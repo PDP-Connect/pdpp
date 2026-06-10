@@ -41,6 +41,9 @@ export const budgetsSchema = z.object({
   deleted: z.boolean(),
 });
 
+// Account entity: identity and settings fields only. The point-in-time
+// balance metrics live on `account_stats` (see `accountStatsSchema`) so a
+// balance move does not version the entity record.
 export const accountsSchema = z.object({
   id: z.string().regex(UUID_RE, "id must be UUID v4"),
   budget_id: z.string().regex(UUID_RE, "budget_id must be UUID v4"),
@@ -48,9 +51,6 @@ export const accountsSchema = z.object({
   type: z.string(),
   on_budget: z.boolean(),
   closed: z.boolean(),
-  balance: z.number().int(),
-  cleared_balance: z.number().int(),
-  uncleared_balance: z.number().int(),
   transfer_payee_id: z.string().regex(UUID_RE, "transfer_payee_id must be UUID v4").nullable(),
   direct_import_linked: z.boolean().nullable(),
   direct_import_in_error: z.boolean().nullable(),
@@ -60,6 +60,19 @@ export const accountsSchema = z.object({
   debt_minimum_payments: z.record(z.string(), z.unknown()).nullable(),
   debt_escrow_amounts: z.record(z.string(), z.unknown()).nullable(),
   deleted: z.boolean(),
+});
+
+// Append-keyed daily balance observation. `id` is `{account_id}:{observed_on}`,
+// so one record covers one account per UTC calendar day. Balances are YNAB
+// milliunit integers (debits negative).
+export const accountStatsSchema = z.object({
+  id: z.string().regex(/^[0-9a-f-]{36}:\d{4}-\d{2}-\d{2}$/, "id must be {account_id}:{YYYY-MM-DD}"),
+  account_id: z.string().regex(UUID_RE, "account_id must be UUID v4"),
+  budget_id: z.string().regex(UUID_RE, "budget_id must be UUID v4"),
+  observed_on: z.string().regex(ISO_DATE_RE, "observed_on must be ISO-8601 date"),
+  balance: z.number().int(),
+  cleared_balance: z.number().int(),
+  uncleared_balance: z.number().int(),
 });
 
 export const categoryGroupsSchema = z.object({
@@ -212,6 +225,7 @@ export const monthCategoriesSchema = z.object({
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   budgets: budgetsSchema,
   accounts: accountsSchema,
+  account_stats: accountStatsSchema,
   category_groups: categoryGroupsSchema,
   categories: categoriesSchema,
   payees: payeesSchema,

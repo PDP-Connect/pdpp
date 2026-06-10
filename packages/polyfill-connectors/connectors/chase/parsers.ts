@@ -66,6 +66,7 @@ const UI_TRANSACTION_ID_ATTRS = [
   "id",
 ] as const;
 const HASHED_ID_RE = /^(?:row-|transaction-|activity-)?[A-Za-z0-9_-]{8,}$/;
+const POSITIONAL_CURRENT_ACTIVITY_ID_RE = /^ovd-recent-activity-table-dataTableId-row-\d+$/;
 
 const MONTH_INDEX: Record<string, string> = {
   jan: "01",
@@ -125,6 +126,35 @@ export function truncate(s: string, max: number): string {
 export function sha256Hex(buf: Buffer | Uint8Array): string {
   return createHash("sha256").update(buf).digest("hex");
 }
+
+/**
+ * True when a downloaded statement buffer is a usable PDF: non-empty and
+ * carrying the `%PDF` magic header. A 0-byte (or HTML/error-page) download
+ * is otherwise hashed and recorded as a "successful" hydration — the empty
+ * buffer yields the empty-string sha256
+ * (e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855),
+ * which then flips back and forth with the real sha across runs and
+ * manufactures version churn on an immutable statement (and leaves the
+ * owner pointing at a 0-byte file they believe is captured). Guarding the
+ * persist path turns an empty/garbage download into an honest index-only
+ * fallback instead of a fake capture. PDFs always begin with `%PDF-` per
+ * the PDF spec; we check the magic bytes rather than only length so an
+ * HTML error page served with a 200 is also rejected.
+ */
+export function isUsablePdfBuffer(buf: Buffer | Uint8Array): boolean {
+  if (buf.length < PDF_MAGIC.length) {
+    return false;
+  }
+  for (let i = 0; i < PDF_MAGIC.length; i++) {
+    if (buf[i] !== PDF_MAGIC[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// "%PDF" — the leading magic bytes every PDF file carries (PDF spec §7.5.2).
+const PDF_MAGIC = Buffer.from("%PDF", "ascii");
 
 export function shortHash(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, HASH_SLUG_LEN);
@@ -360,7 +390,7 @@ function parseVisibleDate(text: string, referenceDateIso: string): string | null
 function extractUiTransactionId(el: Element): string | null {
   for (const attr of UI_TRANSACTION_ID_ATTRS) {
     const value = el.getAttribute(attr);
-    if (value && HASHED_ID_RE.test(value)) {
+    if (value && HASHED_ID_RE.test(value) && !POSITIONAL_CURRENT_ACTIVITY_ID_RE.test(value)) {
       return value;
     }
   }

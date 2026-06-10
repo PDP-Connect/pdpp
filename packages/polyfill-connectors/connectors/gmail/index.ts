@@ -30,8 +30,10 @@ import {
   ImapFlow,
   type ListResponse,
   type MailboxObject,
-  // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
+import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
+import { buildDetailCoverageMessage, buildDetailGap, type DetailGapMessage } from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
@@ -70,6 +72,7 @@ import type {
   InteractionResponse,
   PriorAttachmentsState,
   PriorMessagesState,
+  PriorThreadsState,
   ProgressMessage,
   StartMessage,
   StreamRequest,
@@ -80,13 +83,16 @@ import type {
 
 const EMAIL_AT_RE = /@/;
 const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
+// Splits an address into [local-part, domain] for progress redaction. Only the
+// last `@` is treated as the domain delimiter so quoted local-parts that embed
+// an `@` still redact (the domain is whatever follows the final `@`).
+const EMAIL_SPLIT_RE = /^(.*)@([^@]+)$/;
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const FETCH_HEADER_BATCH_PROGRESS = 1000;
 const SNIPPET_FETCH_MAX_BYTES = 4096;
 const ERROR_MSG_TAIL = 400;
-const FLUSH_HARD_TIMEOUT_MS = 3000;
 const DEFAULT_CRED_TIMEOUT_S = 1800;
 const DEFAULT_GMAIL_CONNECTOR_ID = "https://registry.pdpp.org/connectors/gmail";
 const HYDRATION_ERROR_MAX_CHARS = 240;
@@ -153,16 +159,8 @@ function emit(msg: EmittedMessage): Promise<void> {
   });
 }
 
-// Drain stdout before exit — otherwise Node may exit with buffered bytes
-// still unwritten on a pipe, truncating the final line.
 function flushAndExit(code: number): void {
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
-    // Hard timeout so we don't hang on a pipe that's gone away
-    setTimeout(() => process.exit(code), FLUSH_HARD_TIMEOUT_MS).unref();
-  } else {
-    process.exit(code);
-  }
+  flushAndExitAfterRuntimeAck(code);
 }
 
 function fail(m: string, retryable = false): void {
@@ -318,7 +316,161 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
   ].join(" ");
 }
 
+/**
+ * Per-run honest coverage accounting for the `attachments` detail stream.
+ *
+ * Every attachment decoded from a message's BODYSTRUCTURE during the run is
+ * a key we attempted to hydrate, so it lands in `requiredKeys` (the
+ * denominator). Each attempted hydration then lands in exactly one outcome
+ * bucket by its `hydration_status`:
+ *   - `hydrated`  → `hydratedKeys` (the numerator: blob bytes committed).
+ *   - `failed`    → `gapKeys` (a retryable detail gap to re-attempt next run).
+ *   - `too_large` → `optionalSkipKeys` (a permanent, by-policy skip — NOT a
+ *                   gap, because the next run will skip it again on the same
+ *                   size cap; counting it as a gap would falsely report the
+ *                   stream as never-complete).
+ *
+ * This is the real `considered` axis the progress-evidence contract asks for:
+ * the count is observed from the run, never inferred. Streams without an
+ * attempt-per-key denominator (threads, labels, message_bodies) emit no
+ * coverage rather than a fabricated one.
+ */
+export interface AttachmentDetailCoverage {
+  /**
+   * Failed attachment records, retained so the run can emit one matching
+   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
+   * required key only when it is hydrated, optional-skipped, or backed by a
+   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
+   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
+   * gap's `record_key` and the coverage key a single source of truth.
+   */
+  failedRecords: AttachmentRecord[];
+  gapKeys: string[];
+  hydratedKeys: string[];
+  optionalSkipKeys: string[];
+  requiredKeys: string[];
+}
+
+/** Fresh, empty accumulator for one attachments detail pass. */
+export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
+  return { failedRecords: [], gapKeys: [], hydratedKeys: [], optionalSkipKeys: [], requiredKeys: [] };
+}
+
+/**
+ * Record one attempted attachment hydration into the coverage accumulator by
+ * its terminal `hydration_status`. A `deferred` status (never hydrated this
+ * run) is still a considered key but has no terminal outcome bucket, so it
+ * counts only toward the denominator. Pure: mutates the passed accumulator.
+ */
+export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, record: AttachmentRecord): void {
+  coverage.requiredKeys.push(record.id);
+  switch (record.hydration_status) {
+    case "hydrated":
+      coverage.hydratedKeys.push(record.id);
+      return;
+    case "failed":
+      coverage.gapKeys.push(record.id);
+      // Retain the record so a matching DETAIL_GAP is emitted for this key.
+      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
+      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
+      coverage.failedRecords.push(record);
+      return;
+    case "too_large":
+      coverage.optionalSkipKeys.push(record.id);
+      return;
+    default:
+      // `deferred`: considered but not hydrated this run; denominator only.
+      return;
+  }
+}
+
+/**
+ * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles,
+ * if (and only if) the run considered at least one attachment. A run that
+ * considered zero attachments has no real `considered` axis to report, so it
+ * emits nothing rather than a trivially-`0/0` report — absence is honest; a
+ * fabricated empty denominator is not. The list cursor that anchors this detail
+ * pass lives on `messages`, so that is the `state_stream`. Reference-only: this
+ * reuses DETAIL_COVERAGE without promoting it to portable protocol.
+ *
+ * Extracted from `runAllMailPasses` to keep that orchestrator under the
+ * cognitive-complexity ceiling (authoring guide §"Rules the tooling enforces").
+ */
+async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
+  if (!coverage || coverage.requiredKeys.length === 0) {
+    return;
+  }
+  await emit(
+    buildDetailCoverageMessage({
+      stream: "attachments",
+      stateStream: "messages",
+      requiredKeys: coverage.requiredKeys,
+      hydratedKeys: coverage.hydratedKeys,
+      gapKeys: coverage.gapKeys,
+      optionalSkipKeys: coverage.optionalSkipKeys,
+    })
+  );
+}
+
+/**
+ * Build the recoverable DETAIL_GAP for one failed attachment hydration.
+ *
+ * Every attachment that lands in `DETAIL_COVERAGE.gap_keys` (hydration_status
+ * `failed`) needs a matching durable DETAIL_GAP: the host commit-gate credits a
+ * missing required key only when it is hydrated, optional-skipped, or backed by
+ * a pending DETAIL_GAP — `gap_keys` on their own are not enough, so without this
+ * a successful run that failed even one attachment aborts at commit and the
+ * messages cursor never advances, re-fetching the same window every run.
+ *
+ * `record_key` is the attachment `id` (`<X-GM-MSGID>:<part_index>`), the exact
+ * value already in `gap_keys`, so the gate matches one-to-one. `reason` is
+ * `temporary_unavailable` (retryable): the `failed` bucket mixes transient
+ * download/network/parse errors with no exhaustion signal, mirroring Amazon's
+ * order-detail gap; retrying next run is the honest, non-destructive default.
+ *
+ * Reference-only and bounded: only opaque message and part identifiers cross
+ * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
+ * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
+ * bodies, or payload snippets are carried.
+ */
+export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGapMessage {
+  return buildDetailGap({
+    stream: "attachments",
+    parentStream: "messages",
+    recordKey: attachment.id,
+    reason: "temporary_unavailable",
+    locator: {
+      kind: "gmail.attachment_detail",
+      message_id: attachment.message_id,
+      part_index: attachment.part_index,
+      attachment_id: attachment.id,
+    },
+  });
+}
+
+/**
+ * Emit one DETAIL_GAP per failed attachment retained during the run, mirroring
+ * `emitAttachmentDetailCoverage`. Emitted right after the coverage report and
+ * before the messages STATE commits, so the gate sees every gap as durable when
+ * it credits required keys. No-ops when nothing failed.
+ */
+async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
+  if (!coverage) {
+    return;
+  }
+  for (const attachment of coverage.failedRecords) {
+    await emit(buildAttachmentDetailGap(attachment));
+  }
+}
+
 export interface PerMessageDeps {
+  /**
+   * Optional accumulator for the `attachments` detail-coverage report. When
+   * present, `processMessage` records every attachment it attempts to hydrate
+   * so the pass driver can emit one honest DETAIL_COVERAGE after the lane
+   * settles. Absent for passes that have no attachments denominator.
+   */
+  attachmentCoverage?: AttachmentDetailCoverage;
   emitProgress: ProgressEmitter;
   emitRecord: EmitRecordFn;
   fetchBodies: FetchBodiesFn;
@@ -416,7 +568,13 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
 
   if (deps.requested.has("attachments") && attachments.length) {
     for (const a of attachments) {
-      await deps.emitRecord("attachments", { ...(await deps.hydrateAttachment(msg, a)) });
+      const hydrated = await deps.hydrateAttachment(msg, a);
+      // Record the outcome BEFORE emitting so the coverage denominator counts
+      // every attempt even if the emit is scope-filtered downstream.
+      if (deps.attachmentCoverage) {
+        recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+      }
+      await deps.emitRecord("attachments", { ...hydrated });
     }
   }
   return true;
@@ -522,6 +680,33 @@ export function resolveGmailAddressFromEnv(env: NodeJS.ProcessEnv = process.env)
   return null;
 }
 
+/**
+ * Mask an email address for an operator/model-visible PROGRESS message.
+ *
+ * The owner's full Gmail address is a raw PII identifier; emitting it verbatim
+ * in a PROGRESS line leaks it to every consumer of the run stream (dashboard,
+ * timeline, logs, model). We still want the progress line to confirm *which
+ * account/domain* connected, so we keep the domain and the first character of
+ * the local-part and mask the rest:
+ *
+ *   "the owner.nunamaker@gmail.com"  ->  "t***@gmail.com"
+ *   "x@example.com"            ->  "***@example.com"
+ *
+ * If the value does not look like an `local@domain` address (no `@`, or an
+ * empty domain), we return a constant placeholder rather than risk echoing an
+ * unexpected raw value. The output never contains the full local-part.
+ */
+export function redactEmailForProgress(address: string): string {
+  const match = EMAIL_SPLIT_RE.exec(address);
+  const local = match?.[1];
+  const domain = match?.[2];
+  if (!(local && domain)) {
+    return "[redacted-account]";
+  }
+  const head = local.length > 1 ? local[0] : "";
+  return `${head}***@${domain}`;
+}
+
 async function resolveAddress(): Promise<string | null> {
   const fromEnv = resolveGmailAddressFromEnv();
   if (fromEnv) {
@@ -547,26 +732,86 @@ async function resolveAddress(): Promise<string | null> {
 
 // ─── Labels stream ──────────────────────────────────────────────────────
 
-async function emitLabelsStream(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+/**
+ * Parse the prior `labels` STATE cursor's `fingerprints` map. The cursor
+ * shape is `state.labels.fingerprints` keyed by label `name`. Legacy
+ * cursors (pre-fingerprint: only `{ fetched_at }`) decode to an empty
+ * map, so the first post-deploy run rebuilds the map and re-emits every
+ * label exactly once.
+ */
+export function readPriorLabelFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.labels ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Emit the IMAP mailbox list as `labels` records, gated through a
+ * per-label fingerprint cursor so an unchanged mailbox set does not
+ * append a new version of every label on every run.
+ *
+ * The labels record body is `{ name, canonical_name, is_system,
+ * parent_name, message_count }`. `message_count` is hardcoded `null`,
+ * and there is no run-clock field in the record (the `fetched_at`
+ * lives only in the STATE cursor). So the record's stable-JSON IS the
+ * change signal: a label only re-emits when its name/derived flags
+ * actually change. No fields are excluded from the fingerprint.
+ *
+ * Before this gate, `labels` re-emitted every mailbox unconditionally
+ * each run, accumulating ~269 versions per label of byte-identical
+ * history.
+ */
+async function emitLabelsStream(
+  client: ImapFlow,
+  emitRecord: EmitRecordFn,
+  state: Record<string, unknown>
+): Promise<void> {
+  // `labels` is keyed by `name`, not `id`, and the stored record body has
+  // no `id` field. The fingerprint cursor keys on `data.id`, so we pass a
+  // keying `id` (the label name) but EXCLUDE it from the fingerprint —
+  // leaving the hash computed over exactly the stored record body
+  // (`{name, canonical_name, is_system, parent_name, message_count}`).
+  // This keeps byte-parity with the compaction script, which fingerprints
+  // the stored `record_json` (no `id`) with an empty exclude set.
+  const cursor = openFingerprintCursor(state, {
+    excludeFromFingerprint: ["id"],
+    priorFingerprints: readPriorLabelFingerprints(state),
+  });
   const mailboxes: ListResponse[] = await client.list();
   for (const mb of mailboxes) {
     const name = mb.path;
-    await emitRecord(
-      "labels",
-      {
-        name,
-        canonical_name: canonicalLabelName(name),
-        is_system: isGmailSystemLabel(name),
-        parent_name: labelParentName(name),
-        message_count: null, // we could SELECT each to get EXISTS but not worth it
-      },
-      "name"
-    );
+    const record = {
+      name,
+      canonical_name: canonicalLabelName(name),
+      is_system: isGmailSystemLabel(name),
+      parent_name: labelParentName(name),
+      message_count: null, // we could SELECT each to get EXISTS but not worth it
+    };
+    // Fingerprint by the label `name` (the record key for this stream).
+    if (cursor.shouldEmit({ id: name, ...record })) {
+      await emitRecord("labels", record, "name");
+    }
+  }
+  // Drop fingerprints for mailboxes that disappeared so a future
+  // re-creation re-emits. `labels` is always a full scan.
+  cursor.pruneStale();
+  const labelsCursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (cursor.size() > 0) {
+    labelsCursor.fingerprints = cursor.toState();
   }
   await emit({
     type: "STATE",
     stream: "labels",
-    cursor: { fetched_at: nowIso() },
+    cursor: labelsCursor,
   });
 }
 
@@ -1226,7 +1471,7 @@ async function runDeltaPass(
 
 // ─── Threads pass ───────────────────────────────────────────────────────
 
-async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor: FingerprintCursor): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -1264,9 +1509,60 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promi
     });
     threadAgg.set(tid, next);
   }
-  for (const agg of threadAgg.values()) {
-    await emitRecord("threads", buildThreadRecord(agg));
+  await emitChangedThreads(threadAgg.values(), cursor, emitRecord);
+}
+
+/**
+ * Gate every aggregated thread through the shared fingerprint cursor and
+ * emit only the records whose semantic shape moved since the prior run.
+ * Pruning stale ids is the caller's responsibility — `runThreadsPass`
+ * always drives a full `1:*` scan, so the orchestrator calls
+ * `cursor.pruneStale()` after this returns. Threads with empty ids are
+ * silently dropped: the upstream IMAP loop already filters them.
+ *
+ * Exported so the two-pass churn invariant can be exercised without
+ * standing up an IMAP fixture.
+ */
+export async function emitChangedThreads(
+  aggregates: Iterable<ThreadAggregate>,
+  cursor: FingerprintCursor,
+  emitRecord: EmitRecordFn
+): Promise<void> {
+  for (const agg of aggregates) {
+    const record = buildThreadRecord(agg);
+    if (!cursor.shouldEmit(record)) {
+      continue;
+    }
+    await emitRecord("threads", record);
   }
+}
+
+/**
+ * Parse the prior `threads` STATE cursor's `thread_fingerprints` map.
+ * Tolerant of:
+ *   - missing/legacy cursors (no fingerprints field)
+ *   - malformed entries (non-string values silently dropped)
+ *   - state from a different schema (best-effort coercion)
+ * The returned map is always safe to read; on legacy input it is empty
+ * and the next run re-emits every thread once (the normal one-time
+ * cost of the cursor's introduction).
+ */
+export function readPriorThreadFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const out = new Map<string, string>();
+  const streamState = state.threads;
+  if (!streamState || typeof streamState !== "object" || Array.isArray(streamState)) {
+    return out;
+  }
+  const raw = (streamState as PriorThreadsState).thread_fingerprints;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 // ─── All Mail orchestration (inside the mailbox lock) ───────────────────
@@ -1327,7 +1623,33 @@ async function runAllMailPasses(
   // (this fetch happened at the end before the reorder), so no throughput
   // change.
   if (deps.requested.has("threads")) {
-    await runThreadsPass(client, deps.emitRecord);
+    // Per-thread fingerprint cursor via the shared helper. The prior STATE
+    // shape (`state.threads.thread_fingerprints`) predates the helper's
+    // default `fingerprints` key, so the prior map is decoded by the
+    // gmail-local reader and handed in via `priorFingerprints`. The
+    // cursor still seeds its next map from the prior so threads we skip
+    // emitting carry their fingerprint forward unchanged.
+    const threadCursor = openFingerprintCursor(state, {
+      priorFingerprints: readPriorThreadFingerprints(state),
+    });
+    await runThreadsPass(client, deps.emitRecord, threadCursor);
+    // Full `1:*` scan: drop ids absent from this run so a future
+    // re-creation of the same thread_id triggers a fresh emit instead of
+    // matching a stale fingerprint.
+    threadCursor.pruneStale();
+    // The threads STATE cursor carries the next-run fingerprint map.
+    // Emitted here (inside the mailbox lock) so it's persisted right
+    // after the threads pass and before the messages pass; if the
+    // messages pass crashes, the threads cursor still holds and we
+    // don't re-emit every thread on retry.
+    await emit({
+      type: "STATE",
+      stream: "threads",
+      cursor: {
+        fetched_at: nowIso(),
+        thread_fingerprints: threadCursor.toState(),
+      },
+    });
   }
 
   const metas = await collectMetadata(client, fetchRange);
@@ -1344,7 +1666,15 @@ async function runAllMailPasses(
     maxBytes: resolveMaxAttachmentBytes(),
     uploadBlob: buildRuntimeBlobUploader(),
   });
+  // Accumulate honest attachments detail-coverage across BOTH the primary pass
+  // and the historical backfill pass below, so a single DETAIL_COVERAGE can
+  // report considered-vs-hydrated for every attachment this run attempted.
+  // Only when `attachments` is in scope — otherwise no hydration attempts run
+  // and there is no denominator to report.
+  const wantsAttachments = deps.requested.has("attachments") || attachmentBackfillRequested;
+  const attachmentCoverage = wantsAttachments ? makeAttachmentDetailCoverage() : undefined;
   const perMessageDeps: PerMessageDeps = {
+    ...(attachmentCoverage ? { attachmentCoverage } : {}),
     emitProgress: (m) => emit(m),
     emitRecord: deps.emitRecord,
     fetchBodies: fetchBodiesBound,
@@ -1373,6 +1703,7 @@ async function runAllMailPasses(
       const backfillSummary = createAttachmentBackfillSummary();
       await emitMessagesPass(
         {
+          ...(attachmentCoverage ? { attachmentCoverage } : {}),
           emitProgress: (m) => emit({ ...m, stream: "attachments" }),
           emitRecord: async (stream, data, keyField) => {
             await deps.emitRecord(stream, data, keyField);
@@ -1434,6 +1765,17 @@ async function runAllMailPasses(
     }
   }
 
+  // Emit the per-run attachments coverage report after every attachments
+  // record (primary pass + historical backfill) has settled and before the
+  // messages STATE cursor commits — the ordering the progress-evidence
+  // contract expects (records, then DETAIL_COVERAGE, then STATE).
+  await emitAttachmentDetailCoverage(attachmentCoverage);
+  // Then one matching DETAIL_GAP per failed attachment, so the commit-gate can
+  // credit each gap_keys entry against a durable pending gap. Without this the
+  // gate aborts an otherwise-successful run and the messages cursor never
+  // advances, re-fetching the same window every run.
+  await emitAttachmentDetailGaps(attachmentCoverage);
+
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
 
@@ -1472,9 +1814,13 @@ function makeEmitRecord(
     // Validate record against schema.
     const validation = validateRecord(stream, data);
     if (!validation.ok) {
-      process.stderr.write(
-        `[gmail] SKIP_RESULT ${stream} ${canonical}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}\n`
-      );
+      await emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: "schema_validation_failed",
+        message: `${stream} ${canonical}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`,
+        diagnostics: { issues: validation.issues },
+      });
       return;
     }
 
@@ -1550,10 +1896,10 @@ async function main(): Promise<void> {
   await client.connect();
 
   try {
-    await emit({ type: "PROGRESS", message: `Connected to ${address}` });
+    await emit({ type: "PROGRESS", message: `Connected to ${redactEmailForProgress(address)}` });
 
     if (requested.has("labels")) {
-      await emitLabelsStream(client, emitRecord);
+      await emitLabelsStream(client, emitRecord, state);
     }
 
     const allMail = await findAllMailbox(client);

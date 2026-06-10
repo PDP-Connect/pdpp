@@ -6,6 +6,8 @@ import { join, relative, resolve } from "node:path";
 const repoRoot = exec("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd() }).trim();
 const commonGitDir = resolve(repoRoot, exec("git", ["rev-parse", "--git-common-dir"], { cwd: repoRoot }).trim());
 const tmpReportsDir = join(repoRoot, "tmp", "workstreams");
+const wrapperDir = join(tmpReportsDir, "claude-wrapper");
+const parkedDir = join(tmpReportsDir, "parked");
 const hubDir = join(commonGitDir, "workstreams");
 
 const now = Date.now();
@@ -99,7 +101,7 @@ function parseTmuxPanes() {
       "list-panes",
       "-a",
       "-F",
-      "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}",
+      "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
     ],
     { allowFail: true }
   ).trim();
@@ -110,8 +112,8 @@ function parseTmuxPanes() {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [paneId, session, windowIndex, windowName, command, path] = line.split("\t");
-      return { paneId, session, windowIndex, windowName, command, path };
+      const [paneId, session, windowIndex, windowName, command, pid, path] = line.split("\t");
+      return { paneId, session, windowIndex, windowName, command, pid, path };
     })
     .filter((pane, index, panes) => panes.findIndex((candidate) => candidate.paneId === pane.paneId) === index);
 }
@@ -152,7 +154,11 @@ const worktrees = parseWorktrees().map((worktree) => ({
 }));
 const tmuxPanes = parseTmuxPanes();
 const claudePanes = tmuxPanes.filter((pane) => pane.command === "claude");
-const reportFiles = listFiles(tmpReportsDir).filter((file) => file.endsWith(".md")).map(fileInfo);
+const idleTmuxCleanupCandidates = tmuxPanes.filter((pane) => isIdleTmuxCleanupCandidate(pane, worktrees));
+const reportFiles = listFiles(tmpReportsDir)
+  .filter((file) => file.endsWith(".md"))
+  .filter((file) => !file.startsWith(`${wrapperDir}/`))
+  .map(fileInfo);
 const recentReports = reportFiles.filter((report) => now - report.mtimeMs < 3 * DAY_MS);
 const mergeQueueFiles = listFiles(join(hubDir, "merge-queue")).filter((file) => file.endsWith(".md")).map(fileInfo);
 const blockerFiles = listFiles(join(hubDir, "blockers")).filter((file) => file.endsWith(".md")).map(fileInfo);
@@ -163,10 +169,20 @@ const openSpecChanges = listFiles(join(repoRoot, "openspec", "changes"))
   .filter((name) => !name.startsWith("archive/"))
   .sort();
 
+const openSpecBuckets = classifyOpenSpecChanges(openSpecChanges);
+const wrapperLanes = loadWrapperLanes(wrapperDir);
+const activeWrapperBranches = new Set(
+  wrapperLanes
+    .filter((lane) => lane.status === "running" && isWrapperLaneProcessRunning(lane))
+    .map((lane) => lane.branch)
+    .filter(Boolean)
+);
+
 const risks = [];
 
 for (const worktree of worktrees) {
-  if (worktree.status.dirty.length > 0) {
+  const dirtyOwnedByActiveWorker = activeWrapperBranches.has(worktree.branch);
+  if (worktree.status.dirty.length > 0 && !dirtyOwnedByActiveWorker) {
     risks.push(`DIRTY worktree ${labelWorktree(worktree)} has ${worktree.status.dirty.length} changed paths`);
   }
   if (worktree.status.ahead > 0) {
@@ -188,6 +204,56 @@ for (const queue of mergeQueueFiles) {
 for (const blocker of blockerFiles) {
   risks.push(`BLOCKER pending ${blocker.rel} (${blocker.ageHours}h old)`);
 }
+for (const lane of wrapperLanes) {
+  const parkedWrapperLane = isParkedWrapperLane(lane);
+  if (lane.status === "failed") {
+    if (!parkedWrapperLane) {
+      const txNote = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
+      const ecNote = lane.exitClass ? ` exit_class=${lane.exitClass}` : "";
+      risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}${ecNote}`);
+    }
+  } else if (lane.status === "running") {
+    // Stale "running": started_at === ended_at means the process was SIGKILLed before the final
+    // write_status call could update the seed (both timestamps come from the same initial write).
+    // Normalize both to digits-only to compare across the two date formats used by the wrapper
+    // (started_at: "20260529T033943Z", ended_at: "2026-05-29T03:39:43Z").
+    const normalizeTs = (s) => (s ?? "").replace(/\D/g, "").slice(0, 14);
+    const processRunning = isWrapperLaneProcessRunning(lane);
+    const stale = !processRunning
+      && lane.startedAt
+      && lane.endedAt
+      && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
+    if (stale && !parkedWrapperLane) {
+      risks.push(`WRAPPER-LANE stale-running (SIGKILL?) lane=${lane.lane} started=${lane.startedAt} — relaunch or mark superseded`);
+    } else if (!processRunning && !parkedWrapperLane) {
+      risks.push(`WRAPPER-LANE running-without-process lane=${lane.lane} started=${lane.startedAt} — inspect wrapper status and relaunch or mark superseded`);
+    }
+  }
+  // "aborted" = process was killed before completing; surfaces in the Wrapper Lanes table but
+  // is historical evidence, not a live risk requiring owner action. A deliberately aborted
+  // lane with a thin (or zero) transcript is expected, not a signal that work was lost.
+
+  // Thin transcript on completed/failed/recovered terminal statuses: Claude exited immediately
+  // and the work is likely useless. Exclude "aborted" because a zero-byte
+  // transcript is normal there. Also exclude terminal report-bearing lanes whose
+  // branch has already been removed: those are preserved historical evidence,
+  // not active owner work. The report and wrapper inventory remain visible.
+  const terminalHistoricalWithReport =
+    ["complete", "completed"].includes(lane.status) &&
+    ["present", "recovered"].includes(lane.reportState) &&
+    lane.branch &&
+    !branchExists(lane.branch);
+  if (
+    lane.status !== "running" &&
+    lane.status !== "aborted" &&
+    !terminalHistoricalWithReport &&
+    !parkedWrapperLane &&
+    lane.transcriptBytes >= 0 &&
+    lane.transcriptBytes < 200
+  ) {
+    risks.push(`WRAPPER-LANE thin-transcript lane=${lane.lane} transcript_bytes=${lane.transcriptBytes} — Claude may not have run; check: cat ${lane.transcriptFile || lane.artifactDir + "/transcript.log"}`);
+  }
+}
 
 console.log("# PDPP Workstreams Status");
 console.log(`Generated: ${new Date().toISOString()}`);
@@ -204,6 +270,14 @@ printSection(
   claudePanes.map(
     (pane) =>
       `- ${pane.paneId} ${pane.session}:${pane.windowIndex}:${pane.windowName} cmd=${pane.command} path=${formatPath(pane.path)}`
+  )
+);
+
+printSection(
+  "Idle Tmux Cleanup Candidates",
+  idleTmuxCleanupCandidates.map(
+    (pane) =>
+      `- ${pane.session}:${pane.windowIndex}:${pane.windowName} pane=${pane.paneId} shell=${pane.command} path=${formatPath(pane.path)} cleanup="tmux kill-window -t ${pane.session}:${pane.windowIndex}"`
   )
 );
 
@@ -243,14 +317,49 @@ printSection(
   blockerFiles.map((entry) => `- ${entry.rel} age=${entry.ageHours}h first-line=${JSON.stringify(readFirstHeading(entry))}`)
 );
 
+// Group OpenSpec changes by task-completion status so the in-flight bucket
+// surfaces above the complete-but-not-archived backlog. Archive is owner-only
+// per AGENTS.md, so completed changes accumulate until an owner sweep — without
+// grouping, the in-flight set drowns in noise.
 printSection(
-  "OpenSpec Changes",
-  openSpecChanges.map((name) => `- ${name}`)
+  `OpenSpec Changes — In-flight (${openSpecBuckets.inFlight.length})`,
+  openSpecBuckets.inFlight.map(formatOpenSpecLine)
 );
+
+printSection(
+  `OpenSpec Changes — Zero-progress (${openSpecBuckets.zeroProgress.length})`,
+  openSpecBuckets.zeroProgress.map(formatOpenSpecLine)
+);
+
+printSection(
+  `OpenSpec Changes — Complete, awaiting owner archive (${openSpecBuckets.complete.length})`,
+  openSpecBuckets.complete.map(formatOpenSpecLine)
+);
+
+if (openSpecBuckets.untracked.length > 0) {
+  printSection(
+    `OpenSpec Changes — Without task tracking (${openSpecBuckets.untracked.length})`,
+    openSpecBuckets.untracked.map((entry) => `- ${entry.name}`)
+  );
+}
 
 printSection(
   "Workstream Cards",
   cardFiles.map((entry) => `- ${entry.rel} age=${entry.ageHours}h first-line=${JSON.stringify(readFirstHeading(entry))}`)
+);
+
+printSection(
+  "Claude Wrapper Lanes",
+  wrapperLanes.length === 0
+    ? []
+    : wrapperLanes.map((lane) => {
+        const recovered = lane.recovered ? " recovered=true" : "";
+        const parked = isParkedWrapperLane(lane) ? " parked=true" : "";
+        const branch = lane.branch ? ` branch=${lane.branch}` : "";
+        const txBytes = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
+        const exitClass = lane.exitClass ? ` exit_class=${lane.exitClass}` : "";
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${exitClass}${recovered}${parked}`;
+      })
 );
 
 if (risks.length > 0 && !noFail) {
@@ -266,8 +375,135 @@ function formatPath(path) {
   return path.startsWith(repoRoot) ? relative(repoRoot, path) || "." : path;
 }
 
+function branchExists(branch) {
+  if (!branch || branch === "(detached)" || branch === "(unknown)") return false;
+  return exec("git", ["rev-parse", "--verify", `refs/heads/${branch}`], { cwd: repoRoot, allowFail: true }).trim() !== "";
+}
+
 function sameOrChild(child, parent) {
   if (!(child && parent)) return false;
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !resolve(parent, rel).startsWith(".."));
+}
+
+function isIdleTmuxCleanupCandidate(pane, knownWorktrees) {
+  const shellCommands = new Set(["bash", "fish", "sh", "zsh"]);
+  if (!shellCommands.has(pane.command)) return false;
+  if (pane.windowName === "OVERSEER") return false;
+  if (!knownWorktrees.some((worktree) => sameOrChild(pane.path, worktree.path))) return false;
+  return !paneHasChildProcesses(pane.pid);
+}
+
+function paneHasChildProcesses(pid) {
+  if (!pid) return false;
+  return exec("ps", ["-o", "pid=", "--ppid", String(pid)], { cwd: repoRoot, allowFail: true }).trim() !== "";
+}
+
+function classifyOpenSpecChanges(names) {
+  const buckets = { inFlight: [], zeroProgress: [], complete: [], untracked: [] };
+  for (const name of names) {
+    const tasksFile = join(repoRoot, "openspec", "changes", name, "tasks.md");
+    if (!existsSync(tasksFile)) {
+      buckets.untracked.push({ name, done: 0, total: 0 });
+      continue;
+    }
+    const body = readFileSync(tasksFile, "utf8");
+    let done = 0;
+    let total = 0;
+    for (const line of body.split("\n")) {
+      if (/^\s*- \[x\]/i.test(line)) {
+        done += 1;
+        total += 1;
+      } else if (/^\s*- \[ \]/.test(line)) {
+        total += 1;
+      }
+    }
+    const entry = { name, done, total };
+    if (total === 0) {
+      buckets.untracked.push(entry);
+    } else if (done === 0) {
+      buckets.zeroProgress.push(entry);
+    } else if (done === total) {
+      buckets.complete.push(entry);
+    } else {
+      buckets.inFlight.push(entry);
+    }
+  }
+  // Sort in-flight by least-progressed first so stuck changes surface at the top.
+  buckets.inFlight.sort((a, b) => a.done / a.total - b.done / b.total || a.name.localeCompare(b.name));
+  return buckets;
+}
+
+function formatOpenSpecLine(entry) {
+  const ratio = `[${String(entry.done).padStart(2, " ")}/${String(entry.total).padStart(2, " ")}]`;
+  return `- ${ratio} ${entry.name}`;
+}
+
+function isWrapperLaneProcessRunning(lane) {
+  const processList = exec("ps", ["-eo", "pid=,args="], { allowFail: true });
+  if (!processList) return false;
+  return processList.split("\n").some((line) => {
+    if (!line || line.includes("workstreams-status.mjs")) return false;
+    if (lane.artifactDir && line.includes(lane.artifactDir)) return true;
+    return lane.lane && line.includes(`--lane ${lane.lane}`);
+  });
+}
+
+function isParkedWrapperLane(lane) {
+  if (!lane?.lane) return false;
+  return existsSync(join(parkedDir, lane.lane));
+}
+
+// Scan tmp/workstreams/claude-wrapper/<lane>/<ts>/status.json.
+// Returns one entry per lane: the most recent run for each lane name.
+function loadWrapperLanes(wrapperDir) {
+  if (!existsSync(wrapperDir)) return [];
+  const byLane = new Map();
+  for (const laneEntry of readdirSync(wrapperDir, { withFileTypes: true })) {
+    if (!laneEntry.isDirectory()) continue;
+    const laneName = laneEntry.name;
+    const laneDir = join(wrapperDir, laneName);
+    const runs = readdirSync(laneDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    if (runs.length === 0) continue;
+    const latestRun = runs[runs.length - 1];
+    const statusFile = join(laneDir, latestRun, "status.json");
+    if (!existsSync(statusFile)) continue;
+    try {
+      const data = JSON.parse(readFileSync(statusFile, "utf8"));
+      byLane.set(laneName, {
+        lane: data.lane ?? laneName,
+        branch: data.branch ?? "",
+        status: data.status ?? "unknown",
+        reportState: data.report_state ?? "unknown",
+        recovered: data.recovered ?? false,
+        startedAt: data.started_at ?? latestRun,
+        endedAt: data.ended_at ?? "",
+        exitCode: data.exit_code ?? -1,
+        exitClass: data.exit_class ?? "",
+        transcriptBytes: data.transcript_bytes ?? -1,
+        artifactDir: data.artifact_dir ?? "",
+        transcriptFile: data.transcript_file ?? "",
+      });
+    } catch {
+      // Corrupt status.json — surface as a failed lane.
+      byLane.set(laneName, {
+        lane: laneName,
+        branch: "",
+        status: "failed",
+        reportState: "absent",
+        recovered: false,
+        startedAt: latestRun,
+        endedAt: "",
+        exitCode: -1,
+        exitClass: "",
+        transcriptBytes: -1,
+        artifactDir: "",
+        transcriptFile: "",
+      });
+    }
+  }
+  return [...byLane.values()].sort((a, b) => a.lane.localeCompare(b.lane));
 }

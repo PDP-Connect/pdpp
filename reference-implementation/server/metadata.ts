@@ -223,6 +223,12 @@ export function resolvePublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: str
   return resolveRequestPublicUrl(req);
 }
 
+export function protectedResourceMetadataUrlForResource(resource: string): string {
+  const parsed = new URL(resource);
+  const resourcePath = parsed.pathname === "/" ? "" : parsed.pathname;
+  return `${parsed.origin}/.well-known/oauth-protected-resource${resourcePath}${parsed.search}`;
+}
+
 export function shouldUseDirectRequestOrigin(req: ResolvePublicUrlRequest, explicitUrl?: string | null): boolean {
   if (!explicitUrl || forwardedPublicOrigin(req)) {
     return false;
@@ -343,10 +349,386 @@ export interface ProtectedResourceAgentDiscovery {
   };
   llms_full_txt: string;
   llms_txt: string;
+  mcp?: {
+    endpoint: string;
+    no_owner_token: true;
+    setup_intent: "grant_scoped_read";
+    tool_surface: "profile_free_normal_read";
+    transport: "streamable_http";
+  };
   recommended_flow: "pdpp connect";
   skill: string;
   skill_catalog: string;
   skill_name: "pdpp-data-access";
+}
+
+// Advisory trusted-owner-agent onboarding block carried inside the
+// protected-resource metadata document and the RS cold-start root pointer.
+// Non-normative reference metadata: it names the owner-level REST automation
+// profile and the surfaces a trusted local owner agent needs to onboard and
+// keep an incremental local view. The host only emits it when owner-agent
+// onboarding is safely configured (a resolved public/browser origin); it is
+// never advertised from a direct ephemeral test server. Every URL is derived
+// from the caller-visible trusted public origin, so a forwarded-origin caller
+// either sees a block scoped to the trusted host or no block at all — never an
+// untrusted host. See:
+//   openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+export interface ProtectedResourceOwnerAgentOnboarding {
+  advisory: true;
+  authorization_server: string;
+  // Pointer to the bearer-authed owner-agent control entrypoint and the
+  // action families it currently supports vs. defers to owner mediation. A
+  // trusted local agent reads this before guessing at control routes. See
+  // openspec/changes/add-owner-agent-control-surface.
+  control_surface: OwnerAgentControlSurface;
+  device_authorization_endpoint: string;
+  event_subscriptions_endpoint?: string;
+  introspection_endpoint: string;
+  mcp_owner_bearer_rejected: true;
+  owner_approval_url: string;
+  pdpp_token_kind: "owner";
+  profile: "trusted_owner_agent";
+  query_base: string;
+  registration_endpoint?: string;
+  resource: string;
+  revocation_path_template: string;
+  // Token-efficient schema projection for agent discovery. `schema_endpoint`
+  // remains the exhaustive/full schema surface; owner agents should prefer this
+  // URL for metadata-first sync and fetch the full endpoint only when they need
+  // raw JSON Schema blobs.
+  schema_compact_endpoint: string;
+  schema_endpoint: string;
+  streams_endpoint: string;
+  token_endpoint: string;
+  warning: string;
+}
+
+// Owner-agent control surface catalog. This is the single source of truth for
+// which owner-agent REST control actions the running reference implementation
+// supports, where their routes live, and which action families remain
+// owner-mediated or unsupported in this build. Both the advisory
+// `pdpp_owner_agent_onboarding.control_surface` discovery hint and the
+// bearer-authed `GET /v1/owner/control` capability document are projected from
+// this builder so a trusted agent cannot read a supported claim from one
+// surface and a different claim from the other.
+//
+// Honesty rule (full-context-refresh "Treat gaps as first-class outputs"):
+// an action family is only ever listed `supported` when this build actually
+// serves it over the owner-agent bearer surface. Everything else is named
+// explicitly — never silently omitted — with `status` set to
+// `owner_mediated` (the operation exists but requires a browser owner session
+// or owner-mediated provider step today) or `unsupported` (no route in this
+// build). See:
+//   openspec/changes/add-owner-agent-control-surface/specs/
+//     reference-owner-agent-control-surface/spec.md
+//   openspec/changes/add-owner-agent-control-surface/specs/
+//     reference-agent-access-workflow/spec.md
+//     (#"Owner-agent onboarding metadata SHALL describe control-plane scope")
+
+export type OwnerAgentControlActionStatus = "supported" | "owner_mediated" | "unsupported";
+
+export interface OwnerAgentControlAction {
+  // Stable action-family key an agent can branch on without parsing prose.
+  family: string;
+  // HTTP method + absolute URL when `status` is `supported`; null otherwise so
+  // an agent does not probe a 404 for an action this build does not serve.
+  method: string | null;
+  // One-line, secret-free explanation. For non-supported families this names
+  // where the action lives today (owner session / dashboard) or why it is
+  // unsupported.
+  reason: string;
+  status: OwnerAgentControlActionStatus;
+  url: string | null;
+}
+
+export interface OwnerAgentControlSurface {
+  actions: readonly OwnerAgentControlAction[];
+  // Absolute URL of the capability document route itself.
+  entrypoint: string;
+  mcp_owner_bearer_rejected: true;
+  object: "owner_agent_control_surface";
+  // Reference-only control vocabulary; not promoted to PDPP Core.
+  scope: "reference_implementation";
+}
+
+export interface OwnerAgentControlSurfaceInput {
+  // Already-trusted, forwarded-origin-safe RS public base (no trailing slash
+  // required; this builder normalizes). Every URL is derived from it so the
+  // catalog can never name an untrusted host.
+  resource: string;
+}
+
+// Single source of truth for the owner-agent control action catalog. Each
+// descriptor declares the family's stable status/method/reason and how its URL
+// is derived from the trusted RS base. `scope` says whether the family is a
+// surface-level action (`surface`, e.g. discovery and listing) or operates on a
+// single configured connection (`instance`). Both the control capability
+// document (`buildOwnerAgentControlSurface`) and the per-connection
+// `supported_actions` projection (`buildOwnerConnectionSupportedActions`) are
+// projected from this one table, so the two surfaces can never disagree about
+// what this build supports for a connection.
+//
+// `urlTemplate` receives the trusted RS base and is only invoked for `supported`
+// families; non-supported families always project `method: null, url: null` so
+// an agent never probes a 404. For an instance-scoped supported family the
+// template carries a literal `{connection_id}` placeholder in the surface
+// catalog; the per-connection projection substitutes the concrete id.
+interface OwnerAgentControlActionDescriptor {
+  family: string;
+  method: string | null;
+  reason: string;
+  // "surface" — a control-plane entrypoint not bound to one connection.
+  // "instance" — operates on a single configured connection (`connection_id`).
+  scope: "surface" | "instance";
+  status: OwnerAgentControlActionStatus;
+  urlTemplate: ((rs: string) => string) | null;
+}
+
+const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescriptor[] = [
+  {
+    family: "discover_control_capabilities",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/control`,
+    reason: "Read this owner-agent control capability document.",
+  },
+  {
+    family: "list_connector_templates",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/connector-templates`,
+    reason:
+      "List available connector templates with connector_id, modality, connection-intent status, and related configured connection summaries.",
+  },
+  {
+    family: "list_connections",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/connections`,
+    reason:
+      "List configured connection instances with connection_id, connector identity, display_name, and label status.",
+  },
+  // Supported in this build: a trusted owner agent POSTs a typed connection
+  // intent. The route returns a real owner-mediated next step
+  // (`enroll_local_collector`) for proven local-collector connectors and a
+  // typed `unsupported` with a named-gap reason for browser-bound,
+  // API/network-only, and unknown connectors. It never marks a connection
+  // active and never bypasses a provider step.
+  {
+    family: "initiate_connection",
+    scope: "surface",
+    status: "supported",
+    method: "POST",
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/intents`,
+    reason:
+      "Initiate a new connection as a typed, auditable, owner-mediated intent. Body: { connector_id, display_name? }. Returns next_step.kind = enroll_local_collector for proven local-collector connectors, or unsupported (with a reason naming the missing primitive) for browser-bound and API/network-only connectors. No connection is marked active by the intent.",
+  },
+  {
+    family: "rename_connection",
+    scope: "instance",
+    status: "supported",
+    method: "PATCH",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}`,
+    reason:
+      "Set a connection's owner-meaningful display_name by connection_id. Body: { display_name }. Use a connection_id from list_connections.",
+  },
+  // Supported in this build: a trusted owner agent starts a run-now for a
+  // connection by connection_id. The representative URL is the connection-scoped
+  // route; connector-only addressing (`POST /v1/owner/connectors/{connector_id}/run`)
+  // auto-selects a single active connection or returns a typed
+  // `ambiguous_connection`. The run resolves asynchronously (202 with the run
+  // handle); the route shares the controller `runNow` semantics with the
+  // cookie-authed `/_ref` run route.
+  {
+    family: "run_connection",
+    scope: "instance",
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/run`,
+    reason:
+      "Start a run-now for a connection by connection_id. POST this URL; the run resolves asynchronously (202 with run_id + trace_id, or 409 run_already_active). Use a connection_id from list_connections. Connector-only addressing (`POST /v1/owner/connectors/{connector_id}/run`) auto-selects a single active connection or returns a typed ambiguous_connection.",
+  },
+  // Owner-mediated in this build: a trusted owner agent can discover that
+  // single-run cancellation exists, but it is served only over the owner-session
+  // reference control plane (`POST /_ref/runs/{run_id}/cancel`), not yet over the
+  // owner-agent bearer surface — so the catalog names it without advertising a
+  // bearer method/URL it does not serve (honesty rule; the owner-agent bearer
+  // route is the deferred R.2 slice). `cancel_run` is run-scoped (keyed on the
+  // active `run_id`, not `connection_id`) and is non-destructive: it stops one
+  // in-flight run and preserves that connection's already-collected records,
+  // schedule, grants, and configuration. It is deliberately distinct from
+  // `run_connection` (start), `revoke_connection` (stop future collection), and
+  // `delete_connection` (erase the past). See
+  // openspec/changes/add-owner-run-cancellation-control.
+  {
+    family: "cancel_run",
+    scope: "instance",
+    status: "owner_mediated",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Cancel a single active run by its run_id. Non-destructive and run-scoped: it stops only that one in-flight run and preserves the connection's already-collected records, schedule, grants, and configuration — distinct from run_connection (start), revoke_connection (stop future collection), and delete_connection (erase the past). Served today only over the owner-session reference control plane (`POST /_ref/runs/{run_id}/cancel`, owner cookie); no owner-agent bearer route is offered yet, so no method/URL is advertised here. The run terminals as run.cancelled (owner_cancelled, or owner_cancel_forced if the connector child had to be force-terminated), never as a generic connector-exit failure.",
+  },
+  // Supported in this build: a trusted owner agent pauses, resumes, or deletes a
+  // connection's schedule by connection_id. The representative URL is the pause
+  // route; the resume sibling lives at the same path with `/resume` instead of
+  // `/pause`, and DELETE on the parent `/schedule` path removes the schedule
+  // config (named in the reason so an agent discovers all three without a second
+  // probe). Connector-only addressing of these routes auto-selects a single
+  // active connection or returns a typed `ambiguous_connection`. Schedule
+  // create/replace remains on the browser owner-session surface.
+  {
+    family: "manage_schedule",
+    scope: "instance",
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/schedule/pause`,
+    reason:
+      "Pause, resume, or delete a connection's schedule by connection_id. POST this URL to pause; POST the sibling `/v1/owner/connections/{connection_id}/schedule/resume` to resume; DELETE `/v1/owner/connections/{connection_id}/schedule` to delete the schedule config (204 on delete, typed 404 when none existed). Use a connection_id from list_connections. Schedule create/replace remains owner-session only.",
+  },
+  // Supported in this build: a trusted owner agent reads connection-scoped
+  // diagnostics for one connection by connection_id. The representative URL is
+  // the connection-scoped route; connector-only addressing
+  // (`GET /v1/owner/connectors/{connector_id}/diagnostics`) auto-selects a single
+  // active connection or returns a typed `ambiguous_connection`. The read is
+  // connection-scoped by construction (it derives from the single configured
+  // connection's summary, never device-exporter subsystem or sibling-connection
+  // state), which is why it ships where the device-rooted
+  // `GET /_ref/device-exporters/diagnostics` cannot be shared under an
+  // owner-bearer adapter.
+  {
+    family: "inspect_diagnostics",
+    scope: "instance",
+    status: "supported",
+    method: "GET",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/diagnostics`,
+    reason:
+      "Read connection-scoped diagnostics for a connection by connection_id: last run status, last successful ingest time, current schedule state, freshness, and a typed health classification (healthy/degraded/blocked/cooling_off/idle/needs_attention/unknown). GET this URL. Use a connection_id from list_connections. Connector-only addressing (`GET /v1/owner/connectors/{connector_id}/diagnostics`) auto-selects a single active connection or returns a typed ambiguous_connection. The response describes only the addressed connection and never device-exporter subsystem or sibling-connection state.",
+  },
+  // Supported in this build: a trusted owner agent manages CloudEvents webhook
+  // subscriptions over the same bearer. This is a surface-level family (it is not
+  // bound to one configured connection), and it is the one capability the
+  // admin-surface audit found owner-bearer-capable but previously unadvertised:
+  // the `/v1/event-subscriptions*` routes accept a `trusted_owner_agent` bearer
+  // (the resource-server `client_event_subscriptions` capability advertises
+  // `authority_kinds_supported: [client_grant, trusted_owner_agent]`), so a
+  // trusted owner agent can already create/list/get/update/delete subscriptions
+  // and send test events. The representative URL is the list/create collection
+  // route; the per-subscription and test-event siblings are named in the reason
+  // so an agent discovers the whole family without a second probe. The owner
+  // bearer authorizes the control plane only — `/mcp` still rejects owner
+  // bearers, so an MCP client cannot reach these routes with an owner bearer.
+  {
+    family: "manage_event_subscriptions",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/event-subscriptions`,
+    reason:
+      "Manage CloudEvents webhook subscriptions over the owner-agent bearer. GET this URL to list and POST it to create (Body: { callback_url, filters? }; create returns a one-time whsec_ signing secret — never log it). GET/PATCH/DELETE `/v1/event-subscriptions/{subscription_id}` reads, updates (enable + rotate_secret), or removes one subscription; POST `/v1/event-subscriptions/{subscription_id}/test-event` enqueues a signed test delivery. Callbacks must be HTTPS (localhost excepted). See the resource-server `client_event_subscriptions` capability for the signing, delivery, and event-type contract.",
+  },
+  {
+    family: "delete_connection",
+    scope: "instance",
+    status: "supported",
+    method: "DELETE",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    // The bare connection resource (REST DELETE verb), not a `/delete` suffix.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}`,
+    reason:
+      "DESTRUCTIVELY delete a connection by connection_id to ERASE its data and remove its configuration: DELETE this URL. It erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, NEVER widening to connector_id (sibling connections of the same connector type are untouched). It does NOT erase a running collection: a connection with an in-flight run is REFUSED (no active-run row is deleted while running). It PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: revoke stops the future and preserves the past; delete erases the past and removes the configuration, and is reversible only by re-initiating a fresh connection. The source-of-truth deletion (records, history, version counters, blobs, blob bindings, attention, schedule, device back-ref, and the connector_instances row) is transactional all-or-nothing across one connector_instance_id; the search-index teardown is a rebuildable projection cleaned up after that commit. A repeat/unknown/foreign-owner connection_id returns a typed connector_instance_not_found (404) without leaking existence. Deleting a connection with an in-flight run returns a typed connection_run_active (409) — stop or await the run first. A default-account binding returns a typed default_account_delete_unsupported (409): its deterministic id would silently re-materialize, so revoke it (or re-initiate to replace it) instead. Connector-only addressing (`DELETE /v1/owner/connectors/{connector_id}`) auto-selects a single active connection or returns a typed ambiguous_connection. To revoke a client's grant access (not delete a connection binding) use the owner-session grant-package revoke; that is deliberately not an owner-agent action.",
+  },
+  {
+    family: "revoke_connection",
+    scope: "instance",
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/revoke`,
+    reason:
+      "Revoke a connection by connection_id to STOP its future collection: POST this URL. The connection flips to status 'revoked' and no future run/ingest lands for it. Revoke is zero-cascade and is NOT delete — already-collected records stay readable, and spine evidence, device rows, and sibling connections are untouched. It is durable: implicit default-account materialization no longer resurrects a revoked connection, so the revoke survives every owner/dashboard read and grant/polyfill scope resolution. A revoked connection is reversible only by an explicit owner re-initiate, never silently. Use a connection_id from list_connections; connector-only addressing (`POST /v1/owner/connectors/{connector_id}/revoke`) auto-selects a single active connection or returns a typed ambiguous_connection. A second revoke of an already-revoked connection returns a typed connector_instance_inactive. To revoke a client's grant access (not a connection binding) use the owner-session grant-package revoke; that is deliberately not an owner-agent action.",
+  },
+];
+
+// Projects one catalog descriptor to a concrete `OwnerAgentControlAction`.
+// `supported` families resolve their URL from the trusted RS base; every other
+// family projects `method: null, url: null` regardless of any template so the
+// catalog never advertises a route this build does not serve.
+function projectControlAction(descriptor: OwnerAgentControlActionDescriptor, rs: string): OwnerAgentControlAction {
+  const isSupported = descriptor.status === "supported";
+  return {
+    family: descriptor.family,
+    status: descriptor.status,
+    method: isSupported ? descriptor.method : null,
+    url: isSupported && descriptor.urlTemplate ? descriptor.urlTemplate(rs) : null,
+    reason: descriptor.reason,
+  };
+}
+
+export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSurfaceInput): OwnerAgentControlSurface {
+  const rs = stripTrailingSlash(resource);
+  const entrypoint = `${rs}/v1/owner/control`;
+  const actions: OwnerAgentControlAction[] = OWNER_AGENT_CONTROL_ACTION_CATALOG.map((descriptor) =>
+    projectControlAction(descriptor, rs)
+  );
+  return {
+    object: "owner_agent_control_surface",
+    entrypoint,
+    scope: "reference_implementation",
+    mcp_owner_bearer_rejected: true,
+    actions,
+  };
+}
+
+export interface OwnerConnectionSupportedActionsInput {
+  // Concrete `connection_id` (== `connector_instance_id`) the actions target.
+  connectionId: string;
+  // Already-trusted, forwarded-origin-safe RS public base. Same trust contract
+  // as `buildOwnerAgentControlSurface`.
+  resource: string;
+}
+
+// Projects the instance-scoped subset of the control catalog for one configured
+// connection. Surface-level families (discovery, list, initiate) are excluded
+// because they are not bound to a single connection. For a `supported`
+// instance-scoped family the literal `{connection_id}` placeholder is replaced
+// with the concrete id so an agent gets a directly-callable URL; non-supported
+// families keep `method: null, url: null`.
+//
+// This is the per-connection `supported_actions` array attached to every
+// `owner_connection` row. It is projected from the SAME catalog the control
+// document reads, so a connection can never advertise a supported action the
+// control document calls unsupported (or vice versa).
+export function buildOwnerConnectionSupportedActions({
+  connectionId,
+  resource,
+}: OwnerConnectionSupportedActionsInput): OwnerAgentControlAction[] {
+  const rs = stripTrailingSlash(resource);
+  const encodedId = encodeURIComponent(connectionId);
+  return OWNER_AGENT_CONTROL_ACTION_CATALOG.filter((descriptor) => descriptor.scope === "instance").map(
+    (descriptor) => {
+      const action = projectControlAction(descriptor, rs);
+      // Resolve the `{connection_id}` placeholder to the concrete (URL-encoded)
+      // id for supported instance actions so the agent can call it directly.
+      if (action.url) {
+        action.url = action.url.replace("{connection_id}", encodedId);
+      }
+      return action;
+    }
+  );
 }
 
 export interface ProtectedResourceMetadataInput {
@@ -354,6 +736,7 @@ export interface ProtectedResourceMetadataInput {
   authorizationServers: readonly string[];
   capabilities?: Record<string, unknown> | null;
   discoveryHints?: ProtectedResourceDiscoveryHints | null;
+  ownerAgentOnboarding?: ProtectedResourceOwnerAgentOnboarding | null;
   providerConnectVersion: string;
   queryBase: string;
   resource: string;
@@ -369,6 +752,7 @@ export interface ProtectedResourceMetadata {
   pdpp_agent_discovery?: ProtectedResourceAgentDiscovery;
   pdpp_core_query_base: string;
   pdpp_discovery_hints?: ProtectedResourceDiscoveryHints;
+  pdpp_owner_agent_onboarding?: ProtectedResourceOwnerAgentOnboarding;
   pdpp_provider_connect_version: string;
   pdpp_self_export_supported: boolean;
   pdpp_token_kinds_supported: readonly string[];
@@ -385,6 +769,7 @@ export function buildProtectedResourceMetadata({
   selfExportSupported,
   tokenKindsSupported,
   agentDiscovery,
+  ownerAgentOnboarding,
   capabilities,
   discoveryHints,
 }: ProtectedResourceMetadataInput): ProtectedResourceMetadata {
@@ -403,6 +788,9 @@ export function buildProtectedResourceMetadata({
   }
   if (agentDiscovery) {
     metadata.pdpp_agent_discovery = agentDiscovery;
+  }
+  if (ownerAgentOnboarding) {
+    metadata.pdpp_owner_agent_onboarding = ownerAgentOnboarding;
   }
   if (capabilities && typeof capabilities === "object" && Object.keys(capabilities).length > 0) {
     metadata.capabilities = capabilities;
@@ -440,6 +828,8 @@ export type LexicalRetrievalCapability =
   | {
       supported: true;
       endpoint: string;
+      cursor_supported: true;
+      count_supported: false;
       cross_stream: boolean;
       snippets: boolean;
       default_limit: number;
@@ -467,6 +857,16 @@ export function buildLexicalRetrievalCapability({
   const capability: LexicalRetrievalCapability = {
     supported: true,
     endpoint,
+    // Per canonicalize-public-read-contract task 4.3, pagination and count
+    // support are advertised explicitly on every search capability:
+    //   - lexical supports opaque-cursor pagination over a persisted
+    //     snapshot (cursor_supported: true);
+    //   - lexical does NOT compute counts today (count_supported: false).
+    // Strict request validation already rejects `count=...` on /v1/search;
+    // the negative advertisement makes that decision discoverable to
+    // clients and MCP/CLI consumers without trial-and-error.
+    cursor_supported: true,
+    count_supported: false,
     cross_stream: crossStream,
     snippets,
     default_limit: defaultLimit,
@@ -514,7 +914,13 @@ export interface SemanticRetrievalScoreCapability {
 }
 
 export interface SemanticRetrievalCapability {
+  count_supported: false;
   cross_stream: boolean;
+  // Pagination/count metadata per canonicalize-public-read-contract task 4.3.
+  // Semantic search uses opaque-cursor pagination over a persisted snapshot
+  // (cursor_supported: true). The runtime does NOT compute counts on
+  // semantic responses; clients should not request `count=`.
+  cursor_supported: true;
   default_limit: number;
   dimensions: number;
   distance_metric: string;
@@ -571,6 +977,8 @@ export function buildSemanticRetrievalCapability({
     supported: true,
     stability: "experimental",
     endpoint,
+    cursor_supported: true,
+    count_supported: false,
     cross_stream: crossStream,
     query_input: "text",
     snippets,
@@ -620,6 +1028,9 @@ export interface HybridRetrievalCapabilityInput {
 }
 
 export interface HybridRetrievalCapability {
+  // canonicalize-public-read-contract task 4.3: hybrid composes lexical +
+  // semantic snapshots and does NOT compute counts (count_supported: false).
+  count_supported: false;
   cross_stream: boolean;
   cursor_supported: boolean;
   default_limit: number;
@@ -656,7 +1067,169 @@ export function buildHybridRetrievalCapability({
     default_limit: defaultLimit,
     max_limit: maxLimit,
     cursor_supported: cursorSupported,
+    count_supported: false,
     sources: ["lexical", "semantic"] as const,
+  };
+}
+
+// Builds the `client_event_subscriptions` capability advertisement
+// carried inside the resource-server metadata document. This is a
+// reference-implementation extension, NOT a Core PDPP capability —
+// other PDPP implementations are free to expose a different surface
+// until a Core change promotes one. The advertisement documents the
+// route, signing scheme, delivery semantics, supported event types,
+// and any client-visible limits so callers do not need out-of-band
+// docs to use the feature.
+//
+// Spec:
+//   openspec/changes/add-client-event-subscriptions/specs/
+//   reference-implementation-architecture/spec.md
+export interface ClientEventSubscriptionsCapabilityInput {
+  endpoint?: string;
+  supported?: boolean;
+}
+
+export interface ClientEventSubscriptionsCapability {
+  authority_kinds_supported: readonly ["client_grant", "trusted_owner_agent"];
+  // Reject non-HTTPS callbacks except for development loopback.
+  callback_url: {
+    https_required: true;
+    localhost_exception: true;
+  };
+  delivery: {
+    at_least_once: true;
+    after_commit: true;
+    coalescing: false;
+    retry_schedule_seconds: readonly [30, 120, 600, 3600, 21600, 86400];
+    max_attempts: 6;
+    dead_letter_state: "disabled_failure";
+    response_window_seconds: 10;
+  };
+  endpoint: string;
+  // CloudEvents 1.0 structured-mode JSON body. PDPP profile version is
+  // carried in the `pdppversion` CloudEvents extension attribute so the
+  // envelope stays interoperable with the CloudEvents 1.x ecosystem.
+  //
+  // CloudEvents context-attribute names must be lowercase alphanumeric
+  // (CloudEvents §extension-context-attributes), so PDPP fields that would
+  // contain an underscore live inside `data` rather than at the top level.
+  // `subscription_id` is the canonical example: it travels as
+  // `data.subscription_id` and is also recoverable from the standard `source`
+  // URL. `occurredAt` is emitted as the standard `time` attribute.
+  envelope: {
+    format: "cloudevents+json";
+    content_type: "application/cloudevents+json; charset=utf-8";
+    specversion: "1.0";
+    pdppversion: "1";
+    fields: readonly ["specversion", "pdppversion", "id", "type", "source", "time", "data"];
+    subscription_id_location: "data.subscription_id";
+    no_record_bodies: true;
+  };
+  event_types: readonly [
+    "pdpp.subscription.verify",
+    "pdpp.subscription.test",
+    "pdpp.records.changed",
+    "pdpp.grant.revoked",
+  ];
+  hint_cursor: {
+    cursor_field: "data.changes_since";
+    read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}";
+  };
+  limits: {
+    callback_url_max_bytes: 2048;
+    response_snippet_capture_bytes: 512;
+  };
+  // Subscriptions are reference-only. Cross-implementation
+  // standardization is future work.
+  scope: "reference_implementation";
+  // Standard Webhooks (https://www.standardwebhooks.com) compatible
+  // signing. Off-the-shelf Standard Webhooks libraries can verify
+  // deliveries against the secret returned at subscription create.
+  signing: {
+    profile: "standard-webhooks";
+    algorithm: "HMAC-SHA256";
+    id_header: "webhook-id";
+    timestamp_header: "webhook-timestamp";
+    signature_header: "webhook-signature";
+    signed_payload: "{webhook-id}.{webhook-timestamp}.{body}";
+    signature_encoding: "v1,<base64>";
+    secret_prefix: "whsec_";
+    secret_payload_encoding: "base64";
+  };
+  stability: "reference_extension";
+  supported: true;
+  transport: "https_webhook";
+  verification: {
+    handshake: "post_with_challenge_echo";
+    challenge_event_type: "pdpp.subscription.verify";
+  };
+}
+
+export function buildClientEventSubscriptionsCapability({
+  supported = true,
+  endpoint = "/v1/event-subscriptions",
+}: ClientEventSubscriptionsCapabilityInput = {}): ClientEventSubscriptionsCapability | { supported: false } {
+  if (!supported) {
+    return { supported: false };
+  }
+  return {
+    supported: true,
+    stability: "reference_extension",
+    endpoint,
+    authority_kinds_supported: ["client_grant", "trusted_owner_agent"] as const,
+    scope: "reference_implementation",
+    transport: "https_webhook",
+    envelope: {
+      format: "cloudevents+json",
+      content_type: "application/cloudevents+json; charset=utf-8",
+      specversion: "1.0",
+      pdppversion: "1",
+      fields: ["specversion", "pdppversion", "id", "type", "source", "time", "data"] as const,
+      subscription_id_location: "data.subscription_id",
+      no_record_bodies: true,
+    },
+    event_types: [
+      "pdpp.subscription.verify",
+      "pdpp.subscription.test",
+      "pdpp.records.changed",
+      "pdpp.grant.revoked",
+    ] as const,
+    signing: {
+      profile: "standard-webhooks",
+      algorithm: "HMAC-SHA256",
+      id_header: "webhook-id",
+      timestamp_header: "webhook-timestamp",
+      signature_header: "webhook-signature",
+      signed_payload: "{webhook-id}.{webhook-timestamp}.{body}",
+      signature_encoding: "v1,<base64>",
+      secret_prefix: "whsec_",
+      secret_payload_encoding: "base64",
+    },
+    delivery: {
+      at_least_once: true,
+      after_commit: true,
+      coalescing: false,
+      retry_schedule_seconds: [30, 120, 600, 3600, 21_600, 86_400] as const,
+      max_attempts: 6,
+      dead_letter_state: "disabled_failure",
+      response_window_seconds: 10,
+    },
+    verification: {
+      handshake: "post_with_challenge_echo",
+      challenge_event_type: "pdpp.subscription.verify",
+    },
+    hint_cursor: {
+      cursor_field: "data.changes_since",
+      read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}",
+    },
+    callback_url: {
+      https_required: true,
+      localhost_exception: true,
+    },
+    limits: {
+      callback_url_max_bytes: 2048,
+      response_snippet_capture_bytes: 512,
+    },
   };
 }
 
@@ -668,6 +1241,9 @@ export function buildHybridRetrievalCapability({
 export interface AuthorizationServerMetadataInput {
   agentConnectEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
+  authorizationEndpoint?: string | null;
+  codeChallengeMethodsSupported?: readonly string[] | null;
+  cimdEnabled?: boolean | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;
   introspectionEndpoint: string;
@@ -677,6 +1253,7 @@ export interface AuthorizationServerMetadataInput {
   pushedAuthorizationRequestEndpoint?: string | null;
   registrationEndpoint?: string | null;
   registrationModesSupported?: readonly string[] | null;
+  responseTypesSupported?: readonly string[] | null;
   tokenEndpoint?: string | null;
   tokenEndpointAuthMethodsSupported?: readonly string[] | null;
 }
@@ -689,6 +1266,9 @@ export interface AuthorizationServerPublicClient {
 
 export interface AuthorizationServerMetadata {
   agent_connect_endpoint?: string;
+  authorization_endpoint?: string;
+  code_challenge_methods_supported?: readonly string[];
+  client_id_metadata_document_supported?: true;
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
@@ -699,6 +1279,7 @@ export interface AuthorizationServerMetadata {
   pdpp_registration_modes_supported?: readonly string[];
   pushed_authorization_request_endpoint?: string;
   registration_endpoint?: string;
+  response_types_supported?: readonly string[];
   token_endpoint?: string;
   token_endpoint_auth_methods_supported?: readonly string[];
 }
@@ -712,11 +1293,15 @@ export function buildAuthorizationServerMetadata({
   preRegisteredPublicClients,
   registrationModesSupported,
   authorizationDetailsTypesSupported,
+  authorizationEndpoint,
+  codeChallengeMethodsSupported,
+  cimdEnabled,
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
   agentConnectEndpoint,
   grantTypesSupported,
+  responseTypesSupported,
 }: AuthorizationServerMetadataInput): AuthorizationServerMetadata {
   const metadata: AuthorizationServerMetadata = {
     issuer,
@@ -735,6 +1320,9 @@ export function buildAuthorizationServerMetadata({
   if (registrationModesSupported?.length) {
     metadata.pdpp_registration_modes_supported = registrationModesSupported;
   }
+  if (cimdEnabled) {
+    metadata.client_id_metadata_document_supported = true;
+  }
 
   if (preRegisteredPublicClients?.length) {
     metadata.pdpp_pre_registered_public_clients = preRegisteredPublicClients;
@@ -744,6 +1332,15 @@ export function buildAuthorizationServerMetadata({
     metadata.pdpp_authorization_details_types_supported = authorizationDetailsTypesSupported;
   }
 
+  if (authorizationEndpoint) {
+    metadata.authorization_endpoint = authorizationEndpoint;
+  }
+  if (responseTypesSupported?.length) {
+    metadata.response_types_supported = responseTypesSupported;
+  }
+  if (codeChallengeMethodsSupported?.length) {
+    metadata.code_challenge_methods_supported = codeChallengeMethodsSupported;
+  }
   if (tokenEndpoint) {
     metadata.token_endpoint = tokenEndpoint;
   }

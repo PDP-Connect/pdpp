@@ -41,7 +41,10 @@ import { deleteAllRecordsForConnector } from "./records.js";
 // migrates, we re-declare the narrow shape this module relies on so
 // the reconciliation code stays type-checked end to end.
 type GetConnectorManifest = (connectorId: string) => Promise<unknown>;
-type RegisterConnector = (manifest: PolyfillManifest) => Promise<unknown>;
+type RegisterConnector = (
+  manifest: PolyfillManifest,
+  options?: { backfillRetrievalIndexes?: boolean }
+) => Promise<unknown>;
 type DeleteAllRecordsForConnector = (connectorId: string) => Promise<{ deletedCount: number; streams: string[] }>;
 
 const getConnectorManifestTyped: GetConnectorManifest = getConnectorManifest as GetConnectorManifest;
@@ -298,7 +301,7 @@ async function applyShippedManifest(
   log: ReconcileLog
 ): Promise<{ ok: boolean }> {
   try {
-    await registerConnectorTyped(shipped);
+    await registerConnectorTyped(shipped, { backfillRetrievalIndexes: false });
     log(`[manifest-reconcile] updated ${connectorId} from ${entryName}`);
     return { ok: true };
   } catch (err) {
@@ -349,9 +352,9 @@ function isFixtureToPolyfillTransition(
 /**
  * A shipped first-party manifest is "publicly listed" when it explicitly
  * declares `capabilities.public_listing.listed === true`. That is the same
- * boolean the operator catalog filter (`isPublicReferenceConnector` in
- * `ref-control.ts`) requires for a manifest to surface on
- * `GET /_ref/connectors`.
+ * boolean the reference catalog filter (`isPublicReferenceConnector` in
+ * `ref-control.ts`) requires for a manifest to surface in the registered
+ * connector catalog / add-connection surface.
  *
  * Catalog honesty: listed=true manifests must be visible in the catalog
  * even on a fresh database, before any schedule or run row exists. Hidden
@@ -386,7 +389,19 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     persisted = await getConnectorManifestTyped(connectorId);
   } catch (err) {
     ctx.log(`[manifest-reconcile] lookup failed for ${connectorId}: ${errorMessage(err)}`);
-    return { errors: 1 };
+    // A persisted first-party manifest can become invalid after the
+    // reference tightens manifest validation (for example when a query
+    // capability is removed or renamed). Treat that as a repairable
+    // stale-row condition for shipped manifests: overwrite the DB row with
+    // the checked-in manifest instead of letting the stale row poison
+    // scheduler startup. Do not invalidate records here; we cannot safely
+    // fingerprint an invalid persisted manifest, and ordinary capability
+    // metadata repairs should preserve owner data.
+    const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
+    return {
+      errors: registration.ok ? 0 : 1,
+      updated: registration.ok ? 1 : 0,
+    };
   }
   if (!persisted) {
     // Connector not yet registered. Reconciliation is primarily about

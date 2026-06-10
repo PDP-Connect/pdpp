@@ -50,8 +50,10 @@
 
 export type SearchLexicalErrorCode =
   | "invalid_request"
+  | "invalid_argument"
   | "invalid_cursor"
-  | "grant_stream_not_allowed";
+  | "grant_stream_not_allowed"
+  | "connection_not_found";
 
 /**
  * Error thrown when the request itself is invalid in a host-independent way.
@@ -154,9 +156,24 @@ export interface SearchLexicalConnectorPlan {
  */
 export interface SearchLexicalSnapshotResult {
   connectorId: string;
+  /**
+   * Connection identifier (canonical) for the binding this hit came from.
+   * Optional only because pre-identity snapshots may omit it; new snapshots
+   * SHOULD always set it so the operation can emit `connection_id` and the
+   * deprecated `connector_instance_id` alias on each result item.
+   */
+  connectorInstanceId?: string | null;
+  /**
+   * Owner-facing label for the connection. The operation emits this as
+   * `display_name` on the result item only when the dependency resolved a
+   * non-placeholder label without guessing. Snapshots that cannot pin a
+   * label SHOULD omit this field rather than fabricate one.
+   */
+  displayName?: string | null;
   stream: string;
   recordKey: string;
   emittedAt: string;
+  authoredAt?: string | null;
   matchedFields: string[];
   snippet?: { field: string; text: string } | null;
   score?: number;
@@ -170,6 +187,35 @@ export interface SearchLexicalSnapshot {
   [extra: string]: unknown;
 }
 
+/**
+ * One owner-visible binding for cross-binding fan-in. `connectorInstanceId`
+ * is the canonical connection identifier; `displayName` is the owner-facing
+ * label (omitted when the runtime only has a placeholder).
+ */
+export interface SearchLexicalOwnerBinding {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName?: string | null;
+}
+
+/**
+ * One client-mode binding the grant resolves to under cross-binding fan-in.
+ * Each entry pins one storage binding under the grant's connector_id. When
+ * the grant authorizes more than one active connection the resolver returns
+ * one entry per binding; the operation emits one connector plan per binding
+ * so the snapshot's round-robin merge prevents any single binding from
+ * dominating early pages.
+ *
+ * `manifest` carries the per-binding storage pin (the binding's
+ * `connector_instance_id` baked into `storage_binding`). `displayName` is
+ * surfaced through the snapshot builder for the per-hit `display_name`.
+ */
+export interface SearchLexicalClientBinding {
+  manifest: SearchLexicalManifest;
+  connectorInstanceId: string;
+  displayName?: string | null;
+}
+
 export interface SearchLexicalDependencies {
   /**
    * Capability advertisement; controls cross-stream and score-emission gates.
@@ -177,8 +223,26 @@ export interface SearchLexicalDependencies {
   getAdvertisement(): SearchLexicalAdvertisement | null;
   /**
    * Owner fan-out: list every connector id whose manifest the owner can read.
+   *
+   * Legacy single-binding-per-connector path. Hosts that support cross-
+   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
+   * below; when present, the operation uses it and ignores this method.
    */
   listOwnerVisibleConnectorIds(): Promise<string[]> | string[];
+  /**
+   * Owner cross-binding fan-out (optional): list every active owner-visible
+   * binding (one entry per `(connector_id, connector_instance_id)`). When
+   * provided, the operation emits one connector plan per binding so the
+   * round-robin merge fans across bindings rather than picking a single
+   * binding per connector.
+   *
+   * Spec: openspec/changes/expose-connection-identity-on-public-read/
+   *       specs/reference-implementation-architecture/spec.md
+   *       (#"Multi-connection list and search reads SHALL fan in by default")
+   */
+  listOwnerVisibleBindings?: () =>
+    | Promise<SearchLexicalOwnerBinding[]>
+    | SearchLexicalOwnerBinding[];
   /**
    * Owner fan-out helper: return the manifest for one connector, or null to
    * skip it (e.g. broken polyfill manifests).
@@ -186,6 +250,18 @@ export interface SearchLexicalDependencies {
   resolveOwnerManifestForConnector(
     connectorId: string,
   ):
+    | Promise<SearchLexicalManifest | null>
+    | SearchLexicalManifest
+    | null;
+  /**
+   * Owner cross-binding fan-out helper (optional): resolve the manifest for
+   * one specific binding. Used in conjunction with
+   * `listOwnerVisibleBindings`. When omitted, the operation falls back to
+   * `resolveOwnerManifestForConnector(binding.connectorId)`.
+   */
+  resolveOwnerManifestForBinding?: (
+    binding: SearchLexicalOwnerBinding,
+  ) =>
     | Promise<SearchLexicalManifest | null>
     | SearchLexicalManifest
     | null;
@@ -200,10 +276,38 @@ export interface SearchLexicalDependencies {
   /**
    * Client-mode helper: resolve the manifest the supplied client grant
    * applies against. Hosts build this from the bearer token information.
+   *
+   * Legacy single-binding path. Hosts that support cross-binding fan-in
+   * SHOULD additionally implement `resolveClientBindings` below; when
+   * present, the operation uses it and ignores this method.
    */
   resolveClientManifest(
     actor: { kind: "client"; grant: SearchLexicalGrant },
   ): Promise<SearchLexicalManifest> | SearchLexicalManifest;
+  /**
+   * Client cross-binding fan-out (optional): resolve the set of bindings the
+   * grant authorizes. Each entry carries a manifest pinned to one binding
+   * plus the binding's canonical `connection_id`. The operation emits one
+   * connector plan per binding.
+   *
+   * Implementations MUST honor:
+   *   - grant-scope per-stream `connection_id` constraints
+   *     (`grant.streams[].connection_id`);
+   *   - request-time `connection_id` / deprecated `connector_instance_id`
+   *     alias narrowing;
+   *   - exactly-one auto-select when only one binding is addressable.
+   *
+   * Throws `connection_not_found` (with `param: 'connection_id'`) when the
+   * caller addresses a binding that is not active under the grant; throws
+   * `invalid_argument` when the request mixes canonical and alias with
+   * conflicting values.
+   */
+  resolveClientBindings?: (
+    actor: { kind: "client"; grant: SearchLexicalGrant },
+    request: { connectionId: string | null },
+  ) =>
+    | Promise<SearchLexicalClientBinding[]>
+    | SearchLexicalClientBinding[];
   /**
    * Compile one connector's grant + manifest + request filter shape into a
    * plan. Implementations must enforce field-grant intersection and
@@ -277,11 +381,47 @@ export interface SearchLexicalResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier — present whenever the snapshot result
+   * captured one. `connector_instance_id` mirrors the same value during the
+   * deprecation window so clients can migrate without coordinated cutovers.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Emitted only when the snapshot
+   * captured a non-placeholder label. Wire shape mirrors records-list and
+   * records-detail so REST/MCP/dashboard/CLI consumers see identity in one
+   * uniform form across read surfaces.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string;
+  authored_at?: string;
   matched_fields: string[];
   snippet?: { field: string; text: string };
   score?: { kind: "bm25"; value: number; order: "lower_is_better" };
+}
+
+/**
+ * Structured warning shape used in `meta.warnings[]`. The canonical
+ * `deprecated_alias_used` code is emitted whenever the request reached the
+ * operation via the deprecated `connector_instance_id` query alias.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read warnings SHALL be structured")
+ */
+export interface SearchLexicalWarning {
+  code: string;
+  param?: string;
+  message?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface SearchLexicalEnvelopeMeta {
+  warnings?: SearchLexicalWarning[];
+  [extra: string]: unknown;
 }
 
 export interface SearchLexicalEnvelope {
@@ -289,6 +429,8 @@ export interface SearchLexicalEnvelope {
   has_more: boolean;
   next_cursor?: string;
   data: SearchLexicalResultItem[];
+  /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
+  meta?: SearchLexicalEnvelopeMeta;
 }
 
 export interface SearchLexicalDisclosureData {
@@ -314,6 +456,12 @@ export interface SearchLexicalOutput {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+// `connection_id` is the canonical public connection identifier;
+// `connector_instance_id` is the deprecated wire alias accepted during the
+// migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`. Both are
+// optional filters. When both are present they MUST carry the same value
+// (alias-conflict validation runs after the allowlist check).
 const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "q",
   "limit",
@@ -321,6 +469,8 @@ const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "streams",
   "streams[]",
   "filter",
+  "connection_id",
+  "connector_instance_id",
 ]);
 
 const DEFAULT_LIMIT = 25;
@@ -333,6 +483,50 @@ interface NormalizedRequestParams {
   streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  /**
+   * Structured warnings derived from the raw request shape (currently only
+   * `deprecated_alias_used`). The operation surfaces them via the envelope's
+   * canonical `meta.warnings[]` slot when non-empty.
+   */
+  warnings: SearchLexicalWarning[];
+}
+
+/**
+ * Canonical warning code for deprecated-alias usage. Shared across the
+ * three search operations so REST and MCP clients can detect alias
+ * deprecation without parsing free-form messages.
+ */
+export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+/**
+ * Canonical warning code for a connector that the owner fan-out chose to
+ * skip (broken manifest, empty searchable plan) instead of failing the
+ * whole request. The wire shape mirrors
+ * `connection-id-request.js#CANONICAL_WARNING_CODES.SOURCE_SKIPPED_NOT_APPLICABLE`
+ * so REST, MCP, dashboard, and CLI all see the same identifier.
+ */
+export const SEARCH_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
+
+/**
+ * Canonical warning code for a `limit` that exceeded the advertised maximum
+ * page size and was clamped. Mirrors the records-list `limit_clamped` code
+ * (`connection-id-request.js#CANONICAL_WARNING_CODES.LIMIT_CLAMPED`) so REST,
+ * MCP, dashboard, and CLI all see the same identifier across read surfaces.
+ */
+export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
+
+function deriveSearchConnectionAliasWarnings(
+  query: Record<string, unknown>,
+): SearchLexicalWarning[] {
+  const alias = query.connector_instance_id;
+  if (typeof alias !== "string" || alias.length === 0) return [];
+  return [
+    {
+      code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+      param: "connector_instance_id",
+      message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+    },
+  ];
 }
 
 function clampLimit(raw: unknown): number {
@@ -340,6 +534,33 @@ function clampLimit(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
   return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
+/**
+ * Derive the structured `limit_clamped` warning for an over-max `limit`.
+ *
+ * Returns a single warning only when the raw `limit` parses to a finite
+ * integer strictly greater than `MAX_LIMIT`. A non-positive, unparseable, or
+ * absent `limit` falls back to the default page size (handled by `clampLimit`)
+ * and is NOT a clamp — there is nothing to honestly report — so it emits no
+ * warning. Exactly `MAX_LIMIT` is in-range and emits no warning. The wire shape
+ * mirrors the records-list `limit_clamped` warning so a client reads one
+ * identical structure across read surfaces.
+ */
+function deriveLimitClampedWarning(raw: unknown): SearchLexicalWarning[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return [];
+  const requested = Math.floor(n);
+  if (requested <= MAX_LIMIT) return [];
+  return [
+    {
+      code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
+      param: "limit",
+      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+    },
+  ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
@@ -389,6 +610,7 @@ export function parseSearchLexicalParams(
       "streams",
     );
   }
+  validateSearchConnectionAlias(query, SearchLexicalRequestError);
   return {
     q,
     limit,
@@ -396,7 +618,35 @@ export function parseSearchLexicalParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
+    warnings: [
+      ...deriveSearchConnectionAliasWarnings(query),
+      ...deriveLimitClampedWarning(query.limit),
+    ],
   };
+}
+
+/**
+ * Shared alias-conflict check for search operations. `connection_id` is the
+ * canonical public identifier; `connector_instance_id` is the deprecated wire
+ * alias. Both MAY be sent but MUST carry the same opaque value. Mismatched
+ * values are rejected with a typed `invalid_argument` error so clients learn
+ * before shipping divergent identity assumptions.
+ */
+function validateSearchConnectionAlias(
+  query: Record<string, unknown>,
+  ErrorCtor: typeof SearchLexicalRequestError,
+): void {
+  const canonical = query.connection_id;
+  const alias = query.connector_instance_id;
+  const canonicalSet = typeof canonical === "string" && canonical.length > 0;
+  const aliasSet = typeof alias === "string" && alias.length > 0;
+  if (canonicalSet && aliasSet && canonical !== alias) {
+    throw new ErrorCtor(
+      "invalid_argument",
+      "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
+      "connector_instance_id",
+    );
+  }
 }
 
 interface CursorPayload {
@@ -459,6 +709,16 @@ function buildResultItem(
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
   };
+  if (typeof hit.authoredAt === "string" && hit.authoredAt.length > 0) {
+    item.authored_at = hit.authoredAt;
+  }
+  if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
+    item.connection_id = hit.connectorInstanceId;
+    item.connector_instance_id = hit.connectorInstanceId;
+  }
+  if (typeof hit.displayName === "string" && hit.displayName.length > 0) {
+    item.display_name = hit.displayName;
+  }
   if (hit.snippet) {
     item.snippet = hit.snippet;
   }
@@ -507,24 +767,111 @@ export async function executeSearchLexical(
 
   // 3. Per-mode planning fan-out.
   const perConnectorPlans: SearchLexicalConnectorPlan[] = [];
+  // Track owner-fan-out *sources* that the runtime had to skip without
+  // failing the whole request (broken manifest, empty searchable plan).
+  // These become structured `source_skipped_not_applicable` warnings on the
+  // canonical envelope so the wire never lies by silently dropping sources.
+  // Each entry carries `{ source, connection_id? }` — `connection_id` is
+  // emitted when the skipped unit is a specific binding under a connector
+  // (cross-binding fan-in), and omitted when the entire connector was
+  // skipped before binding fan-out.
+  const skippedSources: Array<{ source: string; connection_id?: string }> = [];
+  // Request-time connection_id narrowing (canonical or deprecated alias).
+  // The parser already validated alias conflicts; here we read the resolved
+  // value from the query so owner-mode fan-in can narrow without piping the
+  // value through every adapter dependency.
+  const requestConnectionId =
+    typeof input.query.connection_id === "string" && input.query.connection_id.length > 0
+      ? input.query.connection_id
+      : typeof input.query.connector_instance_id === "string"
+            && input.query.connector_instance_id.length > 0
+        ? input.query.connector_instance_id
+        : null;
   if (input.actor.kind === "owner") {
-    const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
-    for (const connectorId of connectorIds) {
-      const manifest = await dependencies.resolveOwnerManifestForConnector(
-        connectorId,
-      );
-      if (!manifest) continue;
-      const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
-      const planEntries = dependencies.buildSearchPlanForGrant({
-        manifest,
-        grant,
-        streamsFilter: params.streams,
-        filter: params.filter,
-        filteredStream: params.filteredStream,
-        connectorId,
-      });
-      if (planEntries.length === 0) continue;
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    // Cross-binding fan-in path: when the host wires the binding-aware
+    // dependency, the operation enumerates every active owner-visible
+    // binding and emits one connector plan per binding. The plan still
+    // carries the binding's connector_id so the round-robin merge in the
+    // adapter snapshot fans across bindings.
+    if (typeof dependencies.listOwnerVisibleBindings === "function") {
+      const bindings = await dependencies.listOwnerVisibleBindings();
+      const narrowedBindings = requestConnectionId
+        ? bindings.filter((b) => b.connectorInstanceId === requestConnectionId)
+        : bindings;
+      if (requestConnectionId && narrowedBindings.length === 0) {
+        throw new SearchLexicalRequestError(
+          "connection_not_found",
+          `connection_id '${requestConnectionId}' is not addressable for this owner.`,
+          "connection_id",
+        );
+      }
+      // Skipped (out-of-scope under request-time narrowing) bindings do NOT
+      // become warnings — narrowing is the caller's explicit ask.
+      for (const binding of narrowedBindings) {
+        const manifest = typeof dependencies.resolveOwnerManifestForBinding
+          === "function"
+          ? await dependencies.resolveOwnerManifestForBinding(binding)
+          : await dependencies.resolveOwnerManifestForConnector(
+              binding.connectorId,
+            );
+        if (!manifest) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId: binding.connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId: binding.connectorId,
+          manifest,
+          grant,
+          planEntries,
+        });
+      }
+    } else {
+      // Legacy single-binding-per-connector path (sandbox host, older test
+      // shims). Preserves prior behavior so existing dependency wirings keep
+      // working unchanged.
+      const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
+      for (const connectorId of connectorIds) {
+        const manifest = await dependencies.resolveOwnerManifestForConnector(
+          connectorId,
+        );
+        if (!manifest) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
     // produce zero hits.
@@ -543,25 +890,61 @@ export async function executeSearchLexical(
         }
       }
     }
-    const manifest = await dependencies.resolveClientManifest({
-      kind: "client",
-      grant,
-    });
     const connectorId =
       (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
       typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
         ? ((grant as { source?: { id?: string } }).source!.id as string)
         : null;
-    const planEntries = dependencies.buildSearchPlanForGrant({
-      manifest,
-      grant,
-      streamsFilter: params.streams,
-      filter: params.filter,
-      filteredStream: params.filteredStream,
-      connectorId,
-    });
-    if (planEntries.length > 0) {
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    // Cross-binding fan-in path for client mode. When the host wires the
+    // binding-aware resolver, the operation iterates every binding the grant
+    // authorizes (after narrowing) and emits one connector plan per binding.
+    // The resolver MUST raise `connection_not_found` for narrowing failures
+    // and `invalid_argument` for alias conflicts — the operation does not
+    // re-implement those checks.
+    if (typeof dependencies.resolveClientBindings === "function") {
+      const clientBindings = await dependencies.resolveClientBindings(
+        { kind: "client", grant },
+        { connectionId: requestConnectionId },
+      );
+      for (const cb of clientBindings) {
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest: cb.manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: connectorId ?? "",
+            connection_id: cb.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId,
+          manifest: cb.manifest,
+          grant,
+          planEntries,
+        });
+      }
+    } else {
+      const manifest = await dependencies.resolveClientManifest({
+        kind: "client",
+        grant,
+      });
+      const planEntries = dependencies.buildSearchPlanForGrant({
+        manifest,
+        grant,
+        streamsFilter: params.streams,
+        filter: params.filter,
+        filteredStream: params.filteredStream,
+        connectorId,
+      });
+      if (planEntries.length > 0) {
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
   }
 
@@ -614,11 +997,32 @@ export async function executeSearchLexical(
     buildResultItem(hit, isOwner, emitScore, dependencies.formatRecordUrl),
   );
 
+  const skippedWarnings: SearchLexicalWarning[] = skippedSources.map(
+    (skipped) => {
+      const detail: Record<string, unknown> = { source: skipped.source };
+      if (skipped.connection_id) detail.connection_id = skipped.connection_id;
+      const subject = skipped.connection_id
+        ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
+        : `Connector '${skipped.source}'`;
+      return {
+        code: SEARCH_SOURCE_SKIPPED_WARNING_CODE,
+        message: `${subject} is not applicable to this query and was skipped.`,
+        detail,
+      };
+    },
+  );
+  const allWarnings: SearchLexicalWarning[] = [
+    ...params.warnings,
+    ...skippedWarnings,
+  ];
   const envelope: SearchLexicalEnvelope = {
     object: "list",
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
+    ...(allWarnings.length > 0
+      ? { meta: { warnings: allWarnings } }
+      : {}),
   };
 
   const disclosureData: SearchLexicalDisclosureData = {

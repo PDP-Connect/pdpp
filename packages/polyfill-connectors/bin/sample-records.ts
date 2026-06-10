@@ -8,7 +8,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// biome-ignore lint/correctness/noUnresolvedImports: tsx resolves better-sqlite3 at runtime.
 import Database from "better-sqlite3";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

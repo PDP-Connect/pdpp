@@ -71,8 +71,26 @@ test('rs.streams.aggregate emits the stream_aggregate query-shape data block fro
     metric: 'sum',
     field: 'amount',
     group_by: 'category',
+    group_by_time: null,
+    granularity: null,
     limit: 25,
   });
+});
+
+test('rs.streams.aggregate carries group_by_time and granularity in the query-data block', async () => {
+  const out = await executeStreamsAggregate(
+    ownerInput({
+      requestParams: {
+        metric: 'count',
+        group_by_time: 'occurred_at',
+        granularity: 'day',
+      },
+    }),
+    defaultDeps(),
+  );
+  assert.equal(out.queryData.query_shape, 'stream_aggregate');
+  assert.equal(out.queryData.group_by_time, 'occurred_at');
+  assert.equal(out.queryData.granularity, 'day');
 });
 
 test('rs.streams.aggregate fills missing query-data fields with null', async () => {
@@ -82,6 +100,8 @@ test('rs.streams.aggregate fills missing query-data fields with null', async () 
     metric: null,
     field: null,
     group_by: null,
+    group_by_time: null,
+    granularity: null,
     limit: null,
   });
 });

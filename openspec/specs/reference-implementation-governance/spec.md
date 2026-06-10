@@ -52,10 +52,11 @@ Inbox memos, scratch notes, and other temporary planning artifacts MAY exist dur
 - **THEN** contributors SHALL extend the relevant OpenSpec change rather than creating new inbox memos as the primary execution-planning layer
 
 ### Requirement: Supplemental project notes stay clearly non-canonical
+
 This repository MAY surface change-local supplemental notes to help contributors and partners review the project, but those notes SHALL be clearly distinguished from official OpenSpec artifacts.
 
 #### Scenario: The website renders change-local notes
-- **WHEN** `apps/web` or another repository surface renders markdown from `openspec/changes/*/design-notes/`
+- **WHEN** the public-site deployable (the post-split OpenSpec/planning surface) or another repository surface renders markdown from `openspec/changes/*/design-notes/`
 - **THEN** that surface SHALL label those documents as supplemental project notes rather than as official change artifacts
 - **AND** it SHALL continue to distinguish official change artifacts (`proposal.md`, `design.md`, `tasks.md`, and `specs/**`) from the supplemental note layer
 
@@ -245,3 +246,402 @@ Scrubbed fixtures SHALL preserve the structural fields, selectors, object shapes
 - **THEN** the selector structure needed by the parser SHALL remain intact
 - **AND** sensitive text content SHALL be replaced without breaking the parser's traversal path
 
+### Requirement: Every connector with parsers SHALL ship `schemas.ts` covering every emitted stream
+A polyfill connector that has a `parsers.ts` (or equivalent record-builder layer) and emits at least one stream SHALL ship a `schemas.ts` declaring zod schemas for every stream it emits, wired into the connector via `runConnector({ ..., validateRecord })` (or the equivalent custom emit path for connectors that don't use `runConnector`).
+
+This is the §3 floor from `connector-authoring-guide.md`: a connector must never emit a record that looks right but is wrong. Without a per-stream zod schema, drift in upstream APIs, parser bugs, and accidentally-captured cruft land silently in the database, indistinguishable from valid data.
+
+#### Scenario: A connector ships without schema coverage
+- **WHEN** a connector with `parsers.ts` is reviewed
+- **THEN** it SHALL have a `schemas.ts` declaring a schema for every stream it emits
+- **AND** the connector SHALL wire `validateRecord` into its emit path so failed records become SKIP_RESULT events instead of RECORDs
+- **AND** declared streams in the manifest SHALL match the keys present in the connector's `SCHEMAS` registry
+
+#### Scenario: A connector adds a new emitted stream
+- **WHEN** a connector starts emitting a previously-undeclared stream
+- **THEN** the manifest SHALL declare the new stream in the same change that introduces emission
+- **AND** the connector's `schemas.ts` SHALL declare a schema for the new stream
+
+### Requirement: Schema coverage SHALL be validated against real owner data before commit
+A new or modified `schemas.ts` SHALL be replayed against the local owner database (when records exist) before the change is committed. Schema-rejected records SHALL be inspected; the schema SHALL be loosened only when the rejection is a false positive, not when the connector is emitting bad data.
+
+#### Scenario: A new schema is authored
+- **WHEN** a connector author adds or modifies a `schemas.ts`
+- **THEN** the author SHALL run `bin/replay-schemas.ts <connector>` against the local DB
+- **AND** SHALL document any rejections in the change description
+- **AND** SHALL NOT loosen the schema to mask data-quality issues; SKIP_RESULT is the diagnostic signal for those
+
+### Requirement: Storage and search abstractions SHALL be proven before promotion
+Any proposal to abstract reference storage or search SHALL include a SQLite obligation inventory, semantic tests against the current SQLite implementation, and a feasibility mapping for at least one non-SQLite or fixture adapter before the abstraction is treated as approved architecture.
+
+Before a test-only conformance-driver shape is promoted into a production storage/search interface, the relevant capability harness SHALL pass against the current SQLite implementation and at least one conforming second adapter. A deliberately broken adapter remains useful falsifiability evidence, but it SHALL NOT count as the conforming second adapter required for promotion.
+
+#### Scenario: A production record-read storage interface is proposed
+- **WHEN** a change proposes a production `RecordStore` read interface for record listing, record detail, cursor pagination, `changes_since`, projection, or declared filters
+- **THEN** the record-read conformance harness SHALL already pass against SQLite and at least one conforming second adapter
+- **AND** any Postgres compatibility claim SHALL remain provisional until the same harness passes against an env-gated Postgres driver
+
+#### Scenario: A production record-mutation storage interface is proposed
+- **WHEN** a change proposes a production record-mutation storage interface for ingest, delete, per-stream versions, or `record_changes`
+- **THEN** the record-mutation conformance harness SHALL already pass against SQLite and at least one conforming second adapter
+
+#### Scenario: A production disclosure-spine interface is proposed
+- **WHEN** a change proposes a production `DisclosureSpineStore` interface for append/list/terminal event or summary behavior
+- **THEN** the disclosure-spine conformance harness SHALL already pass against SQLite and at least one conforming second adapter
+
+### Requirement: Publishable npm packages SHALL use the shared PDPP package release policy
+
+Every publishable `@pdpp/*` npm package in the reference implementation SHALL
+use the same semantic-release-governed npm publishing and versioning policy.
+
+#### Scenario: A package is intended for public npm publication
+
+- **WHEN** a workspace package under `packages/` is public and named `@pdpp/*`
+- **THEN** its `package.json` SHALL declare public beta npm `publishConfig`
+- **AND** its git-tracked package version SHALL remain `0.0.0`
+- **AND** semantic-release SHALL own the published npm version
+- **AND** `.releaserc.yaml` SHALL include the package root in the
+  `@semantic-release/npm` publish set
+
+#### Scenario: A package manifest is not listed for public npm publication
+
+- **WHEN** a package manifest in the repository is not intended for public npm
+  publication
+- **THEN** it SHALL remain private
+- **AND** it SHALL NOT declare npm `publishConfig`
+
+#### Scenario: The release workflow publishes npm packages
+
+- **WHEN** CI publishes a PDPP npm package through the normal release workflow
+- **THEN** the workflow SHALL use GitHub Actions OIDC / npm trusted publishing
+- **AND** the workflow SHALL NOT require `NPM_TOKEN` or `NODE_AUTH_TOKEN`
+- **AND** token-based publication SHALL be limited to owner-controlled bootstrap
+  or emergency recovery outside the normal release path
+
+#### Scenario: A new public package is added
+
+- **WHEN** an OpenSpec change makes another `@pdpp/*` package public
+- **THEN** the package SHALL either join the shared release train and pass the
+  package-release policy checker or explicitly define and justify a different
+  release policy in that change
+
+### Requirement: Package release policy SHALL be machine-checked before publication
+
+The release workflow SHALL run a package-release policy checker before npm
+publication.
+
+#### Scenario: A release-worthy commit reaches the active release branch
+
+- **WHEN** the semantic-release workflow prepares to publish npm packages
+- **THEN** CI SHALL verify that publishable package manifests, semantic-release
+  package roots, release workflow authentication, and private-package boundaries
+  match the package-release policy
+- **AND** CI SHALL fail before npm publication if the policy check fails
+
+### Requirement: The PDPP CLI SHALL be published by semantic-release
+The repository SHALL publish the public PDPP CLI package to npm through
+the official `@semantic-release/npm` plugin as part of the semantic-release
+workflow while preserving Conventional Commits release analysis and release-note
+generation.
+
+#### Scenario: A release-worthy commit reaches the active release branch before launch
+- **WHEN** all release-required CI checks pass and semantic-release determines a new prerelease version
+- **THEN** semantic-release SHALL publish the CLI package to npm from the configured package root on the beta distribution channel
+- **AND** the npm package version SHALL be the semantic-release version
+- **AND** release type and release notes SHALL continue to be derived from Conventional Commits
+- **AND** npm publication SHALL NOT be implemented as a custom `npm publish` command in `@semantic-release/exec`
+
+#### Scenario: The first beta publish must remain below 1.0.0
+- **WHEN** no prior semantic-release tag exists and the owner wants prerelease versions below `1.0.0`
+- **THEN** the repository SHALL establish a non-release baseline tag below `1.0.0` before the first beta publish
+- **AND** the beta lane SHALL publish from a prerelease branch rather than treating `main` as prerelease-only
+
+#### Scenario: The owner declares the CLI stable
+- **WHEN** `pdpp connect` works end-to-end and the owner intentionally enables stable publication
+- **THEN** semantic-release MAY publish from a stable branch to the default `latest` npm dist-tag
+- **AND** the change SHALL remove beta-only Docker tags intentionally rather than by accident
+
+#### Scenario: The release workflow publishes to npm from GitHub Actions
+- **WHEN** the release job publishes the CLI package to npm
+- **THEN** the normal GitHub Actions release path SHALL use npm trusted publishing with `id-token: write`
+- **AND** the job SHALL avoid long-lived npm tokens for normal release publication
+- **AND** the package SHALL publish provenance when npm supports provenance for the workflow and source repository visibility
+
+#### Scenario: Emergency token publication is used
+- **WHEN** trusted publishing is temporarily unavailable and a maintainer uses token-based npm publication
+- **THEN** the token fallback SHALL be documented as an emergency/manual path
+- **AND** the token SHALL be granular, automation-scoped, time-limited, rotated, and removed after trusted publishing is verified
+- **AND** this fallback SHALL NOT satisfy the normal GitHub Actions release scenario
+
+#### Scenario: The release job is configured
+- **WHEN** the semantic-release job runs
+- **THEN** it SHALL run only after release-required tests and validation have succeeded
+- **AND** it SHALL check out full git history
+- **AND** it SHALL run on a Node version supported by semantic-release, preferring latest LTS
+- **AND** it SHALL NOT set `actions/setup-node` `registry-url` for npm publishing
+
+### Requirement: Only intended npm artifacts SHALL be publishable
+The repository SHALL prevent accidental npm publication of the workspace root or
+reference-server internals.
+
+#### Scenario: semantic-release evaluates npm publication
+- **WHEN** semantic-release runs from the repository root
+- **THEN** the root package SHALL be marked private
+- **AND** npm publication SHALL target only the dedicated CLI package root
+
+#### Scenario: The CLI package is packed for release
+- **WHEN** CI builds or packs the CLI package
+- **THEN** the packed tarball SHALL include the CLI bin, client helpers, package metadata, license, and readme needed by npm users
+- **AND** it SHALL exclude local environment files, token caches, databases, connector captures, real personal data fixtures, reference-server runtime files, and deployment-only assets
+
+#### Scenario: A maintainer verifies the release locally
+- **WHEN** a maintainer runs the documented release dry-run or package smoke test
+- **THEN** the command SHALL verify semantic-release configuration and CLI package contents without publishing to npm
+
+### Requirement: Root spec files SHALL be canonical for any spec with both a root and a public-site copy
+
+For any spec that exists at both `spec-*.md` at the repository root and `apps/site/content/docs/spec-*.md`, the root file SHALL be the canonical source. The public-site copy SHALL be treated as a derived publication artifact, not as a parallel source of truth.
+
+#### Scenario: A contributor edits a spec body
+
+- **WHEN** a contributor changes the normative or descriptive body of a spec that exists in both trees
+- **THEN** the contributor SHALL apply the change to the root `spec-*.md` file
+- **AND** the corresponding `apps/site/content/docs/<basename>.md` SHALL be updated to match in the same change
+- **AND** the contributor SHALL NOT update only the public-site copy and leave the root file behind
+
+#### Scenario: A reviewer encounters disagreement between the trees
+
+- **WHEN** the root spec file and its public-site counterpart disagree on body content
+- **THEN** the reviewer SHALL treat the root file as authoritative and the public-site copy as the file requiring correction
+
+### Requirement: Public-site copies of canonical-root specs SHALL surface the root Status and Date
+
+The public-site copy of any canonical-root spec SHALL surface the root file's `Status:` and `Date:` text in a form a public reader can see, so a public reader sees the same normative posture a forking implementer sees.
+
+#### Scenario: A canonical-root spec has a Status header
+
+- **WHEN** a root `spec-*.md` carries a `Status:` line (for example `Status: Draft`, `Status: Superseded`, or `Status: Informational`)
+- **THEN** the matching `apps/site/content/docs/<basename>.md` SHALL display the same Status text in a fixed prefix element such as a Fumadocs callout
+- **AND** the public-site copy SHALL NOT silently drop the Status
+
+#### Scenario: A canonical-root spec is marked superseded
+
+- **WHEN** a root `spec-*.md` is marked superseded
+- **THEN** the public-site copy SHALL display the superseded status above the body, before any normative-flavored content the reader could mistake for current guidance
+
+### Requirement: Public-site-only extension specs SHALL be limited to a named allowlist
+
+A `spec-*.md` file MAY exist only under `apps/site/content/docs/` (with no root counterpart) only if it is an opt-in extension explicitly listed in this requirement. Any other public-site-only spec is drift and SHALL be either given a root counterpart or removed.
+
+The current public-site-only extension allowlist:
+
+- `spec-lexical-retrieval-extension`
+- `spec-semantic-retrieval-extension`
+
+#### Scenario: A new extension is proposed as public-site-only
+
+- **WHEN** a contributor proposes a new spec that should live only in the public-site docs tree
+- **THEN** the proposal SHALL extend this allowlist via an OpenSpec change before the file is added
+- **AND** the spec SHALL be opt-in (not depended on by `spec-core.md` or any other canonical-root spec)
+
+#### Scenario: A public-site-only spec is not on the allowlist
+
+- **WHEN** a `spec-*.md` exists under `apps/site/content/docs/` with no root counterpart and is not on the allowlist
+- **THEN** the drift check SHALL fail
+- **AND** the contributor SHALL either add a root counterpart, remove the public-site file, or extend the allowlist via OpenSpec
+
+### Requirement: A drift-check gate SHALL fail when canonical-root specs disagree with their public-site copies
+
+The repository SHALL provide an automated check (for example `pnpm spec:check`) that fails when a canonical-root spec disagrees with its public-site counterpart in the body content, after normalising publication-format-only differences such as frontmatter, the leading Status/Date callout, document-title heading level, and Markdown anchor IDs.
+
+#### Scenario: A contributor edits one tree only
+
+- **WHEN** a contributor stages a change to a root `spec-*.md` without updating the matching `apps/site/content/docs/<basename>.md` (or vice versa)
+- **THEN** the drift-check gate SHALL fail
+- **AND** the failure message SHALL identify the diverged spec pair
+
+#### Scenario: A canonical-root spec has no public-site counterpart
+
+- **WHEN** a root `spec-*.md` exists with no `apps/site/content/docs/<basename>.md` counterpart and is not on a documented reference-only allowlist
+- **THEN** the drift-check gate SHALL fail and report the missing public-site copy
+
+#### Scenario: A public-site-only allowlisted extension is updated
+
+- **WHEN** a contributor edits a public-site-only spec that is on the extension allowlist
+- **THEN** the drift-check gate SHALL skip the root-counterpart requirement for that file
+- **AND** the gate SHALL still run any other applicable checks for that file
+
+### Requirement: New spec proposals SHALL declare their canonical home
+
+Any OpenSpec change that introduces a new `spec-*.md` file SHALL declare in its proposal whether the new spec is canonical at the root, public-site-only on the extension allowlist, or root-only as a reference artifact. The drift-check gate's allowlists SHALL be updated in the same change.
+
+#### Scenario: A new core spec is proposed
+
+- **WHEN** an OpenSpec change introduces a new normative spec
+- **THEN** the proposal SHALL state that the canonical home is the repository root
+- **AND** the change SHALL include both the root file and a matching public-site copy that satisfies the Status/Date parity requirement
+
+#### Scenario: A new extension spec is proposed
+
+- **WHEN** an OpenSpec change introduces a new opt-in extension spec intended to live only on the public site
+- **THEN** the proposal SHALL state that the spec is public-site-only
+- **AND** the change SHALL extend the public-site-only extension allowlist in this capability
+
+### Requirement: Root/public-site spec drift SHALL be checked by repository tooling
+The repository SHALL expose a root-level `pnpm spec:check` command that compares canonical root `spec-*.md` files with their public-site copies after normalizing publication-only formatting differences.
+
+#### Scenario: Canonical root and public-site copy agree
+- **WHEN** a root `spec-*.md` file and its public-site counterpart have equivalent body content after normalization
+- **THEN** `pnpm spec:check` SHALL pass for that pair
+
+#### Scenario: Canonical root and public-site copy drift
+- **WHEN** a root `spec-*.md` file and its public-site counterpart disagree in body content after normalization
+- **THEN** `pnpm spec:check` SHALL fail with a contextual message naming the mismatched spec
+
+#### Scenario: Public-site-only spec is allowlisted
+- **WHEN** a public-site docs `spec-*.md` file has no root counterpart but is one of the approved public-site-only extension specs
+- **THEN** `pnpm spec:check` SHALL not require a root counterpart for that file
+
+#### Scenario: Reference-only spec is allowlisted
+- **WHEN** a root `spec-*.md` file has no public-site counterpart but is an approved reference-only spec
+- **THEN** `pnpm spec:check` SHALL not require a public-site counterpart for that file
+
+### Requirement: Spec drift checks SHALL run in local and CI gates
+
+The repository SHALL run `pnpm spec:check` in the same quality gates used to prevent drift before merge.
+
+#### Scenario: Relevant spec docs are staged
+
+- **WHEN** a contributor stages changes to root `spec-*.md` files or `apps/site/content/docs/spec-*.md`
+- **THEN** the pre-commit hook SHALL run `pnpm spec:check`
+
+#### Scenario: CI validates the repository
+
+- **WHEN** CI runs the repository quality checks
+- **THEN** CI SHALL include `pnpm spec:check`
+
+### Requirement: Schema-bearing connectors enrolled in pilot-fixture coverage SHALL ship a committed pilot fixture and replay test
+Every connector enrolled in pilot-fixture coverage SHALL ship:
+1. A `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl` file for each stream in `SCHEMAS`, containing 1+ synthetic-but-shape-real record(s) that pass `validateRecord(stream, record)`.
+2. A `connectors/<connector>/pilot-fixture.test.ts` that registers per-stream replay tests via `src/pilot-fixture-test-helper.ts`.
+
+The fixtures lock the connector's emitted-record shape against schema drift. Without them, a `schemas.ts` change that rejects real production records can pass review and land silently, since the schema is internally self-consistent.
+
+Schema-bearing connectors not yet enrolled remain visible as follow-up work; enrolling the remaining first-party connectors is a separate connector-by-connector rollout, not a blocker for this pattern change.
+
+#### Scenario: A schema edit becomes too strict for a real shape
+- **WHEN** a connector's `schemas.ts` is modified to require a field that the connector never actually populates
+- **THEN** the per-connector `pilot-fixture.test.ts` SHALL fail because at least one fixture record will lack the field
+- **AND** the failure SHALL surface the offending row's id and zod issue list
+
+#### Scenario: A pilot fixture is missing
+- **WHEN** a connector is enrolled in pilot-fixture coverage but has no committed fixture under `fixtures/<connector>/scrubbed/pilot-real-shape/records/`
+- **THEN** the connector's `pilot-fixture.test.ts` SHALL fail with a "fixture missing" message pointing at the expected path
+- **UNLESS** the test was registered with `expectMissing: true` (used only for connectors that legitimately cannot produce a fixture, e.g. interactive-only flows)
+
+### Requirement: Pilot fixtures SHALL be synthetic-but-shape-real, not real owner data
+Records committed under `fixtures/<connector>/scrubbed/pilot-real-shape/` SHALL contain only synthetic content with `[REDACTED_*]` placeholders for any field that would normally hold identifying data (names, emails, IDs derived from real accounts, free-form text bodies). Real owner data SHALL NOT be committed even when it has been deterministically scrubbed.
+
+The fixtures' purpose is to lock record shape, not to test against real data. Real-data validation is the job of `bin/replay-schemas.ts` against the local owner database, which is gitignored by design.
+
+#### Scenario: A worker considers committing scrubbed real data as a pilot fixture
+- **WHEN** a worker has a real owner-database scrubbed run and wants to commit it as a pilot fixture
+- **THEN** the worker SHALL author synthetic records from `schemas.ts` + `parsers.ts` instead
+- **AND** SHALL NOT commit scrubbed real data into `pilot-real-shape/`
+- **AND** raw-data scrubbed fixtures (which may exist for real-shape DOM/HTTP captures) SHALL live under `fixtures/<connector>/scrubbed/<runId>/` and follow the LLM-redaction pipeline tracked in `add-reddit-pilot-real-shape-fixture`
+
+### Requirement: CLI package validation SHALL prove command ownership
+The repository SHALL validate that the public CLI package owns the public
+`pdpp` command surface and that repo-local reference wrappers do not silently
+diverge from the published command tree.
+
+#### Scenario: The CLI package is packed
+- **WHEN** CI or a maintainer packs `@pdpp/cli`
+- **THEN** package validation SHALL prove that the package exposes the intended `pdpp` binary and command help
+- **AND** it SHALL prove that publishable reference commands do not import server-only, connector-runtime, database, Docker, fixture, or deployment-only modules
+
+#### Scenario: The repo-local wrapper is tested
+- **WHEN** reference CLI tests run
+- **THEN** they SHALL prove that the repo-local wrapper delegates public and reference-namespaced commands consistently
+- **AND** any compatibility aliases SHALL be tested as aliases rather than as the canonical documented command surface
+
+#### Scenario: Dashboard and docs are validated
+- **WHEN** web or docs checks run
+- **THEN** they SHALL detect dashboard/docs examples that advertise legacy top-level reference-operator aliases
+- **AND** they SHALL detect examples that point to the public npm package for commands not shipped by that package
+
+### Requirement: CLI boundary changes SHALL remain OpenSpec-governed
+The repository SHALL treat future changes that publish additional operator
+commands, add CLI extension loading, alter owner-session storage, or change the
+public command namespace as durable reference/governance work.
+
+#### Scenario: A new operator command is proposed for the public package
+- **WHEN** maintainers want to move another repo-local reference command into `@pdpp/cli`
+- **THEN** the command SHALL receive a publishability review covering dependencies, auth model, support posture, help text, and package tests
+
+#### Scenario: A second public CLI package is proposed
+- **WHEN** maintainers want to publish another package related to PDPP CLI behavior
+- **THEN** the package SHALL NOT publish the same `pdpp` binary unless an OpenSpec change explicitly approves the conflict and migration model
+
+### Requirement: Storage abstraction proposals SHALL be evidence-backed before approval
+
+Any proposal to abstract reference storage or search SHALL include a SQLite obligation inventory, semantic tests against the current SQLite implementation, and a feasibility mapping for at least one non-SQLite or fixture adapter before the abstraction is treated as approved architecture.
+
+#### Scenario: Abstraction proposed from interface design alone
+
+- **WHEN** a change proposes `RecordStore`, `GrantStore`, `LexicalIndex`, `SemanticIndex`, or similar contracts without first identifying the current semantic obligations they must preserve
+- **THEN** the change SHALL remain exploratory
+- **AND** implementation work SHALL NOT migrate production operations behind those contracts
+
+#### Scenario: Postgres compatibility is claimed
+
+- **WHEN** a change claims the reference architecture can support Postgres
+- **THEN** the change SHALL document mappings for JSON field filters, cursor ordering, `changes_since`, transactions, lexical retrieval, semantic retrieval, and vector index identity
+- **AND** the claim SHALL remain provisional until at least one operation family passes the same semantic tests through SQLite and a second adapter
+
+### Requirement: Operation migration SHALL include conformance evidence
+
+Each operation migrated into the operation-owned runtime architecture SHALL include conformance or equivalence evidence proving the operation's behavior did not drift across supported hosts or profiles.
+
+#### Scenario: Operation mounted in sandbox and local server
+
+- **WHEN** an operation is mounted through both the local server host and the sandbox host
+- **THEN** the same conformance scenarios SHALL pass against both hosts
+- **AND** any profile-specific limitation SHALL be disclosed in the environment capability matrix
+
+### Requirement: Sandbox AS/RS parity SHALL be proven by deletion of parallel builders
+
+When a sandbox API route is migrated to a reference operation mount, any website-local response builder for the same AS/RS behavior SHALL be deleted or demoted to a fixture-only test helper in the same change.
+
+#### Scenario: Sandbox streams list route is migrated
+
+- **WHEN** `/sandbox/v1/streams` is mounted through the canonical `rs.streams.list` operation
+- **THEN** the website-local builder that previously constructed the public streams-list response SHALL be removed from public route reachability
+- **AND** the migration SHALL include a regression test proving the sandbox route still returns the expected fixture-profile response
+
+### Requirement: Records-stream connectors SHALL commit a schema-locking pilot fixture
+A connector that emits records directly as a JSONL stream (no intermediate DOM or stored HTTP-JSON shape) SHALL commit a `pilot-real-shape` fixture under `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl` covering each stream it declares. The committed fixture SHALL be PII-free and synthetic-but-shape-real: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders where a real capture would carry owner identity. A real owner capture MAY be used as local calibration evidence, but real owner rows SHALL NOT replace the committed `pilot-real-shape/` fixture.
+
+#### Scenario: A records-stream connector ships a synthetic-but-shape-real pilot
+- **WHEN** a connector emits records directly as JSONL and commits a synthetic-but-shape-real pilot fixture
+- **THEN** the committed fixture SHALL contain no real owner PII
+- **AND** every identity-bearing field that a real capture would populate SHALL use a `[REDACTED_*]` placeholder or a representative non-identifying value
+- **AND** no `fixtures/<connector>/raw/` directory SHALL be committed
+
+### Requirement: Real-owner-capture calibration evidence SHALL pass LLM-assisted redaction review before retention
+When a records-stream connector uses a **real owner capture** whose records contain free-form user-authored text (`title`, `body`, `selftext`, or user-authored URL fields) as calibration evidence, any retained scrubbed output SHALL be produced through the LLM-assisted structured-redaction mode of the scrubber pipeline and SHALL live outside `pilot-real-shape/` under a separately named scrubbed run. Deterministic regex redaction alone is insufficient for free-form user-authored text in records.
+
+#### Scenario: A records-stream connector retains scrubbed real owner evidence
+- **WHEN** a worker captures a raw records run for a connector whose emitted records contain free-form `title`, `body`, `selftext`, or user-authored URL fields, and retains a scrubbed output from that run
+- **THEN** the scrubbed output SHALL be produced via `scrub-fixtures.ts --llm-redactions-dir <dir>` with a reviewed redaction plan for every raw file
+- **AND** every replacement in the plan SHALL be a `[REDACTED_*]` placeholder
+- **AND** a reviewer other than the capture author SHOULD sign off on the scrubbed output before commit
+- **AND** real owner rows SHALL NOT be committed under `fixtures/<connector>/scrubbed/pilot-real-shape/`
+
+### Requirement: Records-stream pilot fixtures SHALL be schema-validated in tests
+A committed records-stream pilot fixture SHALL be consumed by at least one integration test that asserts every row passes the connector's `validateRecord()` for its declared stream. This locks the real emitted-record shape against schema drift.
+
+#### Scenario: A pilot fixture contains a record that fails its stream's zod schema
+- **WHEN** the integration test replays `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl`
+- **THEN** any row for which `validateRecord(stream, row)` returns `{ ok: false }` SHALL fail the test with the zod issues reported
+- **AND** the test SHALL NOT silently skip or soft-fail when a fixture is absent — missing pilot files SHALL cause test failure

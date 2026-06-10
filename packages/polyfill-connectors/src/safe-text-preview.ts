@@ -70,6 +70,40 @@ function isForbiddenCodePoint(codeUnit: number): boolean {
 }
 
 /**
+ * Remove every forbidden control character from `text`, preserving all
+ * other code points (including \t, \n, \r and the full printable/Unicode
+ * range). The returned string is guaranteed to satisfy the same invariant
+ * that `pdppSafeText` enforces — because both consult the single
+ * `isForbiddenCodePoint` predicate, the sanitizer can never strip less than
+ * the brand requires.
+ *
+ * Use this for *derived, lossy* text projections — snippets, previews,
+ * one-line summaries — where a stray control character (BEL, VT, FF, ESC,
+ * DEL, a C1 control) carries no human-readable meaning and the honest,
+ * owner-valuable outcome is to drop the character rather than null the whole
+ * field. Do NOT use it to launder a *canonical* payload (a full message
+ * body, a file) into a text field: control-rich canonical content must be
+ * routed to the blobs table via `safeTextPreview`, not silently stripped.
+ *
+ * Returns the input unchanged (same reference) when it is already safe, so
+ * the common case allocates nothing.
+ */
+export function stripForbiddenControlChars(text: string): string {
+  // Fast path: only rebuild the string when something is actually forbidden.
+  if (checkStringForForbidden(text).isSafe) {
+    return text;
+  }
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const codeUnit = text.charCodeAt(i);
+    if (!isForbiddenCodePoint(codeUnit)) {
+      out += text[i];
+    }
+  }
+  return out;
+}
+
+/**
  * Check if a string contains any forbidden code points.
  * Returns { isSafe: boolean, firstOffendingIndex?: number, offendingCodeUnit?: number }
  */

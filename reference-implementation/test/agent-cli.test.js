@@ -54,7 +54,11 @@ async function spinUpServer(opts = {}) {
   return { server, asUrl, rsUrl };
 }
 
-async function createAgentConnectRequest({ asUrl, clientName = 'Agent Connect Test' }) {
+async function createAgentConnectRequest({
+  asUrl,
+  clientName = 'Agent Connect Test',
+  agentConnectClientId,
+}) {
   const spotifyManifest = await registerSpotify(asUrl);
   const registered = await registerClient({
     asUrl,
@@ -80,7 +84,7 @@ async function createAgentConnectRequest({ asUrl, clientName = 'Agent Connect Te
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       request_uri: staged.request_uri,
-      client_id: registered.client_id,
+      client_id: agentConnectClientId ?? registered.client_id,
     }),
   });
   const start = await startResp.json();
@@ -456,6 +460,33 @@ test('agent-connect: owner approval completes polling without exposing owner tok
     });
     assert.equal(replayPoll.resp.status, 401);
     assert.equal(errorCode(replayPoll.body), 'invalid_grant');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('agent-connect: empty client_id is treated as omitted for staged requests', async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: 'Agent Connect Empty Client Test',
+      agentConnectClientId: '',
+    });
+
+    await approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: 'owner_local',
+    });
+
+    const completedPoll = await pollAgentConnectToken({
+      tokenUrl: start.token_url,
+      pollingCode: start.polling_code,
+    });
+    assert.equal(completedPoll.resp.status, 200);
+    assert.equal(completedPoll.body.token_type, 'Bearer');
+    assert.equal(typeof completedPoll.body.access_token, 'string');
   } finally {
     await closeServer(server);
   }

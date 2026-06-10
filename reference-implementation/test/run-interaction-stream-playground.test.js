@@ -54,6 +54,7 @@ test('stream playground n.eko backend mints a fresh session per call (never cach
     const target = runTargetRegistry.get({ runId: s.runId, interactionId: s.interactionId });
     assert.equal(target.backend, 'neko', `target.backend for ${s.runId}`);
     assert.equal(target.base_url, baseUrl, `target.base_url for ${s.runId}`);
+    assert.equal(target.cdp_http_url, 'http://neko:9223/', `target.cdp_http_url for ${s.runId}`);
     assert.match(target.start_url, /^data:text\/html;charset=utf-8,/);
     assert.deepEqual(
       controller.getPendingInteraction(s.runId),

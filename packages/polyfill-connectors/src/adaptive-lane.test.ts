@@ -183,6 +183,99 @@ test("adaptive lane reportPressure delays next queued task even when current tas
   );
 });
 
+test("adaptive lane absorbed pressure reduces concurrency but does not mirror a launch cooldown", async () => {
+  const sleeps: number[] = [];
+  const events: AdaptiveLaneEvent[] = [];
+  const started: string[] = [];
+  const lane = createAdaptiveLane<string>({
+    name: "test.absorbed-pressure",
+    initialConcurrency: 3,
+    maxAttempts: 1,
+    maxConcurrency: 3,
+    maxDelayMs: 3000,
+    maxQueueSize: 10,
+    minConcurrency: 1,
+    minDelayMs: 1500,
+    classifyOutcome: () => ({ kind: "ok" }),
+    emitTelemetry: (event) => {
+      events.push(event);
+    },
+    random: () => 0,
+    sleep: (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  // First task already slept the backoff itself (modeled here by the explicit
+  // sleep) and reports the pressure as absorbed, then succeeds.
+  await lane.run(async (context) => {
+    started.push("first");
+    await context.reportPressure({ absorbedByRequestWait: true, delayMs: 20_000, kind: "rate_limited" });
+    return "first-ok";
+  });
+  // Second task: its launch should pay only the ordinary inter-launch pause,
+  // NOT a mirrored 20_000 cooldown.
+  await lane.run(() => {
+    started.push("second");
+    return "second-ok";
+  });
+
+  assert.deepEqual(started, ["first", "second"]);
+  assert.deepEqual(
+    sleeps,
+    [1500],
+    "absorbed pressure must not add a launch cooldown; only the ordinary inter-launch pause remains"
+  );
+  assert.equal(lane.snapshot().concurrency, 1, "absorbed rate_limited pressure still clamps concurrency to min");
+  // delayMs is reported through the pressure bounds (here the defaults clamp it
+  // to maxDelayMs=3000); the point is the cooldown event still fires.
+  assert.equal(
+    events.some((event) => event.type === "cooldown" && event.outcome === "rate_limited" && event.delayMs === 3000),
+    true,
+    "absorbed pressure is still surfaced as a cooldown event for telemetry"
+  );
+});
+
+test("adaptive lane repeated rate limits keep backing off across attempts", async () => {
+  const sleeps: number[] = [];
+  const events: AdaptiveLaneEvent[] = [];
+  let calls = 0;
+  const lane = createAdaptiveLane<{ status: number }>({
+    name: "test.repeated-429",
+    initialConcurrency: 1,
+    maxAttempts: 4,
+    maxConcurrency: 1,
+    maxDelayMs: 60_000,
+    maxQueueSize: 10,
+    minConcurrency: 1,
+    minDelayMs: 1000,
+    classifyOutcome: ({ result }) =>
+      result?.status === 429 ? { kind: "rate_limited", retryAfterMs: 5000 } : { kind: "ok" },
+    emitTelemetry: (event) => {
+      events.push(event);
+    },
+    random: () => 0,
+    sleep: (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  const result = await lane.run(() => {
+    calls += 1;
+    // 429 on the first three attempts, then succeed.
+    return { status: calls <= 3 ? 429 : 200 };
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(calls, 4, "each 429 is retried until success within the attempt budget");
+  assert.deepEqual(sleeps, [5000, 5000, 5000], "every repeated 429 still backs off by the bounded Retry-After");
+  assert.equal(
+    events.filter((event) => event.type === "cooldown" && event.outcome === "rate_limited").length,
+    3,
+    "each 429 emits its own bounded cooldown event"
+  );
+});
+
 test("adaptive lane reportPressure uses pressure bounds without changing ordinary pacing", async () => {
   const sleeps: number[] = [];
   const lane = createAdaptiveLane<string>({

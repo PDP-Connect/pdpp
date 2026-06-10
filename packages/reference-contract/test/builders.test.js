@@ -44,6 +44,28 @@ test('buildRecordsQuery composes record-list query params without empty values',
   );
 });
 
+test('buildRecordsQuery preserves malformed filters for downstream rejection', () => {
+  assert.deepEqual(
+    buildRecordsQuery({
+      limit: 25,
+      filter: 'date.gte=2026-01-01',
+    }),
+    {
+      limit: 25,
+      filter: 'date.gte=2026-01-01',
+    },
+  );
+
+  assert.deepEqual(
+    buildRecordsQuery({
+      filter: ['date.gte=2026-01-01'],
+    }),
+    {
+      filter: ['date.gte=2026-01-01'],
+    },
+  );
+});
+
 test('buildOwnerDeviceAuthorizationRequest builds x-www-form-urlencoded payloads', () => {
   const params = buildOwnerDeviceAuthorizationRequest({
     client_id: 'cli_longview',

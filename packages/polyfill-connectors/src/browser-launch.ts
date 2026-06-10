@@ -33,6 +33,10 @@ import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const EXTRA_BROWSER_ARGS_RE = /\s+/;
+// The two halves of the transient remote-CDP-attach race signature. See
+// `isCdpAttachSessionRaceError` for the full root-cause explanation.
+const CDP_ATTACH_RACE_METHOD_RE = /Network\.setCacheDisabled/;
+const CDP_ATTACH_RACE_SESSION_CLOSED_RE = /session closed/i;
 
 export interface IsolatedBrowser {
   browser: Browser | null;
@@ -185,8 +189,8 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
   return { kind: "fail_closed" };
 }
 
-function configuredBrowserChannel(): string | undefined {
-  const raw = process.env.PDPP_BROWSER_CHANNEL;
+export function configuredBrowserChannel(env: Record<string, string | undefined> = process.env): string | undefined {
+  const raw = env.PDPP_BROWSER_CHANNEL;
   if (raw === undefined) {
     return;
   }
@@ -194,20 +198,274 @@ function configuredBrowserChannel(): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-// Patchright/Playwright surfaces a specific error when the requested channel
-// binary is not installed on disk — e.g. for `channel: "chrome"`:
-//   "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome"
-// We use this discriminator to decide whether a launch failure is "Chrome
-// just isn't installed" (safe to fall back to bundled Chromium) versus any
-// other launch failure (port collision, profile lock, OOM, etc.) which must
-// propagate so the operator sees the real problem.
-const MISSING_CHROME_INSTALL_RE = /Chromium distribution 'chrome' is not found|Executable doesn't exist.*chrome/i;
-
-function isMissingChromeInstallError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
+/**
+ * Recognise the transient CDP-attach race that fails `connectOverCDP`
+ * against a live n.eko Chromium with:
+ *
+ *   Protocol error (Network.setCacheDisabled): Internal server error, session closed.
+ *       at ... crNetworkManager.setRequestInterception
+ *
+ * Root cause (verified against patchright-core 1.59.4 internals):
+ * Patchright's `CRPage` constructor eagerly calls
+ * `this._networkManager.setRequestInterception(true)` so its stealth
+ * Fetch-domain hooks are always active (`server/chromium/crPage.js` line 80).
+ * Stock Playwright does NOT — it defers to a conditional
+ * `updateRequestInterception()`. Critically, that constructor call is FLOATED:
+ * no `await`, no `.catch`. Patchright's `setRequestInterception` ends with a
+ * patchright-only
+ * `_forEachSession(info => info.session.send("Network.setCacheDisabled", …))`
+ * (`server/chromium/crNetworkManager.js`). When `connectOverCDP` auto-attaches
+ * (`Target.setAutoAttach`) to every existing target, `_onAttachedToTarget`
+ * builds a `CRPage` per target — including the short-lived `about:blank` target
+ * n.eko opens via `/json/new?about:blank` and immediately tears down via
+ * `/json/close`. If that target's session disposes while the send is in flight,
+ * the in-flight callback is rejected with `Internal server error, session
+ * closed.` (`crConnection.js` `dispose()`). The MAIN-frame branch of
+ * `_forEachSession` has no `.catch` guard (only non-main sessions swallow
+ * `isSessionClosedError`).
+ *
+ * Because the offending `setRequestInterception(true)` is floated and
+ * `connectOverCDP` only awaits `_waitForAllPagesToBeInitialized()` (NOT the
+ * interception promise), `connectOverCDP` RESOLVES successfully and the
+ * rejection escapes the entire connect promise chain as a Node UNHANDLED
+ * REJECTION (`node:internal/process/promises`), terminating the process a tick
+ * or two after attach. This is why a `try/catch` around `connectOverCDP` (v1)
+ * never observed it. The catch boundary now lives in
+ * `runCdpAttemptWithRaceGuard`, which intercepts the unhandled rejection.
+ *
+ * The condition is inherently transient: the offending target is on its way
+ * out. A bounded retry a moment later — once n.eko's transient target has
+ * disposed and only the stable page target remains — attaches cleanly.
+ *
+ * We deliberately do NOT switch the remote-attach client to stock Playwright:
+ * patchright's `Runtime.enable` suppression and isolated-world hiding are
+ * CLIENT-driven stealth (sent over CDP by the driving process, not baked into
+ * the launched browser). A stock client attaching to the same browser would
+ * leak the canonical CDP `Runtime.enable` automation signal on every page —
+ * a permanent stealth regression on a bot-hostile target like Amazon, traded
+ * for a transient startup race. Retry keeps full patchright stealth.
+ *
+ * Matched narrowly on the CDP method + the session-closed phrase so unrelated
+ * protocol errors (auth, bad URL, real crash) still fail fast.
+ */
+export function isCdpAttachSessionRaceError(err: unknown): boolean {
+  let message = "";
+  if (err instanceof Error) {
+    message = err.message;
+  } else if (typeof err === "string") {
+    message = err;
+  }
+  if (!message) {
     return false;
   }
-  return MISSING_CHROME_INSTALL_RE.test(error.message);
+  return CDP_ATTACH_RACE_METHOD_RE.test(message) && CDP_ATTACH_RACE_SESSION_CLOSED_RE.test(message);
+}
+
+const REMOTE_CDP_ATTACH_MAX_ATTEMPTS = 4;
+const REMOTE_CDP_ATTACH_RETRY_DELAY_MS = 500;
+// After `connectOverCDP` resolves, the floated `setRequestInterception(true)`
+// rejection (see `runCdpAttemptWithRaceGuard`) lands on a LATER macrotask tick.
+// We hold the scoped unhandled-rejection guard open for this settle window so a
+// just-after race rejection still converts the attempt into a retry instead of
+// crashing the process. 250ms comfortably covers the observed ~tens-of-ms gap
+// without meaningfully slowing a clean attach.
+const REMOTE_CDP_ATTACH_SETTLE_MS = 250;
+
+/**
+ * Minimal port of the `process` unhandled-rejection surface the attempt guard
+ * needs. Injected so the guard can be unit-tested without touching the real
+ * process listeners (the test drives a fake emitter directly).
+ */
+export interface UnhandledRejectionHost {
+  off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+}
+
+/**
+ * Run ONE remote-CDP attach attempt with a scoped `unhandledRejection` guard.
+ *
+ * Why this exists (root cause v2): the production failure is NOT the
+ * `connectOverCDP` promise rejecting. `connectOverCDP` RESOLVES — it returns a
+ * live `Browser`. Patchright's `CRPage` constructor then fires
+ * `this._networkManager.setRequestInterception(true)` with NO `await` and NO
+ * `.catch` (`server/chromium/crPage.js`). That floated promise runs
+ * `_forEachSession(… "Network.setCacheDisabled" …)`, whose MAIN-frame branch has
+ * no session-closed guard. When n.eko's transient `about:blank` target disposes
+ * mid-send, the floated promise rejects, and because nobody is awaiting it the
+ * rejection escapes the entire `connectOverCDP` promise chain as a Node
+ * UNHANDLED REJECTION (`node:internal/process/promises`), terminating the
+ * process. A `try/catch` around `connectOverCDP` (v1) can never see it.
+ *
+ * The fix installs a temporary `process.on("unhandledRejection")` listener and
+ * races the attach attempt against that signal. If the race lands while
+ * `connect()` is still pending, the attempt rejects immediately instead of
+ * waiting for Patchright's 30s timeout. If `connect()` resolves first, the
+ * guard stays open for a short settle window because the floated rejection can
+ * land on a later tick. Either way, a matching unhandled rejection becomes a
+ * retryable rejection of this attempt; the caller's bounded retry then
+ * re-attaches once n.eko's transient target is gone.
+ *
+ * Safety rails:
+ *   - The listener is ALWAYS removed when the attempt settles (success,
+ *     retryable race, or fail-fast), via the `finally` block. We never leave a
+ *     global listener installed across attempts.
+ *   - Only the narrow race signature is consumed. Any OTHER unhandled rejection
+ *     is re-thrown synchronously from the listener after removing ourselves, so
+ *     Node's default crash-on-unhandled-rejection behavior is preserved for
+ *     unrelated bugs. We do not become a process-wide rejection sink.
+ *   - If the race rejection arrives after `connect()` already returned a live
+ *     browser, or `connect()` resolves after the guard has already rejected,
+ *     the injected `disconnect` is invoked best-effort so we don't leak a CDP
+ *     client.
+ *
+ * `host`, `setTimeoutFn`, and `clearTimeoutFn` are injected for tests.
+ */
+export async function runCdpAttemptWithRaceGuard<TBrowser>({
+  connect,
+  disconnect,
+  settleMs = REMOTE_CDP_ATTACH_SETTLE_MS,
+  host = process,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+}: {
+  connect: () => Promise<TBrowser>;
+  disconnect?: (browser: TBrowser) => Promise<void> | void;
+  settleMs?: number;
+  host?: UnhandledRejectionHost;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+}): Promise<TBrowser> {
+  let raceReason: unknown;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Resolves as soon as a race rejection is observed, so we can abandon the
+  // settle window early and retry without waiting out the full delay.
+  let signalRace: (() => void) | undefined;
+  const raceObserved = new Promise<void>((resolve) => {
+    signalRace = resolve;
+  });
+
+  const onUnhandledRejection = (reason: unknown): void => {
+    if (isCdpAttachSessionRaceError(reason)) {
+      raceReason = reason;
+      signalRace?.();
+      return;
+    }
+    // Not our race. Stop intercepting and re-throw so Node's default
+    // unhandled-rejection handling (process crash) still applies to unrelated
+    // failures. We must never silently swallow another subsystem's rejection.
+    host.off("unhandledRejection", onUnhandledRejection);
+    throw reason;
+  };
+
+  host.on("unhandledRejection", onUnhandledRejection);
+  try {
+    let connectSettled = false;
+    const connectPromise = connect().then(
+      (browser) => {
+        connectSettled = true;
+        return browser;
+      },
+      (err: unknown) => {
+        connectSettled = true;
+        throw err;
+      }
+    );
+    const disconnectLateBrowser = async (browser: TBrowser): Promise<void> => {
+      if (!disconnect) {
+        return;
+      }
+      await Promise.resolve(disconnect(browser)).catch(() => undefined);
+    };
+    const browser = await Promise.race([
+      connectPromise,
+      raceObserved.then(() => {
+        // The race can happen while Patchright is still inside connectOverCDP.
+        // Do not wait for its 30s timeout; convert this attempt into the
+        // retryable race immediately. If connect later yields a Browser, close
+        // that orphaned CDP client best-effort.
+        if (!connectSettled) {
+          connectPromise.then(disconnectLateBrowser, () => undefined).catch(() => undefined);
+        }
+        throw raceReason;
+      }),
+    ]);
+    // `connect` resolved, but the floated `setRequestInterception` rejection
+    // (if any) lands on a LATER tick. Hold the guard open for a brief settle
+    // window; bail early the moment a race rejection is observed.
+    await Promise.race([
+      raceObserved,
+      new Promise<void>((resolve) => {
+        settleTimer = setTimeoutFn(resolve, settleMs);
+      }),
+    ]);
+    if (raceReason !== undefined) {
+      // The just-connected browser is orphaned by the race; disconnect it
+      // best-effort so we don't leak a CDP client before the caller retries.
+      await disconnectLateBrowser(browser);
+      throw raceReason;
+    }
+    return browser;
+  } finally {
+    if (settleTimer !== undefined) {
+      clearTimeoutFn(settleTimer);
+    }
+    host.off("unhandledRejection", onUnhandledRejection);
+  }
+}
+
+/**
+ * Attach to a remote Chromium with a bounded retry around the transient
+ * `connectOverCDP` session-closed race (see `isCdpAttachSessionRaceError`).
+ *
+ * Each attempt runs inside `runCdpAttemptWithRaceGuard` so the failure can be
+ * caught whether it surfaces as a rejected `connect` promise OR as a Node
+ * unhandled rejection from patchright's floated `setRequestInterception(true)`
+ * (the v2 root cause — v1 only handled the former). Only the race error is
+ * retried; every other failure (auth, unreachable endpoint, real browser crash)
+ * is rethrown immediately so we never mask a genuine attach failure behind a
+ * retry budget.
+ *
+ * `connect`, `disconnect`, `sleep`, and `runAttempt` are injected so the retry
+ * policy can be unit-tested without a live browser.
+ */
+export async function connectOverCdpWithRetry<TBrowser>({
+  connect,
+  disconnect,
+  profileName,
+  redactedUrl,
+  maxAttempts = REMOTE_CDP_ATTACH_MAX_ATTEMPTS,
+  retryDelayMs = REMOTE_CDP_ATTACH_RETRY_DELAY_MS,
+  sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  runAttempt = runCdpAttemptWithRaceGuard,
+}: {
+  connect: () => Promise<TBrowser>;
+  disconnect?: (browser: TBrowser) => Promise<void> | void;
+  profileName: string;
+  redactedUrl: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  runAttempt?: typeof runCdpAttemptWithRaceGuard;
+}): Promise<TBrowser> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await runAttempt<TBrowser>({ connect, ...(disconnect ? { disconnect } : {}) });
+    } catch (err) {
+      lastErr = err;
+      if (!isCdpAttachSessionRaceError(err) || attempt === maxAttempts) {
+        throw err;
+      }
+      process.stderr.write(
+        "[browser-launch] remote CDP attach hit transient session-closed race " +
+          `profile=${profileName} url=${redactedUrl} attempt=${attempt}/${maxAttempts}; ` +
+          `retrying in ${retryDelayMs}ms\n`
+      );
+      await sleep(retryDelayMs);
+    }
+  }
+  // Unreachable: the loop either returns or throws. Rethrow defensively.
+  throw lastErr;
 }
 
 /**
@@ -226,13 +484,40 @@ function isMissingChromeInstallError(error: unknown): boolean {
  * connector should close any pages it opened in its own cleanup. This
  * matches `launchPersistentContext` semantics where the context outlives
  * individual pages.
+ *
+ * The attach itself is wrapped in `connectOverCdpWithRetry` to ride out the
+ * transient session-closed race n.eko's transient targets trigger during
+ * Patchright's auto-attach. That race does NOT reject `connectOverCDP`; it
+ * escapes as a Node unhandled rejection from patchright's floated
+ * `setRequestInterception(true)`, so each attempt runs under a scoped
+ * `unhandledRejection` guard. See `runCdpAttemptWithRaceGuard` and
+ * `isCdpAttachSessionRaceError`.
  */
 async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
   const attachStartedAt = Date.now();
-  process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactCdpUrl(cdpUrl)}\n`);
-  const browser = await localChromium.connectOverCDP(cdpUrl);
+  const redactedUrl = redactCdpUrl(cdpUrl);
+  process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
+  // Remote profiles persist cookies; stale page targets do not need to persist.
+  // Replace pages before attach so Patchright does not auto-attach to a wedged
+  // renderer, while n.eko Chromium still keeps at least one page alive.
+  const cleanup = await closeRemoteCdpPageTargets({ cdpUrl, profileName });
+  process.stderr.write(
+    `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} replacementCreated=${String(
+      cleanup.replacementCreated
+    )} skipped=${String(cleanup.skipped)}\n`
+  );
+  const browser = await connectOverCdpWithRetry<Browser>({
+    connect: () => localChromium.connectOverCDP(cdpUrl),
+    // If the floated `setRequestInterception` race rejects AFTER this attempt's
+    // `connectOverCDP` already returned a live Browser, that Browser is orphaned
+    // by the retry; disconnect it so we don't leak a CDP client. `.close()` on a
+    // CDP-attached client disconnects without killing the n.eko-owned browser.
+    disconnect: (b) => b.close().catch(() => undefined),
+    profileName,
+    redactedUrl,
+  });
   const attachedAt = Date.now();
   let releaseRequested = false;
   const onDisconnected = (): void => {
@@ -424,6 +709,9 @@ export async function acquireIsolatedBrowser({
   };
 
   const explicitChannel = configuredBrowserChannel();
+  // Default to Patchright's pinned bundled Chromium so local and n.eko runs
+  // share the same browser-family posture. Operators can still opt into a
+  // branded channel explicitly with PDPP_BROWSER_CHANNEL=chrome.
   // Cleanup-then-launch is gated by an in-process mutex keyed on the
   // user-data-dir. The mutex is the load-bearing primitive: it guarantees
   // PDPP never has two of its own processes launching against the same
@@ -439,18 +727,7 @@ export async function acquireIsolatedBrowser({
         channel: explicitChannel,
       });
     }
-    try {
-      return await localChromium.launchPersistentContext(isolatedDir, {
-        ...baseLaunchOptions,
-        channel: "chrome",
-      });
-    } catch (error) {
-      if (!isMissingChromeInstallError(error)) {
-        throw error;
-      }
-      logChromiumFallback();
-      return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
-    }
+    return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
   });
 
   // Publish the CDP host:port to env so the browser-binding-local handoff
@@ -602,8 +879,189 @@ async function readDevToolsActivePort({
 }
 
 interface DevToolsTarget {
+  readonly id?: string;
   readonly type?: string;
   readonly webSocketDebuggerUrl?: string;
+}
+
+export interface RemoteCdpPageTargetCleanupResult {
+  readonly closed: number;
+  readonly remaining: number;
+  readonly replacementCreated: boolean;
+  readonly skipped: boolean;
+}
+
+export async function closeRemoteCdpPageTargets({
+  cdpUrl,
+  fetchImpl = globalThis.fetch,
+  profileName,
+  timeoutMs = 2000,
+  pollMs = 100,
+}: {
+  cdpUrl: string;
+  fetchImpl?: typeof fetch;
+  profileName?: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<RemoteCdpPageTargetCleanupResult> {
+  if (typeof fetchImpl !== "function") {
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
+  }
+  const baseUrl = devToolsHttpBaseUrl(cdpUrl);
+  if (!baseUrl) {
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  const targets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
+  if (!targets) {
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
+  }
+
+  const pageTargets = targets.filter((target) => target?.type === "page" && typeof target.id === "string" && target.id);
+  if (pageTargets.length === 0) {
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: false };
+  }
+  const staleTargetIds = new Set(pageTargets.map((target) => target.id).filter((id): id is string => Boolean(id)));
+  const replacement = await createRemoteDevToolsPageTarget({ baseUrl, deadline, fetchImpl });
+  if (!replacement?.id) {
+    return { closed: 0, remaining: staleTargetIds.size, replacementCreated: false, skipped: true };
+  }
+  staleTargetIds.delete(replacement.id);
+
+  let closed = 0;
+  for (const targetId of staleTargetIds) {
+    if (Date.now() >= deadline) {
+      break;
+    }
+    const ok = await closeRemoteDevToolsTarget({ baseUrl, deadline, fetchImpl, targetId });
+    if (ok) {
+      closed += 1;
+    }
+  }
+
+  let remaining = Math.max(0, staleTargetIds.size - closed);
+  while (Date.now() < deadline) {
+    const latestTargets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
+    if (!latestTargets) {
+      break;
+    }
+    remaining = countMatchingPageTargets(latestTargets, staleTargetIds);
+    if (remaining === 0) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  }
+
+  if (profileName && remaining > 0) {
+    process.stderr.write(
+      `[browser-launch] remote CDP page-target cleanup incomplete profile=${profileName} remaining=${remaining}\n`
+    );
+  }
+  return { closed, remaining, replacementCreated: true, skipped: false };
+}
+
+function devToolsHttpBaseUrl(cdpUrl: string): URL | null {
+  try {
+    const parsed = new URL(cdpUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return new URL("/", parsed);
+    }
+    if (parsed.protocol === "ws:" || parsed.protocol === "wss:") {
+      parsed.protocol = parsed.protocol === "ws:" ? "http:" : "https:";
+      return new URL("/", parsed);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchRemoteDevToolsTargets({
+  baseUrl,
+  deadline,
+  fetchImpl,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+}): Promise<DevToolsTarget[] | null> {
+  const response = await fetchWithDeadline(new URL("/json", baseUrl).toString(), deadline, fetchImpl);
+  if (!response?.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  return Array.isArray(body) ? (body as DevToolsTarget[]) : null;
+}
+
+async function closeRemoteDevToolsTarget({
+  baseUrl,
+  deadline,
+  fetchImpl,
+  targetId,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+  targetId: string;
+}): Promise<boolean> {
+  const url = new URL(`/json/close/${encodeURIComponent(targetId)}`, baseUrl).toString();
+  const response = await fetchWithDeadline(url, deadline, fetchImpl);
+  return response?.ok === true;
+}
+
+async function createRemoteDevToolsPageTarget({
+  baseUrl,
+  deadline,
+  fetchImpl,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+}): Promise<DevToolsTarget | null> {
+  const response = await fetchWithDeadline(new URL("/json/new?about:blank", baseUrl).toString(), deadline, fetchImpl);
+  if (!response?.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  return typeof body === "object" && body !== null ? (body as DevToolsTarget) : null;
+}
+
+async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeof fetch): Promise<Response | null> {
+  const remainingMs = Math.max(1, deadline - Date.now());
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, remainingMs);
+    });
+    return await Promise.race([fetchImpl(url, { signal: controller.signal }), timeoutPromise]);
+  } catch {
+    return null;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function countMatchingPageTargets(targets: readonly DevToolsTarget[], targetIds: ReadonlySet<string>): number {
+  return targets.filter(
+    (target) => target?.type === "page" && typeof target.id === "string" && targetIds.has(target.id)
+  ).length;
 }
 
 export async function fetchPageTargetWsUrl({
@@ -642,22 +1100,9 @@ export async function fetchPageTargetWsUrl({
   return pageTarget?.webSocketDebuggerUrl ?? null;
 }
 
-let chromiumFallbackLogged = false;
 // Module-scope so the DISPLAY-without-XAUTHORITY warning fires once per
 // process, not once per browser launch — quiet logs in normal operation.
 let displayAuthWarningEmitted = false;
-
-function logChromiumFallback(): void {
-  if (chromiumFallbackLogged) {
-    return;
-  }
-  chromiumFallbackLogged = true;
-  process.stderr.write(
-    "[browser-launch] Real Chrome not installed; falling back to bundled Patchright Chromium. " +
-      "For best stealth on the host, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome` " +
-      "(or set PDPP_BROWSER_CHANNEL to override).\n"
-  );
-}
 
 /**
  * Acquire a browser context for connector use.

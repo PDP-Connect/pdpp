@@ -20,6 +20,7 @@ import {
   starredRecord,
   truncateBody,
   userRecord,
+  userStatsRecord,
 } from "./parsers.ts";
 import type { GitHubGist, GitHubIssue, GitHubPullDetail, GitHubRepo, GitHubUser } from "./types.ts";
 
@@ -205,13 +206,17 @@ test("truncateBody: non-string → null", () => {
 
 // ─── userRecord ──────────────────────────────────────────────────────────
 
-test("userRecord: maps fixture fields with id stringified", () => {
+test("userRecord: maps fixture fields with id stringified (no stat fields)", () => {
   const r = userRecord(readScrubbedUserFixture());
   assert.equal(r.id, "424242");
   assert.equal(r.login, "[REDACTED_LOGIN]");
   assert.equal(r.name, "[REDACTED_NAME]");
   assert.equal(r.email, "redacted@example.com");
-  assert.equal(r.public_repos, 7);
+  // Stat fields must NOT appear on entity record.
+  assert.equal("public_repos" in r, false);
+  assert.equal("followers" in r, false);
+  assert.equal("following" in r, false);
+  assert.equal("public_gists" in r, false);
 });
 
 test("userRecord: missing optional fields → null", () => {
@@ -219,6 +224,47 @@ test("userRecord: missing optional fields → null", () => {
   assert.equal(r.name, null);
   assert.equal(r.email, null);
   assert.equal(r.avatar_url, null);
+});
+
+// ─── userStatsRecord ─────────────────────────────────────────────────────
+
+test("userStatsRecord: key is {user_id}:{observed_on}", () => {
+  const u = readScrubbedUserFixture();
+  const r = userStatsRecord(u, "2026-06-03");
+  assert.equal(r.id, "424242:2026-06-03");
+  assert.equal(r.user_id, "424242");
+  assert.equal(r.observed_on, "2026-06-03");
+});
+
+test("userStatsRecord: carries metric fields from fixture", () => {
+  const u = readScrubbedUserFixture();
+  const r = userStatsRecord(u, "2026-06-03");
+  assert.equal(r.public_repos, 7);
+  assert.equal(r.followers, 12);
+  assert.equal(r.following, 5);
+  assert.equal(r.public_gists, 2);
+});
+
+test("userStatsRecord: same-day key is stable (idempotent re-runs)", () => {
+  const u = readScrubbedUserFixture();
+  const r1 = userStatsRecord(u, "2026-06-03");
+  const r2 = userStatsRecord(u, "2026-06-03");
+  assert.equal(r1.id, r2.id, "same key for same user+day");
+});
+
+test("userStatsRecord: different-day key is distinct", () => {
+  const u = readScrubbedUserFixture();
+  const r1 = userStatsRecord(u, "2026-06-03");
+  const r2 = userStatsRecord(u, "2026-06-04");
+  assert.notEqual(r1.id, r2.id);
+});
+
+test("userStatsRecord: missing metric fields → null", () => {
+  const r = userStatsRecord({ id: 1, login: "x" }, "2026-06-03");
+  assert.equal(r.public_repos, null);
+  assert.equal(r.followers, null);
+  assert.equal(r.following, null);
+  assert.equal(r.public_gists, null);
 });
 
 // ─── repoRecord ──────────────────────────────────────────────────────────

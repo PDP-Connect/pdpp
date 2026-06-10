@@ -51,6 +51,65 @@ const DERIVED_TABLE_NAMES = new Set([
   'semantic_search_backfill_progress',
 ]);
 
+// Postgres-only columns that `execute` synthesizes per-row when the SQLite
+// source predates them, rather than NULL-filling. This is the single source
+// of truth shared by `execute` (cli.mjs wires the actual synthesize hooks)
+// and `diff` (which must not flag a synthesizable column as unhandleable
+// drift). If you add a synthesize hook in cli.mjs, add the column here so
+// `diff` stays honest about what the migration can handle.
+//
+//   - records.primary_key_text — derived from manifest primary_key + record
+//     (derivePrimaryKeyText); always non-empty, so it satisfies NOT NULL even
+//     though the source lacks the column.
+//   - records.cursor_value      — derived from manifest cursor_field
+//     (deriveCursorValue); nullable.
+//   - blob_bindings.json_path   — legacy bindings map to '@record'
+//     (sqliteRow.json_path ?? '@record'); NOT NULL in target.
+//
+// See cli.mjs executeCommand() transformerOptions.synthesize for the hooks
+// these names correspond to.
+const SYNTHESIZED_TARGET_COLUMNS = new Map([
+  ['records', new Set(['primary_key_text', 'cursor_value'])],
+  ['blob_bindings', new Set(['json_path'])],
+]);
+
+/**
+ * Whether `execute` synthesizes the named target column for the given table
+ * when it is absent from the SQLite source. Synthesized columns are NOT a
+ * migration hazard: the transformer derives a value (never NULL-fills), so
+ * `diff` must not classify them as unhandleable drift.
+ *
+ * @param {string} tableName
+ * @param {string} columnName
+ * @returns {boolean}
+ */
+export function isSynthesizedColumn(tableName, columnName) {
+  return SYNTHESIZED_TARGET_COLUMNS.get(tableName)?.has(columnName) ?? false;
+}
+
+/**
+ * Classify a target column that is present in the Postgres schema but absent
+ * from the SQLite source. Models exactly how `execute` treats the column so
+ * `diff` and `execute` agree:
+ *
+ *   - "synthesized": execute derives the value per-row (never NULL-fills).
+ *     Not a hazard regardless of nullability.
+ *   - "null-fill": execute NULL-fills, which is safe only when the column is
+ *     nullable. A nullable target column is handled.
+ *   - "hard-drift": execute would NULL-fill a NOT NULL column → the insert
+ *     would fail. This is the one case the migration genuinely cannot handle.
+ *
+ * @param {{name: string, nullable: boolean}} column - target column metadata
+ * @param {string} tableName
+ * @returns {"synthesized" | "null-fill" | "hard-drift"}
+ */
+export function classifyMissingTargetColumn(column, tableName) {
+  if (isSynthesizedColumn(tableName, column.name)) {
+    return 'synthesized';
+  }
+  return column.nullable ? 'null-fill' : 'hard-drift';
+}
+
 let cachedSchema = null;
 
 /**
@@ -265,6 +324,13 @@ export const TABLES = (() => loadSchemaFromSource())();
  * Set of table names that are derived and should not be migrated
  */
 export const DERIVED_TABLES = DERIVED_TABLE_NAMES;
+
+/**
+ * Map<tableName, Set<columnName>> of Postgres-only columns that `execute`
+ * synthesizes per-row. Exported so the synthesize hooks in cli.mjs and the
+ * `diff` classifier read from one source of truth.
+ */
+export const SYNTHESIZED_COLUMNS = SYNTHESIZED_TARGET_COLUMNS;
 
 /**
  * Alias for convenience (same as DERIVED_TABLES for now)

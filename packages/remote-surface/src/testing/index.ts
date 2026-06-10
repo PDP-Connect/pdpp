@@ -183,6 +183,14 @@ export {
   REMOTE_SURFACE_VIEWPORT_FIXTURES,
 } from "./protocol-fixtures.ts";
 
+/**
+ * @deprecated Reference-shaped wire fixtures moved to
+ *   `@opendatalabs/remote-surface/reference`. This re-export is preserved
+ *   for the deprecation horizon recorded in the
+ *   `republish-remote-surface-as-opendatalabs` OpenSpec change (planned
+ *   removal: first post-publish minor). Import directly from the
+ *   `./reference` subpath instead.
+ */
 export {
   REFERENCE_WIRE_ALL_FIXTURES,
   REFERENCE_WIRE_BROWSER_SESSION_ID,
@@ -205,4 +213,4 @@ export {
   REFERENCE_WIRE_VIEWPORT_ACK_FIXTURE,
   REFERENCE_WIRE_VIEWPORT_PAYLOAD_FIXTURE,
   type ReferenceWireFixture,
-} from "./reference-wire-fixtures.ts";
+} from "../reference/reference-wire-fixtures.ts";

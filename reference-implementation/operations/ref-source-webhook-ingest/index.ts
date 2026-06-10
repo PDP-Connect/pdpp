@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { canonicalConnectorKey } from "../../server/connector-key.js";
+
 export class SourceWebhookError extends Error {
   readonly code: string;
   readonly status: number;
@@ -167,7 +169,13 @@ export async function executeSourceWebhook(
 
   verifySignature(secret, timestamp, input.body, signature);
   const payload = parseBody(input.body);
-  const connectorId = deps.resolveConnectorId?.(sourceId) || sourceId;
+  const resolvedConnectorId = deps.resolveConnectorId?.(sourceId) || sourceId;
+  // Canonicalize at the operation boundary: the configured connector id (from
+  // PDPP_SOURCE_WEBHOOK_SECRETS or the raw URL :sourceId) may be a URL-shaped
+  // first-party id or a legacy snake_case alias. Keying the webhook-triggered
+  // run, spine events, and last-run row by a non-canonical id splits identity
+  // from every other surface, so map it to the canonical key here.
+  const connectorId = canonicalConnectorKey(resolvedConnectorId) ?? resolvedConnectorId;
   const bodyHash = createHmac("sha256", secret).update(input.body).digest("hex");
   const receivedAt = new Date(deps.nowMs()).toISOString();
   const claimed = await deps.claimEvent({ sourceId, eventId, bodyHash, receivedAt });

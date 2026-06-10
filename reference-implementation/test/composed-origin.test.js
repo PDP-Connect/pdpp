@@ -9,17 +9,21 @@ import { tmpdir } from 'node:os';
 
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const REPO_ROOT = join(REFERENCE_IMPL_DIR, '..');
-const WEB_DIR = join(REPO_ROOT, 'apps/web');
-const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
+const CONSOLE_DIR = join(REPO_ROOT, 'apps/console');
+const CONSOLE_BUILD_ID_PATH = join(CONSOLE_DIR, '.next/BUILD_ID');
+const CONSOLE_PRERENDER_MANIFEST_PATH = join(CONSOLE_DIR, '.next/prerender-manifest.json');
+const CONSOLE_STANDALONE_SERVER_PATH = join(CONSOLE_DIR, '.next/standalone/apps/console/server.js');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 const SPOTIFY_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey(SPOTIFY_CONNECTOR_ID);
 const CLAUDE_CODE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/claude-code';
 
-let webBuildPromise = null;
+let consoleBuildPromise = null;
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -78,16 +82,16 @@ function runCommand(command, args, opts = {}) {
   });
 }
 
-async function ensureWebBuild() {
-  if (!webBuildPromise) {
-    webBuildPromise = (async () => {
+async function ensureConsoleBuild() {
+  if (!consoleBuildPromise) {
+    consoleBuildPromise = (async () => {
       try {
-        await access(WEB_BUILD_ID_PATH);
+        await assertCompleteConsoleBuild();
         return;
       } catch {}
 
       try {
-        await runCommand('pnpm', ['--dir', 'apps/web', 'build'], {
+        await runCommand('pnpm', ['--dir', 'apps/console', 'build'], {
           cwd: REPO_ROOT,
           env: {
             ...process.env,
@@ -99,26 +103,32 @@ async function ensureWebBuild() {
           error instanceof Error &&
           error.message.includes('Another next build process is already running')
         ) {
-          await waitForExistingWebBuild();
+          await waitForExistingConsoleBuild();
           return;
         }
         throw error;
       }
     })();
   }
-  await webBuildPromise;
+  await consoleBuildPromise;
 }
 
-async function waitForExistingWebBuild(timeoutMs = 30000) {
+async function waitForExistingConsoleBuild(timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      await access(WEB_BUILD_ID_PATH);
+      await assertCompleteConsoleBuild();
       return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error('Timed out waiting for another next build process to finish');
+}
+
+async function assertCompleteConsoleBuild() {
+  await access(CONSOLE_BUILD_ID_PATH);
+  await access(CONSOLE_PRERENDER_MANIFEST_PATH);
+  await access(CONSOLE_STANDALONE_SERVER_PATH);
 }
 
 async function allocatePort() {
@@ -157,9 +167,11 @@ async function startPublicOriginTrap() {
   };
 }
 
-async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
+async function waitForHttpStatus(url, { expectedStatus = 200, headers, timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
+  let lastStatus = null;
+  let lastBody = '';
 
   while (Date.now() < deadline) {
     try {
@@ -167,7 +179,9 @@ async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
         redirect: 'manual',
         headers,
       });
-      if (resp.status < 500) return resp;
+      lastStatus = resp.status;
+      if (resp.status === expectedStatus) return resp;
+      lastBody = await resp.text().catch(() => '');
       lastError = new Error(`HTTP ${resp.status}`);
     } catch (error) {
       lastError = error;
@@ -175,7 +189,11 @@ async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'unknown error'}`);
+  throw new Error(
+    `Timed out waiting for ${url} to return HTTP ${expectedStatus}: ${lastError?.message || 'unknown error'}` +
+    `\nlastStatus=${lastStatus ?? 'none'}` +
+    `\nlastBody=${lastBody.slice(0, 500)}`,
+  );
 }
 
 async function startWebServer({ webOrigin, asUrl, rsUrl }) {
@@ -183,10 +201,10 @@ async function startWebServer({ webOrigin, asUrl, rsUrl }) {
   const port = Number.parseInt(webUrl.port, 10);
   const host = webUrl.hostname;
   const child = spawn(
-    'pnpm',
-    ['exec', 'next', 'start', '--port', String(port), '--hostname', host],
+    process.execPath,
+    [CONSOLE_STANDALONE_SERVER_PATH],
     {
-      cwd: WEB_DIR,
+      cwd: dirname(CONSOLE_STANDALONE_SERVER_PATH),
       env: {
         ...process.env,
         NEXT_TELEMETRY_DISABLED: '1',
@@ -195,6 +213,8 @@ async function startWebServer({ webOrigin, asUrl, rsUrl }) {
         PDPP_AS_URL: asUrl,
         PDPP_RS_URL: rsUrl,
         PDPP_OWNER_PASSWORD: OWNER_PASSWORD,
+        PORT: String(port),
+        HOSTNAME: host,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -213,7 +233,7 @@ async function startWebServer({ webOrigin, asUrl, rsUrl }) {
   });
 
   try {
-    await waitForHttpOk(`${webOrigin}/owner/login`);
+    await waitForHttpStatus(`${webOrigin}/owner/login`, { expectedStatus: 200 });
     return { child, getOutput: () => output };
   } catch (error) {
     child.kill('SIGTERM');
@@ -305,6 +325,11 @@ async function makeClaudeCodeFixture() {
   const projectsDir = join(claudeHome, 'projects');
   const projectDir = join(projectsDir, '-home-test-safe-project');
   await mkdir(projectDir, { recursive: true });
+  // The Claude Code connector reads .claude/skills and .claude/commands
+  // even when empty; create them so the run doesn't fail before exercising
+  // the origin-routing behavior this test targets.
+  await mkdir(join(claudeHome, 'skills'), { recursive: true });
+  await mkdir(join(claudeHome, 'commands'), { recursive: true });
   const sessionId = '00000000-0000-4000-8000-000000000001';
   const lines = [
     {
@@ -396,7 +421,7 @@ test('composed controller runs ingest against the internal RS, not the public br
 });
 
 test('composed browser origin carries metadata, owner session, dashboard, device flow, and consent end to end', async () => {
-  await ensureWebBuild();
+  await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
   const spotifyManifest = JSON.parse(
@@ -599,7 +624,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     });
     assert.equal(approvedGrant.resp.status, 200);
     assert.equal(typeof approvedGrant.body.token, 'string');
-    assert.deepEqual(approvedGrant.body.grant.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_ID });
+    assert.deepEqual(approvedGrant.body.grant.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_KEY });
   } finally {
     await stopChildProcess(webServer.child);
     await closeServer(server);

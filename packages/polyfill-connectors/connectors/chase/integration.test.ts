@@ -42,13 +42,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { parseHTML } from "linkedom";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
+  CHASE_QFX_FILE_TYPE_SELECT_SELECTORS,
   chaseTimeRangeField,
   type EmitDeps,
   emitAccountsStream,
@@ -88,6 +90,27 @@ interface HarnessOverrides {
   wantsStatements?: boolean;
   wantsTransactions?: boolean;
 }
+
+function htmlMatchesAnySelector(html: string, selectors: readonly string[]): boolean {
+  const { document } = parseHTML(html);
+  return selectors.some((selector) => document.querySelector(selector));
+}
+
+test("QFX dropdown selectors support both observed Chase id families", () => {
+  const oldFixture = `
+    <mds-select id="select-downloadActivityOptionId"></mds-select>
+    <mds-select id="select-downloadFileTypeOption"></mds-select>
+  `;
+  const currentFixture = `
+    <mds-select id="downloadActivityOptionId"></mds-select>
+    <mds-select id="downloadFileTypeOption"></mds-select>
+  `;
+
+  assert.equal(htmlMatchesAnySelector(oldFixture, CHASE_QFX_ACTIVITY_SELECT_SELECTORS), true);
+  assert.equal(htmlMatchesAnySelector(oldFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
+  assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_ACTIVITY_SELECT_SELECTORS), true);
+  assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
+});
 
 /** Build an EmitDeps that records every emit() and emitRecord() call.
  *  capture/progress/tmpDir are unused by the helpers under test — the
@@ -244,6 +267,15 @@ test("chase manifest: current_activity nullable fields are required-present", ()
   }
 });
 
+test("chase manifest: successful manual runs have a bounded freshness window", () => {
+  const manifest = JSON.parse(readFileSync(CHASE_MANIFEST_PATH, "utf8")) as {
+    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+  };
+  const policy = manifest.capabilities?.refresh_policy;
+  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.maximum_staleness_seconds, 86_400);
+});
+
 test("savePlaywrightDownload: persists via saveAs without depending on Playwright temp artifact path", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-chase-download-test-"));
   try {
@@ -262,30 +294,6 @@ test("savePlaywrightDownload: persists via saveAs without depending on Playwrigh
 
     assert.equal(existsSync(target), true);
     assert.equal(await readFile(target, "utf8"), "%PDF-1.7\nfixture\n");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("savePlaywrightDownload: streams artifact before falling back to saveAs", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pdpp-chase-download-stream-test-"));
-  try {
-    const target = join(dir, "nested", "statement.pdf");
-
-    await savePlaywrightDownload(
-      {
-        createReadStream() {
-          return Promise.resolve(Readable.from([Buffer.from("%PDF-1.7\nstreamed\n")]));
-        },
-        saveAs(): Promise<void> {
-          return Promise.reject(new Error("saveAs should not be called when createReadStream works"));
-        },
-      },
-      target
-    );
-
-    assert.equal(existsSync(target), true);
-    assert.equal(await readFile(target, "utf8"), "%PDF-1.7\nstreamed\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -574,6 +582,7 @@ test("runCurrentActivity: multiple filtered accounts → ambiguous_multi_account
   assert.ok(skip, "expected SKIP_RESULT for current_activity in multi-account case");
   assert.equal(skip.reason, "ambiguous_multi_account_overview");
   assert.match(skip.message, /multiple accounts/i);
+  assert.equal((skip.diagnostics as { account_count: number } | undefined)?.account_count, 2);
   // STATE still emits so the run records that current_activity was visited.
   const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
   assert.ok(state);
@@ -624,5 +633,10 @@ test("runCurrentActivity: single account + broken-surface HTML → selectors_pen
     skip.message,
     /account activity DOM/i,
     "the misleading 'Chase account activity DOM' wording must be gone"
+  );
+  assert.equal(
+    (skip.diagnostics as { account_count: number } | undefined)?.account_count,
+    1,
+    "diagnostics carry only non-PII account count"
   );
 });

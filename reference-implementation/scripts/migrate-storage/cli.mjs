@@ -37,6 +37,7 @@ import {
   DERIVED_TABLES,
   isShadowTable,
   getMigratableColumns,
+  classifyMissingTargetColumn,
 } from './schema.mjs';
 
 import {
@@ -328,12 +329,19 @@ async function diffCommand({ from, to, json, jsonbNulPolicy }) {
     await bootstrapTargetSchema(to);
 
     const sourceTables = listSourceTables(sqlite.handle);
-    const issues = [];
-    let nullableExtraCount = 0; // Track drifts the migration can handle
+    // Only drifts `execute` genuinely cannot handle gate the exit code.
+    // Everything `execute` resolves on its own (synthesized columns,
+    // NULL-fillable nullable columns, derived-table skips, silently-dropped
+    // source columns) is reported as informational, not as a blocker.
+    let hardDriftCount = 0;
+    let handledCount = 0;
 
     for (const table of TABLES) {
-      // Skip shadow tables when reporting source-side tables
-      if (isShadowTable(table.name)) {
+      // Skip shadow tables and derived/runtime-rebuilt tables — `execute`
+      // does not migrate them (see executeCommand: DERIVED_TABLES are
+      // `continue`d), so their column drift is not a migration hazard. Diff
+      // previously flagged these and reported false "cannot handle" drift.
+      if (isShadowTable(table.name) || DERIVED_TABLES.has(table.name)) {
         continue;
       }
 
@@ -351,67 +359,77 @@ async function diffCommand({ from, to, json, jsonbNulPolicy }) {
 
       const pgColNames = new Set(table.columns.map(c => c.name));
 
-      // Check for extra in source (data will be silently dropped)
+      // Extra columns in source: `execute` silently drops them (a
+      // `copy-warning`, never a failure). Report as informational so an
+      // operator can audit, but do not gate the exit code on it.
       for (const col of sourceColumns) {
         if (!pgColNames.has(col.name)) {
-          const msg = `Column "${col.name}" exists in SQLite but not in Postgres schema`;
           emit('diff-row', {
             table: table.name,
             issue: 'extra-in-source',
+            severity: 'warning',
             column: col.name,
-            message: msg,
+            message: `Column "${col.name}" exists in SQLite but not in Postgres schema (execute drops it)`,
           }, { json, quiet: false });
-          issues.push(msg);
+          handledCount++;
         }
       }
 
-      // Check for extra in target (missing columns)
+      // Target columns missing from source: classify exactly as `execute`
+      // treats them. Synthesized + nullable columns are handled; only a
+      // NOT NULL column with no synthesize hook is a hard drift.
       for (const col of table.columns) {
         if (!sourceColNames.has(col.name)) {
-          const msg = `Column "${col.name}" in Postgres but missing from SQLite source`;
-          const isNullable = col.nullable;
-          emit('diff-row', {
-            table: table.name,
-            issue: 'extra-in-target',
-            column: col.name,
-            nullable: isNullable,
-            message: msg,
-          }, { json, quiet: false });
-          issues.push(msg);
-
-          // Count nullable extras—migration can handle these
-          if (isNullable) {
-            nullableExtraCount++;
+          const kind = classifyMissingTargetColumn(col, table.name);
+          if (kind === 'hard-drift') {
+            hardDriftCount++;
+            emit('diff-row', {
+              table: table.name,
+              issue: 'extra-in-target',
+              severity: 'blocker',
+              resolution: 'hard-drift',
+              column: col.name,
+              nullable: col.nullable,
+              message: `Column "${col.name}" in Postgres (NOT NULL) but missing from SQLite source and not synthesized — migration cannot handle this`,
+            }, { json, quiet: false });
+          } else {
+            handledCount++;
+            const resolutionNote = kind === 'synthesized'
+              ? 'execute synthesizes it'
+              : 'execute NULL-fills it';
+            emit('diff-row', {
+              table: table.name,
+              issue: 'extra-in-target',
+              severity: 'info',
+              resolution: kind,
+              column: col.name,
+              nullable: col.nullable,
+              message: `Column "${col.name}" in Postgres but missing from SQLite source (${resolutionNote})`,
+            }, { json, quiet: false });
           }
         }
       }
     }
 
-    if (issues.length === 0) {
+    if (hardDriftCount === 0) {
+      const message = handledCount === 0
+        ? 'No schema drift detected'
+        : `Found ${handledCount} schema difference(s), all handled by migration (synthesized / NULL-filled / dropped). No blocking drift.`;
       emit('diff-summary', {
-        message: 'No schema drift detected',
+        message,
+        handledCount,
+        hardDriftCount: 0,
       }, { json, quiet: false });
-      process.exit(0);
+      process.exit(0); // Graceful: execute can handle every reported difference
     } else {
-      // Check if ALL issues are nullable extras in target
-      const allNullableExtras = issues.length > 0 &&
-        issues.length === nullableExtraCount &&
-        // Verify no extra-in-source issues exist
-        !issues.some(msg => msg.includes('exists in SQLite but not in Postgres'));
-
-      if (allNullableExtras) {
-        emit('diff-summary', {
-          message: `Found ${issues.length} nullable columns in target (migration will NULL-fill)`,
-          count: issues.length,
-        }, { json, quiet: false });
-        process.exit(0); // Graceful: migration can handle this
-      } else {
-        emit('diff-summary', {
-          message: `Found ${issues.length} schema drift issue(s) that migration cannot handle`,
-          count: issues.length,
-        }, { json, quiet: false });
-        process.exit(1);
-      }
+      emit('diff-summary', {
+        message: `Found ${hardDriftCount} schema drift issue(s) that migration cannot handle` +
+          (handledCount > 0 ? ` (plus ${handledCount} handled difference(s))` : ''),
+        count: hardDriftCount,
+        handledCount,
+        hardDriftCount,
+      }, { json, quiet: false });
+      process.exit(1);
     }
   } finally {
     sqlite.close();

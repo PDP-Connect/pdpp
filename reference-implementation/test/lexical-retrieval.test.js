@@ -71,7 +71,7 @@ async function closeServer(server) {
 // manifest beyond what they explicitly install.
 const REDDITISH_MANIFEST_A = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/redditish-a',
+  connector_id: 'redditish-a',
   version: '1.0.0',
   display_name: 'Redditish A',
   capabilities: { human_interaction: ['credentials'] },
@@ -144,7 +144,7 @@ const REDDITISH_MANIFEST_A = {
 
 const REDDITISH_MANIFEST_B = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/redditish-b',
+  connector_id: 'redditish-b',
   version: '1.0.0',
   display_name: 'Redditish B',
   capabilities: { human_interaction: ['credentials'] },
@@ -334,6 +334,7 @@ test('happy-path search returns list envelope with search_result entries (owner 
     assert.equal(hit.stream, 'posts');
     assert.equal(hit.connector_id, connectorA);
     assert.ok(typeof hit.emitted_at === 'string' && hit.emitted_at.length > 0);
+    assert.equal(hit.authored_at, '2026-04-01T00:00:00Z');
     // Owner-mode record_url MUST include the canonical ?connector_id= query param
     assert.ok(hit.record_url.startsWith('/v1/streams/posts/records/p1?connector_id='));
     assert.ok(hit.record_url.includes(encodeURIComponent(connectorA)));
@@ -724,6 +725,51 @@ test('pagination round-trip works and search cursors are not interchangeable wit
   });
 });
 
+// ─── over-cap limit surfaces a limit_clamped warning over the wire ──────────
+//
+// Spec: openspec/changes/add-search-limit-clamp-warning/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"Search-retrieval limit is clamped to the page maximum")
+//
+// This is the native-shell coverage that the operation-level warning tests
+// cannot give: it proves the `limit_clamped` warning the operation produces is
+// carried by `runLexicalSearch` through `finalizeCanonicalEnvelope` onto the
+// REST response, rather than being dropped at the host boundary.
+
+test('over-cap limit returns <=100 hits and a limit_clamped warning in meta.warnings; in-range limit does not', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'durian delight', selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    // limit=500 > 100 → clamped, warning present, page still bounded.
+    const over = await fetchJson(
+      `${rsUrl}/v1/search?q=durian&limit=500`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(over.status, 200);
+    assert.ok(over.body.data.length <= 100, 'over-cap request is still bounded to <=100 hits');
+    const clamp = (over.body.meta?.warnings || []).find((w) => w.code === 'limit_clamped');
+    assert.ok(clamp, 'expected a limit_clamped warning to reach the REST response');
+    assert.equal(clamp.param, 'limit');
+    assert.equal(clamp.detail.requested_limit, 500);
+    assert.equal(clamp.detail.max_limit, 100);
+
+    // In-range limit (and exactly 100) → no limit_clamped warning.
+    for (const limit of [5, 100]) {
+      const ok = await fetchJson(
+        `${rsUrl}/v1/search?q=durian&limit=${limit}`,
+        { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+      );
+      assert.equal(ok.status, 200);
+      const w = (ok.body.meta?.warnings || []).find((x) => x.code === 'limit_clamped');
+      assert.equal(w, undefined, `limit=${limit} must not emit a limit_clamped warning`);
+    }
+  });
+});
+
 // ─── 9.14 — /_ref/search and /v1/search are independent ─────────────────────
 
 test('/_ref/search returns spine shape, /v1/search returns list shape — they do not alias', async () => {
@@ -958,7 +1004,7 @@ test('pre-existing records become searchable after lexical_fields are declared (
   // A v1 connector manifest WITHOUT lexical_fields. Same connector_id,
   // schema, and primary_key as the eventual v2 — only the query.search
   // block differs.
-  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/late-bloomer';
+  const CONNECTOR_ID = 'late-bloomer';
   const baseStream = (overrides = {}) => ({
     name: 'posts',
     semantics: 'append_only',
@@ -1113,7 +1159,7 @@ test('manifest update that swaps lexical_fields (same cardinality) rebuilds the 
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 
-  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/field-swap';
+  const CONNECTOR_ID = 'field-swap';
   const baseStream = (overrides = {}) => ({
     name: 'posts',
     semantics: 'append_only',

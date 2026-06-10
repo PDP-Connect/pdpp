@@ -61,7 +61,16 @@ until "${DC[@]}" exec -T neko-allocator node -e "fetch('http://127.0.0.1:${PDPP_
   sleep 2
 done
 
-"${DC[@]}" exec -T neko-allocator node --input-type=module - <<'NODE'
+# `docker compose exec -T` reading a heredoc on stdin can report exit 0 even
+# when the inner node process throws and exits non-zero (a compose-v2 quirk),
+# which would let a real allocation failure masquerade as a pass. So we don't
+# trust the exec exit code alone: the node block prints an explicit sentinel as
+# its very last action, and we require that sentinel to appear. A thrown
+# assertion never reaches the sentinel, so the smoke fails closed.
+SMOKE_ASSERT_OK="PDPP_NEKO_DYNAMIC_SMOKE_ASSERTIONS_OK"
+# Capture without letting `set -e` abort on a non-zero exec: the sentinel grep
+# below is the authoritative pass/fail signal, and it must always run.
+node_assert_output="$("${DC[@]}" exec -T neko-allocator node --input-type=module - <<'NODE' || true
 import assert from "node:assert/strict";
 
 const baseUrl = `http://127.0.0.1:${process.env.PDPP_NEKO_ALLOCATOR_PORT ?? "7331"}`;
@@ -135,14 +144,32 @@ for (const surface of surfaces) {
   });
 }
 
+// Scope the post-DELETE assertion to the surfaces THIS smoke created. The
+// allocator's /surfaces listing is owner-label-global, not compose-project
+// scoped, so a shared Docker host with other PDPP sessions' surfaces present
+// would make a bare `remaining.length === 2` flake (it counts every labeled
+// surface across all projects). We assert on our own two surface_ids instead.
+const smokeSurfaceIds = new Set(surfaces.map((surface) => surface.surface_id));
 const remaining = (await request("/surfaces")).surfaces;
-assert.equal(remaining.length, 2, "allocator DELETE should leave stopped surfaces visible until Docker cleanup");
+const remainingOurs = remaining.filter((surface) => smokeSurfaceIds.has(surface.surface_id));
+assert.equal(
+  remainingOurs.length,
+  2,
+  `allocator DELETE should leave this smoke's stopped surfaces visible until Docker cleanup; saw ${remainingOurs.length} of our 2 (total listed: ${remaining.length})`,
+);
 console.log(
   `dynamic allocator allocated distinct surfaces: ${allocated
     .map((surface) => `${surface.allocator_metadata.container_name}:${surface.allocator_metadata.host_port}`)
     .join(", ")}`,
 );
+// Sentinel: only reached if every assertion above passed. Bash requires it.
+console.log("PDPP_NEKO_DYNAMIC_SMOKE_ASSERTIONS_OK");
 NODE
+)"
+printf '%s\n' "$node_assert_output"
+if ! printf '%s' "$node_assert_output" | grep -q "$SMOKE_ASSERT_OK"; then
+  fail "allocator assertion block did not reach its success sentinel (an assertion threw or the exec was interrupted)"
+fi
 
 cleanup
 trap - EXIT

@@ -19,7 +19,6 @@
 
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-// biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a Node 22.5+ built-in module; Biome's resolver doesn't see built-ins
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 

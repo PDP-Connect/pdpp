@@ -30,6 +30,11 @@
  *     block fields populated from operation inputs and result counts.
  */
 
+import {
+  normalizeProjectionFields,
+  projectRecordEnvelope,
+} from "../read-projection.ts";
+
 export interface RecordsListSourceDescriptor {
   kind: "connector" | "provider_native";
   id: string;
@@ -305,8 +310,9 @@ export async function executeRecordsList(
     manifest,
   );
 
+  const projectionFields = normalizeProjectionFields(input.requestParams.fields);
   const decoratedData = rawResult.data.map((record) =>
-    dependencies.decorateRecord(record),
+    projectRecordEnvelope(dependencies.decorateRecord(record), projectionFields),
   );
   const decoratedResult: RecordsListQueryResult = {
     ...rawResult,

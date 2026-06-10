@@ -131,6 +131,12 @@ function channelPropertiesFlags(d: SlackDataBlob): Record<string, unknown> {
   };
 }
 
+/**
+ * Channel entity record: structural and identity fields only.
+ * `num_members` (a sampled metric) is projected into `channel_stats` to
+ * avoid creating false entity versions when only the membership count changes.
+ * See design: split-point-in-time-observation-streams.
+ */
 export function buildChannelRecord(r: ChannelRow): RecordData {
   const d = parseBlob(r.data);
   return {
@@ -142,12 +148,26 @@ export function buildChannelRecord(r: ChannelRow): RecordData {
     created: d.created ?? null,
     created_at: epochToIso(d.created),
     ...channelTopicPurpose(d),
-    num_members: d.num_members ?? null,
     user: d.user || null,
     shared_team_ids: Array.isArray(d.shared_team_ids) ? d.shared_team_ids : null,
     context_team_id: d.context_team_id ?? null,
     previous_names: Array.isArray(d.previous_names) ? d.previous_names : null,
     ...channelPropertiesFlags(d),
+  };
+}
+
+/**
+ * Channel stats observation record: sampled metrics keyed by
+ * {channel_id}:{YYYY-MM-DD}. One record per channel per calendar day (UTC).
+ * Idempotent within a day; accumulates a time series of member counts.
+ */
+export function buildChannelStatsRecord(r: ChannelRow, observedOn: string): RecordData {
+  const d = parseBlob(r.data);
+  return {
+    id: `${r.id}:${observedOn}`,
+    channel_id: r.id,
+    observed_on: observedOn,
+    num_members: d.num_members ?? null,
   };
 }
 

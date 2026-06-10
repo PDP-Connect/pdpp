@@ -58,10 +58,20 @@ export const accountSchema = z.object({
     .string()
     .regex(/^\d{4}$/, "must be 4 digits")
     .nullable(),
-  balance_cents: cents.nullable(),
-  available_balance_cents: cents.nullable(),
   status: z.string().min(1).max(40).nullable(),
   fetched_at: isoTimestamp,
+});
+
+// ─── account_stats (Family-2 observation stream) ─────────────────────────
+
+export const accountStatsSchema = z.object({
+  // id is `{account_id}:{observed_on}` — append key, one record per
+  // account per UTC calendar day.
+  id: z.string().min(1).max(96),
+  account_id: accountIdSchema,
+  observed_on: dateString,
+  balance_cents: cents.nullable(),
+  available_balance_cents: cents.nullable(),
 });
 
 // ─── transactions ───────────────────────────────────────────────────────
@@ -100,11 +110,21 @@ export const statementSchema = z.object({
   document_url: z.url().nullable(),
   // Local file path (file:// URL) or blob reference
   pdf_path: z.string().min(1).max(500).nullable(),
-  // SHA-256 = 64 hex chars
+  // SHA-256 of the RAW PDF bytes = 64 hex chars. Blob content-address, NOT the
+  // content fingerprint — re-encrypted per download, so it churns on no-op
+  // re-fetches.
   pdf_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
     .nullable(),
+  // Positive content fingerprint: SHA-256 of the normalized extracted PDF text.
+  // Stable across raw-byte churn; null when text extraction failed/empty.
+  pdf_text_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
+    .nullable(),
+  // Integer page count from the PDF structure; null when extraction failed.
+  pdf_page_count: z.number().int().positive().nullable(),
   fetched_at: isoTimestamp,
 });
 
@@ -125,8 +145,6 @@ export const creditCardBillingSchema = z.object({
   id: z.string().min(1).max(200),
   account_id: accountIdSchema.nullable(),
   account_nickname: cleanString(120).nullable(),
-  current_balance_cents: cents.nullable(),
-  available_credit_cents: nonNegativeCents.nullable(),
   credit_limit_cents: nonNegativeCents.nullable(),
   // APRs are strings like "24.99%" (kept as text to preserve display precision)
   annual_percent_rate: z
@@ -137,21 +155,36 @@ export const creditCardBillingSchema = z.object({
     .string()
     .regex(/^-?\d+\.?\d*%?$/, "must be percentage")
     .nullable(),
+  card_holders: z.string().min(1).max(400).nullable(),
+  fetched_at: isoTimestamp,
+});
+
+// ─── credit_card_billing_stats (Family-2 observation stream) ─────────────
+
+export const creditCardBillingStatsSchema = z.object({
+  // id is `{card_id}:{observed_on}` — append key, one record per card per
+  // UTC calendar day.
+  id: z.string().min(1).max(232),
+  card_id: z.string().min(1).max(200),
+  account_id: accountIdSchema.nullable(),
+  observed_on: dateString,
+  current_balance_cents: cents.nullable(),
+  available_credit_cents: nonNegativeCents.nullable(),
   cash_rewards_cents: cents.nullable(),
   billing_status: z.string().min(1).max(80).nullable(),
   minimum_payment_met: z.boolean().nullable(),
-  card_holders: z.string().min(1).max(400).nullable(),
-  fetched_at: isoTimestamp,
 });
 
 // ─── Registry ───────────────────────────────────────────────────────────
 
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   accounts: accountSchema,
+  account_stats: accountStatsSchema,
   transactions: transactionSchema,
   statements: statementSchema,
   inbox_messages: inboxMessageSchema,
   credit_card_billing: creditCardBillingSchema,
+  credit_card_billing_stats: creditCardBillingStatsSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);

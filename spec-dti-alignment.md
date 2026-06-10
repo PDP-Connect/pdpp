@@ -18,7 +18,7 @@ DTI has publicly acknowledged:
 - EU DMA mandates "continuous and real-time" portability but doesn't specify how third parties should be authorized
 - Missing infrastructure for fine-grained, parameterized access controls
 
-No one has proposed parameterized OAuth grants (RFC 9396-based) to DTI. This has only been used in Open Banking.
+No one has proposed parameterized OAuth grants (RFC 9396-based) to DTI for personal data portability. The same standards pattern — OAuth for authorization, plus a domain-specific `authorization_details` type with a domain data and consent model — already underlies Open Banking (FAPI / FDX) for financial data and SMART on FHIR for health data. PDPP applies that pattern to general personal data: it defines what `authorization_details` mean for personal data (data categories, field selection, time ranges, resources, grants, record format, and enforcement rules), so independent clients and resource servers can interoperate without each platform inventing its own consent vocabulary.
 
 ## What resonates with DTI
 
@@ -41,12 +41,12 @@ DTI is an independent 501(c)(4) nonprofit (not Linux Foundation). Path is direct
 
 ## Spec implications
 
-The OAuth approach (define the grant, not the resource API) is the right framing for DTI. The spec should:
+The standards-pattern framing (use OAuth for authorization, define a domain `authorization_details` type, define the domain data and consent model) is the right framing for DTI. The spec should:
 - Use RFC 9396 as the envelope (standard web protocol, not custom)
 - Define the grant as a portable consent artifact that any server can enforce
 - Be explicit that disclosure constraints are protocol-enforced while fields like purpose and retention are machine-readable policy declarations, not generic downstream-use enforcement
-- Define the connector protocol as a reference implementation for data collection
-- Explicitly not define the resource API (like OAuth doesn't define what you do with the token)
+- Define data collection in a separate companion spec (the PDPP Collection Profile), not in core, so the consent/disclosure layer remains agnostic to whether data arrived via connector-driven collection, regulatory export, manual import, or platform-native APIs
+- Normatively define the resource server interface for serving records under grant enforcement (core §8), while leaving downstream use of returned records out of scope (like OAuth does not define what an app does with retrieved data)
 - Frame `continuous` grants as the answer to DMA's real-time portability requirement
 
 Source: Gemini 3.1 Pro Preview research with Google Search (2026-03-28), checking dtinit.org, conference talks, blog posts, governance docs.

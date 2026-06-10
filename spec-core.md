@@ -1026,7 +1026,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `limit` | integer | Records per page. Default 25, max 100. |
+| `limit` | integer | Records per page. Default 25, max 100. A request for more than 100 is clamped to 100 and the response carries a non-fatal `limit_clamped` warning (see below), not an error. |
 | `cursor` | string | Opaque pagination token from a previous response. Clients MUST NOT parse or construct cursor tokens. |
 | `order` | enum | `desc` (default) or `asc`. |
 | `filter[{field}]` | string | Exact match filter on an authorized top-level scalar field. |
@@ -1044,6 +1044,8 @@ The durable base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
+**Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
+
 Exact `filter[{field}]` applies only to authorized top-level scalar fields. Unknown fields and non-scalar fields are HTTP 400. Fields outside the grant's authorized projection are HTTP 403 `field_not_granted`.
 
 Range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
@@ -1051,6 +1053,8 @@ Range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query
 Expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
 
 **Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values.
+
+Page cursors are direction-bound: a client MUST follow a `next_cursor` with the same `order` value that produced it. To change direction, the client MUST restart pagination without a cursor. Resource servers MUST reject order-mismatched page cursors as `invalid_cursor`.
 
 **Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410), the client must perform a full re-sync.
 

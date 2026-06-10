@@ -16,4 +16,10 @@ export * from "./builders/index.ts";
 export * from "./common/index.ts";
 export * from "./public/index.ts";
 export * from "./reference/index.ts";
-export { listOperations, validateRequest } from "./validate.ts";
+export {
+  getManifest,
+  hasResponseSchema,
+  listOperations,
+  validateRequest,
+  validateResponse,
+} from "./validate.ts";

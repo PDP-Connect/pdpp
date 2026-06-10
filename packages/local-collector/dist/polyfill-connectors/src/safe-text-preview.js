@@ -23,6 +23,19 @@ function isForbiddenCodePoint(codeUnit) {
     }
     return false;
 }
+export function stripForbiddenControlChars(text) {
+    if (checkStringForForbidden(text).isSafe) {
+        return text;
+    }
+    let out = "";
+    for (let i = 0; i < text.length; i++) {
+        const codeUnit = text.charCodeAt(i);
+        if (!isForbiddenCodePoint(codeUnit)) {
+            out += text[i];
+        }
+    }
+    return out;
+}
 function checkStringForForbidden(value) {
     for (let i = 0; i < value.length; i++) {
         const codeUnit = value.charCodeAt(i);

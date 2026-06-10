@@ -1,6 +1,6 @@
 # Local end-to-end testing
 
-This document walks through connecting one data source (ChatGPT) into a local PDPP instance, minting an owner token, handing that token to a coding agent for exploration, and viewing the data in the included web dashboard.
+This document walks through connecting one data source (ChatGPT) into a local PDPP instance, onboarding a trusted owner agent for local exploration, and viewing the data in the included web dashboard.
 
 It is mechanical — follow the steps in order. Each step either succeeds or returns a clear error.
 
@@ -10,7 +10,7 @@ You can hand this entire doc to your agent and let it execute the steps. There a
 
 1. **ChatGPT login** — a browser window opens so you can complete Cloudflare's "I'm not a robot" challenge if it appears, and sign in if auto-login doesn't succeed. The connector runs with a visible browser (`PDPP_CHATGPT_HEADLESS=0`) for this reason.
 2. **Optional 2FA code** — if your ChatGPT account has 2FA, the terminal prints an `INTERACTION` prompt asking for the code. Type it in the same terminal.
-3. **Approve the token mint** — the CLI prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you. **Important**: the CLI blocks until approval, so the agent won't see the URL unless it runs the command in the background. Tell the agent to background the command, read the output for the URL, then give it to you to approve.
+3. **Approve owner-agent onboarding** — `pdpp owner-agent onboard` prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you. **Important**: the CLI blocks until approval, so the agent won't see the URL unless it runs the command in the background. Tell the agent to background the command, read the output for the URL, then give it to you to approve.
 
 Everything else is mechanical.
 
@@ -18,10 +18,10 @@ Everything else is mechanical.
 
 - Node.js ≥ 20
 - `pnpm` installed (`npm i -g pnpm` if not)
-- Google Chrome recommended for the strongest Patchright stealth posture. If Chrome is absent, the connector falls back to bundled Patchright Chromium installed by `pnpm install`.
+- Patchright's bundled Chromium is used by default for the strongest aligned browser posture. Google Chrome is optional and only used when you explicitly set `PDPP_BROWSER_CHANNEL=chrome`.
 - A ChatGPT account (email + password)
 
-Quick sanity check for Chrome on macOS: `ls "/Applications/Google Chrome.app"`. To install Chrome-for-Testing for Patchright explicitly, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome`.
+Optional Chrome sanity check on macOS: `ls "/Applications/Google Chrome.app"`. Use this only when intentionally testing `PDPP_BROWSER_CHANNEL=chrome`.
 
 ## Repo setup
 
@@ -63,7 +63,7 @@ In one terminal:
 PDPP_CHATGPT_HEADLESS=0 node packages/polyfill-connectors/bin/orchestrate.js run chatgpt
 ```
 
-`PDPP_CHATGPT_HEADLESS=0` opens a visible Chrome window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. On subsequent runs the cookies persist and you can omit this flag for a headless run.
+`PDPP_CHATGPT_HEADLESS=0` opens a visible Patchright browser window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. On subsequent runs the cookies persist and you can omit this flag for a headless run.
 
 What happens:
 1. An embedded PDPP authorization + resource server starts on two local ports (ephemeral).
@@ -102,16 +102,16 @@ The server starts on:
 
 Leave this terminal running.
 
-## Mint an owner token
+## Onboard a trusted owner agent
 
-Open a third terminal. Still with `PDPP_DB_PATH` exported, run:
+Open a third terminal. Still with `PDPP_DB_PATH` exported, run the public
+`@pdpp/cli` binary. If you are working from this checkout without an installed
+`pdpp` binary, use `node packages/cli/bin/pdpp.js` in place of `pdpp`.
 
 ```bash
 export PDPP_DB_PATH="$HOME/.pdpp/local-test.sqlite"
-node reference-implementation/cli/index.js auth login \
-  --rs-url http://localhost:7663 \
-  --client-id cli_longview \
-  --timeout-seconds 600
+pdpp owner-agent onboard http://localhost:7663 \
+  --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json
 ```
 
 The CLI prints:
@@ -124,46 +124,76 @@ User code: XXXXXX
 **If a coding agent is running this command**, it will block waiting for approval — the agent won't see the output until the command finishes. Run the command in the background or in a separate terminal so you can read the URL immediately, then approve it before the timeout expires.
 
 1. Open that URL in a browser.
-2. You'll see an "Approve owner access" page.
-3. Leave the `Subject ID` field as-is (`owner_local`) and click **Approve and issue owner token**.
-4. Return to the terminal. The CLI prints a JSON block with `access_token` and `token_type`. Copy the `access_token` value (a 64-char hex string).
+2. You'll see an owner-agent approval page.
+3. Approve the trusted local owner agent.
+4. Return to the terminal. The CLI writes the credential to the `--credential-file` path with restrictive permissions and prints only non-secret status. It does not print the bearer.
 
-The token is valid for one year against this server.
-
-## Verify the token works
-
-From the third terminal, before handing off to anything else, confirm the token is live:
+Confirm the local credential is active:
 
 ```bash
-TOKEN=<paste-access-token-here>
+pdpp owner-agent status \
+  --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json
+```
+
+The owner-agent credential is operator-grade material for REST/control-plane access to this local server. Keep it on disk, read it only at call time, and never paste the bearer into a coding-agent chat.
+
+## Verify the owner-agent credential works
+
+From the third terminal, before handing off to anything else, confirm the credential can query the local resource server without echoing the bearer:
+
+```bash
+CREDENTIAL_FILE="$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json"
+TOKEN="$(jq -r '.access_token' "$CREDENTIAL_FILE")"
 
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:7663/v1/streams?connector_id=https://registry.pdpp.org/connectors/chatgpt" \
   | python3 -m json.tool
+
+unset TOKEN
 ```
 
 You should see a JSON block listing streams with their record counts.
 
 ```bash
+TOKEN="$(jq -r '.access_token' "$CREDENTIAL_FILE")"
+
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:7663/v1/streams/conversations/records?connector_id=https://registry.pdpp.org/connectors/chatgpt&limit=3" \
   | python3 -m json.tool | head -60
+
+unset TOKEN
 ```
 
 You should see three real conversation records.
 
-## Hand the token to a coding agent
+## Hand the local credential path to a coding agent
 
-Open a coding agent of your choice (Claude Code, Cursor, etc.). Paste the following prompt, substituting your token:
+The owner-agent credential you just onboarded is an operator-grade REST
+credential. Use it only with a trusted local agent that runs on your behalf — a
+coding agent on your own machine, a CLI tool you wrote, or a backup script. It
+is **not** the right shape for an ordinary MCP client, and the bearer should not
+be pasted into chat.
+
+For routine MCP clients (the public Claude or ChatGPT connectors, third-party
+agents, any session you do not personally control), use the scoped-grant flow
+described in [`docs/operator/hosted-mcp-setup.md`](operator/hosted-mcp-setup.md)
+and the `pdpp connect <provider-url>` CLI command. The hosted `/mcp` endpoint
+rejects owner bearers on purpose.
+
+For a quick local self-test through a trusted agent on your own machine, open a
+coding agent (Claude Code, Cursor, etc.) and paste the following prompt. The
+agent should read the local credential file at call time and never echo the
+bearer:
 
 ````
 I have a locally-running PDPP server. Your job is to explore the data it exposes.
 
 Base URL: http://localhost:7663
-Owner token: <paste-access-token-here>
+Owner-agent credential file: ~/applications/daisy/.pi/agent/pdpp-owner-agent.json
 
-To authenticate, include this header on every request:
-  Authorization: Bearer <owner-token>
+To authenticate, read `.access_token` from the credential file at call time,
+include `Authorization: Bearer <token>` on each request, and unset the token
+variable immediately after use. Do not print or summarize the bearer.
 
 Connector ID for ChatGPT: https://registry.pdpp.org/connectors/chatgpt
 
@@ -182,7 +212,16 @@ Start by listing streams on the ChatGPT connector, then fetch a few records
 from the `conversations` and `messages` streams. Report what you find.
 ````
 
-The agent can then use `curl`, `fetch`, or its HTTP tool of choice to explore your ChatGPT data through a real standards-compliant API.
+The agent can then use `curl`, `fetch`, or its HTTP tool of choice to explore your ChatGPT data through the reference resource-server API.
+
+## Low-level owner self-export debug path
+
+If you are debugging the older owner self-export surface directly, the
+repo-local CLI still supports `auth login` and returns an owner bearer. Treat
+that as a low-level diagnostic path, not the trusted owner-agent onboarding
+path. Do not paste the bearer into a chat transcript; store it in a local
+0600 credential file or shell variable, use it for the immediate debug call,
+and clear it afterward.
 
 ## View the data in the dashboard
 
@@ -209,9 +248,9 @@ The dashboard reads from the same PDPP server you started earlier (at 7662/7663)
 
 **`Cannot find package 'express'` when running the server** — `reference-implementation` deps didn't install. Run `pnpm install` again at the repo root; it's now a workspace member.
 
-**`Unknown client_id: pdpp-cli`** — the reference server's default pre-registered clients don't include `pdpp-cli`. Use `--client-id cli_longview` as shown above.
+**`Unknown client_id: pdpp-cli`** — this applies only if you are debugging the older `auth login` self-export path. The owner-agent onboarding flow dynamically registers its local client.
 
-**`Timed out waiting for owner approval`** — the `--timeout-seconds 600` window expired before you clicked Approve. Re-run the login command.
+**`Timed out waiting for owner approval`** — the approval window expired before you clicked Approve. Re-run the owner-agent onboarding command.
 
 **`[orchestrate] result: status=failed records_emitted=0` with no reason** — the orchestrator is swallowing the child connector's error. Run the connector directly to see the real error:
 

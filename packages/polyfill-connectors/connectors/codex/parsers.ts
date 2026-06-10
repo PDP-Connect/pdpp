@@ -3,7 +3,7 @@
 // walker, sqlite reader, and JSONL iterator live in index.ts.
 
 import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "../../src/safe-text-preview.ts";
-import type { ParsedFrontmatter, RolloutAggregate, RolloutPayload, ThreadRow } from "./types.ts";
+import type { ParsedFrontmatter, RolloutAggregate, RolloutPayload, ThreadFingerprint, ThreadRow } from "./types.ts";
 
 // ─── Constants & regexes (module-scope per Biome useTopLevelRegex) ──────
 
@@ -97,8 +97,17 @@ export function isRolloutFile(name: string): boolean {
 export function buildThreadSessionRecord(
   id: string,
   t: ThreadRow,
-  agg: RolloutAggregate | undefined
+  agg: RolloutAggregate | undefined,
+  priorFingerprint?: ThreadFingerprint | null
 ): Record<string, unknown> {
+  // Counts source-of-truth precedence:
+  //   1. Aggregate from THIS run's rollout parse (most accurate).
+  //   2. Last-known count from the prior cursor — preserves real values
+  //      across runs where state_5 mtime changed but the rollout file
+  //      did not, so we don't overwrite a non-null count with null.
+  //   3. null (genuinely unknown — session has no rollout history yet).
+  const messageCount = agg?.messageCount ?? priorFingerprint?.message_count ?? null;
+  const functionCallCount = agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null;
   return {
     id,
     cwd: t.cwd || null,
@@ -110,8 +119,8 @@ export function buildThreadSessionRecord(
     repository_url: t.git_origin_url || null,
     started_at: epochToIso(t.created_at) || agg?.meta?.timestamp || agg?.firstTs || null,
     last_event_at: epochToIso(t.updated_at) || agg?.lastTs || null,
-    message_count: agg?.messageCount ?? null,
-    function_call_count: agg?.functionCallCount ?? null,
+    message_count: messageCount,
+    function_call_count: functionCallCount,
     // Codex can stuff large assistant output into `title` and
     // `first_user_message`; cap to keep records reasonable.
     title: textPreview(t.title || null, 500),

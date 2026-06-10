@@ -104,12 +104,17 @@ function stateUrl(asUrl, deviceId, sourceInstanceId) {
   return `${asUrl}/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`;
 }
 
+// Live local-device storage key: the bare canonical connector key. Connection
+// isolation is carried by connector_instance_id, not a `local-device:` prefix.
+// See canonicalize-connector-keys design Decision 7.
 function localDeviceConnectorId(connectorId) {
-  return `local-device:${encodeURIComponent(connectorId)}`;
+  return connectorId;
 }
 
+// The pre-migration on-disk form: `local-device:<id>:<source_instance_id>`.
+// Only used to seed legacy rows the startup migration must relocate.
 function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
-  return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+  return `local-device:${encodeURIComponent(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
 function hashDeviceSecret(value) {
@@ -175,11 +180,36 @@ test('startup migrates legacy local-device source namespaces to connector-instan
     source_instance_id: 'src_legacy_local_device',
   };
   const oldConnectorId = legacyLocalDeviceConnectorId(device.connector_id, device.source_instance_id);
-  const newConnectorId = localDeviceConnectorId(device.connector_id);
+  // Legacy `local-device:<id>:<source>` rows relocate to the bare canonical
+  // connector key (`claude_code` → `claude-code`), the same key the live
+  // ingest/read paths use. See canonicalize-connector-keys design Decision 7.
+  const newConnectorId = 'claude-code';
   try {
     initDb(dbPath, { quiet: true });
     const db = getDb();
     const now = '2026-05-01T00:00:00.000Z';
+    // A real legacy deployment that produced local-device records also had the
+    // connector registered with a full manifest (ingest requires one). Seed it
+    // under the canonical key so post-migration ingest validates. The startup
+    // migration's catalog upsert is ON CONFLICT DO NOTHING, so it will not
+    // clobber this manifest.
+    db.prepare(
+      `INSERT INTO connectors(connector_id, manifest, created_at) VALUES(?, ?, ?)`,
+    ).run(
+      newConnectorId,
+      JSON.stringify({
+        connector_id: newConnectorId,
+        display_name: 'Claude Code',
+        streams: [
+          {
+            name: 'messages',
+            primary_key: ['id'],
+            schema: { properties: { id: { type: 'string' }, value: { type: 'string' } } },
+          },
+        ],
+      }),
+      now,
+    );
     db.prepare(
       `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
        VALUES(?, ?, ?, 'active', ?, ?)`,
@@ -244,7 +274,7 @@ test('startup migrates legacy local-device source namespaces to connector-instan
            FROM connector_instances
           WHERE connector_instance_id = ?`,
       ).get(device.connector_instance_id);
-      assert.equal(instanceRow.connector_id, device.connector_id);
+      assert.equal(instanceRow.connector_id, newConnectorId);
       assert.equal(instanceRow.owner_subject_id, 'owner_ref');
       assert.equal(instanceRow.source_kind, 'local_device');
       assert.deepEqual(JSON.parse(instanceRow.source_binding_json), {
@@ -315,6 +345,65 @@ test('startup migrates legacy local-device source namespaces to connector-instan
     } finally {
       await closeServer(server);
     }
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('startup migration fails clearly when a legacy local-device source maps to more than one connector instance', async () => {
+  // complete-local-agent-collectors task 3.3 + spec scenario "Existing
+  // single-device state is migrated → connector-only compatibility operations
+  // SHALL fail clearly if more than one matching instance exists."
+  //
+  // The deterministic backfill (`migrateLocalDeviceConnectorInstances`) can
+  // safely re-home a legacy `local-device:<id>:<source>` namespace into one
+  // canonical connector instance ONLY when the legacy rows agree on a single
+  // connector_instance_id (or the device_source_instances row already records
+  // one). If the device source row has no connector_instance_id AND the legacy
+  // rows disagree, re-homing them into a single instance would silently merge
+  // two distinct collection histories. The migration MUST refuse rather than
+  // guess — this proves it does.
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-local-device-ambiguous-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  const sourceInstanceId = 'src_ambiguous_legacy';
+  const oldConnectorId = legacyLocalDeviceConnectorId('claude_code', sourceInstanceId);
+  try {
+    initDb(dbPath, { quiet: true });
+    const db = getDb();
+    const now = '2026-05-01T00:00:00.000Z';
+    db.prepare(
+      `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, 'active', ?, ?)`,
+    ).run('dev_ambiguous', 'owner_ref', 'Ambiguous Laptop', now, now);
+    // device_source_instances.connector_instance_id is NULL — the pre-contract
+    // shape that forces the migration to derive identity from the legacy rows.
+    db.prepare(
+      `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, NULL, ?, ?, 'active', ?, ?)`,
+    ).run(sourceInstanceId, 'dev_ambiguous', 'claude_code', 'laptop-a', 'Legacy Claude Code', now, now);
+    // Two legacy state rows under the same local-device namespace but DIFFERENT
+    // connector_instance_ids: the migration cannot pick one without losing data.
+    db.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, 'messages', ?, ?)`,
+    ).run(oldConnectorId, 'cin_legacy_one', JSON.stringify({ cursor: 'one' }), now);
+    db.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, 'sessions', ?, ?)`,
+    ).run(oldConnectorId, 'cin_legacy_two', JSON.stringify({ cursor: 'two' }), now);
+    closeDb();
+
+    assert.throws(
+      () => initDb(dbPath, { quiet: true }),
+      (err) =>
+        err instanceof Error &&
+        /Cannot migrate local-device source_instance_id/.test(err.message) &&
+        /multiple connector_instance_ids/.test(err.message) &&
+        err.message.includes('cin_legacy_one') &&
+        err.message.includes('cin_legacy_two'),
+      'startup migration must refuse an ambiguous legacy local-device namespace rather than silently merge it',
+    );
   } finally {
     closeDb();
     await rm(dir, { recursive: true, force: true });
@@ -500,16 +589,21 @@ test('Two-device isolation: same connector id, different source instances, separ
     assert.deepEqual(firstRead.body.state, { messages: { cursor: 'first-cursor' } });
     assert.deepEqual(secondRead.body.state, { messages: { cursor: 'second-cursor' } });
 
-    // Underlying storage rows are keyed by the derived connector id, never
-    // the public 'codex' connector id — owner-auth state under 'codex' must
-    // stay empty.
+    // Underlying state rows are stored under the bare canonical connector key
+    // ('codex'), the same key API-collected records use. Isolation between the
+    // two device connections — and from any owner-auth account connection for
+    // the same connector type — is carried entirely by connector_instance_id,
+    // not by a 'local-device:' storage prefix. See canonicalize-connector-keys
+    // design Decision 7.
     const db = getDb();
-    const ownerRows = db.prepare(
-      `SELECT COUNT(*) AS n FROM connector_state WHERE connector_id = ?`,
-    ).get('codex');
-    assert.equal(ownerRows.n, 0);
+    const storageConnectorId = localDeviceConnectorId('codex');
 
-    const storageConnectorId = `local-device:${encodeURIComponent('codex')}`;
+    // No legacy-prefixed rows should exist on the live write path.
+    const prefixedRows = db.prepare(
+      `SELECT COUNT(*) AS n FROM connector_state WHERE connector_id LIKE 'local-device:%'`,
+    ).get();
+    assert.equal(prefixedRows.n, 0, 'live local-device state MUST NOT use a local-device: prefix');
+
     const firstRow = db.prepare(
       `SELECT state_json FROM connector_state WHERE connector_id = ? AND connector_instance_id = ? AND stream = ?`,
     ).get(storageConnectorId, first.connector_instance_id, 'messages');
@@ -518,6 +612,8 @@ test('Two-device isolation: same connector id, different source instances, separ
     ).get(storageConnectorId, second.connector_instance_id, 'messages');
     assert.equal(JSON.parse(firstRow.state_json).cursor, 'first-cursor');
     assert.equal(JSON.parse(secondRow.state_json).cursor, 'second-cursor');
+    // The two device connections never collide: distinct connector_instance_id.
+    assert.notEqual(first.connector_instance_id, second.connector_instance_id);
   });
 });
 

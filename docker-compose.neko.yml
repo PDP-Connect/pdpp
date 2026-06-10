@@ -1,11 +1,16 @@
 services:
   reference:
+    depends_on:
+      - registry-mock
     environment:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
       PDPP_STREAM_PLAYGROUND_BACKEND: ${PDPP_STREAM_PLAYGROUND_BACKEND:-neko}
+      PDPP_STREAM_PLAYGROUND_DOCKER: "1"
+      PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL: ${PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL:-http://neko:8080/neko}
       PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL-http://neko:8080/neko}
       PDPP_NEKO_PROXY_ALLOWED_HOSTS: ${PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080}
       PDPP_NEKO_PROXY_AUTOLOGIN: ${PDPP_NEKO_PROXY_AUTOLOGIN:-1}
+      PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL: ${PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL:-http://neko:9223}
       PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL-http://neko:9223}
       # Static managed n.eko mode exposes exactly one browser surface. The
       # controller owns leasing, queueing, and child-process CDP env injection;
@@ -29,8 +34,11 @@ services:
       # stealth design rationale and the fingerprint-probe.mjs investigation
       # that established Runtime.enable as the dominant detection vector.
       PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-strict}
-      NEKO_USERNAME: operator
-      NEKO_PASSWORD: "1"
+      NEKO_CONTROL_USERNAME: ${NEKO_CONTROL_USERNAME:-admin}
+      NEKO_CONTROL_PASSWORD: ${NEKO_CONTROL_PASSWORD:-}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
 
   neko:
     image: ${NEKO_IMAGE:-pdpp-neko:local}
@@ -47,8 +55,13 @@ services:
       NEKO_SERVER_BIND: 0.0.0.0:8080
       NEKO_SERVER_PATH_PREFIX: /neko
       NEKO_SERVER_PROXY: "true"
-      NEKO_MEMBER_PROVIDER: noauth
+      NEKO_MEMBER_PROVIDER: ${NEKO_MEMBER_PROVIDER:-multiuser}
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: ${NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-}
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: ${NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-}
       NEKO_SESSION_IMPLICIT_HOSTING: "true"
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_UDPMUX: ${NEKO_WEBRTC_PORT:-59000}
       NEKO_WEBRTC_TCPMUX: ${NEKO_WEBRTC_PORT:-59000}
@@ -93,8 +106,12 @@ services:
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
       NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
-      NEKO_USERNAME: operator
-      NEKO_PASSWORD: ${NEKO_PASSWORD:-1}
+      NEKO_MEMBER_PROVIDER: ${NEKO_MEMBER_PROVIDER:-multiuser}
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: ${NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-}
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: ${NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
     expose:
       - "7331"
     volumes:
@@ -128,6 +145,18 @@ services:
       - "${TURN_PORT:-3478}:3478/udp"
       - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
 
+  registry-mock:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./packages/polyfill-connectors/manifests:/usr/share/nginx/html/connectors:ro
+    configs:
+      - source: registry_mock_nginx
+        target: /etc/nginx/conf.d/default.conf
+    networks:
+      default:
+        aliases:
+          - registry.pdpp.org
+
   web:
     depends_on:
       neko:
@@ -136,3 +165,17 @@ services:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
     volumes:
       - ./tmp:/app/tmp
+
+configs:
+  registry_mock_nginx:
+    content: |
+      server {
+        listen 80;
+        server_name registry.pdpp.org;
+        root /usr/share/nginx/html;
+        location /connectors/ {
+          types { }
+          default_type application/json;
+          try_files $$uri $$uri.json =404;
+        }
+      }

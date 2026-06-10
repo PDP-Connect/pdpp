@@ -111,6 +111,7 @@ function mapSourceInstanceHeartbeatRow(row) {
     sourceInstanceId: row.source_instance_id,
     deviceId: row.device_id,
     connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id ?? null,
     sourceStatus: row.source_status,
     deviceStatus: row.device_status,
     deviceRevokedAt: row.device_revoked_at ?? null,
@@ -118,6 +119,7 @@ function mapSourceInstanceHeartbeatRow(row) {
     lastHeartbeatStatus: row.last_heartbeat_status ?? null,
     recordsPending: row.records_pending == null ? null : Number(row.records_pending),
     outboxDiagnostics: parseJson(row.outbox_diagnostics_json, null),
+    lastIngestAt: row.last_ingest_at ?? null,
     updatedAt: row.updated_at ?? null,
   };
 }
@@ -233,6 +235,14 @@ export function createSqliteDeviceExporterStore() {
     revokeDevice(deviceId, revokedAt) {
       exec(referenceQueries.deviceExportersRevokeDevice, [revokedAt, revokedAt, deviceId]);
       exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [revokedAt, deviceId]);
+      // Cascade revoke to the local-collector source instances bound to this
+      // device and, where safe, to the connector_instances those source
+      // instances reference. Source instances are revoked first so the
+      // connector_instance update can use NOT EXISTS to spare any
+      // connector_instance still referenced by another device's non-revoked
+      // source instance (stable-binding re-enrollment lane).
+      exec(referenceQueries.deviceExportersRevokeSourceInstancesForDevice, [revokedAt, revokedAt, deviceId]);
+      exec(referenceQueries.deviceExportersRevokeConnectorInstancesForDevice, [revokedAt, revokedAt, deviceId]);
     },
 
     markDeviceHeartbeat(deviceId, record) {
@@ -322,10 +332,11 @@ export function createSqliteDeviceExporterStore() {
       );
     },
 
-    listSourceInstanceHeartbeatsByConnector(connectorId) {
+    listSourceInstanceHeartbeatsByConnector(connectorId, options) {
+      const connectorInstanceId = options?.connectorInstanceId ?? null;
       return allowUnboundedReadAcknowledged(
         referenceQueries.deviceExportersListSourceInstanceHeartbeatsByConnector,
-        [connectorId],
+        [connectorId, connectorInstanceId, connectorInstanceId],
       ).map(mapSourceInstanceHeartbeatRow);
     },
 
@@ -433,6 +444,36 @@ export function createPostgresDeviceExporterStore() {
     async revokeDevice(deviceId, revokedAt) {
       await postgresQuery(`UPDATE device_exporters SET status = 'revoked', revoked_at = $1, updated_at = $1 WHERE device_id = $2`, [revokedAt, deviceId]);
       await postgresQuery(`UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`, [revokedAt, deviceId]);
+      // Cascade revoke to the local-collector source instances bound to this
+      // device and, where safe, to the connector_instances those source
+      // instances reference. Source instances are revoked first so the
+      // connector_instance update can use NOT EXISTS to spare any
+      // connector_instance still referenced by another device's non-revoked
+      // source instance (stable-binding re-enrollment lane).
+      await postgresQuery(
+        `UPDATE device_source_instances
+            SET status = 'revoked', revoked_at = $1, updated_at = $1
+          WHERE device_id = $2 AND status <> 'revoked'`,
+        [revokedAt, deviceId],
+      );
+      await postgresQuery(
+        `UPDATE connector_instances ci
+            SET status = 'revoked', revoked_at = $1, updated_at = $1
+          WHERE ci.status <> 'revoked'
+            AND ci.connector_instance_id IN (
+              SELECT connector_instance_id
+              FROM device_source_instances
+              WHERE device_id = $2
+                AND connector_instance_id IS NOT NULL
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM device_source_instances active
+              WHERE active.connector_instance_id = ci.connector_instance_id
+                AND active.status <> 'revoked'
+            )`,
+        [revokedAt, deviceId],
+      );
     },
 
     async markDeviceHeartbeat(deviceId, record) {
@@ -568,24 +609,33 @@ export function createPostgresDeviceExporterStore() {
       return result.rows.map(mapSourceInstance);
     },
 
-    async listSourceInstanceHeartbeatsByConnector(connectorId) {
+    async listSourceInstanceHeartbeatsByConnector(connectorId, options) {
+      const connectorInstanceId = options?.connectorInstanceId ?? null;
       const result = await postgresQuery(
         `SELECT dsi.source_instance_id,
                 dsi.device_id,
                 dsi.connector_id,
+                dsi.connector_instance_id,
                 dsi.status AS source_status,
                 dsi.last_heartbeat_at,
                 dsi.last_heartbeat_status,
                 dsi.records_pending,
                 dsi.outbox_diagnostics_json,
                 dsi.updated_at,
+                dio.last_ingest_at,
                 de.status AS device_status,
                 de.revoked_at AS device_revoked_at
            FROM device_source_instances dsi
            JOIN device_exporters de ON de.device_id = dsi.device_id
+           LEFT JOIN (
+             SELECT device_id, source_instance_id, MAX(created_at) AS last_ingest_at
+               FROM device_ingest_batch_outcomes
+              GROUP BY device_id, source_instance_id
+           ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id
           WHERE dsi.connector_id = $1
+            AND ($2::text IS NULL OR dsi.connector_instance_id = $2)
           ORDER BY (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC NULLS LAST, dsi.device_id ASC, dsi.source_instance_id ASC`,
-        [connectorId],
+        [connectorId, connectorInstanceId],
       );
       return result.rows.map(mapSourceInstanceHeartbeatRow);
     },

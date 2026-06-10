@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
-const WEB_DOCS = join(REPO_ROOT, "apps/web/content/docs");
+const SITE_DOCS = join(REPO_ROOT, "apps/site/content/docs");
 
-const WEB_ONLY_EXTENSIONS = new Set([
+const SITE_ONLY_EXTENSIONS = new Set([
   "spec-lexical-retrieval-extension.md",
   "spec-semantic-retrieval-extension.md",
 ]);
@@ -52,7 +52,7 @@ function stripTitleAndRootStatus(text) {
   return lines.join("\n");
 }
 
-function stripLeadingWebCallout(text) {
+function stripLeadingSiteCallout(text) {
   const withoutFrontmatter = stripFrontmatter(text);
   const lines = withoutFrontmatter.split("\n");
   stripLeadingBlank(lines);
@@ -142,7 +142,7 @@ function firstDiff(expected, actual) {
       return {
         line: i + 1,
         root: a[i] ?? "<missing>",
-        web: b[i] ?? "<missing>",
+        site: b[i] ?? "<missing>",
       };
     }
   }
@@ -151,26 +151,26 @@ function firstDiff(expected, actual) {
 
 function checkPair(file) {
   const rootText = readFileSync(join(REPO_ROOT, file), "utf8");
-  const webText = readFileSync(join(WEB_DOCS, file), "utf8");
+  const siteText = readFileSync(join(SITE_DOCS, file), "utf8");
   const expectedMeta = rootMetadata(rootText);
-  const actualMeta = calloutMetadata(webText);
+  const actualMeta = calloutMetadata(siteText);
   const errors = [];
 
   if (!expectedMeta.status || !expectedMeta.date) {
     errors.push(`${file}: root spec must declare Status and Date`);
   }
   if (!actualMeta.status || !actualMeta.date) {
-    errors.push(`${file}: web copy must start with a Status/Date Callout`);
+    errors.push(`${file}: public-site copy must start with a Status/Date Callout`);
   }
   if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
-    errors.push(`${file}: web Status mismatch (root=${JSON.stringify(expectedMeta.status)} web=${JSON.stringify(actualMeta.status)})`);
+    errors.push(`${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`);
   }
   if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
-    errors.push(`${file}: web Date mismatch (root=${JSON.stringify(expectedMeta.date)} web=${JSON.stringify(actualMeta.date)})`);
+    errors.push(`${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`);
   }
 
   const expected = normalizeBody(stripTitleAndRootStatus(rootText));
-  const actual = normalizeBody(stripLeadingWebCallout(webText));
+  const actual = normalizeBody(stripLeadingSiteCallout(siteText));
   if (expected !== actual) {
     const diff = firstDiff(expected, actual);
     errors.push(
@@ -178,7 +178,7 @@ function checkPair(file) {
         `${file}: body drift after normalization`,
         diff ? `  first mismatch at normalized line ${diff.line}` : null,
         diff ? `  root: ${diff.root}` : null,
-        diff ? `  web:  ${diff.web}` : null,
+        diff ? `  site: ${diff.site}` : null,
       ]
         .filter(Boolean)
         .join("\n")
@@ -189,28 +189,28 @@ function checkPair(file) {
 
 function main() {
   const rootSpecs = specFiles(REPO_ROOT);
-  const webSpecs = specFiles(WEB_DOCS);
+  const siteSpecs = specFiles(SITE_DOCS);
   const rootSet = new Set(rootSpecs);
-  const webSet = new Set(webSpecs);
+  const siteSet = new Set(siteSpecs);
   const errors = [];
 
   for (const file of rootSpecs) {
     if (REFERENCE_ONLY_ROOT_SPECS.has(file)) {
       continue;
     }
-    if (!webSet.has(file)) {
-      errors.push(`${file}: missing web counterpart at apps/web/content/docs/${file}`);
+    if (!siteSet.has(file)) {
+      errors.push(`${file}: missing public-site counterpart at apps/site/content/docs/${file}`);
       continue;
     }
     errors.push(...checkPair(file));
   }
 
-  for (const file of webSpecs) {
+  for (const file of siteSpecs) {
     if (rootSet.has(file)) {
       continue;
     }
-    if (!WEB_ONLY_EXTENSIONS.has(file)) {
-      errors.push(`${file}: web-only spec is not allowlisted`);
+    if (!SITE_ONLY_EXTENSIONS.has(file)) {
+      errors.push(`${file}: site-only spec is not allowlisted`);
     }
   }
 
@@ -222,7 +222,7 @@ function main() {
 
   console.log(
     `spec:check passed (${rootSpecs.length - REFERENCE_ONLY_ROOT_SPECS.size} canonical pairs, ` +
-      `${WEB_ONLY_EXTENSIONS.size} web-only extensions, ${REFERENCE_ONLY_ROOT_SPECS.size} reference-only root spec)`
+      `${SITE_ONLY_EXTENSIONS.size} site-only extensions, ${REFERENCE_ONLY_ROOT_SPECS.size} reference-only root spec)`
   );
 }
 

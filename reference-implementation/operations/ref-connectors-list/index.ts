@@ -1,11 +1,13 @@
 /**
  * Canonical `ref.connectors.list` operation.
  *
- * Owns the envelope semantics for the reference-only operator-console
- * connector catalog that powers `GET /_ref/connectors`. Host adapters
- * (Fastify route in `reference-implementation/server/index.js`) supply
- * connector-summary data via the dependency contract; the operation owns
- * the `{object: 'list', data}` envelope and its element ordering.
+ * Owns the envelope semantics for the legacy reference-only
+ * connector-summary list at `GET /_ref/connectors`. Despite the route name,
+ * each item is a configured connection summary (`connection_id` is required);
+ * the addable connector catalog is a separate registered-manifest surface.
+ * Host adapters supply connector-summary data via the dependency contract;
+ * the operation owns the `{object: 'list', data}` envelope and its element
+ * ordering.
  *
  * This is reference/operator surface, not PDPP protocol. Clients must not
  * depend on the response shape.
@@ -51,18 +53,20 @@ export interface RefConnectorsListItem {
   readonly total_retained_bytes?: number | null;
   readonly freshness: RefConnectorsListFreshness;
   readonly refresh_policy: unknown;
+  readonly revoked_at?: string | null;
   readonly schedule: unknown;
+  readonly status?: string | null;
   readonly last_run: RefConnectorsListRunSummary | null;
   readonly last_successful_run: RefConnectorsListRunSummary | null;
 }
 
 export interface RefConnectorsListDependencies {
   /**
-   * Returns the connector summaries to surface in the catalog. Host
+   * Returns configured connection summaries for the route. Host
    * implementation owns the substrate read; the operation does not
    * inspect adapter internals. Order is not required from the dependency
    * — the operation preserves insertion order so the host can choose the
-   * canonical sort (currently the registered-connectors row order).
+   * canonical sort.
    */
   listConnectorSummaries(): Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
 }

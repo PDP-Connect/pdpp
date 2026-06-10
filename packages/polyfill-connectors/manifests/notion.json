@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/notion",
+  "connector_key": "notion",
+  "manifest_uri": "https://registry.pdpp.org/connectors/notion",
   "version": "0.1.0",
   "display_name": "Notion",
   "runtime_requirements": {

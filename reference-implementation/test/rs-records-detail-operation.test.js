@@ -37,11 +37,26 @@ const sourceDescriptor = { kind: 'connector', id: 'acme_payroll' };
 function makeDeps(overrides = {}) {
   return {
     getSourceDescriptor: () => sourceDescriptor,
-    getManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
+    getManifest: () => ({
+      streams: [
+        {
+          name: 'pay_statements',
+          schema: {
+            properties: {
+              id: {},
+              employer: {},
+              net_pay_minor: {},
+              sent_at: {},
+            },
+          },
+        },
+      ],
+    }),
     getGrant: () => ({ streams: [{ name: 'pay_statements' }] }),
     getRecord: (stream, recordId) =>
       Promise.resolve({ object: 'record', id: recordId, stream }),
     decorateRecord: (record) => record,
+    validateRequestFields: () => undefined,
     ...overrides,
   };
 }
@@ -122,6 +137,72 @@ test('rs.records.get applies decorateRecord to the returned record', async () =>
     }),
   );
   assert.equal(result.record.decorated, true);
+});
+
+test('rs.records.get applies request projection after lower driver returns full payload', async () => {
+  const result = await executeRecordDetail(
+    {
+      actor: ownerActor,
+      streamName: 'pay_statements',
+      recordId: 'rec_1',
+      expandOptions: { fields: ['id'] },
+    },
+    makeDeps({
+      getRecord: () =>
+        Promise.resolve({
+          object: 'record',
+          id: 'rec_1',
+          data: {
+            id: 'rec_1',
+            channel_id: 'C1',
+            ts: '123.456',
+            text: 'unrequested',
+          },
+        }),
+    }),
+  );
+
+  assert.deepEqual(result.record.data, { id: 'rec_1' });
+});
+
+test('rs.records.get validates requested fields before fetching the record', async () => {
+  let observedParams = null;
+  let observedStream = null;
+  let fetched = false;
+
+  await assert.rejects(
+    () =>
+      executeRecordDetail(
+        {
+          actor: ownerActor,
+          streamName: 'pay_statements',
+          recordId: 'rec_1',
+          expandOptions: { fields: ['definitely_not_a_field'] },
+        },
+        makeDeps({
+          getRecord: () => {
+            fetched = true;
+            return Promise.resolve({ object: 'record', id: 'rec_1' });
+          },
+          validateRequestFields: (params, stream) => {
+            observedParams = params;
+            observedStream = stream;
+            const err = new Error('Unknown field: definitely_not_a_field');
+            err.code = 'unknown_field';
+            throw err;
+          },
+        }),
+      ),
+    (err) => {
+      assert.equal(err.code, 'unknown_field');
+      assert.match(err.message, /definitely_not_a_field/);
+      return true;
+    },
+  );
+
+  assert.deepEqual(observedParams.fields, ['definitely_not_a_field']);
+  assert.equal(observedStream?.name, 'pay_statements');
+  assert.equal(fetched, false);
 });
 
 test('rs.records.get forwards expand options to the dependency', async () => {

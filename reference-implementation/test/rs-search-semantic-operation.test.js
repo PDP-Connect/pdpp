@@ -422,6 +422,21 @@ test('hydrateResult is invoked for every emitted hit and its result populates em
   }
 });
 
+test('hydrateResult authoredAt is emitted as authored_at', async () => {
+  const deps = makeDeps({
+    hydrateResult: ({ hit }) => ({
+      emittedAt: '2026-04-01T00:00:00Z',
+      authoredAt: '2026-04-08T16:57:06.018Z',
+      snippet: { field: hit.topField || hit.matchedFields[0], text: '…snippet…' },
+    }),
+  });
+  const out = await executeSearchSemantic(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.equal(out.envelope.data[0].authored_at, '2026-04-08T16:57:06.018Z');
+});
+
 test('hydrateResult returning null/undefined snippet causes the field to be omitted', async () => {
   const deps = makeDeps({
     hydrateResult: ({ hit }) => {

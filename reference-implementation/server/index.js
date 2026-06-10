@@ -5,11 +5,12 @@
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
   closePostgresStorage,
+  collectPhysicalFootprint,
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
@@ -17,41 +18,101 @@ import {
 } from './postgres-storage.js';
 import {
   buildAuthorizationServerMetadata,
+  buildClientEventSubscriptionsCapability,
   buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
+  buildOwnerAgentControlSurface,
+  buildOwnerConnectionSupportedActions,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
   isLocalOrPrivateRequestOrigin,
   isTrustedMetadataRequestOrigin,
+  protectedResourceMetadataUrlForResource,
   resolvePublicUrl,
   resolveSiblingPublicUrl,
   shouldUseDirectRequestOrigin,
   stripTrailingSlash,
 } from './metadata.ts';
 import { deriveReferenceFreshness } from './freshness.ts';
-import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
-import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
+import { createTraceContext, emitSpineEvent, generateSpineId, getRunStartedEvent, getRunTerminalEvent, getRunTerminalStatus, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
+import { exec, getOne, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
-  introspect, revokeGrant,
+  introspect, revokeGrant, revokeGrantPackage,
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
-  deleteRegisteredClient, listOwnerIssuedClients, listRegisteredConnectorIds,
-  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
+  createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
+  getCumulativeClientAccessForPackage,
+  listGrantPackagesForOwner, getGrantPackageIdForGrant,
+  createCimdDocument, deleteCimdDocument, deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
+  getCimdDocument,
+  issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
+  listCimdDocuments, listOwnerIssuedClients, listRegisteredConnectorIds,
+  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, resolveOAuthClient,
+  seedPreRegisteredClients,
   buildPendingConsentRequestUri,
+  stageOAuthAuthorizationCodeRequest,
 } from './auth.js';
 import { createBlobStore } from './stores/blob-store.js';
+import {
+  AmbiguousConnectionError,
+  listActiveBindingsForGrant,
+  listGrantedConnectionsForStream,
+  projectBindingForWire,
+} from './connection-identity.js';
+import {
+  encodeHostedMcpSelection,
+  encodeHostedMcpStreamSelection,
+  hostedMcpSourceKey,
+  parseHostedMcpSelections,
+  parseHostedMcpStreamSelections,
+} from './hosted-mcp-selection.js';
+import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
+import { projectStorageDisplayName } from './connection-id-request.js';
+import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
 } from './stores/connector-instance-store.js';
+import {
+  createPostgresConnectorInstanceCredentialStore,
+  createSqliteConnectorInstanceCredentialStore,
+} from './stores/connector-instance-credential-store.js';
+import { resolveStaticSecretRunEnv } from './stores/static-secret-run-credentials.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
-import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
-import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
+import {
+  buildEventPayload,
+  executeApplyGrantRevoke,
+  executeCreateSubscription,
+  executeDeleteSubscription,
+  executeEnqueueTestEvent,
+  executeGetSubscription,
+  executeListSubscriptions,
+  executeUpdateSubscription,
+} from '../operations/as-client-event-subscriptions/index.ts';
+import {
+  deriveClientEventsFromRecordChange,
+} from '../operations/rs-client-event-derive/index.ts';
+import {
+  getDefaultClientEventSubscriptionStore,
+  getSubscriptionSummary,
+  listActiveSubscriptions,
+  listAllSubscriptions,
+  listAttemptsForSubscription,
+} from './stores/client-event-subscription-store.ts';
+import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
+import {
+  deleteConnectionRecordRowsPostgres,
+  deleteConnectionRecordRowsSqlite,
+  enumerateConnectionStreams,
+  setClientEventEnqueueHook,
+  teardownConnectionSearchProjection,
+} from './records.js';
+import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
   createWebPushSubscriptionStore,
@@ -65,13 +126,28 @@ import {
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
   getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
   listDatasetSummaryStreamProjectionSeeds, getDatasetSummaryStreamRecordTimeBounds,
+  queryRecordsAcrossBindings, getRecordAcrossBindings,
+  aggregateRecordsAcrossBindings, listStreamsAcrossBindings,
+  getStreamDetailAcrossBindings, resolveReadRequestBindings,
+  listLocalCoverageDiagnostics,
 } from './records.js';
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
+  listStreamProjections,
   reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
 } from './dataset-summary-read-model.js';
+import {
+  applyRetainedSizeBlobDelta,
+  getRetainedSizeGlobal,
+  listRetainedSizeConnections,
+  listRetainedSizeStreams,
+  listRetainedSizeTop,
+  rebuildRetainedSize,
+  reconcileDirtyRetainedSize,
+} from './retained-size-read-model.js';
+import { buildRecordVersionStatsEnvelope } from './record-version-stats.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
@@ -86,7 +162,7 @@ import {
   runSemanticSearch,
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
-import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
+import { collectDeploymentDiagnostics, probeDiskHeadroom } from './deployment-diagnostics.ts';
 import {
   COLLECTOR_PROTOCOL_VERSION,
   SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
@@ -107,13 +183,12 @@ import {
   resolveDefaultConnectorPath,
 } from '../runtime/controller.ts';
 import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts';
-import { redactStderrTail } from '../runtime/stderr-redact.js';
 import { createScheduler } from '../runtime/scheduler.ts';
+import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressure-cooldown.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
-import {
-  BrowserSurfaceLeaseManager,
-  parseNekoBrowserSurfaceRuntimeConfig,
-} from '../runtime/browser-surface-leases.ts';
+import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
+import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
+import { parseNekoBrowserSurfaceRuntimeConfig } from '../runtime/browser-surface-leases.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
 import { createDefaultBrowserSurfaceReadinessProbe } from '../runtime/browser-surface-readiness.ts';
 import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
@@ -125,8 +200,6 @@ import {
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
 import {
-  HOSTED_UI_CSS,
-  HOSTED_UI_CSS_PATH,
   escapeHtml as hostedEscape,
   renderActionRow,
   renderEmptyState,
@@ -136,16 +209,24 @@ import {
   renderResultState,
   renderSurface,
 } from './hosted-ui.js';
+import { servedRootLandingIfBrowser } from './reference-root-landing.js';
 import {
   collectRecordsTimelineEntries,
+  getConnectorAttentionProjection,
   getConnectorDetail,
+  getConnectorSummaryForRoute,
+  getOwnerConnectionDiagnostics,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
+import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.js';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
+import { handleStreamableHttpRequest } from '@pdpp/mcp-server/server';
+import { createPackageRsClient, createRsClient } from './package-rs-client.js';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
@@ -165,20 +246,8 @@ import {
   RecordDetailVisibilityError,
   executeRecordDetail,
 } from '../operations/rs-records-detail/index.ts';
-import { executeRefDatasetSummary } from '../operations/ref-dataset-summary/index.ts';
-import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
-import {
-  RefConnectorDetailNotFoundError,
-  executeRefConnectorDetail,
-} from '../operations/ref-connectors-detail/index.ts';
 import { executeRefApprovalsList } from '../operations/ref-approvals-list/index.ts';
 import { executeRefSchedulesList } from '../operations/ref-schedules-list/index.ts';
-import {
-  RefConnectorScheduleGetNotFoundError,
-  executeRefConnectorScheduleGet,
-} from '../operations/ref-connector-schedule-get/index.ts';
-import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correlations-list/index.ts';
-import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
 import { executeRefRecordsTimeline } from '../operations/ref-records-timeline/index.ts';
 import {
@@ -187,8 +256,6 @@ import {
 } from '../operations/ref-clients-list/index.ts';
 import { executeRefDeployment } from '../operations/ref-deployment/index.ts';
 import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts';
-import { executeRsDiscoveryIndex } from '../operations/rs-discovery-index/index.ts';
-import { executeRsProtectedResourceMetadata } from '../operations/rs-protected-resource-metadata/index.ts';
 import { executeRsConnectorStateGet } from '../operations/rs-connector-state-get/index.ts';
 import {
   RsConnectorStatePutValidationError,
@@ -223,24 +290,163 @@ import {
   executeRecordsIngest,
   parseLines as parseIngestLines,
 } from '../operations/rs-records-ingest/index.ts';
-import {
-  SourceWebhookError,
-  executeSourceWebhook,
-} from '../operations/ref-source-webhook-ingest/index.ts';
-import { executeAsDiscoveryIndex } from '../operations/as-discovery-index/index.ts';
-import { executeAsAuthorizationServerMetadata } from '../operations/as-authorization-server-metadata/index.ts';
-import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
-import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
-import { executeAsDeviceDecision } from '../operations/as-device-decision/index.ts';
 import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
-import { executeAsPolyfillConnectorRegister } from '../operations/as-polyfill-connector-register/index.ts';
-import { executeAsPolyfillConnectorDetail } from '../operations/as-polyfill-connector-detail/index.ts';
-import { executeAsParCreate } from '../operations/as-par-create/index.ts';
-import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
-import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
-import { executeAsGrantRevoke } from '../operations/as-grant-revoke/index.ts';
+import {
+  mountAsAuthorizationServerMetadata,
+  mountAsRoot,
+  mountRsMcpProtectedResourceMetadata,
+  mountRsProtectedResourceMetadata,
+  mountRsRoot,
+} from './routes/root-and-discovery.ts';
+import { mountHostedUiCss } from './routes/hosted-ui-asset.ts';
+import {
+  mountRefGrants,
+  mountRefRuns,
+  mountRefTraces,
+} from './routes/ref-spine-correlations.ts';
+import {
+  mountRefGrantTimeline,
+  mountRefRunTimeline,
+  mountRefTraceTimeline,
+} from './routes/ref-spine-timelines.ts';
+import {
+  mountRefWebPushConfig,
+  mountRefWebPushCreateSubscription,
+  mountRefWebPushDeleteSubscription,
+  mountRefWebPushListSubscriptions,
+  mountRefWebPushTest,
+} from './routes/web-push.ts';
+import { mountRefSourceWebhooks } from './routes/source-webhooks.ts';
+import {
+  mountRefDeviceExporterDiagnostics,
+  mountRefDeviceExporterEnroll,
+  mountRefDeviceExporterEnrollmentCodes,
+  mountRefDeviceExporterHeartbeat,
+  mountRefDeviceExporterIngestBatches,
+  mountRefDeviceExporterLocalCollectorGaps,
+  mountRefDeviceExporterLocalCollectorGapsRecovered,
+  mountRefDeviceExporterRevoke,
+  mountRefDeviceExporterSourceInstanceStateGet,
+  mountRefDeviceExporterSourceInstanceStatePut,
+  mountRefDeviceExporterSourceInstances,
+  mountRefDeviceExportersList,
+} from './routes/ref-device-exporters.ts';
+import {
+  mountRefDevPlaygroundSession,
+  mountRefRunInteraction,
+} from './routes/run-interaction.ts';
+import { mountRefRunCancel } from './routes/run-cancel.ts';
+import { mountRefRunStatus } from './routes/ref-run-status.ts';
+import {
+  mountRefApprovals,
+  mountRefCimdClientDocuments,
+  mountRefClients,
+  mountRefDeployment,
+  mountRefRecordsTimeline,
+  mountRefSchedules,
+  mountRefSearch,
+} from './routes/ref-admin.ts';
+import {
+  mountRefEventSubscriptionsDisable,
+  mountRefEventSubscriptionsGet,
+  mountRefEventSubscriptionsList,
+  mountRefGrantPackagesCumulative,
+  mountRefGrantPackagesGet,
+  mountRefGrantPackagesList,
+  mountRefGrantPackagesRevoke,
+} from './routes/ref-grants.ts';
+import {
+  mountRefDatasetSize,
+  mountRefDatasetSizeRebuild,
+  mountRefDatasetSizeReconcile,
+  mountRefDatasetSummary,
+  mountRefDatasetSummaryRebuild,
+  mountRefDatasetSummaryReconcile,
+  mountRefDatasetSummaryStreams,
+  mountRefDatasetTop,
+  mountRefRecordsVersionStats,
+} from './routes/ref-dataset.ts';
+import {
+  mountRefConnectionDelete,
+  mountRefConnectionDetail,
+  mountRefConnectionRevoke,
+  mountRefConnectionRun,
+  mountRefConnectionScheduleDelete,
+  mountRefConnectionSchedulePause,
+  mountRefConnectionScheduleResume,
+  mountRefConnectionScheduleUpsert,
+  mountRefConnectionSetDisplayName,
+  mountRefConnectionsList,
+  mountRefConnectorDetail,
+  mountRefConnectorInstanceDetail,
+  mountRefConnectorInstancesList,
+  mountRefConnectorRun,
+  mountRefConnectorScheduleDelete,
+  mountRefConnectorScheduleGet,
+  mountRefConnectorSchedulePause,
+  mountRefConnectorScheduleResume,
+  mountRefConnectorScheduleUpsert,
+  mountRefConnectorsList,
+} from './routes/ref-connectors.ts';
+import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
+import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
+import { mountRefStaticSecretSetupStatus } from './routes/ref-static-secret-setup-status.ts';
+import { mountRefBrowserEnrollmentShell } from './routes/ref-browser-enrollment-shell.ts';
+import {
+  createInProcessPendingAuthStore,
+  mountRefProviderAuthCallback,
+  mountRefProviderAuthInitiate,
+} from './routes/ref-provider-auth.ts';
+import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
+import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
+import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
+import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
+import { mountOwnerConnectionRevoke } from './routes/owner-connection-revoke.ts';
+import { mountOwnerConnectionDelete } from './routes/owner-connection-delete.ts';
+import { mountOwnerConnectionDiagnostics } from './routes/owner-connection-diagnostics.ts';
+import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
+import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
+import { mountOwnerControl } from './routes/owner-control.ts';
+import {
+  mountRsBlobsUpload,
+  mountRsEventSubscriptions,
+  mountRsMutation,
+} from './routes/rs-mutation.ts';
+import {
+  mountAsDeviceAuthorization,
+  mountAsIntrospect,
+  mountAsToken,
+} from './routes/as-oauth.ts';
+import {
+  mountAsPolyfillConnectorDetail,
+  mountAsPolyfillConnectorRegister,
+} from './routes/as-polyfill-connectors.ts';
+import {
+  createAgentConnectAttemptStore,
+  mountAsAgentConnect,
+  mountAsAgentConnectToken,
+} from './routes/as-agent-connect.ts';
+import {
+  buildApplyGrantRevokeSideEffects,
+  mountAsGrantRevoke,
+} from './routes/as-grant-revoke.ts';
+import { mountAsAuthorize } from './routes/as-authorize.ts';
+import { mountAsConsent } from './routes/as-consent.ts';
+import { mountAsDcr } from './routes/as-dcr.ts';
+import { mountAsPar } from './routes/as-par.ts';
+import { mountAsDeviceUi } from './routes/as-device-ui.ts';
+import { mountClientMetadata } from './routes/client-metadata.ts';
+import { mountRsHostedMcp } from './routes/rs-hosted-mcp.ts';
+import {
+  renderPendingConsentNotFoundHtml,
+  renderPendingGrantConsentHtml,
+} from './routes/as-consent-ui-helpers.ts';
+import {
+  sanitizeDeviceExporterDiagnostic,
+  sanitizeLocalCollectorGapDetails,
+} from './routes/ref-device-exporter-sanitize.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -253,7 +459,6 @@ const PDPP_DCR_INITIAL_ACCESS_TOKENS = (process.env.PDPP_DCR_INITIAL_ACCESS_TOKE
   .map((value) => value.trim())
   .filter(Boolean);
 const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
-const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
 const PROTECTED_RESOURCE_METADATA_URL_LOCAL = 'protectedResourceMetadataUrl';
 const PROTECTED_RESOURCE_METADATA_NEXT_STEP =
   'Fetch error.resource_metadata, then follow pdpp_agent_discovery.cli when token completion is available; otherwise request a scoped client grant without using an owner bearer token.';
@@ -381,9 +586,17 @@ function scheduleRetrievalStartupBackfill({ manifests, logger, signal = null }) 
     });
 }
 
-function pdppError(res, status, code, message, param = null) {
+function pdppError(res, status, code, message, param = null, extras = null) {
   const body = { error: { type: typeFor(status), code, message } };
   if (param) body.error.param = param;
+  if (extras && typeof extras === 'object') {
+    if (Array.isArray(extras.available_connections)) {
+      body.error.available_connections = extras.available_connections;
+    }
+    if (typeof extras.retry_with === 'string') {
+      body.error.retry_with = extras.retry_with;
+    }
+  }
   const resourceMetadataUrl = status === 401 ? getProtectedResourceMetadataUrl(res) : null;
   if (resourceMetadataUrl) {
     body.error.resource_metadata = resourceMetadataUrl;
@@ -408,12 +621,6 @@ function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, option
 
 function httpQuotedString(value) {
   return String(value).replace(/["\\]/g, '\\$&');
-}
-
-function protectedResourceMetadataUrlForResource(resource) {
-  const parsed = new URL(resource);
-  const resourcePath = parsed.pathname === '/' ? '' : parsed.pathname;
-  return `${parsed.origin}${PROTECTED_RESOURCE_METADATA_PATH}${resourcePath}${parsed.search}`;
 }
 
 function resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedHosts) {
@@ -452,77 +659,57 @@ function generateReferenceSecret(prefix, bytes = 24) {
   return `${prefix}_${randomBytes(bytes).toString('base64url')}`;
 }
 
-function optionalObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
+// Keyed by canonical connector_key. The local-collector manifest files
+// retain their historical snake_case filenames (`claude_code.json`), but the
+// catalog row, the connector_instances row, and the record storage target all
+// use the canonical key (`claude-code`, `codex`) so a legacy-alias enroll
+// cannot fork the connector type away from its canonical identity.
+const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
+  ['claude-code', { entryName: 'claude_code.json', displayName: 'Claude Code' }],
+  ['codex', { entryName: 'codex.json', displayName: 'OpenAI Codex CLI' }],
+]);
 
-function requireNonEmptyString(value, param) {
-  if (typeof value !== 'string' || !value.trim()) {
-    const err = new Error(`${param} is required`);
-    err.code = 'invalid_request';
-    err.param = param;
-    throw err;
+function readReferenceLocalConnectorCatalogManifest(connectorId) {
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorKey);
+  if (!local) return null;
+  try {
+    const raw = readFileSync(
+      new URL(`../../packages/polyfill-connectors/manifests/${local.entryName}`, import.meta.url),
+      'utf8',
+    );
+    const manifest = JSON.parse(raw);
+    return {
+      ...manifest,
+      connector_id: connectorKey,
+      display_name: manifest.display_name || local.displayName,
+    };
+  } catch {
+    return {
+      connector_id: connectorKey,
+      display_name: local.displayName,
+      streams: [],
+    };
   }
-  return value.trim();
 }
 
-function sanitizeLocalCollectorGapDetails(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const redacted = redactStderrTail(value).text.replace(/\s+/g, ' ').trim();
-  if (!redacted) return null;
-  return redacted.length <= 300 ? redacted : `${redacted.slice(0, 299)}…`;
+function listReferenceLocalConnectorCatalogManifests() {
+  return Array.from(REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.keys())
+    .map((connectorId) => readReferenceLocalConnectorCatalogManifest(connectorId))
+    .filter(Boolean);
 }
 
-const SENSITIVE_DIAGNOSTIC_KEY_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b/i;
-
-function sanitizeDeviceExporterDiagnostic(value, depth = 0) {
-  if (value == null) return null;
-  if (typeof value === 'string') {
-    return sanitizeDeviceExporterDiagnosticText(value);
+async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDisplayName) {
+  const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
+  if (localCollectorManifest) {
+    await registerConnector(localCollectorManifest);
+    return;
   }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (depth >= 4) return '[REDACTED_DEPTH]';
-    return value.slice(0, 20).map((item) => sanitizeDeviceExporterDiagnostic(item, depth + 1));
-  }
-  if (typeof value === 'object') {
-    if (depth >= 4) return '[REDACTED_DEPTH]';
-    const out = {};
-    for (const [key, child] of Object.entries(value)) {
-      if (SENSITIVE_DIAGNOSTIC_KEY_RE.test(key)) {
-        out[key] = '[REDACTED]';
-        continue;
-      }
-      out[key] = sanitizeDeviceExporterDiagnostic(child, depth + 1);
-    }
-    return out;
-  }
-  return null;
-}
-
-function sanitizeDeviceExporterDiagnosticText(value) {
-  let redacted = redactStderrTail(value).text;
-  redacted = redacted.replace(/(?:^|[\s"'=(:])(?:\/home|\/Users|\/root)\/[^\s"',)]+/g, (match) => {
-    const prefix = match.startsWith('/') ? '' : match[0];
-    return `${prefix}[REDACTED_PATH]`;
-  });
-  redacted = redacted.replace(/\b[A-Za-z]:\\Users\\[^\s"',)]+/g, '[REDACTED_PATH]');
-  return redacted.replace(/\s+/g, ' ').trim();
-}
-
-function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
-  return {
-    connector_id: `local-device:${encodeURIComponent(connectorId)}`,
-    connector_instance_id: connectorInstanceId,
-  };
-}
-
-async function ensureReferenceConnectorCatalogEntry(connectorId, displayName) {
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
   const manifest = {
-    connector_id: connectorId,
-    display_name: displayName || connectorId,
+    connector_id: connectorKey,
+    ...(connectorKey !== connectorId ? { manifest_uri: connectorId } : {}),
+    display_name: connectorDisplayName || connectorKey,
     streams: [],
   };
   if (isPostgresStorageBackend()) {
@@ -530,58 +717,19 @@ async function ensureReferenceConnectorCatalogEntry(connectorId, displayName) {
       `INSERT INTO connectors(connector_id, manifest)
        VALUES($1, $2::jsonb)
        ON CONFLICT(connector_id) DO NOTHING`,
-      [connectorId, JSON.stringify(manifest)],
+      [connectorKey, JSON.stringify(manifest)],
     );
     return;
   }
-  exec(referenceQueries.authConnectorsUpsert, [connectorId, JSON.stringify(manifest)]);
+  // Insert the minimal catalog stub only when the connector is not already
+  // registered. A real manifest (e.g. a browser-bound connector like amazon
+  // registered via POST /connectors) MUST NOT be clobbered by this stub on
+  // enroll — otherwise a second enrollment for the same connector type would
+  // read a manifest stripped of its runtime bindings. This matches the
+  // postgres branch's DO NOTHING semantics. (Without this guard the shared
+  // authConnectorsUpsert query DO-UPDATEs the manifest.)
+  exec(referenceQueries.authConnectorsInsertIfAbsent, [connectorKey, JSON.stringify(manifest)]);
 }
-
-function typeFor(status) {
-  if (status === 400) return 'invalid_request_error';
-  if (status === 401) return 'authentication_error';
-  if (status === 403) return 'permission_error';
-  if (status === 404) return 'not_found_error';
-  if (status === 410) return 'gone_error';
-  if (status === 429) return 'rate_limit_error';
-  return 'api_error';
-}
-
-const codeToStatus = {
-  grant_stream_not_allowed: 403,
-  grant_expired: 403,
-  grant_revoked: 403,
-  grant_consumed: 403,
-  grant_invalid: 403,
-  field_not_granted: 403,
-  insufficient_scope: 403,
-  invalid_cursor: 400,
-  invalid_request: 400,
-  invalid_client: 400,
-  invalid_client_metadata: 400,
-  connector_invalid: 400,
-  invalid_record: 400,
-  invalid_record_identity: 400,
-  invalid_expand: 400,
-  ambiguous_connector_instance: 400,
-  connector_instance_connector_mismatch: 400,
-  connector_instance_inactive: 400,
-  connector_instance_selector_required: 400,
-  connector_instance_store_required: 500,
-  owner_subject_required: 400,
-  unknown_field: 400,
-  unsupported_version: 400,
-  authentication_error: 401,
-  connector_instance_owner_mismatch: 403,
-  blob_not_found: 404,
-  connector_instance_not_found: 404,
-  not_found: 404,
-  run_already_active: 409,
-  no_pending_interaction: 409,
-  interaction_id_mismatch: 409,
-  invalid_status: 400,
-  cursor_expired: 410,
-};
 
 function handleError(res, err) {
   const code = err.code || 'api_error';
@@ -592,7 +740,10 @@ function handleError(res, err) {
   if (err.trace_id) {
     setReferenceTraceId(res, err.trace_id);
   }
-  pdppError(res, status, code, err.message, err.param || null);
+  const extras = {};
+  if (Array.isArray(err.available_connections)) extras.available_connections = err.available_connections;
+  if (typeof err.retry_with === 'string') extras.retry_with = err.retry_with;
+  pdppError(res, status, code, err.message, err.param || null, extras);
 }
 
 function createRequestAbortSignal(req, message) {
@@ -814,7 +965,10 @@ async function rejectQuery(res, req, context, err, param = null) {
   await emitQueryRejected(context, req, err);
   const code = err.code || 'api_error';
   const status = codeToStatus[code] || 500;
-  return pdppError(res, status, code, err.message, param);
+  const extras = {};
+  if (Array.isArray(err.available_connections)) extras.available_connections = err.available_connections;
+  if (typeof err.retry_with === 'string') extras.retry_with = err.retry_with;
+  return pdppError(res, status, code, err.message, param || err.param || null, extras);
 }
 
 function buildStateContext(req, res, { connectorId, grantId = null, traceId = null, scenarioId = null, operation, requestedStreams = null } = {}) {
@@ -962,38 +1116,6 @@ async function rejectMutation(res, req, context, err) {
   return pdppError(res, status, code, err.message);
 }
 
-// Spine timeline envelope assembly and live-bearer redaction live in the
-// `ref.spine.events.page` operation; see
-// reference-implementation/operations/ref-spine-events-page/index.ts.
-// The host adapter still owns query-string parsing for `limit`/`cursor`
-// (including the 400 error shape and the upper bound) because cursor
-// validation is route-layer concern: an invalid cursor must short-circuit
-// before any operation runs.
-
-const TIMELINE_DEFAULT_LIMIT = 2_000;
-const TIMELINE_MAX_LIMIT = 5_000;
-
-function parseTimelinePageOptions(req, res) {
-  const rawLimit = req.query?.limit;
-  let limit = TIMELINE_DEFAULT_LIMIT;
-  if (rawLimit !== undefined && rawLimit !== null && rawLimit !== '') {
-    const parsed = Number(rawLimit);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
-      pdppError(res, 400, 'invalid_request', `limit must be a positive integer (got "${rawLimit}")`, 'limit');
-      return null;
-    }
-    if (parsed > TIMELINE_MAX_LIMIT) {
-      pdppError(res, 400, 'invalid_request', `limit ${parsed} exceeds maximum ${TIMELINE_MAX_LIMIT}`, 'limit');
-      return null;
-    }
-    limit = parsed;
-  }
-  const cursor = typeof req.query?.cursor === 'string' && req.query.cursor.length > 0
-    ? req.query.cursor
-    : null;
-  return { limit, cursor };
-}
-
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 
 async function requireToken(req, res, next) {
@@ -1075,64 +1197,24 @@ function requireClient(req, res, next) {
   next();
 }
 
-// Auth gate for `POST /grants/:grantId/revoke`. Accepts:
-//   - any owner bearer whose token row is real and not token-level-revoked or
-//     token-level-expired. (A still-good owner bearer SHALL be able to revoke
-//     any grant. We do not require introspection's `active === true` because
-//     owner tokens have no grant binding to invalidate.)
-//   - a client bearer whose token row is real, not token-level-revoked or
-//     token-level-expired, and whose row's `grant_id` matches the URL
-//     `:grantId`. We deliberately allow `grant_invalid`/`grant_revoked`/
-//     `grant_expired` introspection here because the bearer string itself is
-//     authentic and the legitimate use of a client token whose grant is
-//     malformed-or-expired-or-already-revoked is to revoke the grant the
-//     client holds.
-// Anything else fails before any state mutation. See spec at
-// openspec/changes/harden-reference-auth-surfaces/specs/
-//   reference-implementation-architecture/spec.md
-async function requireRevokeAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return pdppError(res, 401, 'authentication_error', 'Missing Bearer token');
+// Accept either a per-grant client token (the normal RS token) or a
+// hosted-MCP grant-package token. The package token is only meaningful at
+// `/mcp`; every other resource-server route stays gated by `requireClient`
+// so package tokens cannot reach REST surfaces. Owner tokens are always
+// rejected — there is no owner-mode MCP.
+function requireClientOrMcpPackage(req, res, next) {
+  const kind = req.tokenInfo?.pdpp_token_kind;
+  if (kind !== 'client' && kind !== 'mcp_package') {
+    return pdppError(
+      res,
+      403,
+      'permission_error',
+      'MCP requires a grant-scoped client or MCP package token. Owner-agent bearers are REST/control-plane credentials; use owner-agent REST onboarding for local owner automation.',
+    );
   }
-  const token = auth.slice(7);
-  let info;
-  try {
-    info = await introspect(token);
-  } catch {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // No introspection row at all (unknown bearer) → 401.
-  if (!info || (info.active === false && !info.inactive_reason)) {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // Token-level inactive reasons (the token itself, not the grant, is bad).
-  // We reject these because the bearer's authenticity is in question.
-  const tokenLevelInactive = new Set(['token_revoked', 'token_expired']);
-  if (info.active === false && tokenLevelInactive.has(info.inactive_reason)) {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // Token kind: owner tokens have no grant binding so introspection
-  // signals their kind via `pdpp_token_kind`. Inactive owner introspection
-  // (`token_revoked` / `token_expired`) is already handled above. If the
-  // active introspection lacks `pdpp_token_kind`, treat as not-permitted.
-  const grantId = req.params.grantId;
-  if (info.pdpp_token_kind === 'owner') {
-    req.tokenInfo = info;
-    return next();
-  }
-  // Client bearer path: accept iff the row's grant_id matches the URL.
-  // `grant_id` is populated even on inactive client introspections that
-  // carry a grant-state inactive_reason.
-  if (info.pdpp_token_kind === 'client' || (info.active === false && info.grant_id)) {
-    if (info.grant_id && info.grant_id === grantId) {
-      req.tokenInfo = info;
-      return next();
-    }
-    return pdppError(res, 403, 'permission_error', 'Client token is not bound to this grant');
-  }
-  return pdppError(res, 403, 'permission_error', 'Token kind not permitted to revoke');
+  next();
 }
+
 
 function resolveNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
@@ -1157,17 +1239,110 @@ function createRequestConnectorInstanceStore() {
     : createSqliteConnectorInstanceStore();
 }
 
+function createRequestConnectorInstanceCredentialStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceCredentialStore()
+    : createSqliteConnectorInstanceCredentialStore();
+}
+
+// Lazily loads the pure static-secret injection helpers from the
+// polyfill-connectors runner slice. The reference server reaches connector
+// code by relative path (it does not declare the package as a dependency), so
+// this mirrors the controller's `await import("../../packages/...")` idiom and
+// caches the resolved module after the first run.
+let staticSecretInjectionModulePromise = null;
+function loadStaticSecretInjectionHelpers() {
+  if (!staticSecretInjectionModulePromise) {
+    staticSecretInjectionModulePromise = import(
+      '../../packages/polyfill-connectors/src/static-secret-injection.ts'
+    );
+  }
+  return staticSecretInjectionModulePromise;
+}
+
+// Build the route-facing static-secret credential prober. The reference-only
+// probe seam lives in the connector package: the pure orchestration
+// (`probeCredential`, `hasCredentialProbe`) and the live transport factory,
+// which owns the provider dependency (imapflow / GitHub fetch). The server
+// adapter turns a thrown probe error into the route's non-throwing typed
+// result. This is NOT a Collection Profile message and is never exposed to /mcp
+// or grant-scoped reads. Resolved once at startup and injected, so the route
+// stays synchronous and tests inject a deterministic double instead.
+async function buildStaticSecretCredentialProber() {
+  const [probe, transport, adapter] = await Promise.all([
+    import('../../packages/polyfill-connectors/src/credential-probe.ts'),
+    import('../../packages/polyfill-connectors/src/credential-probe-transport.ts'),
+    import('./stores/static-secret-credential-probe.js'),
+  ]);
+  return adapter.createStaticSecretCredentialProber({
+    probeCredential: probe.probeCredential,
+    hasCredentialProbe: probe.hasCredentialProbe,
+    createLiveCredentialProbeTransport: transport.createLiveCredentialProbeTransport,
+  });
+}
+
+// Builds the controller's connection-scoped static-secret resolver (design
+// Decision 5). For a static-secret connector that HAS an active stored
+// credential, it returns the env fragment carrying only that connection's
+// secret; the run then authenticates with exactly that secret, overriding any
+// process-global one. It returns `null` for non-static-secret connectors and
+// for connections with no captured credential — those fall back to the legacy
+// process-env path, so existing single-account deployments are unaffected. A
+// revoked/deleted credential on a static-secret connection fails closed: the
+// run seam throws and the run is refused (no stale or process-global secret).
+function buildControllerStaticSecretRunEnvResolver() {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+    const { isStaticSecretConnector, buildConnectionScopedSecretEnv } =
+      await loadStaticSecretInjectionHelpers();
+    if (!isStaticSecretConnector(connectorId)) {
+      return null;
+    }
+    const credentialStore = createRequestConnectorInstanceCredentialStore();
+    // Backward-compatible gate keyed on credential EXISTENCE, not active status.
+    // When no credential row was ever captured for this connection, fall back to
+    // the legacy process-env path so existing single-account deployments keep
+    // working. When a credential row DOES exist (active, revoked, or deleted)
+    // we defer to the run seam, which injects the secret for an active
+    // credential and FAILS CLOSED for a revoked/deleted one — a deliberately
+    // revoked credential must never silently resurrect onto a process-global
+    // secret (design Decision 7).
+    if ((await credentialStore.getMetadata(connectorInstanceId)) === null) {
+      return null;
+    }
+    const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
+    return await resolveStaticSecretRunEnv({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
+      sourceBinding: connectorInstance?.sourceBinding ?? null,
+      credentialStore,
+      isStaticSecretConnector,
+      buildConnectionScopedSecretEnv,
+    });
+  };
+}
+
 async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
   const explicitConnectorInstanceId =
     resolveSingleConnectorIdQueryValue(options.connectorInstanceId) ||
     resolveSingleConnectorIdQueryValue(req.query?.connector_instance_id);
   const ownerSubjectId = options.ownerSubjectId || getOwnerTokenSubjectId(req);
+  // Connectors are stored under canonical short keys (registerConnector calls
+  // normalizeConnectorManifestForStorage which maps URL-form connector ids like
+  // 'https://registry.pdpp.org/connectors/spotify' to 'spotify'). Callers may
+  // supply either form, so normalise here before the instance-store lookup to
+  // prevent FK mismatches on ensureDefaultAccountConnection.
+  const canonicalId = (connectorId && canonicalConnectorKey(connectorId)) ?? connectorId;
   return resolveOwnerConnectorInstanceNamespace({
     ownerSubjectId,
-    connectorId,
+    connectorId: canonicalId,
     connectorInstanceId: explicitConnectorInstanceId,
     connectorInstanceStore: createRequestConnectorInstanceStore(),
-    allowLegacyDefault: options.allowLegacyDefault ?? true,
+    allowDefaultAccount: options.allowDefaultAccount ?? true,
+    // Only the owner-session capture path and the owner-authenticated
+    // first-ingest path pass `['active','draft']` to reach a static-secret
+    // draft. Every other caller inherits the active-only default.
+    ...(options.allowStatuses ? { allowStatuses: options.allowStatuses } : {}),
     displayName: options.displayName ?? connectorId,
     now: options.now,
   });
@@ -1227,13 +1402,22 @@ function resolveOwnerReadScope(req, opts = {}) {
     err.code = 'invalid_request';
     throw err;
   }
+  // Canonicalize the owner-supplied connector_id once, at the read-scope
+  // construction boundary, so the owner read storage binding carries the same
+  // canonical key the ingest path writes under (resolveOwnerConnectorNamespace
+  // canonicalizes at line ~1332). Without this, a URL-shaped connector_id like
+  // 'https://registry.pdpp.org/connectors/gmail' reaches connection admission
+  // verbatim, listActiveByConnector finds zero rows (they are keyed 'gmail'),
+  // and the read fails connection_not_found. The owner-facing source descriptor
+  // still reflects the canonical key. See canonicalize-connector-keys Decision 1.
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
 
   return {
     public_scope: 'polyfill',
     owner_subject_id: getOwnerTokenSubjectId(req),
-    source: { kind: 'connector', id: connectorId },
+    source: { kind: 'connector', id: connectorKey },
     storage_binding: {
-      connector_id: connectorId,
+      connector_id: connectorKey,
       connector_instance_id: resolveSingleConnectorIdQueryValue(req.query.connector_instance_id),
     },
   };
@@ -1383,14 +1567,21 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   // Explicit opts win over env so the harness can set them per-test. When
   // neither is set, placeholder auth stays off and the server keeps its
   // current open local-dev behavior.
+  //
+  // Node's built-in test runner sets NODE_TEST_CONTEXT. In that mode,
+  // direct `node --test test/foo.test.js` invocations must be hermetic
+  // even when the developer shell exports real operator env vars. The
+  // production process still reads env normally; tests that need owner auth
+  // opt in with explicit startServer({ ownerAuthPassword, ... }) options.
+  const readOwnerAuthEnv = !process.env.NODE_TEST_CONTEXT;
   const password =
     opts.ownerAuthPassword ??
-    (typeof process.env.PDPP_OWNER_PASSWORD === 'string' && process.env.PDPP_OWNER_PASSWORD
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_PASSWORD === 'string' && process.env.PDPP_OWNER_PASSWORD
       ? process.env.PDPP_OWNER_PASSWORD
       : null);
   const subjectId =
     opts.ownerAuthSubjectId ??
-    (typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
       ? process.env.PDPP_OWNER_SUBJECT_ID
       : null);
   // Force `Secure` on owner cookies behind a TLS-terminating proxy where
@@ -1398,8 +1589,10 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   // so plain-HTTP local development continues to issue usable cookies.
   const forceSecureCookies =
     opts.ownerAuthForceSecureCookies ??
-    (process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === '1' ||
-      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === 'true');
+    (readOwnerAuthEnv && (
+      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === '1' ||
+      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === 'true'
+    ));
   // SameSite mode for the owner session and CSRF cookies. `lax` keeps the
   // existing flow (login redirects from /owner/login back to /consent)
   // working. `strict` is opt-in for deployments that don't rely on
@@ -1407,11 +1600,13 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   const sameSiteRaw =
     typeof opts.ownerAuthSameSite === 'string'
       ? opts.ownerAuthSameSite
-      : process.env.PDPP_OWNER_SAMESITE;
+      : readOwnerAuthEnv
+        ? process.env.PDPP_OWNER_SAMESITE
+        : undefined;
   const sameSite = sameSiteRaw === 'strict' ? 'strict' : 'lax';
   const sessionTtlRaw =
     opts.ownerAuthSessionTtlSeconds ??
-    (typeof process.env.PDPP_OWNER_SESSION_TTL_SECONDS === 'string'
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_SESSION_TTL_SECONDS === 'string'
       ? process.env.PDPP_OWNER_SESSION_TTL_SECONDS
       : null);
   const sessionTtlSeconds =
@@ -1438,6 +1633,12 @@ function resolveGrantStorageBinding(tokenInfo) {
   return null;
 }
 
+function ownerSubjectIdForBindings(tokenInfo) {
+  return tokenInfo?.grant?.subject?.id
+    || tokenInfo?.subject_id
+    || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+}
+
 function buildClientSourceDescriptor(tokenInfo) {
   const grantSource = buildSourceDescriptor(tokenInfo?.grant?.source);
   if (grantSource) return grantSource;
@@ -1456,7 +1657,9 @@ function buildOwnerQuerySourceDescriptor(req, opts = {}) {
   }
 
   const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-  return connectorId ? buildSourceDescriptor({ kind: 'connector', id: connectorId }) : null;
+  if (!connectorId) return null;
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  return buildSourceDescriptor({ kind: 'connector', id: connectorKey });
 }
 
 function buildOwnerReadGrant(streamName) {
@@ -1468,15 +1671,30 @@ function buildOwnerReadGrant(streamName) {
 async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
   let storageBinding = ownerScope.storage_binding || null;
   if (ownerScope.public_scope === 'polyfill' && storageBinding?.connector_id) {
-    const namespace = await resolveOwnerConnectorInstanceNamespace({
-      ownerSubjectId: ownerScope.owner_subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      connectorId: storageBinding.connector_id,
-      connectorInstanceId: storageBinding.connector_instance_id,
-      connectorInstanceStore: createRequestConnectorInstanceStore(),
-      allowLegacyDefault: true,
-      displayName: storageBinding.connector_id,
-    });
-    storageBinding = storageTargetForConnectorNamespace(namespace);
+    try {
+      const namespace = await resolveOwnerConnectorInstanceNamespace({
+        ownerSubjectId: ownerScope.owner_subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId: storageBinding.connector_id,
+        connectorInstanceId: storageBinding.connector_instance_id,
+        connectorInstanceStore: createRequestConnectorInstanceStore(),
+        allowDefaultAccount: true,
+        displayName: storageBinding.connector_id,
+      });
+      storageBinding = storageTargetForConnectorNamespace(namespace);
+    } catch (err) {
+      // Tolerate multi-connection ambiguity: the route layer fans in over
+      // every active connection under the connector, so a single-binding
+      // pin is no longer required. The storage binding stays scoped to
+      // `connector_id` and the route resolves the binding set per
+      // request via `resolveReadRequestBindings`.
+      if (err?.code === 'ambiguous_connector_instance') {
+        storageBinding = { connector_id: storageBinding.connector_id };
+      } else if (err?.code !== 'connector_instance_not_found') {
+        // Fall through to manifest-not-found if the connector is not
+        // registered; route-level not_found mapping then returns a 404.
+        throw err;
+      }
+    }
   }
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
@@ -1498,16 +1716,37 @@ async function resolveOwnerManifest(req, opts = {}) {
 
 async function resolveGrantManifest(tokenInfo, opts = {}) {
   let storageBinding = resolveGrantStorageBinding(tokenInfo);
-  if (storageBinding?.connector_id) {
-    const namespace = await resolveOwnerConnectorInstanceNamespace({
-      ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      connectorId: storageBinding.connector_id,
-      connectorInstanceId: storageBinding.connector_instance_id,
-      connectorInstanceStore: createRequestConnectorInstanceStore(),
-      allowLegacyDefault: true,
-      displayName: storageBinding.connector_id,
-    });
-    storageBinding = storageTargetForConnectorNamespace(namespace);
+  // Only resolve a connector_instance namespace for polyfill connector
+  // sources. Native provider grants point at synthetic storage bindings
+  // whose connector_id is not registered in the `connectors` catalog, so
+  // forcing a connector_instances upsert would FK-fail and surface as
+  // a 500 instead of the intended client-error rejection downstream.
+  const grantSourceKind = tokenInfo?.grant?.source?.kind;
+  if (storageBinding?.connector_id && grantSourceKind !== 'provider_native') {
+    try {
+      const namespace = await resolveOwnerConnectorInstanceNamespace({
+        ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId: storageBinding.connector_id,
+        connectorInstanceId: storageBinding.connector_instance_id,
+        connectorInstanceStore: createRequestConnectorInstanceStore(),
+        allowDefaultAccount: true,
+        displayName: storageBinding.connector_id,
+      });
+      storageBinding = storageTargetForConnectorNamespace(namespace);
+    } catch (err) {
+      // Tolerate multi-connection ambiguity: the route layer fans in over
+      // every active connection under the connector. The storage binding
+      // stays scoped to `connector_id` only; the route uses the
+      // fan-in resolver to pick / iterate concrete bindings.
+      if (err?.code === 'ambiguous_connector_instance') {
+        storageBinding = { connector_id: storageBinding.connector_id };
+      } else if (err?.code !== 'connector_instance_not_found') {
+        // If the connector is not registered, fall through to the
+        // manifest-not-found path below so the route returns a clean 404
+        // ("Unknown connector: …") instead of bubbling a 500.
+        throw err;
+      }
+    }
   }
   const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
@@ -1538,8 +1777,22 @@ function buildGrantInvalidError() {
   return err;
 }
 
-async function resolveGrantScopedStateGrant(connectorId, grantId) {
-  const row = getOne(referenceQueries.grantsGetScopedStateById, [grantId]);
+export async function resolveGrantScopedStateGrant(connectorId, grantId) {
+  // Grants live in the active storage backend. In postgres mode the SQLite
+  // `grants` table is empty (or stale), so we must read from postgres or
+  // every postgres-issued grant resolves as `not_found`. JSONB columns are
+  // cast to ::text so requirePersistedGrantState's JSON.parse sees the same
+  // string shape it sees from the SQLite reader.
+  const row = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json,
+                trace_id, scenario_id
+         FROM grants
+         WHERE grant_id = $1`,
+        [grantId],
+      )).rows[0] || null
+    : getOne(referenceQueries.grantsGetScopedStateById, [grantId]);
   if (!row) {
     const err = new Error(`Unknown grant: ${grantId}`);
     err.code = 'not_found';
@@ -1555,7 +1808,15 @@ async function resolveGrantScopedStateGrant(connectorId, grantId) {
       err.scenario_id = row.scenario_id || undefined;
       throw err;
     }
-    if (resolved.storageBinding.connector_id !== connectorId) {
+    // Compare connector identity canonically: the request path may carry a
+    // URL-shaped connector id and a stale grant may carry a URL-shaped storage
+    // binding, while the live instance/records are keyed by the canonical key.
+    // Canonicalize both sides so admission matches the same key ingest/read use.
+    // See canonicalize-connector-keys Decision 1/8.
+    const canonicalPathConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const canonicalBoundConnectorId =
+      canonicalConnectorKey(resolved.storageBinding.connector_id) ?? resolved.storageBinding.connector_id;
+    if (canonicalBoundConnectorId !== canonicalPathConnectorId) {
       const err = new Error(`Grant '${grantId}' is not scoped to connector ${connectorId}`);
       err.code = 'invalid_request';
       err.trace_id = row.trace_id || null;
@@ -1707,11 +1968,37 @@ function buildFieldAggregationCapabilities(aggregations, field, granted) {
       declared: Array.isArray(aggregations?.group_by) && aggregations.group_by.includes(field),
       granted,
     }),
+    group_by_time: buildFieldCapabilityFlag({
+      declared: Array.isArray(aggregations?.group_by_time) && aggregations.group_by_time.includes(field),
+      granted,
+    }),
+    count_distinct: buildFieldCapabilityFlag({
+      declared: Array.isArray(aggregations?.count_distinct) && aggregations.count_distinct.includes(field),
+      granted,
+    }),
   };
 }
 
 function buildFieldCapabilities(manifestStream, streamGrant = null) {
   const properties = manifestStream?.schema?.properties || {};
+  const fieldDeclarations = new Map();
+  for (const declarations of [manifestStream?.fields, manifestStream?.schema?.fields]) {
+    if (!Array.isArray(declarations)) {
+      continue;
+    }
+    for (const declaration of declarations) {
+      if (
+        declaration
+        && typeof declaration === 'object'
+        && typeof declaration.name === 'string'
+        && declaration.name.trim().length > 0
+        && typeof declaration.type === 'string'
+        && declaration.type.trim().length > 0
+      ) {
+        fieldDeclarations.set(declaration.name, declaration.type.trim());
+      }
+    }
+  }
   const grantedFields = Array.isArray(streamGrant?.fields) && streamGrant.fields.length > 0
     ? new Set(streamGrant.fields)
     : null;
@@ -1724,7 +2011,21 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
     Object.entries(properties).map(([field, schema]) => {
       const granted = !grantedFields || grantedFields.has(field);
       const rangeOperators = Array.isArray(rangeFilters[field]) ? rangeFilters[field] : null;
+      // Optional declared presentation type, sourced either from the JSON
+      // Schema extension (`schema.properties[field].x_pdpp_type`) or from a
+      // sandbox-shaped field declaration (`fields[]` or `schema.fields[]`,
+      // with `{ name, type, semantic_class }`). Surfaced as an additive `type`
+      // on the field_capabilities entry only; it does not influence any filter,
+      // search, aggregation, grant, or retrieval decision below.
+      const declaredType =
+        schema
+        && typeof schema === 'object'
+        && typeof schema.x_pdpp_type === 'string'
+        && schema.x_pdpp_type.trim().length > 0
+          ? schema.x_pdpp_type.trim()
+          : fieldDeclarations.get(field) || null;
       return [field, {
+        ...(declaredType ? { type: declaredType } : {}),
         schema,
         granted,
         exact_filter: buildFieldCapabilityFlag({
@@ -1750,11 +2051,18 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
   );
 }
 
-function buildStreamMetadataEntry({ manifestStream, streamGrant = null, grantStreams = [], freshness = null }) {
+function buildStreamMetadataEntry({
+  manifestStream,
+  streamGrant = null,
+  grantStreams = [],
+  freshness = null,
+  grantedConnections = null,
+  manifestStreamNames = null,
+}) {
   const expandStreamGrant = streamGrant
     ? { ...streamGrant, grantStreams }
     : null;
-  return {
+  const entry = {
     object: 'stream_metadata',
     name: manifestStream.name,
     semantics: manifestStream.semantics,
@@ -1767,12 +2075,26 @@ function buildStreamMetadataEntry({ manifestStream, streamGrant = null, grantStr
     relationships: manifestStream.relationships || [],
     query: manifestStream.query || {},
     field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
-    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant),
+    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
     freshness: freshness ?? buildFreshness(null),
   };
+  if (Array.isArray(grantedConnections)) {
+    entry.granted_connections = grantedConnections;
+  }
+  return entry;
 }
 
-function buildExpandCapabilities(manifestStream, streamGrant = null) {
+// Emit one `expand_capabilities` entry per enabled parent-stream relation (a
+// `query.expand[]` capability backed by a `relationships[]` declaration),
+// including relations whose target stream is unreadable under the current
+// request. Declared-but-unreadable relations stay visible with `usable: false`
+// and a `reason` enum value so a console can tell "no relation declared" apart
+// from "relation declared but not readable here".
+//
+// `manifestStreamNames`, when provided, is the set of streams the loaded
+// manifest declares; a relation pointing at a stream outside that set is
+// surfaced as `related_stream_unknown` rather than silently dropped.
+function buildExpandCapabilities(manifestStream, streamGrant = null, manifestStreamNames = null) {
   const relationships = new Map((manifestStream?.relationships || []).map((relationship) => [relationship.name, relationship]));
   const grantedStreams = Array.isArray(streamGrant?.grantStreams)
     ? new Set(streamGrant.grantStreams.map((stream) => stream.name))
@@ -1782,15 +2104,25 @@ function buildExpandCapabilities(manifestStream, streamGrant = null) {
     .map((capability) => {
       const relationship = relationships.get(capability.name);
       if (!relationship) return null;
-      const granted = !grantedStreams || grantedStreams.has(relationship.stream);
+      const targetStream = relationship.stream;
+      const known = !manifestStreamNames || manifestStreamNames.has(targetStream);
+      const granted = known && (!grantedStreams || grantedStreams.has(targetStream));
+      const usable = known && granted;
       const entry = {
         name: capability.name,
-        stream: relationship.stream,
+        // `stream` (back-compat) and `target_stream` both name the related child
+        // stream; the canonical, self-describing name is `target_stream`.
+        stream: targetStream,
+        target_stream: targetStream,
         cardinality: relationship.cardinality,
         granted,
-        usable: granted,
+        usable,
       };
       if (relationship.foreign_key) {
+        // The field on the child carrying the parent's key. `child_parent_key_field`
+        // is the canonical name; `foreign_key` stays as a back-compat alias with
+        // the identical value.
+        entry.child_parent_key_field = relationship.foreign_key;
         entry.foreign_key = relationship.foreign_key;
       }
       if (capability.default_limit !== undefined) {
@@ -1799,8 +2131,8 @@ function buildExpandCapabilities(manifestStream, streamGrant = null) {
       if (capability.max_limit !== undefined) {
         entry.max_limit = capability.max_limit;
       }
-      if (!granted) {
-        entry.reason = 'related_stream_not_granted';
+      if (!usable) {
+        entry.reason = known ? 'related_stream_not_granted' : 'related_stream_unknown';
       }
       return entry;
     })
@@ -1847,7 +2179,7 @@ function buildStreamDiscoverySummary({ connectorId = null, stream, summary = nul
   };
 }
 
-async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null }) {
+async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null, ownerSubjectId = null }) {
   const connectorId = source?.kind === 'connector' ? source.id : null;
   const streamSummaries = grant
     ? await listStreams(storageBinding, grant, manifest)
@@ -1862,15 +2194,42 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
       .filter(Boolean)
     : manifest.streams || [];
   const grantStreams = grant?.streams || [];
+  // Streams the loaded manifest declares — lets the expand-capabilities builder
+  // distinguish "target stream not granted" from "target stream unknown".
+  const manifestStreamNames = new Set((manifest.streams || []).map((stream) => stream.name));
   const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
+
+  // Look up granted connections once per connector. For polyfill connectors
+  // we batch a single owner+connector store query and reuse the result for
+  // every stream entry, narrowing per-stream by `grant.streams[].connection_id`
+  // when the grant pins a single connection. For provider_native sources we
+  // omit the field — those grants do not address a connection_id.
+  let activeBindings = null;
+  if (connectorId && ownerSubjectId) {
+    activeBindings = await listGrantedConnectionsForStream({
+      ownerSubjectId,
+      connectorId,
+      grantStreamConnectionId: null,
+    });
+  }
 
   const streams = visibleStreams.map((manifestStream) => {
     const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
+    const streamGrant = grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null;
+    let grantedConnections = null;
+    if (activeBindings) {
+      const pin = streamGrant?.connection_id || null;
+      grantedConnections = pin
+        ? activeBindings.filter((entry) => entry.connection_id === pin)
+        : activeBindings;
+    }
     return buildStreamMetadataEntry({
       manifestStream,
-      streamGrant: grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null,
+      streamGrant,
       grantStreams,
       freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
+      grantedConnections,
+      manifestStreamNames,
     });
   });
 
@@ -1881,6 +2240,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
     streams,
   };
   if (connectorId) {
+    item.connector_key = connectorId;
     item.connector_id = connectorId;
   }
   return item;
@@ -1912,6 +2272,7 @@ async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, g
   };
 
   if (connectorId) {
+    item.connector_key = connectorId;
     item.connector_id = connectorId;
   }
 
@@ -1950,9 +2311,121 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
-function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
+/**
+ * Build the canonical request URL for `links.self`. Echoes the effective
+ * request path plus its query string so callers can replay the exact call
+ * without reconstructing query state. Falls back to `req.path` when no
+ * query string is present.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read responses SHALL be canonical envelopes")
+ */
+function buildSelfLink(req) {
+  if (!req) return null;
+  const path = typeof req.path === 'string' ? req.path : null;
+  if (!path) return null;
+  // Fastify exposes the raw URL (path + query) on `req.url` and on
+  // `req.raw.url`; prefer those so query order matches what the client sent.
+  const rawUrl = typeof req.url === 'string' && req.url
+    ? req.url
+    : (req.raw && typeof req.raw.url === 'string' ? req.raw.url : null);
+  if (rawUrl && rawUrl.startsWith('/')) return rawUrl;
+  return path;
+}
+
+/**
+ * Build a `links.next` URL by re-applying the operation's opaque cursor
+ * onto the same path. Returns `null` when there is no further page (the
+ * canonical contract treats absent / null `links.next` identically).
+ */
+function buildNextLink(req, payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload.has_more !== true) return null;
+  const path = typeof req?.path === 'string' ? req.path : null;
+  if (!path) return null;
+
+  // Carry every cursor variant the operation may emit: the canonical opaque
+  // `next_cursor`, and the legacy `next_changes_since` cursor used by the
+  // changes_since branch. The wire next-link is a server-issued URL the
+  // client follows verbatim; we do not commit to a cursor key format here.
+  const nextCursor = typeof payload.next_cursor === 'string' && payload.next_cursor
+    ? payload.next_cursor
+    : null;
+  const nextChangesSince = typeof payload.next_changes_since === 'string' && payload.next_changes_since
+    ? payload.next_changes_since
+    : null;
+  if (!nextCursor && !nextChangesSince) return null;
+
+  // Strip cursor/changes_since from the original request before re-stamping
+  // so a relayed link replaces the previous cursor instead of compounding.
+  const rawUrl = typeof req.url === 'string' && req.url ? req.url : path;
+  const queryStart = rawUrl.indexOf('?');
+  const queryPart = queryStart >= 0 ? rawUrl.slice(queryStart + 1) : '';
+  const sanitized = new URLSearchParams(queryPart);
+  sanitized.delete('cursor');
+  sanitized.delete('changes_since');
+  if (nextCursor) sanitized.set('cursor', nextCursor);
+  if (nextChangesSince) sanitized.set('changes_since', nextChangesSince);
+  const finalQuery = sanitized.toString();
+  return finalQuery ? `${path}?${finalQuery}` : path;
+}
+
+/**
+ * Project a public-read operation envelope onto the canonical contract:
+ * `{ object, data, has_more?, links: { self, next }, meta: { count, warnings } }`.
+ *
+ * Backward-compatible fields the contract allows (`next_cursor`,
+ * `next_changes_since`, `url`) are preserved. Operations that already
+ * emitted a partial `meta` (e.g. `meta.warnings[]` for a deprecated alias
+ * use) keep their warnings; the helper just guarantees the envelope SHAPE
+ * is canonical.
+ *
+ * Single-object envelopes (records detail, schema) omit `has_more`. The
+ * helper detects them by absence of `has_more` on the operation payload.
+ */
+function finalizeCanonicalEnvelope(payload, req) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const next = { ...payload };
+  const self = buildSelfLink(req);
+  const nextLink = buildNextLink(req, payload);
+  next.links = {
+    ...(payload.links && typeof payload.links === 'object' && !Array.isArray(payload.links) ? payload.links : {}),
+  };
+  if (self) next.links.self = self;
+  // List-shaped envelopes always announce `links.next` (null when there is
+  // no further page). Non-list envelopes omit `next` to keep wire shape
+  // discriminated.
+  if (Object.prototype.hasOwnProperty.call(payload, 'has_more')) {
+    next.links.next = nextLink;
+  }
+  const existingMeta = payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
+    ? payload.meta
+    : null;
+  const meta = { ...(existingMeta || {}) };
+  if (!('count' in meta)) {
+    meta.count = { kind: 'none' };
+  }
+  if (!('warnings' in meta)) {
+    meta.warnings = [];
+  }
+  next.meta = meta;
+  return next;
+}
+
+async function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
   if (isPostgresStorageBackend()) {
-    return postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
+    const stored = await postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
+    if (stored.binding_inserted) {
+      await applyRetainedSizeBlobDelta({
+        connectorInstanceId,
+        connectorId,
+        stream,
+        blobBytesDelta: Number(stored.size_bytes || 0),
+        blobCountDelta: 1,
+      });
+    }
+    return stored;
   }
 
   const sha256 = createHash('sha256').update(data).digest('hex');
@@ -1970,9 +2443,18 @@ function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream,
       throw err;
     }
 
-    exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
+    const bindingResult = exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
     if (insertResult.changes > 0) {
       applyDatasetSummaryBlobDelta({ blobBytesDelta: sizeBytes });
+    }
+    if (bindingResult.changes > 0) {
+      applyRetainedSizeBlobDelta({
+        connectorInstanceId,
+        connectorId,
+        stream,
+        blobBytesDelta: sizeBytes,
+        blobCountDelta: 1,
+      });
     }
 
     return row;
@@ -2052,30 +2534,19 @@ function buildAsApp(opts = {}) {
 
   // Shared hosted-UI stylesheet for reference server-rendered HTML pages
   // (consent, device, approval results, owner-login). This is a
-  // reference-only asset, not a PDPP protocol surface. See
-  // `reference-implementation/server/hosted-ui.js`.
-  app.get(HOSTED_UI_CSS_PATH, (req, res) => {
-    res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=300');
-    res.send(HOSTED_UI_CSS);
-  });
+  // reference-only asset, not a PDPP protocol surface. Mounted via
+  // `server/routes/hosted-ui-asset.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same path, same headers, same registration order.
+  mountHostedUiCss(app);
 
-  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so an
-  // integrator probing the AS root learns where the AS well-known endpoint
-  // lives without trial-and-error. The body intentionally restates the
-  // running reference revision (also exposed via the response header) so an
-  // LLM agent has a single document to read.
-  // Discovery-index envelope semantics live in the canonical
-  // `as.discovery.index` operation (operations/as-discovery-index). This
-  // route is an Express host adapter: it owns request-id/header wiring and
-  // response writing; the operation owns the envelope shape.
-  app.get('/', { contract: 'getAsDiscoveryIndex' }, (req, res) => {
-    res.json(
-      executeAsDiscoveryIndex({
-        providerName,
-        referenceRevision,
-      }),
-    );
+  // AS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving extraction: same mount point, same handler, same envelope.
+  mountAsRoot(app, {
+    providerName,
+    referenceRevision,
+    servedRootLandingIfBrowser,
   });
 
   // Reference-only owner-auth placeholder. This is NOT a public PDPP
@@ -2088,45 +2559,13 @@ function buildAsApp(opts = {}) {
     return req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
   }
 
-  async function resolveRefConnectorNamespace(req, connectorId) {
-    return resolveOwnerConnectorNamespace(req, connectorId, {
-      ownerSubjectId: getOwnerSubjectId(req),
-    });
-  }
-
-  async function resolveRefConnectionNamespace(req, connectorInstanceId) {
-    return resolveOwnerConnectorNamespace(req, null, {
-      ownerSubjectId: getOwnerSubjectId(req),
-      allowLegacyDefault: false,
-      connectorInstanceId,
-    });
-  }
-
-  function projectRefConnection(instance, schedulesByInstanceId = new Map()) {
-    return {
-      object: 'ref_connection',
-      connector_instance_id: instance.connectorInstanceId,
-      connector_id: instance.connectorId,
-      display_name: instance.displayName,
-      status: instance.status,
-      source_kind: instance.sourceKind,
-      source_binding: instance.sourceBinding,
-      created_at: instance.createdAt,
-      updated_at: instance.updatedAt,
-      revoked_at: instance.revokedAt,
-      schedule: schedulesByInstanceId.get(instance.connectorInstanceId) || null,
-    };
-  }
-
-  async function sendRefConnectionDetail(req, res, connectorInstanceId) {
-    const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-    const store = createRequestConnectorInstanceStore();
-    const instance = await store.get(namespace.connectorInstanceId);
-    const schedule = controller
-      ? await controller.getSchedule(namespace.connectorId, { connectorInstanceId: namespace.connectorInstanceId })
-      : null;
-    res.json(projectRefConnection(instance || namespace, new Map(schedule ? [[namespace.connectorInstanceId, schedule]] : [])));
-  }
+  // `resolveRefConnectorNamespace`, `resolveRefConnectionNamespace`,
+  // `projectRefConnection`, and `sendRefConnectionDetail` moved to
+  // `server/routes/ref-connectors.ts` along with the routes that consumed
+  // them. The host still exposes `resolveOwnerConnectorNamespace`,
+  // `getOwnerSubjectId`, `createRequestConnectorInstanceStore`, and the
+  // controller surface; the adapter wires those into the per-route
+  // helpers.
 
   // Reject any device-exporter ingest/heartbeat/state request whose
   // X-PDPP-Collector-Protocol header is not in the server's accepted set.
@@ -2212,1159 +2651,465 @@ function buildAsApp(opts = {}) {
   const runTargetRegistry = opts.runTargetRegistry || createRunTargetRegistry({ logger: opts.streamingLogger });
   runTargetRegistry.attachRoutes(app, requireDeviceExporterCredential);
 
-  async function buildDeviceExporterDiagnostics(ownerSubjectId) {
-    const [devices, sourceInstances, outcomes] = await Promise.all([
-      deviceExporterStore.listDevices(ownerSubjectId),
-      deviceExporterStore.listSourceInstances(),
-      deviceExporterStore.listBatchOutcomes({ limit: 5000 }),
-    ]);
-    const now = Date.now();
-    const sourcesByDevice = new Map();
-    const outcomeStats = new Map();
-    const devicesById = new Map(devices.map((device) => [device.deviceId, device]));
-    const connectorInstances = await createRequestConnectorInstanceStore().listByOwner(ownerSubjectId);
-    const connectorInstancesById = new Map(connectorInstances.map((instance) => [instance.connectorInstanceId, instance]));
-    const connectorInstancesByBinding = new Map(connectorInstances.map((instance) => [
-      `${instance.connectorId}\n${instance.sourceKind}\n${instance.sourceBindingKey}`,
-      instance,
-    ]));
+  // renderPendingConsentNotFoundHtml, renderPendingGrantConsentHtml, and
+  // renderHostedMcpSourceSelection extracted to
+  // `server/routes/as-consent-ui-helpers.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Call sites below pass the
+  // required context arguments explicitly.
 
-    // Aggregate pending local-collector gap rows by the source instance
-    // that produced them. Without this, every device sharing a connector
-    // type collapses into the same connector-level gap count and an
-    // operator cannot tell whether "Codex" is unhealthy on laptop A or
-    // laptop B. Each gap stores the producing source in `source_json`
-    // (kind=local_device, device_id, source_instance_id).
-    const connectorIds = new Set();
-    for (const source of sourceInstances) {
-      if (source.connectorId) connectorIds.add(source.connectorId);
-    }
-    const detailGapStore = getDefaultConnectorDetailGapStore();
-    const localCollectorGapStats = new Map();
-    const localCollectorGapUnreliableConnectorIds = new Set();
-    if (typeof detailGapStore.listPendingGapsForConnector === 'function') {
-      for (const connectorId of connectorIds) {
-        let gaps = [];
-        try {
-          gaps = await detailGapStore.listPendingGapsForConnector(connectorId, { limit: 500 });
-        } catch {
-          // Do not fail the whole device-exporter projection on a single
-          // detail-gap store read, but also do not render a false zero.
-          // Each source for this connector gets local_collector_gaps.unreliable=true.
-          localCollectorGapUnreliableConnectorIds.add(connectorId);
-          gaps = [];
-        }
-        for (const gap of gaps) {
-          if (!gap || gap.status !== 'pending') continue;
-          const source = gap.source && typeof gap.source === 'object' ? gap.source : null;
-          if (!source || source.kind !== 'local_device') continue;
-          const sourceInstanceId = typeof source.source_instance_id === 'string' ? source.source_instance_id : null;
-          if (!sourceInstanceId) continue;
-          const current = localCollectorGapStats.get(sourceInstanceId) || {
-            pending: 0,
-            lastUpdatedAt: null,
-            reasons: new Set(),
-          };
-          current.pending += 1;
-          if (!current.lastUpdatedAt || (gap.updated_at && gap.updated_at > current.lastUpdatedAt)) {
-            current.lastUpdatedAt = gap.updated_at ?? current.lastUpdatedAt;
-          }
-          if (typeof gap.reason === 'string' && gap.reason) current.reasons.add(gap.reason);
-          localCollectorGapStats.set(sourceInstanceId, current);
-        }
-      }
-    }
-
-    for (const outcome of outcomes) {
-      const key = outcome.sourceInstanceId;
-      const current = outcomeStats.get(key) || {
-        accepted: 0,
-        rejected: 0,
-        lastIngestAt: null,
-      };
-      if (outcome.status === 'accepted') {
-        current.accepted += outcome.response?.accepted_record_count ?? 0;
-      } else if (outcome.status === 'rejected') {
-        current.rejected += outcome.response?.rejected_record_count ?? 0;
-      }
-      if (!current.lastIngestAt || outcome.createdAt > current.lastIngestAt) {
-        current.lastIngestAt = outcome.createdAt;
-      }
-      outcomeStats.set(key, current);
-    }
-
-    for (const source of sourceInstances) {
-      const stats = outcomeStats.get(source.sourceInstanceId) || {
-        accepted: 0,
-        rejected: 0,
-        lastIngestAt: null,
-      };
-      const device = devicesById.get(source.deviceId);
-      const sourceBinding = deviceExporterSourceBinding(source.deviceId, source);
-      const connectorInstance = source.connectorInstanceId
-        ? connectorInstancesById.get(source.connectorInstanceId)
-        : device
-          ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
-          : null;
-      const gapStats = localCollectorGapStats.get(source.sourceInstanceId) || null;
-      const outboxDiagnostics = source.outboxDiagnostics ?? null;
-      const projected = {
-        object: 'device_source_instance',
-        source_instance_id: source.sourceInstanceId,
-        connector_instance_id: connectorInstance?.connectorInstanceId ?? null,
-        device_id: source.deviceId,
-        connector_id: source.connectorId,
-        local_binding_name: source.localBindingId,
-        display_name: source.displayName,
-        created_at: source.createdAt,
-        last_ingest_at: stats.lastIngestAt,
-        accepted_record_count: stats.accepted,
-        rejected_record_count: stats.rejected,
-        // Per-source heartbeat state — distinguishes a stalled collector
-        // on one device from a healthy collector on another device that
-        // shares the same connector type.
-        last_heartbeat_at: source.lastHeartbeatAt ?? null,
-        last_heartbeat_status: source.lastHeartbeatStatus ?? null,
-        records_pending: source.recordsPending ?? null,
-        outbox_diagnostics: outboxDiagnostics,
-        outbox_state: deriveSourceInstanceOutboxState(outboxDiagnostics),
-        // Pending local-collector gaps scoped to THIS source instance.
-        // Diagnostics consumers can render a per-source backlog without
-        // attributing one device's gap to another.
-        local_collector_gaps: {
-          pending_count: gapStats ? gapStats.pending : 0,
-          reasons: gapStats ? [...gapStats.reasons].sort() : [],
-          last_updated_at: gapStats ? gapStats.lastUpdatedAt : null,
-          unreliable: localCollectorGapUnreliableConnectorIds.has(source.connectorId),
-        },
-        last_error: source.lastError,
-      };
-      const list = sourcesByDevice.get(source.deviceId) || [];
-      list.push(projected);
-      sourcesByDevice.set(source.deviceId, list);
-    }
-
-    return devices.map((device) => {
-      const sourceList = sourcesByDevice.get(device.deviceId) || [];
-      const lastIngestAt = sourceList.reduce(
-        (latest, source) => (!latest || (source.last_ingest_at && source.last_ingest_at > latest) ? source.last_ingest_at : latest),
-        null,
-      );
-      const lastHeartbeatAt = device.lastHeartbeatAt ?? null;
-      const stale = Boolean(
-        lastHeartbeatAt
-        && Number.isFinite(Date.parse(lastHeartbeatAt))
-        && now - Date.parse(lastHeartbeatAt) > 5 * 60 * 1000
-      );
-      return {
-        object: 'device_exporter',
-        device_id: device.deviceId,
-        subject_id: device.ownerSubjectId,
-        display_name: device.displayName,
-        status: device.status,
-        created_at: device.createdAt,
-        last_heartbeat_at: lastHeartbeatAt,
-        last_ingest_at: lastIngestAt,
-        revoked_at: device.revokedAt,
-        stale,
-        source_instances: sourceList,
-        last_error: device.lastError,
-      };
-    });
-  }
-
-  function deriveSourceInstanceOutboxState(diagnostics) {
-    if (!diagnostics || typeof diagnostics !== 'object') return 'unknown';
-    if ((diagnostics.dead_letter ?? 0) > 0) return 'dead_letter';
-    if ((diagnostics.stale_leases ?? 0) > 0) return 'stale';
-    if ((diagnostics.retrying ?? 0) > 0) return 'retrying';
-    if ((diagnostics.pending ?? 0) > 0) return 'pending';
-    if ((diagnostics.backlog_open ?? 0) > 0) return 'backlog';
-    return 'drained';
-  }
-
-  function normalizeHeartbeatSourceInstances(body) {
-    if (Array.isArray(body.source_instances)) {
-      // The array form carries per-source state today; the top-level
-      // `status` / `records_pending` apply to a single-source heartbeat.
-      return body.source_instances;
-    }
-    if (typeof body.source_instance_id === 'string') {
-      return [
-        {
-          source_instance_id: body.source_instance_id,
-          last_error: body.last_error ?? null,
-          status: typeof body.status === 'string' ? body.status : null,
-          records_pending:
-            typeof body.records_pending === 'number' ? body.records_pending : null,
-          outbox: body.outbox ?? null,
-        },
-      ];
-    }
-    return [];
-  }
-
-  function deviceExporterSourceBinding(deviceId, sourceInstance) {
-    return {
-      kind: 'local_device',
-      device_id: deviceId,
-      local_binding_name: sourceInstance.localBindingId,
-      source_instance_id: sourceInstance.sourceInstanceId,
-    };
-  }
-
-  async function resolveActiveDeviceConnectorInstance(deviceId, ownerSubjectId, sourceInstance) {
-    const store = createRequestConnectorInstanceStore();
-    if (sourceInstance.connectorInstanceId) {
-      const instance = await store.get(sourceInstance.connectorInstanceId);
-      if (
-        instance
-        && instance.status === 'active'
-        && instance.ownerSubjectId === ownerSubjectId
-        && instance.connectorId === sourceInstance.connectorId
-      ) {
-        return instance;
-      }
-      return null;
-    }
-    const sourceBinding = deviceExporterSourceBinding(deviceId, sourceInstance);
-    const instance = await store.getByBinding({
-      ownerSubjectId,
-      connectorId: sourceInstance.connectorId,
-      sourceKind: 'local_device',
-      sourceBindingKey: makeConnectorInstanceSourceBindingKey(sourceBinding),
-    });
-    if (!instance || instance.status !== 'active') {
-      return null;
-    }
-    return instance;
-  }
-
-  async function resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus = 400 } = {}) {
-    const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
-    if (!sourceInstance || sourceInstance.status !== 'active') {
-      pdppError(res, notFoundStatus, notFoundStatus === 404 ? 'not_found' : 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
-      return null;
-    }
-    const connectorInstance = await resolveActiveDeviceConnectorInstance(deviceId, req.deviceExporter.ownerSubjectId, sourceInstance);
-    if (!connectorInstance || connectorInstance.ownerSubjectId !== req.deviceExporter.ownerSubjectId) {
-      pdppError(res, 403, 'permission_error', 'source_instance_id is not authorized for an active connector instance', 'source_instance_id');
-      return null;
-    }
-    return { sourceInstance, connectorInstance };
-  }
-
-  function normalizeDeviceIngestRecords(body) {
-    if (!Array.isArray(body.records) || body.records.length === 0) {
-      const err = new Error('records must be a non-empty array');
-      err.code = 'invalid_request';
-      err.param = 'records';
-      throw err;
-    }
-    return body.records.map((record, index) => {
-      if (!record || typeof record !== 'object' || Array.isArray(record)) {
-        const err = new Error(`records[${index}] must be an object`);
-        err.code = 'invalid_request';
-        err.param = 'records';
-        throw err;
-      }
-      const key = record.record_key ?? record.key;
-      if (key == null || (typeof key !== 'string' && !Array.isArray(key))) {
-        const err = new Error(`records[${index}].record_key is required`);
-        err.code = 'invalid_request';
-        err.param = 'records';
-        throw err;
-      }
-      return {
-        stream: requireNonEmptyString(record.stream, `records[${index}].stream`),
-        key,
-        emitted_at: typeof record.emitted_at === 'string' ? record.emitted_at : undefined,
-        data: optionalObject(record.data) || {},
-      };
-    });
-  }
-
-  function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
-    const request = pending.request;
-    const client = request.client || {};
-    const selection = request.selection || {};
-    const sourceBinding = request.source_binding;
-    const clientName = client.client_display?.name || client.client_id || 'Client application';
-    const sourceLabel = sourceBinding?.id || 'this source';
-    const sourceFactLabel = sourceBinding?.kind === 'provider_native' ? 'Provider' : 'Connector';
-
-    const requestedStreams = Array.isArray(selection.streams) ? selection.streams : [];
-    const isWildcardRequest = requestedStreams.length === 1 && requestedStreams[0]?.name === '*';
-    const manifestStreamNames = Array.isArray(pending.manifestStreamNames)
-      ? pending.manifestStreamNames
-      : null;
-
-    let streamsBlock;
-    if (isWildcardRequest) {
-      // The owner must see effective scope, not the protocol shorthand `*`.
-      const resolvedNames = manifestStreamNames && manifestStreamNames.length > 0
-        ? manifestStreamNames
-        : null;
-      const countSummary = resolvedNames
-        ? `All streams for ${sourceLabel} (${resolvedNames.length}) are in scope.`
-        : `All streams for ${sourceLabel} are in scope.`;
-      const resolvedList = resolvedNames
-        ? `<ul class="hosted-ui-streams">${
-            resolvedNames
-              .map((name) => `<li><span class="hosted-ui-stream-name">${hostedEscape(name)}</span></li>`)
-              .join('')
-          }</ul>`
-        : '';
-      streamsBlock = `
-      <div>
-        <span class="pdpp-title">Streams requested</span>
-        <div class="hosted-ui-warning" role="note">
-          <span class="hosted-ui-warning-title">All streams</span>
-          <span class="hosted-ui-warning-body">${hostedEscape(countSummary)}</span>
-        </div>
-        ${resolvedList}
-      </div>`;
-    } else {
-      const streamItems = requestedStreams
-        .map((s) => {
-          const fragments = [
-            s.time_range ? `since ${s.time_range.since || 'any'}` : null,
-            s.fields ? `fields: ${s.fields.join(', ')}` : null,
-            s.view ? `view: ${s.view}` : null,
-            s.necessity === 'optional' ? 'optional' : null,
-          ].filter(Boolean);
-          const meta = fragments.length
-            ? ` <span class="hosted-ui-stream-meta">${hostedEscape(fragments.join(' · '))}</span>`
-            : '';
-          return `<li><span class="hosted-ui-stream-name">${hostedEscape(s.name)}</span>${meta}</li>`;
-        })
-        .join('');
-      streamsBlock = `
-      <div>
-        <span class="pdpp-title">Streams requested</span>
-        <ul class="hosted-ui-streams">${streamItems}</ul>
-      </div>`;
-    }
-
-    const isContinuous = selection.access_mode === 'continuous';
-    const hasRetentionBound = Boolean(selection.retention?.max_duration);
-
-    let continuousBlock = '';
-    if (isContinuous) {
-      const continuousBody = hasRetentionBound
-        ? 'This is long-lived access — the client may keep reading until the grant is revoked or its retention bound is reached.'
-        : 'This is long-lived access with no explicit expiry. The client may keep reading until you revoke the grant.';
-      continuousBlock = `
-      <div class="hosted-ui-warning" role="note">
-        <span class="hosted-ui-warning-title">Continuous access</span>
-        <span class="hosted-ui-warning-body">${hostedEscape(continuousBody)}</span>
-      </div>`;
-    }
-
-    const facts = renderKeyValueList([
-      { label: 'Requesting app', value: clientName },
-      sourceBinding?.id ? { label: sourceFactLabel, value: sourceBinding.id } : null,
-      { label: 'Purpose', value: selection.purpose_description || selection.purpose_code },
-      { label: 'Access mode', value: selection.access_mode },
-      selection.retention
-        ? { label: 'Retention', value: `${selection.retention.on_expiry} after ${selection.retention.max_duration}` }
-        : null,
-    ].filter(Boolean));
-
-    const codeBlock = pending.userCode
-      ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${hostedEscape(pending.userCode)}</div></div>`
-      : '';
-
-    const csrfHidden = csrfToken
-      ? [{ name: ownerAuth.csrfFieldName, value: csrfToken }]
-      : [];
-    const actions = renderActionRow([
-      {
-        label: 'Allow access',
-        variant: 'primary',
-        method: 'POST',
-        action: '/consent/approve',
-        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
-      },
-      {
-        label: 'Deny',
-        variant: 'danger',
-        method: 'POST',
-        action: '/consent/deny',
-        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
-      },
-    ]);
-
-    const body = [
-      renderPageIntro({
-        eyebrow: 'Data access request',
-        title: `${clientName} wants access to your data`,
-        lede: 'Review what this app is asking for. Your server will only release what you allow here.',
-      }),
-      renderSurface({ surface: 'human', children: [codeBlock, facts, streamsBlock, continuousBlock, actions].filter(Boolean).join('\n'), ariaLabel: 'Consent request' }),
-    ].join('\n');
-
-    return renderHostedDocument({
-      title: `${providerName} — Consent request`,
-      providerName,
-      body,
-    });
-  }
-
-  async function getPendingGrantFromRequestUri(requestUri) {
+  async function getPendingGrantFromRequestUri(requestUri, opts = {}) {
     const deviceCode = consentStore.parseRequestUri(requestUri);
     if (!deviceCode) return { deviceCode: null, pending: null };
-    const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode);
+    const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode, opts);
     return { deviceCode, pending };
   }
 
-  const agentConnectAttempts = new Map();
+  // agent-connect attempt state — shared between the two agent-connect HTTP
+  // routes and the consent approve/deny handlers. Extracted to
+  // `server/routes/as-agent-connect.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`.
+  const agentConnectAttemptStore = createAgentConnectAttemptStore();
 
-  function pruneAgentConnectAttempts(now = Date.now()) {
-    for (const [id, attempt] of agentConnectAttempts) {
-      if (attempt.status !== 'pending' || attempt.expiresAt <= now) {
-        agentConnectAttempts.delete(id);
+  // parseAuthorizeAuthorizationDetails, requireAuthorizeString,
+  // requireRegisteredRedirectUri, validateAuthorizePkce,
+  // buildHostedMcpAuthorizationDetailsForConnector,
+  // buildHostedMcpAuthorizationDetailForConnector,
+  // HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
+  // HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES, and
+  // renderHostedMcpSourceSelection extracted to
+  // `server/routes/as-consent-ui-helpers.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Imports at top of file.
+
+  // POST /agent-connect and POST /agent-connect/:attemptId/token extracted to
+  // `server/routes/as-agent-connect.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving: same auth
+  // posture (none), same status codes, same error envelopes.
+  mountAsAgentConnect(app, {
+    agentConnectAttemptStore,
+    agentConnectTtlMs: opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS,
+    handleError,
+    pdppError,
+    async getPendingGrantFromRequestUri(requestUri, opts2 = {}) {
+      const { pending } = await getPendingGrantFromRequestUri(requestUri, opts2);
+      if (!pending) return null;
+      const pendingClientId = pending.request?.client?.client_id || null;
+      return { pendingClientId };
+    },
+    async initiateNativeGrant({ baseUrl, clientId, clientName }) {
+      const nativeManifest = resolveNativeManifest(opts);
+      if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
+        return null;
       }
-    }
-  }
-
-  function publicAgentConnectAttempt(attempt) {
-    return {
-      id: attempt.id,
-      object: 'agent_connect_attempt',
-      status: attempt.status,
-      approval_url: attempt.approvalUrl,
-      poll_url: attempt.tokenUrl,
-      token_url: attempt.tokenUrl,
-      expires_in: Math.max(Math.ceil((attempt.expiresAt - Date.now()) / 1000), 0),
-      interval: attempt.interval,
-    };
-  }
-
-  function completeAgentConnectAttempt(requestUri, outcome) {
-    for (const attempt of agentConnectAttempts.values()) {
-      if (attempt.requestUri !== requestUri || attempt.status !== 'pending') continue;
-      attempt.status = outcome.status;
-      attempt.completedAt = new Date().toISOString();
-      if (outcome.status === 'approved') {
-        attempt.token = outcome.token;
-        attempt.grant = outcome.grant;
-        attempt.grantId = outcome.grant?.grant_id || outcome.grantId || null;
-      }
-    }
-  }
-
-  function failAgentConnectAttempt(requestUri, status) {
-    completeAgentConnectAttempt(requestUri, { status });
-  }
-
-  function buildAgentConnectError(status) {
-    if (status === 'denied') {
-      return { error: 'access_denied', error_description: 'Owner denied the scoped access request' };
-    }
-    if (status === 'expired') {
-      return { error: 'expired_token', error_description: 'The agent-connect request expired before approval' };
-    }
-    return { error: 'authorization_pending', error_description: 'Owner approval is still pending' };
-  }
-
-  // Narrow hosted completion handoff for CLI `connect`: the CLI first stages a
-  // normal PAR request, then registers that request_uri here to receive a
-  // polling handle. Owner approval still happens through the existing consent
-  // page, but the bearer is returned only to the caller holding the polling
-  // code, never rendered into the owner browser.
-  app.post('/agent-connect', async (req, res) => {
-    try {
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const baseUrl = resolvePublicUrl(req, explicitBaseUrl);
-      let requestUri = typeof req.body?.request_uri === 'string' ? req.body.request_uri : null;
-      let clientId = typeof req.body?.client_id === 'string' ? req.body.client_id : null;
-      if (!requestUri) {
-        const nativeManifest = resolveNativeManifest(opts);
-        if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
-          return pdppError(
-            res,
-            400,
-            'invalid_request',
-            'request_uri is required unless the reference provider is running with a native manifest',
-          );
-        }
-        const clientName = typeof req.body?.client_name === 'string' && req.body.client_name.trim()
-          ? req.body.client_name.trim()
-          : 'PDPP CLI';
-        clientId = clientId || PDPP_CLI_DEFAULT_CLIENT_ID;
-        const staged = await consentStore.initiateGrant(
-          {
-            client_id: clientId,
-            client_display: { name: clientName },
-            authorization_details: [
-              {
-                type: 'https://pdpp.org/data-access',
-                source: { kind: 'provider_native', id: nativeManifest.provider_id },
-                purpose_code: 'https://pdpp.org/purpose/personal_assistant',
-                purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
-                access_mode: 'single_use',
-                streams: [{ name: '*' }],
-              },
-            ],
-          },
-          { baseUrl, nativeManifest },
-        );
-        requestUri = staged.request_uri;
-      }
-      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
-      const { pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!pending) return pdppError(res, 400, 'expired_token', 'Pending grant request is unknown or expired');
-      if (clientId && pending.request?.client?.client_id !== clientId) {
-        return pdppError(res, 403, 'invalid_client', 'client_id does not match pending request');
-      }
-
-      pruneAgentConnectAttempts();
-      const id = `agc_${randomBytes(16).toString('hex')}`;
-      const pollingCode = `agc_poll_${randomBytes(32).toString('hex')}`;
-      const tokenUrl = `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`;
-      const approvalUrl = new URL(`${baseUrl}/consent`);
-      approvalUrl.searchParams.set('request_uri', requestUri);
-      const attempt = {
-        id,
-        pollingCode,
-        requestUri,
-        clientId: pending.request?.client?.client_id || clientId || null,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        expiresAt: Date.now() + (opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS),
-        interval: 2,
-        approvalUrl: approvalUrl.toString(),
-        tokenUrl,
-      };
-      agentConnectAttempts.set(id, attempt);
-      res.status(201).json({
-        ...publicAgentConnectAttempt(attempt),
-        polling_code: pollingCode,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/agent-connect/:attemptId/token', async (req, res) => {
-    try {
-      const attempt = agentConnectAttempts.get(req.params.attemptId);
-      const pollingCode = typeof req.body?.polling_code === 'string' ? req.body.polling_code : null;
-      if (!attempt || pollingCode !== attempt.pollingCode) {
-        return pdppError(res, 401, 'invalid_grant', 'Unknown agent-connect polling handle');
-      }
-      if (attempt.status === 'pending' && attempt.expiresAt <= Date.now()) {
-        attempt.status = 'expired';
-      }
-      if (attempt.status === 'pending') {
-        return res.status(202).json({
-          status: 'pending',
-          ...buildAgentConnectError('pending'),
-          interval: attempt.interval,
-        });
-      }
-      if (attempt.status !== 'approved') {
-        const error = buildAgentConnectError(attempt.status);
-        agentConnectAttempts.delete(attempt.id);
-        return pdppError(res, attempt.status === 'denied' ? 403 : 400, error.error, error.error_description);
-      }
-      agentConnectAttempts.delete(attempt.id);
-      res.json({
-        access_token: attempt.token,
-        token_type: 'Bearer',
-        grant_id: attempt.grantId,
-        grant: attempt.grant,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // RFC 8414 authorization-server metadata. The metadata-document envelope
-  // lives in the canonical `as.authorization_server.metadata` operation
-  // (operations/as-authorization-server-metadata). The host adapter resolves
-  // the public issuer URL from explicit opts or ambient env, and supplies
-  // the metadata-builder dependency.
-  app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
-    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
-    if (rejectUntrustedMetadataHost(req, res, explicitIssuer, opts.trustedMetadataHosts)) {
-      return;
-    }
-    const issuer = resolvePublicUrl(req, explicitIssuer);
-    res.json(
-      executeAsAuthorizationServerMetadata(
+      return consentStore.initiateGrant(
         {
-          issuer,
-          dynamicClientRegistrationEnabled,
-          preRegisteredPublicClients: publicClientMetadataForAuthorizationServer(
-            resolvePreRegisteredPublicClients(opts),
-          ),
-        },
-        { buildAuthorizationServerMetadata },
-      ),
-    );
-  });
-
-  // DCR register semantics (input sanitization, extra metadata derivation,
-  // success/failure spine-event data shapes, HTTP status mapping) live in
-  // the canonical `as.dcr.register` operation (operations/as-dcr-register).
-  // The host adapter owns trace-context emission, owner-session resolution,
-  // request-id/trace-id headers, spine-event dispatch, and response writing.
-  app.post('/oauth/register', { contract: 'registerDynamicClient' }, async (req, res) => {
-    const traceContext = createTraceContext();
-    res.setHeader('Request-Id', traceContext.request_id);
-    setReferenceTraceId(res, traceContext.trace_id);
-
-    const ownerSession = ownerAuth.readOwnerSession(req);
-    const authorizationHeader = req.headers.authorization || null;
-    if (!authorizationHeader && !ownerSession) {
-      const retryAfter = publicDcrRateLimiter.check(req);
-      if (retryAfter) {
-        res.setHeader('Retry-After', String(retryAfter));
-        await emitSpineEvent({
-          event_type: 'client.register_rejected',
-          trace_id: traceContext.trace_id,
-          scenario_id: traceContext.scenario_id,
-          request_id: traceContext.request_id,
-          actor_type: 'client',
-          actor_id: 'dynamic_registration',
-          object_type: 'client_registration',
-          object_id: traceContext.request_id,
-          status: 'rejected',
-          data: {
-            ...summarizeDcrRegisterRequest(req.body),
-            error: {
-              code: 'slow_down',
-              message: 'Too many public client registration attempts; retry later',
+          client_id: clientId,
+          client_display: { name: clientName },
+          authorization_details: [
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'provider_native', id: nativeManifest.provider_id },
+              purpose_code: 'https://pdpp.org/purpose/personal_assistant',
+              purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
+              access_mode: 'single_use',
+              streams: [{ name: '*' }],
             },
-          },
-        });
-        return oauthError(
-          res,
-          429,
-          'slow_down',
-          'Too many public client registration attempts; retry later',
-        );
-      }
-    }
-    const outcome = await executeAsDcrRegister(
-      {
-        body: req.body,
-        authorizationHeader,
-        dcrEnabled: dynamicClientRegistrationEnabled,
-        initialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokensForRequest(
-          req,
-          dynamicClientRegistrationInitialAccessTokens,
-        ),
-        ownerSessionSubjectId: ownerSession?.sub || null,
-      },
-      { registerDynamicClient },
-    );
-
-    if (outcome.outcome === 'success') {
-      await emitSpineEvent({
-        event_type: 'client.registered',
-        trace_id: traceContext.trace_id,
-        scenario_id: traceContext.scenario_id,
-        request_id: traceContext.request_id,
-        actor_type: 'client',
-        actor_id: outcome.registered.client_id,
-        object_type: 'client',
-        object_id: outcome.registered.client_id,
-        status: 'succeeded',
-        client_id: outcome.registered.client_id,
-        data: outcome.spineData,
-      });
-      return res.status(outcome.status).json(outcome.registered);
-    }
-
-    await emitSpineEvent({
-      event_type: 'client.register_rejected',
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      request_id: traceContext.request_id,
-      actor_type: 'client',
-      actor_id: 'dynamic_registration',
-      object_type: 'client_registration',
-      object_id: traceContext.request_id,
-      status: 'rejected',
-      data: outcome.spineData,
-    });
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+          ],
+        },
+        { baseUrl, nativeManifest },
+      );
+    },
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
+    pdppCliDefaultClientId: PDPP_CLI_DEFAULT_CLIENT_ID,
+    generateAttemptId: () => `agc_${randomBytes(16).toString('hex')}`,
+    generatePollingCode: () => `agc_poll_${randomBytes(32).toString('hex')}`,
+    buildTokenUrl: (baseUrl, id) => `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`,
+    buildApprovalUrl: (baseUrl, requestUri) => {
+      const u = new URL(`${baseUrl}/consent`);
+      u.searchParams.set('request_uri', requestUri);
+      return u.toString();
+    },
+    now: () => Date.now(),
   });
 
-  // RFC 7592 client deletion. Owner-session-gated rather than registration-
-  // access-token-gated by deliberate design choice — see the rationale in
-  // openspec/changes/dcr-per-owner-token-with-revoke/design.md. Cascades to
-  // revoke every active grant tied to the client; refuses pre-registered
-  // clients and cross-operator deletes. Idempotent: a second call returns
-  // 404 not_found.
-  // DCR delete semantics (cascading delete + typed error → status mapping)
-  // live in the canonical `as.dcr.delete` operation
-  // (operations/as-dcr-delete). The host adapter owns owner-session
-  // enforcement, request-id/trace-id headers, and response writing.
-  app.delete('/oauth/register/:clientId', ownerAuth.requireOwnerSession, async (req, res) => {
-    const traceContext = createTraceContext();
-    res.setHeader('Request-Id', traceContext.request_id);
-    setReferenceTraceId(res, traceContext.trace_id);
-    const outcome = await executeAsDcrDelete(
-      {
-        clientId: decodeURIComponent(req.params.clientId),
-        actingSubjectId:
-          req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-        requestId: traceContext.request_id,
-        traceId: traceContext.trace_id,
-      },
-      { deleteRegisteredClient },
-    );
-    if (outcome.outcome === 'success') {
-      return res.status(outcome.status).end();
-    }
-    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+  mountAsAgentConnectToken(app, {
+    agentConnectAttemptStore,
+    handleError,
+    pdppError,
   });
 
-  // Device-authorization initiation semantics (client_id presence
-  // validation, store call, trace_context-stripped public envelope) live
-  // in the canonical `as.device.authorization.init` operation
-  // (operations/as-device-authorization-init).
-  app.post('/oauth/device_authorization', { contract: 'startOwnerDeviceAuthorization' }, async (req, res) => {
-    const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-    const outcome = await executeAsDeviceAuthInit(
-      {
-        clientId: req.body?.client_id,
-        baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-      },
-      {
-        initiate: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
-      },
-    );
-    if (outcome.outcome === 'success') {
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      return res.status(outcome.status).json(outcome.publicResult);
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+  // AS `/.well-known/oauth-authorization-server` is mounted via
+  // `server/routes/root-and-discovery.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving
+  // extraction: same mount point, same handler, same envelope.
+  mountAsAuthorizationServerMetadata(app, {
+    buildAuthorizationServerMetadata,
+    cimdEnabled: opts.cimdEnabled !== false,
+    dynamicClientRegistrationEnabled,
+    publicClientMetadataForAuthorizationServer,
+    rejectUntrustedMetadataHost,
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePreRegisteredPublicClients: () => resolvePreRegisteredPublicClients(opts),
+    resolvePublicUrl,
+    trustedMetadataHosts: opts.trustedMetadataHosts,
   });
 
-  // Device-code token-exchange semantics (grant-type allowlist, store
-  // call, RFC 8628 client-fault → 400 mapping, trace_context propagation)
-  // live in the canonical `as.device.token.exchange` operation
-  // (operations/as-device-token-exchange).
-  app.post('/oauth/token', { contract: 'exchangeOwnerDeviceToken' }, async (req, res) => {
-    const outcome = await executeAsDeviceTokenExchange(
-      {
-        grantType: req.body?.grant_type,
-        clientId: req.body?.client_id,
-        deviceCode: req.body?.device_code,
-      },
-      {
-        exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
-      },
-    );
-    if (outcome.outcome === 'success') {
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      return res.status(outcome.status).json(outcome.publicResult);
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+  mountClientMetadata(app, {
+    getCimdDocument,
+    explicitIssuer:
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePublicUrl,
   });
 
-  app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
-    const userCode = typeof req.query.user_code === 'string' ? req.query.user_code : '';
-    const pending = userCode ? await ownerDeviceAuthStore.getByUserCode(userCode) : null;
-
-    if (!userCode || !pending) {
-      const emptyBody = [
-        renderPageIntro({
-          eyebrow: 'Device verification',
-          title: 'Enter verification code',
-          lede: 'Paste the code shown by the CLI to continue the owner sign-in flow.',
-        }),
-        renderEmptyState({
-          form: {
-            method: 'GET',
-            action: '/device',
-            submitLabel: 'Continue',
-            fields: [
-              { name: 'user_code', label: 'User code', value: userCode || '', autofocus: true, autocomplete: 'one-time-code' },
-            ],
-          },
-        }),
-      ].join('\n');
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device verification`,
-        providerName,
-        body: emptyBody,
-      }));
-    }
-
-    const facts = renderKeyValueList([
-      { label: 'Client', value: pending.client_id },
-      { label: 'User code', html: `<span class="hosted-ui-code">${hostedEscape(pending.user_code)}</span>` },
-      { label: 'Expires', value: pending.expires_at },
-    ]);
-
-    const ownerBlock = ownerAuth.enabled
-      ? renderKeyValueList([
-          { label: 'Owner subject', html: `<code>${hostedEscape(ownerAuth.subjectId)}</code> <span class="pdpp-caption">signed-in owner</span>` },
-        ])
-      : `<div class="hosted-ui-field">
-  <label for="hosted-ui-subject_id">Subject ID</label>
-  <input id="hosted-ui-subject_id" name="subject_id" value="owner_local" type="text" />
-</div>`;
-
-    const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-    const csrfField = ownerAuth.renderCsrfField(csrfToken);
-    const formOpen = `<form class="hosted-ui-surface" method="POST" action="/device/approve" data-surface="human" aria-label="Approve CLI access">
-  ${csrfField}
-  <input type="hidden" name="user_code" value="${hostedEscape(pending.user_code)}" />
-  ${facts}
-  ${ownerBlock}
-  <div class="hosted-ui-actions">
-    <button type="submit" class="hosted-ui-button" data-variant="primary">Approve and issue owner token</button>
-    <button type="submit" class="hosted-ui-button" data-variant="danger" formaction="/device/deny">Deny</button>
-  </div>
-</form>`;
-
-    const body = [
-      renderPageIntro({
-        eyebrow: 'Device verification',
-        title: `Approve owner access to ${providerName}`,
-        lede: 'A CLI is asking to sign in on your behalf. Approve only if you started this on a device you trust.',
-      }),
-      formOpen,
-    ].join('\n');
-
-    res.send(renderHostedDocument({
-      title: `${providerName} — Approve CLI access`,
-      providerName,
-      body,
-    }));
+  // DCR register/delete routes — extracted to routes/as-dcr.ts per
+  // openspec/changes/split-reference-server-by-route-family.
+  mountAsDcr(app, {
+    dcrEnabled: dynamicClientRegistrationEnabled,
+    resolveInitialAccessTokensForRequest: (req) =>
+      resolveDynamicClientRegistrationInitialAccessTokensForRequest(
+        req,
+        dynamicClientRegistrationInitialAccessTokens,
+      ),
+    publicDcrRateLimiter,
+    readOwnerSession: (req) => ownerAuth.readOwnerSession(req),
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    ownerSubjectId: ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    emitSpineEvent,
+    setReferenceTraceId,
+    createTraceContext,
+    oauthError,
+    pdppError,
+    registerDynamicClient,
+    deleteRegisteredClient,
   });
 
-  // Device approve/deny decision semantics (approval_id → user_code
-  // resolution behind the owner-session + CSRF gate, store call, error
-  // mapping) live in the canonical `as.device.decision` operation
-  // (operations/as-device-decision). The host adapter owns owner-session
-  // + CSRF enforcement, subject-id resolution, and the hosted-UI HTML
-  // result rendering.
-  function buildDeviceDecisionDeps() {
-    return {
+  // Injected context objects for the consent/authorize UI helpers extracted to
+  // `server/routes/as-consent-ui-helpers.ts`. These are built once per
+  // buildAsApp call and shared across the consent + authorize route handlers.
+  const consentUi = {
+    escapeHtml: hostedEscape,
+    renderActionRow,
+    renderHostedDocument,
+    renderKeyValueList,
+    renderPageIntro,
+    renderResultState,
+    renderSurface,
+  };
+  const consentPickerCaps = {
+    listRegisteredConnectorIds,
+    getConnectorManifest,
+    listActiveBindingsForGrant,
+    projectBindingForWire,
+    isInternalConnectorId,
+    canonicalConnectorKey,
+    encodeHostedMcpSelection,
+    encodeHostedMcpStreamSelection,
+    hostedMcpSourceKey,
+  };
+  const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+
+  // GET /oauth/authorize and POST /oauth/authorize/mcp-package extracted to
+  // `server/routes/as-authorize.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same owner-session + CSRF enforcement, same PKCE validation, same
+  // consentStore.initiateGrant delegation, same createHostedMcpGrantPackage
+  // delegation, same auth-code staging and redirect.
+  mountAsAuthorize(app, {
+    asPublicUrl: opts.asPublicUrl || null,
+    consentPickerCaps,
+    selectionParsers: {
+      parseHostedMcpSelections,
+      parseHostedMcpStreamSelections,
+    },
+    consentStore,
+    consentUi,
+    createHostedMcpGrantPackage,
+    ensureCsrfToken: (req, res) => ownerAuth.ensureCsrfToken(req, res),
+    getRegisteredClient: (clientId) => resolveOAuthClient(clientId, { baseUrl: explicitAsBaseUrl }),
+    ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
+    issueOAuthAuthorizationCodeForPackageDeviceCode,
+    nativeManifest: resolveNativeManifest(opts),
+    oauthError,
+    providerName,
+    requireCsrf: ownerAuth.requireCsrf,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolvePublicUrl,
+    stageOAuthAuthorizationCodeRequest,
+  });
+  // POST /oauth/device_authorization and POST /oauth/token extracted to
+  // `server/routes/as-oauth.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoints),
+  // same trace-id header wiring, same response envelopes, same status codes.
+  const asDeviceAuthContext = {
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
+    initiateDeviceAuth: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
+    setReferenceTraceId,
+    oauthError,
+  };
+  mountAsDeviceAuthorization(app, asDeviceAuthContext);
+
+  const asTokenContext = {
+    exchangeOAuthAuthorizationCode,
+    exchangeOAuthRefreshToken,
+    exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
+    setReferenceTraceId,
+    oauthError,
+  };
+  mountAsToken(app, asTokenContext);
+
+  // GET /device, POST /device/approve, POST /device/deny extracted to
+  // `server/routes/as-device-ui.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same owner-session + CSRF enforcement, same subject-id resolution,
+  // same hosted-UI HTML rendering, same error mapping.
+  mountAsDeviceUi(app, {
+    providerName,
+    ownerAuthEnabled: ownerAuth.enabled,
+    ownerSubjectId: ownerAuth.subjectId,
+    ownerAuthDefaultSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    requireCsrf: ownerAuth.requireCsrf,
+    ensureCsrfToken: (req, res) => ownerAuth.ensureCsrfToken(req, res),
+    renderCsrfField: (token) => ownerAuth.renderCsrfField(token),
+    getByUserCode: (userCode) => ownerDeviceAuthStore.getByUserCode(userCode),
+    ui: {
+      escapeHtml: hostedEscape,
+      renderHostedDocument,
+      renderPageIntro,
+      renderEmptyState,
+      renderKeyValueList,
+      renderSurface,
+      renderResultState,
+    },
+    deviceDecision: {
       getByApprovalId: (approvalId) => ownerDeviceAuthStore.getByApprovalId(approvalId),
       approve: (userCode, subjectId) => ownerDeviceAuthStore.approve(userCode, subjectId),
       deny: (userCode, subjectId) => ownerDeviceAuthStore.deny(userCode, subjectId),
-    };
-  }
-
-  app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    const subjectId = ownerAuth.enabled
-      ? ownerAuth.subjectId
-      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-    const outcome = await executeAsDeviceDecision(
-      {
-        action: 'approve',
-        userCode: req.body?.user_code,
-        approvalId: req.body?.approval_id,
-        subjectId,
-      },
-      buildDeviceDecisionDeps(),
-    );
-    if (outcome.outcome === 'success') {
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device access approved`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Device verification', title: 'Approved' }),
-          renderSurface({
-            surface: 'human',
-            children: renderResultState({
-              tone: 'success',
-              title: 'CLI access approved',
-              body: 'The CLI can return to polling and complete sign-in now.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+    },
+    oauthError,
+    setReferenceTraceId,
   });
 
-  app.post('/device/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    const subjectId = ownerAuth.enabled
-      ? ownerAuth.subjectId
-      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-    const outcome = await executeAsDeviceDecision(
-      {
-        action: 'deny',
-        userCode: req.body?.user_code,
-        approvalId: req.body?.approval_id,
-        subjectId,
-      },
-      buildDeviceDecisionDeps(),
-    );
-    if (outcome.outcome === 'success') {
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device access denied`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Device verification', title: 'Denied' }),
-          renderSurface({
-            children: renderResultState({
-              tone: 'danger',
-              title: 'CLI access denied',
-              body: 'The CLI will stop polling and report that access was denied.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
-
-  // RFC 7662-style token introspection with PDPP extensions. Token-presence
-  // validation and the AS-internal `grant_storage_binding` redaction live
-  // in the canonical `as.introspect` operation (operations/as-introspect).
-  app.post('/introspect', { contract: 'introspectToken' }, async (req, res) => {
-    const outcome = await executeAsIntrospect(
-      { token: req.body?.token },
-      { introspect },
-    );
-    if (outcome.outcome === 'success') {
-      return res.json(outcome.publicInfo);
-    }
-    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
-
-  // Reference-only event spine inspection surfaces for CLI/tests/future console.
-  function parseListFilters(query) {
-    const legacyConnectorId = typeof query.connector_id === 'string' && query.connector_id.trim()
-      ? query.connector_id.trim()
-      : null;
-    return {
-      limit: query.limit,
-      cursor: query.cursor,
-      since: query.since,
-      until: query.until,
-      status: query.status,
-      clientId: query.client_id,
-      sourceKind: query.source_kind || (legacyConnectorId ? 'connector' : undefined),
-      sourceId: query.source_id || legacyConnectorId || undefined,
-      grantId: query.grant_id,
-      q: query.q,
-    };
-  }
+  // POST /introspect extracted to `server/routes/as-oauth.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoint),
+  // same response envelope, same status codes.
+  mountAsIntrospect(app, { introspect, pdppError });
 
   // Spine correlation list / timeline / search routes delegate envelope
-  // assembly to canonical operation modules. The host adapter retains
-  // ownership of owner-auth, query-string parsing, cursor validation
-  // (`InvalidCursorError` → 400), 404-on-empty-first-page, and contract
-  // metadata; the operation owns response shape (per-kind discriminators,
-  // pagination fields, and live-bearer redaction on timelines). See
-  // openspec/changes/mount-ref-spine-operations.
-
-  const spineCorrelationsListDeps = {
+  // assembly to canonical operation modules. Timeline and search remain
+  // inline below; the list routes (`/_ref/traces`, `/_ref/grants`,
+  // `/_ref/runs`) are mounted via `server/routes/ref-spine-correlations.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`.
+  // Behaviour-preserving extraction: same mount points, same handler
+  // chain, same envelope. See openspec/changes/mount-ref-spine-operations
+  // for the operation contract.
+  const refSpineCorrelationsContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
     listSpineCorrelations: (kind, filters) => listSpineCorrelations(kind, filters),
+    canonicalConnectorKey,
+    handleError,
   };
+  mountRefTraces(app, refSpineCorrelationsContext);
+  mountRefGrants(app, refSpineCorrelationsContext);
+  mountRefRuns(app, refSpineCorrelationsContext);
 
-  app.get('/_ref/traces', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'trace', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
+  // ────────────────────────────────────────────────────────────────────────
+  // /_ref/grant-packages — operator visibility for hosted-MCP grant packages
+  // ────────────────────────────────────────────────────────────────────────
+  // Read-mostly operator surface that exposes the grant-package primitive
+  // `/_ref/grant-packages` and `/_ref/event-subscriptions` routes extracted
+  // to `server/routes/ref-grants.ts` per `split-reference-server-by-route-family`.
+  // Behaviour-preserving extraction: same mount points, same owner-session
+  // posture, same envelopes. Grant-packages spec:
+  //   openspec/changes/add-grant-package-operator-visibility/
+  // Event-subscriptions spec:
+  //   openspec/changes/add-client-event-subscription-management/
+  const refGrantsContext = {
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    listGrantPackagesForOwner,
+    getGrantPackageForOwner,
+    getCumulativeClientAccessForPackage,
+    revokeGrantPackage,
+    listAllSubscriptions,
+    getSubscriptionSummary,
+    listAttemptsForSubscription,
+    getClientEventSubscriptionStore: getDefaultClientEventSubscriptionStore,
+    nowIso: () => new Date().toISOString(),
+  };
+  mountRefGrantPackagesList(app, refGrantsContext);
+  mountRefGrantPackagesGet(app, refGrantsContext);
+  mountRefGrantPackagesCumulative(app, refGrantsContext);
+  mountRefGrantPackagesRevoke(app, refGrantsContext);
+  mountRefEventSubscriptionsList(app, refGrantsContext);
+  mountRefEventSubscriptionsGet(app, refGrantsContext);
+  mountRefEventSubscriptionsDisable(app, refGrantsContext);
+
+  // Operator-only Web Push surfaces are mounted via
+  // `server/routes/web-push.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.2). Behaviour-preserving
+  // extraction: same mount points, same handler chain, same envelopes.
+  const refWebPushContext = {
+    fanoutTestWebPush,
+    getOwnerSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    webPushConfig,
+    webPushStore,
+  };
+  mountRefWebPushConfig(app, refWebPushContext);
+  mountRefWebPushListSubscriptions(app, refWebPushContext);
+  mountRefWebPushCreateSubscription(app, refWebPushContext);
+  mountRefWebPushDeleteSubscription(app, refWebPushContext);
+  mountRefWebPushTest(app, refWebPushContext);
+
+  // `/_ref/search`, `/_ref/approvals`, `/_ref/records/timeline`,
+  // `/_ref/schedules`, `/_ref/deployment`, and `/_ref/clients` routes
+  // extracted to `server/routes/ref-admin.ts` per
+  // `split-reference-server-by-route-family` §2.5. The host wires
+  // capability-shaped substrate dependencies; the adapter owns owner-auth,
+  // contract metadata, response writing, and query-string parsing.
+  const refAdminContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    listPendingApprovals: () => listPendingApprovals(),
+    collectRecordsTimelineEntries: (input) => collectRecordsTimelineEntries(input),
+    listSchedules: async () => (controller ? await controller.listSchedules() : []),
+    collectDeploymentReport: (req) => collectDeploymentDiagnostics(
+      {
+        getBackend: () => getSemanticBackend(),
+        getDb: () => getDb(),
+        getPhysicalFootprint: () => collectPhysicalFootprint(),
+        getDiskHeadroom: () => probeDiskHeadroom(opts.dbPath || DB_PATH),
+        computeIndexState: () => computeSemanticIndexState(),
+        getBackfillProgress: () => getSemanticIndexBackfillProgress(),
+        getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
+        getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
+        listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
+        getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+        getRuntimeCapabilityPosture: async () => {
+          const inContainer =
+            process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
+          let collectorPaired = false;
+          let pairing = null;
+          try {
+            const subjectId = getOwnerSubjectId(req);
+            const devices = await deviceExporterStore.listDevices(subjectId);
+            const activeDevices = Array.isArray(devices)
+              ? devices.filter((d) => d.status === 'active')
+              : [];
+            collectorPaired = activeDevices.length > 0;
+            if (collectorPaired) {
+              const sorted = [...activeDevices].sort((a, b) => {
+                const aT = Date.parse(a.lastHeartbeatAt || a.updatedAt || a.createdAt || '') || 0;
+                const bT = Date.parse(b.lastHeartbeatAt || b.updatedAt || b.createdAt || '') || 0;
+                return bT - aT;
+              });
+              const outdated = activeDevices.some(
+                (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+              );
+              const outdatedDevice = outdated
+                ? activeDevices.find(
+                    (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+                  )
+                : null;
+              const representative = outdatedDevice || sorted[0];
+              const observedVersion = representative?.collectorProtocolVersion ?? null;
+              pairing = {
+                protocol_version: observedVersion ?? (representative ? 'legacy_unknown' : null),
+                protocol_outdated: outdated,
+                runner_version: representative?.agentVersion ?? null,
+                connector_versions: {},
+              };
+            }
+          } catch {
+            collectorPaired = false;
+            pairing = null;
+          }
+          return {
+            bindings: {
+              browser: false,
+              filesystem: true,
+              local_device: false,
+              network: true,
+            },
+            collector_paired: collectorPaired,
+            accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
+            collector_pairing: pairing,
+            in_container: inContainer,
+          };
+        },
+      },
+      { dbPath: opts.dbPath || DB_PATH }
+    ),
+    createCimdDocument: (input) => createCimdDocument(input),
+    deleteCimdDocument: (documentId, options) => deleteCimdDocument(documentId, options),
+    getCimdDocument: (documentId) => getCimdDocument(documentId),
+    listCimdDocuments: () => listCimdDocuments(),
+    listOwnerIssuedClients: (subjectId) => listOwnerIssuedClients(subjectId),
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
+    searchSpine: (query) => searchSpine(query),
+    getOwnerSubjectId,
+    resolveSingleConnectorIdQueryValue,
+  };
+  mountRefSearch(app, refAdminContext);
+  mountRefApprovals(app, refAdminContext);
+  mountRefCimdClientDocuments(app, refAdminContext);
+
+  // Spine detail / timeline routes are mounted via
+  // `server/routes/ref-spine-timelines.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§2.2 detail/timeline
+  // sub-bullet). Behaviour-preserving extraction: same mount points,
+  // same handler chain (ownerAuth.requireOwnerSession), same envelope,
+  // same `limit`/`cursor` validation, same 404-on-empty-first-page, and
+  // same `invalid_cursor` discrimination. The canonical
+  // `ref.spine.events.page` operation continues to own envelope shape
+  // and live-bearer redaction.
+  const refSpineTimelinesContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    listSpineEventsPage: (kind, id, opts) => listSpineEventsPage(kind, id, opts),
+    getRunTerminalStatus: (runId) => getRunTerminalStatus(runId),
+    handleError,
+    pdppError,
+  };
+  mountRefTraceTimeline(app, refSpineTimelinesContext);
+  mountRefGrantTimeline(app, refSpineTimelinesContext);
+  mountRefRunTimeline(app, refSpineTimelinesContext);
+
+  // Run-handle status route (`GET /_ref/runs/:runId`). Resolves any run id
+  // returned by a 202 run-now ack — active runs via the controller's
+  // in-process bookkeeping, finished runs via the run's terminal spine
+  // event — so a run handle never dangles into Express's default 404 once
+  // the run leaves `controller_active_runs` flight state. Unknown ids get
+  // a typed `not_found` envelope.
+  // See openspec/changes/surface-run-handle-resolvability.
+  mountRefRunStatus(app, {
+    controller,
+    getRunStartedEvent: (runId) => getRunStartedEvent(runId),
+    getRunTerminalEvent: (runId) => getRunTerminalEvent(runId),
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
   });
-
-  app.get('/_ref/grants', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'grant', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/runs', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'run', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/web-push/config', ownerAuth.requireOwnerSession, async (req, res) => {
-    res.json({
-      object: 'web_push_config',
-      enabled: webPushConfig.enabled,
-      public_key: webPushConfig.enabled ? webPushConfig.publicKey : null,
-      unavailable_reason: webPushConfig.enabled ? null : webPushConfig.unavailableReason,
-    });
-  });
-
-  app.get('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const ownerSubjectId = getOwnerSubjectId(req);
-    res.json({
-      object: 'list',
-      data: await webPushStore.list(ownerSubjectId),
-      has_more: false,
-    });
-  });
-
-  app.post('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const record = await webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
-        user_agent: req.get('user-agent') || null,
-        platform: req.body?.platform || null,
-        device_label: req.body?.device_label || null,
-      });
-      res.status(201).json({ object: 'web_push_subscription', subscription: record });
-    } catch (err) {
-      if (err?.status === 400) {
-        return pdppError(res, 400, err.code || 'invalid_request', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.delete('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : null;
-    if (!endpoint) {
-      return pdppError(res, 400, 'invalid_request', 'endpoint is required');
-    }
-    const ownerSubjectId = getOwnerSubjectId(req);
-    const revoked = await webPushStore.revoke(ownerSubjectId, endpoint);
-    res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
-  });
-
-  app.post('/_ref/web-push/test', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const result = await fanoutTestWebPush({
-        config: webPushConfig,
-        store: webPushStore,
-        ownerSubjectId,
-      });
-      res.json({
-        object: 'web_push_test_notification',
-        attempted: result.attempted,
-        sent: result.sent,
-        unavailable: Boolean(result.unavailable),
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only — not the public lexical retrieval surface.
-  // /_ref/search is a spine-only artifact/id-jump helper for the operator
-  // console. The public lexical retrieval contract lives at GET /v1/search;
-  // these two routes share neither shape nor backing. See:
-  //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-  app.get('/_ref/search', { contract: 'refSearch' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineSearch(
-        { query: req.query.q || '' },
-        { searchSpine: (query) => searchSpine(query) },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  function handleSpineTimeline(kind, idParamKey, notFoundMessage) {
-    return async (req, res) => {
-      try {
-        const id = decodeURIComponent(req.params[idParamKey]);
-        const opts = parseTimelinePageOptions(req, res);
-        if (!opts) return;
-        const page = await listSpineEventsPage(kind, id, opts);
-        if (!page.events.length && !opts.cursor) {
-          return pdppError(res, 404, 'not_found', notFoundMessage);
-        }
-        const envelope = executeRefSpineEventsPage({
-          kind,
-          id,
-          cursor: opts.cursor,
-          page,
-        });
-        res.json(envelope);
-      } catch (err) {
-        if (err instanceof InvalidCursorError) {
-          return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
-        }
-        handleError(res, err);
-      }
-    };
-  }
-
-  app.get(
-    '/_ref/traces/:traceId',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('trace', 'traceId', 'Trace not found'),
-  );
-
-  app.get(
-    '/_ref/grants/:grantId/timeline',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('grant', 'grantId', 'Grant timeline not found'),
-  );
-
-  app.get(
-    '/_ref/runs/:runId/timeline',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('run', 'runId', 'Run timeline not found'),
-  );
 
   // Run-interaction streaming companion (reference-only). The store and
   // companion factory live in this AS app so the mint route, the SSE viewer
@@ -3475,6 +3220,11 @@ function buildAsApp(opts = {}) {
   // production deployments leave it disabled. Owner session is still required
   // when owner-auth is enabled — the playground is for the deploying operator,
   // not unauth'd visitors.
+  //
+  // Route extracted to `server/routes/run-interaction.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.1). Behaviour-preserving:
+  // same gate condition, same owner-session posture, same response envelope,
+  // same error mapping.
   const streamPlaygroundEnabled =
     process.env.NODE_ENV !== 'production' || process.env.PDPP_ENABLE_STREAM_PLAYGROUND === '1';
   if (streamPlaygroundEnabled && controller) {
@@ -3483,32 +3233,11 @@ function buildAsApp(opts = {}) {
       controller,
       logger: opts.streamingLogger,
     });
-    app.post('/_ref/dev/playground/session', ownerAuth.requireOwnerSession, async (req, res) => {
-      try {
-        const backend =
-          typeof req.query?.backend === 'string'
-            ? req.query.backend
-            : typeof req.body?.backend === 'string'
-              ? req.body.backend
-              : undefined;
-        const streamDebug =
-          typeof req.query?.stream_debug === 'string'
-            ? req.query.stream_debug
-            : typeof req.body?.stream_debug === 'string'
-              ? req.body.stream_debug
-              : undefined;
-        const session = await playground.getOrCreatePlaygroundSession({ backend, streamDebug });
-        return res.status(200).json({
-          object: 'stream_playground_session',
-          backend: session.backend,
-          run_id: session.runId,
-          interaction_id: session.interactionId,
-        });
-      } catch (err) {
-        const message = err?.message || 'playground session failed';
-        opts.streamingLogger?.warn?.({ err: message }, 'stream_playground_session_failed');
-        return pdppError(res, 500, 'playground_failed', message);
-      }
+    mountRefDevPlaygroundSession(app, {
+      logger: opts.streamingLogger,
+      pdppError,
+      playground,
+      requireOwnerSession: ownerAuth.requireOwnerSession,
     });
   }
 
@@ -3517,1606 +3246,403 @@ function buildAsApp(opts = {}) {
   // existing run timeline; this route is mutation-only and is not a public
   // PDPP API. Submitted `data` satisfies the current run only — it is not
   // written to `.env.local`, SQLite config/state, or spine event payloads.
-  app.post(
-    '/_ref/runs/:runId/interaction',
-    { contract: 'refRunInteraction' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        if (!controller || typeof controller.respondToInteraction !== 'function') {
-          return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
-        }
-        const runId = decodeURIComponent(req.params.runId);
-        const body = req.body || {};
-        if (typeof body.interaction_id !== 'string' || !body.interaction_id.trim()) {
-          return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
-        }
-        if (body.status !== 'success' && body.status !== 'cancelled') {
-          return pdppError(res, 400, 'invalid_status', 'status must be "success" or "cancelled"', 'status');
-        }
-        if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
-          return pdppError(res, 400, 'invalid_request', 'data must be an object if provided', 'data');
-        }
-        const result = controller.respondToInteraction(runId, {
-          interaction_id: body.interaction_id,
-          status: body.status,
-          data: body.data,
-        });
-        res.status(202).json({
-          object: 'run_interaction_ack',
-          run_id: runId,
-          interaction_id: body.interaction_id,
-          status: result.status,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
+  //
+  // Route extracted to `server/routes/run-interaction.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.1). Behaviour-preserving:
+  // same contract metadata, same owner-session posture, same validation,
+  // same response envelope, same error codes.
+  mountRefRunInteraction(app, {
+    controller,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  });
 
-  // Reference-only dataset summary for the operator-console hero band. Envelope
-  // assembly lives in the canonical `ref.dataset.summary` operation
-  // (operations/ref-dataset-summary). This route is a Fastify host adapter:
-  // it owns owner auth and response writing, and wires native capability
-  // helpers (split out of the previous `getDatasetSummary` in
-  // server/records.js) into the operation's dependency contract. Not a PDPP
-  // protocol surface — `record_json_bytes` remains an adapter-native operator
-  // diagnostic per `define-reference-operation-environments` contract
-  // correction (4); the operation preserves that constraint.
-  app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      // Cache the records aggregate so `record_count` and `*_ingested_at`
-      // come from the same SQL snapshot — the operation calls `getCounts`
-      // and `getIngestedTimeBounds` independently, but the previous native
-      // helper used one aggregate row for both.
-      let cachedAggregate = null;
-      const aggregate = async () => {
-        if (cachedAggregate === null) {
-          cachedAggregate = await getDatasetRecordsAggregate();
-        }
-        return cachedAggregate;
-      };
+  // Reference-only, owner-only control surface: cancel a single active
+  // controller-managed run by run id. Stops only the targeted run, preserves
+  // already-collected records, and does not touch sibling runs, schedules,
+  // grants, or connections. Mutation-only; not a public PDPP API.
+  // See openspec/changes/add-owner-run-cancellation-control.
+  mountRefRunCancel(app, {
+    controller,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  });
 
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => getDatasetSummaryProjection(),
-        getCounts: async () => {
-          const agg = await aggregate();
-          return {
-            connector_count: agg.connector_count,
-            stream_count: agg.stream_count,
-            record_count: agg.record_count,
-          };
+  // `/_ref/dataset/*` and `/_ref/records/version-stats` routes extracted to
+  // `server/routes/ref-dataset.ts` per `split-reference-server-by-route-family`
+  // §2.3. Context wires the same substrate functions that previously lived
+  // inline here; behaviour is identical.
+  const refDatasetContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    createRequestAbortSignal,
+    isPostgresStorageBackend,
+    getDatasetRecordsAggregate,
+    getDatasetRecordChangesBytes,
+    getDatasetBlobBytes,
+    getDatasetRecordTimeBounds,
+    listDatasetTopConnectorCandidates,
+    listDatasetSummaryStreamProjectionSeeds,
+    getDatasetSummaryStreamRecordTimeBounds,
+    getDatasetSummaryProjection,
+    listStreamProjections,
+    rebuildDatasetSummaryProjection,
+    reconcileDirtyDatasetSummaryRecordTimeBounds,
+    getRetainedSizeGlobal,
+    listRetainedSizeConnections,
+    listRetainedSizeStreams,
+    listRetainedSizeTop,
+    rebuildRetainedSize,
+    reconcileDirtyRetainedSize,
+    buildRecordVersionStatsEnvelope,
+    createRequestConnectorInstanceStore,
+  };
+  mountRefDatasetSummary(app, refDatasetContext);
+  mountRefDatasetSummaryStreams(app, refDatasetContext);
+  mountRefDatasetSummaryRebuild(app, refDatasetContext);
+  mountRefDatasetSummaryReconcile(app, refDatasetContext);
+  mountRefDatasetSize(app, refDatasetContext);
+  mountRefDatasetTop(app, refDatasetContext);
+  mountRefRecordsVersionStats(app, refDatasetContext);
+  mountRefDatasetSizeRebuild(app, refDatasetContext);
+  mountRefDatasetSizeReconcile(app, refDatasetContext);
+
+  // `/_ref/connectors`, `/_ref/connections`, and `/_ref/connector-instances`
+  // routes (connector-summary list/detail, schedule read, connection list/detail,
+  // display-name PATCH, and run/schedule action routes) extracted to
+  // `server/routes/ref-connectors.ts` per
+  // `split-reference-server-by-route-family` §2.4. The host wires
+  // capability-shaped controller / substrate dependencies; the adapter
+  // owns owner-auth, namespace resolution, contract metadata, response
+  // writing, and the `onScheduleMutation` callback.
+  const refConnectorsContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    listConnectorSummaries: () => listConnectorSummaries(controller),
+    getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
+    getConnectorDetail: (id) => getConnectorDetail(id, controller),
+    resolveRegisteredConnectorManifest,
+    listSchedules: async () => (controller ? await controller.listSchedules() : []),
+    getSchedule: async (connectorId, options) =>
+      controller ? await controller.getSchedule(connectorId, options) : null,
+    runNow: (connectorId, options) => controller.runNow(connectorId, options),
+    upsertSchedule: (connectorId, input, options) =>
+      controller.upsertSchedule(connectorId, input, options),
+    setScheduleEnabled: (connectorId, enabled, options) =>
+      controller.setScheduleEnabled(connectorId, enabled, options),
+    deleteSchedule: (connectorId, options) => controller.deleteSchedule(connectorId, options),
+    onScheduleMutation: opts.onScheduleMutation,
+    createRequestConnectorInstanceStore,
+    resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    resolveSingleConnectorIdQueryValue,
+    canonicalConnectorKey,
+    // Connection revoke/delete share the SAME store primitives the owner-agent
+    // bearer routes use (`mountOwnerConnectionRevoke` / `mountOwnerConnectionDelete`
+    // below): revoke flips one instance via `updateStatus`; delete runs the
+    // all-or-nothing `deleteConnection` cascade with the same injected `purge`
+    // phases (record purge atomic with schedule/device/row cleanup; search
+    // teardown as a post-commit rebuildable-projection cleanup). The owner-session
+    // `/_ref` routes add no new destructive semantic — only a cookie auth adapter.
+    updateConnectorInstanceStatus: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
+    deleteConnection: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
+        ...options,
+        purge: {
+          enumerateStreams: (storageTarget) => enumerateConnectionStreams(storageTarget),
+          deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+          deleteRecordRowsPostgres: (client, id) => deleteConnectionRecordRowsPostgres(client, id),
+          teardownProjection: (args) => teardownConnectionSearchProjection(args),
         },
-        getRetainedBytes: async () => {
-          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-            aggregate(),
-            getDatasetRecordChangesBytes(),
-            getDatasetBlobBytes(),
-          ]);
-          return {
-            record_json_bytes: agg.record_json_bytes,
-            record_changes_json_bytes: recordChangesJsonBytes,
-            blob_bytes: blobBytes,
-          };
-        },
-        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-        getIngestedTimeBounds: async () => {
-          const agg = await aggregate();
-          return {
-            earliest: agg.earliest_ingested_at,
-            latest: agg.latest_ingested_at,
-          };
-        },
-        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
-      });
-      res.json(summary);
-    } catch (err) {
-      handleError(res, err);
-    }
+      }),
+    emitSpineEvent,
+    createTraceContext,
+    ensureRequestId,
+    setReferenceTraceId,
+  };
+
+  mountRefConnectorsList(app, refConnectorsContext);
+  mountRefConnectorDetail(app, refConnectorsContext);
+
+  mountRefRecordsTimeline(app, refAdminContext);
+  mountRefSchedules(app, refAdminContext);
+
+  mountRefConnectorScheduleGet(app, refConnectorsContext);
+  mountRefConnectionsList(app, refConnectorsContext);
+  mountRefConnectorInstancesList(app, refConnectorsContext);
+  mountRefConnectionDetail(app, refConnectorsContext);
+  mountRefConnectorInstanceDetail(app, refConnectorsContext);
+  mountRefConnectionSetDisplayName(app, refConnectorsContext);
+  mountRefStaticSecretCredentialCapture(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceCredentialStore,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
+    // Reference-only synchronous credential probe (owner-journey flow design
+    // B1). Resolved at startup and injected; null/absent means every connector
+    // takes the first-sync path. Never exposed to /mcp or grant-scoped reads.
+    probeStaticSecretCredential: opts.staticSecretCredentialProber ?? undefined,
   });
 
-  app.post('/_ref/dataset/summary/rebuild', { contract: 'refDatasetSummaryRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    const requestAbort = createRequestAbortSignal(req, 'dataset summary rebuild request closed');
-    try {
-      let cachedAggregate = null;
-      const aggregate = async () => {
-        if (cachedAggregate === null) {
-          cachedAggregate = await getDatasetRecordsAggregate();
-        }
-        return cachedAggregate;
-      };
-      const projection = await rebuildDatasetSummaryProjection({
-        getCounts: async () => {
-          const agg = await aggregate();
-          return {
-            connector_count: agg.connector_count,
-            stream_count: agg.stream_count,
-            record_count: agg.record_count,
-          };
-        },
-        getRetainedBytes: async () => {
-          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-            aggregate(),
-            getDatasetRecordChangesBytes(),
-            getDatasetBlobBytes(),
-          ]);
-          return {
-            record_json_bytes: agg.record_json_bytes,
-            record_changes_json_bytes: recordChangesJsonBytes,
-            blob_bytes: blobBytes,
-          };
-        },
-        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-        getIngestedTimeBounds: async () => {
-          const agg = await aggregate();
-          return {
-            earliest: agg.earliest_ingested_at,
-            latest: agg.latest_ingested_at,
-          };
-        },
-        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
-        listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
-      }, { signal: requestAbort.signal });
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => projection,
-        getCounts: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getRetainedBytes: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getRecordTimeBounds: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getIngestedTimeBounds: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        listTopConnectorCandidates: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-      });
-      res.json(summary);
-    } catch (err) {
-      handleError(res, err);
-    } finally {
-      requestAbort.cleanup();
-    }
+  mountRefStaticSecretDraftConnection(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
   });
 
-  app.post('/_ref/dataset/summary/reconcile', { contract: 'refDatasetSummaryReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    const requestAbort = createRequestAbortSignal(req, 'dataset summary reconcile request closed');
-    try {
-      const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
-        getStreamRecordTimeBounds: (connectorId, stream, consentTimeField) =>
-          getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField),
-      }, { signal: requestAbort.signal });
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => getDatasetSummaryProjection(),
-        getCounts: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getRetainedBytes: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getRecordTimeBounds: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getIngestedTimeBounds: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        listTopConnectorCandidates: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-      });
-      res.json({
-        object: 'dataset_summary_reconcile',
-        reconciled: result.reconciled,
-        deferred: result.deferred,
-        residual: result.residual,
-        summary,
-      });
-    } catch (err) {
-      handleError(res, err);
-    } finally {
-      requestAbort.cleanup();
-    }
+  // Browser-enrollment shell: pre-credential draft for in-dashboard browser-bound
+  // setup. Creates an invisible shell with TTL; owner can also abandon explicitly.
+  // Shell transitions to active when an enrollment run captures source identity;
+  // first sync then runs as normal collection on that active connection.
+  mountRefBrowserEnrollmentShell(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
   });
 
-  // Reference-only connector catalog list. Envelope assembly lives in the
-  // canonical `ref.connectors.list` operation; this route owns owner auth,
-  // response writing, and dependency wiring (the substrate read still lives
-  // in `server/ref-control.ts`).
-  app.get('/_ref/connectors', { contract: 'refListConnectors' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefConnectorsList({
-        listConnectorSummaries: () => listConnectorSummaries(controller),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
+  // Owner-visible setup lifecycle for a static-secret connection. Projects the
+  // draft/active instance + non-secret credential metadata + current/last run
+  // into one durable status surface so a submitted account never disappears
+  // behind the invisible draft. Owner-session-only; no secrets in the response.
+  mountRefStaticSecretSetupStatus(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    createRequestConnectorInstanceCredentialStore,
+    resolveRegisteredConnectorManifest,
+    resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    getRunTerminalStatus,
   });
 
-  // Reference-only connector detail. The canonical `ref.connectors.detail`
-  // operation owns the `ref_connector_detail` envelope discriminator and
-  // the not-found mapping; the host adapter translates host-internal
-  // `RefControlError`s into the same `not_found` / `connector_invalid`
-  // shape the route exposed before mount.
-  app.get('/_ref/connectors/:connectorId', { contract: 'refGetConnector' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const envelope = await executeRefConnectorDetail(
-        { connectorId },
-        {
-          getConnectorDetail: async (id) => {
-            try {
-              const detail = await getConnectorDetail(id, controller);
-              if (!detail) {
-                return null;
-              }
-              const { object: _ignored, ...rest } = detail;
-              return rest;
-            } catch (err) {
-              if (err && err.code === 'not_found') {
-                return null;
-              }
-              throw err;
-            }
-          },
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      if (err instanceof RefConnectorDetailNotFoundError) {
-        const wrapped = new Error(err.message);
-        wrapped.code = 'not_found';
-        handleError(res, wrapped);
-        return;
-      }
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only pending approvals queue. The canonical
-  // `ref.approvals.list` operation owns the `{object: 'list', data}`
-  // envelope, the created-at-descending sort across both kinds, and the
-  // `request_uri` / `user_code` redaction invariant. The host adapter
-  // owns owner auth and response writing; the substrate composition
-  // (consents + owner-device flows) still lives in `server/ref-control.ts`.
-  app.get('/_ref/approvals', { contract: 'refListApprovals' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefApprovalsList({
-        listPendingApprovals: () => listPendingApprovals(),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only timeline view. The canonical `ref.records.timeline`
-  // operation owns input normalization, the final `data` slice to the
-  // effective limit, and the `{object: 'list', data, meta}` envelope.
-  // The host adapter still owns owner auth and response writing, and
-  // wires the substrate read (`collectRecordsTimelineEntries`) behind
-  // the capability so the operation never touches the SQLite handle or
-  // manifest store directly.
-  app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const limit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const envelope = await executeRefRecordsTimeline(
-        {
-          connectorId,
-          stream: typeof req.query.stream === 'string' ? req.query.stream : null,
-          since: typeof req.query.since === 'string' ? req.query.since : null,
-          until: typeof req.query.until === 'string' ? req.query.until : null,
-          limit: Number.isFinite(limit) ? limit : null,
-          order: req.query.order,
-          timestampMode: req.query.timestamp_mode,
-        },
-        {
-          collectEntries: (input) => collectRecordsTimelineEntries(input),
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only schedule listing. The canonical `ref.schedules.list`
-  // operation owns the `{object: 'list', data}` envelope; the host adapter
-  // owns owner auth and response writing only. Schedule reads flow through
-  // the controller's capability-shaped `listSchedules` so the operation
-  // never sees the runtime controller or scheduler store directly.
-  app.get('/_ref/schedules', { contract: 'refListSchedules' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSchedulesList({
-        listSchedules: async () => (controller ? await controller.listSchedules() : []),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only per-connector schedule view. The canonical
-  // `ref.connector-schedule.get` operation owns the success projection and
-  // the typed not-found failure shape; the host adapter translates the
-  // typed error into the existing PDPP 404 `not_found` envelope.
-  app.get('/_ref/connectors/:connectorId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
-    const connectorId = decodeURIComponent(req.params.connectorId);
-    try {
-      const namespace = await resolveRefConnectorNamespace(req, connectorId);
-      const schedule = await executeRefConnectorScheduleGet(
-        { connectorId: namespace.connectorInstanceId },
-        {
-          getConnectorSchedule: async () =>
-            controller
-              ? await controller.getSchedule(namespace.connectorId, {
-                  connectorInstanceId: namespace.connectorInstanceId,
-                })
-              : null,
-        },
-      );
-      res.json(schedule);
-    } catch (err) {
-      if (err instanceof RefConnectorScheduleGetNotFoundError) {
-        return pdppError(res, 404, 'not_found', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/connections', { contract: 'refListConnections' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const status = resolveSingleConnectorIdQueryValue(req.query.status);
-      const store = createRequestConnectorInstanceStore();
-      const instances = await store.listByOwner(ownerSubjectId);
-      const schedules = controller ? await controller.listSchedules() : [];
-      const schedulesByInstanceId = new Map(
-        schedules
-          .filter((schedule) => schedule?.connector_instance_id)
-          .map((schedule) => [schedule.connector_instance_id, schedule]),
-      );
-      const data = instances
-        .filter((instance) => !connectorId || instance.connectorId === connectorId)
-        .filter((instance) => !status || instance.status === status)
-        .map((instance) => projectRefConnection(instance, schedulesByInstanceId));
-      res.json({ object: 'list', data });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/connector-instances', { contract: 'refListConnectorInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const status = resolveSingleConnectorIdQueryValue(req.query.status);
-      const store = createRequestConnectorInstanceStore();
-      const instances = await store.listByOwner(ownerSubjectId);
-      const data = instances
-        .filter((instance) => !connectorId || instance.connectorId === connectorId)
-        .filter((instance) => !status || instance.status === status)
-        .map((instance) => projectRefConnection(instance));
-      res.json({ object: 'list', data });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/connections/:connectorInstanceId', { contract: 'refGetConnection' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      await sendRefConnectionDetail(req, res, connectorInstanceId);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/connector-instances/:connectorInstanceId', { contract: 'refGetConnectorInstance' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      await sendRefConnectionDetail(req, res, connectorInstanceId);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
-  // surface; the dashboard's /dashboard/deployment page reads this. The
-  // canonical `ref.deployment` operation owns the public envelope and a
-  // defensive env-redaction invariant; the host wires
-  // `collectDeploymentDiagnostics` (which performs the actual redaction
-  // against the strict allowlist) behind the diagnostic capability so the
-  // operation never imports the substrate helper or `process`.
-  app.get('/_ref/deployment', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const report = await executeRefDeployment({
-        collectDeploymentReport: () => collectDeploymentDiagnostics(
-          {
-            getBackend: () => getSemanticBackend(),
-            getDb: () => getDb(),
-            computeIndexState: () => computeSemanticIndexState(),
-            getBackfillProgress: () => getSemanticIndexBackfillProgress(),
-            getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
-            getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
-            listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
-            getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
-            getRuntimeCapabilityPosture: async () => {
-              // Provider/control-plane runtime advertises only the bindings
-              // it can actually satisfy. We honestly never advertise
-              // `browser` here — the runtime gate fails closed on headed
-              // in-container browser launches. `local_device` is also
-              // false; only a paired collector can satisfy that.
-              const inContainer =
-                process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
-              let collectorPaired = false;
-              let pairing = null;
-              try {
-                const subjectId = getOwnerSubjectId(req);
-                const devices = await deviceExporterStore.listDevices(subjectId);
-                const activeDevices = Array.isArray(devices)
-                  ? devices.filter((d) => d.status === 'active')
-                  : [];
-                collectorPaired = activeDevices.length > 0;
-                if (collectorPaired) {
-                  // Pick the most-recently-updated active device as the
-                  // representative pairing for the warning surface. Multiple
-                  // collectors with different protocol versions still drive
-                  // a single dashboard warning, but we report the worst case
-                  // (outdated > current) so the operator notices drift.
-                  const sorted = [...activeDevices].sort((a, b) => {
-                    const aT = Date.parse(a.lastHeartbeatAt || a.updatedAt || a.createdAt || '') || 0;
-                    const bT = Date.parse(b.lastHeartbeatAt || b.updatedAt || b.createdAt || '') || 0;
-                    return bT - aT;
-                  });
-                  const outdated = activeDevices.some(
-                    (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
-                  );
-                  const outdatedDevice = outdated
-                    ? activeDevices.find(
-                        (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
-                      )
-                    : null;
-                  const representative = outdatedDevice || sorted[0];
-                  const observedVersion = representative?.collectorProtocolVersion ?? null;
-                  pairing = {
-                    protocol_version: observedVersion ?? (representative ? 'legacy_unknown' : null),
-                    protocol_outdated: outdated,
-                    runner_version: representative?.agentVersion ?? null,
-                    // Per-connector bundle versions aren't advertised by
-                    // today's runner. The shape is reserved so a future
-                    // heartbeat extension can fill it without a contract
-                    // change.
-                    connector_versions: {},
-                  };
-                }
-              } catch {
-                // Diagnostics must survive a transient store failure.
-                collectorPaired = false;
-                pairing = null;
-              }
-              return {
-                bindings: {
-                  browser: false,
-                  filesystem: true,
-                  local_device: false,
-                  network: true,
-                },
-                collector_paired: collectorPaired,
-                accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
-                collector_pairing: pairing,
-                in_container: inContainer,
-              };
-            },
-          },
-          { dbPath: opts.dbPath || DB_PATH }
-        ),
-      });
-      res.json(report);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/enrollment-codes', { contract: 'refCreateDeviceExporterEnrollmentCode' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const body = req.body || {};
-      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-      const localBindingId = requireNonEmptyString(body.local_binding_name, 'local_binding_name');
-      const now = new Date();
-      const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
-        ? body.expires_in_seconds
-        : 15 * 60;
-      if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
-        return pdppError(res, 400, 'invalid_request', 'expires_in_seconds must be between 60 and 86400', 'expires_in_seconds');
-      }
-      const enrollmentCode = generateReferenceSecret('lde', 18);
-      const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
-      await deviceExporterStore.createEnrollmentCode({
-        enrollmentCodeId: generateSpineId('denroll'),
-        codeHash: hashDeviceSecret(enrollmentCode),
-        ownerSubjectId: getOwnerSubjectId(req),
-        connectorId,
-        localBindingId,
-        displayName: typeof body.display_name === 'string' && body.display_name.trim() ? body.display_name.trim() : null,
-        createdAt: now.toISOString(),
-        expiresAt,
-      });
-      res.status(201).json({
-        object: 'device_exporter_enrollment_code',
-        enrollment_code: enrollmentCode,
-        expires_at: expiresAt,
-        connector_id: connectorId,
-        local_binding_name: localBindingId,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/enroll', { contract: 'refExchangeDeviceExporterEnrollmentCode' }, async (req, res) => {
-    try {
-      // Refuse to mint a device-scoped credential for a collector whose
-      // protocol version this server cannot accept. The 409 must precede any
-      // store write (no device row, no credential, no source instance) so a
-      // rejected enroll cannot leak partial state.
-      if (enforceCollectorProtocolVersion(req, res)) {
-        return;
-      }
-      const body = req.body || {};
-      const enrollmentCode = requireNonEmptyString(body.enrollment_code, 'enrollment_code');
-      const enrollment = await deviceExporterStore.findEnrollmentByCodeHash(hashDeviceSecret(enrollmentCode));
-      const now = new Date();
-      if (!enrollment || enrollment.status !== 'pending') {
-        return pdppError(res, 400, 'invalid_request', 'Enrollment code is invalid or already used', 'enrollment_code');
-      }
-      if (Date.parse(enrollment.expiresAt) <= now.getTime()) {
-        await deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
-        return pdppError(res, 410, 'invalid_request', 'Enrollment code has expired', 'enrollment_code');
-      }
-
-      const collectorProtocolVersion = readCollectorProtocolHeader(req.headers);
-
-      const deviceId = generateSpineId('dexp');
-      const credentialId = generateSpineId('dcred');
-      const sourceInstanceId = generateSpineId('dsrc');
-      const deviceToken = generateReferenceSecret('ldt', 32);
-      const displayName = typeof body.device_label === 'string' && body.device_label.trim()
-        ? body.device_label.trim()
-        : (enrollment.displayName || enrollment.localBindingId);
-
-      await deviceExporterStore.createDevice({
-        deviceId,
-        ownerSubjectId: enrollment.ownerSubjectId,
-        displayName,
-        collectorProtocolVersion,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      await deviceExporterStore.createCredential({
-        credentialId,
-        deviceId,
-        tokenHash: hashDeviceSecret(deviceToken),
-        createdAt: now.toISOString(),
-      });
-      await ensureReferenceConnectorCatalogEntry(enrollment.connectorId, enrollment.displayName || displayName);
-      const connectorInstance = await createRequestConnectorInstanceStore().upsert({
-        ownerSubjectId: enrollment.ownerSubjectId,
-        connectorId: enrollment.connectorId,
-        displayName,
-        status: 'active',
-        sourceKind: 'local_device',
-        sourceBinding: {
-          kind: 'local_device',
-          device_id: deviceId,
-          local_binding_name: enrollment.localBindingId,
-          source_instance_id: sourceInstanceId,
-        },
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      await deviceExporterStore.upsertSourceInstance({
-        sourceInstanceId,
-        deviceId,
-        connectorId: enrollment.connectorId,
-        connectorInstanceId: connectorInstance.connectorInstanceId,
-        localBindingId: enrollment.localBindingId,
-        displayName: enrollment.displayName,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      const consumed = await deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, deviceId, now.toISOString());
-      if (!consumed) {
-        await deviceExporterStore.revokeDevice(deviceId, now.toISOString());
-        await createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
-          status: 'revoked',
-          updatedAt: now.toISOString(),
-          revokedAt: now.toISOString(),
-        });
-        return pdppError(res, 409, 'invalid_request', 'Enrollment code was consumed by another device', 'enrollment_code');
-      }
-
-      res.status(201).json({
-        object: 'device_exporter_enrollment',
-        device_id: deviceId,
-        connector_instance_id: connectorInstance.connectorInstanceId,
-        // Compatibility: collectors still persist source_instance_id as their
-        // device-binding selector. Server-side trust is now the active
-        // connector_instance_id resolved from that binding.
-        source_instance_id: sourceInstanceId,
-        device_token: deviceToken,
-        connector_id: enrollment.connectorId,
-        local_binding_name: enrollment.localBindingId,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters', { contract: 'refListDeviceExporters' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters/source-instances', { contract: 'refListDeviceExporterSourceInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const diagnostics = await buildDeviceExporterDiagnostics(getOwnerSubjectId(req));
-      const requestedDeviceId = typeof req.query.device_id === 'string' && req.query.device_id.trim()
-        ? req.query.device_id.trim()
-        : null;
-      const data = diagnostics
-        .flatMap((device) => device.source_instances)
-        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId);
-      res.json({ object: 'list', data });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters/diagnostics', { contract: 'refListDeviceExporterDiagnostics' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/revoke', { contract: 'refRevokeDeviceExporter' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      const device = await deviceExporterStore.getDevice(deviceId);
-      if (!device || device.ownerSubjectId !== getOwnerSubjectId(req)) {
-        return pdppError(res, 404, 'not_found', 'Device exporter not found');
-      }
-      const revokedAt = new Date().toISOString();
-      await deviceExporterStore.revokeDevice(deviceId, revokedAt);
-      res.json({ object: 'device_exporter_revocation', device_id: deviceId, revoked_at: revokedAt });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/heartbeat', { contract: 'refHeartbeatDeviceExporter' }, requireDeviceExporterCredential, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      if (deviceId !== req.deviceExporter.deviceId) {
-        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-      }
-      const body = req.body || {};
-      const receivedAt = new Date().toISOString();
-      await deviceExporterStore.markDeviceHeartbeat(deviceId, {
-        receivedAt,
-        agentVersion: typeof body.agent_version === 'string' ? body.agent_version : null,
-        lastError: sanitizeDeviceExporterDiagnostic(body.last_error),
-      });
-      for (const source of normalizeHeartbeatSourceInstances(body)) {
-        const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
-        if (!authorized) return;
-        await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
-          receivedAt,
-          lastError: sanitizeDeviceExporterDiagnostic(source.last_error),
-          status: typeof source.status === 'string' ? source.status : null,
-          recordsPending:
-            typeof source.records_pending === 'number' ? source.records_pending : null,
-          outboxDiagnostics: source.outbox ?? null,
-        });
-      }
-      res.json({
-        object: 'device_exporter_heartbeat',
-        device_id: deviceId,
-        received_at: receivedAt,
-        status: 'accepted',
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/ingest-batches', { contract: 'refIngestDeviceExporterBatch' }, requireDeviceExporterCredential, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      if (deviceId !== req.deviceExporter.deviceId) {
-        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-      }
-      const body = req.body || {};
-      const bodyDeviceId = requireNonEmptyString(body.device_id, 'device_id');
-      if (bodyDeviceId !== deviceId) {
-        return pdppError(res, 400, 'invalid_request', 'body device_id must match path deviceId', 'device_id');
-      }
-      const sourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-      const batchId = requireNonEmptyString(body.batch_id, 'batch_id');
-      const bodyHash = requireNonEmptyString(body.body_hash, 'body_hash');
-      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-      if (!Number.isInteger(body.batch_seq) || body.batch_seq < 0) {
-        return pdppError(res, 400, 'invalid_request', 'batch_seq must be a non-negative integer', 'batch_seq');
-      }
-      const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
-      if (!authorized) return;
-      const { sourceInstance, connectorInstance } = authorized;
-      if (sourceInstance.connectorId !== connectorId) {
-        return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-      }
-
-      const records = normalizeDeviceIngestRecords(body);
-      const existing = await deviceExporterStore.getBatchOutcome(deviceId, batchId);
-      if (existing) {
-        if (existing.bodyHash !== bodyHash) {
-          return pdppError(res, 409, 'device_batch_conflict', `Device ingest batch '${batchId}' already exists with a different body hash`);
-        }
-        return res.status(200).json({
-          object: 'device_ingest_batch_result',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          batch_id: batchId,
-          body_hash: bodyHash,
-          status: 'replayed',
-          accepted_record_count: existing.response?.accepted_record_count ?? records.length,
-          rejected_record_count: existing.response?.rejected_record_count ?? 0,
-        });
-      }
-
-      const storageTarget = referenceLocalDeviceStorageTarget(connectorId, connectorInstance.connectorInstanceId);
-      for (const record of records) {
-        await ingestRecord(storageTarget, record);
-      }
-      const response = {
-        object: 'device_ingest_batch_result',
-        device_id: deviceId,
-        connector_instance_id: connectorInstance.connectorInstanceId,
-        source_instance_id: sourceInstanceId,
-        batch_id: batchId,
-        body_hash: bodyHash,
-        status: 'accepted',
-        accepted_record_count: records.length,
-        rejected_record_count: 0,
-      };
-      await deviceExporterStore.recordBatchOutcome({
-        deviceId,
-        batchId,
-        bodyHash,
-        sourceInstanceId,
-        status: 'accepted',
-        httpStatus: 201,
-        response,
-        createdAt: new Date().toISOString(),
-      });
-      res.status(201).json(response);
-    } catch (err) {
-      if (err instanceof DeviceBatchConflictError) {
-        return pdppError(res, 409, 'device_batch_conflict', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
-  // Device-scoped local collector state read. Reference-only; not part of the
-  // public PDPP contract. State is stored under the same internal storage
-  // storage target used by device ingest (`referenceLocalDeviceStorageTarget`)
-  // so device state rows are scoped by the authorized connector instance and
-  // never collide with owner-auth /v1/state rows for the public connector id.
-  // `source_instance_id` remains in the route as the legacy device-binding
-  // selector. See OpenSpec `design-local-collector-state-sync`.
-  app.get(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
-    { contract: 'refGetDeviceExporterSourceInstanceState' },
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-        const storageTarget = referenceLocalDeviceStorageTarget(
-          sourceInstance.connectorId,
-          connectorInstance.connectorInstanceId,
-        );
-        const projection = await getSyncState(storageTarget, { grantId: null });
-        res.json({
-          object: 'device_source_instance_state',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          state: projection.state ?? {},
-          updated_at: projection.updated_at ?? null,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
+  // Provider-authorization lifecycle: initiate + callback routes.
+  // The in-process pending-auth store is scoped to this RS process instance and
+  // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
+  const pendingAuthStore = createInProcessPendingAuthStore();
+  const providerAuthCtx = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    generateReferenceSecret,
+    generateSpineId,
+    setReferenceTraceId,
+    pendingAuthStore,
+    // Exchanger is wired via opts so tests can inject a deterministic double.
+    exchanger: opts.providerAuthExchanger ?? null,
+    // Connector keys for which provider-app deployment config is in place.
+    // Populated by opts or env-var inspection in production deployments.
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    // The callback URL lives on the AS app (/_ref/provider-auth/callback).
+    resolveCallbackBaseUrl: (req) => {
+      const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitAsBaseUrl);
     },
-  );
+  };
+  if (providerAuthCtx.exchanger) {
+    mountRefProviderAuthInitiate(app, providerAuthCtx);
+    mountRefProviderAuthCallback(app, providerAuthCtx);
+  }
 
-  // PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
-  // Device-scoped local collector state write. Body shape: { state: { [stream]: cursor } }.
-  // Last-write-wins per stream; full replacement of all streams is NOT performed
-  // because the underlying ConnectorStateStore is stream-keyed merge.
-  app.put(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
-    { contract: 'refPutDeviceExporterSourceInstanceState' },
+  mountRefDeployment(app, refAdminContext);
+
+  // `/_ref/device-exporters` route family extracted to
+  // `server/routes/ref-device-exporters.ts` per
+  // `split-reference-server-by-route-family` §2.6. The host wires
+  // device-exporter store, connector instance store, gap store, sync
+  // state, record ingest, catalog entry, and credential/protocol
+  // enforcement; the adapter owns all route logic.
+  const refDeviceExportersContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
     requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-        const stateMap = optionalObject(req.body?.state);
-        if (!stateMap) {
-          return pdppError(res, 400, 'invalid_request', 'state body must be an object map of streams to cursors', 'state');
-        }
-        const storageTarget = referenceLocalDeviceStorageTarget(
-          sourceInstance.connectorId,
-          connectorInstance.connectorInstanceId,
-        );
-        const projection = await putSyncState(storageTarget, stateMap, { grantId: null });
-        res.json({
-          object: 'device_source_instance_state',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          state: projection.state ?? {},
-          updated_at: projection.updated_at ?? null,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
-    },
-  );
+    pdppError,
+    handleError,
+    getOwnerSubjectId,
+    enforceCollectorProtocolVersion,
+    acceptedCollectorProtocolVersions,
+    readCollectorProtocolHeader,
+    generateSpineId,
+    generateReferenceSecret,
+    hashDeviceSecret,
+    sanitizeDeviceExporterDiagnostic,
+    sanitizeLocalCollectorGapDetails,
+    canonicalConnectorKey,
+    makeConnectorInstanceSourceBindingKey,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    readReferenceLocalConnectorCatalogManifest,
+    deviceExporterStore,
+    createRequestConnectorInstanceStore,
+    getDefaultConnectorDetailGapStore,
+    ensureReferenceConnectorCatalogEntry,
+    ingestRecord,
+    getSyncState,
+    putSyncState,
+    listLocalCoverageDiagnostics,
+    DeviceBatchConflictError,
+  };
 
-  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps
-  // Device-scoped acknowledgement route for `gap` outbox rows produced by
-  // the local collector runner (queue-depth deferrals, connector child
-  // crashes, etc.). Reuses the existing `connector_detail_gaps` storage
-  // because that table already models retryable pending evidence keyed by
-  // (connector_id, connector_instance_id, stream, ...). The local
-  // collector does not always know a real connector stream, so the route
-  // namespaces gaps under a synthetic `local-collector/<reason>` stream
-  // while still binding the source to the enrolled device source
-  // instance. `connector_id` and `connector_instance_id` are derived
-  // server-side from the authorized source instance; the client's
-  // `connector_id` must match. Reference-only; not part of PDPP Core.
-  app.post(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps',
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
+  mountRefDeviceExporterEnrollmentCodes(app, refDeviceExportersContext);
+  mountRefDeviceExporterEnroll(app, refDeviceExportersContext);
+  mountRefDeviceExportersList(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstances(app, refDeviceExportersContext);
+  mountRefDeviceExporterDiagnostics(app, refDeviceExportersContext);
+  mountRefDeviceExporterRevoke(app, refDeviceExportersContext);
+  mountRefDeviceExporterHeartbeat(app, refDeviceExportersContext);
+  mountRefDeviceExporterIngestBatches(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstanceStateGet(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstanceStatePut(app, refDeviceExportersContext);
+  mountRefDeviceExporterLocalCollectorGaps(app, refDeviceExportersContext);
+  mountRefDeviceExporterLocalCollectorGapsRecovered(app, refDeviceExportersContext);
 
-        const body = req.body || {};
-        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-        if (bodySourceInstanceId !== sourceInstanceId) {
-          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
-        }
-        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (connectorId !== sourceInstance.connectorId) {
-          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-        }
-        const reason = requireNonEmptyString(body.reason, 'reason');
-        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
-          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
-        }
-        const firstSeenAt = requireNonEmptyString(body.first_seen_at, 'first_seen_at');
-        if (Number.isNaN(Date.parse(firstSeenAt))) {
-          return pdppError(res, 400, 'invalid_request', 'first_seen_at must be an ISO timestamp', 'first_seen_at');
-        }
-        if (typeof body.retryable !== 'boolean') {
-          return pdppError(res, 400, 'invalid_request', 'retryable must be a boolean', 'retryable');
-        }
-        if (!Number.isFinite(body.next_attempt_backoff_ms) || body.next_attempt_backoff_ms < 0) {
-          return pdppError(res, 400, 'invalid_request', 'next_attempt_backoff_ms must be a non-negative number', 'next_attempt_backoff_ms');
-        }
+  mountRefClients(app, refAdminContext);
 
-        const streamName = typeof body.stream === 'string' && body.stream.trim()
-          ? body.stream.trim()
-          : null;
-        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
-          ? body.stream_boundary.trim()
-          : null;
-        const firstSeenRunId = typeof body.first_seen_run_id === 'string' && body.first_seen_run_id.trim()
-          ? body.first_seen_run_id.trim()
-          : null;
-        const lastRunId = typeof body.last_run_id === 'string' && body.last_run_id.trim()
-          ? body.last_run_id.trim()
-          : firstSeenRunId;
-        const details = sanitizeLocalCollectorGapDetails(body.details);
+  mountRefConnectorRun(app, refConnectorsContext);
+  mountRefConnectionRun(app, refConnectorsContext);
+  mountRefConnectorScheduleUpsert(app, refConnectorsContext);
+  mountRefConnectionScheduleUpsert(app, refConnectorsContext);
+  mountRefConnectorSchedulePause(app, refConnectorsContext);
+  mountRefConnectionSchedulePause(app, refConnectorsContext);
+  mountRefConnectorScheduleResume(app, refConnectorsContext);
+  mountRefConnectionScheduleResume(app, refConnectorsContext);
+  mountRefConnectorScheduleDelete(app, refConnectorsContext);
+  mountRefConnectionScheduleDelete(app, refConnectorsContext);
 
-        // Use a synthetic stream namespace so a local-collector gap can
-        // never collide with real connector-data streams that share the
-        // same connector_instance_id. The optional client-supplied stream
-        // is preserved inside `detail_locator_json` for diagnostics.
-        const syntheticStream = streamName
-          ? `local-collector/${reason}/${streamName}`
-          : `local-collector/${reason}`;
-
-        const detailLocator = {
-          kind: 'local_collector_gap',
-          reason,
-          ...(streamName ? { stream: streamName } : {}),
-          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
-        };
-        const source = {
-          kind: 'local_device',
-          device_id: deviceId,
-          source_instance_id: sourceInstanceId,
-        };
-        const lastError = {
-          first_seen_at: firstSeenAt,
-          next_attempt_backoff_ms: body.next_attempt_backoff_ms,
-          ...(details ? { details } : {}),
-        };
-
-        const store = getDefaultConnectorDetailGapStore();
-        const gap = await store.upsertPendingGap({
-          connectorId,
-          connectorInstanceId: connectorInstance.connectorInstanceId,
-          stream: syntheticStream,
-          source,
-          detailLocator,
-          reason,
-          lastError,
-          ...(firstSeenRunId ? { discoveredRunId: firstSeenRunId } : {}),
-          ...(lastRunId ? { lastRunId } : {}),
-        });
-
-        res.status(201).json({
-          object: 'device_local_collector_gap',
-          device_id: deviceId,
-          connector_id: connectorId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          gap_id: gap.gap_id,
-          stream: syntheticStream,
-          reason,
-          retryable: body.retryable,
-          status: gap.status,
-          attempt_count: gap.attempt_count,
-          first_seen_at: firstSeenAt,
-          first_seen_run_id: firstSeenRunId,
-          last_run_id: gap.last_run_id ?? lastRunId,
-          updated_at: gap.updated_at,
-        });
-      } catch (err) {
-        if (err && err.code === 'invalid_request') {
-          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
-        }
-        handleError(res, err);
-      }
-    },
-  );
-
-  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered
-  // Marks a previously reported local-collector gap as recovered once a later
-  // clean local run has drained its blocking work and can safely stop
-  // degrading connection coverage. The device still cannot choose connector
-  // instance identity: the route derives it from the enrolled source binding.
-  app.post(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered',
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-
-        const body = req.body || {};
-        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-        if (bodySourceInstanceId !== sourceInstanceId) {
-          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
-        }
-        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (connectorId !== sourceInstance.connectorId) {
-          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-        }
-        const reason = requireNonEmptyString(body.reason, 'reason');
-        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
-          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
-        }
-
-        const streamName = typeof body.stream === 'string' && body.stream.trim()
-          ? body.stream.trim()
-          : null;
-        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
-          ? body.stream_boundary.trim()
-          : null;
-        const recoveredRunId = typeof body.recovered_run_id === 'string' && body.recovered_run_id.trim()
-          ? body.recovered_run_id.trim()
-          : null;
-        const syntheticStream = streamName
-          ? `local-collector/${reason}/${streamName}`
-          : `local-collector/${reason}`;
-        const detailLocator = {
-          kind: 'local_collector_gap',
-          reason,
-          ...(streamName ? { stream: streamName } : {}),
-          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
-        };
-        const source = {
-          kind: 'local_device',
-          device_id: deviceId,
-          source_instance_id: sourceInstanceId,
-        };
-
-        const store = getDefaultConnectorDetailGapStore();
-        const gap = await store.upsertPendingGap({
-          connectorId,
-          connectorInstanceId: connectorInstance.connectorInstanceId,
-          stream: syntheticStream,
-          source,
-          detailLocator,
-          reason,
-          lastError: {
-            recovered_by: 'local_collector',
-            recovered_at: new Date().toISOString(),
-          },
-          ...(recoveredRunId ? { discoveredRunId: recoveredRunId, lastRunId: recoveredRunId } : {}),
-        });
-        const recovered = await store.markGapStatus(gap.gap_id, 'recovered', {
-          ...(recoveredRunId ? { runId: recoveredRunId } : {}),
-        });
-
-        res.status(200).json({
-          object: 'device_local_collector_gap',
-          device_id: deviceId,
-          connector_id: connectorId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          gap_id: recovered.gap_id,
-          stream: syntheticStream,
-          reason,
-          retryable: false,
-          status: recovered.status,
-          attempt_count: recovered.attempt_count,
-          first_seen_at: null,
-          first_seen_run_id: recovered.discovered_run_id ?? null,
-          last_run_id: recovered.last_run_id ?? recoveredRunId,
-          updated_at: recovered.updated_at,
-        });
-      } catch (err) {
-        if (err && err.code === 'invalid_request') {
-          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
-        }
-        handleError(res, err);
-      }
-    },
-  );
-
-  // Operator-issued client listing. Backs the dashboard Tokens page so an
-  // operator can see and revoke the credentials they registered. Returns
-  // only dynamic clients whose `metadata.issuer_subject_id` matches the
-  // requesting owner-session subject — so the listing is per-operator and
-  // pre-registered seeds (`pdpp-web-dashboard`, `cli_longview`, ...) never
-  // appear here. Spec: openspec/changes/dcr-per-owner-token-with-revoke/.
-  // Operator-issued client listing. The canonical `ref.clients.list`
-  // operation owns the `?owner=true` request requirement (typed
-  // `RefClientsListInvalidRequestError` translated to the PDPP
-  // 400 `invalid_request` envelope) and the `{object: 'list', data}`
-  // envelope. The host adapter still owns owner auth and per-operator
-  // subject scoping: `listOwnerIssuedClients` is called with the
-  // requesting owner-session subject so pre-registered seeds never
-  // appear here. See openspec/changes/dcr-per-owner-token-with-revoke/.
-  app.get('/_ref/clients', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const subjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
-      const envelope = await executeRefClientsList(
-        { owner: req.query?.owner },
-        {
-          listOwnerIssuedClients: () => listOwnerIssuedClients(subjectId),
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      if (err instanceof RefClientsListInvalidRequestError) {
-        return pdppError(res, 400, 'invalid_request', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.post(
-    '/_ref/connectors/:connectorId/run',
-    { contract: 'refRunConnector' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        const connectorId = decodeURIComponent(req.params.connectorId);
-        const namespace = await resolveRefConnectorNamespace(req, connectorId);
-        const started = await controller.runNow(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        res.status(202).json(started);
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
-
-  app.post('/_ref/connections/:connectorInstanceId/run', { contract: 'refRunConnection' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-      const started = await controller.runNow(namespace.connectorId, {
-        connectorInstanceId: namespace.connectorInstanceId,
-      });
-      res.status(202).json(started);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.put(
-    '/_ref/connectors/:connectorId/schedule',
-    { contract: 'refPutConnectorSchedule' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        const connectorId = decodeURIComponent(req.params.connectorId);
-        await resolveRegisteredConnectorManifest(connectorId);
-        const namespace = await resolveRefConnectorNamespace(req, connectorId);
-        const result = await controller.upsertSchedule(namespace.connectorId, req.body || {}, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await opts.onScheduleMutation?.();
-        // Include policy_warning in the response so dashboard can surface it
-        // without a second round-trip.
-        const responseBody = result.policy_warning
-          ? { ...result.schedule, policy_warning: result.policy_warning }
-          : result.schedule;
-        res.json(responseBody);
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
-
-  app.put('/_ref/connections/:connectorInstanceId/schedule', { contract: 'refPutConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-      await resolveRegisteredConnectorManifest(namespace.connectorId);
-      const result = await controller.upsertSchedule(namespace.connectorId, req.body || {}, {
-        connectorInstanceId: namespace.connectorInstanceId,
-      });
-      await opts.onScheduleMutation?.();
-      const responseBody = result.policy_warning
-        ? { ...result.schedule, policy_warning: result.policy_warning }
-        : result.schedule;
-      res.json(responseBody);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post(
-    '/_ref/connectors/:connectorId/schedule/pause',
-    { contract: 'refPauseConnectorSchedule' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        const connectorId = decodeURIComponent(req.params.connectorId);
-        const namespace = await resolveRefConnectorNamespace(req, connectorId);
-        const schedule = await controller.setScheduleEnabled(namespace.connectorId, false, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await opts.onScheduleMutation?.();
-        res.json(schedule);
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
-
-  app.post('/_ref/connections/:connectorInstanceId/schedule/pause', { contract: 'refPauseConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-      const schedule = await controller.setScheduleEnabled(namespace.connectorId, false, {
-        connectorInstanceId: namespace.connectorInstanceId,
-      });
-      await opts.onScheduleMutation?.();
-      res.json(schedule);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post(
-    '/_ref/connectors/:connectorId/schedule/resume',
-    { contract: 'refResumeConnectorSchedule' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        const connectorId = decodeURIComponent(req.params.connectorId);
-        const namespace = await resolveRefConnectorNamespace(req, connectorId);
-        const schedule = await controller.setScheduleEnabled(namespace.connectorId, true, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await opts.onScheduleMutation?.();
-        res.json(schedule);
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
-
-  app.post('/_ref/connections/:connectorInstanceId/schedule/resume', { contract: 'refResumeConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-      const schedule = await controller.setScheduleEnabled(namespace.connectorId, true, {
-        connectorInstanceId: namespace.connectorInstanceId,
-      });
-      await opts.onScheduleMutation?.();
-      res.json(schedule);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.delete(
-    '/_ref/connectors/:connectorId/schedule',
-    { contract: 'refDeleteConnectorSchedule' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        const connectorId = decodeURIComponent(req.params.connectorId);
-        const namespace = await resolveRefConnectorNamespace(req, connectorId);
-        const deleted = await controller.deleteSchedule(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        if (!deleted) {
-          return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
-        }
-        await opts.onScheduleMutation?.();
-        res.status(204).end();
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
-
-  app.delete('/_ref/connections/:connectorInstanceId/schedule', { contract: 'refDeleteConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
-      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
-      const deleted = await controller.deleteSchedule(namespace.connectorId, {
-        connectorInstanceId: namespace.connectorInstanceId,
-      });
-      if (!deleted) {
-        return pdppError(res, 404, 'not_found', `Schedule not found for connection: ${connectorInstanceId}`);
-      }
-      await opts.onScheduleMutation?.();
-      res.status(204).end();
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // Owner-session connection revoke + delete — cookie-authed siblings of the
+  // owner-agent bearer routes (`mountOwnerConnectionRevoke` /
+  // `mountOwnerConnectionDelete` below). They give the operator console a way to
+  // revoke (stop future collection, preserve records) and delete (erase exactly
+  // one connection's records/state, refuse active runs + default-account) one
+  // configured connection without an owner-agent bearer, reusing the SAME store
+  // primitives and emitting the SAME audit event types. See
+  // openspec/changes/add-console-connection-revoke-delete-controls.
+  mountRefConnectionRevoke(app, refConnectorsContext);
+  mountRefConnectionDelete(app, refConnectorsContext);
 
   if (!nativeMode) {
     // Polyfill-only connector registry: register/detail semantics live in
-    // the canonical operations (operations/as-polyfill-connector-register
-    // and operations/as-polyfill-connector-detail). The host adapter owns
-    // Express plumbing, native-mode mounting, URL decoding, and response
-    // writing.
-    app.post('/connectors', async (req, res) => {
-      try {
-        const outcome = await executeAsPolyfillConnectorRegister(
-          { manifest: req.body },
-          { registerConnector },
-        );
-        if (outcome.outcome === 'success') {
-          return res.status(outcome.status).json(outcome.envelope);
-        }
-        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      } catch (err) {
-        handleError(res, err);
-      }
-    });
-
-    app.get('/connectors/:connectorId', async (req, res) => {
-      try {
-        const outcome = await executeAsPolyfillConnectorDetail(
-          { connectorId: decodeURIComponent(req.params.connectorId) },
-          { getConnectorManifest },
-        );
-        if (outcome.outcome === 'success') {
-          return res.json(outcome.envelope);
-        }
-        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      } catch (err) {
-        handleError(res, err);
-      }
-    });
+    // `server/routes/as-polyfill-connectors.ts` per OpenSpec change
+    // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+    // same routes, same operation delegation, same error mapping, same response
+    // envelopes. Only mounted in polyfill mode, matching the original guard.
+    const asPolyfillConnectorsContext = { registerConnector, getConnectorManifest, handleError, pdppError };
+    mountAsPolyfillConnectorRegister(app, asPolyfillConnectorsContext);
+    mountAsPolyfillConnectorDetail(app, asPolyfillConnectorsContext);
   }
 
-  // RFC 9126-style PAR envelope semantics live in the canonical
-  // `as.par.create` operation (operations/as-par-create). The host adapter
-  // owns base-URL resolution from explicit opts or ambient env, native
-  // manifest resolution, header propagation, and response writing.
-  app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
-    try {
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const output = await executeAsParCreate(
-        {
-          body: req.body,
-          baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-          nativeManifest: resolveNativeManifest(opts),
-        },
-        {
-          initiateGrant: (body, opts2) => consentStore.initiateGrant(body, opts2),
-        },
-      );
-      if (output.traceContext?.request_id) {
-        res.setHeader('Request-Id', output.traceContext.request_id);
-      }
-      if (output.traceContext?.trace_id) {
-        setReferenceTraceId(res, output.traceContext.trace_id);
-      }
-      res.status(output.status).json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
+  // POST /oauth/par extracted to `server/routes/as-par.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoint),
+  // same base-URL resolution, same response envelope, same status codes.
+  mountAsPar(app, {
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
+    nativeManifest: resolveNativeManifest(opts),
+    initiateGrant: (body, opts2) => consentStore.initiateGrant(body, opts2),
+    handleError,
+    setReferenceTraceId,
   });
 
 
-  // Primary consent shell for the current provider-connect request/approval profile.
-  app.get('/consent', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const requestUri = typeof req.query.request_uri === 'string' ? req.query.request_uri : null;
-      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
-      const { pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!pending) return res.status(404).send('Not found');
-      const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-      res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken));
-    } catch (err) {
-      handleError(res, err);
-    }
+  // Consent route family (GET /consent, POST /consent/approve, POST /consent/deny,
+  // POST /consent/exchange) extracted to `server/routes/as-consent.ts` per
+  // OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving: same auth posture (owner-session + CSRF), same operation
+  // delegation, same response envelopes and error mapping.
+  mountAsConsent(app, {
+    ownerAuth,
+    consentStore,
+    agentConnectAttemptStore,
+    buildPendingConsentRequestUri,
+    consentUi,
+    consumeConsentExchangeCode,
+    createConsentExchangeCode,
+    handleError,
+    issueOAuthAuthorizationCodeForDeviceCode,
+    issueOAuthAuthorizationCodeForPackageDeviceCode,
+    pdppError,
+    providerName,
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
+    setReferenceTraceId,
   });
 
 
-  // Consent approve/deny decision semantics (approval_id → request_uri
-  // resolution, deviceCode resolution, store call, error mapping) live
-  // in the canonical `as.consent.decision` operation
-  // (operations/as-consent-decision). The host adapter owns owner-session
-  // + CSRF enforcement, subject-id resolution, content negotiation
-  // between the JSON and HTML approve branches, exchange-code minting,
-  // and HTML rendering.
-  function buildConsentDecisionDeps() {
-    return {
-      getPendingConsentByApprovalId: (id) => consentStore.getPendingConsentByApprovalId(id),
-      buildPendingConsentRequestUri: (deviceCode) => buildPendingConsentRequestUri(deviceCode),
-      getPendingFromRequestUri: (uri) => getPendingGrantFromRequestUri(uri),
-      approveGrant: (deviceCode, subjectId, opts2) => consentStore.approveGrant(deviceCode, subjectId, opts2),
-      denyGrant: (deviceCode) => consentStore.denyGrant(deviceCode),
-    };
-  }
+  // Grant-revocation route extracted to `server/routes/as-grant-revoke.ts`
+  // per OpenSpec change `split-reference-server-by-route-family` (§6 continuation).
+  // Behaviour-preserving: same `requireRevokeAuth` posture, same operation delegation,
+  // same side-effect hook (client-event-subscription rows + delivery tick),
+  // same response envelope, same error mapping.
+  const asGrantRevokeContext = {
+    ensureRequestId,
+    revokeGrant,
+    introspect,
+    applyGrantRevokeSideEffects: buildApplyGrantRevokeSideEffects({
+      getStore: getDefaultClientEventSubscriptionStore,
+      getDeliveryWorker: getDefaultDeliveryWorker,
+    }),
+    pdppError,
+    handleError,
+    setReferenceTraceId,
+    logger: opts.logger,
+  };
+  mountAsGrantRevoke(app, asGrantRevokeContext);
 
-  app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      const outcome = await executeAsConsentDecision(
-        {
-          action: 'approve',
-          requestUri: req.body?.request_uri || req.query?.request_uri,
-          approvalId: req.body?.approval_id || req.query?.approval_id,
-          subjectId,
-          approveOptions: { ai_training_consented: req.body?.ai_training_consented },
-        },
-        buildConsentDecisionDeps(),
-      );
-      if (outcome.outcome === 'failure') {
-        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      }
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      const { grant, token } = outcome;
-      completeAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, {
-        status: 'approved',
-        token,
-        grant,
-      });
-      const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
-      if (wantsJson) {
-        return res.json({ grant_id: grant.grant_id, token, grant });
-      }
-      // The HTML approval surface is the human-hosted owner consent page. The
-      // bearer SHALL NOT appear anywhere in this response (browser history,
-      // screenshots, screen-shares, password-manager autofill, chat
-      // transcripts that paste the rendered page). Mint a single-use opaque
-      // exchange code for the cold-agent handoff path; the client redeems it
-      // at POST /consent/exchange to receive the bearer in a JSON body.
-      // Spec: openspec/changes/harden-consent-token-handoff/specs/
-      //       reference-implementation-architecture/spec.md
-      const exchangeCode = createConsentExchangeCode({
-        grantId: grant.grant_id,
-        token,
-        grant,
-      });
-      res.send(renderHostedDocument({
-        title: `${providerName} — Access approved`,
-        providerName,
-        body: [
-          renderPageIntro({
-            eyebrow: 'Consent result',
-            title: 'Access approved',
-            lede: 'A grant was issued for this request. Hand the exchange code below to the client that requested access; it will redeem the code for an access token over a fresh JSON request.',
-          }),
-          renderSurface({
-            surface: 'human',
-            children: renderResultState({
-              tone: 'success',
-              title: 'Grant issued',
-              body: 'You can revoke this access any time from the grants dashboard. The exchange code is single-use and expires shortly.',
-            }),
-          }),
-          renderSurface({
-            surface: 'protocol',
-            ariaLabel: 'Technical grant details',
-            children: renderKeyValueList([
-              { label: 'Grant ID', html: `<code>${hostedEscape(grant.grant_id)}</code>` },
-              { label: 'Consent exchange code', html: `<code>${hostedEscape(exchangeCode)}</code>` },
-              { label: 'Redeem at', html: `<code>POST /consent/exchange</code>` },
-            ]),
-          }),
-        ].join('\n'),
-      }));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // Client event subscriptions are mounted on the RESOURCE SERVER under
+  // `/v1/event-subscriptions` (see buildRsApp). They are the same kind of
+  // RI-extension surface as `/v1/streams/:s/records`: ordinary clients use
+  // grant-scoped bearers, while trusted owner agents use owner REST
+  // authority. The AS host no longer mounts a `_ref` alias for them.
 
-
-  app.post('/consent/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      const outcome = await executeAsConsentDecision(
-        {
-          action: 'deny',
-          requestUri: req.body?.request_uri || req.query?.request_uri,
-          approvalId: req.body?.approval_id || req.query?.approval_id,
-          subjectId,
-        },
-        buildConsentDecisionDeps(),
-      );
-      if (outcome.outcome === 'failure') {
-        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      }
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      failAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, 'denied');
-      res.send(renderHostedDocument({
-        title: `${providerName} — Access denied`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Consent result', title: 'Access Denied' }),
-          renderSurface({
-            children: renderResultState({
-              tone: 'danger',
-              title: 'Request rejected',
-              body: 'The pending data access request was rejected and cleared.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-
-  // Reference-only redemption surface for the human-hosted approval flow.
-  // The HTML branch of POST /consent/approve embeds an opaque single-use code
-  // instead of the live bearer; the client (or human relaying for the client)
-  // redeems the code here to receive the same JSON body the JSON branch of
-  // POST /consent/approve already returns. Spec:
-  //   openspec/changes/harden-consent-token-handoff/specs/
-  //     reference-implementation-architecture/spec.md
-  // Consent-exchange-code redemption semantics live in the canonical
-  // `as.consent.exchange` operation (operations/as-consent-exchange).
-  app.post('/consent/exchange', { contract: 'exchangeConsentCode' }, async (req, res) => {
-    try {
-      const outcome = await executeAsConsentExchange(
-        { code: typeof req.body?.code === 'string' ? req.body.code : null },
-        { consumeConsentExchangeCode },
-      );
-      if (outcome.outcome === 'success') {
-        return res.json(outcome.envelope);
-      }
-      pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-
-  // Grant-revocation envelope semantics live in the canonical
-  // `as.grant.revoke` operation (operations/as-grant-revoke). The host
-  // adapter owns Express plumbing, owner/client revoke authorization
-  // (`requireRevokeAuth`), request-id ensure, error mapping via
-  // `handleError`, and response writing.
-  app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, requireRevokeAuth, async (req, res) => {
-    try {
-      const requestId = ensureRequestId(res);
-      const output = await executeAsGrantRevoke(
-        { grantId: req.params.grantId, requestId },
-        { revokeGrant },
-      );
-      if (output.traceId) {
-        setReferenceTraceId(res, output.traceId);
-      }
-      res.json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
   return app;
 }
 
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
-function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
+// `origin` is the provider/MCP origin: it backs the `cli.run_command` connect
+// target and the `mcp.endpoint` (both of which the RS itself serves, so the RS
+// origin is honest here). `docsOrigin` backs the agent-facing docs/skill
+// pointers (`skill`, `skill_catalog`, `llms_txt`, `llms_full_txt`) — those
+// routes are served ONLY by the console/site Next.js origin, never the RS. When
+// no docs origin is available (direct/ephemeral topology), those pointers are
+// omitted entirely rather than rebased onto an origin that would 404. Defaults
+// to `origin` so callers whose `origin` already IS the docs origin (the plain
+// protected-resource metadata in composed mode) need not pass it twice.
+function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin = origin } = {}) {
   if (!origin) {
     return null;
   }
@@ -5125,6 +3651,7 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
   const noOwnerTokenPolicy = noOwnerToken
     ? cli.noOwnerTokenPolicy
     : 'requires_native_reference_provider_for_one_command_connect';
+  const docs = docsOrigin ? stripTrailingSlash(docsOrigin) : null;
   return {
     advisory: true,
     skill_name: 'pdpp-data-access',
@@ -5140,10 +3667,77 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
       no_owner_token: noOwnerToken,
       no_owner_token_policy: noOwnerTokenPolicy,
     },
-    skill_catalog: `${base}/.well-known/skills/index.json`,
-    skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
-    llms_txt: `${base}/llms.txt`,
-    llms_full_txt: `${base}/llms-full.txt`,
+    // Docs/skill pointers are only honest when a docs origin serves them.
+    ...(docs
+      ? {
+          skill_catalog: `${docs}/.well-known/skills/index.json`,
+          skill: `${docs}/.well-known/skills/pdpp-data-access/SKILL.md`,
+        }
+      : {}),
+    mcp: {
+      transport: 'streamable_http',
+      endpoint: `${base}/mcp`,
+      setup_intent: 'grant_scoped_read',
+      tool_surface: 'profile_free_normal_read',
+      no_owner_token: true,
+    },
+    ...(docs
+      ? {
+          llms_txt: `${docs}/llms.txt`,
+          llms_full_txt: `${docs}/llms-full.txt`,
+        }
+      : {}),
+  };
+}
+
+// Build the advisory `pdpp_owner_agent_onboarding` block for a trusted local
+// owner agent (e.g. Daisy). This is non-normative reference metadata — NOT a
+// PDPP Core requirement — that names the owner-level REST automation profile
+// and the surfaces needed to onboard and keep an incremental local view.
+//
+// Safe-emission gate: returns null unless an owner-approval `origin` is
+// resolved. The host passes the same composed-mode browser origin that gates
+// `pdpp_agent_discovery` (null in direct/ephemeral mode), so a direct
+// ephemeral test server never advertises owner-agent onboarding even when
+// ambient public-origin env vars leak in. Every URL is derived from the
+// caller-visible trusted `resource` (RS) and `issuer` (AS) the host already
+// resolved through the forwarded-origin/trusted-host machinery, so the block
+// is scoped to a trusted host or omitted — never an untrusted forwarded host.
+//
+// Spec: openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
+  if (!(origin && resource && issuer)) {
+    return null;
+  }
+  const approvalBase = stripTrailingSlash(origin);
+  const rs = stripTrailingSlash(resource);
+  const as = stripTrailingSlash(issuer);
+  return {
+    advisory: true,
+    profile: 'trusted_owner_agent',
+    warning:
+      'Owner-level local automation. This profile yields an owner bearer that authorizes owner-visible REST/control-plane access — not a grant-scoped external client. Use grant-scoped MCP for ordinary third-party agents.',
+    authorization_server: as,
+    resource: rs,
+    owner_approval_url: `${approvalBase}/dashboard`,
+    device_authorization_endpoint: `${as}/oauth/device_authorization`,
+    token_endpoint: `${as}/oauth/token`,
+    introspection_endpoint: `${as}/introspect`,
+    registration_endpoint: `${as}/oauth/register`,
+    revocation_path_template: `${as}/oauth/register/{client_id}`,
+    schema_endpoint: `${rs}/v1/schema`,
+    schema_compact_endpoint: `${rs}/v1/schema?view=compact`,
+    streams_endpoint: `${rs}/v1/streams`,
+    query_base: `${rs}/v1`,
+    event_subscriptions_endpoint: `${rs}/v1/event-subscriptions`,
+    // Owner-agent control entrypoint + action-family catalog. Projected from
+    // the same `buildOwnerAgentControlSurface` builder the bearer-authed
+    // `GET /v1/owner/control` route returns, so discovery and the live
+    // capability document never disagree on what is supported. See
+    // openspec/changes/add-owner-agent-control-surface.
+    control_surface: buildOwnerAgentControlSurface({ resource: rs }),
+    mcp_owner_bearer_rejected: true,
+    pdpp_token_kind: 'owner',
   };
 }
 
@@ -5153,6 +3747,14 @@ function buildRsApp(opts = {}) {
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
   const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
+  // Trusted INTERNAL resource-server base for the hosted-MCP adapter's own
+  // child-grant self-calls, plumbed in via `opts.rsInternalUrl` from startServer
+  // (which sources it from the explicit `PDPP_RS_URL` / opt — no new env). It is
+  // an operator-configured loopback/cluster address, never request-derived. When
+  // absent the adapter falls back to the advertised public resource (current
+  // behavior). startServer intentionally does NOT pass the bare default here.
+  // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+  const internalResource = opts.rsInternalUrl ?? null;
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? (!opts.ignoreAmbientPublicUrls ? process.env.PDPP_TRUSTED_HOSTS : null);
 
   app.use((req, res, next) => {
@@ -5173,1830 +3775,601 @@ function buildRsApp(opts = {}) {
     next();
   });
 
-  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so a
-  // probe at the RS root learns where the well-known endpoint, capability
-  // schema, and core query base live before guessing at REST/LLM-API
-  // conventions. See openspec/changes/polish-reference-api-discovery-seams.
-  app.get('/', { contract: 'getRsDiscoveryIndex' }, (req, res) => {
-    const { envelope } = executeRsDiscoveryIndex({
-      providerName,
-      referenceRevision,
-    });
-    res.json(envelope);
+  // `GET /mcp`, `POST /mcp`, `DELETE /mcp` are mounted via
+  // `server/routes/rs-hosted-mcp.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.4). Behaviour-preserving
+  // extraction: same `requireTrustedHostedMcpResource` host guard, same
+  // `setHostedMcpProtectedResourceMetadata` middleware, same
+  // `requireToken` + `requireClientOrMcpPackage` auth posture, same
+  // package-token → PackageRsClient fan-out, same single-bearer path,
+  // same response envelope and headers.
+  mountRsHostedMcp(app, {
+    explicitResource,
+    internalResource,
+    trustedMetadataHosts,
+    referenceRevision,
+    getGrantPackageAccess,
+    handleStreamableHttpRequest,
+    createPackageRsClient,
+    createRsClient,
+    requireToken,
+    requireClientOrMcpPackage,
+    pdppError,
   });
 
-  // Primary reference surface: RFC 9728 protected-resource metadata.
-  app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
-      return;
-    }
-    const resource = resolvePublicUrl(req, explicitResource);
-    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
+  // Build rsMutationContext here so both mountRsEventSubscriptions (registered
+  // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
+  // (registered after) share the same context object.
+  const rsMutationContext = {
+    requireToken,
+    requireOwner,
+    requireClient,
+    pdppError,
+    buildMutationContext,
+    buildStateContext,
+    setReferenceTraceId,
+    emitMutationRequested,
+    emitMutationEvent,
+    rejectMutation,
+    emitStateRequested,
+    emitStateEvent,
+    rejectState,
+    resolveRegisteredConnectorManifest,
+    resolveOwnerConnectorNamespace,
+    persistContentAddressedBlob,
+    storageTargetForConnectorNamespace,
+    deleteAllRecords,
+    deleteRecord,
+    ingestRecord: (target, record) => ingestRecord(target, record),
+    // First-ingest activation for static-secret drafts: flip draft → active
+    // once a record lands. No-op on a non-draft row. See
+    // add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId) =>
+      createRequestConnectorInstanceStore().activateDraft(connectorInstanceId),
+    getSyncState,
+    putSyncState,
+    resolveGrantScopedStateGrant,
+    toPublicConnectorStateProjection,
+    resolveSingleConnectorIdQueryValue,
+    handleError,
+    getDefaultClientEventSubscriptionStore,
+    getDefaultDeliveryWorker,
+  };
+
+  // /v1/event-subscriptions cluster is mounted via `server/routes/rs-mutation.ts`
+  // per OpenSpec change `split-reference-server-by-route-family` (§4).
+  // Behaviour-preserving extraction: same auth posture (`requireClient`), same
+  // middleware order, same response envelopes, same status codes.
+  // Registered here — before the hosted-UI CSS and mountRsReadQueries — to
+  // preserve the original route registration order.
+  mountRsEventSubscriptions(app, rsMutationContext);
+
+  // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
+  // RS root landing (see below) can load styles from its own origin without
+  // depending on the AS port being reachable. Mounted via
+  // `server/routes/hosted-ui-asset.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same path, same headers, same registration order.
+  mountHostedUiCss(app);
+
+  // RS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving extraction: same mount point, same handler, same envelope.
+  mountRsRoot(app, {
+    providerName,
+    referenceRevision,
+    servedRootLandingIfBrowser,
+    // Advisory owner-agent onboarding pointer on the RS root. Same host
+    // capabilities the protected-resource metadata route uses, so the root and
+    // `.well-known` documents stay consistent and forwarded-origin-safe. See
+    // openspec/changes/add-trusted-owner-agent-onboarding.
+    agentDiscoveryOrigin: opts.agentDiscoveryOrigin || null,
+    asPort: opts.asPort || AS_PORT,
+    buildOwnerAgentOnboardingMetadata,
+    explicitResource,
+    rejectUntrustedMetadataHost,
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePublicUrl,
+    resolveSiblingPublicUrl,
+    shouldUseDirectRequestOrigin,
+    trustedMetadataHosts,
+  });
+
+  // RS `/.well-known/oauth-protected-resource` and `/oauth-protected-resource/mcp`
+  // are mounted via `server/routes/root-and-discovery.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same mount points, same handlers, same envelopes.
+  const protectedResourceMetadataContext = {
+    agentDiscoveryOrigin: opts.agentDiscoveryOrigin || null,
+    asPort: opts.asPort || AS_PORT,
+    buildAgentDiscoveryMetadata,
+    buildOwnerAgentOnboardingMetadata,
+    buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
+      buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
+    buildProtectedResourceMetadata,
+    explicitResource,
+    isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
+    nativeMode,
+    pdppProviderConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
+    providerName,
+    rejectUntrustedMetadataHost,
+    resolveClientEventSubscriptionsCapability: () => {
+      if (opts.clientEventSubscriptionsCapability) {
+        return opts.clientEventSubscriptionsCapability;
+      }
+      if (opts.clientEventSubscriptionsSupported === false) return null;
+      return buildClientEventSubscriptionsCapability();
+    },
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolveHybridCapabilityOverride: () => opts.hybridRetrievalCapability || null,
+    resolveLexicalCapability: () => {
+      if (opts.lexicalRetrievalCapability) {
+        return opts.lexicalRetrievalCapability;
+      }
+      if (opts.lexicalRetrievalSupported !== false) {
+        return buildLexicalRetrievalCapability();
+      }
+      return null;
+    },
+    resolvePublicUrl,
+    resolveSemanticCapability: async () => {
+      if (opts.semanticRetrievalCapability) {
+        return opts.semanticRetrievalCapability;
+      }
+      if (opts.semanticRetrievalSupported === false) return null;
+      const semBackend = getSemanticBackend();
+      if (!semBackend || !semBackend.available()) return null;
+      return (
+        buildSemanticRetrievalCapability({
+          model: semBackend.model(),
+          dimensions: semBackend.dimensions(),
+          distanceMetric: semBackend.distanceMetric(),
+          indexState: await computeSemanticIndexState(),
+          profileId: semBackend.profileId ? semBackend.profileId() : null,
+          dtype: semBackend.dtype ? semBackend.dtype() : null,
+          languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
+        }) || null
+      );
+    },
+    resolveSiblingPublicUrl,
+    shouldUseDirectRequestOrigin,
+    trustedMetadataHosts,
+  };
+  mountRsProtectedResourceMetadata(app, protectedResourceMetadataContext);
+  mountRsMcpProtectedResourceMetadata(app, protectedResourceMetadataContext);
+
+  // RS read/query family (`/v1` reads + lexical/semantic/hybrid search) is
+  // mounted via `server/routes/rs-read.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§3). Behaviour-preserving
+  // extraction: same mount points, same auth (`requireToken`), same
+  // request-id / trace-id wiring, same source/manifest/grant resolution, same
+  // `query.received` / `disclosure.served` spine emission, same envelopes,
+  // status codes, and error mapping. Every host capability the routes touch is
+  // injected here so the adapter never reaches back into this closure. The
+  // blob-read route (`GET /v1/blobs/:blob_id`) mounts after `POST /v1/blobs`
+  // below, preserving the original registration order.
+  const rsReadContext = {
+    opts,
+    requireToken,
+    ensureRequestId,
+    setReferenceTraceId,
+    buildQueryActorContext,
+    buildOwnerQuerySourceDescriptor,
+    buildClientSourceDescriptor,
+    buildSourceDescriptor,
+    emitQueryReceived,
+    emitSpineEvent,
+    rejectQuery,
+    handleError,
+    finalizeCanonicalEnvelope,
+    resolveNativeManifest,
+    resolveNativeStorageBinding,
+    resolveGrantManifest: (tokenInfo, options) => resolveGrantManifest(tokenInfo, options),
+    resolveOwnerReadScope,
+    resolveOwnerManifest: (req, options) => resolveOwnerManifest(req, options),
+    resolveOwnerManifestFromScope: (ownerScope, options) => resolveOwnerManifestFromScope(ownerScope, options),
+    ownerSubjectIdForBindings,
+    resolveRegisteredConnectorManifest,
+    listRegisteredConnectorIds,
+    getOwnerTokenSubjectId,
+    buildConnectorDiscoveryItem,
+    buildConnectorSchemaItem,
+    buildStreamMetadataEntry,
+    buildOwnerReadGrant,
+    buildConnectorAwareFreshness,
+    decorateRecordBlobRefs,
+    projectBindingForWire,
+    getConnectorFreshnessEvidence,
+    getVisibleStreamFreshness,
+    listAllStreams,
+    listStreamsAcrossBindings,
+    resolveReadRequestBindings,
+    aggregateRecordsAcrossBindings,
+    queryRecordsAcrossBindings,
+    getRecordAcrossBindings,
+    getRecord,
+    validateRequestedQueryFieldParams,
+    runLexicalSearch,
+    runSemanticSearch,
+    runHybridSearch,
+    getSemanticBackend,
+    createBlobStore,
+    canonicalConnectorKey,
+    AmbiguousConnectionError,
+  };
+  mountRsReadQueries(app, rsReadContext);
+
+  // POST /v1/blobs is mounted via `server/routes/rs-mutation.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§4). Behaviour-preserving
+  // extraction: same auth posture (`requireOwner`), same request-id / trace-id
+  // wiring, same response envelope, same status codes.
+  // Registered immediately after mountRsReadQueries, before mountRsBlobRead,
+  // to preserve the original route registration order.
+  mountRsBlobsUpload(app, rsMutationContext);
+
+  // GET /v1/owner/connections is the bearer-authed owner-agent control-surface
+  // listing of configured connection instances. It is the `/v1/owner/*` sibling
+  // of the cookie-authed `/_ref/connections` listing: same store, same
+  // connector-key canonicalization, same display-name placeholder rules, but it
+  // emits the owner-agent contract (`connection_id`, deprecated
+  // `connector_instance_id` alias, `connector_id`/`connector_key`,
+  // `label_status`). Gated by `requireToken` + `requireOwner` so client and
+  // mcp_package bearers are rejected with 403; `/mcp` owner-bearer rejection is
+  // untouched. See openspec/changes/add-owner-agent-control-surface.
+  const ownerConnectionsContext = {
+    requireToken,
+    requireOwner,
+    pdppError,
+    handleError,
+    buildOwnerConnectionSupportedActions,
+    canonicalConnectorKey,
+    createTraceContext,
+    createRequestConnectorInstanceStore,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
+    projectStorageDisplayName,
+    // Same trusted, forwarded-origin-safe RS base resolution the control
+    // entrypoint uses, so a row's supported_actions URLs match the advertised
+    // resource and the per-connection catalog agrees with GET /v1/owner/control.
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
+    resolveSingleConnectorIdQueryValue,
+    setReferenceTraceId,
+  };
+  mountOwnerConnectionsList(app, ownerConnectionsContext);
+
+  // PATCH /v1/owner/connections/:connectionId is the bearer-authed owner-agent
+  // rename: a trusted local owner agent labels a connection (e.g. "the owner personal"
+  // / "Shared Amazon") without a browser owner session or `/_ref` session cookie.
+  // It shares the connector-instance store rename semantics with the cookie-authed
+  // `PATCH /_ref/connections/:id` route under a separate owner-bearer auth adapter;
+  // `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (task 4.4).
+  mountOwnerConnectionRename(app, ownerConnectionsContext);
+
+  // POST /v1/owner/connections/:connectionId/schedule/{pause,resume},
+  // POST /v1/owner/connectors/:connectorId/schedule/{pause,resume}, and
+  // DELETE /v1/owner/{connections/:connectionId,connectors/:connectorId}/schedule
+  // are the bearer-authed owner-agent schedule lifecycle control routes. A
+  // trusted local owner agent pauses, resumes, or deletes a connection's
+  // schedule without a browser owner session. They share the controller
+  // `setScheduleEnabled` (pause/resume) and `deleteSchedule` (delete) semantics
+  // (schedule-not-found 404, automation-ineligibility 400 on resume, delete
+  // returns 204 / typed 404 when no schedule existed, scheduler refresh on
+  // success) with the cookie-authed `/_ref` schedule routes under a separate
+  // owner-bearer auth adapter (`requireToken` + `requireOwner`). The
+  // connector-only routes auto-select the single active connection or reject
+  // with a typed `ambiguous_connection` (409) carrying available `connection_id`
+  // values; `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+  mountOwnerConnectionSchedule(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    onScheduleMutation: opts.onScheduleMutation,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    setScheduleEnabled: (connectorId, enabled, options) =>
+      opts.controller.setScheduleEnabled(connectorId, enabled, options),
+    deleteSchedule: (connectorId, options) => opts.controller.deleteSchedule(connectorId, options),
+  });
+
+  // POST /v1/owner/connections/:connectionId/run and
+  // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
+  // run-now siblings of the cookie-authed `/_ref/connections/:id/run` and
+  // `/_ref/connectors/:id/run` routes. They converge on ONE mutation path — the
+  // controller's `runNow`, owner-scoped via the connector-instance namespace
+  // resolver — under separate auth adapters (`requireToken` + `requireOwner` vs
+  // `requireOwnerSession`), so the async run semantics (202 with the run handle,
+  // typed `run_already_active` 409) are shared, not cloned. The connector-only
+  // route auto-selects the single active connection or rejects with a typed
+  // `ambiguous_connection` (409) carrying available `connection_id` values;
+  // `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+  mountOwnerConnectionRun(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    runNow: (connectorId, options) => opts.controller.runNow(connectorId, options),
+  });
+
+  // POST /v1/owner/connections/:connectionId/revoke and
+  // POST /v1/owner/connectors/:connectorId/revoke are the bearer-authed
+  // owner-agent connection-revoke routes: a trusted local owner agent stops ONE
+  // connection's future collection by flipping its connector_instance to status
+  // `revoked`, addressed by connection_id (or connector_id when unambiguous).
+  // There is no cookie-authed `/_ref` revoke route to share with — revoke is a
+  // new owner-agent control surface built directly on the existing
+  // connector-instance store soft-flip primitive (`updateStatus → 'revoked'`),
+  // so it adds NO new destructive semantic; it shares that store primitive under
+  // the same owner-bearer auth adapter the run/schedule routes use. Revoke is
+  // zero-cascade (records, spine, device rows, and sibling connections are
+  // untouched) and durable (default-account materialization no longer resurrects
+  // a revoked row). Ownership is enforced by the namespace resolver BEFORE the
+  // mutation (foreign connection_id → 404), a repeat revoke returns a typed
+  // connector_instance_inactive (400), and the connector-only route
+  // auto-selects a single active connection or rejects with a typed
+  // `ambiguous_connection` (409). `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 3.1d/6.1d, design
+  // "Deferred: connection-revoke durability" → Unit 2).
+  mountOwnerConnectionRevoke(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
+  });
+
+  // DELETE /v1/owner/connections/:connectionId and
+  // DELETE /v1/owner/connectors/:connectorId are the bearer-authed owner-agent
+  // connection-DELETE routes: a trusted local owner agent DESTRUCTIVELY purges
+  // ONE connection — its records/history/blobs/search/attention and its
+  // schedule, the device source-instance back-reference, and the
+  // connector_instances row — keyed strictly on one connection_id. An in-flight
+  // run's active-run lease is REFUSED, never erased. Unlike revoke (zero-cascade
+  // soft-flip preserving the past), delete erases the past and removes the
+  // configuration. It PRESERVES the audit spine (appending an
+  // owner_agent.connection.delete event), disclosure grants, sibling
+  // connections, and the device edge. Ownership is verified in the store BEFORE
+  // any mutation (foreign/unknown/repeat → connector_instance_not_found 404, no
+  // existence leak — the same code the sibling owner-agent instance-control
+  // routes raise); an in-flight run → connection_run_active (409); a
+  // default-account binding → default_account_delete_unsupported (409, no silent
+  // re-materialization). The connector-only route auto-selects a single active
+  // connection or returns a typed ambiguous_connection (409). The durable
+  // source-of-truth cascade (records-family + schedule + device back-ref +
+  // connector_instances row) is ONE all-or-nothing transaction per backend;
+  // search-index teardown is a rebuildable projection torn down after that
+  // commit. `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-connection-delete-contract.
+  mountOwnerConnectionDelete(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    deleteConnection: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
+        ...options,
+        // The records-side cascade is injected as discrete phases so the store
+        // can run the source-of-truth record purge INSIDE its own transaction
+        // (atomic with schedule/device/row cleanup — invariant I8). Search
+        // teardown stays a post-commit rebuildable-projection cleanup.
+        purge: {
+          enumerateStreams: (storageTarget) => enumerateConnectionStreams(storageTarget),
+          deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+          deleteRecordRowsPostgres: (client, id) => deleteConnectionRecordRowsPostgres(client, id),
+          teardownProjection: (args) => teardownConnectionSearchProjection(args),
+        },
+      }),
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+  });
+
+  // GET /v1/owner/connections/:connectionId/diagnostics and
+  // GET /v1/owner/connectors/:connectorId/diagnostics are the bearer-authed
+  // owner-agent connection-scoped diagnostics reads: a trusted local owner agent
+  // inspects ONE connection's last run status, last successful ingest time,
+  // current schedule state, freshness, and typed health classification, without a
+  // browser owner session. They share the `getOwnerConnectionDiagnostics`
+  // operation (which reuses `listConnectorSummaries`) under a separate
+  // owner-bearer auth adapter (`requireToken` + `requireOwner`). The read is
+  // connection-scoped by construction — it derives from the single configured
+  // connection matching the resolved `connection_id`, never device-exporter
+  // subsystem or sibling-connection state, which is why it is safe to share where
+  // the device-rooted `GET /_ref/device-exporters/diagnostics` is not. The
+  // connector-only route auto-selects the single active connection or rejects with
+  // a typed `ambiguous_connection` (409); `/mcp` owner-bearer rejection is
+  // untouched. See openspec/changes/add-owner-agent-control-surface (tasks 6.1d,
+  // design "Deferred: connection-scoped diagnostics").
+  mountOwnerConnectionDiagnostics(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerConnectionDiagnostics: (connectorInstanceId) =>
+      getOwnerConnectionDiagnostics(connectorInstanceId, opts.controller),
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+  });
+
+  // POST /v1/owner/connections/intents is the bearer-authed owner-agent
+  // connection-initiation route: a trusted local owner agent asks "how do I add
+  // a new connection for connector X?" and receives a typed, auditable,
+  // owner-mediated next step instead of a silently-created connection. The route
+  // classifies the connector by its manifest `runtime_requirements.bindings`
+  // and, for proven local-collector connectors (claude-code, codex), mints a
+  // real single-use enrollment code via the SAME `deviceExporterStore`
+  // operation the cookie-authed `/_ref/device-exporters/enrollment-codes` route
+  // uses (separate owner-bearer auth adapter — no handler cloning). Browser-bound
+  // (Amazon, chase, chatgpt) and API/network-only (github, gmail) connectors get
+  // a typed `unsupported` whose reason names the exact missing primitive. Same
+  // owner-bearer guards as /v1/owner/connections; `/mcp` owner-bearer rejection
+  // is untouched. See openspec/changes/add-owner-agent-control-surface (tasks
+  // 2.3, 5.1-5.4).
+  // The device-exporter store and the enroll route live on the AS app
+  // (`buildAsApp`); the owner-agent control surface lives on the RS app. Both
+  // the AS enroll route and this RS-scoped store read the same backing DB, so a
+  // code minted here is exchangeable at the AS enroll endpoint. The enroll
+  // endpoint URL is therefore resolved against the AS issuer base (same
+  // derivation as the protected-resource-metadata / onboarding routes), never
+  // the RS base.
+  const resolveAsIssuerBase = (req) => {
+    const explicitIssuer =
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
     const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
-    const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
-    if (
-      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
-        forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
-      })
-    ) {
-      return;
-    }
-    const issuer = resolvePublicUrl(req, issuerSource);
-
-    // Composition (which capabilities to publish, which discovery hints to
-    // include) is owned by the canonical `rs.protected-resource-metadata`
-    // operation. The host adapter resolves URLs and live capability shapes
-    // (e.g. `buildSemanticRetrievalCapability` against the live embedding
-    // backend) and passes them through dependency callbacks. Truthfulness
-    // rules — semantic only when backend is available; hybrid only when both
-    // lexical AND semantic are supported — are encoded inside the operation.
-    // See:
-    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-    //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
-    //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
-    //   openspec/changes/polish-reference-api-discovery-seams
-    const { composition } = executeRsProtectedResourceMetadata(
-      {},
-      {
-        resolveLexicalCapability: () => {
-          if (opts.lexicalRetrievalCapability) {
-            return opts.lexicalRetrievalCapability;
-          }
-          if (opts.lexicalRetrievalSupported !== false) {
-            return buildLexicalRetrievalCapability();
-          }
-          return null;
-        },
-        resolveSemanticCapability: () => {
-          if (opts.semanticRetrievalCapability) {
-            return opts.semanticRetrievalCapability;
-          }
-          if (opts.semanticRetrievalSupported === false) return null;
-          const semBackend = getSemanticBackend();
-          if (!semBackend || !semBackend.available()) return null;
-          return (
-            buildSemanticRetrievalCapability({
-              model: semBackend.model(),
-              dimensions: semBackend.dimensions(),
-              distanceMetric: semBackend.distanceMetric(),
-              indexState: computeSemanticIndexState(),
-              profileId: semBackend.profileId ? semBackend.profileId() : null,
-              dtype: semBackend.dtype ? semBackend.dtype() : null,
-              languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
-            }) || null
-          );
-        },
-        resolveHybridCapabilityOverride: () =>
-          opts.hybridRetrievalCapability || null,
-        buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
-          buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
-        isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
-        isNativeSingleSourceMode: () => !!resolveNativeManifest(opts),
-      },
-    );
-    const { capabilities, discoveryHints } = composition;
-
-    res.json(
-      buildProtectedResourceMetadata({
-        resource,
-        resourceName: `${providerName} Resource Server`,
-        authorizationServers: [issuer],
-        queryBase: `${resource}/v1`,
-        providerConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
-        selfExportSupported: true,
-        tokenKindsSupported: ['owner', 'client'],
-        capabilities,
-        discoveryHints,
-        agentDiscovery: buildAgentDiscoveryMetadata(
-          opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
-          { noOwnerToken: nativeMode },
-        ),
-      })
-    );
+    const issuerSource = shouldUseDirectRequestOrigin(req, explicitIssuer)
+      ? fallbackIssuer
+      : explicitIssuer || fallbackIssuer;
+    return resolvePublicUrl(req, issuerSource);
+  };
+  mountOwnerConnectionIntent(app, {
+    requireToken,
+    requireOwner,
+    pdppError,
+    handleError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    setReferenceTraceId,
+    deviceExporterStore: opts.deviceExporterStore || getDefaultDeviceExporterStore(),
+    generateReferenceSecret,
+    generateSpineId,
+    hashDeviceSecret,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    readReferenceLocalConnectorCatalogManifest,
+    resolveEnrollBaseUrl: resolveAsIssuerBase,
   });
 
-  // GET /v1/connectors — bearer-scoped connector/source discovery
-  // Connector-list semantics live in the canonical `rs.connectors.list`
-  // operation (operations/rs-connectors-list). This route is a Fastify host
-  // adapter: it owns auth, request id / trace id, manifest/grant/storage-
-  // binding resolution, instrumentation events, and response writing; it MUST
-  // NOT recompute the envelope shape or the disclosure totals locally.
-  app.get('/v1/connectors', { contract: 'listConnectors' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
-          ? buildOwnerQuerySourceDescriptor(req, opts)
-          : buildClientSourceDescriptor(tokenInfo),
-        queryData: { query_shape: 'connector_list' },
-      };
-
-      let operationInput;
-      let dependencies;
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        operationInput = {
-          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
-        };
-        const nativeManifest = resolveNativeManifest(opts);
-        const nativeStorageBinding = resolveNativeStorageBinding(opts);
-        if (nativeManifest && nativeStorageBinding) {
-          const source = buildSourceDescriptor({
-            kind: 'provider_native',
-            id: nativeManifest.provider_id,
-          });
-          queryContext.sourceDescriptor = source;
-          dependencies = {
-            getSourceDescriptor: () => source,
-            listConnectorItems: async () => {
-              const item = await buildConnectorDiscoveryItem({
-                source,
-                storageBinding: nativeStorageBinding,
-                manifest: nativeManifest,
-              });
-              return [item];
-            },
-          };
-        } else {
-          // Multiple registered connectors: no single source descriptor; the
-          // disclosure event has historically emitted `source: null` for this
-          // branch. The operation propagates `null` through verbatim.
-          dependencies = {
-            getSourceDescriptor: () => null,
-            listConnectorItems: async () => {
-              const connectorIds = await listRegisteredConnectorIds();
-              return Promise.all(connectorIds.map(async (connectorId) => {
-                const manifest = await resolveRegisteredConnectorManifest(connectorId);
-                return buildConnectorDiscoveryItem({
-                  source: buildSourceDescriptor({ kind: 'connector', id: connectorId }),
-                  storageBinding: { connector_id: connectorId },
-                  manifest,
-                });
-              }));
-            },
-          };
-        }
-      } else {
-        operationInput = {
-          actor: {
-            kind: 'client',
-            subject_id: tokenInfo.subject_id || null,
-            client_id: tokenInfo.client_id || null,
-            grant_id: tokenInfo.grant_id || null,
-          },
-        };
-        // Eagerly resolve the grant so the rejected-query path has the
-        // correct source descriptor even if connector-item assembly throws.
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        const source = grantResolved.source;
-        queryContext.sourceDescriptor = source;
-        dependencies = {
-          getSourceDescriptor: () => source,
-          listConnectorItems: async () => {
-            const item = await buildConnectorDiscoveryItem({
-              source,
-              storageBinding: grantResolved.storageBinding,
-              manifest: grantResolved.manifest,
-              grant: tokenInfo.grant,
-            });
-            return [item];
-          },
-        };
-      }
-
-      const result = await executeConnectorsList(operationInput, dependencies);
-
-      await emitQueryReceived(queryContext, req);
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: result.sourceDescriptor,
-          query_shape: 'connector_list',
-          connector_count: result.disclosureTotals.connector_count,
-          stream_count: result.disclosureTotals.stream_count,
-        },
-      });
-
-      res.json(result.envelope);
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
+  // GET /v1/owner/connector-templates is the bearer-authed owner-agent template
+  // catalog. It separates connector implementation metadata from configured
+  // connection instances, embeds related connection summaries, and reports
+  // template-level `initiate_connection` support truthfully: proven
+  // local-collector templates can create an enrollment intent; browser-bound and
+  // API/network-only templates name the missing primitive instead of pretending
+  // an owner bearer can add a provider account.
+  mountOwnerConnectorTemplates(app, {
+    requireToken,
+    requireOwner,
+    handleError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    getOwnerTokenSubjectId,
+    listReferenceLocalConnectorCatalogManifests,
+    listRegisteredConnectorIds,
+    projectStorageDisplayName,
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
   });
 
-  // GET /v1/schema — one-shot capability/schema discovery for the bearer
-  // Schema-discovery semantics live in the canonical `rs.schema.get`
-  // operation (operations/rs-schema-get). This route is a Fastify host
-  // adapter: it owns auth, request id / trace id, source-descriptor / manifest
-  // / grant resolution wiring, instrumentation events, and response writing;
-  // it MUST NOT recompute schema-discovery rules or bearer projection
-  // locally.
-  app.get('/v1/schema', { contract: 'getSchema' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
-          ? buildOwnerQuerySourceDescriptor(req, opts)
-          : buildClientSourceDescriptor(tokenInfo),
-        queryData: { query_shape: 'schema' },
-      };
-
-      let operationInput;
-      let dependencies;
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        operationInput = {
-          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
-        };
-        const nativeManifest = resolveNativeManifest(opts);
-        const nativeStorageBinding = resolveNativeStorageBinding(opts);
-        if (nativeManifest && nativeStorageBinding) {
-          const source = buildSourceDescriptor({
-            kind: 'provider_native',
-            id: nativeManifest.provider_id,
-          });
-          queryContext.sourceDescriptor = source;
-          dependencies = {
-            getSourceDescriptor: () => source,
-            listConnectorItems: async () => {
-              const item = await buildConnectorSchemaItem({
-                source,
-                storageBinding: nativeStorageBinding,
-                manifest: nativeManifest,
-              });
-              return [item];
-            },
-          };
-        } else {
-          // Multiple registered connectors: no single source descriptor, the
-          // disclosure event has historically emitted `source: null` for this
-          // branch. Operation propagates `null` through verbatim.
-          dependencies = {
-            getSourceDescriptor: () => null,
-            listConnectorItems: async () => {
-              const connectorIds = await listRegisteredConnectorIds();
-              return Promise.all(connectorIds.map(async (connectorId) => {
-                const manifest = await resolveRegisteredConnectorManifest(connectorId);
-                return buildConnectorSchemaItem({
-                  source: buildSourceDescriptor({ kind: 'connector', id: connectorId }),
-                  storageBinding: { connector_id: connectorId },
-                  manifest,
-                });
-              }));
-            },
-          };
-        }
-      } else {
-        operationInput = {
-          actor: {
-            kind: 'client',
-            subject_id: tokenInfo.subject_id || null,
-            client_id: tokenInfo.client_id || null,
-            grant_id: tokenInfo.grant_id || null,
-          },
-        };
-        // Eagerly resolve the grant so the rejected-query path has the
-        // correct source descriptor even if connector-item assembly throws.
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        const source = grantResolved.source;
-        queryContext.sourceDescriptor = source;
-        dependencies = {
-          getSourceDescriptor: () => source,
-          listConnectorItems: async () => {
-            const item = await buildConnectorSchemaItem({
-              source,
-              storageBinding: grantResolved.storageBinding,
-              manifest: grantResolved.manifest,
-              grant: tokenInfo.grant,
-            });
-            return [item];
-          },
-        };
-      }
-
-      const result = await executeSchemaGet(operationInput, dependencies);
-
-      await emitQueryReceived(queryContext, req);
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: result.sourceDescriptor,
-          query_shape: 'schema',
-          connector_count: result.counts.connector_count,
-          stream_count: result.counts.stream_count,
-        },
-      });
-
-      res.json(result.response);
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
+  // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
+  // a non-secret capability document that names every owner-agent control
+  // action family, marks supported vs owner-mediated vs unsupported, and links
+  // to the supported owner-agent routes (e.g. /v1/owner/connections). It is the
+  // durable discovery surface for trusted local owner agents. Same owner-bearer
+  // guards as /v1/owner/connections; /mcp owner-bearer rejection is untouched.
+  // The action catalog is projected from `buildOwnerAgentControlSurface` (the
+  // same builder the `pdpp_owner_agent_onboarding.control_surface` metadata hint
+  // uses) so discovery and the live document never disagree. URLs are resolved
+  // from the caller-visible trusted RS public base with the same
+  // forwarded-origin handling as the metadata routes. See
+  // openspec/changes/add-owner-agent-control-surface.
+  mountOwnerControl(app, {
+    requireToken,
+    requireOwner,
+    handleError,
+    buildOwnerAgentControlSurface,
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
   });
 
-  // GET /v1/streams — list streams (client or owner)
-  // Stream-list semantics live in the canonical `rs.streams.list` operation
-  // (operations/rs-streams-list). This route is a Fastify host adapter:
-  // it owns auth, request id / trace id, instrumentation events, and
-  // envelope writing; it MUST NOT recompute stream-list rules locally.
-  app.get('/v1/streams', { contract: 'listStreams' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor: tokenInfo.pdpp_token_kind === 'owner'
-          ? buildOwnerQuerySourceDescriptor(req, opts)
-          : buildClientSourceDescriptor(tokenInfo),
-        queryData: { query_shape: 'stream_list' },
-      };
-
-      let operationInput;
-      let dependencies;
-      let streamListFreshnessEvidence = null;
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        // Set source before manifest resolution so malformed connector
-        // failures remain attributable in query.received/query.rejected.
-        queryContext.sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        const ownerResolved = await resolveOwnerManifest(req, opts);
-        streamListFreshnessEvidence = await getConnectorFreshnessEvidence({
-          source: ownerScope.source,
-          manifest: ownerResolved.manifest,
-        });
-        operationInput = {
-          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
-        };
-        dependencies = {
-          getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => listAllStreams(ownerScope.storage_binding),
-        };
-      } else {
-        const grant = tokenInfo.grant;
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        streamListFreshnessEvidence = await getConnectorFreshnessEvidence({
-          source: grantResolved.source,
-          manifest: grantResolved.manifest,
-        });
-        const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
-        queryContext.sourceDescriptor = grantResolved.source;
-        queryContext.queryData.stream_count_limit = streamCountLimit;
-        operationInput = {
-          actor: {
-            kind: 'client',
-            subject_id: tokenInfo.subject_id || null,
-            client_id: tokenInfo.client_id || null,
-            grant_id: tokenInfo.grant_id || null,
-            stream_count_limit: streamCountLimit,
-          },
-        };
-        dependencies = {
-          getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => listStreams(grantResolved.storageBinding, grant, grantResolved.manifest),
-        };
-      }
-
-      const result = await executeStreamsList(operationInput, dependencies);
-
-      await emitQueryReceived(queryContext, req);
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: result.sourceDescriptor,
-          query_shape: 'stream_list',
-          stream_count: result.streams.length,
-        },
-      });
-
-      res.json({
-        object: 'list',
-        data: result.streams.map((summary) => ({
-          ...summary,
-          freshness: buildConnectorAwareFreshness(streamListFreshnessEvidence, summary.last_updated || null),
-        })),
-      });
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/streams/:stream — stream metadata
-  // Stream-detail semantics live in the canonical `rs.streams.detail`
-  // operation (operations/rs-streams-detail). This route is a Fastify host
-  // adapter: it owns auth, request id / trace id, manifest + grant
-  // resolution, instrumentation events, and response writing; it MUST NOT
-  // recompute stream-detail visibility rules locally.
-  app.get('/v1/streams/:stream', { contract: 'getStreamMetadata' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      let manifest;
-      let storageBinding;
-      let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? buildOwnerQuerySourceDescriptor(req, opts)
-        : buildClientSourceDescriptor(tokenInfo);
-
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor,
-        streamId: req.params.stream,
-        queryData: { query_shape: 'stream_metadata' },
-      };
-
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-        manifest = ownerResolved.manifest;
-        storageBinding = ownerScope.storage_binding;
-      } else {
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        manifest = grantResolved.manifest;
-        sourceDescriptor = grantResolved.source;
-        queryContext.sourceDescriptor = sourceDescriptor;
-        storageBinding = resolveGrantStorageBinding(tokenInfo);
-      }
-
-      await emitQueryReceived(queryContext, req);
-
-      const operationInput = tokenInfo.pdpp_token_kind === 'owner'
-        ? {
-            actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
-            streamName: req.params.stream,
-          }
-        : {
-            actor: {
-              kind: 'client',
-              subject_id: tokenInfo.subject_id || null,
-              client_id: tokenInfo.client_id || null,
-              grant_id: tokenInfo.grant_id || null,
-            },
-            streamName: req.params.stream,
-          };
-
-      const dependencies = {
-        getSourceDescriptor: () => sourceDescriptor,
-        hasManifestStream: async (name) =>
-          Array.isArray(manifest?.streams) && manifest.streams.some((s) => s.name === name),
-        isStreamInGrant: (name) =>
-          Array.isArray(tokenInfo.grant?.streams)
-            && tokenInfo.grant.streams.some((s) => s.name === name),
-        buildStreamMetadata: async (name) => {
-          const manifestStream = manifest.streams.find((s) => s.name === name);
-          const streamGrant = tokenInfo.pdpp_token_kind === 'client'
-            ? tokenInfo.grant?.streams?.find((s) => s.name === name)
-            : null;
-          const freshness = await getVisibleStreamFreshness({
-            tokenInfo,
-            source: sourceDescriptor,
-            storageBinding,
-            stream: name,
-            manifest,
-          });
-          return buildStreamMetadataEntry({
-            manifestStream,
-            streamGrant,
-            grantStreams: tokenInfo.grant?.streams || [],
-            freshness,
-          });
-        },
-      };
-
-      let result;
-      try {
-        result = await executeStreamDetail(operationInput, dependencies);
-      } catch (err) {
-        if (err instanceof StreamDetailVisibilityError) {
-          const visibilityErr = new Error(err.message);
-          visibilityErr.code = err.code;
-          return await rejectQuery(res, req, queryContext, visibilityErr);
-        }
-        throw err;
-      }
-
-      const metadataBody = result.metadata;
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        stream_id: req.params.stream,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: result.sourceDescriptor,
-          query_shape: 'stream_metadata',
-          view_count: metadataBody.views.length,
-          relationship_count: metadataBody.relationships.length,
-        },
-      });
-
-      res.json(metadataBody);
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/streams/:stream/aggregate
-  // Aggregate semantics live in the canonical `rs.streams.aggregate`
-  // operation (operations/rs-streams-aggregate). This route is a Fastify host
-  // adapter: it owns auth, request id / trace id, manifest/grant/storage-
-  // binding resolution, instrumentation events, and response writing; it MUST
-  // NOT recompute the `query.received` data block, the owner-branch
-  // visibility check, or the disclosure totals locally.
-  app.get('/v1/streams/:stream/aggregate', { contract: 'aggregateStream' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      let grant = tokenInfo.grant;
-      let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? buildOwnerQuerySourceDescriptor(req, opts)
-        : buildClientSourceDescriptor(tokenInfo);
-      let storageBinding = null;
-      let manifest;
-      const requestParams = { ...req.query };
-      // Pre-emit query data block matches the operation's shape so the
-      // rejected-query path emits the same fields whether the failure happens
-      // before or after the operation runs.
-      const queryEventData = {
-        query_shape: 'stream_aggregate',
-        metric: typeof requestParams.metric === 'string' ? requestParams.metric : null,
-        field: typeof requestParams.field === 'string' ? requestParams.field : null,
-        group_by: typeof requestParams.group_by === 'string' ? requestParams.group_by : null,
-        limit: requestParams.limit ? Number(requestParams.limit) : null,
-      };
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor,
-        streamId: req.params.stream,
-        queryData: { ...queryEventData },
-      };
-
-      let operationInput;
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-        storageBinding = ownerResolved.storageBinding;
-        manifest = ownerResolved.manifest;
-        grant = buildOwnerReadGrant(req.params.stream);
-        operationInput = {
-          actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
-          streamName: req.params.stream,
-          requestParams,
-        };
-      } else {
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        storageBinding = grantResolved.storageBinding;
-        sourceDescriptor = grantResolved.source;
-        manifest = grantResolved.manifest;
-        queryContext.sourceDescriptor = sourceDescriptor;
-        operationInput = {
-          actor: {
-            kind: 'client',
-            subject_id: tokenInfo.subject_id || null,
-            client_id: tokenInfo.client_id || null,
-            grant_id: tokenInfo.grant_id || null,
-          },
-          streamName: req.params.stream,
-          requestParams,
-        };
-      }
-
-      await emitQueryReceived(queryContext, req);
-
-      const dependencies = {
-        getSourceDescriptor: () => sourceDescriptor,
-        hasManifestStream: (streamName) => Boolean(
-          manifest?.streams?.find((stream) => stream.name === streamName),
-        ),
-        validateRequest: (params) => {
-          const mStream = manifest?.streams?.find((stream) => stream.name === req.params.stream);
-          validateRequestedQueryFieldParams(params, mStream);
-        },
-        aggregate: (params) => aggregateRecords(
-          storageBinding,
-          req.params.stream,
-          grant,
-          params,
-          manifest,
-        ),
-      };
-
-      let result;
-      try {
-        result = await executeStreamsAggregate(operationInput, dependencies);
-      } catch (opErr) {
-        if (opErr instanceof StreamsAggregateVisibilityError) {
-          const visibilityErr = new Error(opErr.message);
-          visibilityErr.code = opErr.code;
-          return await rejectQuery(res, req, queryContext, visibilityErr);
-        }
-        throw opErr;
-      }
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        stream_id: req.params.stream,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: {
-          source: result.sourceDescriptor,
-          query_shape: 'stream_aggregate',
-          metric: result.disclosureTotals.metric,
-          field: result.disclosureTotals.field,
-          group_by: result.disclosureTotals.group_by,
-          filtered_record_count: result.disclosureTotals.filtered_record_count,
-          group_count: result.disclosureTotals.group_count,
-        },
-      });
-
-      res.json(result.result);
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/streams/:stream/records
-  // Record-list semantics live in the canonical `rs.records.list` operation
-  // (operations/rs-records-list). This route is a Fastify host adapter:
-  // it owns auth, request id / trace id, source-descriptor / manifest /
-  // grant resolution, query-received and disclosure-served instrumentation,
-  // blob-ref URL decoration, the host-shaped `url` envelope field, and
-  // response writing. It MUST NOT recompute view/fields mutual exclusion,
-  // view → fields resolution, manifest stream visibility, or owner read-
-  // grant construction locally.
-  app.get('/v1/streams/:stream/records', { contract: 'listRecords' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? buildOwnerQuerySourceDescriptor(req, opts)
-        : buildClientSourceDescriptor(tokenInfo);
-      let storageBinding = null;
-      let manifest;
-      const requestParams = { ...req.query };
-      const queryEventData = {
-        query_shape: 'record_list',
-        has_changes_since: !!requestParams.changes_since,
-        limit: requestParams.limit ? Number(requestParams.limit) : null,
-        ...(typeof req.query.view === 'string' && req.query.view.trim()
-          ? { requested_view: req.query.view.trim() }
-          : {}),
-      };
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor,
-        streamId: req.params.stream,
-        queryData: { ...queryEventData },
-      };
-
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        // Self-export: owner can query without a client grant.
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-        storageBinding = ownerResolved.storageBinding;
-        manifest = ownerResolved.manifest;
-      } else {
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        storageBinding = grantResolved.storageBinding;
-        sourceDescriptor = grantResolved.source;
-        manifest = grantResolved.manifest;
-        queryContext.sourceDescriptor = sourceDescriptor;
-      }
-
-      await emitQueryReceived(queryContext, req);
-
-      const operationInput = {
-        actor: tokenInfo.pdpp_token_kind === 'owner'
-          ? { kind: 'owner', subject_id: tokenInfo.subject_id || null }
-          : {
-              kind: 'client',
-              subject_id: tokenInfo.subject_id || null,
-              client_id: tokenInfo.client_id || null,
-              grant_id: tokenInfo.grant_id || null,
-            },
-        streamName: req.params.stream,
-        requestParams,
-        // Forward the raw `view` / `fields` values without coercion so the
-        // operation can apply the previous native truthiness test
-        // (`if (req.query.view && req.query.fields)`). `qs.parse` may
-        // produce strings, arrays (repeated params), or objects (bracketed
-        // params); the operation handles each shape per its boundary
-        // contract.
-        rawQueryView: req.query.view,
-        rawQueryFields: req.query.fields,
-      };
-
-      const dependencies = {
-        getSourceDescriptor: () => sourceDescriptor,
-        getManifest: () => manifest,
-        getGrant: () => tokenInfo.grant || { streams: [] },
-        queryRecords: (stream, grant, params, m) =>
-          queryRecords(storageBinding, stream, grant, params, m),
-        decorateRecord: (record) => decorateRecordBlobRefs(record),
-        validateRequestFields: (params, manifestStream) =>
-          validateRequestedQueryFieldParams(params, manifestStream),
-      };
-
-      let result;
-      try {
-        result = await executeRecordsList(operationInput, dependencies);
-      } catch (err) {
-        if (err instanceof RecordsListVisibilityError) {
-          const mappedErr = new Error(err.message);
-          mappedErr.code = err.code;
-          return await rejectQuery(res, req, queryContext, mappedErr);
-        }
-        throw err;
-      }
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        stream_id: req.params.stream,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: { source: result.sourceDescriptor, ...result.disclosureData },
-      });
-
-      res.json({
-        ...result.result,
-        url: req.path,
-      });
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/streams/:stream/records/:id
-  // Single-record-read semantics live in the canonical `rs.records.get`
-  // operation (operations/rs-records-detail). This route is a Fastify host
-  // adapter: it owns auth, request id / trace id, source-descriptor /
-  // manifest / grant resolution, URI decoding of the path-level record id,
-  // query-received and disclosure-served instrumentation, blob-ref URL
-  // decoration, and response writing. It MUST NOT recompute owner read-
-  // grant construction or `not_found` mapping locally.
-  app.get('/v1/streams/:stream/records/:id', { contract: 'getRecord' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-      let storageBinding = null;
-      let sourceDescriptor = tokenInfo.pdpp_token_kind === 'owner'
-        ? buildOwnerQuerySourceDescriptor(req, opts)
-        : buildClientSourceDescriptor(tokenInfo);
-      let manifest;
-      const requestedRecordId = decodeURIComponent(req.params.id);
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor,
-        streamId: req.params.stream,
-        queryData: {
-          query_shape: 'record_detail',
-          requested_record_id: requestedRecordId,
-          has_changes_since: false,
-          limit: null,
-        },
-      };
-
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        queryContext.sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-        storageBinding = ownerResolved.storageBinding;
-        manifest = ownerResolved.manifest;
-        sourceDescriptor = buildSourceDescriptor(ownerScope.source);
-        queryContext.sourceDescriptor = sourceDescriptor;
-      } else {
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        storageBinding = grantResolved.storageBinding;
-        manifest = grantResolved.manifest;
-        sourceDescriptor = grantResolved.source;
-        queryContext.sourceDescriptor = sourceDescriptor;
-      }
-      await emitQueryReceived(queryContext, req);
-
-      const operationInput = {
-        actor: tokenInfo.pdpp_token_kind === 'owner'
-          ? { kind: 'owner', subject_id: tokenInfo.subject_id || null }
-          : {
-              kind: 'client',
-              subject_id: tokenInfo.subject_id || null,
-              client_id: tokenInfo.client_id || null,
-              grant_id: tokenInfo.grant_id || null,
-            },
-        streamName: req.params.stream,
-        recordId: requestedRecordId,
-        expandOptions: {
-          expand: req.query.expand,
-          expand_limit: req.query.expand_limit,
-        },
-      };
-
-      const dependencies = {
-        getSourceDescriptor: () => sourceDescriptor,
-        getManifest: () => manifest,
-        getGrant: () => tokenInfo.grant || { streams: [] },
-        getRecord: (stream, recordId, grant, m, options) =>
-          getRecord(storageBinding, stream, recordId, grant, m, options),
-        decorateRecord: (record) => decorateRecordBlobRefs(record),
-      };
-
-      // The native `getRecord` capability throws an `Error` carrying
-      // `code: 'not_found'` for missing or grant-filtered records, so the
-      // operation's null-record check is unreachable here — that branch
-      // only fires for hosts whose `getRecord` returns null on miss
-      // (e.g., the sandbox fixture). Native `not_found` errors flow
-      // through the existing outer catch into `rejectQuery`.
-      let result;
-      try {
-        result = await executeRecordDetail(operationInput, dependencies);
-      } catch (err) {
-        if (err instanceof RecordDetailVisibilityError) {
-          const mappedErr = new Error(err.message);
-          mappedErr.code = err.code;
-          return await rejectQuery(res, req, queryContext, mappedErr);
-        }
-        throw err;
-      }
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        stream_id: req.params.stream,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: { source: result.sourceDescriptor, ...result.disclosureData },
-      });
-      res.json(result.record);
-    } catch (err) {
-      if (queryContext) {
-        await emitQueryReceived(queryContext, req);
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/search — public lexical retrieval extension. Thin route handler;
-  // all logic (parameter parsing, owner-vs-client mode, planning, FTS5,
-  // snippet hydration, response shaping) lives in search.js. See the
-  // approved spec at:
-  //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-  app.get('/v1/search', { contract: 'searchRecordsLexical' }, requireToken, async (req, res) => {
-    let queryContext = null;
-    try {
-      const { tokenInfo } = req;
-      const queryId = ensureRequestId(res);
-      const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-      setReferenceTraceId(res, traceId);
-
-      const isOwner = tokenInfo.pdpp_token_kind === 'owner';
-      queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
-        actorId,
-        traceId,
-        scenarioId,
-        sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
-        streamId: null,
-        queryData: { query_shape: 'search' },
-      };
-      await emitQueryReceived(queryContext, req);
-
-      const { envelope, disclosureData } = await runLexicalSearch({
-        req,
-        opts,
-        tokenInfo,
-        // Owner-mode helpers — bound to the request so the helper stays
-        // generic across tests, native mode, and polyfill mode.
-        resolveOwnerVisibleConnectorIds: async () => {
-          const native = resolveNativeManifest(opts);
-          if (native?.storage_binding?.connector_id) {
-            // Native mode: a single owner-visible connector identity.
-            return [native.storage_binding.connector_id];
-          }
-          // Polyfill mode: every registered connector is owner-visible.
-          return await listRegisteredConnectorIds();
-        },
-        resolveOwnerScopeForConnector: (connectorId) => ({
-          public_scope: 'polyfill',
-          owner_subject_id: getOwnerTokenSubjectId(req),
-          source: { kind: 'connector', id: connectorId },
-          storage_binding: { connector_id: connectorId },
-        }),
-        resolveOwnerManifestFromScope: (ownerScope) =>
-          resolveOwnerManifestFromScope(ownerScope, opts),
-        // Synthetic owner read grant covering every stream of the manifest;
-        // fields = undefined ⇒ "all fields authorized" per
-        // buildSearchPlanForGrant semantics.
-        buildOwnerReadGrantForManifest: (manifest) => ({
-          streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
-        }),
-        // Client-mode resolver
-        resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
-      });
-
-      await emitSpineEvent({
-        event_type: 'disclosure.served',
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: 'subject',
-        subject_id: tokenInfo.subject_id || null,
-        object_type: 'query',
-        object_id: queryId,
-        status: 'succeeded',
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        stream_id: null,
-        token_id: req.headers.authorization?.slice(7) || null,
-        data: disclosureData,
-      });
-
-      res.json(envelope);
-    } catch (err) {
-      if (queryContext) {
-        return await rejectQuery(res, req, queryContext, err);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // Experimental — public semantic retrieval. Unstable.
-  // See capabilities.semantic_retrieval.stability and
-  //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
-  //
-  // Only registered when a real embedding backend is configured. When no
-  // backend is configured, the advertisement is also omitted (see the RS
-  // metadata route handler above), and requests fall through to the default
-  // 404 — which is what the spec scenario "A client encounters a server
-  // that does not advertise the extension" expects.
-  const semanticBackendAtRegistration = getSemanticBackend();
-  if (
-    semanticBackendAtRegistration
-    && semanticBackendAtRegistration.available()
-    && opts.semanticRetrievalSupported !== false
-  ) {
-    app.get('/v1/search/semantic', { contract: 'searchRecordsSemantic' }, requireToken, async (req, res) => {
-      let queryContext = null;
-      try {
-        const { tokenInfo } = req;
-        const queryId = ensureRequestId(res);
-        const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-        setReferenceTraceId(res, traceId);
-
-        const isOwner = tokenInfo.pdpp_token_kind === 'owner';
-        queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
-          actorId,
-          traceId,
-          scenarioId,
-          sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
-          streamId: null,
-          queryData: { query_shape: 'search_semantic' },
-        };
-        await emitQueryReceived(queryContext, req);
-
-        const { envelope, disclosureData } = await runSemanticSearch({
-          req,
-          opts,
-          tokenInfo,
-          // Owner-mode helpers mirror the lexical route's wiring.
-          resolveOwnerVisibleConnectorIds: async () => {
-            const native = resolveNativeManifest(opts);
-            if (native?.storage_binding?.connector_id) {
-              return [native.storage_binding.connector_id];
-            }
-            return await listRegisteredConnectorIds();
-          },
-          resolveOwnerScopeForConnector: (connectorId) => ({
-            public_scope: 'polyfill',
-            owner_subject_id: getOwnerTokenSubjectId(req),
-            source: { kind: 'connector', id: connectorId },
-            storage_binding: { connector_id: connectorId },
-          }),
-          resolveOwnerManifestFromScope: (ownerScope) =>
-            resolveOwnerManifestFromScope(ownerScope, opts),
-          buildOwnerReadGrantForManifest: (manifest) => ({
-            streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
-          }),
-          resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
-        });
-
-        await emitSpineEvent({
-          event_type: 'disclosure.served',
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: 'subject',
-          subject_id: tokenInfo.subject_id || null,
-          object_type: 'query',
-          object_id: queryId,
-          status: 'succeeded',
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: null,
-          token_id: req.headers.authorization?.slice(7) || null,
-          data: disclosureData,
-        });
-
-        res.json(envelope);
-      } catch (err) {
-        if (queryContext) {
-          return await rejectQuery(res, req, queryContext, err);
-        }
-        handleError(res, err);
-      }
-    });
-  }
-
-  // Experimental — public hybrid retrieval. Composes lexical + semantic under
-  // the same grant; deduplicates by (connector_id, stream, record_key); emits
-  // per-source provenance and score objects. Registered only when BOTH
-  // underlying surfaces are active on this server. See:
-  //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
-  const hybridBackendAtRegistration = getSemanticBackend();
-  const hybridSemanticAvailable = !!(
-    hybridBackendAtRegistration
-    && hybridBackendAtRegistration.available()
-    && opts.semanticRetrievalSupported !== false
-  );
-  const hybridLexicalAvailable = opts.lexicalRetrievalSupported !== false;
-  if (
-    opts.hybridRetrievalSupported !== false
-    && hybridLexicalAvailable
-    && hybridSemanticAvailable
-  ) {
-    app.get('/v1/search/hybrid', { contract: 'searchRecordsHybrid' }, requireToken, async (req, res) => {
-      let queryContext = null;
-      try {
-        const { tokenInfo } = req;
-        const queryId = ensureRequestId(res);
-        const { actorType, actorId, traceId, scenarioId } = buildQueryActorContext(tokenInfo);
-        setReferenceTraceId(res, traceId);
-
-        const isOwner = tokenInfo.pdpp_token_kind === 'owner';
-        queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
-          actorId,
-          traceId,
-          scenarioId,
-          sourceDescriptor: isOwner ? null : buildClientSourceDescriptor(tokenInfo),
-          streamId: null,
-          queryData: { query_shape: 'search_hybrid' },
-        };
-        await emitQueryReceived(queryContext, req);
-
-        const { envelope, disclosureData } = await runHybridSearch({
-          req,
-          opts,
-          tokenInfo,
-          resolveOwnerVisibleConnectorIds: async () => {
-            const native = resolveNativeManifest(opts);
-            if (native?.storage_binding?.connector_id) {
-              return [native.storage_binding.connector_id];
-            }
-            return await listRegisteredConnectorIds();
-          },
-          resolveOwnerScopeForConnector: (connectorId) => ({
-            public_scope: 'polyfill',
-            owner_subject_id: getOwnerTokenSubjectId(req),
-            source: { kind: 'connector', id: connectorId },
-            storage_binding: { connector_id: connectorId },
-          }),
-          resolveOwnerManifestFromScope: (ownerScope) =>
-            resolveOwnerManifestFromScope(ownerScope, opts),
-          buildOwnerReadGrantForManifest: (manifest) => ({
-            streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
-          }),
-          resolveGrantManifest: (info) => resolveGrantManifest(info, opts),
-        });
-
-        await emitSpineEvent({
-          event_type: 'disclosure.served',
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: 'subject',
-          subject_id: tokenInfo.subject_id || null,
-          object_type: 'query',
-          object_id: queryId,
-          status: 'succeeded',
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: null,
-          token_id: req.headers.authorization?.slice(7) || null,
-          data: disclosureData,
-        });
-
-        res.json(envelope);
-      } catch (err) {
-        if (queryContext) {
-          return await rejectQuery(res, req, queryContext, err);
-        }
-        handleError(res, err);
-      }
-    });
-  }
-
-  // POST /v1/blobs
-  // Blob-upload semantics live in the canonical `rs.blobs.upload` operation
-  // (operations/rs-blobs-upload). This route is a Fastify host adapter:
-  // it owns auth, request id, response writing, and concrete capability
-  // wiring. It MUST NOT recompute query/Content-Type validation, manifest
-  // visibility, or response envelope shaping locally. The host wires the
-  // existing `persistContentAddressedBlob` capability, which preserves
-  // blob+binding atomicity.
-  app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
-    try {
-      let manifestCache = null;
-      let storageNamespace = null;
-      const dependencies = {
-        hasManifestStream: async (connectorId, streamName) => {
-          manifestCache = await resolveRegisteredConnectorManifest(connectorId);
-          const visible = Boolean(
-            (manifestCache.streams || []).find((candidate) => candidate.name === streamName),
-          );
-          if (visible) {
-            storageNamespace = await resolveOwnerConnectorNamespace(req, connectorId);
-          }
-          return visible;
-        },
-        persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
-          const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, connectorId);
-          return persistContentAddressedBlob({
-            connectorId: namespace.connectorId,
-            connectorInstanceId: namespace.connectorInstanceId,
-            stream,
-            recordKey,
-            mimeType,
-            data: Buffer.isBuffer(data) ? data : Buffer.from(data),
-          });
-        },
-      };
-      const operationInput = {
-        requestParams: {
-          connector_id: req.query.connector_id,
-          stream: req.query.stream,
-          record_key: req.query.record_key,
-        },
-        contentType: req.headers['content-type'],
-        body: req.body,
-      };
-      let output;
-      try {
-        output = await executeBlobsUpload(operationInput, dependencies);
-      } catch (opErr) {
-        if (
-          opErr instanceof BlobsUploadInvalidRequestError
-          || opErr instanceof BlobsUploadStreamNotFoundError
-        ) {
-          const mapped = new Error(opErr.message);
-          mapped.code = opErr.code;
-          throw mapped;
-        }
-        throw opErr;
-      }
-      res.json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // GET /v1/blobs/:blob_id
-  // Per-binding blob-visibility semantics live in the canonical `rs.blobs.read`
-  // operation (operations/rs-blobs-read). This route is a Fastify host
-  // adapter: it owns auth, decoding the blob_id path parameter, response
-  // header / body writing, and wiring the actor-scoped storage binding,
-  // manifest, and grant into the operation's `getVisibleRecord` capability.
-  // It MUST NOT recompute the binding loop, the visibility short-circuit, or
-  // the `blob_not_found` error shape locally, and MUST NOT speak SQL.
-  // Storage reads flow through the `BlobStore` capability
-  // (server/stores/blob-store.js).
-  const blobStore = createBlobStore();
-  app.get('/v1/blobs/:blob_id', { contract: 'getBlob' }, requireToken, async (req, res) => {
-    try {
-      const blobId = decodeURIComponent(req.params.blob_id);
-      const { tokenInfo } = req;
-      let storageBinding;
-      let manifest;
-      if (tokenInfo.pdpp_token_kind === 'owner') {
-        const ownerScope = resolveOwnerReadScope(req, opts);
-        const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
-        storageBinding = ownerResolved.storageBinding;
-        manifest = ownerResolved.manifest;
-      } else {
-        const grantResolved = await resolveGrantManifest(tokenInfo, opts);
-        storageBinding = grantResolved.storageBinding;
-        manifest = grantResolved.manifest;
-      }
-
-      const dependencies = {
-        loadBlob: (id) => blobStore.loadContentAddressedBlob(id),
-        loadBindings: (id) => blobStore.listBlobBindings(id),
-        getActorConnectorId: () => storageBinding?.connector_id ?? null,
-        getVisibleRecord: async (binding) => {
-          if (
-            storageBinding?.connector_instance_id
-            && binding.connector_instance_id
-            && binding.connector_instance_id !== storageBinding.connector_instance_id
-          ) {
-            return null;
-          }
-          const grant = tokenInfo.pdpp_token_kind === 'owner'
-            ? buildOwnerReadGrant(binding.stream)
-            : tokenInfo.grant;
-          const bindingStorageTarget = binding.connector_instance_id
-            ? {
-                connector_id: binding.connector_id,
-                connector_instance_id: binding.connector_instance_id,
-              }
-            : storageBinding;
-          return await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
-        },
-      };
-
-      let output;
-      try {
-        output = await executeBlobsRead({ blobId }, dependencies);
-      } catch (opErr) {
-        if (opErr instanceof BlobsReadNotFoundError) {
-          const mapped = new Error(opErr.message);
-          mapped.code = opErr.code;
-          throw mapped;
-        }
-        throw opErr;
-      }
-      const blob = output.blob;
-      res.setHeader('Content-Type', blob.mime_type);
-      res.setHeader('Content-Length', String(blob.size_bytes));
-      res.setHeader('Cache-Control', 'private, no-store');
-      res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ''));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // GET /v1/blobs/:blob_id is mounted via `server/routes/rs-read.ts` (§3),
+  // registered here — immediately after `POST /v1/blobs` — to preserve the
+  // original route registration order. Behaviour-preserving extraction.
+  mountRsBlobRead(app, rsReadContext);
 
   if (!nativeMode) {
-    // DELETE /v1/streams/:stream/records (owner-authenticated reference reset for polyfill mode)
-    // Bulk-delete semantics live in the canonical `rs.records.delete_stream`
-    // operation (operations/rs-records-delete-stream). This route is a
-    // Fastify host adapter: it owns auth, mutation-context wiring, trace
-    // id setup, instrumentation dispatch, and response writing. It MUST NOT
-    // recompute the connector_id presence rule, manifest visibility, or the
-    // `{ deleted_record_count }` event payload locally.
-    app.delete('/v1/streams/:stream/records', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        operation: 'delete_stream_records',
-        streamId: req.params.stream,
-      });
-      try {
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            return Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-          },
-          deleteAllRecords: (cid, streamName) => deleteAllRecords(cid, streamName),
-        };
-        let output;
-        try {
-          // Validate inputs before emitting `mutation.requested` to mirror
-          // the previous native ordering: invalid_request short-circuits via
-          // rejectMutation, which itself emits the requested event for parity.
-          if (!connectorId) {
-            throw new RecordsDeleteStreamInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsDeleteStream(
-            { connectorId, streamName: req.params.stream },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsDeleteStreamInvalidRequestError
-            || opErr instanceof RecordsDeleteStreamNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: output.deletedRecordCount,
-        });
-        res.status(204).end();
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
+    // Reference-only signed source-webhook ingress is mounted via
+    // `server/routes/source-webhooks.ts` per OpenSpec change
+    // `split-reference-server-by-route-family` (§5.3). Behaviour-preserving
+    // extraction: same path, same HMAC posture, same envelopes, same status
+    // codes (202 on duplicate, 200 otherwise), same error mapping.
+    mountRefSourceWebhooks(app, {
+      controller: opts.controller,
+      getManifestRefreshPolicy,
+      getSchedulerStore: getDefaultSchedulerStore,
+      getSourceWebhookEventStore: getDefaultSourceWebhookEventStore,
+      handleError,
+      ingestRecord: (connectorId, record) => ingestRecord(connectorId, record),
+      parseSourceWebhookSecrets,
+      pdppError,
+      projectRunAutomationPolicy,
+      resolveRegisteredConnectorManifest,
     });
 
-    // DELETE /v1/streams/:stream/records/:id (owner-authenticated)
-    // Single-delete semantics live in the canonical `rs.records.delete`
-    // operation (operations/rs-records-delete). This route is a Fastify
-    // host adapter: it owns auth, mutation-context wiring, trace id setup,
-    // instrumentation dispatch, and response writing. It MUST NOT recompute
-    // the connector_id presence rule, manifest visibility, or the
-    // `{ deleted_record_count }` event payload locally.
-    app.delete('/v1/streams/:stream/records/:id', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const requestedRecordId = decodeURIComponent(req.params.id);
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        operation: 'delete_record',
-        streamId: req.params.stream,
-        requestedRecordId,
-      });
-      try {
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            return Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-          },
-          deleteRecord: (cid, streamName, recordId) => deleteRecord(cid, streamName, recordId),
-        };
-        let output;
-        try {
-          if (!connectorId) {
-            throw new RecordsDeleteInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsDelete(
-            {
-              connectorId,
-              streamName: req.params.stream,
-              recordId: requestedRecordId,
-            },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsDeleteInvalidRequestError
-            || opErr instanceof RecordsDeleteNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: output.deletedRecordCount,
-        });
-        res.status(204).end();
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
-    });
-
-    // POST /_ref/source-webhooks/:sourceId (reference-only runtime ingress)
-    // This is not a PDPP protocol endpoint. It accepts source-specific signed
-    // callbacks and maps them into existing ingest/scheduler semantics.
-    app.post('/_ref/source-webhooks/:sourceId', async (req, res) => {
-      const secrets = parseSourceWebhookSecrets();
-      const body = typeof req.body === 'string'
-        ? req.body
-        : Buffer.isBuffer(req.body)
-          ? req.body.toString('utf8')
-          : JSON.stringify(req.body ?? {});
-      try {
-        const result = await executeSourceWebhook(
-          {
-            sourceId: req.params.sourceId,
-            body,
-            timestamp: req.headers['pdpp-webhook-timestamp'],
-            eventId: req.headers['pdpp-webhook-event-id'],
-            signature: req.headers['pdpp-webhook-signature'],
-          },
-          {
-            nowMs: () => Date.now(),
-            resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
-            resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
-            claimEvent: (event) => getDefaultSourceWebhookEventStore().claimEvent(event),
-            ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
-              const output = await executeRecordsIngest(
-                { connectorId, streamName, body: ingestBody },
-                {
-                  hasManifestStream: async (cid, name) => {
-                    const manifest = await resolveRegisteredConnectorManifest(cid);
-                    return Boolean((manifest.streams || []).find((stream) => stream.name === name));
-                  },
-                  ingestRecord: (cid, _connectorInstanceId, record) => ingestRecord(cid, record),
-                },
-              );
-              return output.envelope;
-            },
-            signalScheduler: async ({ connectorId, receivedAt }) => {
-              await getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
-          },
-          projectAutomationPolicy: async ({ connectorId, triggerKind }) => {
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return projectRunAutomationPolicy({
-              triggerKind,
-              refreshPolicy: getManifestRefreshPolicy(manifest),
-            });
-          },
-          requestRun: async ({ connectorId, triggerKind }) => {
-            if (!opts.controller) {
-              return null;
-            }
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return opts.controller.runNow(connectorId, {
-              manifest,
-              priorityClass: 'scheduled_refresh',
-              triggerKind,
-            });
-          },
-        },
-      );
-        res.status(result.duplicate ? 202 : 200).json(result);
-      } catch (err) {
-        if (err instanceof SourceWebhookError) {
-          return pdppError(res, err.status, err.code, err.message);
-        }
-        return handleError(res, err);
-      }
-    });
-
-    // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
-    // Ingest semantics live in the canonical `rs.records.ingest` operation
-    // (operations/rs-records-ingest). This route is a Fastify host adapter:
-    // it owns auth, mutation-context wiring, trace id setup, instrumentation
-    // dispatch, and response writing. It MUST NOT recompute line splitting,
-    // connector_id presence, manifest visibility, JSON parse handling, the
-    // accepted/rejected counters, or the response envelope locally. Per-record
-    // durable atomicity remains in the underlying `ingestRecord` capability.
-    app.post('/v1/ingest/:stream', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
-      const lines = parseIngestLines(typeof req.body === 'string' ? req.body : '');
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        connectorInstanceId,
-        operation: 'ingest_records',
-        streamId: req.params.stream,
-        submittedRecordCount: lines.length,
-      });
-      try {
-        let storageNamespace = null;
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-            if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
-            }
-            return visible;
-          },
-          ingestRecord: async (cid, cin, record) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
-              connectorInstanceId: cin,
-            });
-            return ingestRecord(storageTargetForConnectorNamespace(namespace), record);
-          },
-        };
-        let output;
-        try {
-          if (!connectorId) {
-            throw new RecordsIngestInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsIngest(
-            {
-              connectorId,
-              connectorInstanceId,
-              streamName: req.params.stream,
-              body: typeof req.body === 'string' ? req.body : '',
-            },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsIngestInvalidRequestError
-            || opErr instanceof RecordsIngestNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          records_accepted: output.envelope.records_accepted,
-          records_rejected: output.envelope.records_rejected,
-          error_count: output.envelope.errors.length,
-        });
-        res.json(output.envelope);
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
-    });
-
-    // GET /v1/state/:connectorId (Collection Profile, owner-authenticated)
-    // Validation order, the storage call shape, and the
-    // grant-scope-driven `allowedStreams` semantics live in the canonical
-    // `rs.connector-state.get` operation. The host adapter wires auth,
-    // request id / trace id, instrumentation events
-    // (`state.requested`, `state.served`, `state.rejected`), the manifest
-    // resolver, the grant-scope resolver, and the response writing.
-    app.get('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
-      const stateContext = buildStateContext(req, res, {
-        connectorId,
-        grantId,
-        operation: 'read',
-      });
-      try {
-        let storageNamespace = null;
-        const { state } = await executeRsConnectorStateGet(
-          { connectorId, grantId },
-          {
-            resolveRegisteredConnectorManifest: async (id) => {
-              const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
-              return manifest;
-            },
-            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
-            onGrantResolved: async (grantScope) => {
-              if (grantScope?.traceId) {
-                stateContext.traceId = grantScope.traceId;
-                stateContext.scenarioId = grantScope.scenarioId;
-              }
-              setReferenceTraceId(res, stateContext.traceId);
-              await emitStateRequested(req, stateContext);
-            },
-            getSyncState: async (id, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
-              return getSyncState(storageTargetForConnectorNamespace(namespace), args);
-            },
-          },
-        );
-        await emitStateEvent(req, stateContext, 'state.served', 'succeeded', {
-          visible_streams: Object.keys(state?.state || {}),
-          updated_at: state?.updated_at || null,
-        });
-        res.json(toPublicConnectorStateProjection(state));
-      } catch (err) {
-        return await rejectState(res, req, stateContext, err);
-      }
-    });
-
-    // PUT /v1/state/:connectorId (Collection Profile, owner-authenticated)
-    // Validation order (manifest stream membership, grant-scope membership),
-    // the storage call shape, and the typed validation errors live in the
-    // canonical `rs.connector-state.put` operation. The host adapter
-    // translates the typed validation error into the existing PDPP error
-    // envelope shape.
-    app.put('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
-      const stateMap = (
-        req.body?.state
-        && typeof req.body.state === 'object'
-        && !Array.isArray(req.body.state)
-      ) ? req.body.state : {};
-      const requestedStreams = Object.keys(stateMap);
-      const stateContext = buildStateContext(req, res, {
-        connectorId,
-        grantId,
-        operation: 'write',
-        requestedStreams,
-      });
-      try {
-        let storageNamespace = null;
-        const { state } = await executeRsConnectorStatePut(
-          { connectorId, grantId, stateMap },
-          {
-            resolveRegisteredConnectorManifest: async (id) => {
-              const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
-              return manifest;
-            },
-            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
-            onGrantResolved: async (grantScope) => {
-              if (grantScope?.traceId) {
-                stateContext.traceId = grantScope.traceId;
-                stateContext.scenarioId = grantScope.scenarioId;
-              }
-              setReferenceTraceId(res, stateContext.traceId);
-              await emitStateRequested(req, stateContext);
-            },
-            putSyncState: async (id, map, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
-              return putSyncState(storageTargetForConnectorNamespace(namespace), map, args);
-            },
-          },
-        );
-        await emitStateEvent(req, stateContext, 'state.updated', 'succeeded', {
-          persisted_streams: Object.keys(state?.state || {}),
-          updated_at: state?.updated_at || null,
-        });
-        res.json(toPublicConnectorStateProjection(state));
-      } catch (err) {
-        if (err instanceof RsConnectorStatePutValidationError) {
-          // Translate the operation-typed validation error into the plain
-          // `Error` shape `rejectState` already understands so the public
-          // error envelope and `state.rejected` event remain unchanged.
-          const translated = new Error(err.message);
-          translated.code = err.code;
-          return await rejectState(res, req, stateContext, translated);
-        }
-        return await rejectState(res, req, stateContext, err);
-      }
-    });
+    // DELETE /v1/streams/:stream/records, DELETE /v1/streams/:stream/records/:id,
+    // POST /v1/ingest/:stream, GET /v1/state/:connectorId, PUT /v1/state/:connectorId
+    // are mounted via `server/routes/rs-mutation.ts` per OpenSpec change
+    // `split-reference-server-by-route-family` (§4). Behaviour-preserving extraction:
+    // same auth posture, same middleware order, same response envelopes, same status
+    // codes, same spine event emission. Only registered in polyfill mode (!nativeMode).
+    mountRsMutation(app, rsMutationContext);
   }
 
   return app;
@@ -7008,7 +4381,17 @@ export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = resolveStorageBackend({ opts });
-  await initDb(opts.dbPath || DB_PATH, {
+  // Storage-mode boundary: in Postgres mode, Postgres owns runtime persistence,
+  // so startup MUST NOT open or migrate the configured *persistent* SQLite file.
+  // We still init SQLite as an explicitly non-durable in-memory handle so guarded
+  // modules that hold a `getDb()` reference never observe `null`; it opens no
+  // file, runs no persistent migration, serves no durable answer, and is dropped
+  // on shutdown. See openspec/changes/exclude-persistent-sqlite-from-postgres-boot
+  // and design-notes/postgres-runtime-boundary-sqlite-classification-2026-05-28.md.
+  const sqliteInitPath = storageBackend.backend === 'postgres'
+    ? ':memory:'
+    : (opts.dbPath || DB_PATH);
+  await initDb(sqliteInitPath, {
     busyTimeoutMs: opts.sqliteBusyTimeoutMs,
     onSchemaRetry: ({ attempt, delay, err }) => {
       logger.warn(
@@ -7017,6 +4400,15 @@ export async function startServer(opts = {}) {
       );
     },
   });
+  // Establish the active runtime backend BEFORE any backend-dispatching startup
+  // write. `seedPreRegisteredClients` dispatches on `isPostgresStorageBackend()`,
+  // which only reports `postgres` once `initPostgresStorage` has run; seeding
+  // before this point would persist pre-registered clients to SQLite even in
+  // Postgres mode.
+  await initPostgresStorage(storageBackend, { log: (msg) => logger.info(msg) });
+  if (storageBackend.backend === 'postgres') {
+    logger.info('postgres runtime storage initialized');
+  }
   await seedPreRegisteredClients(
     resolvePreRegisteredPublicClients(opts),
     {
@@ -7029,10 +4421,6 @@ export async function startServer(opts = {}) {
     },
   );
   logger.info('database initialized');
-  await initPostgresStorage(storageBackend);
-  if (storageBackend.backend === 'postgres') {
-    logger.info('postgres runtime storage initialized');
-  }
 
   // Boot-epoch reconciliation — STAGE 5.
   // Emit `controller.booted` as the FIRST spine event of this process
@@ -7173,6 +4561,20 @@ export async function startServer(opts = {}) {
     (!ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null) ||
     null;
   const configuredRsPublicUrl = referenceTopology.rsPublicUrl || null;
+  // Internal RS base for the hosted-MCP adapter's own child-grant self-calls
+  // (F1: avoid hairpinning PATCH self-calls through the public edge that 405s
+  // PATCH). Only honor an EXPLICITLY configured internal base — `opts.rsInternalUrl`
+  // or the operator's `PDPP_RS_URL` — because that is the only value known to
+  // point at the live RS. The bare `DEFAULT_RS_INTERNAL_URL` (localhost:7663) is
+  // deliberately NOT used as an implicit internal base: in ephemeral-port
+  // harnesses (rsPort:0) and any deployment where the default does not match the
+  // realized listener it would misroute self-calls. When no explicit internal
+  // base is configured the adapter falls back to the advertised public resource,
+  // preserving current behavior.
+  // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+  const explicitRsInternalUrl =
+    opts.rsInternalUrl ??
+    (!ignoreAmbientPublicUrls ? (process.env.PDPP_RS_URL?.trim() || null) : null);
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? process.env.PDPP_TRUSTED_HOSTS ?? null;
   const runtimeContext = {
     rsUrl: configuredRsPublicUrl || null,
@@ -7211,13 +4613,79 @@ export async function startServer(opts = {}) {
       registerNonce: (args) => runTargetRegistry.registerNonce(args),
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
     },
+    resolveStaticSecretRunEnv: buildControllerStaticSecretRunEnvResolver(),
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   let schedulerManager = null;
+
+  // Client event subscriptions: install the post-commit hook from
+  // records.js and start the delivery worker. The hook synchronously
+  // enqueues envelopes after a record_changes row has committed; the
+  // worker handles signing, HTTP delivery, and retry.
+  setClientEventEnqueueHook(async (change) => {
+    try {
+      const subs = await listActiveSubscriptions();
+      if (subs.length === 0) return;
+      const store = getDefaultClientEventSubscriptionStore();
+      const activeSubs = subs.filter((row) => row.status === 'active');
+      const changedInstanceOwner = activeSubs.some((row) => row.authority_kind === 'trusted_owner_agent')
+        ? (await createRequestConnectorInstanceStore().get(change.connectorInstanceId))?.ownerSubjectId ?? null
+        : null;
+      const events = deriveClientEventsFromRecordChange(
+        {
+          connectorId: change.connectorId,
+          connectorInstanceId: change.connectorInstanceId,
+          ownerSubjectId: changedInstanceOwner,
+          connectionId: change.connectionId ?? null,
+          stream: change.stream,
+          version: Number(change.version) || 0,
+          emittedAt: change.emittedAt,
+        },
+        activeSubs
+          .map((row) => ({
+            subscriptionId: row.subscription_id,
+            authorityKind: row.authority_kind,
+            grantId: row.grant_id,
+            clientId: row.client_id,
+            subjectId: row.subject_id,
+            scope: JSON.parse(row.scope_json),
+            status: 'active',
+          })),
+      );
+      const now = new Date().toISOString();
+      for (const ev of events) {
+        const eventId = `evt_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+        await store.enqueueEvent({
+          subscriptionId: ev.subscriptionId,
+          eventId,
+          eventType: ev.type,
+          payloadJson: buildEventPayload(eventId, ev),
+          enqueuedAt: now,
+          nextAttemptAt: now,
+        });
+      }
+      if (events.length > 0) {
+        getDefaultDeliveryWorker().tick().catch(() => { /* surfaced via attempt log */ });
+      }
+    } catch (hookErr) {
+      logger.warn?.({ err: String(hookErr?.message ?? hookErr) }, 'client-event-subscriptions: enqueue hook failed');
+    }
+  });
+  if (opts.startClientEventDeliveryWorker !== false) {
+    getDefaultDeliveryWorker().start();
+  }
+
+  // Resolve the reference-only static-secret credential prober once at startup
+  // (it lazily imports the connector package's probe + live transport). Tests
+  // may inject their own via `opts.staticSecretCredentialProber`.
+  const staticSecretCredentialProber =
+    opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
+
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
     providerName,
+    staticSecretCredentialProber,
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
     dbPath: opts.dbPath || DB_PATH,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
@@ -7246,6 +4714,8 @@ export async function startServer(opts = {}) {
     runTargetRegistry,
     onScheduleMutation: () => schedulerManager?.refresh(),
     logger,
+    providerAuthExchanger: opts.providerAuthExchanger ?? null,
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
   });
 
   // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default
@@ -7292,6 +4762,11 @@ export async function startServer(opts = {}) {
     asPublicUrl,
     asIssuer: configuredAsIssuer || asPublicUrl,
     rsPublicUrl: configuredRsPublicUrl,
+    // Explicitly-configured internal RS base for the hosted-MCP adapter's
+    // child-grant self-calls (null when only the bare default would apply, so
+    // the adapter falls back to the public resource). See explicitRsInternalUrl.
+    // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+    rsInternalUrl: explicitRsInternalUrl,
     ignoreAmbientPublicUrls,
     trustedMetadataHosts,
     logger,
@@ -7312,6 +4787,12 @@ export async function startServer(opts = {}) {
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     referenceRevision: opts.referenceRevision,
     agentDiscoveryOrigin: referenceTopology.browserOrigin,
+    // Scheduler refresh hook for the owner-agent schedule pause/resume routes,
+    // the same callback `buildAsApp` receives for the cookie-authed `/_ref`
+    // schedule routes. `schedulerManager` is assigned later in startServer; the
+    // closure reads it lazily at mutation time. See
+    // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+    onScheduleMutation: () => schedulerManager?.refresh(),
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;
@@ -7403,6 +4884,7 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
     return {};
   }
 
+  await browserSurfaceLeaseStore.repairStaleSurfaceActiveLeases();
   const browserSurfaceLeaseManager = new BrowserSurfaceLeaseManager({
     config: runtimeConfig.leaseConfig,
     initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),
@@ -7444,6 +4926,7 @@ export function isManagedNekoSurfaceApproved(target, { runId, interactionId, bro
   const leaseId = typeof target.lease_id === 'string' ? target.lease_id : null;
   const profileKey = typeof target.profile_key === 'string' ? target.profile_key : null;
   const baseUrl = normalizedUrlWithoutTrailingSlash(target.base_url || target.origin);
+  const cdpUrl = normalizedUrlWithoutTrailingSlash(target.cdp_http_url || target.cdpHttpUrl);
   if (!surfaceId || !leaseId || !profileKey || !baseUrl) return false;
 
   const lease = typeof browserSurfaceLeaseManager.getLease === 'function'
@@ -7464,6 +4947,7 @@ export function isManagedNekoSurfaceApproved(target, { runId, interactionId, bro
       typeof target.interaction_id === 'string' ? target.interaction_id : null;
     if (targetInteractionId !== interactionId) return false;
   }
+  if (cdpUrl && normalizedUrlWithoutTrailingSlash(surface.cdp_url) !== cdpUrl) return false;
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 
@@ -7487,30 +4971,42 @@ function createReferenceSchedulerManager({
     const connectors = [];
     for (const schedule of enabledSchedules) {
       try {
-        const manifest = await getConnectorManifest(schedule.connector_id);
+        // Canonicalize at the autonomous-scheduler boundary. A legacy /
+        // migration `connector_schedules` row can carry a URL-shaped or
+        // legacy-alias `connector_id`: the controller's `upsertSchedule`
+        // canonicalizes on write, but rows seeded before that slice (or by a
+        // non-controller path) do not. Forwarding it verbatim makes the
+        // scheduler emit the spine run source / actor_id and persist
+        // run-history + last-run rows under the non-canonical id, mismatching
+        // the canonical key the read/admission paths key on. Normalize once
+        // here, mirroring the established `canonicalConnectorKey(x) ?? x`
+        // pattern (see index.js:1236, 1310). The manifest still resolves via
+        // alias fallback, so eligible connectors still run.
+        const connectorId = canonicalConnectorKey(schedule.connector_id) ?? schedule.connector_id;
+        const manifest = await getConnectorManifest(connectorId);
         if (!manifest) {
           continue;
         }
         const scheduleIneligibilityReason = getScheduleIneligibilityReason(getManifestRefreshPolicy(manifest));
         if (scheduleIneligibilityReason) {
           logger?.warn?.(
-            { connector_id: schedule.connector_id, reason: scheduleIneligibilityReason },
+            { connector_id: connectorId, reason: scheduleIneligibilityReason },
             'skipping scheduled connector because refresh policy is not background-safe',
           );
           continue;
         }
         const connectorPath = await Promise.resolve(
-          connectorPathResolver(schedule.connector_id, manifest, { priorityClass: 'scheduled_refresh' }),
+          connectorPathResolver(connectorId, manifest, { priorityClass: 'scheduled_refresh' }),
         );
         if (!connectorPath) {
           logger?.warn?.(
-            { connector_id: schedule.connector_id },
+            { connector_id: connectorId },
             'skipping scheduled connector without runnable implementation',
           );
           continue;
         }
         connectors.push({
-          connectorId: schedule.connector_id,
+          connectorId,
           connectorInstanceId: schedule.connector_instance_id,
           connectorPath,
           manifest,
@@ -7543,18 +5039,84 @@ function createReferenceSchedulerManager({
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
       getState: async (connectorId, connectorInstanceId) => {
-        const stored = await getSyncState(connectorId, { connectorInstanceId });
+        // Read scheduler state from the connection-instance namespace by
+        // construction: getSyncState keys storage off its storage-target
+        // argument, and a bare connectorId string falls back to the
+        // default-account instance id (the connectorInstanceId option is
+        // ignored). Pass the explicit object target so each connection's
+        // schedule reads its own durable state.
+        const stored = await getSyncState(
+          storageTargetForConnectorNamespace({ connectorId, connectorInstanceId }),
+        );
         return stored?.state || null;
       },
       setState: async (connectorId, state, connectorInstanceId) => {
-        await putSyncState(connectorId, state && typeof state === 'object' && !Array.isArray(state) ? state : {}, {
-          connectorInstanceId,
-        });
+        await putSyncState(
+          storageTargetForConnectorNamespace({ connectorId, connectorInstanceId }),
+          state && typeof state === 'object' && !Array.isArray(state) ? state : {},
+        );
       },
       markNeedsHuman: (connectorId, connectorInstanceId) => controller.markNeedsHuman(connectorId, { connectorInstanceId }),
       isNeedsHuman: (connectorId, connectorInstanceId) =>
         controller.isNeedsHuman(connectorId, { connectorInstanceId }) ||
         Boolean(controller.getActiveRun(connectorId, { connectorInstanceId })),
+      hasUnresolvedAttention: async (connectorId, connectorInstanceId) => {
+        // Durable attention projection. The in-memory `isNeedsHuman` flag
+        // is process-local; this probe consults the structured
+        // attention_request store so a scheduled tick after process
+        // restart still recognizes unresolved owner action and does not
+        // launch a doomed run. The projection is read-bounded
+        // (`listOpenAttentionForConnection` clamps `limit` to 50) and
+        // returns the most-recently-updated open record first.
+        const projection = await getConnectorAttentionProjection(connectorId, { connectorInstanceId });
+        if (projection.unreliable) {
+          // Probe failure must not silently suppress launches — surface
+          // the schedule as eligible so a freshness gap is preferred over
+          // an invisible pause.
+          return null;
+        }
+        const nowIso = new Date().toISOString();
+        for (const record of projection.records) {
+          if (!isAttentionHealthRelevant(record, nowIso)) continue;
+          return { key: record.dedupe_key || record.id, reason: record.reason_code };
+        }
+        return null;
+      },
+      getSourcePressureGaps: async (connectorId, connectorInstanceId) => {
+        // Durable source-pressure projection for the cross-run cooldown. Reads
+        // pending detail gaps from `connector_detail_gaps`, keeps only the
+        // account/source-pressure reasons (ChatGPT `upstream_pressure` /
+        // `rate_limited`), and maps them to the lane-agnostic shape the
+        // scheduler cooldown consumes. The read is bounded and reason-filtered;
+        // it never returns record bodies, locators, or secrets — only the
+        // reason, recovery-attempt count, and an optional next-attempt floor.
+        //
+        // A probe failure is surfaced as "no pressure" (empty list) so an
+        // unreadable gap store cannot silently pause a schedule — same
+        // fail-open stance as the attention probe above.
+        const store = getDefaultConnectorDetailGapStore();
+        const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
+        const instanceKey = connectorInstanceId || connectorId;
+        const gaps = [];
+        for (const row of rows ?? []) {
+          if (typeof row?.reason !== 'string' || !SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) continue;
+          // `listPendingGapsForConnector` spans every instance of the connector
+          // type; keep only this connection's gaps so cooldown stays per-source.
+          if ((row.connector_instance_id || connectorId) !== instanceKey) continue;
+          gaps.push({
+            reason: row.reason,
+            attemptCount: typeof row.attempt_count === 'number' ? row.attempt_count : null,
+            nextAttemptAfter: typeof row.next_attempt_after === 'string' ? row.next_attempt_after : null,
+            lastPressureAt:
+              typeof row.last_attempt_at === 'string'
+                ? row.last_attempt_at
+                : typeof row.updated_at === 'string'
+                  ? row.updated_at
+                  : null,
+          });
+        }
+        return gaps;
+      },
       onInteraction: async (interaction) => {
         const connectorDisplayName =
           typeof interaction?.connector_display_name === 'string' && interaction.connector_display_name.trim()
@@ -7578,6 +5140,25 @@ function createReferenceSchedulerManager({
               routeTo: 'run',
               runId,
               log: logger,
+              // Record the durable notification outcome on the structured
+              // attention row the runtime writer just upserted. The attention
+              // id is the runtime writer's default `att_<runId>_<requestId>`
+              // — kept deterministic so the scheduler seam (which does not
+              // own the per-run writer instance) can address it. A non-default
+              // factory is only used by tests, which do not flow through this
+              // production push path.
+              recordOutcome: async ({ state, reason }) => {
+                const requestId = typeof interaction?.request_id === 'string' ? interaction.request_id : null;
+                if (!requestId) return;
+                const attentionStore = getDefaultConnectorAttentionStore();
+                if (typeof attentionStore.recordNotificationOutcomeById !== 'function') return;
+                await attentionStore.recordNotificationOutcomeById({
+                  attentionId: `att_${runId}_${requestId}`,
+                  outcome: state,
+                  reason: reason || null,
+                  now: new Date().toISOString(),
+                });
+              },
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

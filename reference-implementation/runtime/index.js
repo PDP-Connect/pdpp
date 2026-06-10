@@ -16,6 +16,64 @@ import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
+
+// ─── Owned connector-child process-group registry ──────────────────────────
+//
+// Every connector child is spawned `detached` (its own process group; see the
+// spawn site in `runConnector`). The runtime reaps that group on the run's own
+// terminal paths (cancel / failure / protocol violation / error). But if the
+// PARENT process dies abnormally — an `uncaughtException`/`unhandledRejection`
+// that takes `process.exit(1)` (server/index.js handleUncaught), or any
+// `process.exit()` with in-flight runs — Node does NOT propagate a signal to
+// children, so a still-running connector group would reparent to PID 1 and
+// orphan. That is exactly the run_1780436796334 / run_1780436796294 symptom.
+//
+// This registry closes that last gap: each live child's PID (== its PGID,
+// because it leads its own group) is tracked while the run is in flight and
+// removed on the run's terminal path. A SINGLE, idempotent `process.on('exit')`
+// handler sweeps the registry and best-effort SIGTERMs each surviving group, so
+// the runtime never leaves an owned connector subtree behind when its own
+// process exits.
+//
+// `process.on('exit')` handlers must be synchronous; `process.kill(-pgid,...)`
+// is synchronous and best-effort, which is the right shape here. The handler is
+// installed at most once per module instance (the install-once guard) so the
+// many-`runConnector`-calls-per-process test harness can't accumulate
+// listeners — the same accumulation hazard that keeps the signal handlers in
+// server/index.js behind an `argv[1]` guard.
+const ownedConnectorChildPids = new Set();
+let connectorChildExitSweepInstalled = false;
+
+function installConnectorChildExitSweepOnce() {
+  if (connectorChildExitSweepInstalled) return;
+  connectorChildExitSweepInstalled = true;
+  // 'exit' fires on normal exit AND on process.exit()/fatal-handler exit, but
+  // NOT on SIGKILL/SIGSTOP (uninterceptable) — those are covered at the
+  // container/orchestrator layer. Synchronous, best-effort, never throws.
+  process.on('exit', () => {
+    for (const pid of ownedConnectorChildPids) {
+      if (typeof pid !== 'number' || pid <= 1) continue;
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch {
+        // Group already gone, or un-signalable; nothing else we can do
+        // synchronously from an exit handler.
+      }
+    }
+  });
+}
+
+function registerOwnedConnectorChild(pid) {
+  if (typeof pid !== 'number' || pid <= 1) return;
+  installConnectorChildExitSweepOnce();
+  ownedConnectorChildPids.add(pid);
+}
+
+function unregisterOwnedConnectorChild(pid) {
+  if (typeof pid !== 'number') return;
+  ownedConnectorChildPids.delete(pid);
+}
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -33,6 +91,145 @@ function buildStartDetailGap(gap) {
     status: gap.status,
     detail_locator: gap.detail_locator ?? null,
     reference_only: true,
+  };
+}
+
+const DETAIL_GAP_PAGE_MIN_BYTES = 16 * 1024;
+const DETAIL_GAP_PAGE_DEFAULT_BYTES = 256 * 1024;
+const DETAIL_GAP_PAGE_MAX_BYTES = 1024 * 1024;
+const DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS = 500;
+const DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES = 1536;
+
+function boundedPositiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function detailGapPageByteBudget(requestedMaxBytes = null) {
+  return boundedPositiveInteger(
+    requestedMaxBytes ?? process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES,
+    DETAIL_GAP_PAGE_DEFAULT_BYTES,
+    { min: DETAIL_GAP_PAGE_MIN_BYTES, max: DETAIL_GAP_PAGE_MAX_BYTES },
+  );
+}
+
+function serializedDetailGapBytes(entry) {
+  try {
+    return Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
+  } catch {
+    return DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+  }
+}
+
+function normalizeDetailGapPageStreams(streams, scopeByStream) {
+  if (streams == null) return null;
+  if (!Array.isArray(streams)) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected string array');
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const stream of streams) {
+    if (typeof stream !== 'string' || !stream.trim()) {
+      throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected non-empty string array');
+    }
+    if (!scopeByStream.has(stream)) {
+      throw new Error(`Connector emitted DETAIL_GAPS_PAGE_REQUEST for undeclared stream: ${stream}`);
+    }
+    if (seen.has(stream)) continue;
+    seen.add(stream);
+    normalized.push(stream);
+  }
+  return normalized.length ? normalized : null;
+}
+
+function validateDetailGapsPageRequest(msg, scopeByStream) {
+  if (msg.reference_only !== true) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.reference_only: expected true');
+  }
+  if (typeof msg.request_id !== 'string' || !msg.request_id.trim()) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.request_id: expected non-empty string');
+  }
+  if (msg.max_bytes != null && (!Number.isFinite(msg.max_bytes) || msg.max_bytes <= 0)) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.max_bytes: expected positive number');
+  }
+  return {
+    maxBytes: msg.max_bytes == null ? null : Math.floor(msg.max_bytes),
+    requestId: msg.request_id,
+    streams: normalizeDetailGapPageStreams(msg.streams, scopeByStream),
+  };
+}
+
+function createDetailGapPageReader({
+  connectorId,
+  connectorInstanceId,
+  detailGapStore,
+  grantId,
+  runId,
+  allServedGapIds,
+}) {
+  let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+
+  return async function readDetailGapPage({ maxBytes = null, streams = null } = {}) {
+    const byteBudget = detailGapPageByteBudget(maxBytes);
+    const candidateLimit = Math.max(
+      1,
+      Math.min(
+        DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS,
+        Math.ceil((byteBudget / Math.max(1, observedAverageBytes)) * 1.5),
+      ),
+    );
+    const pendingGaps = (await detailGapStore.listPendingGaps({
+      connectorId,
+      connectorInstanceId,
+      grantId,
+      streams,
+      limit: candidateLimit,
+    })) ?? [];
+    const detailGaps = [];
+    const servedGapIds = [];
+    let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
+    let entryBytesTotal = 0;
+
+    for (const gap of pendingGaps) {
+      const entry = buildStartDetailGap(gap);
+      const entryBytes = serializedDetailGapBytes(entry);
+      if (detailGaps.length > 0 && serializedBytes + entryBytes > byteBudget) {
+        break;
+      }
+      detailGaps.push(entry);
+      servedGapIds.push(gap.gap_id);
+      serializedBytes += entryBytes;
+      entryBytesTotal += entryBytes;
+      if (serializedBytes >= byteBudget) {
+        break;
+      }
+    }
+
+    if (detailGaps.length > 0) {
+      const pageAverage = entryBytesTotal / detailGaps.length;
+      observedAverageBytes = Math.max(
+        1,
+        Math.round((observedAverageBytes * 0.65) + (pageAverage * 0.35)),
+      );
+      // Mark served gaps in_progress so attempt_count increments before the
+      // connector makes any provider requests. Re-deferred gaps (connector
+      // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
+      // keeping the incremented attempt_count. Recovered gaps advance to
+      // 'recovered' via DETAIL_GAP_RECOVERED handling.
+      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress', { runId })));
+      if (allServedGapIds) {
+        for (const gapId of servedGapIds) allServedGapIds.add(gapId);
+      }
+    }
+
+    return {
+      candidateLimit,
+      detailGaps,
+      servedGapIds,
+      maxBytes: byteBudget,
+      serializedBytes,
+    };
   };
 }
 
@@ -223,6 +420,9 @@ const VIOLATION_LIST_MAX = 20;
 const GAP_STRING_MAX = 200;
 const GAP_LIST_MAX = 20;
 const KNOWN_GAPS_MAX = 50;
+const GAP_DIAGNOSTICS_BYTES_MAX = 8 * 1024;
+const GAP_DIAGNOSTICS_DEPTH_MAX = 6;
+const GAP_DIAGNOSTICS_LIST_MAX = 32;
 const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 'transient']);
 const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
 const TRANSIENT_GAP_REASONS = new Set([
@@ -320,6 +520,269 @@ function boundGapStringList(values) {
   const bounded = values.map((value) => boundGapString(value)).filter(Boolean);
   if (!bounded.length) return null;
   return bounded.slice(0, GAP_LIST_MAX);
+}
+
+/**
+ * Walk a connector-authored diagnostics object, applying secret-redaction
+ * to every string leaf and bounding nested array length / object depth.
+ * Returns the bounded projection, null for non-object top-level values, or a
+ * sentinel object if the input exceeds the depth/list cap or total JSON byte cap.
+ *
+ * Used to propagate `SKIP_RESULT.diagnostics` to the run.stream_skipped
+ * spine event without leaking secrets or unbounded payloads. See
+ * openspec/changes/propagate-skip-result-diagnostics.
+ */
+function boundGapDiagnostics(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const projected = projectDiagnosticsNode(value, 0);
+  if (projected == null) {
+    return { truncated: true, reason: 'depth_overflow' };
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(projected);
+  } catch {
+    return { truncated: true, reason: 'serialization_failed' };
+  }
+  if (serialized.length > GAP_DIAGNOSTICS_BYTES_MAX) {
+    return { truncated: true, reason: 'size_overflow' };
+  }
+  return projected;
+}
+
+function projectDiagnosticsNode(value, depth) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    return boundGapString(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (depth >= GAP_DIAGNOSTICS_DEPTH_MAX) {
+    return Array.isArray(value)
+      ? { truncated: true, reason: 'depth_overflow' }
+      : { truncated: true, reason: 'depth_overflow' };
+  }
+  if (Array.isArray(value)) {
+    const items = [];
+    const limit = Math.min(value.length, GAP_DIAGNOSTICS_LIST_MAX);
+    for (let i = 0; i < limit; i += 1) {
+      const projected = projectDiagnosticsNode(value[i], depth + 1);
+      if (projected !== undefined) {
+        items.push(projected);
+      }
+    }
+    if (value.length > GAP_DIAGNOSTICS_LIST_MAX) {
+      items.push({ truncated: true, reason: 'list_overflow', omitted: value.length - GAP_DIAGNOSTICS_LIST_MAX });
+    }
+    return items;
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      const projected = projectDiagnosticsNode(child, depth + 1);
+      if (projected !== undefined) {
+        out[key] = projected;
+      }
+    }
+    return out;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize an optional connector-declared `considered` denominator into either
+ * a trusted safe non-negative integer or `null` (= `unknown`, omit the field).
+ *
+ * A `considered` value is evidence only: it labels how many items the connector
+ * claims it weighed for a stream/boundary. It is never trusted unless it is a
+ * safe non-negative integer. Anything else — non-number, NaN/Infinity, negative,
+ * fractional, or outside JavaScript's precise integer range — is dropped to
+ * `null` so it cannot fabricate a completeness denominator. The
+ * runtime never infers `considered` from collected counts (that conflation is
+ * explicitly rejected by the progress-evidence contract); absence stays
+ * `unknown`. Mirrors the drop-don't-reject posture of `boundGapDiagnostics`:
+ * malformed evidence is omitted, not a protocol violation.
+ */
+function boundConsideredCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Normalize a top-level `considered` key inside a bounded diagnostics object
+ * (SKIP_RESULT.diagnostics). `boundGapDiagnostics` already preserved numbers as
+ * raw leaves; this re-validates the one denominator key so an unsafe,
+ * fractional, or non-integer `considered` is dropped to `unknown` (deleted)
+ * instead of surviving as an untrusted number. A trusted value is rewritten in
+ * its normalized form. Truncation sentinels and non-object inputs pass through
+ * untouched. Mutates and returns the bounded object in place.
+ */
+function normalizeConsideredInDiagnostics(boundedDiagnostics) {
+  if (
+    boundedDiagnostics == null
+    || typeof boundedDiagnostics !== 'object'
+    || Array.isArray(boundedDiagnostics)
+    || !Object.prototype.hasOwnProperty.call(boundedDiagnostics, 'considered')
+  ) {
+    return boundedDiagnostics;
+  }
+  const considered = boundConsideredCount(boundedDiagnostics.considered);
+  if (considered == null) {
+    delete boundedDiagnostics.considered;
+  } else {
+    boundedDiagnostics.considered = considered;
+  }
+  return boundedDiagnostics;
+}
+
+/**
+ * Build the per-stream runtime collection-fact block attached to the terminal
+ * event (`run.completed` / `run.failed` / `run.cancelled`).
+ *
+ * This is the runtime half of the two-layer Collection Report construction
+ * (openspec/changes/define-connector-progress-evidence-contract, task 2.2a). It
+ * is pure and run-local: it carries ONLY the objective facts the per-connector
+ * run subprocess owns at completion — per-stream `collected` count, a declared
+ * `considered` value or `unknown` (never inferred from collected), the committed
+ * checkpoint status, the `SKIP_RESULT` reason, and the pending recoverable
+ * detail-gap count.
+ *
+ * It deliberately does NOT derive a coverage condition or a forward
+ * disposition. Both require freshness, refresh-policy, attention, and the
+ * cross-stream rollup that only the control-plane projection (ref-control ->
+ * connection-health) holds. The projection derives those on read (Tranche C).
+ *
+ * Honesty rules pinned by the layer-boundary tests:
+ *   - one entry per in-scope stream, including zero-record streams;
+ *   - `considered` is OMITTED (reads `unknown`) unless a trusted declared value
+ *     exists; it is NEVER set to `collected`;
+ *   - declared `DETAIL_COVERAGE.considered` wins over `required_keys.length`;
+ *   - `covered` (the items the run accounted for: emitted + suppressed-unchanged)
+ *     is OMITTED unless a trusted declared `DETAIL_COVERAGE.covered` exists; it is
+ *     NEVER inferred from `collected`. When present, the projection compares
+ *     `considered` against `covered` so a steady-state full-sync run that
+ *     suppressed every unchanged record reads `complete`, not a false `partial`;
+ *   - no `coverage`, `coverage_axis`, `forward_disposition`, `freshness`, or
+ *     `refresh` key, on the block or on any entry.
+ *
+ * @returns {{ reference_only: true, schema_version: number, streams: object[] }
+ *           | null} the block, or null when there is no in-scope stream universe.
+ */
+function buildCollectionFacts({
+  scopeByStream,
+  emittedByStream,
+  knownGaps,
+  durableDetailGaps,
+  detailCoverageByStateStream,
+  newState,
+  committedStateStreams,
+  persistState,
+}) {
+  const inScopeStreams = [...scopeByStream.keys()];
+  if (!inScopeStreams.length) return null;
+
+  // Map each data `stream` to the `state_stream` whose checkpoint covers it.
+  // Default: a stream checkpoints itself (state_stream === stream). For
+  // list-plus-detail connectors the detail `stream` (e.g. other_items) is
+  // covered by the list `state_stream` (e.g. items); DETAIL_COVERAGE entries
+  // carry both, so we learn the mapping from them.
+  const streamToStateStream = new Map();
+  for (const [stateStream, entries] of detailCoverageByStateStream) {
+    for (const entry of entries) {
+      if (entry?.stream && !streamToStateStream.has(entry.stream)) {
+        streamToStateStream.set(entry.stream, stateStream);
+      }
+    }
+  }
+
+  const committed = committedStateStreams instanceof Set
+    ? committedStateStreams
+    : new Set(committedStateStreams || []);
+  const stagedStateStreams = new Set(Object.keys(newState || {}));
+
+  const checkpointForStateStream = (stateStream) => {
+    if (!persistState) return 'disabled';
+    if (committed.has(stateStream)) return 'committed';
+    if (stagedStateStreams.has(stateStream)) return 'not_committed';
+    return 'not_staged';
+  };
+
+  // First declared considered (DETAIL_COVERAGE.considered) wins, else the
+  // required-keys count, else unknown (omitted). Never derived from collected.
+  const declaredConsideredForStream = (stream) => {
+    let requiredKeysFallback = null;
+    for (const entries of detailCoverageByStateStream.values()) {
+      for (const entry of entries) {
+        if (entry?.stream !== stream) continue;
+        if (typeof entry.considered === 'number') return entry.considered;
+        if (requiredKeysFallback == null && Array.isArray(entry.requiredKeys)) {
+          requiredKeysFallback = entry.requiredKeys.length;
+        }
+      }
+    }
+    return requiredKeysFallback;
+  };
+
+  // First declared covered count (DETAIL_COVERAGE.covered) wins, else unknown
+  // (omitted). Mirrors declaredConsideredForStream. The projection compares
+  // `considered` against `covered` when present so a full-sync stream that
+  // suppressed every unchanged record reads `complete`. Never inferred from
+  // collected; there is no required-keys fallback (covered is a run-outcome count,
+  // not a declared key set).
+  const declaredCoveredForStream = (stream) => {
+    for (const entries of detailCoverageByStateStream.values()) {
+      for (const entry of entries) {
+        if (entry?.stream !== stream) continue;
+        if (typeof entry.covered === 'number') return entry.covered;
+      }
+    }
+    return null;
+  };
+
+  const skipForStream = (stream) => {
+    const gap = knownGaps.find(
+      (candidate) => candidate.kind === 'skip_result' && candidate.stream === stream,
+    );
+    if (!gap) return null;
+    const action = gap.recovery_hint && typeof gap.recovery_hint === 'object'
+      ? gap.recovery_hint.action
+      : null;
+    return {
+      reason: gap.reason,
+      ...(action ? { recovery_action: action } : {}),
+    };
+  };
+
+  const pendingDetailGapsForStream = (stream) => durableDetailGaps.filter(
+    (gap) => gap.stream === stream && gap.status === 'pending',
+  ).length;
+
+  const streams = inScopeStreams.map((stream) => {
+    const considered = declaredConsideredForStream(stream);
+    const covered = declaredCoveredForStream(stream);
+    const stateStream = streamToStateStream.get(stream) || stream;
+    return {
+      stream,
+      collected: emittedByStream.get(stream) || 0,
+      // Omit when unknown — absence reads as `unknown` downstream; never
+      // inferred from collected count.
+      ...(considered == null ? {} : { considered }),
+      // Optional covered count (task 4.4): omit when unknown. When present the
+      // projection compares `considered` against this instead of `collected`.
+      ...(covered == null ? {} : { covered }),
+      checkpoint: checkpointForStateStream(stateStream),
+      pending_detail_gaps: pendingDetailGapsForStream(stream),
+      skipped: skipForStream(stream),
+    };
+  });
+
+  return {
+    reference_only: true,
+    schema_version: 1,
+    streams,
+  };
 }
 
 function inferRecoveryAction(reason, message, interactionKind = null) {
@@ -441,6 +904,7 @@ function buildKnownGap({
   explicitSelection = false,
   severity = null,
   unsupportedInDefaultScope = false,
+  diagnostics = null,
 }) {
   const safeReason = boundGapString(reason) || 'unknown';
   const safeMessage = boundGapString(message);
@@ -452,6 +916,7 @@ function buildKnownGap({
     severity,
     unsupportedInDefaultScope,
   });
+  const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));
   return {
     kind,
     stream: boundGapString(stream),
@@ -464,6 +929,7 @@ function buildKnownGap({
       message: safeMessage,
       interactionKind,
     }),
+    ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
   };
 }
 
@@ -784,6 +1250,63 @@ function validateProgressMessage(msg, scopeByStream) {
       throw new Error(`Connector emitted invalid PROGRESS.${fieldName}: expected non-negative number`);
     }
   }
+  if (msg.provider_budget != null) {
+    validateProgressProviderBudget(msg.provider_budget);
+  }
+}
+
+const PROVIDER_BUDGET_PROGRESS_OBJECTS = new Set(['provider_budget_circuit_transition']);
+const PROVIDER_BUDGET_CIRCUIT_STATES = new Set(['closed', 'half_open', 'open']);
+const PROVIDER_BUDGET_CIRCUIT_REASONS = new Set([
+  'provider_failure',
+  'provider_throttle',
+  'reset_timeout',
+  'success',
+]);
+const PROVIDER_BUDGET_CIRCUIT_TRIGGERS = new Set([
+  'before_request',
+  'provider_failure',
+  'provider_throttle',
+  'success',
+]);
+
+function validateProgressProviderBudget(providerBudget) {
+  if (!providerBudget || typeof providerBudget !== 'object' || Array.isArray(providerBudget)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget: expected object');
+  }
+  if (!PROVIDER_BUDGET_PROGRESS_OBJECTS.has(providerBudget.object)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.object');
+  }
+  const circuit = providerBudget.circuit;
+  if (!circuit || typeof circuit !== 'object' || Array.isArray(circuit)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit: expected object');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.previous_state)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.previous_state');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.state)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.state');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_REASONS.has(circuit.reason)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.reason');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_TRIGGERS.has(circuit.trigger)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.trigger');
+  }
+  for (const fieldName of ['elapsed_ms', 'request_count']) {
+    const value = providerBudget[fieldName];
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Connector emitted invalid PROGRESS.provider_budget.${fieldName}`);
+    }
+  }
+  const retryTokensRemaining = providerBudget.retry_tokens_remaining;
+  if (
+    retryTokensRemaining != null
+    && retryTokensRemaining !== 'unbounded'
+    && (!Number.isFinite(retryTokensRemaining) || retryTokensRemaining < 0)
+  ) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.retry_tokens_remaining');
+  }
 }
 
 function validateSkipResultMessage(msg, scopeByStream) {
@@ -1041,13 +1564,25 @@ function validateAssistanceMessage(msg, scopeByStream) {
   }
 }
 
-function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
+function hasBrowserSurfaceLaunchEnv(env) {
+  return Boolean(
+    env
+      && typeof env === 'object'
+      && (
+        optionalNonEmptyEnv(env.PDPP_BROWSER_SURFACE_STREAM_BASE_URL)
+        || optionalNonEmptyEnv(env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL)
+      )
+  );
+}
+
+function buildAssistanceRequestedDataFromInteraction(msg, runSource, options = {}) {
   const isSecretValue = msg.kind === 'credentials' || msg.kind === 'otp';
+  const hasBrowserSurface = msg.kind === 'manual_action' || (msg.kind === 'otp' && options.browserSurfaceAvailable === true);
   return {
     source: runSource,
     assistance_request_id: msg.request_id,
     progress_posture: 'blocked',
-    owner_action: msg.kind === 'manual_action' ? 'operate_attachment' : 'provide_value',
+    owner_action: hasBrowserSurface ? 'operate_attachment' : 'provide_value',
     response_contract: 'response_required',
     sensitivity: isSecretValue ? 'secret' : 'non_secret',
     message: sanitizeAssistanceTimelineString(msg.message) || 'Owner assistance requested.',
@@ -1055,7 +1590,7 @@ function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
     stream: msg.stream || null,
     ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
     ...(isSecretValue && msg.schema != null ? { input_schema: sanitizeAssistanceInputSchema(msg.schema) } : {}),
-    ...(msg.kind === 'manual_action'
+    ...(hasBrowserSurface
       ? { attachments: [{ kind: 'browser_surface', role: 'streaming_companion' }] }
       : {}),
   };
@@ -1178,7 +1713,7 @@ export async function runConnector(opts) {
     : (msg) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
     connectorPath,
-    connectorId,
+    connectorId: rawConnectorId,
     connectorInstanceId = null,
     ownerToken,
     manifest,
@@ -1205,9 +1740,27 @@ export async function runConnector(opts) {
     referenceBaseUrl = null,
     browserSurfaceLease = null,
     browserSurfaceEnv = null,
+    // Connection-scoped static-secret injection (Gmail app password / GitHub
+    // PAT). The controller resolves this fragment from the per-connection
+    // encrypted credential store and threads it here; it carries ONLY this one
+    // connection's secret env var(s). It is merged LAST over `process.env` at
+    // spawn so a stored credential overrides any process-global secret the
+    // operator may still have set — making two mailboxes two distinct runs
+    // rather than a collision on one global. Null/absent means no stored
+    // credential applies to this run (the legacy process-env path is used).
+    // See add-static-secret-owner-connect-primitive design Decision 5.
+    staticSecretEnv = null,
     triggerKind = null,
     automationMode = null,
+    // Optional owner-cancel signal. The controller passes one AbortSignal per
+    // run; aborting it requests cooperative cancellation of THIS run only. The
+    // runtime records a non-terminal `run.cancel_requested` event and
+    // terminates the connector child via the existing graceful-then-SIGKILL
+    // escalation. A run that already recorded a terminal event ignores abort.
+    // See openspec/changes/add-owner-run-cancellation-control.
+    cancelSignal = null,
   } = opts;
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};
@@ -1250,6 +1803,10 @@ export async function runConnector(opts) {
         }
       : {};
   const browserSurfaceLaunchEnv = buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv });
+  // Connection-scoped static-secret env fragment, merged LAST at spawn so a
+  // stored credential takes precedence over any process-global provider secret.
+  const staticSecretLaunchEnv =
+    staticSecretEnv && typeof staticSecretEnv === 'object' ? staticSecretEnv : {};
   const normalizedConnectorInstanceId = optionalNonEmptyEnv(connectorInstanceId);
   const connectorInstanceEnv = normalizedConnectorInstanceId
     ? { PDPP_CONNECTOR_INSTANCE_ID: normalizedConnectorInstanceId }
@@ -1265,7 +1822,24 @@ export async function runConnector(opts) {
   const args = isTsConnector
     ? ['--import', 'tsx/esm', connectorPath]
     : [connectorPath];
+  // `detached: true` puts the connector child into its OWN process group
+  // (POSIX setsid), with the child's PID as the group leader. This is the
+  // load-bearing half of the run-lifecycle lease invariant: any grandchild
+  // the connector spawns (a Playwright/Chromium helper, a shelled-out tool)
+  // inherits this process group, so terminating the GROUP (see
+  // `terminateConnectorChildGroup` below) reaps the connector AND its whole
+  // subtree as one unit. Without it, `proc.kill()` signals only the direct
+  // child PID; grandchildren reparent to PID 1 and orphan — the failure mode
+  // captured by run_1780436796334 / run_1780436796294 (started-only runs whose
+  // GitHub/YNAB children outlived the run under PID 1).
+  //
+  // We keep `stdio: ['pipe','pipe','pipe']` and do NOT `proc.unref()`: the
+  // parent stays attached to the child's stdio and awaits its close, exactly
+  // as before. `detached` here only changes the process-GROUP topology, not
+  // ownership of the handle. This is a Linux/Docker runtime (no Windows
+  // support anywhere in the tree), so the POSIX process-group semantics hold.
   const proc = spawn(process.execPath, args, {
+    detached: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -1275,8 +1849,40 @@ export async function runConnector(opts) {
       PDPP_RS_URL: rsUrl,
       ...streamingRegistrationEnv,
       ...browserSurfaceLaunchEnv,
+      // LAST: a connection's own static secret overrides any process-global one.
+      ...staticSecretLaunchEnv,
     },
   });
+
+  // Group-aware termination. Because the child leads its own process group
+  // (see `detached: true` above), signalling the NEGATIVE pid delivers to
+  // every process in that group — the connector and any descendants it
+  // spawned. We fall back to a direct single-PID `proc.kill(signal)` if the
+  // group signal fails (e.g. the leader already exited so the group is gone,
+  // surfacing as ESRCH), which preserves the prior best-effort behaviour.
+  // Guarded on a real, post-spawn pid (> 1) so we can never accidentally
+  // signal our own group (pid 0) or init.
+  const terminateConnectorChildGroup = (signal) => {
+    const pid = proc.pid;
+    if (typeof pid === 'number' && pid > 1) {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // Group gone or un-signalable; fall through to the direct kill.
+      }
+    }
+    if (proc.exitCode != null || proc.signalCode != null) return;
+    try {
+      proc.kill(signal);
+    } catch {}
+  };
+
+  // Track this child's process group for the parent-exit sweep (see the
+  // `ownedConnectorChildPids` registry near the top of this module). The PID
+  // is the group leader because the child was spawned `detached`. It is
+  // removed again in `cleanupChildHandles` on every terminal path.
+  registerOwnedConnectorChild(proc.pid);
 
   // Closed-pipe defenses on the connector child stdio we own. Without
   // these, an EPIPE on `proc.stdin.write(...)` (child exited early) or on
@@ -1432,19 +2038,44 @@ export async function runConnector(opts) {
     try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
   };
 
+  // Tracks all gap IDs served to the connector this run (across START + paged requests).
+  // Used in cleanup to reset still-in_progress gaps back to pending if the connector
+  // exits without recovering or re-deferring them.
+  const allServedGapIds = new Set();
+
+  const readDetailGapPage = createDetailGapPageReader({
+    connectorId,
+    connectorInstanceId: normalizedConnectorInstanceId,
+    detailGapStore,
+    grantId,
+    runId,
+    allServedGapIds,
+  });
+
   let startDetailGaps = [];
   try {
-    const pendingGaps = await detailGapStore.listPendingGaps({
-      connectorId,
-      connectorInstanceId: normalizedConnectorInstanceId,
-      grantId,
+    // Reclaim in_progress gaps left by prior crashed/killed runs before loading
+    // new pending gaps. Uses last_run_id != currentRunId so only prior-run
+    // leftovers are touched; never resets recovered gaps.
+    if (typeof detailGapStore.reclaimStrandedInProgressGaps === 'function') {
+      await detailGapStore.reclaimStrandedInProgressGaps({
+        connectorId,
+        connectorInstanceId: normalizedConnectorInstanceId,
+        grantId,
+        currentRunId: spawnRunId,
+      });
+    }
+    const page = await readDetailGapPage({
       streams: startScope.streams.map((stream) => stream.name),
     });
-    startDetailGaps = pendingGaps.map(buildStartDetailGap);
+    startDetailGaps = page.detailGaps;
   } catch (err) {
-    try {
-      proc.kill();
-    } catch {}
+    // Pre-START failure (before the run promise / cleanupChildHandles exists):
+    // reap the just-spawned connector group rather than leaking it, and drop
+    // it from the parent-exit registry so a later exit can't re-signal a group
+    // we already terminated.
+    terminateConnectorChildGroup('SIGTERM');
+    unregisterOwnedConnectorChild(proc.pid);
     throw err;
   }
 
@@ -1601,11 +2232,27 @@ export async function runConnector(opts) {
   const newState = {};
   const committedStateStreams = new Set();
   let totalEmitted = 0;
+  // Per-stream emitted counter. `totalEmitted` is the aggregate the DONE
+  // records_emitted guard checks; this Map carries the same accounting keyed by
+  // data `stream` so the terminal collection-fact block can state per-stream
+  // `collected` without re-deriving it. Every in-scope stream is seeded to 0 so
+  // a stream that emitted nothing still appears as an honest `collected: 0`
+  // (absence of records is a fact, not a missing entry).
+  const emittedByStream = new Map(
+    (startScope.streams || []).map((streamScope) => [streamScope.name, 0]),
+  );
   let totalFlushed = 0;
   let finalStatus = 'failed';
   let pendingInteraction = null;
   let terminalEventRecorded = false;
   let doneMessage = null;
+  // Owner-cancel intent for this run. Set when `cancelSignal` aborts before a
+  // terminal event is recorded. `ownerCancelForced` flips to true if the
+  // connector child ignored graceful termination and had to be SIGKILL'd, so
+  // the terminal `run.cancelled` event can distinguish a clean owner cancel
+  // from a forced one. See add-owner-run-cancellation-control design.
+  let ownerCancelRequested = false;
+  let ownerCancelForced = false;
   const knownGaps = [];
   const durableDetailGaps = [];
   const detailCoverageByStateStream = new Map();
@@ -1680,6 +2327,19 @@ export async function runConnector(opts) {
     const publicIngestFailure = toPublicIngestFailure(ingestFailure);
     const terminalKnownGaps = buildKnownGapsForTerminal(reason, connectorError);
     const visibleKnownGaps = terminalKnownGaps.slice(0, KNOWN_GAPS_MAX);
+    // Runtime collection-fact block (task 2.2a): objective per-stream facts only.
+    // No coverage condition / forward disposition — those are derived by the
+    // control-plane projection on read (Tranche C).
+    const collectionFacts = buildCollectionFacts({
+      scopeByStream,
+      emittedByStream,
+      knownGaps,
+      durableDetailGaps,
+      detailCoverageByStateStream,
+      newState,
+      committedStateStreams,
+      persistState,
+    });
     return {
       source: runSource,
       grant_id: grantId,
@@ -1721,6 +2381,7 @@ export async function runConnector(opts) {
             },
           }
         : {}),
+      ...(collectionFacts ? { collection_facts: collectionFacts } : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
         : {}),
@@ -1762,6 +2423,17 @@ export async function runConnector(opts) {
       requiredKeys: msg.required_keys.map(normalizeCoverageKey),
       hydratedKeys: new Set(msg.hydrated_keys.map(normalizeCoverageKey)),
       optionalSkipKeys: new Set((msg.optional_skip_keys || []).map(normalizeCoverageKey)),
+      // Optional connector-declared considered denominator (task 2.1). Retained
+      // here — normalized to a trusted safe non-negative integer or null — so
+      // the terminal collection-fact block can prefer it over the
+      // required_keys.length fallback. null stays `unknown`; never inferred.
+      considered: boundConsideredCount(msg.considered),
+      // Optional connector-declared covered count (task 4.4): in-boundary items the
+      // run accounted for (emitted + suppressed-unchanged). Same drop-don't-reject
+      // normalization. null stays `unknown`; the projection compares `considered`
+      // against `covered` when present so a steady-state full-sync run reads
+      // `complete`, never inferred from collected.
+      covered: boundConsideredCount(msg.covered),
     });
     detailCoverageByStateStream.set(msg.state_stream, entries);
   }
@@ -1770,15 +2442,19 @@ export async function runConnector(opts) {
     for (const stateStream of Object.keys(newState)) {
       const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
       for (const coverage of coverageEntries) {
-        const pendingGapKeys = new Set(
+        const accountedGapKeys = new Set(
           durableDetailGaps
-            .filter((gap) => gap.stream === coverage.stream && gap.status === 'pending' && gap.record_key != null)
+            .filter((gap) => (
+              gap.stream === coverage.stream
+              && (gap.status === 'pending' || gap.status === 'recovered')
+              && gap.record_key != null
+            ))
             .map((gap) => normalizeCoverageKey(gap.record_key)),
         );
         const missingKeys = coverage.requiredKeys.filter((key) => (
           !coverage.hydratedKeys.has(key)
           && !coverage.optionalSkipKeys.has(key)
-          && !pendingGapKeys.has(key)
+          && !accountedGapKeys.has(key)
         ));
         if (!missingKeys.length) continue;
 
@@ -1919,29 +2595,85 @@ export async function runConnector(opts) {
 
     function terminateChild() {
       if (proc.exitCode != null || proc.signalCode != null) return;
-      try {
-        proc.kill();
-      } catch {}
+      // SIGTERM the WHOLE process group, not just the direct child PID, so a
+      // connector's grandchildren (browser helpers, shelled-out tools) are
+      // terminated with it rather than reparenting to PID 1.
+      terminateConnectorChildGroup('SIGTERM');
 
       if (terminateTimer || proc.exitCode != null || proc.signalCode != null) return;
       terminateTimer = setTimeout(() => {
         terminateTimer = null;
         if (proc.exitCode != null || proc.signalCode != null) return;
-        try {
-          proc.kill('SIGKILL');
-        } catch {}
+        // The child ignored graceful termination within the window. Record the
+        // escalation so an owner-cancelled run terminals as `owner_cancel_forced`
+        // rather than `owner_cancelled`.
+        if (ownerCancelRequested) {
+          ownerCancelForced = true;
+        }
+        // Escalate to a group-wide SIGKILL: an unkillable grandchild can no
+        // longer keep the subtree alive after the connector leader is gone.
+        terminateConnectorChildGroup('SIGKILL');
       }, 250);
       terminateTimer.unref?.();
+    }
+
+    // Owner-cancel signal wiring. Aborting `cancelSignal` requests cancellation
+    // of THIS run only: record intent, emit a non-terminal `run.cancel_requested`
+    // event, and trigger the graceful-then-SIGKILL escalation above. Abort after
+    // a terminal event is recorded is a no-op (the run already ended). The
+    // listener is removed in cleanupChildHandles so a settled run does not leak
+    // it on the controller's shared AbortController.
+    function handleOwnerCancel() {
+      if (terminalEventRecorded || ownerCancelRequested) return;
+      ownerCancelRequested = true;
+      // Emit the audit marker without blocking the terminate path; the terminal
+      // `run.cancelled` event is emitted later by the close handler.
+      emitSpineEvent({
+        event_type: 'run.cancel_requested',
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: 'owner',
+        actor_id: connectorId,
+        object_type: 'run',
+        object_id: runId,
+        status: 'cancel_requested',
+        run_id: runId,
+        data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },
+      }).catch((err) => {
+        onProgress({ type: 'spine_error', error: err?.message || String(err) });
+      });
+      onProgress({ type: 'cancel_requested', run_id: runId });
+      terminateChild();
+    }
+    if (cancelSignal) {
+      if (cancelSignal.aborted) {
+        handleOwnerCancel();
+      } else {
+        cancelSignal.addEventListener('abort', handleOwnerCancel, { once: true });
+      }
     }
 
     function cleanupChildHandles() {
       if (cleanedUp) return;
       cleanedUp = true;
       clearTerminateTimer();
+      if (cancelSignal) {
+        cancelSignal.removeEventListener('abort', handleOwnerCancel);
+      }
+      // The run reached a terminal path; this child's group no longer needs
+      // the parent-exit sweep. Removing it here keeps the registry bounded to
+      // genuinely in-flight runs across a long-lived process.
+      unregisterOwnedConnectorChild(proc.pid);
       rl.close();
       proc.stdin.destroy();
       proc.stdout.destroy();
       proc.stderr.destroy();
+      // Reset any gaps this run marked in_progress but the connector never
+      // recovered or re-deferred — so they remain retryable on the next run.
+      // Best-effort: fire-and-forget; cleanup must not throw.
+      if (allServedGapIds.size > 0 && typeof detailGapStore.resetServedInProgressGaps === 'function') {
+        Promise.resolve(detailGapStore.resetServedInProgressGaps([...allServedGapIds])).catch(() => {});
+      }
     }
 
     function notifyQueueDrained() {
@@ -2074,6 +2806,7 @@ export async function runConnector(opts) {
           if (!recordBatch[stream]) recordBatch[stream] = [];
           recordBatch[stream].push({ key, data, emitted_at, op });
           totalEmitted++;
+          emittedByStream.set(stream, (emittedByStream.get(stream) || 0) + 1);
 
           if (recordBatch[stream].length >= BATCH_SIZE) {
             await flushBatch(stream);
@@ -2158,7 +2891,9 @@ export async function runConnector(opts) {
             status: 'started',
             run_id: runId,
             interaction_id: msg.request_id,
-            data: buildAssistanceRequestedDataFromInteraction(msg, runSource),
+            data: buildAssistanceRequestedDataFromInteraction(msg, runSource, {
+              browserSurfaceAvailable: hasBrowserSurfaceLaunchEnv(browserSurfaceLaunchEnv),
+            }),
           });
 
           // Durable structured attention upsert. The interaction is now
@@ -2336,6 +3071,7 @@ export async function runConnector(opts) {
             scope: normalizeGapScope(msg),
             explicitSelection: Boolean(msg.stream && explicitlyRequestedStreams?.has(msg.stream)),
             unsupportedInDefaultScope: streamUnsupportedInDefaultScope(skippedManifestStream),
+            diagnostics: msg.diagnostics ?? null,
           });
           appendKnownGap(gap);
           await emitSpineEventTracked({
@@ -2355,9 +3091,37 @@ export async function runConnector(opts) {
               reason: msg.reason || null,
               message: boundGapString(msg.message) || null,
               known_gap: gap,
+              ...(gap.diagnostics ? { diagnostics: gap.diagnostics } : {}),
             },
           });
           onProgress(msg);
+          break;
+        }
+
+        case 'DETAIL_GAPS_PAGE_REQUEST': {
+          const request = validateDetailGapsPageRequest(msg, scopeByStream);
+          const page = await readDetailGapPage({
+            maxBytes: request.maxBytes,
+            streams: request.streams ?? startScope.streams.map((stream) => stream.name),
+          });
+          const accepted = writeChildStdin(
+            JSON.stringify({
+              type: 'DETAIL_GAPS_PAGE_RESPONSE',
+              reference_only: true,
+              request_id: request.requestId,
+              detail_gaps: page.detailGaps,
+            }) + '\n',
+            'detail_gaps_page_response',
+          );
+          onProgress({
+            type: 'DETAIL_GAPS_PAGE_RESPONSE',
+            reference_only: true,
+            count: page.detailGaps.length,
+            max_bytes: page.maxBytes,
+            serialized_bytes: page.serializedBytes,
+            candidate_limit: page.candidateLimit,
+            accepted,
+          });
           break;
         }
 
@@ -2380,6 +3144,9 @@ export async function runConnector(opts) {
             discoveredRunId: runId,
             lastRunId: runId,
           });
+          // Gap was explicitly re-deferred by the connector — it's already pending
+          // again via upsert; remove from lease set so cleanup won't double-reset it.
+          allServedGapIds.delete(storedGap.gap_id);
           durableDetailGaps.push(storedGap);
           const gap = buildKnownGap({
             kind: 'detail_gap',
@@ -2427,6 +3194,8 @@ export async function runConnector(opts) {
         case 'DETAIL_COVERAGE': {
           validateDetailCoverageMessage(msg, scopeByStream);
           trackDetailCoverage(msg);
+          const coverageConsidered = boundConsideredCount(msg.considered);
+          const coverageCovered = boundConsideredCount(msg.covered);
           await emitSpineEventTracked({
             event_type: 'run.detail_coverage_declared',
             trace_id: traceContext.trace_id,
@@ -2448,6 +3217,11 @@ export async function runConnector(opts) {
               hydrated_keys: msg.hydrated_keys.length,
               gap_keys: msg.gap_keys?.length || 0,
               optional_skip_keys: msg.optional_skip_keys?.length || 0,
+              // Optional connector-declared denominator; omitted (= `unknown`)
+              // unless it is a trusted safe non-negative integer.
+              ...(coverageConsidered == null ? {} : { considered: coverageConsidered }),
+              // Optional covered count (task 4.4); same omit-unless-trusted posture.
+              ...(coverageCovered == null ? {} : { covered: coverageCovered }),
             },
           });
           onProgress({
@@ -2463,6 +3237,8 @@ export async function runConnector(opts) {
           validateDetailGapRecoveredMessage(msg, scopeByStream);
           await flushAll();
           const recoveredGap = await detailGapStore.markGapStatus(msg.gap_id, 'recovered', { runId });
+          // Gap is now recovered — remove from the lease set so cleanup won't reset it.
+          allServedGapIds.delete(msg.gap_id);
           durableDetailGaps.push(recoveredGap);
           await emitSpineEventTracked({
             event_type: 'run.detail_gap_recovered',
@@ -2508,6 +3284,7 @@ export async function runConnector(opts) {
               message: msg.message || null,
               ...(msg.count == null ? {} : { count: msg.count }),
               ...(msg.total == null ? {} : { total: msg.total }),
+              ...(msg.provider_budget == null ? {} : { provider_budget: msg.provider_budget }),
             },
           });
           onProgress(msg);
@@ -2529,6 +3306,12 @@ export async function runConnector(opts) {
             // Flush any remaining records
             await flushAll();
           }
+          // Close child stdin to signal that the runtime has finished
+          // consuming DONE (and flushed all records for succeeded runs).
+          // The connector's flushAndExit waits for this EOF before calling
+          // process.exit(), closing the race where the connector exits while
+          // buffered stdout bytes are still in transit through the kernel pipe.
+          try { proc.stdin.end(); } catch {}
           break;
         }
 
@@ -2705,6 +3488,41 @@ export async function runConnector(opts) {
               }),
             });
             onProgress({ type: 'done', status: doneMessage.status, records_emitted: doneMessage.records_emitted });
+          } else if (ownerCancelRequested) {
+            // The owner cancelled this run and the connector child exited
+            // without DONE. Terminal as `run.cancelled` (intentional owner
+            // stop), NOT `run.failed`/`connector_exit_without_done`. The
+            // reason distinguishes a child that stopped within the graceful
+            // window from one that had to be force-terminated. Staged cursor
+            // state is NOT committed on this path (no DONE succeeded), and
+            // already-flushed records are preserved.
+            finalStatus = 'cancelled';
+            const cancelReason = ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled';
+            await closeOpenStructuredAssistance('cancelled', { reason: cancelReason });
+            await emitSpineEvent({
+              event_type: 'run.cancelled',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'owner',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'cancelled',
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: totalEmitted,
+                exitCode: code,
+                reason: cancelReason,
+                connectorError: null,
+              }),
+            });
+            onProgress({
+              type: 'done',
+              status: 'cancelled',
+              records_emitted: totalEmitted,
+              exit_code: code,
+              reason: cancelReason,
+            });
           } else {
             // No DONE was received. If the runtime observed a
             // closed-stdin write, surface that as the typed terminal
@@ -2761,12 +3579,21 @@ export async function runConnector(opts) {
           terminalEventRecorded = true;
         }
         cleanupChildHandles();
-        const { reason: closeTerminalReason, phase: closeTerminalPhase } = deriveTerminalReason({
+        const derivedTerminal = deriveTerminalReason({
           doneMessage,
           finalStatus,
           childStdinClosedReason,
           childStdinClosedAtPhase,
         });
+        // An owner-cancelled run resolves with the owner-cancel reason on the
+        // result so callers (and run-history persistence) see the intentional
+        // stop rather than a null/failure reason. The spine terminal event
+        // already carries the same reason.
+        const closeTerminalReason =
+          finalStatus === 'cancelled' && ownerCancelRequested && !doneMessage
+            ? (ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled')
+            : derivedTerminal.reason;
+        const closeTerminalPhase = derivedTerminal.phase;
         // Surface the additive diagnostic fields on the resolved result
         // for failed connector exits before DONE so callers don't have
         // to parse the spine event back out.
@@ -2941,6 +3768,7 @@ export async function loadSyncState(connectorIdOrOpts, ownerToken, opts = {}) {
   }
   const rsUrl = o.rsUrl || process.env.RS_URL || 'http://localhost:7663';
   const connectorInstanceId = optionalNonEmptyEnv(o.connectorInstanceId);
+  connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
   const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
   if (connectorInstanceId) stateUrl.searchParams.set('connector_instance_id', connectorInstanceId);
   if (o.grantId) stateUrl.searchParams.set('grant_id', o.grantId);

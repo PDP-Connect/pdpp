@@ -30,7 +30,7 @@ export function escapeHtml(input) {
 }
 
 // ─── PDPP mark (server-side SVG) ─────────────────────────────────────────────
-// Geometry mirrors apps/web/src/components/PdppLogo.tsx so the reference
+// Geometry mirrors apps/site/src/components/PdppLogo.tsx so the reference
 // pages carry the same mark as the website. Keep in sync.
 
 const HUMAN = 'oklch(0.52 0.11 45)';
@@ -305,6 +305,185 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   margin-left: 0.5rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
+}
+
+.hosted-ui-option-group {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0 0 1rem;
+}
+
+.hosted-ui-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--card);
+  cursor: pointer;
+}
+
+.hosted-ui-option:hover {
+  background: var(--muted);
+}
+
+.hosted-ui-option:has(input:checked) {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.hosted-ui-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+
+.hosted-ui-option-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.hosted-ui-option-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--foreground);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.35rem;
+}
+
+.hosted-ui-connector-type {
+  color: var(--foreground);
+}
+
+.hosted-ui-connection-name {
+  font-weight: 400;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+.hosted-ui-connection-name::before {
+  content: '·';
+  margin-right: 0.35rem;
+  color: var(--muted-foreground);
+}
+
+.hosted-ui-option-meta {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.hosted-ui-option-source {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.25rem 0.75rem 0.75rem;
+  margin: 0;
+  background: var(--card);
+}
+.hosted-ui-option-source-legend {
+  padding: 0 0.25rem;
+  display: block;
+  width: 100%;
+}
+.hosted-ui-option-source-legend .hosted-ui-option {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0.5rem 0.25rem;
+  margin: 0;
+}
+.hosted-ui-option-source-legend .hosted-ui-option:hover {
+  background: transparent;
+}
+.hosted-ui-option-source-legend .hosted-ui-option:has(input:checked) {
+  border: none;
+  box-shadow: none;
+}
+
+.hosted-ui-option-streams {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.5rem 0.25rem 0.25rem 1.75rem;
+  border-top: 1px dashed var(--border);
+}
+
+.hosted-ui-option-streams-empty {
+  margin: 0.5rem 0 0;
+  padding: 0 0.25rem 0.25rem 1.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+
+.hosted-ui-stream-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.625rem;
+  align-items: start;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0;
+  cursor: pointer;
+}
+.hosted-ui-stream-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+.hosted-ui-stream-option-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.hosted-ui-access-mode {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.875rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+.hosted-ui-access-mode-legend {
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.hosted-ui-access-mode-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.625rem;
+  align-items: start;
+  padding: 0.375rem 0.25rem;
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+.hosted-ui-access-mode-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+.hosted-ui-access-mode-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.hosted-ui-access-mode-label {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.hosted-ui-access-mode-meta {
+  color: var(--muted-foreground);
 }
 
 .hosted-ui-actions {

@@ -50,6 +50,10 @@ export interface ClaudeCodeState {
   sessions?: { file_mtimes?: Record<string, number> };
   skills?: { file_mtimes?: Record<string, number> };
   slash_commands?: { file_mtimes?: Record<string, number> };
+  // Inventory streams (backup_inventory, cache_inventory, config_inventory,
+  // file_history) persist a per-stream fingerprint cursor so an unchanged
+  // store does not re-version on every run when only mtime/size ticks.
+  [stream: string]: { fingerprints?: Record<string, string>; fetched_at?: string } | unknown;
 }
 
 export interface ParsedFrontmatter {

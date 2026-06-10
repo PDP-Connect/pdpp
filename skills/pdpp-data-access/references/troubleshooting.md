@@ -10,12 +10,26 @@ When the flow breaks, work the failure top-down: discovery -> agent-connect -> a
 - Try the other well-known path. Many users provide the AS URL when you needed the RS URL or vice versa.
 - If both 404, ask the user for the issuer URL printed at server start.
 
+**Symptom:** You guessed a convenience entrypoint like `/llms.txt`, `/.well-known/llms.txt`, or `/.well-known/skills/pdpp-data-access/SKILL.md` on the server origin and got an HTML `404` page.
+
+- Those convenience entrypoints are served by the project's public documentation/standards site, not guaranteed on every reference-server or operator-console origin. An operator origin that fronts a live AS/RS may serve none of them and return its framework's default HTML `404`. That is expected; it is not the discovery entrypoint.
+- The canonical, metadata-first entrypoint on the server origin is `GET /.well-known/oauth-protected-resource`. Start there. Its `pdpp_agent_discovery` block names the absolute `skill`, `skill_catalog`, `llms_txt`, and `llms_full_txt` URLs (resolved to whichever origin actually serves them), so you never have to guess the convenience paths.
+- If you reached this `SKILL.md` over HTTP, fetch its `references/*` from the *same* base URL you fetched the skill from (per `SKILL.md`), not from a guessed origin.
+- Do not fall back to scraping HTML, owner pages, or a marketing site when a convenience path 404s. Read the protected-resource metadata and follow named URLs.
+
 **Symptom:** Discovery returns metadata but no `agent_connect_endpoint`.
 
 - This provider has not enabled the no-owner-token CLI completion path.
 - Stop. Tell the user the provider metadata does not advertise agent-connect, and ask them to update the provider or pre-provision a scoped client credential out-of-band.
 
 ## Registration
+
+**Symptom:** The MCP connector shows fewer tools than expected, or tools are missing inputs advertised in the skill (`detail`, `stream`, event-subscription tools, etc.).
+
+- This is a **stale host registration**, not a PDPP bug. External MCP clients (ChatGPT, Claude, and similar) cache the tool surface at the time the connector is first registered. They do not poll PDPP for changes after the initial setup.
+- The PDPP reference server publishes the current tool surface on every connection via the MCP `initialize` response `serverVersion`, but external hosts cannot be forced to refresh a cached registration.
+- **Remediation:** Ask the user to delete the PDPP connector in the external MCP client and re-add it pointing at the same `<origin>/mcp` URL. After re-adding and completing the OAuth grant, the client fetches the current tool surface.
+- Do not work around missing tools by guessing at raw HTTP endpoints. If the tool the task requires is absent, request the re-add before proceeding.
 
 **Symptom:** `POST /oauth/register` returns `401 invalid_token` or `403`.
 

@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CONNECTION_CONDITION_REASONS,
   computeConnectionHealth,
   deriveOutboxAxisFromHeartbeat,
   deriveOutboxStateFromDiagnostics,
+  rollupOutboxDiagnosticCounts,
 } from '../runtime/connection-health.ts';
-import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 
 const STALE_MS = 30 * 60 * 1000;
 const NOW = '2026-05-19T12:00:00.000Z';
@@ -74,6 +76,14 @@ test('unknown: any unreliable required projection forces unknown and names the s
   );
   assert.equal(snap.state, 'unknown');
   assert.deepEqual([...snap.unknown_reasons], ['dashboard_summary']);
+  assert.equal(findCondition(snap, 'ProjectionReliable')?.status, 'false');
+  assert.equal(snap.dominant_condition_id, 'ProjectionReliable:projection_unreliable');
+});
+
+test('shared condition reasons expose canonical reason-code constants', () => {
+  assert.equal(CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE, 'projection_unreliable');
+  assert.equal(CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED, 'credential_rejected');
+  assert.equal(CONNECTION_CONDITION_REASONS.REMOTE_SURFACE_FAILED, 'remote_surface_failed');
 });
 
 test('unknown: takes precedence even over open attention', () => {
@@ -124,6 +134,25 @@ test('needs_attention: open required attention beats backoff', () => {
   assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
 });
 
+test('needs_attention: open required attention beats never-run idle', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: null,
+      attention: {
+        lifecycle: 'open',
+        reasonCode: 'push_approval',
+        actionTarget: 'dashboard',
+        expiresAt: '2026-05-19T13:00:00.000Z',
+      },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+  assert.equal(snap.reason_code, 'push_approval');
+  assert.equal(snap.next_action?.action_target, 'dashboard');
+  assert.equal(findCondition(snap, 'AttentionClear')?.current, true);
+});
+
 test('needs_attention: attention does NOT override projection-unreliable', () => {
   // Already covered above; documents the precedence boundary explicitly.
   const snap = computeConnectionHealth(
@@ -151,6 +180,53 @@ test('blocked: consecutiveFailures at threshold promotes cooling_off to blocked'
   );
   assert.equal(snap.state, 'blocked');
   assert.equal(snap.reason_code, 'auth_expired'); // class prefix stripped
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, 'auth_expired');
+  assert.equal(credentials?.sensitivity, 'secret_redacted');
+  assert.equal(credentials?.remediation?.action, 'refresh_credentials');
+});
+
+test('blocked: current credential rejection is readiness evidence without waiting for backoff', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: 'github_auth_failed',
+      }),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(snap.reason_code, 'github_auth_failed');
+  assert.equal(snap.dominant_condition_id, 'CredentialsValid:github_auth_failed');
+  assert.ok(snap.supporting_condition_ids.includes('CredentialsValid:github_auth_failed'));
+
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.origin, 'readiness');
+  assert.equal(credentials?.sensitivity, 'secret_redacted');
+  assert.equal(credentials?.message.includes('github_auth_failed'), false);
+});
+
+test('conditions: credential diagnostics redact token-shaped source details', () => {
+  const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: `invalid_token token=${secret}`,
+      }),
+      coverage: { axis: 'partial' },
+    })
+  );
+  const serialized = JSON.stringify(snap);
+  assert.equal(snap.state, 'blocked');
+  assert.equal(findCondition(snap, 'CredentialsValid')?.reason, 'credential_rejected');
+  assert.ok(!serialized.includes(secret), `secret leaked through condition projection: ${serialized}`);
 });
 
 // ─── 5. Cooling off ───────────────────────────────────────────────────────
@@ -167,6 +243,45 @@ test('cooling_off: backoffApplied with sub-threshold streak', () => {
   assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
 });
 
+test('cooling_off: source-pressure cooldown surfaces reason_code source_pressure (no failures)', () => {
+  // Cross-run source-pressure cooldown: the run SUCCEEDED but deferred work
+  // under throttling. The merged backoff carries reasonClass "source_pressure"
+  // with zero consecutive failures. The health snapshot must surface
+  // reason_code: "source_pressure" so the console can render it as catch-up
+  // rather than a failure backoff. This is the cross-layer contract the
+  // operator console's cooling-off copy depends on.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'succeeded' }),
+      backoff: backoff({ consecutiveFailures: 0, reasonClass: 'source_pressure' }),
+    })
+  );
+  assert.equal(snap.state, 'cooling_off');
+  assert.equal(snap.reason_code, 'source_pressure');
+  assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
+});
+
+test('cooling_off: expired retry backoff is not current blocking evidence', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      backoff: backoff({
+        consecutiveFailures: BLOCKED_PROMOTION_THRESHOLD,
+        nextRunAt: OLD,
+        reasonClass: 'terminal:rate_limited',
+      }),
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(snap.next_attempt_at, null);
+  const retryPolicy = findCondition(snap, 'RetryPolicyClear');
+  assert.equal(retryPolicy?.status, 'true');
+  assert.equal(retryPolicy?.reason, 'backoff_expired');
+});
+
 // ─── 6. Degraded ──────────────────────────────────────────────────────────
 
 test('degraded: outbox stalled forces degraded even when run succeeded', () => {
@@ -180,6 +295,7 @@ test('degraded: outbox stalled forces degraded even when run succeeded', () => {
   );
   assert.equal(snap.state, 'degraded');
   assert.equal(snap.axes.outbox, 'stalled');
+  assert.equal(findCondition(snap, 'BacklogClear')?.reason, 'outbox_stalled');
 });
 
 test('degraded: succeeded-with-gaps does not project as healthy', () => {
@@ -316,8 +432,166 @@ test('healthy: success + complete coverage + fresh + no attention/backoff', () =
   );
   assert.equal(snap.state, 'healthy');
   assert.equal(snap.reason_code, null);
+  assert.equal(snap.dominant_condition_id, null);
+  assert.equal(findCondition(snap, 'CredentialsValid')?.status, 'true');
+  assert.equal(findCondition(snap, 'SourceCoverageComplete')?.status, 'true');
+  assert.equal(findCondition(snap, 'Fresh')?.status, 'true');
   assert.equal(snap.badges.stale, false);
   assert.equal(snap.badges.syncing, false);
+});
+
+// ─── 7b. Local-device collection verdict ──────────────────────────────────
+// A local collector writes no spine run, so `run` is null and
+// `CollectionSucceeded` would be unknown. The caller establishes the verdict
+// only when the device-side evidence is fully green (trusted idle outbox +
+// complete coverage + fresh); the classifier then treats it as a terminal
+// succeeded collection equivalent to a run.
+
+test('local-device verdict: no run + verdict + complete coverage + fresh + idle → healthy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  const collection = findCondition(snap, 'CollectionSucceeded');
+  assert.equal(collection?.status, 'true');
+  assert.equal(collection?.origin, 'local_device');
+  assert.equal(collection?.reason, CONNECTION_CONDITION_REASONS.COLLECTION_SUCCEEDED_LOCAL_DEVICE);
+});
+
+test('local-device verdict: absent verdict (no run) is not healthy — the verdict is what flips it', () => {
+  // Same green axes as the healthy case above but WITHOUT the verdict: with no
+  // run and no verdict, `CollectionSucceeded` is unknown, so fresh evidence
+  // without a collection verdict is honestly `unknown` (never silently
+  // healthy). The verdict is the only thing that turns this into `healthy`.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(snap.state, 'unknown');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
+});
+
+test('local-device verdict: no refresh policy (freshness unknown) without verdict stays idle, not unknown', () => {
+  // This mirrors the live drained-collector-without-policy case: the caller
+  // does NOT establish the verdict when freshness is unknown, so the no-run
+  // connection keeps its honest `idle` headline (CollectionSucceeded unknown,
+  // Fresh unknown → never-run idle rung). The change is purely additive here.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'unknown' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
+});
+
+test('local-device verdict: a real run verdict is authoritative over the device verdict', () => {
+  // A failed run must never be greened by device evidence. The verdict is only
+  // consulted when there is no run verdict at all.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', reasonCode: 'connector_error' }),
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  const collection = findCondition(snap, 'CollectionSucceeded');
+  assert.equal(collection?.status, 'false');
+  assert.notEqual(snap.state, 'healthy');
+});
+
+test('local-device verdict: a stalled outbox still degrades even if a verdict is passed', () => {
+  // The verdict only sets CollectionSucceeded; degrading axes win via the
+  // ordered precedence. (In practice the caller would not pass a verdict for a
+  // stalled outbox, but the classifier must be safe even if it does.)
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'dead_letter_backlog' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('conditions: remote-surface failure becomes runtime availability evidence', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      remoteSurface: {
+        axis: 'failed',
+        leaseId: 'bsl_1',
+        leaseStatus: 'surface_failed',
+        profileKey: 'github',
+        surfaceHealth: 'unhealthy',
+        surfaceId: 'surf_1',
+        waitReason: 'surface_unhealthy',
+      },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  const runtime = findCondition(snap, 'RuntimeAvailable');
+  assert.equal(runtime?.status, 'false');
+  assert.equal(runtime?.origin, 'remote_surface');
+  assert.equal(runtime?.remediation?.action, 'check_runtime');
+  assert.equal(snap.dominant_condition_id, runtime?.id);
+});
+
+test('conditions: missing runtime binding is a blocked readiness condition', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: 'browser_runtime_not_configured',
+      }),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  const runtime = findCondition(snap, 'RuntimeAvailable');
+  assert.equal(runtime?.status, 'false');
+  assert.equal(runtime?.severity, 'blocked');
+  assert.equal(runtime?.reason, 'browser_runtime_not_configured');
+  assert.equal(runtime?.remediation?.action, 'check_runtime');
+  assert.equal(snap.dominant_condition_id, runtime?.id);
+});
+
+test('conditions: local exporter availability is separate from backlog state', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'active' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(findCondition(snap, 'LocalExporterAvailable')?.status, 'true');
+  assert.equal(findCondition(snap, 'BacklogClear')?.status, 'false');
 });
 
 test('healthy: complete coverage and fresh evidence can project healthy without outbox evidence', () => {
@@ -333,8 +607,10 @@ test('healthy: complete coverage and fresh evidence can project healthy without 
 
 // ─── Stale axis (never a headline state) ──────────────────────────────────
 
-test('stale: freshness stale alone surfaces as axis+badge, not a stale headline state', () => {
+test('stale: schedulable connector stale alone surfaces as axis+badge and degrades', () => {
   // Spec scenario: "Freshness policy is violated" — stale is an axis.
+  // A schedulable / background-safe connector (no refresh evidence, the
+  // default) was supposed to auto-refresh and did not, so stale degrades.
   const snap = computeConnectionHealth(
     input({
       run: run(),
@@ -347,6 +623,228 @@ test('stale: freshness stale alone surfaces as axis+badge, not a stale headline 
   assert.equal(snap.state, 'degraded');
   assert.equal(snap.axes.freshness, 'stale');
   assert.equal(snap.badges.stale, true);
+  const fresh = findCondition(snap, 'Fresh');
+  assert.equal(fresh?.status, 'false');
+  assert.equal(fresh?.severity, 'warning');
+  assert.equal(fresh?.reason, 'stale');
+});
+
+// ─── Manual / paused / background-unsafe connector freshness ──────────────
+// A connector whose manifest refresh policy declares it manual, paused, or
+// background-unsafe (e.g. Reddit: recommended_mode "manual",
+// background_safe false) cannot auto-refresh. Stale data for such a
+// connector is an owner-action / manual-refresh advisory, not a
+// degradation — but only when nothing else is wrong. Every real failure
+// still degrades or blocks exactly as for a schedulable connector.
+
+test('manual stale: background-unsafe complete+succeeded+stale is idle advisory, not degraded', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+  // The stale axis and badge stay on so the UI still says "stale — run it".
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+  const fresh = findCondition(snap, 'Fresh');
+  assert.equal(fresh?.status, 'false');
+  assert.equal(fresh?.severity, 'info');
+  assert.equal(fresh?.reason, 'stale_manual_refresh');
+  assert.equal(fresh?.remediation?.action, 'retry_by_runtime');
+  assert.equal(fresh?.remediation?.target, 'run');
+  // The advisory is the dominant condition so the surface explains why idle.
+  assert.equal(snap.dominant_condition_id, fresh?.id);
+});
+
+test('manual stale: recommended_mode manual alone (background_safe null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: null, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: recommended_mode paused alone (background_safe null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: null, recommendedMode: 'paused' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: background_safe false alone (mode null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: null },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: a local-device collection verdict also satisfies the advisory', () => {
+  // Local collectors write no spine run; the caller-supplied verdict is the
+  // collection-succeeded proof. A manual local-device connector that drained
+  // cleanly but whose data aged out gets the same idle advisory, not degraded.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'idle' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: schedulable connector with the SAME stale evidence still degrades', () => {
+  // The distinction is purely the refresh policy. An automatic /
+  // background-safe connector degrades on the identical stale+complete+
+  // succeeded evidence the manual connector treats as an advisory.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'Fresh')?.severity, 'warning');
+});
+
+test('manual stale: incomplete coverage still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'SourceCoverageComplete')?.status, 'false');
+});
+
+test('manual stale: terminal-gap coverage still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'terminal_gap' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('manual stale: failed last run still degrades a manual connector', () => {
+  // A non-credential failure (e.g. a scrape timeout) degrades; the manual
+  // advisory must never reclassify a failed run as a benign idle.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'reddit_scrape_timeout' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'false');
+});
+
+test('manual stale: a credential-rejected failure still blocks a manual connector', () => {
+  // A login/credential failure is readiness-blocked — even stronger than
+  // degraded. The manual advisory must not soften it.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'reddit_login_failed' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(findCondition(snap, 'CredentialsValid')?.status, 'false');
+});
+
+test('manual stale: stalled outbox still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'stalled', cause: 'stale_pending' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('manual stale: open attention still dominates a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      attention: { lifecycle: 'open', expiresAt: null, reasonCode: 'needs_login', actionTarget: 'external_app', id: 'att-1', ownerAction: 'act_elsewhere', responseContract: 'response_required' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+});
+
+test('manual stale: a manual connector that is fresh still projects healthy', () => {
+  // The advisory only fires on stale. A manual connector with fresh data
+  // and a successful run is fully healthy, exactly as before.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+});
+
+test('manual stale: a never-run manual connector that is stale stays idle (not advisory-reclassified)', () => {
+  // No collection has ever succeeded, so the advisory must NOT fire — the
+  // honest state is the never-run idle, not a "fresh-but-for-staleness"
+  // advisory. CollectionSucceeded is unknown, so the advisory guard fails.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  // It is the never-run idle, NOT the manual-stale advisory.
+  assert.notEqual(snap.reason_code, 'stale_manual_refresh');
 });
 
 // ─── Syncing badge (never a headline state) ───────────────────────────────
@@ -447,7 +945,7 @@ test('outbox axis: trusted healthy heartbeat with zero pending is idle', () => {
     nowIso: NOW,
     staleHeartbeatThresholdMs: STALE_MS,
   });
-  assert.deepEqual(r, { axis: 'idle', unreliable: false });
+  assert.deepEqual(r, { axis: 'idle', cause: null, unreliable: false });
 });
 
 test('outbox axis: trusted healthy heartbeat with pending work is active', () => {
@@ -471,20 +969,118 @@ test('outbox axis: starting/retrying heartbeats are active', () => {
   assert.equal(retrying.axis, 'active');
 });
 
-test('outbox axis: blocked status is stalled regardless of freshness', () => {
+test('outbox axis: blocked status with no dead letters is a state-read stall', () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({ lastHeartbeatStatus: 'blocked' }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
   assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'state_read_failed');
 });
 
-test('outbox axis: pending work + stale heartbeat degrades to stalled', () => {
+test('outbox axis: blocked status with dead letters is a dead-letter backlog', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'blocked', deadLetterCount: 258 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'dead_letter_backlog');
+});
+
+test('outbox axis: pending work + stale heartbeat degrades to stale_pending stall', () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({ lastHeartbeatStatus: 'healthy', lastHeartbeatAt: OLD, recordsPending: 3 }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
   assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'stale_pending');
+});
+
+// ─── Stalled cause drives specific, non-generic projection copy ──────────
+
+test('local exporter: state_read_failed renders re-run copy, not generic stalled', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'state_read_failed' },
+    }),
+  );
+  assert.equal(snap.state, 'degraded');
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.status, 'false');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED);
+  assert.match(exporter?.message ?? '', /blocked reading prior state/i);
+  assert.match(exporter?.message ?? '', /nothing to requeue/i);
+  // Cause-matched remediation names the host re-run, not a generic "inspect".
+  assert.match(exporter?.remediation?.label ?? '', /re-run the local collector/i);
+  const backlog = findCondition(snap, 'BacklogClear');
+  assert.equal(backlog?.reason, CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED);
+});
+
+test('local exporter: dead_letter_backlog renders retry-then-rerun copy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'dead_letter_backlog' },
+    }),
+  );
+  assert.equal(snap.state, 'degraded');
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG);
+  assert.match(exporter?.message ?? '', /dead-lettered records/i);
+  assert.match(exporter?.remediation?.label ?? '', /retry dead letters.*re-run/i);
+  assert.equal(
+    findCondition(snap, 'BacklogClear')?.reason,
+    CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG,
+  );
+});
+
+test('local exporter: stale_pending names the stopped heartbeat, not a backlog', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'stale_pending' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING);
+  assert.match(exporter?.message ?? '', /stopped sending heartbeats/i);
+});
+
+test('local exporter: stalled with no cause falls back to generic copy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALLED);
+  assert.match(exporter?.message ?? '', /stalled or blocked/i);
+});
+
+test('local exporter: a cause is ignored unless the axis is actually stalled', () => {
+  // A non-stalled axis must never inherit a stray cause into scary copy.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'active', cause: 'dead_letter_backlog' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.status, 'true');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_ACTIVE);
+  assert.match(exporter?.message ?? '', /draining queued work normally/i);
 });
 
 test('outbox axis: idle heartbeat that is stale but has zero pending stays idle', () => {
@@ -503,7 +1099,7 @@ test('outbox axis: missing heartbeat is unknown (not unreliable)', () => {
     heartbeat({ lastHeartbeatAt: null, lastHeartbeatStatus: null }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
-  assert.deepEqual(r, { axis: 'unknown', unreliable: false });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: false });
 });
 
 test('outbox axis: untrusted evidence flags projection unreliable', () => {
@@ -511,7 +1107,7 @@ test('outbox axis: untrusted evidence flags projection unreliable', () => {
     heartbeat({ evidenceTrusted: false }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
-  assert.deepEqual(r, { axis: 'unknown', unreliable: true });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: true });
 });
 
 test('outbox state: granular diagnostics use terminal-first precedence', () => {
@@ -523,6 +1119,45 @@ test('outbox state: granular diagnostics use terminal-first precedence', () => {
   assert.equal(deriveOutboxStateFromDiagnostics({ retrying: 1, pending: 1 }), 'retrying');
   assert.equal(deriveOutboxStateFromDiagnostics({ stale_leases: 1, retrying: 1 }), 'stale');
   assert.equal(deriveOutboxStateFromDiagnostics({ dead_letter: 1, stale_leases: 1 }), 'dead_letter');
+});
+
+// ─── outbox diagnostic count rollup ──────────────────────────────────────
+
+test('rollupOutboxDiagnosticCounts: null when no input carries a count', () => {
+  assert.equal(rollupOutboxDiagnosticCounts([]), null);
+  assert.equal(rollupOutboxDiagnosticCounts([null, undefined]), null);
+  assert.equal(rollupOutboxDiagnosticCounts([{}, {}]), null);
+});
+
+test('rollupOutboxDiagnosticCounts: sums count fields across sources', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 3, dead_letter: 1, total: 10 },
+    { pending: 4, stale_leases: 2, total: 5 },
+    null,
+  ]);
+  assert.deepEqual(r, { pending: 7, dead_letter: 1, total: 15, stale_leases: 2 });
+});
+
+test('rollupOutboxDiagnosticCounts: keeps the earliest oldest_pending_at', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 1, oldest_pending_at: '2026-05-19T11:00:00.000Z' },
+    { pending: 1, oldest_pending_at: '2026-05-19T10:00:00.000Z' },
+  ]);
+  assert.equal(r.pending, 2);
+  assert.equal(r.oldest_pending_at, '2026-05-19T10:00:00.000Z');
+});
+
+test('rollupOutboxDiagnosticCounts: ignores negative / non-finite counts', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 2 },
+    { pending: -5, dead_letter: Number.NaN, retrying: Number.POSITIVE_INFINITY },
+  ]);
+  assert.deepEqual(r, { pending: 2 });
+});
+
+test('rollupOutboxDiagnosticCounts: surfaces oldest_pending_at even with no numeric counts', () => {
+  const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: '2026-05-19T09:00:00.000Z' }]);
+  assert.deepEqual(r, { oldest_pending_at: '2026-05-19T09:00:00.000Z' });
 });
 
 // ─── next_action CTA derivation ──────────────────────────────────────────
@@ -551,6 +1186,7 @@ test('next_action: structured attention projects a non-secret CTA with source=st
     reason_code: 'push_approval',
     response_contract: 'none',
     source: 'structured',
+    notification_state: 'pending',
   });
 });
 
@@ -630,3 +1266,8 @@ test('next_action: idle and degraded headlines do not synthesize a CTA', () => {
   assert.equal(degradedSnap.state, 'degraded');
   assert.equal(degradedSnap.next_action, null);
 });
+
+function findCondition(snap, type) {
+  assert.ok(Array.isArray(snap.conditions), 'conditions must be present on health snapshot');
+  return snap.conditions.find((condition) => condition.type === type);
+}

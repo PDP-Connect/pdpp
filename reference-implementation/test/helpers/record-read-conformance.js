@@ -61,8 +61,7 @@ import assert from 'node:assert/strict';
  * The fixed connector_id and stream the harness uses. Drivers should register
  * a manifest under this id whose shape matches CONFORMANCE_MANIFEST below.
  */
-export const CONFORMANCE_CONNECTOR_ID =
-  'https://test.pdpp.org/connectors/record-read-conformance';
+export const CONFORMANCE_CONNECTOR_ID = 'record-read-conformance';
 export const CONFORMANCE_STREAM = 'items';
 
 /**

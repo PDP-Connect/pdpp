@@ -22,6 +22,7 @@ import { emitRemoteTelemetry } from './remote-telemetry-registry.js';
 const PROFILE_NAME = 'stream-playground';
 const DEFAULT_PLAYGROUND_BACKEND = 'cdp';
 const DEFAULT_NEKO_BASE_URL = 'http://127.0.0.1:8080/neko';
+const DEFAULT_DOCKER_NEKO_BASE_URL = 'http://neko:8080/neko';
 // One device-id constant, used both when registering the wsUrl with the
 // run-target registry and when minting future runIds. Synthetic — does not
 // collide with real device-exporter ids (those have a uuid-style prefix).
@@ -517,7 +518,33 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
   }
 
   function resolveNekoBaseUrl() {
-    return String(env.PDPP_NEKO_BASE_URL || env.NEKO_ORIGIN || DEFAULT_NEKO_BASE_URL).trim();
+    return String(
+      env.PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL ||
+        env.PDPP_NEKO_BASE_URL ||
+        env.NEKO_ORIGIN ||
+        (env.PDPP_STREAM_PLAYGROUND_DOCKER === '1' ? DEFAULT_DOCKER_NEKO_BASE_URL : DEFAULT_NEKO_BASE_URL),
+    ).trim();
+  }
+
+  function resolveNekoCdpHttpUrl(baseUrl) {
+    const configured = String(
+      env.PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL ||
+        env.PDPP_NEKO_CDP_HTTP_URL ||
+        env.NEKO_CDP_HTTP_URL ||
+        env.NEKO_CDP_ORIGIN ||
+        '',
+    ).trim();
+    if (configured) return configured;
+    try {
+      const parsed = new URL(baseUrl || resolveNekoBaseUrl());
+      if (parsed.hostname === 'neko') return 'http://neko:9223/';
+      if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
+        return `${parsed.protocol}//${parsed.hostname}:9223/`;
+      }
+    } catch {
+      /* fall through: no safe inferred CDP URL */
+    }
+    return null;
   }
 
   // Monotonic counter to ensure each call to makeIds() produces a unique
@@ -577,11 +604,13 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     const startUrl = buildTestPageUrl({ debug: session.debugCalibration === true });
     if (session.backend === 'neko') {
       const baseUrl = session.baseUrl || resolveNekoBaseUrl();
+      const cdpHttpUrl = session.cdpHttpUrl || resolveNekoCdpHttpUrl(baseUrl);
       runTargetRegistry.register({
         runId: session.runId,
         interactionId: session.interactionId,
         backend: 'neko',
         base_url: baseUrl,
+        ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
         start_url: startUrl,
         deviceId: PLAYGROUND_DEVICE_ID,
         pageUrl: 'neko:playground',
@@ -589,6 +618,7 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
         reason: 'manual_action',
       });
       session.baseUrl = baseUrl;
+      session.cdpHttpUrl = cdpHttpUrl;
       return session;
     }
 
@@ -792,7 +822,9 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
    * that interaction's lifecycle, not the architecture itself.
    */
   async function createNekoRemoteCdpPlaygroundSession({ debugCalibration = false } = {}) {
-    const remoteCdpUrl = String(env.PDPP_NEKO_CDP_HTTP_URL || 'http://neko:9223').trim();
+    const remoteCdpUrl = String(
+      env.PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL || env.PDPP_NEKO_CDP_HTTP_URL || 'http://neko:9223',
+    ).trim();
     const { acquireBrowserForConnector } = await import(
       '../../../packages/polyfill-connectors/src/browser-launch.ts'
     );

@@ -25,6 +25,114 @@ test('initDb applies a configurable SQLite busy timeout', () => {
   }
 });
 
+test('initDb migrates legacy event subscriptions before creating authority index', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-event-sub-migrate-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  let legacy;
+  try {
+    legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE client_event_subscriptions (
+        subscription_id        TEXT PRIMARY KEY,
+        grant_id               TEXT NOT NULL,
+        client_id              TEXT NOT NULL,
+        subject_id             TEXT NOT NULL,
+        callback_url           TEXT NOT NULL,
+        secret_hash            TEXT NOT NULL,
+        secret_text            TEXT NOT NULL,
+        scope_json             TEXT NOT NULL,
+        status                 TEXT NOT NULL,
+        verification_challenge TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        disabled_at            TEXT,
+        disabled_reason        TEXT
+      );
+      INSERT INTO client_event_subscriptions(
+        subscription_id, grant_id, client_id, subject_id, callback_url,
+        secret_hash, secret_text, scope_json, status, verification_challenge,
+        created_at, updated_at, disabled_at, disabled_reason
+      ) VALUES(
+        'sub_legacy', 'grt_legacy', 'client_legacy', 'owner_legacy',
+        'https://callback.example/webhook', 'hash', 'secret', '{"streams":[{"name":"messages"}]}',
+        'active', NULL, '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z', NULL, NULL
+      );
+    `);
+    legacy.close();
+    legacy = null;
+
+    const db = initDb(dbPath);
+    const columns = db.prepare('PRAGMA table_info(client_event_subscriptions)').all();
+    assert.ok(columns.some((col) => col.name === 'authority_kind'));
+    assert.equal(columns.find((col) => col.name === 'grant_id')?.notnull, 0);
+    const indexes = db.prepare('PRAGMA index_list(client_event_subscriptions)').all();
+    assert.ok(indexes.some((idx) => idx.name === 'idx_client_event_subscriptions_authority'));
+    const row = db.prepare(
+      'SELECT authority_kind, grant_id, client_id, subject_id, status FROM client_event_subscriptions WHERE subscription_id = ?',
+    ).get('sub_legacy');
+    assert.deepEqual(row, {
+      authority_kind: 'client_grant',
+      grant_id: 'grt_legacy',
+      client_id: 'client_legacy',
+      subject_id: 'owner_legacy',
+      status: 'active',
+    });
+  } finally {
+    try { legacy?.close(); } catch {}
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('initDb migrates legacy grant packages before creating parent index', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-grant-packages-migrate-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  let legacy;
+  try {
+    legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE grant_packages (
+        package_id   TEXT PRIMARY KEY,
+        subject_id   TEXT NOT NULL,
+        client_id    TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'active',
+        package_json TEXT NOT NULL,
+        trace_id     TEXT,
+        scenario_id  TEXT,
+        created_at   TEXT NOT NULL,
+        approved_at  TEXT NOT NULL,
+        revoked_at   TEXT
+      );
+      INSERT INTO grant_packages(
+        package_id, subject_id, client_id, status, package_json,
+        trace_id, scenario_id, created_at, approved_at, revoked_at
+      ) VALUES(
+        'gpkg_legacy', 'owner_legacy', 'client_legacy', 'active', '{}',
+        NULL, NULL, '2026-05-31T00:00:00.000Z', '2026-05-31T00:00:00.000Z', NULL
+      );
+    `);
+    legacy.close();
+    legacy = null;
+
+    const db = initDb(dbPath);
+    const columns = db.prepare('PRAGMA table_info(grant_packages)').all();
+    assert.ok(columns.some((col) => col.name === 'parent_package_id'));
+    const indexes = db.prepare('PRAGMA index_list(grant_packages)').all();
+    assert.ok(indexes.some((idx) => idx.name === 'idx_grant_packages_parent'));
+    const row = db.prepare(
+      'SELECT package_id, parent_package_id FROM grant_packages WHERE package_id = ?',
+    ).get('gpkg_legacy');
+    assert.deepEqual(row, {
+      package_id: 'gpkg_legacy',
+      parent_package_id: null,
+    });
+  } finally {
+    try { legacy?.close(); } catch {}
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('isTransientSqliteLockError recognizes SQLITE_BUSY/LOCKED', () => {
   assert.equal(isTransientSqliteLockError(Object.assign(new Error('x'), { code: 'SQLITE_BUSY' })), true);
   assert.equal(isTransientSqliteLockError(Object.assign(new Error('x'), { code: 'SQLITE_LOCKED' })), true);

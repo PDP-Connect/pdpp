@@ -13,34 +13,53 @@ import type {
 } from "../protocol/index.ts";
 
 export {
-  __test__,
   createSurfaceSessionStore,
+} from "./surface-session-store.ts";
+export type {
+  AttachSurfaceSessionRequest,
+  AuthorizeSurfaceSessionRequest,
+  GetSurfaceSessionSummaryRequest,
+  InvalidateSurfaceSessionRequest,
+  MintSurfaceSessionRequest,
+  MintSurfaceSessionResult,
+  SurfaceSessionRecord,
+  SurfaceSessionStore,
+} from "./surface-session-store.ts";
+
+/**
+ * @deprecated Reference-shaped streaming-session APIs (with `run_id` /
+ *   `interaction_id` fields) moved to
+ *   `@opendatalabs/remote-surface/reference`. These re-exports are
+ *   preserved for the deprecation horizon recorded in the
+ *   `republish-remote-surface-as-opendatalabs` OpenSpec change
+ *   (planned removal: first post-publish minor). Import from the
+ *   `./reference` subpath instead.
+ */
+export {
+  __test__,
   createStreamingSessionStore,
   DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
   DEFAULT_STREAMING_SESSION_TTL_MS,
   hashStreamingSessionToken,
   MAX_IDEMPOTENCY_KEY_LEN,
   StreamingSessionStoreError,
-} from "./streaming-session-store.ts";
+} from "../reference/streaming-session-store.ts";
+/**
+ * @deprecated Reference-shaped streaming-session types moved to
+ *   `@opendatalabs/remote-surface/reference`. See the export block
+ *   above for the deprecation horizon.
+ */
 export type {
   AttachStreamingSessionRequest,
-  AttachSurfaceSessionRequest,
   AuthorizeStreamingSessionRequest,
-  AuthorizeSurfaceSessionRequest,
-  GetSurfaceSessionSummaryRequest,
   GetStreamingSessionSummaryRequest,
   InvalidateStreamingSessionRequest,
-  InvalidateSurfaceSessionRequest,
-  MintSurfaceSessionRequest,
-  MintSurfaceSessionResult,
   MintStreamingSessionRequest,
   MintStreamingSessionResult,
-  SurfaceSessionRecord,
-  SurfaceSessionStore,
   StreamingSessionRecord,
   StreamingSessionStore,
   StreamingSessionStoreOptions,
-} from "./streaming-session-store.ts";
+} from "../reference/streaming-session-store.ts";
 
 export interface RemoteSurfaceSessionBroker {
   createSession(request: RemoteSurfaceCreateSessionRequest): Promise<RemoteSurfaceCreateSessionResult>;

@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/uber",
+  "connector_key": "uber",
+  "manifest_uri": "https://registry.pdpp.org/connectors/uber",
   "version": "0.1.0",
   "display_name": "Uber",
   "runtime_requirements": {

@@ -105,6 +105,7 @@ test('valid full refresh_policy is accepted', async () => {
           rate_limit_sensitivity: 'low',
           bot_detection_sensitivity: 'low',
           background_safe: true,
+          assisted_after_owner_auth: true,
           rationale: 'Durable credentials, low rate-limit risk.',
         },
       }),
@@ -251,6 +252,25 @@ test('refresh_policy with non-boolean background_safe is rejected', async () => 
     assert.equal(status, 400);
     assert.equal(body.error.code, 'invalid_request');
     assert.match(body.error.message, /background_safe/);
+  });
+});
+
+test('refresh_policy with non-boolean assisted_after_owner_auth is rejected', async () => {
+  await withHarness(async ({ asUrl }) => {
+    const { status, body } = await registerConnectorManifest(
+      asUrl,
+      makeManifest({
+        connectorIdSuffix: 'bad-assisted-after-owner-auth',
+        refreshPolicy: {
+          recommended_mode: 'automatic',
+          assisted_after_owner_auth: 'yes',
+          rationale: 'String instead of boolean.',
+        },
+      }),
+    );
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message, /assisted_after_owner_auth/);
   });
 });
 

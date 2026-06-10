@@ -11,9 +11,9 @@ branch while the reference implementation is pre-launch, and every publishable
 - `@pdpp/cli`
 - `@pdpp/local-collector`
 
-Packages such as `@pdpp/remote-surface`, `@pdpp/polyfill-connectors`,
-`@pdpp/reference-contract`, and `@pdpp/brand` remain private unless a future
-OpenSpec change explicitly makes them publishable.
+Packages such as `@opendatalabs/remote-surface` (formerly `@pdpp/remote-surface`),
+`@pdpp/polyfill-connectors`, `@pdpp/reference-contract`, and `@pdpp/brand` remain
+private unless a future OpenSpec change explicitly makes them publishable.
 
 ## Versioning
 
@@ -65,15 +65,120 @@ Private workspace packages SHALL NOT declare `publishConfig`. Every
 `private: true` only when it is explicitly covered by this policy as a public
 npm package.
 
+## Install Instructions Pin `@beta` While In Beta-Only Posture
+
+The release train publishes prereleases to npm's `beta` dist-tag. It does **not**
+publish a stable release, so the default `latest` dist-tag still points at the
+placeholder `0.0.0` that was created during owner bootstrap. Installing either
+publishable package by bare name (no `@beta` tag) therefore resolves to that
+empty placeholder.
+
+Until a publishable package is intentionally promoted to a real stable release
+(see the promotion step below), every operator-facing install/exec instruction
+SHALL pin the package with an explicit `@beta` tag (or a pinned version):
+
+```sh
+npx -y @pdpp/local-collector@beta advertise
+npm i -g @pdpp/cli@beta
+```
+
+`pnpm release:policy-check` enforces this statically and offline: it fails when
+an active install doc references a publishable package in an `npm`/`pnpm`/`npx`
+install or exec command without an explicit tag. Shell comments and Markdown
+headings are ignored.
+
+## Verifying The Live Dist-Tag Posture
+
+`pnpm release:policy-check` is hermetic and runs before every publish, so it
+cannot inspect the registry. Use the network-aware companion check to confirm
+the live posture:
+
+```sh
+pnpm release:dist-tag-check
+```
+
+It queries `npm view <package> dist-tags` for each publishable package and fails
+when `latest` resolves to the placeholder `0.0.0` (or is missing while a `beta`
+version exists). Unpublished packages and an unreachable registry are reported
+as `SKIP`, not failures, unless you pass `--require-reachable`.
+
+This check is an owner/release-readiness gate, not part of the blocking publish
+path, because the placeholder `latest` it detects is the known consequence of
+the beta-only posture and only an owner promotion can clear it. While the
+posture is intentional, acknowledge it explicitly:
+
+```sh
+PDPP_RELEASE_DIST_TAG_WAIVER="Beta-only pre-launch posture; promotion gated on owner release-readiness decision." \
+  pnpm release:dist-tag-check
+```
+
+The waiver exits `0` but still prints the finding and the reason, so the
+acknowledgement stays visible rather than silently passing.
+
+## Beta Release Cadence
+
+The release train publishes **only when `beta` is pushed** (the
+`semantic-release` workflow triggers on `push` to `beta`, and `.releaserc.yaml`
+marks `beta` as the prerelease branch). Publishable work, however, lands on
+`main`. A new `@pdpp/*@beta` is therefore cut only when an owner advances `beta`
+to include `main` — until then the published `@beta` silently goes stale while
+`docs/package-release-policy.md`, `docs/local-collector.md`, and the
+`pdpp-local-collector doctor` remediation all point operators at `@beta` as the
+install path. (This is the exact footgun behind hosts intentionally running the
+repo `dist/` override to avoid regressing onto an older published `@beta`.)
+
+`pnpm release:cadence-check` detects this lag mechanically and offline:
+
+```sh
+pnpm release:cadence-check
+```
+
+It compares local git refs — preferring `origin/beta`/`origin/main`, falling
+back to the local `beta`/`main` branches — and fails when any commit that
+touches a publishable package path (each `@semantic-release/npm` `pkgRoot`,
+plus `.releaserc.yaml` and the release workflow) is reachable from `main` but
+not from `beta`. It uses the `beta..main` set-difference, so it stays correct
+even when the branches have diverged rather than fast-forwarded.
+
+The check is **hermetic** — it never contacts npm or the network — so it is
+safe in ordinary local test runs and in the offline release path. When neither
+the `beta` nor the `main` ref is present (for example a shallow CI checkout that
+fetched neither branch), it reports `SKIP` rather than failing; pass
+`--require-refs` to turn an unresolved ref into a failure.
+
+Like `release:dist-tag-check`, this is an **owner/release-readiness gate, not
+part of the blocking publish path** — a lag is cleared by an owner cutting a
+current beta, which the blocking publish job cannot do for itself. When a lag is
+intentional (e.g. a fix has deliberately not yet been cut to beta), acknowledge
+it explicitly rather than ignoring the finding:
+
+```sh
+PDPP_RELEASE_CADENCE_WAIVER="Fix held back from beta pending owner release-readiness review." \
+  pnpm release:cadence-check
+```
+
+The waiver exits `0` but still prints the stranded-commit finding and the
+reason, so the acknowledgement stays visible. The guard's pure logic is covered
+by `pnpm release:cadence-check:test`, which runs in the semantic-release quality
+job; the live `release:cadence-check` itself is run by the release owner during
+a release-readiness review.
+
 ## Enforcement
 
 Run:
 
 ```sh
 pnpm release:policy-check
+pnpm release:policy-check:test
+pnpm release:cadence-check:test
 ```
 
-The same check runs in the semantic-release quality job before npm publication.
+`pnpm release:policy-check` (and its unit test) and
+`pnpm release:cadence-check:test` run in the semantic-release quality job before
+npm publication. `pnpm release:dist-tag-check` and `pnpm release:cadence-check`
+are run by the release owner during a release-readiness review, not in the
+blocking publish path — both detect conditions (a placeholder `latest`, a beta
+lane lagging `main`) that only an owner action can clear.
 
 ## Release-Readiness Checklist
 
@@ -92,6 +197,18 @@ Before adding or unprivatizing a public package:
 - Run `pnpm release:policy-check`, the package's `verify` script, and
   `openspec validate <change> --strict`.
 
+To keep the published `@beta` current with `main` (owner action; the publish
+job cannot do this for itself):
+
+- Run `pnpm release:cadence-check`. If it reports a lag, the published `@beta`
+  is missing publishable changes that have landed on `main`.
+- Advance `beta` to include `main` (fast-forward when possible, otherwise merge
+  `main` into `beta`) and push `beta`. The push triggers semantic-release, which
+  cuts the next `@pdpp/*@beta`.
+- Re-run `pnpm release:cadence-check` and confirm `OK`. If a remaining lag is
+  intentional, acknowledge it with `PDPP_RELEASE_CADENCE_WAIVER` rather than
+  letting it pass silently.
+
 Before promoting from beta to stable/latest:
 
 - Confirm the intended public packages are already published and installable
@@ -103,3 +220,33 @@ Before promoting from beta to stable/latest:
 - Re-enable npm provenance when the source repository is public and trusted
   publishing is verified for every public package.
 - Keep repository/package versions distinct from PDPP protocol versions.
+
+### Owner step to move `latest` off the placeholder `0.0.0`
+
+`pnpm release:dist-tag-check` fails today because `@pdpp/cli` and
+`@pdpp/local-collector` both have `latest` pinned to the bootstrap placeholder
+`0.0.0`. Clearing this is an owner action against npm registry state (CI does
+not mutate dist-tags outside a real publish):
+
+1. Land the OpenSpec-backed release-readiness change that adds a non-prerelease
+   release lane (publishing from `main` in `.releaserc.yaml`), so
+   `@semantic-release/npm` produces a real stable version and publishes it to
+   the default `latest` dist-tag.
+2. After that stable version exists on npm, retire the placeholder so it can
+   never be resolved again — for each publishable package:
+
+   ```sh
+   # latest now points at the real release; deprecate the dead placeholder
+   npm deprecate @pdpp/cli@0.0.0 "Placeholder bootstrap version; use the published release."
+   npm deprecate @pdpp/local-collector@0.0.0 "Placeholder bootstrap version; use the published release."
+   ```
+
+   (`npm unpublish @pdpp/<pkg>@0.0.0` is also possible inside npm's unpublish
+   window, but deprecation is the durable, always-available option.)
+3. Re-run `pnpm release:dist-tag-check` (without a waiver) and confirm it reports
+   `OK` for every publishable package, then drop the `@beta` pin from the
+   install docs in the same release-readiness change.
+
+Until step 1 ships, keep the install docs pinned to `@beta` and acknowledge the
+posture with `PDPP_RELEASE_DIST_TAG_WAIVER` rather than letting the check pass
+silently.

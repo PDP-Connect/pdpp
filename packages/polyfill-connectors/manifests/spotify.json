@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "connector_key": "spotify",
+  "manifest_uri": "https://registry.pdpp.org/connectors/spotify",
   "version": "0.1.0",
   "display_name": "Spotify",
   "runtime_requirements": {

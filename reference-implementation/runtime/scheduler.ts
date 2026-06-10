@@ -23,15 +23,22 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { canonicalConnectorKey } from "../server/connector-key.js";
 import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
 import {
   type AutomationRefreshPolicy,
+  projectRunAutomationPolicy,
   type RunAutomationMode,
   type RunTriggerKind,
-  projectRunAutomationPolicy,
 } from "./run-automation-policy.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
+import {
+  computeSourcePressureCooldown,
+  isSourcePressureCooldownDeferring,
+  type PendingPressureGap,
+  type SourcePressureCooldownDecision,
+} from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -170,9 +177,66 @@ export type SetStateHandler = (connectorId: string, state: unknown, connectorIns
 export type NeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => void;
 export type IsNeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => boolean;
 
+/**
+ * Probe for durable unresolved owner/operator attention keyed to a
+ * connection/source. When this returns a non-null evidence object, the
+ * scheduler treats the schedule as paused-for-attention: it does not
+ * launch another automatic run, it emits at most one skip record per
+ * attention identity, and it does not replay missed ticks once the
+ * evidence is gone.
+ *
+ * The `key` is an opaque, owner-controlled string (typically the
+ * `dedupe_key` or `attention_id` of the unresolved request) that the
+ * scheduler uses to dedupe its own skip records. Two consecutive probes
+ * returning the same `key` are treated as the same attention; a probe
+ * returning a different `key` re-arms the skip emitter so the operator
+ * sees a fresh audit line.
+ *
+ * The handler MAY return null/undefined or throw to signal "no relevant
+ * attention or unable to determine". A throw is treated as "no evidence"
+ * — the scheduler must never silently suppress launches when the durable
+ * store is unreachable, because that would itself hide a real freshness
+ * problem.
+ */
+export interface UnresolvedAttentionEvidence {
+  readonly key: string;
+  readonly reason?: string | null;
+}
+export type HasUnresolvedAttentionHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) => Promise<UnresolvedAttentionEvidence | null | undefined> | UnresolvedAttentionEvidence | null | undefined;
+
+/**
+ * Probe for durable pending *source-pressure* detail gaps keyed to a
+ * connection/source. When this returns a non-empty list of pending gaps whose
+ * reason is account/source pressure (e.g. ChatGPT `upstream_pressure` /
+ * `rate_limited`), the scheduler applies a decaying inter-run cooldown so an
+ * unattended cadence does not keep re-hitting a hot upstream bucket while the
+ * prior run's deferred work is still waiting to recover.
+ *
+ * Unlike `hasUnresolvedAttention`, this is not a hard pause: it only delays the
+ * next *automatic* dispatch until the computed retry time arrives and surfaces
+ * `cooling_off` while that retry is still too early. Ordinary manual runs use
+ * the same future-only safety gate unless explicitly forced. A run that
+ * recovers the gaps empties the pending set, which relaxes the cooldown on the
+ * next tick.
+ *
+ * The handler MAY return an empty array, null/undefined, or throw to signal
+ * "no pressure or unable to determine". A throw is treated as "no evidence" —
+ * the scheduler must never silently suppress launches when the durable store
+ * is unreachable, because that would itself hide a real freshness problem.
+ */
+export type GetSourcePressureGapsHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) => Promise<readonly PendingPressureGap[] | null | undefined> | readonly PendingPressureGap[] | null | undefined;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
+  getSourcePressureGaps?: GetSourcePressureGapsHandler;
   getState?: GetStateHandler;
+  hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
   onInteraction: InteractionHandler;
@@ -268,7 +332,8 @@ function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connector
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
-  const capabilities = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
+  const capabilities =
+    manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     return null;
   }
@@ -342,10 +407,7 @@ function newestHistoryEpochMs(history: readonly RunRecord[]): number {
   return newest;
 }
 
-function resolveLastRunEpochMs(
-  lastRunTimeMs: number | undefined,
-  history: readonly RunRecord[]
-): number {
+function resolveLastRunEpochMs(lastRunTimeMs: number | undefined, history: readonly RunRecord[]): number {
   const fromMap = normalizeSchedulerEpochMs(lastRunTimeMs);
   if (fromMap > 0) {
     return fromMap;
@@ -371,6 +433,19 @@ interface SchedulerRuntime {
   readonly exhaustedGrants: Set<string>;
   readonly history: RunRecord[];
   readonly lastRunTime: Map<string, number>;
+  // Tracks the durable attention key (from `hasUnresolvedAttention`) for
+  // which we last emitted a suppression skip record. Keyed by
+  // connector_instance_id. A different key means a fresh attention
+  // identity and re-arms the emitter; an absent key (attention resolved)
+  // clears the entry so the next observed suppression emits a new skip.
+  readonly notifiedAttentionSkips: Map<string, string>;
+  // Tracks the source-pressure cooldown identity (from
+  // `computeSourcePressureCooldown`) for which we last emitted a cooling-off
+  // skip record. Keyed by connector_instance_id. A different identity means
+  // the pressure picture changed (gap count or persistence) and re-arms the
+  // emitter; an absent identity (pressure recovered) clears the entry so the
+  // next observed cooldown emits a fresh skip.
+  readonly notifiedCooldownIdentity: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
   // Tracks connectors for which we have already emitted one needs-human skip
   // record this cycle. Cleared when the owner clears the needs-human flag via
@@ -393,6 +468,8 @@ function buildRuntime(): SchedulerRuntime {
     notifiedDisabledGrantFailures: new Set(),
     notifiedNeedsHumanSkips: new Set(),
     notifiedNotReadySkips: new Map(),
+    notifiedAttentionSkips: new Map(),
+    notifiedCooldownIdentity: new Map(),
     running: false,
     timers: [],
   };
@@ -494,6 +571,27 @@ function buildDisabledGrantSkip(
   };
 }
 
+function buildUnresolvedAttentionSkip(
+  connectorId: string,
+  evidence: UnresolvedAttentionEvidence,
+  connectorInstanceId?: string
+): RunRecord {
+  const tail = evidence.reason ? `: ${evidence.reason} (${evidence.key})` : `: ${evidence.key}`;
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `attention_unresolved${tail}`,
+    attempt: 0,
+  };
+}
+
 function buildNeedsHumanSkip(connectorId: string, connectorInstanceId?: string): RunRecord {
   return {
     connectorId,
@@ -526,7 +624,11 @@ function buildNotReadySkip(connectorId: string, reason: string, connectorInstanc
   };
 }
 
-function buildAutomationPolicySkip(connectorId: string, reason: string | null, connectorInstanceId?: string): RunRecord {
+function buildAutomationPolicySkip(
+  connectorId: string,
+  reason: string | null,
+  connectorInstanceId?: string
+): RunRecord {
   return {
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
@@ -588,6 +690,36 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connec
   };
 }
 
+function buildSourcePressureCooldownSkip(
+  connectorId: string,
+  decision: SourcePressureCooldownDecision,
+  connectorInstanceId?: string
+): RunRecord {
+  // One-shot skip emitted when the cross-run source-pressure cooldown first
+  // engages for the current pressure picture. Like the back-off skip, we keep
+  // emitting one record (rather than going silent) so the audit log shows the
+  // connection is intentionally cooling off rather than looking like a healthy
+  // gap-free run. Carries the pending-gap count and persistence so the
+  // dashboard can render `cooling_off; next attempt at HH:MM` without
+  // re-deriving anything.
+  const next = decision.nextRunAt;
+  const gaps = decision.pendingPressureGapCount;
+  const attempts = decision.maxAttemptCount;
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `source_pressure_cooldown_applied: ${gaps} pending source-pressure gap(s), persistence ${attempts}; next attempt at ${next}`,
+    attempt: 0,
+  };
+}
+
 // ─── Spine-event transition markers ─────────────────────────────────────────
 //
 // Per brief §3.6, three new one-shot spine event types augment (do not
@@ -605,7 +737,11 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connec
 const BACKOFF_STARTED_PREFIX = "schedule.back_off.started:";
 const GAVE_UP_PREFIX = "schedule.gave_up:";
 
-function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision, connectorInstanceId?: string): RunRecord {
+function buildBackoffStartedEvent(
+  connectorId: string,
+  decision: BackoffDecision,
+  connectorInstanceId?: string
+): RunRecord {
   const payload = JSON.stringify({
     reason_class: decision.reasonClass,
     consecutive_failures: decision.consecutiveFailures,
@@ -672,7 +808,11 @@ function buildGaveUpEvent(
 function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
-    if (record && (record.connectorInstanceId || record.connectorId) === connectorKey && record.status === "succeeded") {
+    if (
+      record &&
+      (record.connectorInstanceId || record.connectorId) === connectorKey &&
+      record.status === "succeeded"
+    ) {
       return record.completedAt;
     }
   }
@@ -692,11 +832,7 @@ function readSchedulerEventReasonClass(record: RunRecord, prefix: string): strin
   }
 }
 
-function currentStreakHasSchedulerEvent(
-  history: readonly RunRecord[],
-  prefix: string,
-  reasonClass: string
-): boolean {
+function currentStreakHasSchedulerEvent(history: readonly RunRecord[], prefix: string, reasonClass: string): boolean {
   const lastSuccessIndex = history.findLastIndex((record) => record.status === "succeeded");
   return history
     .slice(lastSuccessIndex + 1)
@@ -792,9 +928,23 @@ function requiredBindingEnabled(manifest: SchedulerManifest, binding: string): b
 }
 
 function browserSurfaceConfigured(): boolean {
+  // Direct CDP URL — connector receives the URL in env and talks to it directly.
   if (process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim()) {
     return true;
   }
+  // Managed neko surface (static mode): a single shared n.eko container whose
+  // CDP port is exposed at PDPP_NEKO_CDP_HTTP_URL.  The controller owns leasing;
+  // the connector does not discover the CDP endpoint itself.
+  if (process.env.PDPP_NEKO_CDP_HTTP_URL?.trim()) {
+    return true;
+  }
+  // Managed neko surface (dynamic mode): the allocator spawns per-connector
+  // n.eko containers; PDPP_NEKO_MANAGED_CONNECTORS lists the connector IDs
+  // eligible for those surfaces.
+  if (process.env.PDPP_NEKO_MANAGED_CONNECTORS?.trim()) {
+    return true;
+  }
+  // Explicit opt-in for unmanaged/bring-your-own browser setups.
   if (process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES === "1") {
     return true;
   }
@@ -808,13 +958,14 @@ async function checkFirstPartyLocalSourceReadiness(
   if (!requiredBindingEnabled(manifest, "filesystem")) {
     return null;
   }
-  if (connectorId === "https://registry.pdpp.org/connectors/codex") {
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (canonicalId === "codex") {
     const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
     const requiredPaths = [
       process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
       process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
     ];
-    const missing = [];
+    const missing: string[] = [];
     for (const path of requiredPaths) {
       if (!(await canAccessPath(path))) {
         missing.push(path);
@@ -822,7 +973,7 @@ async function checkFirstPartyLocalSourceReadiness(
     }
     return missing.length > 0 ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}` : null;
   }
-  if (connectorId === "https://registry.pdpp.org/connectors/claude-code") {
+  if (canonicalId === "claude-code") {
     const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
     const projectsDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
     return (await canAccessPath(projectsDir))
@@ -925,6 +1076,7 @@ function buildExhaustedFailureRecord({
 // ─── Core run loop ──────────────────────────────────────────────────────────
 
 interface RunConnectorCall {
+  automationMode?: RunAutomationMode;
   collectionMode: "full_refresh" | "incremental";
   connectorId: string;
   connectorInstanceId?: string;
@@ -939,7 +1091,6 @@ interface RunConnectorCall {
   rsUrl: string;
   state: Record<string, unknown> | null;
   triggerKind?: RunTriggerKind;
-  automationMode?: RunAutomationMode;
 }
 
 async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorResult> {
@@ -1011,6 +1162,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // no-op
     },
     isNeedsHuman = () => false,
+    hasUnresolvedAttention = () => null,
+    getSourcePressureGaps = () => [],
   } = opts;
 
   const runtime = buildRuntime();
@@ -1050,10 +1203,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     if (!schedulerStore) {
       return;
     }
-    Promise.resolve(schedulerStore.upsertLastRunTime(connectorInstanceId, lastRunTimeMs, nowIso(), connectorId)).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
-    });
+    Promise.resolve(schedulerStore.upsertLastRunTime(connectorInstanceId, lastRunTimeMs, nowIso(), connectorId)).catch(
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
+      }
+    );
   }
 
   function handleGrantFailureDisable(reason: string | null | undefined, connectorInstanceId: string): void {
@@ -1222,44 +1377,29 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return { kind: "give-up", error };
     }
   }
+  function buildAttemptCall(schedule: ConnectorSchedule, call: RunConnectorCall, attempt: number): RunConnectorCall {
+    const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
+    const attemptPolicy = projectRunAutomationPolicy({
+      triggerKind: attemptTriggerKind,
+      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+    });
+    return {
+      ...call,
+      triggerKind: attemptPolicy.trigger_kind,
+      automationMode: attemptPolicy.automation_mode,
+    };
+  }
 
-  async function runWithRetries(schedule: ConnectorSchedule, call: RunConnectorCall): Promise<RunRecord> {
-    const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
-    let attempt = 0;
-    let lastError: RunConnectorError | null = null;
-
-    while (attempt <= maxRetries) {
-      if (!runtime.running) {
-        break;
-      }
-      attempt++;
-
-      const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
-      const attemptPolicy = projectRunAutomationPolicy({
-        triggerKind: attemptTriggerKind,
-        refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
-      });
-      const attemptCall: RunConnectorCall = {
-        ...call,
-        triggerKind: attemptPolicy.trigger_kind,
-        automationMode: attemptPolicy.automation_mode,
-      };
-      const outcome = await runSingleAttempt(schedule, attemptCall, attempt);
-      if (outcome.kind === "done") {
-        return outcome.record;
-      }
-      if (outcome.kind === "give-up") {
-        lastError = outcome.error;
-        break;
-      }
-
-      lastError = outcome.error;
-      await sleep(backoffDelayMs(attempt));
-      if (!runtime.running) {
-        break;
-      }
-    }
-
+  // Drains the durable failure record for an exhausted-retries run: history,
+  // store append, last-run timestamp, terminal-grant handling, completion
+  // notification. Pulled out so `runWithRetries` only orchestrates the retry
+  // loop and trusts this helper for the failure tail.
+  function finalizeExhaustedFailure(
+    schedule: ConnectorSchedule,
+    lastError: RunConnectorError | null,
+    attempt: number
+  ): RunRecord {
+    const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
       connectorId,
       connectorInstanceId,
@@ -1279,14 +1419,242 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     return failRecord;
   }
 
+  async function runWithRetries(schedule: ConnectorSchedule, call: RunConnectorCall): Promise<RunRecord> {
+    const { maxRetries = 2 } = schedule;
+    let attempt = 0;
+    let lastError: RunConnectorError | null = null;
+
+    while (attempt <= maxRetries) {
+      if (!runtime.running) {
+        break;
+      }
+      attempt++;
+
+      const outcome = await runSingleAttempt(schedule, buildAttemptCall(schedule, call, attempt), attempt);
+      if (outcome.kind === "done") {
+        return outcome.record;
+      }
+      lastError = outcome.error;
+      if (outcome.kind === "give-up") {
+        break;
+      }
+      await sleep(backoffDelayMs(attempt));
+    }
+
+    return finalizeExhaustedFailure(schedule, lastError, attempt);
+  }
+  // Outcome of a pre-run gate check. `"proceed"` means the gate is clear; any
+  // other value is the value `executeRun` must return immediately (either a
+  // recorded skip or `null` for silent skips).
+  type GateOutcome = "proceed" | RunRecord | null;
+
+  async function probeUnresolvedAttention(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<UnresolvedAttentionEvidence | null> {
+    try {
+      const observed = await hasUnresolvedAttention(connectorId, connectorInstanceId);
+      return observed ?? null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] attention probe failed for ${connectorId}: ${message}`);
+      return null;
+    }
+  }
+
+  // Read durable pending source-pressure gaps for the cross-run cooldown.
+  // A probe failure is treated as "no pressure" — the same fail-open stance as
+  // the attention probe: silently suppressing launches when the durable store
+  // is unreachable would itself hide a freshness problem.
+  async function probeSourcePressureGaps(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<readonly PendingPressureGap[]> {
+    try {
+      const observed = await getSourcePressureGaps(connectorId, connectorInstanceId);
+      return Array.isArray(observed) ? observed : [];
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] source-pressure gap probe failed for ${connectorId}: ${message}`);
+      return [];
+    }
+  }
+
+  // Durable attention is the highest-priority gate. If an equivalent
+  // unresolved attention request exists for this connection/source, no other
+  // policy result matters: we do not launch another automatic run, we emit at
+  // most one skip record per attention identity, and we leave `lastRunTime`
+  // alone so the schedule stays eligible for a single latest-only catch-up
+  // once the attention resolves.
+  //
+  // Probe failures are treated as "no evidence" — silently suppressing
+  // launches when the durable store is unreachable would itself hide a
+  // freshness problem.
+  async function gateAttention(connectorId: string, connectorInstanceId: string, key: string): Promise<GateOutcome> {
+    const attentionEvidence = await probeUnresolvedAttention(connectorId, connectorInstanceId);
+    if (attentionEvidence?.key) {
+      if (runtime.notifiedAttentionSkips.get(key) === attentionEvidence.key) {
+        return null;
+      }
+      runtime.notifiedAttentionSkips.set(key, attentionEvidence.key);
+      return recordAndNotify(buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId));
+    }
+    // No durable attention evidence. Clear suppression so the next observed
+    // attention emits a fresh skip record. This also enforces latest-only
+    // catch-up: once attention clears, the next eligible tick fires exactly
+    // one run regardless of how many ticks were skipped while attention was
+    // open.
+    runtime.notifiedAttentionSkips.delete(key);
+    return "proceed";
+  }
+
+  function gateAutomationPolicy(
+    connectorId: string,
+    connectorInstanceId: string,
+    key: string,
+    policy: ReturnType<typeof projectRunAutomationPolicy>
+  ): GateOutcome {
+    if (policy.allowed_to_start) {
+      return "proceed";
+    }
+    const reason = policy.reason || "automatic run is not allowed by connector policy";
+    const dedupeReason = `automation_policy_blocked:${reason}`;
+    if (runtime.notifiedNotReadySkips.get(key) === dedupeReason) {
+      return null;
+    }
+    runtime.notifiedNotReadySkips.set(key, dedupeReason);
+    return recordAndNotify(buildAutomationPolicySkip(connectorId, reason, connectorInstanceId));
+  }
+
+  function gateNeedsHuman(connectorId: string, connectorInstanceId: string, key: string): GateOutcome {
+    if (!isNeedsHuman(connectorId, connectorInstanceId)) {
+      // Flag was cleared (owner ran manually or called clearNeedsHuman).
+      // Reset suppression so the next time the flag is set we emit a fresh
+      // skip.
+      runtime.notifiedNeedsHumanSkips.delete(key);
+      return "proceed";
+    }
+    // Emit one inspectable skip record, then suppress further skips on
+    // subsequent ticks (mirrors the terminal-grant disabled pattern).
+    if (runtime.notifiedNeedsHumanSkips.has(key)) {
+      return null;
+    }
+    runtime.notifiedNeedsHumanSkips.add(key);
+    return recordAndNotify(buildNeedsHumanSkip(connectorId, connectorInstanceId));
+  }
+
+  // The pre-run gate cascade that only applies to automatic runs. Manual runs
+  // bypass all of these so the owner can resolve the issue. Each gate either
+  // returns `"proceed"` or yields the final decision `executeRun` must
+  // surface to the caller (either a recorded skip or `null` for silent).
+  async function runAutomaticPreflight(
+    schedule: ConnectorSchedule,
+    key: string,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
+  ): Promise<GateOutcome> {
+    const { connectorId, connectorInstanceId = connectorId } = schedule;
+
+    const attention = await gateAttention(connectorId, connectorInstanceId, key);
+    if (attention !== "proceed") {
+      return attention;
+    }
+    const policyDecision = gateAutomationPolicy(connectorId, connectorInstanceId, key, automationPolicy);
+    if (policyDecision !== "proceed") {
+      return policyDecision;
+    }
+    const notReadyDecision = await decideNotReady(schedule);
+    if (notReadyDecision === "silent-skip") {
+      return null;
+    }
+    if (notReadyDecision !== "proceed") {
+      return notReadyDecision;
+    }
+    return gateNeedsHuman(connectorId, connectorInstanceId, key);
+  }
+
+  function gateGrantState(
+    connectorId: string,
+    connectorInstanceId: string,
+    grantAccessMode: NonNullable<ConnectorSchedule["grantAccessMode"]>
+  ): GateOutcome {
+    const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, connectorInstanceId, grantAccessMode);
+    if (singleUseSkip) {
+      return singleUseSkip;
+    }
+    const disabledDecision = decideDisabledGrant(connectorId, connectorInstanceId);
+    if (disabledDecision === "silent-skip") {
+      return null;
+    }
+    return disabledDecision;
+  }
+
+  async function launchRun(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
+  ): Promise<RunRecord> {
+    const {
+      connectorId,
+      connectorInstanceId = connectorId,
+      connectorPath,
+      manifest,
+      ownerToken,
+      grantAccessMode = "continuous",
+    } = schedule;
+    const persistState = grantAccessMode !== "single_use";
+    const state = narrowState(await getState(connectorId, connectorInstanceId));
+    const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
+    let currentRunId: string | null = null;
+    const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
+
+    // Wrap onInteraction to detect when an automatic run surfaces a
+    // human-attention interaction. We mark the connector as needs-human so
+    // subsequent automatic ticks skip it rather than repeatedly prompting for
+    // OTP or manual browser action.
+    const wrappedInteraction: InteractionHandler = (interaction) => {
+      if (!isManual) {
+        markNeedsHuman(connectorId, connectorInstanceId);
+      }
+      return onInteraction(
+        withSchedulerInteractionContext(interaction, {
+          connectorDisplayName,
+          connectorId,
+          connectorInstanceId,
+          runId: currentRunId,
+        })
+      );
+    };
+
+    return await runWithRetries(schedule, {
+      connectorPath,
+      connectorId,
+      connectorInstanceId,
+      ownerToken,
+      manifest,
+      state,
+      collectionMode,
+      persistState,
+      referenceBaseUrl,
+      rsUrl,
+      triggerKind: automationPolicy.trigger_kind,
+      automationMode: automationPolicy.automation_mode,
+      onInteraction: wrappedInteraction,
+      onStarted: (run) => {
+        currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
+      },
+      onProgress: () => {
+        // no-op; progress is driven by the runtime's own logging.
+      },
+    });
+  }
+
   async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
-    const { connectorId, connectorInstanceId = connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
+    const { connectorId, connectorInstanceId = connectorId, manifest, grantAccessMode = "continuous" } = schedule;
     const key = connectorInstanceId;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
-    const refreshPolicy = getManifestRefreshPolicy(manifest);
     const automationPolicy = projectRunAutomationPolicy({
       triggerKind,
-      refreshPolicy,
+      refreshPolicy: getManifestRefreshPolicy(manifest),
     });
 
     if (runtime.activeRuns.has(key)) {
@@ -1295,93 +1663,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     runtime.activeRuns.add(key);
 
     try {
-      // Automatic runs skip connectors that previously surfaced a human-attention
-      // interaction. Manual runs (isManual=true) bypass this gate so the owner
-      // can resolve the issue. The controller also clears the flag on runNow.
       if (!isManual) {
-        if (!automationPolicy.allowed_to_start) {
-          const reason = automationPolicy.reason || "automatic run is not allowed by connector policy";
-          const dedupeReason = `automation_policy_blocked:${reason}`;
-          if (runtime.notifiedNotReadySkips.get(key) === dedupeReason) {
-            return null;
-          }
-          runtime.notifiedNotReadySkips.set(key, dedupeReason);
-          return recordAndNotify(buildAutomationPolicySkip(connectorId, reason, connectorInstanceId));
+        const preflight = await runAutomaticPreflight(schedule, key, automationPolicy);
+        if (preflight !== "proceed") {
+          return preflight;
         }
-        const notReadyDecision = await decideNotReady(schedule);
-        if (notReadyDecision === "silent-skip") {
-          return null;
-        }
-        if (notReadyDecision !== "proceed") {
-          return notReadyDecision;
-        }
-        if (isNeedsHuman(connectorId, connectorInstanceId)) {
-          // Emit one inspectable skip record, then suppress further skips on
-          // subsequent ticks (mirrors the terminal-grant disabled pattern).
-          if (runtime.notifiedNeedsHumanSkips.has(key)) {
-            return null;
-          }
-          runtime.notifiedNeedsHumanSkips.add(key);
-          return recordAndNotify(buildNeedsHumanSkip(connectorId, connectorInstanceId));
-        }
-        // Flag was cleared (owner ran manually or called clearNeedsHuman).
-        // Reset suppression so the next time the flag is set we emit a fresh skip.
-        runtime.notifiedNeedsHumanSkips.delete(key);
       }
-
-      const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, connectorInstanceId, grantAccessMode);
-      if (singleUseSkip) {
-        return singleUseSkip;
+      const grantDecision = gateGrantState(connectorId, connectorInstanceId, grantAccessMode);
+      if (grantDecision !== "proceed") {
+        return grantDecision;
       }
-
-      const disabledDecision = decideDisabledGrant(connectorId, connectorInstanceId);
-      if (disabledDecision === "silent-skip") {
-        return null;
-      }
-      if (disabledDecision !== "proceed") {
-        return disabledDecision;
-      }
-
-      const persistState = grantAccessMode !== "single_use";
-      const state = narrowState(await getState(connectorId, connectorInstanceId));
-      const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
-      let currentRunId: string | null = null;
-      const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
-
-      // Wrap onInteraction to detect when an automatic run surfaces a
-      // human-attention interaction. We mark the connector as needs-human
-      // so subsequent automatic ticks skip it rather than repeatedly
-      // prompting for OTP or manual browser action.
-      const wrappedInteraction: InteractionHandler = (interaction) => {
-        if (!isManual) {
-          markNeedsHuman(connectorId, connectorInstanceId);
-        }
-        return onInteraction(
-          withSchedulerInteractionContext(interaction, { connectorDisplayName, connectorId, connectorInstanceId, runId: currentRunId })
-        );
-      };
-
-      return await runWithRetries(schedule, {
-        connectorPath,
-        connectorId,
-        connectorInstanceId,
-        ownerToken,
-        manifest,
-        state,
-        collectionMode,
-        persistState,
-        referenceBaseUrl,
-        rsUrl,
-        triggerKind: automationPolicy.trigger_kind,
-        automationMode: automationPolicy.automation_mode,
-        onInteraction: wrappedInteraction,
-        onStarted: (run) => {
-          currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
-        },
-        onProgress: () => {
-          // no-op; progress is driven by the runtime's own logging.
-        },
-      });
+      return await launchRun(schedule, isManual, automationPolicy);
     } finally {
       runtime.activeRuns.delete(key);
     }
@@ -1426,15 +1718,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   // is explicit about this), but the interval loop will not call
   // `executeRun` for a connector whose `recommendedHealthState` is
   // `"blocked"`.
-  function evaluateBackoffDispatch(
+  async function evaluateBackoffDispatch(
     schedule: ConnectorSchedule,
     now: number
-  ): {
+  ): Promise<{
     decision: BackoffDecision;
     eligible: boolean;
     eventsToEmit: RunRecord[];
     skipToEmit: RunRecord | null;
-  } {
+  }> {
     const connectorId = schedule.connectorId;
     const key = runtimeKey(schedule);
     const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
@@ -1449,8 +1741,18 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
 
+    // Cross-run source-pressure cooldown. Independent of failure back-off: a
+    // connection that *succeeded* but deferred work under upstream pressure
+    // has no failure streak, so back-off alone would fire on the normal
+    // interval and re-hit the still-hot bucket. The cooldown reads the durable
+    // pending pressure gaps and defers the next automatic dispatch on its own
+    // capped curve. We take whichever governor defers the run further.
+    const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
+    const cooldown = computeSourcePressureCooldown(pendingPressureGaps, scheduleIntervalMs, lastRun);
+    const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
+
     const elapsed = now - lastRun;
-    let eligible = elapsed >= decision.effectiveIntervalMs;
+    let eligible = elapsed >= decision.effectiveIntervalMs && !cooldownDefers;
 
     let skipToEmit: RunRecord | null = null;
     const eventsToEmit: RunRecord[] = [];
@@ -1485,7 +1787,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           runtime.announcedBlockedClass.set(key, decision.reasonClass);
         } else {
           runtime.announcedBlockedClass.set(key, decision.reasonClass);
-          eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId));
+          eventsToEmit.push(
+            buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId)
+          );
         }
         // Auto-dispatch is suppressed for blocked connectors. Manual
         // `runNow` still works (it bypasses this evaluator entirely via
@@ -1498,17 +1802,52 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.announcedBackoffClass.delete(key);
     }
 
+    // Source-pressure cooldown is layered on top of failure back-off. Pending
+    // pressure gaps alone do not defer forever; only a future `nextRunAt` does.
+    // `resolveCooldownSkip` emits at most one cooling-off skip per pressure
+    // identity while the retry is too early, but only when back-off has not
+    // already emitted its own skip this tick (back-off is the stronger signal
+    // and already explains the quiet; double-emitting would be noise).
+    skipToEmit = resolveCooldownSkip(schedule, key, cooldown, cooldownDefers, skipToEmit);
+
     return { decision, eligible, skipToEmit, eventsToEmit };
+  }
+
+  // Decide whether this tick should emit a one-shot source-pressure cooling-off
+  // skip record. Manages the per-connection dedup map so the audit log shows
+  // one record per pressure identity and re-arms when pressure clears. Returns
+  // the (possibly unchanged) skip record the caller should emit.
+  function resolveCooldownSkip(
+    schedule: ConnectorSchedule,
+    key: string,
+    cooldown: SourcePressureCooldownDecision,
+    cooldownDefers: boolean,
+    existingSkip: RunRecord | null
+  ): RunRecord | null {
+    if (!(cooldownDefers && cooldown.identity)) {
+      // Pressure recovered (no pending pressure gaps): clear the announcement
+      // so a future pressure window emits a fresh cooling-off skip. Also
+      // re-arm once the current cooldown is due, because a run may create a new
+      // cooldown window with the same pressure identity.
+      runtime.notifiedCooldownIdentity.delete(key);
+      return existingSkip;
+    }
+    const alreadyAnnounced = runtime.notifiedCooldownIdentity.get(key) === cooldown.identity;
+    runtime.notifiedCooldownIdentity.set(key, cooldown.identity);
+    if (existingSkip || alreadyAnnounced) {
+      return existingSkip;
+    }
+    return buildSourcePressureCooldownSkip(schedule.connectorId, cooldown, schedule.connectorInstanceId);
   }
 
   function startScheduledLoops(): void {
     if (runtime.timers.length > 0) {
       return;
     }
-    function dispatchIfDue(schedule: ConnectorSchedule): void {
-      let dispatch;
+    async function dispatchIfDue(schedule: ConnectorSchedule): Promise<void> {
+      let dispatch: Awaited<ReturnType<typeof evaluateBackoffDispatch>>;
       try {
-        dispatch = evaluateBackoffDispatch(schedule, Date.now());
+        dispatch = await evaluateBackoffDispatch(schedule, Date.now());
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
@@ -1541,18 +1880,30 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
     }
 
+    // `dispatchIfDue` is async (it awaits the durable source-pressure gap
+    // probe). Its body already try/catches the evaluator and swallows
+    // `executeRun` rejections, but a throw from the post-await skip emission
+    // would otherwise surface as an unhandled rejection out of the interval
+    // callback — swallow it here, matching the `executeRun` stance.
+    const tick = (schedule: ConnectorSchedule): void => {
+      dispatchIfDue(schedule).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] dispatch tick failed for ${schedule.connectorId}: ${message}`);
+      });
+    };
+
     for (const schedule of connectors) {
       // Check immediately, then on interval. Startup uses the same persisted
       // last-run/back-off gate as every later tick; restarting the server must
       // not bypass a connector's configured interval.
-      dispatchIfDue(schedule);
+      tick(schedule);
 
       const timer = setInterval(
         () => {
           if (!runtime.running) {
             return;
           }
-          dispatchIfDue(schedule);
+          tick(schedule);
         },
         Math.min(normalizeScheduleIntervalMs(schedule.intervalMs), 60_000)
       );

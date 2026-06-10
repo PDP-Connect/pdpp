@@ -90,6 +90,32 @@ export type ResponseContract = "none" | "response_required";
 export type Sensitivity = "none" | "non_secret" | "secret";
 
 /**
+ * Durable notification delivery state per the schedule/manual-attention
+ * policy. The state is recorded on the attention record so the operator
+ * console can answer "did we tell the owner?" without re-querying push
+ * transport logs, and so notification failure does not become permission
+ * to repeatedly relaunch the same scheduled run.
+ *
+ *   - `pending`      : the attention exists but no delivery has been
+ *                      attempted yet (default at create).
+ *   - `sent`         : the channel accepted at least one delivery for the
+ *                      current record.
+ *   - `suppressed`   : delivery was intentionally skipped (no opted-in
+ *                      channel, secret sensitivity, quiet hours for an
+ *                      informational tier, or no actionable owner_action).
+ *   - `failed`       : the channel rejected delivery. The attention SHALL
+ *                      remain visible (the projection still surfaces
+ *                      needs_attention) and another scheduled run SHALL
+ *                      NOT be relaunched merely because notification
+ *                      failed.
+ *   - `acknowledged` : the owner has seen the prompt in-band (dashboard
+ *                      open, lifecycle transitioned to acknowledged /
+ *                      in_progress). Recorded so silent suppression and
+ *                      noisy repeats can both be avoided.
+ */
+export type NotificationState = "acknowledged" | "failed" | "pending" | "sent" | "suppressed";
+
+/**
  * Generic attachment kinds.  Implementation details (Playwright Page, n.eko
  * stream URL, CDP wsUrl, QR raw bytes) stay outside this module — only the
  * reference and a redaction-safe label appear here.
@@ -98,10 +124,10 @@ export type AttachmentKind = "browser_surface" | "url" | "qr" | "file" | "fixtur
 
 export interface AttentionAttachment {
   readonly kind: AttachmentKind;
-  /** Opaque, ephemeral reference resolved by the surface layer. */
-  readonly ref: string;
   /** Optional non-secret label safe for display. */
   readonly label?: string;
+  /** Opaque, ephemeral reference resolved by the surface layer. */
+  readonly ref: string;
 }
 
 // ─── Core record ───────────────────────────────────────────────────────────
@@ -115,50 +141,66 @@ export interface AttentionAttachment {
  * reason code + interaction kind).  Equality drives dedupe and supersession.
  */
 export interface AttentionRecord {
-  readonly id: string;
-  readonly dedupe_key: string;
-  readonly connection_id: string;
-  readonly run_id: string | null;
-  readonly reason_code: string;
-  readonly progress_posture: ProgressPosture;
-  readonly owner_action: OwnerAction;
-  readonly response_contract: ResponseContract;
-  readonly sensitivity: Sensitivity;
-  readonly auto_detect: boolean;
-  readonly lifecycle: AttentionLifecycle;
-  readonly created_at: string;
-  readonly updated_at: string;
-  readonly expires_at: string | null;
-  readonly owner_copy: string | null;
   readonly action_target: string | null;
   readonly attachments: readonly AttentionAttachment[];
+  readonly auto_detect: boolean;
+  readonly connection_id: string;
+  readonly created_at: string;
+  readonly dedupe_key: string;
+  readonly expires_at: string | null;
+  readonly id: string;
+  readonly lifecycle: AttentionLifecycle;
   /**
    * Free-form non-secret metadata for the timeline / dashboard.  Values are
    * passed through `redact()` before this record is constructed — the
    * runtime never trusts a caller to hand-classify metadata as safe.
    */
   readonly metadata: Readonly<Record<string, unknown>>;
+  /**
+   * Short, redaction-safe reason explaining the latest notification
+   * outcome (e.g. "no_opted_in_channel", "quiet_hours", "vapid_rejected").
+   * Free-form opaque label; never contains owner copy or secret content.
+   */
+  readonly notification_reason: string | null;
+  /**
+   * Durable notification delivery state. Defaults to `"pending"` on
+   * create; updated by the notification fanout path via
+   * `recordNotificationOutcome`. Persists on the same record as the
+   * lifecycle so a process restart does not lose the fact that a
+   * delivery has been attempted (or has failed).
+   */
+  readonly notification_state: NotificationState;
+  /** ISO-8601 time the last notification outcome was recorded. */
+  readonly notification_updated_at: string | null;
+  readonly owner_action: OwnerAction;
+  readonly owner_copy: string | null;
+  readonly progress_posture: ProgressPosture;
+  readonly reason_code: string;
+  readonly response_contract: ResponseContract;
+  readonly run_id: string | null;
+  readonly sensitivity: Sensitivity;
+  readonly updated_at: string;
 }
 
 // ─── Construction ──────────────────────────────────────────────────────────
 
 export interface CreateAttentionInput {
-  readonly id: string;
-  readonly dedupe_key: string;
-  readonly connection_id: string;
-  readonly run_id?: string | null;
-  readonly reason_code: string;
-  readonly progress_posture: ProgressPosture;
-  readonly owner_action: OwnerAction;
-  readonly response_contract: ResponseContract;
-  readonly sensitivity?: Sensitivity;
-  readonly auto_detect?: boolean;
-  readonly now: string;
-  readonly expires_at?: string | null;
-  readonly owner_copy?: string | null;
   readonly action_target?: string | null;
   readonly attachments?: readonly AttentionAttachment[];
+  readonly auto_detect?: boolean;
+  readonly connection_id: string;
+  readonly dedupe_key: string;
+  readonly expires_at?: string | null;
+  readonly id: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly now: string;
+  readonly owner_action: OwnerAction;
+  readonly owner_copy?: string | null;
+  readonly progress_posture: ProgressPosture;
+  readonly reason_code: string;
+  readonly response_contract: ResponseContract;
+  readonly run_id?: string | null;
+  readonly sensitivity?: Sensitivity;
 }
 
 export function createAttention(input: CreateAttentionInput): AttentionRecord {
@@ -182,6 +224,9 @@ export function createAttention(input: CreateAttentionInput): AttentionRecord {
     action_target: input.action_target ?? null,
     attachments: input.attachments ?? [],
     metadata: Object.freeze({ ...redactMetadata(input.metadata ?? {}) }),
+    notification_state: "pending",
+    notification_updated_at: null,
+    notification_reason: null,
   };
 }
 
@@ -190,14 +235,10 @@ export function createAttention(input: CreateAttentionInput): AttentionRecord {
  * no response contract is observability, not attention; it should be a
  * progress message instead.
  */
-function validateAxes(
-  posture: ProgressPosture,
-  action: OwnerAction,
-  contract: ResponseContract,
-): void {
+function validateAxes(posture: ProgressPosture, action: OwnerAction, contract: ResponseContract): void {
   if (action === "none" && contract === "none" && posture === "running") {
     throw new Error(
-      "attention: posture=running + owner_action=none + response_contract=none is not assistance; emit PROGRESS instead",
+      "attention: posture=running + owner_action=none + response_contract=none is not assistance; emit PROGRESS instead"
     );
   }
   if (contract === "response_required" && action === "none") {
@@ -208,28 +249,82 @@ function validateAxes(
 // ─── Transitions ───────────────────────────────────────────────────────────
 
 export interface TransitionInput {
-  readonly to: AttentionLifecycle;
   readonly now: string;
+  readonly to: AttentionLifecycle;
 }
 
 export function transition(record: AttentionRecord, input: TransitionInput): AttentionRecord {
   if (!canTransition(record.lifecycle, input.to)) {
-    throw new Error(
-      `attention: invalid transition ${record.lifecycle} -> ${input.to} for ${record.id}`,
-    );
+    throw new Error(`attention: invalid transition ${record.lifecycle} -> ${input.to} for ${record.id}`);
   }
-  return { ...record, lifecycle: input.to, updated_at: input.now };
+  // Lifecycle progress into acknowledged/in_progress is the canonical
+  // signal that the owner has seen the prompt — promote the durable
+  // notification state in lockstep so the projection can answer
+  // "is the owner aware?" without re-reading transport logs.
+  const promotedNotification: NotificationState | null =
+    input.to === "acknowledged" || input.to === "in_progress" ? "acknowledged" : null;
+  return {
+    ...record,
+    lifecycle: input.to,
+    updated_at: input.now,
+    notification_state: promotedNotification ?? record.notification_state,
+    notification_updated_at: promotedNotification ? input.now : record.notification_updated_at,
+    notification_reason: promotedNotification ? "owner_acknowledged" : record.notification_reason,
+  };
+}
+
+// ─── Notification state ────────────────────────────────────────────────────
+
+export interface NotificationOutcomeInput {
+  readonly now: string;
+  readonly outcome: NotificationState;
+  /** Opaque, redaction-safe reason label. Never holds owner copy or secrets. */
+  readonly reason?: string | null;
+}
+
+const VALID_NOTIFICATION_STATES: ReadonlySet<NotificationState> = new Set([
+  "acknowledged",
+  "failed",
+  "pending",
+  "sent",
+  "suppressed",
+]);
+
+/**
+ * Pure transition helper for the durable notification axis. The runtime
+ * calls this from the push fanout seam so the operator console reflects
+ * whether delivery actually reached the owner. Lifecycle is independent:
+ * a `failed` notification SHALL NOT terminate the attention, because the
+ * unresolved owner action is still real — the spec scenario "Notification
+ * failure does not cause a run storm" requires the attention to stay
+ * visible while the failure is recorded.
+ */
+export function recordNotificationOutcome(record: AttentionRecord, input: NotificationOutcomeInput): AttentionRecord {
+  if (!VALID_NOTIFICATION_STATES.has(input.outcome)) {
+    throw new Error(`attention: invalid notification outcome ${input.outcome}`);
+  }
+  const reason = typeof input.reason === "string" && input.reason.trim() ? input.reason.trim() : null;
+  return {
+    ...record,
+    notification_state: input.outcome,
+    notification_updated_at: input.now,
+    notification_reason: reason,
+  };
+}
+
+export function isNotificationDeliveryFailed(record: AttentionRecord): boolean {
+  return record.notification_state === "failed";
 }
 
 // ─── Dedupe / cooldown / supersession ──────────────────────────────────────
 
 export interface DedupeDecisionInput {
+  /** Cooldown window in seconds. */
+  readonly cooldown_seconds: number;
   /** Currently active (non-terminal) record sharing the dedupe_key, if any. */
   readonly existing: AttentionRecord | null;
   /** Proposed creation. */
   readonly proposed: CreateAttentionInput;
-  /** Cooldown window in seconds. */
-  readonly cooldown_seconds: number;
 }
 
 export type DedupeOutcome =
@@ -251,7 +346,9 @@ export type DedupeOutcome =
  */
 export function decideDedupe(input: DedupeDecisionInput): DedupeOutcome {
   const { existing, proposed, cooldown_seconds } = input;
-  if (!existing) return { kind: "create" };
+  if (!existing) {
+    return { kind: "create" };
+  }
 
   if (!isTerminal(existing.lifecycle)) {
     if (axesDiffer(existing, proposed)) {
@@ -279,8 +376,12 @@ function axesDiffer(a: AttentionRecord, b: CreateAttentionInput): boolean {
 // ─── Expiry ────────────────────────────────────────────────────────────────
 
 export function isExpired(record: AttentionRecord, now: string): boolean {
-  if (!record.expires_at) return false;
-  if (isTerminal(record.lifecycle)) return false;
+  if (!record.expires_at) {
+    return false;
+  }
+  if (isTerminal(record.lifecycle)) {
+    return false;
+  }
   return Date.parse(record.expires_at) <= Date.parse(now);
 }
 
@@ -315,24 +416,24 @@ function redactMetadata(meta: Readonly<Record<string, unknown>>): Record<string,
 }
 
 export interface PushPayload {
-  readonly title: string;
-  readonly body: string;
-  readonly url: string;
-  readonly tag: string;
   readonly attention_id: string;
+  readonly body: string;
   readonly connection_id: string;
   readonly reason_code: string;
+  readonly tag: string;
+  readonly title: string;
+  readonly url: string;
 }
 
 export interface PushPayloadOptions {
-  /** Dashboard origin, e.g. "https://dashboard.example". */
-  readonly dashboard_origin: string;
   /**
    * Display name for the connection; caller-supplied because connector
    * display copy isn't part of this module.  `null` means use a generic
    * "A connection" label so lock-screen text stays non-revealing.
    */
   readonly connection_display: string | null;
+  /** Dashboard origin, e.g. "https://dashboard.example". */
+  readonly dashboard_origin: string;
   /** If true (privacy mode), strip connection display from the body. */
   readonly hide_source?: boolean;
 }
@@ -346,13 +447,16 @@ export interface PushPayloadOptions {
  * The returned object is the *content* layer; the push runtime is
  * responsible for wrapping it in VAPID/TTL/urgency envelopes.
  */
-export function pushPayload(
-  record: AttentionRecord,
-  options: PushPayloadOptions,
-): PushPayload | null {
-  if (record.sensitivity === "secret") return null;
-  if (record.owner_action === "none") return null;
-  if (isTerminal(record.lifecycle)) return null;
+export function pushPayload(record: AttentionRecord, options: PushPayloadOptions): PushPayload | null {
+  if (record.sensitivity === "secret") {
+    return null;
+  }
+  if (record.owner_action === "none") {
+    return null;
+  }
+  if (isTerminal(record.lifecycle)) {
+    return null;
+  }
 
   const showSource = !options.hide_source && options.connection_display !== null;
   const sourceLabel = showSource ? (options.connection_display as string) : "A connection";
@@ -412,18 +516,27 @@ function stripTrailingSlash(s: string): string {
  * (no response required, no expiry close) should not toggle the pill.
  */
 export function isHealthRelevant(record: AttentionRecord, now: string): boolean {
-  if (isTerminal(record.lifecycle)) return false;
-  if (isExpired(record, now)) return false;
-  if (record.response_contract === "response_required") return true;
-  if (record.progress_posture === "blocked") return true;
-  if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") return true;
+  if (isTerminal(record.lifecycle)) {
+    return false;
+  }
+  if (isExpired(record, now)) {
+    return false;
+  }
+  if (record.response_contract === "response_required") {
+    return true;
+  }
+  if (record.progress_posture === "blocked") {
+    return true;
+  }
+  if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") {
+    return true;
+  }
   return false;
 }
 
 // ─── Auto-detected resolution ──────────────────────────────────────────────
 
 export interface AutoDetectInput {
-  readonly record: AttentionRecord;
   /**
    * Evidence the connector / controller observed:
    *   - `proceeded`: the run continued past the blocking condition
@@ -433,6 +546,7 @@ export interface AutoDetectInput {
    */
   readonly evidence: "proceeded" | "still_blocked" | "unknown";
   readonly now: string;
+  readonly record: AttentionRecord;
 }
 
 export type AutoDetectOutcome =
@@ -447,8 +561,12 @@ export type AutoDetectOutcome =
  */
 export function classifyAutoDetect(input: AutoDetectInput): AutoDetectOutcome {
   const { record, evidence, now } = input;
-  if (isTerminal(record.lifecycle)) return { kind: "no_change", reason: "terminal" };
-  if (!record.auto_detect) return { kind: "no_change", reason: "auto_detect_disabled" };
+  if (isTerminal(record.lifecycle)) {
+    return { kind: "no_change", reason: "terminal" };
+  }
+  if (!record.auto_detect) {
+    return { kind: "no_change", reason: "auto_detect_disabled" };
+  }
   switch (evidence) {
     case "proceeded":
       return { kind: "resolve", record: transition(record, { to: "resolved", now }) };

@@ -25,6 +25,7 @@ import {
   parseIcs,
   RETRYABLE_FETCH_RE,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { IcalState, IcsSource } from "./types.ts";
 
 async function fetchIcs(url: string): Promise<string> {
@@ -122,6 +123,7 @@ async function emitEventsFromSource(
 runConnector({
   name: "ical",
   retryablePattern: RETRYABLE_FETCH_RE,
+  validateRecord,
   async collect({ state, emit, emitRecord, progress }) {
     const dir = process.env.ICAL_IMPORT_DIR || join(homedir(), ".pdpp/imports/ical");
     const subscriptionUrls = readSubscriptionUrls();

@@ -1,0 +1,80 @@
+name: beta-cadence
+
+# Surfaces the release-cadence lag the publish train cannot see for itself.
+#
+# semantic-release only publishes when `beta` is pushed (see
+# semantic-release.yml). Publishable work lands on `main`, so a new
+# `@pdpp/*@beta` is cut only when an owner advances `beta`. Until then the
+# published `@beta` silently goes stale while docs/package-release-policy.md,
+# docs/local-collector.md, and the `pdpp-local-collector doctor` remediation all
+# point operators at `@beta` as the install path. `scripts/check-beta-cadence.mjs`
+# detects that lag offline; this workflow runs it so the lag is VISIBLE without an
+# owner remembering to run it by hand.
+#
+# Deliberately NON-BLOCKING. Per docs/package-release-policy.md §"Enforcement",
+# the cadence check is an owner/release-readiness signal, not part of the
+# blocking publish path: a lag is cleared only by an owner cutting a current
+# beta, which CI cannot do for itself. Failing every `main` push/PR would block
+# unrelated work, so this job reports the verdict to the run summary and never
+# fails the build. The blocking unit test still runs in the semantic-release
+# quality job.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/beta-cadence.yml"
+      - "scripts/check-beta-cadence.mjs"
+      - ".releaserc.yaml"
+      - ".github/workflows/semantic-release.yml"
+      - "packages/cli/**"
+      - "packages/local-collector/**"
+  schedule:
+    # Weekly nudge so a lag that accumulates between main pushes still surfaces.
+    - cron: "17 14 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: beta-cadence-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  beta-cadence:
+    name: published beta vs main cadence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The guard diffs `beta..main`; it needs full history and both refs.
+          fetch-depth: 0
+
+      - name: Fetch beta ref
+        run: git fetch --no-tags origin beta:refs/remotes/origin/beta || true
+
+      - name: Report beta release cadence
+        # Non-blocking by design (see header). The guard exits 1 on a lag; we
+        # capture the verdict for the summary but never fail the job.
+        run: |
+          set +e
+          node scripts/check-beta-cadence.mjs --json > "$RUNNER_TEMP/cadence.json"
+          node scripts/check-beta-cadence.mjs | tee "$RUNNER_TEMP/cadence.txt"
+          {
+            echo "## Beta release cadence"
+            echo ""
+            verdict="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$RUNNER_TEMP/cadence.json")"
+            case "$verdict" in
+              ok)   echo ":white_check_mark: No publishable change is stranded behind the beta lane." ;;
+              skip) echo ":fast_forward: \`beta\`/\`main\` refs unavailable; cadence not verified." ;;
+              *)    echo ":warning: The published \`@beta\` lags \`main\` for publishable package paths. Cut a current beta (owner: advance \`beta\` to include \`main\` and push) so \`@beta\` carries the fixes that docs and the local-collector doctor point operators at." ;;
+            esac
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/cadence.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

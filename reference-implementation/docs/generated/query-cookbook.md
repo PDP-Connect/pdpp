@@ -1,10 +1,10 @@
 # PDPP query cookbook
 
-All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant (see spec §7).
+All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant. Core spec §8 (Resource Server Interface) is authoritative for query syntax — the canonical `filter[<field>]` / `filter[<field>][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning. This cookbook shows the smallest correct call for each shape; where it is terser than §8, §8 governs.
 
 ## Discovery (one shot)
 
-`GET /v1/schema` returns every connector and stream visible to the bearer in a single response. Owner tokens (polyfill mode) get every owner-visible connector with no `connector_id` required; client tokens see only the streams in the grant. Each stream entry reuses the per-stream metadata shape, including `schema`, `query` declarations, `field_capabilities`, `expand_capabilities`, and `freshness`.
+`GET /v1/schema` returns every connector and stream visible to the bearer in a single response. Owner tokens (polyfill mode) get every owner-visible connector with no `connector_id` required; client tokens see only the streams in the grant. Use `GET /v1/schema?view=compact` for token-efficient agent discovery, and `GET /v1/schema?view=compact&stream=<name>` for the cheap per-stream schema step before querying records. Omitted `view` returns the full schema, including `schema`, `query` declarations, `field_capabilities`, `expand_capabilities`, and `freshness`.
 
 ```http
 GET /v1/schema
@@ -12,6 +12,15 @@ Authorization: Bearer <owner_or_client_token>
 ```
 
 Use the per-field `field_capabilities[<field>]` flags (`exact_filter`, `range_filter`, `lexical_search`, `semantic_search`, `aggregation`) to learn which filters and aggregations are valid for each field without trial-and-error 400s. Per-stream `query.range_filters` / `query.aggregations` / `query.expand` lists are still emitted for callers that prefer the manifest view.
+
+For agents with limited context budget, prefer the compact schema view:
+
+```http
+GET /v1/schema?view=compact&stream=messages
+Authorization: Bearer <owner_or_client_token>
+```
+
+The compact view keeps stream identity, `granted_connections`, field names, declared types, and terse capability flags while omitting raw per-field JSON Schema blobs.
 
 ## Exact filter
 
@@ -73,7 +82,9 @@ GET /v1/streams/top_artists/records?view=basic
 
 ## Logical cursor pagination
 
-Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them.
+Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them. Cursors are direction-bound: follow a page cursor with the same `order` value that produced it. To change direction, restart pagination without a cursor; the reference rejects order-mismatched cursors as `invalid_cursor`.
+
+`limit` defaults to 25 and is capped at 100. A request for more than 100 is clamped to 100 and returns a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`, not an error — page forward with the returned cursor rather than expecting a larger page.
 
 ```http
 GET /v1/streams/top_artists/records?order=asc&limit=50
@@ -135,4 +146,3 @@ Authorized only if the caller holds a grant that includes a record referencing t
 - `404 not_found` — stream or record not found.
 - `404 blob_not_found` — `blob_id` is unknown or stale.
 - `410 cursor_expired` — `changes_since` cursor too old; full re-sync required.
-

@@ -1,0 +1,3 @@
+# Synthetic Codex rules fixture
+allow read /tmp
+deny write /etc

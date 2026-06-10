@@ -28,12 +28,14 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
+import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildLocalSourceInventory,
   type KnownLocalStore,
   listDirectoryInventory,
+  openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
 import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
@@ -396,7 +398,7 @@ interface WalkToolResultsArgs {
   sessionId: string;
 }
 
-interface EmitToolResultFileArgs {
+export interface EmitToolResultFileArgs {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   full: string;
   projectDir: string;
@@ -405,15 +407,19 @@ interface EmitToolResultFileArgs {
   toolResultsDir: string;
 }
 
-async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
-  let buf: string;
-  try {
-    buf = await readFile(args.full, "utf8");
-  } catch {
+export async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
+  // Tool-result blobs are machine-generated and unbounded (a single large
+  // command output can be hundreds of MB). The durable record keeps only a
+  // short preview plus the byte length (already known from `st.size`), so we
+  // read just a bounded head prefix instead of the whole file — keeping memory
+  // flat on huge sessions. A forbidden byte past the window cannot reach the
+  // preview anyway, so prefix-only screening is honest for this lossy field.
+  const bounded = await readBoundedFilePreview(args.full);
+  if (bounded === null) {
     return;
   }
   const rel = args.full.slice(args.toolResultsDir.length + 1);
-  const previewResult = safeTextPreview(buf, TOOL_RESULT_PREVIEW_CHARS);
+  const previewResult = safeTextPreview(bounded.buffer, TOOL_RESULT_PREVIEW_CHARS);
   await args.emitRecord("attachments", {
     id: `tool_result_file:${args.projectDir}/${args.sessionId}/${rel}`,
     session_id: args.sessionId,
@@ -586,7 +592,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
     if (!buildOnly && lineCount % LINE_PROGRESS_INTERVAL === 0) {
       await emit({
         type: "PROGRESS",
-        message: `  ${path}: ${lineCount} lines parsed`,
+        message: `Claude Code phase=emit pass=emit lines_parsed=${lineCount}`,
       });
     }
     const messageCountBeforeLine = obs.messageCount;
@@ -812,17 +818,10 @@ interface ProcessJsonlFileArgs {
   args: ScanProjectDirsArgs;
   forcedSessionId: string | null;
   path: string;
-  progressLabel: string;
   projectDir: string;
 }
 
-async function processJsonlFile({
-  args,
-  forcedSessionId,
-  path,
-  progressLabel,
-  projectDir,
-}: ProcessJsonlFileArgs): Promise<void> {
+async function processJsonlFile({ args, forcedSessionId, path, projectDir }: ProcessJsonlFileArgs): Promise<void> {
   let st: ReturnType<typeof statSync>;
   try {
     st = statSync(path);
@@ -836,7 +835,9 @@ async function processJsonlFile({
   }
   await args.emit({
     type: "PROGRESS",
-    message: `${args.buildOnly ? "Indexing" : "Emitting"} ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
+    message: `Claude Code phase=${args.buildOnly ? "index" : "emit"} pass=${
+      args.buildOnly ? "index" : "emit"
+    } file_size_mb=${(st.size / BYTES_PER_MB).toFixed(1)}`,
   });
   await parseJsonlFile({
     buildOnly: args.buildOnly,
@@ -863,7 +864,6 @@ async function processTopLevelJsonl(
       args,
       forcedSessionId: null,
       path: join(projectPath, f),
-      progressLabel: `${projectDir}/${f}`,
       projectDir,
     });
   }
@@ -894,7 +894,6 @@ async function processSessionDir(
       args,
       forcedSessionId: sessionId,
       path: join(subagentsDir, f),
-      progressLabel: `${projectDir}/${sessionId}/subagents/${f}`,
       projectDir,
     });
   }
@@ -942,13 +941,12 @@ async function listProjectDirs(baseDir: string, emit: CollectContext["emit"]): P
   let projectDirs: string[];
   try {
     projectDirs = (await readdir(baseDir)).filter((name) => !name.startsWith("."));
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+  } catch {
     await emit({
       type: "SKIP_RESULT",
       stream: "sessions",
       reason: "claude_dir_not_found",
-      message: `${baseDir} not readable: ${errMsg}`,
+      message: "Claude Code projects directory not readable",
     });
     return null;
   }
@@ -963,9 +961,10 @@ export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> 
   if (projectDirs === null) {
     return;
   }
+  const totalProjectDirs = projectDirs.length;
   await args.emit({
     type: "PROGRESS",
-    message: `${projectDirs.length} project dirs in scope`,
+    message: `Claude Code phase=index pass=index total_project_dirs=${totalProjectDirs}`,
   });
   for (const projectDir of projectDirs) {
     await scanProjectDir(projectDir, args);
@@ -1007,19 +1006,75 @@ async function assertRequestedClaudeSources(input: {
   }
 }
 
-async function emitLocalInventoryStreams(input: {
-  claudeHome: string;
+/**
+ * Emit the per-store `coverage_diagnostics` rows from a pre-built
+ * inventory. Kept separate from the inventory-record emission so the
+ * durable coverage signal can be flushed BEFORE
+ * {@link assertRequestedClaudeSources} runs: a missing requested content
+ * source must still produce honest `missing` coverage rows rather than
+ * omit the coverage stream entirely. `buildLocalSourceInventory` already
+ * classifies every known store (including absent ones) without reading
+ * payload, so this is safe to run even when the source home is partial or
+ * empty. No-op when `coverage_diagnostics` was not requested.
+ */
+async function emitCoverageDiagnostics(input: {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
   requested: Map<string, StreamScope>;
 }): Promise<void> {
-  const inventory = await buildLocalSourceInventory("claude_code", input.claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
-  for (const [stream, records] of inventory.recordsByStream) {
+  if (!input.requested.has("coverage_diagnostics")) {
+    return;
+  }
+  for (const record of input.inventory.coverage) {
+    await input.emitRecord("coverage_diagnostics", record);
+  }
+}
+
+/** Emit one inventory stream's records under a fingerprint gate that excludes
+ *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
+ *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
+ *  stale ids are pruned: a store that disappears drops out and re-appears as a
+ *  fresh emit. */
+async function emitGatedInventoryStream(input: {
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  priorState: unknown;
+  records: readonly RecordData[];
+  stream: string;
+}): Promise<void> {
+  const cursor = openInventoryFingerprintCursor(input.priorState);
+  for (const record of input.records) {
+    if (cursor.shouldEmit(record)) {
+      await input.emitRecord(input.stream, record);
+    }
+  }
+  cursor.pruneStale();
+  const inventoryCursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (cursor.size() > 0) {
+    inventoryCursor.fingerprints = cursor.toState();
+  }
+  await input.emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+}
+
+async function emitLocalInventoryStreams(input: {
+  claudeHome: string;
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  requested: Map<string, StreamScope>;
+  state: ClaudeCodeState;
+}): Promise<void> {
+  for (const [stream, records] of input.inventory.recordsByStream) {
     if (!input.requested.has(stream)) {
       continue;
     }
-    for (const record of records) {
-      await input.emitRecord(stream, record);
-    }
+    await emitGatedInventoryStream({
+      emit: input.emit,
+      emitRecord: input.emitRecord,
+      priorState: input.state[stream],
+      records,
+      stream,
+    });
   }
   if (input.requested.has("file_history")) {
     const records = await listDirectoryInventory({
@@ -1030,14 +1085,13 @@ async function emitLocalInventoryStreams(input: {
       stream: "file_history",
       reason: "metadata-only until payload contract is approved",
     });
-    for (const record of records) {
-      await input.emitRecord("file_history", record);
-    }
-  }
-  if (input.requested.has("coverage_diagnostics")) {
-    for (const record of inventory.coverage) {
-      await input.emitRecord("coverage_diagnostics", record);
-    }
+    await emitGatedInventoryStream({
+      emit: input.emit,
+      emitRecord: input.emitRecord,
+      priorState: input.state.file_history,
+      records,
+      stream: "file_history",
+    });
   }
 }
 
@@ -1063,9 +1117,8 @@ async function runSkillsAndCommands(
       fileMtimes: state.skillsMtimes,
       newMtimes: state.newSkillsMtimes,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await emit({ type: "PROGRESS", message: `skills scan skipped: ${msg}` });
+  } catch {
+    await emit({ type: "PROGRESS", message: "Claude Code phase=index pass=index stream=skills scan_skipped=true" });
   }
   try {
     await emitSlashCommands({
@@ -1075,9 +1128,11 @@ async function runSkillsAndCommands(
       fileMtimes: state.slashCommandMtimes,
       newMtimes: state.newSlashCommandMtimes,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await emit({ type: "PROGRESS", message: `slash_commands scan skipped: ${msg}` });
+  } catch {
+    await emit({
+      type: "PROGRESS",
+      message: "Claude Code phase=index pass=index stream=slash_commands scan_skipped=true",
+    });
   }
   if (requested.has("skills")) {
     await emit({
@@ -1112,6 +1167,16 @@ if (isMainModule(import.meta.url)) {
     async collect({ state, requested, emit, emitRecord }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+      // Build the source inventory and flush durable coverage diagnostics
+      // BEFORE asserting requested content sources exist. A missing content
+      // store should surface an honest `missing` coverage row, not abort the
+      // run with zero coverage evidence — the connection-health rollup
+      // derives a local collector's coverage axis from these records, and an
+      // omitted coverage stream collapses to `coverage_unknown` forever (the
+      // local run path writes no spine run). The inventory walk reads only
+      // path metadata, never payload, so it is safe on a partial/empty home.
+      const inventory = await buildLocalSourceInventory("claude_code", claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
+      await emitCoverageDiagnostics({ emitRecord, inventory, requested });
       await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
       const typedState = state as ClaudeCodeState;
       // STATE is stream-keyed per Collection Profile. JSONL child emits and
@@ -1128,7 +1193,7 @@ if (isMainModule(import.meta.url)) {
       const newSlashCommandMtimes: Record<string, number> = { ...slashCommandMtimes };
       const newMemoryNoteMtimes: Record<string, number> = { ...memoryNoteMtimes };
 
-      await emitLocalInventoryStreams({ claudeHome, requested, emitRecord });
+      await emitLocalInventoryStreams({ claudeHome, emit, emitRecord, inventory, requested, state: typedState });
 
       await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
         skillsMtimes,

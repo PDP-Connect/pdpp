@@ -29,6 +29,7 @@ import {
   unwrapDmMessage,
   unwrapTweetEntry,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { StreamState } from "./types.ts";
 
 async function readJsArchive(path: string): Promise<unknown[] | null> {
@@ -68,7 +69,7 @@ async function runTweetsStream(ctx: TweetsContext): Promise<void> {
       type: "SKIP_RESULT",
       stream: "tweets",
       reason: "archive_not_found",
-      message: `tweets.js not found in ${importDir}/data/`,
+      message: "Twitter archive tweets data was not found in the configured import directory",
     });
     return;
   }
@@ -77,9 +78,11 @@ async function runTweetsStream(ctx: TweetsContext): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "tweets",
-    message: `Importing ${arr.length} tweets`,
+    message: `Twitter archive phase=emit pass=emit stream=tweets total_items=${arr.length}`,
   });
+  let itemOrdinal = 0;
   for (const raw of arr) {
+    itemOrdinal++;
     const tweet = unwrapTweetEntry(raw);
     const rec = buildTweetRecord(tweet);
     if (!rec) {
@@ -90,6 +93,13 @@ async function runTweetsStream(ctx: TweetsContext): Promise<void> {
     }
     latest = advanceCursor(latest, rec.created_at);
     await emitRecord("tweets", { ...rec });
+    if (itemOrdinal % 10_000 === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream: "tweets",
+        message: `Twitter archive phase=emit pass=emit stream=tweets item=${itemOrdinal}/${arr.length}`,
+      });
+    }
   }
   await emit({
     type: "STATE",
@@ -140,7 +150,7 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
       type: "SKIP_RESULT",
       stream: "direct_messages",
       reason: "archive_not_found",
-      message: `direct-messages.js not found in ${importDir}/data/`,
+      message: "Twitter archive direct-message data was not found in the configured import directory",
     });
     return;
   }
@@ -148,8 +158,22 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
     since: state?.last_created_at,
     latest: state?.last_created_at,
   };
+  await emit({
+    type: "PROGRESS",
+    stream: "direct_messages",
+    message: `Twitter archive phase=emit pass=emit stream=direct_messages total_conversations=${arr.length}`,
+  });
+  let conversationOrdinal = 0;
   for (const rawConvo of arr) {
+    conversationOrdinal++;
     await emitDmConversation(rawConvo, cursor, emitRecord);
+    if (conversationOrdinal % 1000 === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream: "direct_messages",
+        message: `Twitter archive phase=emit pass=emit stream=direct_messages conversation=${conversationOrdinal}/${arr.length}`,
+      });
+    }
   }
   await emit({
     type: "STATE",
@@ -160,6 +184,7 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
 
 runConnector({
   name: "twitter_archive",
+  validateRecord,
   async collect({ state, requested, emit, emitRecord }) {
     const importDir = process.env.TWITTER_ARCHIVE_DIR || join(homedir(), ".pdpp/imports/twitter_archive");
     const typedState = state as Record<string, StreamState | undefined>;

@@ -20,6 +20,7 @@ import {
   mapWithConcurrency,
   projectConnectorOutboxAxisFromHeartbeats,
   projectConnectorSummaryConnectionHealth,
+  projectLocalDeviceProgress,
 } from '../server/ref-control.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';
@@ -36,7 +37,9 @@ function hbRow(overrides = {}) {
     deviceRevokedAt: null,
     lastHeartbeatAt: FRESH,
     lastHeartbeatStatus: 'healthy',
+    lastIngestAt: FRESH,
     recordsPending: 0,
+    outboxDiagnostics: null,
     updatedAt: FRESH,
     ...overrides,
   };
@@ -209,6 +212,54 @@ test('reference connector catalog hides stub and stream-test connector registrat
       `${connectorId} must not appear in the user-facing reference connector catalog`,
     );
   }
+});
+
+test('reference connector catalog hides pg_runtime_, pg_canonical_, pg_expand_ test connectors', () => {
+  for (const connectorId of [
+    'pg_runtime_v1',
+    'pg_runtime_postgres',
+    'pg_canonical_gmail',
+    'pg_canonical_messages',
+    'pg_expand_threads',
+    'pg_expand_test_connector',
+  ]) {
+    assert.equal(
+      isPublicReferenceConnector({ connector_id: connectorId, manifest: '{}' }, { connector_id: connectorId }),
+      false,
+      `${connectorId} must not appear in the owner-facing reference connector catalog`,
+    );
+  }
+});
+
+test('reference connector catalog hides connectors without explicit public_listing by default', () => {
+  // Catalog visibility is opt-in: a manifest with no capabilities.public_listing
+  // at all must not appear, even without a local_device binding or stub prefix.
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.dev/connectors/some-fixture', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.dev/connectors/some-fixture',
+        // No capabilities field at all
+      },
+    ),
+    false,
+    'connector with no public_listing declaration must be hidden by default',
+  );
+
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.dev/connectors/caps-no-listing', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.dev/connectors/caps-no-listing',
+        capabilities: {
+          refresh_policy: { background_safe: false },
+          // public_listing absent from capabilities
+        },
+      },
+    ),
+    false,
+    'connector with capabilities but no public_listing must be hidden by default',
+  );
 });
 
 test('connector summary connection health projects never-run as idle with unknown axes', () => {
@@ -440,6 +491,7 @@ test('connector summary connection health projects durable scheduler backoff as 
     freshness: { status: 'stale', captured_at: '2026-05-19T12:00:00.000Z' },
     lastRun: run,
     lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
     schedule: {
       enabled: true,
       scheduler_backoff: {
@@ -456,11 +508,41 @@ test('connector summary connection health projects durable scheduler backoff as 
   assert.equal(snapshot.reason_code, 'rate_limited');
 });
 
+test('connector summary connection health does not treat normal next_due_at as retry backoff', () => {
+  const run = {
+    event_count: 1,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    nowIso: '2026-05-19T12:05:00.000Z',
+    schedule: {
+      enabled: true,
+      next_due_at: '2026-05-19T13:00:00.000Z',
+      scheduler_backoff: null,
+    },
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.reason_code, null);
+  assert.equal(snapshot.next_attempt_at, null);
+  assert.equal(snapshot.conditions.find((condition) => condition.type === 'RetryPolicyClear')?.reason, 'no_active_backoff');
+});
+
 test('connector summary connection health uses scheduler backoff even when run spine summary is absent', () => {
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { status: 'unknown', captured_at: '2026-05-19T12:00:00.000Z' },
     lastRun: null,
     lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
     schedule: {
       enabled: true,
       last_error_code: 'rate_limited',
@@ -507,11 +589,47 @@ test('connector summary connection health promotes durable scheduler backoff str
   assert.equal(snapshot.reason_code, 'browser_runtime_not_configured');
 });
 
+test('connector summary connection health ignores stale scheduler backoff after a newer successful run', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-24T23:20:25.909Z',
+    first_at: '2026-05-24T23:20:02.398Z',
+    known_gaps: [],
+    last_at: '2026-05-24T23:20:25.909Z',
+    run_id: 'run_success_after_backoff',
+    started_at: '2026-05-24T23:20:02.398Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-24T23:20:25.909Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: {
+      enabled: true,
+      last_error_code: 'schedule.gave_up',
+      last_finished_at: '2026-05-21T02:04:39.188Z',
+      last_started_at: '2026-05-21T02:03:39.190Z',
+      next_due_at: '2026-05-21T03:04:39.188Z',
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 7,
+        next_run_at: '2026-05-21T18:04:39.188Z',
+        reason_class: 'terminal:connector_reported_failed',
+        recommended_health_state: 'blocked',
+      },
+    },
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.reason_code, null);
+  assert.equal(snapshot.next_attempt_at, null);
+});
+
 // ─── Connector outbox axis rollup from per-source heartbeats ──────────────
 
 test('connector outbox rollup: no heartbeats → unknown without unreliable', () => {
   const r = projectConnectorOutboxAxisFromHeartbeats([], { nowIso: NOW });
-  assert.deepEqual(r, { axis: 'unknown', unreliable: false, hasEvidence: false });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: false, hasEvidence: false });
 });
 
 test('connector outbox rollup: single trusted healthy idle heartbeat → idle', () => {
@@ -558,6 +676,91 @@ test('connector outbox rollup: pending + stale heartbeat surfaces stalled', () =
   ];
   const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
   assert.equal(r.axis, 'stalled');
+});
+
+// ─── Local-device progress projection ────────────────────────────────────
+
+test('projectLocalDeviceProgress: no rows → null', () => {
+  assert.equal(projectLocalDeviceProgress([]), null);
+});
+
+test('projectLocalDeviceProgress: only revoked / inactive rows → null', () => {
+  // No trusted heartbeat — we must not surface device-side progress
+  // derived from a revoked or inactive row.
+  const out = projectLocalDeviceProgress([
+    hbRow({ deviceStatus: 'revoked', deviceRevokedAt: FRESH }),
+    hbRow({ sourceStatus: 'revoked', sourceInstanceId: 'src_x', deviceId: 'dev_x' }),
+  ]);
+  assert.equal(out, null);
+});
+
+test('projectLocalDeviceProgress: surfaces most-recent trusted heartbeat / ingest', () => {
+  const out = projectLocalDeviceProgress([
+    hbRow({ sourceInstanceId: 'src_a', lastHeartbeatAt: OLD, lastIngestAt: OLD, recordsPending: 1 }),
+    hbRow({ sourceInstanceId: 'src_b', deviceId: 'dev_b', lastHeartbeatAt: FRESH, lastIngestAt: FRESH, recordsPending: 3 }),
+  ]);
+  assert.equal(out?.last_heartbeat_at, FRESH);
+  assert.equal(out?.last_ingest_at, FRESH);
+  assert.equal(out?.records_pending, 4);
+  assert.equal(out?.source_count, 2);
+});
+
+test('projectLocalDeviceProgress: outbox_counts is null when no trusted source reports counts', () => {
+  const out = projectLocalDeviceProgress([hbRow({ recordsPending: 0, outboxDiagnostics: null })]);
+  assert.equal(out?.outbox_counts, null);
+});
+
+test('projectLocalDeviceProgress: rolls up outbox_counts across trusted sources', () => {
+  const out = projectLocalDeviceProgress([
+    hbRow({
+      sourceInstanceId: 'src_a',
+      recordsPending: 5,
+      outboxDiagnostics: { pending: 5, dead_letter: 1, oldest_pending_at: '2026-05-19T11:00:00.000Z' },
+    }),
+    hbRow({
+      sourceInstanceId: 'src_b',
+      deviceId: 'dev_b',
+      recordsPending: 2,
+      outboxDiagnostics: { pending: 2, stale_leases: 3, oldest_pending_at: '2026-05-19T10:00:00.000Z' },
+    }),
+  ]);
+  assert.equal(out?.outbox_counts?.pending, 7);
+  assert.equal(out?.outbox_counts?.dead_letter, 1);
+  assert.equal(out?.outbox_counts?.stale_leases, 3);
+  assert.equal(out?.outbox_counts?.oldest_pending_at, '2026-05-19T10:00:00.000Z');
+});
+
+test('projectLocalDeviceProgress: outbox_counts excludes revoked / inactive rows', () => {
+  // A revoked device with a scary backlog must not leak its counts into the
+  // connection summary; only the trusted source's counts roll up.
+  const out = projectLocalDeviceProgress([
+    hbRow({ sourceInstanceId: 'src_ok', recordsPending: 1, outboxDiagnostics: { pending: 1 } }),
+    hbRow({
+      sourceInstanceId: 'src_revoked',
+      deviceId: 'dev_revoked',
+      deviceStatus: 'revoked',
+      deviceRevokedAt: FRESH,
+      outboxDiagnostics: { pending: 999, dead_letter: 42 },
+    }),
+  ]);
+  assert.equal(out?.source_count, 1);
+  assert.deepEqual(out?.outbox_counts, { pending: 1 });
+});
+
+test('projectLocalDeviceProgress: scoped rows (single connector_instance_id) do not leak from another instance', () => {
+  // The store is expected to scope rows by connector_instance_id before
+  // passing them in. The projection just rolls up the rows it receives.
+  const out = projectLocalDeviceProgress([
+    hbRow({
+      sourceInstanceId: 'src_z',
+      connectorInstanceId: 'cin_other',
+      lastHeartbeatAt: FRESH,
+      lastIngestAt: null,
+    }),
+  ]);
+  assert.equal(out?.source_count, 1);
+  assert.equal(out?.last_heartbeat_at, FRESH);
+  assert.equal(out?.last_ingest_at, null);
 });
 
 // ─── projectConnectorSummaryConnectionHealth honors outbox input ──────────
@@ -1013,4 +1216,61 @@ test('LIST_CONNECTOR_SUMMARIES_CONCURRENCY exports a sensible bound', () => {
   // We never want the dashboard list to fan out unboundedly; pin the
   // upper bound at a clearly conservative number.
   assert.equal(LIST_CONNECTOR_SUMMARIES_CONCURRENCY <= 32, true);
+});
+
+// ─── local-device operator-ideal: freshness from heartbeat ───────────────
+
+test('projectLocalDeviceProgress: surfaces last_heartbeat_at and last_ingest_at from trusted rows', () => {
+  const rows = [
+    hbRow({ lastHeartbeatAt: FRESH, lastHeartbeatStatus: 'healthy', lastIngestAt: FRESH }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p, 'expected non-null progress for trusted row');
+  assert.equal(p.last_heartbeat_at, FRESH);
+  assert.equal(p.last_ingest_at, FRESH);
+  assert.equal(p.source_count, 1);
+});
+
+test('projectLocalDeviceProgress: returns null when all rows are revoked or inactive', () => {
+  const rows = [
+    hbRow({ deviceStatus: 'revoked', deviceRevokedAt: OLD }),
+    hbRow({ sourceStatus: 'inactive' }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.equal(p, null);
+});
+
+test('projectLocalDeviceProgress: records_pending is null when no row reports a count', () => {
+  const rows = [hbRow({ recordsPending: undefined })];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p);
+  assert.equal(p.records_pending, null);
+});
+
+test('projectLocalDeviceProgress: sums records_pending across multiple trusted rows', () => {
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1', recordsPending: 3 }),
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', recordsPending: 5 }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p);
+  assert.equal(p.records_pending, 8);
+  assert.equal(p.source_count, 2);
+});
+
+test('connection health idle+outbox=active projects state=idle (label change is UI-side)', () => {
+  // The connection-health projection itself doesn't change the headline
+  // state when outbox is active — it stays "idle". The UI layer reads
+  // axes.outbox==="active" and shows "Syncing" instead of "Idle". This
+  // test pins that the projection stays conservative and doesn't invent
+  // a new state value.
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'unknown' },
+    lastRun: null,
+    lastSuccessfulRun: null,
+    outbox: { axis: 'active' },
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'idle');
+  assert.equal(snapshot.axes.outbox, 'active');
 });

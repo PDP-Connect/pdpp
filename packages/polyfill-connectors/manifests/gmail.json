@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/gmail",
+  "connector_key": "gmail",
+  "manifest_uri": "https://registry.pdpp.org/connectors/gmail",
   "version": "0.2.0",
   "display_name": "Gmail",
   "runtime_requirements": {
@@ -8,6 +10,45 @@
       "network": {
         "required": true
       }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "app_password",
+      "label": "Google app password",
+      "description": "Use a Gmail address and a Google app password for the mailbox this connection should collect.",
+      "submit_label": "Create Gmail connection and start first sync",
+      "fields": [
+        {
+          "name": "account_email",
+          "label": "Gmail address",
+          "type": "email",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "email",
+          "placeholder": "you@example.com",
+          "env": [
+            "GMAIL_ADDRESS",
+            "GMAIL_USER"
+          ]
+        },
+        {
+          "name": "secret",
+          "label": "Google app password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "one-time-code",
+          "help_url": "https://myaccount.google.com/apppasswords",
+          "help_text": "Create an app password in your Google Account, then paste it here.",
+          "env": [
+            "GOOGLE_APP_PASSWORD_PDPP",
+            "GMAIL_APP_PASSWORD"
+          ]
+        }
+      ]
     }
   },
   "capabilities": {
@@ -52,13 +93,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "text"
           },
           "from_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "person"
           },
           "from_email": {
             "type": [
@@ -83,7 +126,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_type": "timestamp"
           },
           "received_at": {
             "type": "string",
@@ -132,7 +176,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "text"
           }
         },
         "required": [

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { test } from "node:test";
 import { COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
-import { LOCAL_DEVICE_ENDPOINTS, LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
+import {
+  LOCAL_DEVICE_ENDPOINTS,
+  LocalDeviceClient,
+  LocalDeviceHttpError,
+  LocalDeviceRequestTimeoutError,
+} from "./local-device-client.ts";
 
 test("LocalDeviceClient sends enrollment exchange without bearer token", async () => {
   const seen: SeenRequest[] = [];
@@ -180,7 +186,7 @@ test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError",
 test("LocalDeviceHttpError surfaces a typed PDPP code from the response envelope", async () => {
   const server = await startStatusServer(
     409,
-    '{"error":{"type":"conflict","code":"collector_protocol_mismatch","accepted_versions":["2"],"received_version":"1"}}'
+    '{"error":{"type":"conflict","code":"collector_protocol_mismatch","param":"connector_id","message":"connector_id does not match source_instance_id","accepted_versions":["2"],"received_version":"1"}}'
   );
   try {
     const client = new LocalDeviceClient({ baseUrl: server.url });
@@ -191,8 +197,12 @@ test("LocalDeviceHttpError surfaces a typed PDPP code from the response envelope
         if (err instanceof LocalDeviceHttpError) {
           assert.equal(err.status, 409);
           assert.equal(err.code, "collector_protocol_mismatch");
+          assert.equal(err.param, "connector_id");
+          assert.equal(err.envelopeMessage, "connector_id does not match source_instance_id");
           assert.match(err.message, /409/);
           assert.match(err.message, /collector_protocol_mismatch/);
+          assert.match(err.message, /param=connector_id/);
+          assert.match(err.message, /message=connector_id does not match source_instance_id/);
         }
         return true;
       }
@@ -238,6 +248,57 @@ test("LocalDeviceClient state methods surface 404 unknown source instance", asyn
         return true;
       }
     );
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceClient aborts a stalled request with LocalDeviceRequestTimeoutError instead of hanging", async () => {
+  // Server accepts the connection but never responds, mimicking a reference
+  // server stalled mid-request (e.g. during a projection rebuild). Without a
+  // bounded timeout this `fetch` would hang until the host supervisor's
+  // 15-minute start-timeout reaped the whole process.
+  const server = await startStallingServer();
+  try {
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      requestTimeoutMs: 150,
+    });
+    const startedAt = process.hrtime.bigint();
+    await assert.rejects(
+      () => client.getSourceInstanceState({ sourceInstanceId: "source-1" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceRequestTimeoutError, `expected timeout error, got ${String(err)}`);
+        if (err instanceof LocalDeviceRequestTimeoutError) {
+          assert.equal(err.timeoutMs, 150);
+          assert.match(err.message, /timed out after 150ms/);
+        }
+        return true;
+      }
+    );
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    // It fails fast (bounded), nowhere near a 15-minute hang.
+    assert.ok(elapsedMs < 5000, `expected fast abort, took ${elapsedMs}ms`);
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceClient requestTimeoutMs=0 disables the ceiling and lets a fast response through", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({
+      baseUrl: server.url,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      requestTimeoutMs: 0,
+    });
+    const response = await client.getSourceInstanceState({ sourceInstanceId: "source-1" });
+    assert.equal(response.source_instance_id, "source-1");
+    assert.equal(seen[0]?.method, "GET");
   } finally {
     await server.close();
   }
@@ -304,6 +365,33 @@ async function startStatusServer(status: number, body: string): Promise<{ close:
   assert.ok(address && typeof address === "object");
   return {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
+
+async function startStallingServer(): Promise<{ close: () => Promise<void>; url: string }> {
+  const sockets = new Set<Socket>();
+  // Never call res.end(): the request hangs open until the client's bounded
+  // timeout aborts it. Track sockets so teardown can destroy the dangling
+  // connection rather than waiting on a response that never comes.
+  const server: Server = createServer((_req: IncomingMessage, _res: ServerResponse) => {
+    /* intentionally never responds */
+  });
+  server.on("connection", (socket: Socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close(() => resolve());
+      }),
     url: `http://127.0.0.1:${address.port}`,
   };
 }

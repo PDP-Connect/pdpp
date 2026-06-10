@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
-import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "../runtime/browser-surface-leases.ts";
+import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "@opendatalabs/remote-surface/leases";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 
 const MANIFEST = {
@@ -84,6 +84,17 @@ function createMemoryBrowserSurfaceLeaseStore({ surfaces = [], leases = [] } = {
     getLease: async (leaseId) => leaseRows.get(leaseId) ?? null,
     listSurfaces: async () => [...surfaceRows.values()].sort((a, b) => a.surface_id.localeCompare(b.surface_id)),
     listNonTerminalLeases: async () => [...leaseRows.values()].filter((lease) => !terminalStatuses.has(lease.status)),
+    repairStaleSurfaceActiveLeases: async () => {
+      for (const [surfaceId, surface] of surfaceRows) {
+        const activeLeaseId = surface.active_lease_id;
+        const activeLease = activeLeaseId ? leaseRows.get(activeLeaseId) : null;
+        if (!activeLease || activeLease.surface_id !== surfaceId || terminalStatuses.has(activeLease.status)) {
+          const updated = { ...surface };
+          delete updated.active_lease_id;
+          surfaceRows.set(surfaceId, updated);
+        }
+      }
+    },
     updateLeaseTerminal: async (leaseId, status, options = {}) => {
       const lease = leaseRows.get(leaseId);
       if (!lease) return null;
@@ -110,14 +121,19 @@ function createMemoryBrowserSurfaceLeaseStore({ surfaces = [], leases = [] } = {
 }
 
 function createManager(options = {}) {
-  const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000, now = () => new Date("2026-05-12T12:00:00.000Z") } = options;
+  const {
+    managedConnectors = new Set(["managed", "other-managed"]),
+    surfaceCap = 1,
+    leaseWaitTimeoutMs = 300_000,
+    now = () => new Date("2026-05-12T12:00:00.000Z"),
+  } = options;
   const staticProfileKey = Object.hasOwn(options, "staticProfileKey") ? options.staticProfileKey : "managed-profile";
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
   return new BrowserSurfaceLeaseManager({
     config: {
-      managedConnectors: new Set(["managed", "other-managed"]),
+      managedConnectors,
       surfaceCap,
       staticProfileKey,
       staticCdpHttpUrl: "http://127.0.0.1:9222/json/version",
@@ -332,6 +348,34 @@ test("managed free surface leases and spawns with browser-surface env", async (t
   assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_LEASE_ID, "lease_1");
   assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_PROFILE_KEY, "managed-profile");
   assert.equal(manager.getLease("lease_1").status, "released");
+});
+
+test("canonical-url configured managed connector leases short-id run", async (t) => {
+  const manager = createManager({
+    managedConnectors: new Set(["https://registry.pdpp.org/connectors/chatgpt", "chatgpt"]),
+    staticProfileKey: "chatgpt",
+  });
+  const { calls, controller, manager: leases } = setup(t, { manager });
+  const manifest = {
+    ...MANIFEST,
+    connector_id: "chatgpt",
+    name: "ChatGPT",
+    capabilities: {},
+  };
+
+  const result = await controller.runNow("chatgpt", {
+    manifest,
+    ownerToken: "owner-token",
+    runId: "run_canonical_url_short_id",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.equal(calls.runConnector, 1);
+  assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_REQUIRED, "neko");
+  assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_PROFILE_KEY, "chatgpt");
+  assert.equal(leases.getLease("lease_1").connector_id, "chatgpt");
+  assert.ok(listRunEventTypes("run_canonical_url_short_id").includes("run.browser_surface_requested"));
 });
 
 test("managed run emits browser-surface requested before starting before leased", async (t) => {
@@ -843,6 +887,60 @@ test("queued browser-surface timeout emits deferred event without connector fail
   releaseFirst();
   await controller.drainActiveRuns(1000);
   assert.equal(calls.runConnector, 1);
+});
+
+test("managed acquisition expires stale queued lease before duplicate detection", async (t) => {
+  let releaseFirst;
+  let nowMs = Date.parse("2026-05-12T12:00:00.000Z");
+  const manager = createManager({
+    surfaceCap: 1,
+    staticProfileKey: "managed-profile",
+    leaseWaitTimeoutMs: 1000,
+    now: () => new Date(nowMs),
+  });
+  const store = createMemoryBrowserSurfaceLeaseStore();
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller } = setup(t, { browserSurfaceLeaseStore: store, manager, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  const queued = await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stale_waiter",
+  });
+
+  assert.equal(queued.status, "waiting_for_browser_surface");
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+  assert.equal(store.leases.get("lease_2").status, "waiting_for_browser_surface");
+
+  nowMs += 2000;
+  const retry = await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_retry",
+  });
+
+  assert.equal(retry.status, "waiting_for_browser_surface");
+  assert.equal(retry.browser_surface.browser_surface_lease_id, "lease_3");
+  assert.equal(manager.getLease("lease_2").status, "deferred");
+  assert.equal(manager.getLease("lease_2").wait_reason, "lease_wait_timeout");
+  assert.equal(store.leases.get("lease_2").status, "deferred");
+  assert.equal(store.leases.get("lease_2").wait_reason, "lease_wait_timeout");
+  assert.ok(listRunEventTypes("run_stale_waiter").includes("run.browser_surface_deferred"));
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
 });
 
 test("promotion precondition failure defers lease instead of recording clean release", async (t) => {

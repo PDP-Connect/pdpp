@@ -257,6 +257,21 @@ test('score is emitted only when capability advertises bm25 lower_is_better', as
   }
 });
 
+test('authoredAt snapshot value is emitted as authored_at', async () => {
+  const deps = makeDeps({
+    buildSnapshot: () => ({
+      snapshot_id: 'snap_authored',
+      query: 'foo',
+      results: [makeHit({ authoredAt: '2026-04-08T16:57:06.018Z' })],
+    }),
+  });
+  const out = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.equal(out.envelope.data[0].authored_at, '2026-04-08T16:57:06.018Z');
+});
+
 // ─── formatRecordUrl is called for every hit ───────────────────────────
 
 test('formatRecordUrl decorates every emitted result with isOwner=true for owner actor', async () => {

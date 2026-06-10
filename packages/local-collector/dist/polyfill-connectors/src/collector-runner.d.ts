@@ -16,6 +16,22 @@ export interface CollectorOutboxPolicy {
     retryBackoffMs: number;
 }
 export declare const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy>;
+export interface CollectorAutoPrunePolicy {
+    enabled: boolean;
+    keepRecentCount: number;
+}
+export declare const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY: Readonly<CollectorAutoPrunePolicy>;
+export declare function resolveCollectorAutoPrunePolicy(override?: Partial<CollectorAutoPrunePolicy>, env?: NodeJS.ProcessEnv): CollectorAutoPrunePolicy;
+export declare function autoPruneSucceededOutbox(input: {
+    outbox: Pick<LocalDeviceOutbox, "pruneSent">;
+    policy: CollectorAutoPrunePolicy;
+    sourceInstanceId: string;
+}): CollectorAutoPruneResult;
+export interface CollectorAutoPruneResult {
+    enabled: boolean;
+    matched: number;
+    pruned: number;
+}
 export interface CollectorEnrollmentConfig {
     baseUrl: string;
     code: string;
@@ -32,6 +48,7 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
 }
 export interface CollectorRunConfig {
     abortSignal?: AbortSignal;
+    autoPrune?: Partial<CollectorAutoPrunePolicy>;
     baseUrl: string;
     batchSize?: number;
     collectorHolderId?: string;
@@ -44,7 +61,17 @@ export interface CollectorRunConfig {
     runId?: string;
     sourceInstanceId: string;
 }
+export declare const COLLECTOR_COVERAGE_STATUSES: readonly ["collected", "inventory_only", "excluded", "deferred", "missing", "unsupported", "unaccounted"];
+export type CollectorCoverageStatus = (typeof COLLECTOR_COVERAGE_STATUSES)[number];
+export interface CollectorCompletenessSummary {
+    byStore: Readonly<Record<string, CollectorCoverageStatus>>;
+    countsByStatus: Readonly<Record<CollectorCoverageStatus, number>>;
+    fullyAccounted: boolean;
+    storeCount: number;
+    unaccountedStores: readonly string[];
+}
 export interface CollectorRunResult {
+    completeness: CollectorCompletenessSummary | null;
     done: Extract<EmittedMessage, {
         type: "DONE";
     }> | null;
@@ -52,6 +79,7 @@ export interface CollectorRunResult {
     flushedState: Readonly<Record<string, unknown>> | null;
     outboxSummary: LocalDeviceOutboxSummary;
     priorState: Readonly<Record<string, unknown>>;
+    prunedSent: CollectorAutoPruneResult;
     recordsQueued: number;
     recoveredLeases: number;
     satisfiedBindings: readonly RuntimeBindingName[];
@@ -65,6 +93,7 @@ export declare class CollectorStateReadError extends Error {
     constructor(message: string, cause: unknown);
 }
 export declare function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult>;
+export declare function summarizeCollectorCompleteness(coverageByStore: Map<string, CollectorCoverageStatus> | null): CollectorCompletenessSummary | null;
 export declare function buildCollectorStartMessage(streams: readonly string[], streamsToBackfill?: readonly string[], priorState?: Readonly<Record<string, unknown>> | null): StartMessage;
 export declare function transformRecordsToCollectorEnvelopes(input: {
     batchId: string;
@@ -118,6 +147,14 @@ export interface DrainCollectorOutboxResult {
     sentByKind: Readonly<Partial<Record<LocalDeviceOutboxItem["kind"], number>>>;
 }
 export declare function drainCollectorOutbox(input: DrainCollectorOutboxInput): Promise<DrainCollectorOutboxResult>;
+export declare const LOCAL_COLLECTOR_LIFECYCLE_STATES: readonly ["healthy_idle", "draining", "retryable_backlog", "dead_letter", "stale_lease", "coverage_missing"];
+export type LocalCollectorLifecycleState = (typeof LOCAL_COLLECTOR_LIFECYCLE_STATES)[number];
+export interface LocalCollectorLifecycleInput {
+    coverageObserved: boolean | null;
+    recordBatchCount: number;
+    summary: LocalDeviceOutboxSummary;
+}
+export declare function deriveLocalCollectorLifecycleState(input: LocalCollectorLifecycleInput): LocalCollectorLifecycleState;
 export declare function buildHeartbeatOutboxDiagnostics(summary: LocalDeviceOutboxSummary, options?: {
     backlogOpen?: number;
 }): HeartbeatOutboxDiagnostics;

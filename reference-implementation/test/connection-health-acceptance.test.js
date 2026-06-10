@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAttention } from '../runtime/attention.ts';
-import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 import { projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';
@@ -135,6 +135,54 @@ test('acceptance 7.1: never-run connection projects idle', () => {
   assert.equal(snap.last_success_at, null);
 });
 
+test('acceptance 7.1: never-run does not hide a failed managed runtime surface', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: UNKNOWN_FRESHNESS,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    remoteSurface: {
+      axis: 'failed',
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: 'chatgpt:cin_active',
+      surfaceHealth: 'unhealthy',
+      surfaceId: 'surface_unhealthy',
+      waitReason: 'surface_unhealthy',
+    },
+    schedule: null,
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.remote_surface, 'failed');
+  assert.equal(snap.reason_code, 'remote_surface:surface_unhealthy');
+});
+
+test('acceptance 7.1: never-run does not hide durable coverage gaps', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'messages' }],
+    schedule: null,
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+  assert.equal(snap.reason_code, 'rate_limited');
+});
+
+test('acceptance 7.1: fresh local-device evidence without a terminal collection verdict projects unknown, not idle', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    outbox: { axis: 'idle' },
+    schedule: null,
+  });
+  assertHeadline(snap, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['collection']);
+  assert.equal(snap.axes.freshness, 'fresh');
+  assert.equal(snap.axes.outbox, 'idle');
+});
+
 test('acceptance 7.1: owner-paused schedule projects idle even with failed last run', () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,
@@ -144,6 +192,106 @@ test('acceptance 7.1: owner-paused schedule projects idle even with failed last 
   });
   assertHeadline(snap, 'idle');
   assert.equal(snap.next_attempt_at, null, 'paused schedules emit no next_attempt');
+});
+
+// Reddit-shaped raw manifest refresh policy: manual + background-unsafe.
+const REDDIT_REFRESH_POLICY = {
+  recommended_mode: 'manual',
+  maximum_staleness_seconds: 86400,
+  background_safe: false,
+};
+const SCHEDULABLE_REFRESH_POLICY = {
+  recommended_mode: 'automatic',
+  maximum_staleness_seconds: 86400,
+  background_safe: true,
+};
+const PAUSED_REFRESH_POLICY = {
+  recommended_mode: 'paused',
+  maximum_staleness_seconds: 86400,
+  background_safe: true,
+};
+
+test('acceptance 7.1: manual/background-unsafe connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
+  // Reddit-like: the raw manifest refresh_policy declares manual +
+  // background_safe:false, so stale data is an owner-action advisory the
+  // caller wiring (buildRefreshEvidence) recognizes end-to-end.
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+});
+
+test('acceptance 7.1: schedulable connector with the SAME stale evidence still degrades', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: SCHEDULABLE_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.freshness, 'stale');
+});
+
+test('acceptance 7.1: paused connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: PAUSED_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('acceptance 7.1: a manual connector with no refresh policy still degrades on stale (default = schedulable)', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+});
+
+test('acceptance 7.1: a manual connector with incomplete coverage still degrades even when stale', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'posts' }],
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+});
+
+test('acceptance 7.1: a manual connector whose last run failed still degrades even when stale', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
 });
 
 test('acceptance 7.1: succeeded run + complete coverage + fresh + no attention projects healthy', () => {
@@ -158,6 +306,37 @@ test('acceptance 7.1: succeeded run + complete coverage + fresh + no attention p
   assertHeadline(snap, 'healthy');
   assert.equal(snap.reason_code, null);
   assert.equal(snap.next_action, null);
+});
+
+test('acceptance 7.1: newer successful run clears stale scheduler backoff evidence', () => {
+  const run = succeededRun({
+    finished_at: '2026-05-24T23:20:25.909Z',
+    last_at: '2026-05-24T23:20:25.909Z',
+    run_id: 'run_success_after_backoff',
+    started_at: '2026-05-24T23:20:02.398Z',
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-24T23:20:25.909Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: {
+      enabled: true,
+      last_error_code: 'schedule.gave_up',
+      last_finished_at: '2026-05-21T02:04:39.188Z',
+      last_started_at: '2026-05-21T02:03:39.190Z',
+      next_due_at: '2026-05-21T18:04:39.188Z',
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: BLOCKED_PROMOTION_THRESHOLD,
+        next_run_at: '2026-05-21T18:04:39.188Z',
+        reason_class: 'terminal:connector_reported_failed',
+        recommended_health_state: 'blocked',
+      },
+    },
+  });
+  assertHeadline(snap, 'healthy');
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.next_attempt_at, null);
 });
 
 test('acceptance 7.1: structured open attention drives needs_attention with structured CTA', () => {
@@ -182,6 +361,7 @@ test('acceptance 7.1: cooling_off when scheduler backoff is delaying a retry bel
     freshness: STALE_FRESHNESS,
     lastRun: failedRun({ failure_reason: 'rate_limited' }),
     lastSuccessfulRun: null,
+    nowIso: NOW,
     schedule: backoffSchedule({ failures: 3, reasonClass: 'failure:rate_limited' }),
   });
   assertHeadline(snap, 'cooling_off');
@@ -273,6 +453,7 @@ test('acceptance 7.1: every canonical headline state is reachable through projec
         freshness: STALE_FRESHNESS,
         lastRun: failedRun(),
         lastSuccessfulRun: null,
+        nowIso: NOW,
         schedule: backoffSchedule({ failures: 2 }),
       },
     },
@@ -282,6 +463,7 @@ test('acceptance 7.1: every canonical headline state is reachable through projec
         freshness: STALE_FRESHNESS,
         lastRun: failedRun(),
         lastSuccessfulRun: null,
+        nowIso: NOW,
         schedule: backoffSchedule({ failures: BLOCKED_PROMOTION_THRESHOLD }),
       },
     },

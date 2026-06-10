@@ -25,6 +25,41 @@ test("claude_code connector fails instead of succeeding when requested local sou
   assert.match(done?.error?.message ?? "", /commands directory=/);
 });
 
+test("claude_code emits coverage diagnostics for a missing source home before failing", async () => {
+  // A host whose requested content sources are absent must still produce the
+  // durable coverage signal: every known store classified `missing`, emitted
+  // BEFORE the source-presence assert throws. Without this the run fails with
+  // zero coverage evidence and the connection-health rollup is stuck at
+  // `coverage_unknown` forever (the local run path writes no spine run).
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-missing-coverage-"));
+  const result = await runConnectorProcess({
+    env: { CLAUDE_CODE_HOME: claudeHome },
+    start: {
+      scope: {
+        streams: [{ name: "sessions" }, { name: "skills" }, { name: "coverage_diagnostics" }],
+      },
+      type: "START",
+    },
+  });
+
+  // The run still fails honestly on the missing content sources.
+  assert.notEqual(result.exitCode, 0);
+  const done = result.messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE");
+  assert.equal(done?.status, "failed");
+
+  // …but coverage diagnostics were already emitted, classifying the absent
+  // declared stores as `missing` rather than omitting the stream entirely.
+  const coverage = result.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> =>
+      msg.type === "RECORD" && msg.stream === "coverage_diagnostics"
+  );
+  assert(coverage.length > 0, "expected coverage diagnostics to be emitted before the failure");
+  assert(
+    coverage.some((record) => record.data.store === "projects" && record.data.status === "missing"),
+    "expected the absent projects store to be reported as missing"
+  );
+});
+
 test("claude_code inventory streams emit safe metadata and exclude auth payloads", async () => {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-inventory-"));
   await mkdir(join(claudeHome, "file-history"), { recursive: true });

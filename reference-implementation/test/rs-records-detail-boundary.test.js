@@ -42,7 +42,7 @@ test('rs.records.get operation has no host or storage concretes', () => {
 
 test('sandbox /sandbox/v1/streams/:stream/records/:recordId route does not import buildLiveRecordDetail', () => {
   const src = read(
-    'apps/web/src/app/sandbox/v1/streams/[stream]/records/[recordId]/route.ts',
+    'apps/site/src/app/sandbox/v1/streams/[stream]/records/[recordId]/route.ts',
   );
   const importPattern =
     /\bimport\b[^;]*\bbuildLiveRecordDetail\b[^;]*\bfrom\b[^;]*;/;
@@ -54,7 +54,7 @@ test('sandbox /sandbox/v1/streams/:stream/records/:recordId route does not impor
 });
 
 test('sandbox builders.ts no longer exports buildLiveRecordDetail', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveRecordDetail\b/.test(src),
     false,

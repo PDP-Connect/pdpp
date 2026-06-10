@@ -1,22 +1,24 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 
 import { registerConnector } from '../server/auth.js';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { getSyncState, ingestRecord, queryRecords } from '../server/records.js';
 import { createSqliteBlobStore } from '../server/stores/blob-store.js';
 import { createSqliteBrowserSurfaceLeaseStore } from '../server/stores/browser-surface-lease-store.ts';
-import { createSqliteConnectorInstanceStore, makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore, makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 import { createSqliteConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSqliteDeviceExporterStore } from '../server/stores/device-exporter-store.js';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const NOW = '2026-05-18T12:00:00.000Z';
-const GMAIL = 'https://test.pdpp.dev/connectors/gmail-acceptance';
-const LOCAL = 'https://test.pdpp.dev/connectors/local-collector-acceptance';
+const GMAIL = 'gmail-acceptance';
+const LOCAL = 'local-collector-acceptance';
 
 function manifest(connectorId, stream = 'messages') {
   return {
@@ -62,6 +64,11 @@ function stateTarget(connectorId, connectorInstanceId) {
   return { connectorId, connectorInstanceId };
 }
 
+function oldLegacyDefaultConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
+  return `cin_legacy_${hash.slice(0, 24)}`;
+}
+
 function record(subject, key = 'same-key') {
   return {
     stream: 'messages',
@@ -71,10 +78,281 @@ function record(subject, key = 'same-key') {
   };
 }
 
-test('legacy connector-keyed stores migrate to one deterministic instance per owner and connector without data loss', async () => {
+function createLegacyInstanceMigrationFixture(raw, { oldInstanceId, defaultAccountInstanceId = null }) {
+  raw.exec(`
+    CREATE TABLE connectors (
+      connector_id TEXT PRIMARY KEY,
+      manifest     TEXT NOT NULL,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE connector_instances (
+      connector_instance_id TEXT PRIMARY KEY,
+      owner_subject_id      TEXT NOT NULL,
+      connector_id          TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+      source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+      source_binding_key    TEXT NOT NULL,
+      source_binding_json   TEXT NOT NULL DEFAULT '{}',
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL,
+      revoked_at            TEXT,
+      UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+    );
+    CREATE INDEX idx_connector_instances_owner_connector_status
+      ON connector_instances(owner_subject_id, connector_id, status);
+    CREATE TABLE records (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      connector_id  TEXT NOT NULL,
+      connector_instance_id TEXT NOT NULL,
+      stream        TEXT NOT NULL,
+      record_key    TEXT NOT NULL,
+      record_json   TEXT NOT NULL,
+      emitted_at    TEXT NOT NULL,
+      version       INTEGER NOT NULL DEFAULT 1,
+      deleted       INTEGER NOT NULL DEFAULT 0,
+      deleted_at    TEXT,
+      UNIQUE(connector_instance_id, stream, record_key)
+    );
+  `);
+  raw.prepare('INSERT INTO connectors(connector_id, manifest, created_at) VALUES(?, ?, ?)').run(
+    GMAIL,
+    JSON.stringify(manifest(GMAIL)),
+    NOW,
+  );
+  const insertInstance = raw.prepare(
+    `INSERT INTO connector_instances(
+      connector_instance_id,
+      owner_subject_id,
+      connector_id,
+      display_name,
+      status,
+      source_kind,
+      source_binding_key,
+      source_binding_json,
+      created_at,
+      updated_at,
+      revoked_at
+    ) VALUES(?, 'owner_local', ?, 'Gmail', 'active', ?, 'default', ?, ?, ?, NULL)`,
+  );
+  insertInstance.run(oldInstanceId, GMAIL, 'legacy', '{"kind":"legacy_default"}', NOW, NOW);
+  if (defaultAccountInstanceId) {
+    insertInstance.run(defaultAccountInstanceId, GMAIL, 'account', '{"kind":"default_account"}', NOW, NOW);
+  }
+}
+
+function insertRecordRow(raw, connectorInstanceId, recordKey, subject) {
+  raw.prepare(
+    `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version)
+     VALUES(?, ?, 'messages', ?, ?, ?, 1)`,
+  ).run(GMAIL, connectorInstanceId, recordKey, JSON.stringify({ id: recordKey, subject }), NOW);
+}
+
+test('existing legacy connector instance rows migrate to default account ids and tighten the source_kind check', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-instance-legacy-row-'));
+  const dbPath = join(dir, 'reference.sqlite');
+  const oldInstanceId = oldLegacyDefaultConnectorInstanceId('owner_local', GMAIL);
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', GMAIL);
+
+  try {
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE connectors (
+        connector_id TEXT PRIMARY KEY,
+        manifest     TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO connectors(connector_id, manifest, created_at)
+      VALUES('${GMAIL}', '${JSON.stringify(manifest(GMAIL)).replaceAll("'", "''")}', '${NOW}');
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+      );
+      CREATE INDEX idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      VALUES(
+        '${oldInstanceId}',
+        'owner_local',
+        '${GMAIL}',
+        'Gmail',
+        'active',
+        'legacy',
+        'default',
+        '{"kind":"legacy_default"}',
+        '${NOW}',
+        '${NOW}',
+        NULL
+      );
+
+      CREATE TABLE records (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        record_json   TEXT NOT NULL,
+        emitted_at    TEXT NOT NULL,
+        version       INTEGER NOT NULL DEFAULT 1,
+        deleted       INTEGER NOT NULL DEFAULT 0,
+        deleted_at    TEXT,
+        UNIQUE(connector_instance_id, stream, record_key)
+      );
+      INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version)
+      VALUES('${GMAIL}', '${oldInstanceId}', 'messages', 'msg_legacy_instance', '{"id":"msg_legacy_instance","subject":"legacy row"}', '${NOW}', 1);
+
+      CREATE TABLE connector_schedules (
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id      TEXT NOT NULL,
+        interval_seconds  INTEGER NOT NULL,
+        jitter_seconds    INTEGER NOT NULL DEFAULT 0,
+        enabled           INTEGER NOT NULL DEFAULT 1,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      );
+      INSERT INTO connector_schedules(connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
+      VALUES('${oldInstanceId}', '${GMAIL}', 900, 10, 1, '${NOW}', '${NOW}');
+    `);
+    raw.close();
+
+    initDb(dbPath);
+    const db = getDb();
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM connector_instances WHERE connector_instance_id = ?').get(oldInstanceId).count,
+      0,
+    );
+    const instance = db.prepare('SELECT connector_instance_id, source_kind, source_binding_key, source_binding_json FROM connector_instances WHERE connector_id = ?').get(GMAIL);
+    assert.deepEqual(instance, {
+      connector_instance_id: defaultAccountInstanceId,
+      source_kind: 'account',
+      source_binding_key: 'default',
+      source_binding_json: '{"kind":"default_account"}',
+    });
+    assert.equal(
+      db.prepare('SELECT connector_instance_id FROM records WHERE record_key = ?').get('msg_legacy_instance').connector_instance_id,
+      defaultAccountInstanceId,
+    );
+    assert.equal(
+      db.prepare('SELECT connector_instance_id FROM connector_schedules WHERE connector_id = ?').get(GMAIL).connector_instance_id,
+      defaultAccountInstanceId,
+    );
+    const schemaSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'").get().sql;
+    assert.equal(schemaSql.includes("'legacy'"), false);
+    assert.throws(
+      () => db.prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+         VALUES('cin_bad_legacy', 'owner_local', ?, 'Bad', 'active', 'legacy', 'bad', '{}', ?, ?)`
+      ).run(GMAIL, NOW, NOW),
+      /CHECK constraint failed/,
+    );
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy default rows merge into an existing default account connection when scoped rows do not collide', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-instance-legacy-merge-'));
+  const dbPath = join(dir, 'reference.sqlite');
+  const oldInstanceId = oldLegacyDefaultConnectorInstanceId('owner_local', GMAIL);
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', GMAIL);
+
+  try {
+    const raw = new Database(dbPath);
+    createLegacyInstanceMigrationFixture(raw, { oldInstanceId, defaultAccountInstanceId });
+    insertRecordRow(raw, oldInstanceId, 'legacy_msg', 'legacy row');
+    insertRecordRow(raw, defaultAccountInstanceId, 'default_msg', 'default row');
+    raw.close();
+
+    initDb(dbPath);
+    const db = getDb();
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM connector_instances WHERE connector_instance_id = ?').get(oldInstanceId).count,
+      0,
+    );
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM records WHERE connector_instance_id = ?').get(defaultAccountInstanceId).count,
+      2,
+    );
+    assert.deepEqual(
+      db.prepare('SELECT record_key FROM records WHERE connector_instance_id = ? ORDER BY record_key').all(defaultAccountInstanceId),
+      [{ record_key: 'default_msg' }, { record_key: 'legacy_msg' }],
+    );
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy default merge aborts instead of overwriting colliding scoped rows', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-instance-legacy-collision-'));
+  const dbPath = join(dir, 'reference.sqlite');
+  const oldInstanceId = oldLegacyDefaultConnectorInstanceId('owner_local', GMAIL);
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', GMAIL);
+
+  try {
+    const raw = new Database(dbPath);
+    createLegacyInstanceMigrationFixture(raw, { oldInstanceId, defaultAccountInstanceId });
+    insertRecordRow(raw, oldInstanceId, 'same_msg', 'legacy row');
+    insertRecordRow(raw, defaultAccountInstanceId, 'same_msg', 'default row');
+    raw.close();
+
+    assert.throws(
+      () => initDb(dbPath),
+      /records has a colliding row/,
+    );
+    closeDb();
+
+    const after = new Database(dbPath);
+    try {
+      assert.equal(
+        after.prepare('SELECT COUNT(*) AS count FROM connector_instances WHERE connector_instance_id IN (?, ?)').get(oldInstanceId, defaultAccountInstanceId).count,
+        2,
+      );
+      assert.equal(
+        after.prepare('SELECT COUNT(*) AS count FROM records WHERE connector_instance_id = ?').get(oldInstanceId).count,
+        1,
+      );
+      assert.equal(
+        after.prepare('SELECT COUNT(*) AS count FROM records WHERE connector_instance_id = ?').get(defaultAccountInstanceId).count,
+        1,
+      );
+    } finally {
+      after.close();
+    }
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy connector-keyed stores migrate to one deterministic default account instance per owner and connector without data loss', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pdpp-instance-acceptance-'));
   const dbPath = join(dir, 'reference.sqlite');
-  const legacyInstanceId = makeLegacyConnectorInstanceId('owner_local', GMAIL);
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', GMAIL);
 
   try {
     initDb(dbPath);
@@ -293,7 +571,7 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
       'gap_legacy',
       GMAIL,
       'grant_1',
-      '{"connector_id":"https://test.pdpp.dev/connectors/gmail-acceptance"}',
+      `{"connector_id":"${GMAIL}"}`,
       'messages',
       'msg_1',
       '{"path":"/thread"}',
@@ -315,15 +593,15 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
     initDb(dbPath);
     const legacyState = await getSyncState(GMAIL);
     assert.equal(legacyState.connector_id, GMAIL);
-    assert.equal(legacyState.connector_instance_id, legacyInstanceId);
+    assert.equal(legacyState.connector_instance_id, defaultAccountInstanceId);
     assert.deepEqual(legacyState.state, { messages: { cursor: 'owner' } });
     assert.equal(
       getDb().prepare('SELECT connector_instance_id FROM grant_connector_state WHERE grant_id = ?').get('grant_1').connector_instance_id,
-      legacyInstanceId,
+      defaultAccountInstanceId,
     );
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM records WHERE record_key = ?').get('msg_1').connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM record_changes WHERE record_key = ?').get('msg_1').connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT max_version FROM version_counter WHERE connector_instance_id = ?').get(legacyInstanceId).max_version, 7);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM records WHERE record_key = ?').get('msg_1').connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM record_changes WHERE record_key = ?').get('msg_1').connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT max_version FROM version_counter WHERE connector_instance_id = ?').get(defaultAccountInstanceId).max_version, 7);
     assert.deepEqual(createSqliteBlobStore().listBlobBindings('blob_sha256_acceptance')
       .filter((row) => row.connector_instance_id)
       .map((row) => ({ connector_id: row.connector_id, stream: row.stream, record_key: row.record_key })), [
@@ -331,20 +609,20 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
     ]);
 
     const scheduler = createSqliteSchedulerStore();
-    assert.equal(scheduler.getSchedule(legacyInstanceId).interval_seconds, 900);
-    assert.equal(scheduler.listActiveRuns()[0].connector_instance_id, legacyInstanceId);
-    assert.equal(scheduler.listRunHistory(10)[0].connectorInstanceId, legacyInstanceId);
-    assert.equal(scheduler.listLastRunTimes()[0].connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM connector_detail_gaps WHERE gap_id = ?').get('gap_legacy').connector_instance_id, legacyInstanceId);
+    assert.equal(scheduler.getSchedule(defaultAccountInstanceId).interval_seconds, 900);
+    assert.equal(scheduler.listActiveRuns()[0].connector_instance_id, defaultAccountInstanceId);
+    assert.equal(scheduler.listRunHistory(10)[0].connectorInstanceId, defaultAccountInstanceId);
+    assert.equal(scheduler.listLastRunTimes()[0].connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM connector_detail_gaps WHERE gap_id = ?').get('gap_legacy').connector_instance_id, defaultAccountInstanceId);
     assert.deepEqual(
       getDb().prepare('SELECT connector_instance_id, stream, record_key, field, text FROM lexical_search_index WHERE connector_id = ?').all(GMAIL),
-      [{ connector_instance_id: legacyInstanceId, stream: 'messages', record_key: 'msg_1', field: 'subject', text: 'legacy lexical subject' }],
+      [{ connector_instance_id: defaultAccountInstanceId, stream: 'messages', record_key: 'msg_1', field: 'subject', text: 'legacy lexical subject' }],
     );
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM lexical_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_rowid WHERE connector_id = ?').get(GMAIL).connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_blob WHERE connector_id = ?').get(GMAIL).connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
-    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_backfill_progress WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM lexical_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_rowid WHERE connector_id = ?').get(GMAIL).connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_blob WHERE connector_id = ?').get(GMAIL).connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, defaultAccountInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_backfill_progress WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, defaultAccountInstanceId);
   } finally {
     closeDb();
     await rm(dir, { recursive: true, force: true });

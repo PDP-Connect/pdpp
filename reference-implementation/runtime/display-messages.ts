@@ -47,6 +47,18 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   controller_restarted: "We restarted in the middle — we'll try again",
   consent_expiring_soon: "Your sign-in will expire soon",
 
+  // ─── Chase statements-PDF probe diagnostics ────────────────────────────
+  // Emitted by `chase` during HTTP-response inspection while scanning the
+  // statements page. These three are diagnostic-bucket reasons (matched
+  // probe / unmatched probe / probe error), but the completeness test
+  // scans every `reason: "<code>"` literal in connector source, so they
+  // need vetted end-user copy here too. Reaching the dashboard layer
+  // would be unusual but should still read like English, not protocol
+  // jargon.
+  body_error: "We hit a problem reading a Chase statement page",
+  not_expected_body: "A Chase page didn't look like a statement we recognize",
+  matched: "We found a Chase statement to import",
+
   // ─── Connector SKIP_RESULT reasons (catalog scan) ──────────────────────
   ambiguous_multi_account_overview: "We couldn't tell which account view to use",
   archive_not_found: "We couldn't find an export archive to read",
@@ -54,6 +66,29 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   claude_dir_not_found: "We couldn't find your Claude Code data folder",
   credit_card_export_unverified: "We couldn't confirm the credit card export",
   doordash_graphql_wiring_pending: "DoorDash support isn't wired up yet",
+  empty_detail: "We opened this conversation but found no messages to import",
+  // 2026-06-04 baseline repair: these reason literals are emitted by
+  // connectors but were missing vetted copy, so the registry completeness
+  // test was red and the dashboard would have shown `null` for a real code.
+  // Codes that surface through a `reason:` ternary (missing_mapping,
+  // csv_no_data_rows, csv_no_usable_transactions) were also invisible to the
+  // scan until it was taught to read ternary literals — they are included here
+  // so the now-stricter scan stays green. Copy stays operator/end-user voice.
+  csv_no_data_rows: "The transactions file had no rows to import",
+  csv_no_usable_transactions: "We couldn't find any usable transactions in that file",
+  empty_first_page_without_diagnostics: "The first page came back empty and we couldn't tell why",
+  empty_first_page_without_terminal_signal: "The first page came back empty with no sign it was really the end",
+  missing_mapping: "We opened this conversation but it had no message data to read",
+  no_orders_text: "This account shows no orders to import",
+  pagination_exhausted: "We reached the end of the available pages",
+  pr_detail_fetch_failed: "We saved these pull requests but couldn't load every detail",
+  pr_search_cap_truncated: "There were more results than the service will return, so the oldest couldn't be collected",
+  source_auth_or_challenge: "We need you to sign in or pass a verification check to continue",
+  starred_entry_missing_repo: "We skipped a starred entry whose repository was unavailable",
+  unparseable_order_date: "We skipped some orders because their dates couldn't be read",
+  upstream_pressure_deferred: "The service was busy, so we saved what we could and will finish the rest later",
+  temporary_unavailable: "We couldn't finish this item yet, so we'll try it again on the next run",
+  export_affordance_missing: "We couldn't find the export controls on this page — the site may have changed",
   export_error: "The export couldn't be downloaded",
   export_no_download: "The export didn't produce a downloadable file",
   export_not_found: "We couldn't find an export to import",
@@ -75,7 +110,21 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   qfx_download_failed: "We couldn't download the transactions file",
   qfx_parse_failed: "We couldn't read the transactions file",
   records_not_found: "We didn't find any records to import",
+  // ─── Resumable retry / bounded-run cap deferrals ───────────────────────
+  // Two distinct codes, neither of which means the service was busy (that copy
+  // belongs to `upstream_pressure` / `upstream_pressure_deferred`):
+  //   - `retry_exhausted` is the GENERIC resumable wire reason — a retry budget
+  //     was used up. It covers any retry-exhaustion path, not only a configured
+  //     cap, so its copy stays generic and the rest is retried next run.
+  //   - `run_cap_deferred` is the SPECIFIC error class for a configured per-run
+  //     size/time budget: the run chose to stop and saved what it collected.
+  // The two strings must differ (the run-cap class is more specific than the
+  // generic reason) and neither may imply source pressure.
+  retry_exhausted: "We used up this run's retries here, so we'll pick the rest up on the next run",
+  run_cap_deferred:
+    "We collected a batch within this run's budget and saved it; the rest will be collected on the next run",
   row_exception: "Something went wrong reading one of the rows",
+  schema_validation_failed: "Some data didn't match the expected format and was skipped",
   scrape_failed: "We couldn't read the page contents",
   selector_drift: "The page layout changed and we couldn't find what we needed",
   selectors_pending: "Support for this part of the connector isn't complete yet",

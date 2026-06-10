@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * PDPP YNAB Connector (v0.2.0)
  *
@@ -28,11 +29,24 @@
  * and most-recent month).
  */
 
-import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import {
+  type CollectContext,
+  emitDetailCoverage,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
+
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 429 throw byte-identical to the prior hand-rolled path (cross-run cooldown via
+// `retryablePattern`); raising it activates the wired Retry-After honor.
+const httpGovernor = createConnectorHttpGovernor({ name: "ynab", maxAttempts: 1 });
 
 interface YnabFetchOptions {
   knowledge?: number;
@@ -229,7 +243,13 @@ interface YnabMonthDetailResponse {
   data: { month: YnabMonth };
 }
 
-async function ynab<T>(path: string, token: string, { knowledge, sinceDate }: YnabFetchOptions = {}): Promise<T> {
+async function ynab<T>(
+  path: string,
+  token: string,
+  { knowledge, sinceDate }: YnabFetchOptions = {},
+  progress?: ProgressFn,
+  extra?: Parameters<ProgressFn>[1]
+): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (knowledge != null) {
     url.searchParams.set("last_knowledge_of_server", String(knowledge));
@@ -237,20 +257,36 @@ async function ynab<T>(path: string, token: string, { knowledge, sinceDate }: Yn
   if (sinceDate) {
     url.searchParams.set("since_date", sinceDate);
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
+  let result: { body: string; status: number };
+  try {
+    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+      async () => {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          status: res.status,
+        } as { body: string; status: number };
+      },
+      (raw) => ({ status: raw.status, value: raw })
+    );
+    result = r.value;
+  } catch (error) {
+    // Terminal rate-limit: emit the same progress side-effect the hand-rolled
+    // path did, then rethrow `ynab_rate_limited` for the cross-run contract.
+    if (error instanceof Error && error.message === "ynab_rate_limited") {
+      await progress?.("YNAB request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (result.status === 401) {
     throw new Error("ynab_auth_failed");
   }
-  if (res.status === 429) {
-    throw new Error("ynab_rate_limited");
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`ynab_http_${String(result.status)}: ${result.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    const body = await res.text().catch((): string => "");
-    throw new Error(`ynab_http_${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as T;
+  return JSON.parse(result.body) as T;
 }
 
 interface TimeRange {
@@ -290,7 +326,35 @@ export function rewindOneMonth(monthIso: string): string {
 
 // ─── Record builders ────────────────────────────────────────────────────
 
-function budgetRecord(b: YnabBudget): RecordData {
+/**
+ * Fields excluded from the `budgets` fingerprint.
+ *
+ * `last_month` and `last_modified_on` move without a corresponding change to
+ * the budget-summary content this stream actually projects:
+ *
+ *   - `last_month` is the most-recent budget month YNAB has materialized.
+ *     YNAB rolls active budgets forward automatically, so this advances on
+ *     the 1st of every calendar month even when the owner has touched
+ *     nothing. It is a clock, not a user edit to a budget-summary field.
+ *   - `last_modified_on` is the budget's last-modified timestamp. It ticks
+ *     on *any* edit anywhere in the budget — a single transaction, a
+ *     category assignment, a memo — none of which change the fields this
+ *     stream emits (name, currency locale, date format, first month).
+ *     Those edits surface in their own streams (`transactions`,
+ *     `categories`, …); re-emitting the budget summary for them is the
+ *     unbounded forward churn this gate removes (~273 versions/budget in the
+ *     2026-05-26 churn report).
+ *
+ * Every remaining field — name, currency locale, date format, and
+ * `first_month` — is a real budget-summary source fact, so a genuine edit to
+ * any of them still re-emits the budget. This matches the design-note rule
+ * "exclude volatile collection-time fields from durable record identity
+ * unless those fields are source facts"
+ * (design-notes/record-version-churn-and-noop-semantics-2026-05-26.md).
+ */
+export const BUDGET_FINGERPRINT_EXCLUDE = ["last_month", "last_modified_on"] as const;
+
+export function budgetRecord(b: YnabBudget): RecordData {
   return {
     id: b.id,
     name: b.name,
@@ -308,7 +372,31 @@ function budgetRecord(b: YnabBudget): RecordData {
   };
 }
 
-function accountRecord(a: YnabAccount, budgetId: string): RecordData {
+/**
+ * Open the per-record fingerprint cursor for the `budgets` stream.
+ *
+ * Unlike the per-budget streams, `/budgets` is a single full-collection
+ * fetch keyed by budget id, so there is one cursor for the whole stream
+ * rather than one per budget. The prior fingerprints live alongside the
+ * existing `fetched_at` marker under `state.budgets.fingerprints`; the
+ * cursor's tolerant decoder ignores `fetched_at` and any legacy shape.
+ *
+ * `BUDGET_FINGERPRINT_EXCLUDE` drops the two calendar/clock fields so an
+ * unchanged budget no-ops across runs (see the constant's doc comment).
+ */
+export function openBudgetCursor(state: Record<string, unknown>): FingerprintCursor {
+  return openFingerprintCursor(state.budgets, {
+    excludeFromFingerprint: BUDGET_FINGERPRINT_EXCLUDE,
+  });
+}
+
+// Account entity record: identity and settings fields only. The
+// point-in-time balance metrics (`balance`, `cleared_balance`,
+// `uncleared_balance`) are projected into the `account_stats` observation
+// stream so a balance move does not version this entity record. See
+// `accountStatsRecord` and the `split-ynab-account-balance-observation-stream`
+// OpenSpec change.
+export function accountRecord(a: YnabAccount, budgetId: string): RecordData {
   return {
     id: a.id,
     budget_id: budgetId,
@@ -316,9 +404,6 @@ function accountRecord(a: YnabAccount, budgetId: string): RecordData {
     type: a.type,
     on_budget: a.on_budget,
     closed: a.closed,
-    balance: a.balance,
-    cleared_balance: a.cleared_balance,
-    uncleared_balance: a.uncleared_balance,
     transfer_payee_id: a.transfer_payee_id ?? null,
     direct_import_linked: a.direct_import_linked ?? null,
     direct_import_in_error: a.direct_import_in_error ?? null,
@@ -328,6 +413,23 @@ function accountRecord(a: YnabAccount, budgetId: string): RecordData {
     debt_minimum_payments: a.debt_minimum_payments ?? null,
     debt_escrow_amounts: a.debt_escrow_amounts ?? null,
     deleted: a.deleted,
+  };
+}
+
+// Account balance observation record: point-in-time balances keyed by
+// `{account_id}:{observed_on}` (UTC date). One record per account per
+// calendar day; re-emitting on the same day with the same balances is
+// idempotent under the runtime byte-equivalence check. A later day appends a
+// new record, accumulating a daily balance time series.
+export function accountStatsRecord(a: YnabAccount, budgetId: string, observedOn: string): RecordData {
+  return {
+    id: `${a.id}:${observedOn}`,
+    account_id: a.id,
+    budget_id: budgetId,
+    observed_on: observedOn,
+    balance: a.balance,
+    cleared_balance: a.cleared_balance,
+    uncleared_balance: a.uncleared_balance,
   };
 }
 
@@ -382,7 +484,7 @@ function payeeRecord(p: YnabPayee, budgetId: string): RecordData {
   };
 }
 
-function payeeLocationRecord(loc: YnabPayeeLocation, budgetId: string): RecordData {
+export function payeeLocationRecord(loc: YnabPayeeLocation, budgetId: string): RecordData {
   return {
     id: loc.id,
     budget_id: budgetId,
@@ -494,10 +596,24 @@ type EmitFn = (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promi
 
 type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
 
-type ProgressFn = (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
+type ProgressFn = (
+  message: string,
+  extra?: {
+    count?: number;
+    cursor_present?: boolean;
+    item_count?: number;
+    offset_ordinal?: number;
+    phase?: string;
+    rate_limit_pressure?: number;
+    stream?: string;
+    total?: number;
+    total_seen?: number;
+  }
+) => Promise<void>;
 
 export interface BudgetCtx {
   budgetId: string;
+  budgetOrdinal?: number;
   emit: EmitFn;
   newState: Record<string, unknown>;
   progress: ProgressFn;
@@ -507,47 +623,143 @@ export interface BudgetCtx {
   trackAndEmit: TrackedEmitRecord;
 }
 
+/**
+ * Per-budget fingerprint cursor for the `accounts` entity stream. After the
+ * balance fields move to `account_stats`, the entity record carries only
+ * identity and settings fields, so a full fingerprint (no exclusions) is
+ * correct: the record re-emits only when one of those fields actually changes.
+ *
+ * State shape: `state.accounts[budgetId].fingerprints`, opened per budget so a
+ * multi-budget owner cannot cross-contaminate fingerprint maps. The per-budget
+ * entry also carries the existing `server_knowledge` cursor; this wrapper reads
+ * only the `fingerprints` field.
+ */
+export function openAccountCursor(state: Record<string, unknown>, budgetId: string): FingerprintCursor {
+  const streamState = state.accounts;
+  let budgetEntry: unknown;
+  if (streamState && typeof streamState === "object" && !Array.isArray(streamState)) {
+    budgetEntry = (streamState as Record<string, unknown>)[budgetId];
+  }
+  return openFingerprintCursor(budgetEntry);
+}
+
 async function collectAccounts(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching accounts for budget ${budgetId}`, {
-    stream: "accounts",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "accounts", budgetId);
-  const res = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.accounts.length} accounts for budget ${budgetId}`, {
+  await progress("Fetching YNAB accounts window", {
     stream: "accounts",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const requestExtra = {
+    stream: "accounts",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabAccountsResponse>(
+    `/budgets/${budgetId}/accounts`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
+  );
+  await progress("Fetched YNAB accounts window", {
+    stream: "accounts",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.accounts.length,
+    total_seen: res.data.accounts.length,
+    cursor_present: true,
     count: res.data.accounts.length,
     total: res.data.accounts.length,
   });
+
+  // Entity stream: gate on a per-record fingerprint so a balance-only delta
+  // does not version the account. `/accounts` is a `server_knowledge` PARTIAL
+  // scan — it returns only accounts changed since the prior knowledge value —
+  // so we must NOT prune: an account absent from this delta was not deleted,
+  // it just did not change. A real deletion arrives as a returned record with
+  // `deleted: true`, which the fingerprint treats as a normal field change.
+  const entityCursor = openAccountCursor(state, budgetId);
+  const wantsEntity = requested.has("accounts");
+  const wantsStats = requested.has("account_stats");
+  const observedOn = nowIso().slice(0, 10);
   for (const a of res.data.accounts) {
-    await trackAndEmit("accounts", accountRecord(a, budgetId));
+    if (wantsEntity) {
+      const entityRec = accountRecord(a, budgetId);
+      if (entityCursor.shouldEmit(entityRec)) {
+        await trackAndEmit("accounts", entityRec);
+      }
+    }
+    // Observation stream: append-keyed daily balance snapshot. Emitted
+    // unconditionally for returned accounts; the date-scoped key + runtime
+    // byte-equivalence make same-day same-balance re-emits idempotent.
+    if (wantsStats) {
+      await trackAndEmit("account_stats", accountStatsRecord(a, budgetId, observedOn));
+    }
   }
-  const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
-  accounts[budgetId] = { server_knowledge: res.data.server_knowledge };
-  newState.accounts = accounts;
-  await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+
+  if (wantsEntity) {
+    const accounts =
+      (newState.accounts as
+        | Record<string, { server_knowledge: number; fingerprints?: Record<string, string> }>
+        | undefined) ?? {};
+    accounts[budgetId] = { server_knowledge: res.data.server_knowledge, fingerprints: entityCursor.toState() };
+    newState.accounts = accounts;
+    await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+  } else {
+    // `account_stats` requested without `accounts`: still advance the
+    // server_knowledge delta cursor so the next run continues incrementally.
+    const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
+    accounts[budgetId] = { ...accounts[budgetId], server_knowledge: res.data.server_knowledge };
+    newState.accounts = accounts;
+    await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+  }
+
+  if (wantsStats) {
+    await emit({ type: "STATE", stream: "account_stats", cursor: { observed_on: observedOn, fetched_at: nowIso() } });
+  }
 }
 
 async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching categories for budget ${budgetId}`, {
-    stream: "categories",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "categories", budgetId);
-  const res = await ynab<YnabCategoriesResponse>(`/budgets/${budgetId}/categories`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
+  await progress("Fetching YNAB categories window", {
+    stream: "categories",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
   });
-  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
-  await progress(
-    `Fetched ${categoryCount} categories in ${res.data.category_groups.length} groups for budget ${budgetId}`,
+  const requestExtra = {
+    stream: "categories",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabCategoriesResponse>(
+    `/budgets/${budgetId}/categories`,
+    token,
     {
-      stream: "categories",
-      count: categoryCount,
-      total: categoryCount,
-    }
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
   );
+  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
+  await progress("Fetched YNAB categories window", {
+    stream: "categories",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: categoryCount,
+    total_seen: categoryCount,
+    cursor_present: true,
+    count: categoryCount,
+    total: categoryCount,
+  });
   for (const group of res.data.category_groups) {
     if (requested.has("category_groups")) {
       await trackAndEmit("category_groups", categoryGroupRecord(group, budgetId));
@@ -569,16 +781,36 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectPayees(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching payees for budget ${budgetId}`, {
-    stream: "payees",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "payees", budgetId);
-  const res = await ynab<YnabPayeesResponse>(`/budgets/${budgetId}/payees`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.payees.length} payees for budget ${budgetId}`, {
+  await progress("Fetching YNAB payees window", {
     stream: "payees",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const requestExtra = {
+    stream: "payees",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabPayeesResponse>(
+    `/budgets/${budgetId}/payees`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
+  );
+  await progress("Fetched YNAB payees window", {
+    stream: "payees",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.payees.length,
+    total_seen: res.data.payees.length,
+    cursor_present: true,
     count: res.data.payees.length,
     total: res.data.payees.length,
   });
@@ -591,27 +823,81 @@ async function collectPayees(ctx: BudgetCtx): Promise<void> {
   await emit({ type: "STATE", stream: "payees", cursor: newState.payees });
 }
 
+/**
+ * Open a per-record fingerprint cursor for one budget's payee_locations.
+ *
+ * YNAB exposes `server_knowledge` deltas on payees/transactions/etc., but
+ * NOT on `/payee_locations` — the full collection re-returns every run.
+ * Without a connector-side gate, every run appends a new version per
+ * location (77 keys × 270 versions in the live churn report). The cursor
+ * fingerprints the full emitted record; nothing is excluded — lat/long
+ * are user-provided in the YNAB UI and never re-geocoded silently, so
+ * they are valid change signals, and YNAB does not stamp a run-clock
+ * field into the payload.
+ *
+ * State shape: `state.payee_locations[budgetId].fingerprints` — opened
+ * per budget so a multi-budget owner cannot cross-contaminate fingerprint
+ * maps.
+ */
+export function openPayeeLocationCursor(state: Record<string, unknown>, budgetId: string): FingerprintCursor {
+  const streamState = state.payee_locations;
+  let budgetEntry: unknown;
+  if (streamState && typeof streamState === "object" && !Array.isArray(streamState)) {
+    budgetEntry = (streamState as Record<string, unknown>)[budgetId];
+  }
+  return openFingerprintCursor(budgetEntry);
+}
+
 async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, trackAndEmit, progress } = ctx;
-  await progress(`Fetching payee locations for budget ${budgetId}`, {
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  await progress("Fetching YNAB payee locations window", {
     stream: "payee_locations",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: false,
   });
-  const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token);
-  await progress(`Fetched ${res.data.payee_locations.length} payee locations for budget ${budgetId}`, {
+  const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token, {}, progress, {
     stream: "payee_locations",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: false,
+  });
+  await progress("Fetched YNAB payee locations window", {
+    stream: "payee_locations",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.payee_locations.length,
+    total_seen: res.data.payee_locations.length,
+    cursor_present: true,
     count: res.data.payee_locations.length,
     total: res.data.payee_locations.length,
   });
+  const cursor = openPayeeLocationCursor(state, budgetId);
   for (const loc of res.data.payee_locations) {
-    await trackAndEmit("payee_locations", payeeLocationRecord(loc, budgetId));
+    const record = payeeLocationRecord(loc, budgetId);
+    if (!cursor.shouldEmit(record)) {
+      continue;
+    }
+    await trackAndEmit("payee_locations", record);
   }
+  // YNAB's `/payee_locations` is a full-collection endpoint, so any prior
+  // id absent this run was deleted at the source. Prune so a future
+  // re-creation triggers a fresh emit instead of silently no-opping
+  // against a stale fingerprint.
+  cursor.pruneStale();
+  const payeeLocsState =
+    (newState.payee_locations as Record<string, { fingerprints?: Record<string, string> }> | undefined) ?? {};
+  payeeLocsState[budgetId] = { fingerprints: cursor.toState() };
+  newState.payee_locations = payeeLocsState;
+  await emit({
+    type: "STATE",
+    stream: "payee_locations",
+    cursor: newState.payee_locations,
+  });
 }
 
 async function collectTransactions(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching transactions for budget ${budgetId}`, {
-    stream: "transactions",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const stream = requested.get("transactions");
   const knowledge = priorKnowledge(state, "transactions", budgetId);
   const txnState = state.transactions as Record<string, { server_knowledge?: number; since_date?: string }> | undefined;
@@ -619,12 +905,23 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
   const scopeSince = stream?.time_range?.since?.slice(0, 10);
   // Use server-side since_date only on first run (no delta cursor yet).
   const sinceDate = knowledge == null ? scopeSince || priorSinceDate || undefined : undefined;
+  await progress("Fetching YNAB transactions window", {
+    stream: "transactions",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined || sinceDate !== undefined,
+  });
 
   // Build account_id → account_type map for convenience enrichment.
   const accountTypeById = new Map<string, string>();
   // Always re-fetch accounts summary for the type map. Small payload, negligible cost.
   try {
-    const aRes = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token);
+    const aRes = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {}, progress, {
+      stream: "transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined || sinceDate !== undefined,
+    });
     for (const a of aRes.data.accounts) {
       accountTypeById.set(a.id, a.type);
     }
@@ -632,10 +929,21 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     /* non-fatal */
   }
 
-  const res = await ynab<YnabTransactionsResponse>(`/budgets/${budgetId}/transactions`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-    ...(sinceDate === undefined ? {} : { sinceDate }),
-  });
+  const res = await ynab<YnabTransactionsResponse>(
+    `/budgets/${budgetId}/transactions`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+      ...(sinceDate === undefined ? {} : { sinceDate }),
+    },
+    progress,
+    {
+      stream: "transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined || sinceDate !== undefined,
+    }
+  );
   let emittedTransactions = 0;
   for (const t of res.data.transactions) {
     if (!withinTimeRange(t.date, stream?.time_range)) {
@@ -644,14 +952,16 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
     emittedTransactions++;
   }
-  await progress(
-    `Processed ${res.data.transactions.length} transactions for budget ${budgetId}; emitted ${emittedTransactions}`,
-    {
-      stream: "transactions",
-      count: res.data.transactions.length,
-      total: res.data.transactions.length,
-    }
-  );
+  await progress("Processed YNAB transactions window", {
+    stream: "transactions",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.transactions.length,
+    total_seen: res.data.transactions.length,
+    cursor_present: true,
+    count: emittedTransactions,
+    total: res.data.transactions.length,
+  });
   const txns =
     (newState.transactions as Record<string, { server_knowledge: number; since_date?: string }> | undefined) ?? {};
   const storedSince = sinceDate || priorSinceDate || scopeSince;
@@ -668,16 +978,35 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching scheduled transactions for budget ${budgetId}`, {
-    stream: "scheduled_transactions",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
-  const res = await ynab<YnabScheduledTransactionsResponse>(`/budgets/${budgetId}/scheduled_transactions`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.scheduled_transactions.length} scheduled transactions for budget ${budgetId}`, {
+  await progress("Fetching YNAB scheduled transactions window", {
     stream: "scheduled_transactions",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const res = await ynab<YnabScheduledTransactionsResponse>(
+    `/budgets/${budgetId}/scheduled_transactions`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    {
+      stream: "scheduled_transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined,
+    }
+  );
+  await progress("Fetched YNAB scheduled transactions window", {
+    stream: "scheduled_transactions",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.scheduled_transactions.length,
+    total_seen: res.data.scheduled_transactions.length,
+    cursor_present: true,
     count: res.data.scheduled_transactions.length,
     total: res.data.scheduled_transactions.length,
   });
@@ -698,17 +1027,36 @@ async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promis
   if (!shouldFetch) {
     return null;
   }
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching months for budget ${budgetId}`, {
-    stream: "months",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "months", budgetId);
-  const res = await ynab<YnabMonthsResponse>(`/budgets/${budgetId}/months`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  const monthList = res.data.months;
-  await progress(`Fetched ${monthList.length} months for budget ${budgetId}`, {
+  await progress("Fetching YNAB months window", {
     stream: "months",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const res = await ynab<YnabMonthsResponse>(
+    `/budgets/${budgetId}/months`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    {
+      stream: "months",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined,
+    }
+  );
+  const monthList = res.data.months;
+  await progress("Fetched YNAB months window", {
+    stream: "months",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: monthList.length,
+    total_seen: monthList.length,
+    cursor_present: true,
     count: monthList.length,
     total: monthList.length,
   });
@@ -737,7 +1085,7 @@ export async function collectMonthCategories(
   monthCategoriesStream: { time_range?: TimeRange },
   fetchMonth: MonthDetailFetcher = fetchMonthDetail
 ): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const mcState = state.month_categories as Record<string, { last_fetched_month?: string }> | undefined;
   const priorCutoff = mcState?.[budgetId]?.last_fetched_month;
   const scopeSince = monthCategoriesStream.time_range?.since?.slice(0, 10);
@@ -771,10 +1119,14 @@ export async function collectMonthCategories(
     if (!m) {
       continue;
     }
-    await progress(`Fetching categories for budget ${budgetId} month ${m.month}`, {
+    await progress("Fetching YNAB month categories window", {
       stream: "month_categories",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
       count: i + 1,
       total: activeMonths.length,
+      total_seen: i,
+      cursor_present: Boolean(priorCutoff || scopeSince),
     });
     const monthDetail = await fetchMonth(budgetId, m.month, token);
     for (const c of monthDetail.categories ?? []) {
@@ -784,8 +1136,13 @@ export async function collectMonthCategories(
       highestMonth = m.month;
     }
   }
-  await progress(`Fetched month categories for ${activeMonths.length} months in budget ${budgetId}`, {
+  await progress("Fetched YNAB month categories windows", {
     stream: "month_categories",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: activeMonths.length,
+    total_seen: activeMonths.length,
+    cursor_present: Boolean(highestMonth),
     count: activeMonths.length,
     total: activeMonths.length,
   });
@@ -806,7 +1163,7 @@ export async function collectMonthCategories(
 
 async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   const { requested } = ctx;
-  if (requested.has("accounts")) {
+  if (requested.has("accounts") || requested.has("account_stats")) {
     await collectAccounts(ctx);
   }
   if (requested.has("categories") || requested.has("category_groups")) {
@@ -833,6 +1190,76 @@ async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   if (monthCategoriesStream && monthList) {
     await collectMonthCategories(ctx, monthList, monthCategoriesStream);
   }
+}
+
+/** Inputs for the `budgets` full-sync stream, extracted from `collect()` so the
+ *  considered/covered declaration is unit-testable without the live API. */
+export interface BudgetsStreamDeps {
+  budgets: readonly YnabBudget[];
+  emit: CollectContext["emit"];
+  newState: Record<string, unknown>;
+  state: Record<string, unknown>;
+  trackAndEmit: TrackedEmitRecord;
+}
+
+/**
+ * Emit the `budgets` entity stream. `/budgets` is a full-collection endpoint
+ * with no `server_knowledge` delta, so the run re-enumerates the whole budget
+ * inventory every time and gates each row through a per-record fingerprint
+ * (excluding the two calendar/clock fields, see `BUDGET_FINGERPRINT_EXCLUDE`) so
+ * an unchanged budget is not re-emitted — without this gate each run appended a
+ * new version per budget (~273/budget in the 2026-05-26 churn report).
+ *
+ * Because the run suppresses unchanged rows, on a steady-state run `collected`
+ * is a churn-reduced subset (often 0), not a coverage count. The stream declares
+ * `considered = budgets.length` (the enumerated boundary) alongside an objective
+ * `covered` count — emitted plus suppressed-because-unchanged, tallied at the
+ * loop site from per-record outcomes — so the Collection Report reads `complete`
+ * instead of a false `partial` (define-connector-progress-evidence-contract
+ * task 4.4). `covered` is counted independently from `budgets.length`: a future
+ * malformed-row drop before the gate would raise `considered` without raising
+ * `covered`, leaving an honest `partial`. Empty required/hydrated key sets — a
+ * list stream with no detail-hydration phase, so considered-vs-covered is the
+ * only coverage axis.
+ */
+export async function emitBudgetsStream(deps: BudgetsStreamDeps): Promise<void> {
+  const { budgets, state, newState, emit, trackAndEmit } = deps;
+  const cursor = openBudgetCursor(state);
+  let covered = 0;
+  for (const b of budgets) {
+    const record = budgetRecord(b);
+    if (!cursor.shouldEmit(record)) {
+      // Suppressed because unchanged since the prior run. The budget is still
+      // accounted for as covered — `/budgets` re-enumerated it and the run
+      // deliberately chose not to re-emit it.
+      covered += 1;
+      continue;
+    }
+    await trackAndEmit("budgets", record);
+    covered += 1;
+  }
+  await emitDetailCoverage(
+    { emit },
+    {
+      stream: "budgets",
+      stateStream: "budgets",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: budgets.length,
+      covered,
+    }
+  );
+  // `/budgets` is a full-collection endpoint, so any id known to the prior
+  // cursor but absent this run was deleted at the source. Prune so a future
+  // re-creation triggers a fresh emit instead of silently no-opping against a
+  // stale fingerprint.
+  cursor.pruneStale();
+  const budgetsCursor = {
+    fetched_at: nowIso(),
+    fingerprints: cursor.toState(),
+  };
+  await emit({ type: "STATE", stream: "budgets", cursor: budgetsCursor });
+  newState.budgets = budgetsCursor;
 }
 
 if (isMainModule(import.meta.url)) {
@@ -872,31 +1299,36 @@ if (isMainModule(import.meta.url)) {
       const progressWithCounters: ProgressFn = progress;
 
       // 1. Budgets — always fetched; needed to enumerate downstream streams.
-      await progressWithCounters("Fetching budgets", { stream: "budgets" });
-      const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token);
+      await progressWithCounters("Fetching budgets", { stream: "budgets", phase: "fetch", cursor_present: false });
+      const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token, {}, progressWithCounters, {
+        stream: "budgets",
+        phase: "fetch",
+        cursor_present: false,
+      });
       const budgets = budgetsRes.data.budgets;
       const budgetIds = budgets.map((b) => b.id);
-      await progressWithCounters(`Fetched ${budgets.length} budgets`, {
+      await progressWithCounters("Fetched budgets", {
         stream: "budgets",
+        phase: "page",
+        item_count: budgets.length,
+        total_seen: budgets.length,
+        cursor_present: true,
         count: budgets.length,
         total: budgets.length,
       });
 
       if (requested.has("budgets")) {
-        for (const b of budgets) {
-          await trackAndEmit("budgets", budgetRecord(b));
-        }
-        await emit({
-          type: "STATE",
-          stream: "budgets",
-          cursor: { fetched_at: nowIso() },
-        });
-        newState.budgets = { fetched_at: nowIso() };
+        await emitBudgetsStream({ budgets, state, newState, emit, trackAndEmit });
       }
 
-      for (const budgetId of budgetIds) {
+      for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal++) {
+        const budgetId = budgetIds[budgetOrdinal];
+        if (!budgetId) {
+          continue;
+        }
         await collectForBudget({
           budgetId,
+          budgetOrdinal,
           token,
           state,
           newState,

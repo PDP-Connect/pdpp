@@ -3,6 +3,8 @@
 // client, its side effects, and clock-dependent helpers live in index.ts.
 
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
+import { recordFingerprint } from "../../src/fingerprint-cursor.ts";
+import { stripForbiddenControlChars } from "../../src/safe-text-preview.ts";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
@@ -489,12 +491,20 @@ export function makeSnippet(
     decoded = buffer.toString("utf8");
   }
   // Drop lines that are obviously quoted replies ("> ...") and signature separators
-  const cleaned = decoded
+  const collapsed = decoded
     .split(NEWLINE_SPLIT_RE)
     .filter((ln) => !QUOTED_REPLY_RE.test(ln))
     .join(" ")
     .replace(WHITESPACE_RUN_RE, " ")
     .trim();
+  // A snippet is a lossy, derived preview — not the canonical body (that lives
+  // in message_bodies, blob-routed when control-rich). Strip the forbidden
+  // control characters that JS `\s` whitespace-collapse misses (BEL, ESC, DEL,
+  // and the C1 range), so the messages.snippet field always satisfies the
+  // pdppSafeText brand instead of failing schema validation and dropping the
+  // whole message record as a terminal source gap. Uses the same predicate the
+  // brand enforces, so the result is provably safe.
+  const cleaned = stripForbiddenControlChars(collapsed).trim();
   if (!cleaned) {
     return null;
   }
@@ -558,18 +568,43 @@ export function updateThreadAggregate(
 }
 
 export function buildThreadRecord(agg: ThreadAggregate): Record<string, unknown> {
+  // Sort the participant + label arrays so the emitted record's shape is
+  // deterministic across runs. IMAP doesn't guarantee identical message
+  // iteration order across `1:*` fetches; without sorting, Set insertion
+  // order would oscillate and the per-thread fingerprint would mark
+  // every thread as changed on every run.
   return {
     id: agg.id,
     subject: agg.subject,
-    participant_emails: [...agg.participant_set],
+    participant_emails: [...agg.participant_set].sort(),
     message_count: agg.message_count,
     first_message_date: agg.first_message_date,
     last_message_date: agg.last_message_date,
-    labels: [...agg.labels_set],
+    labels: [...agg.labels_set].sort(),
     unread_count: agg.unread_count,
     flagged_count: agg.flagged_count,
     has_attachments: agg.has_attachments,
   };
+}
+
+/**
+ * Stable per-thread fingerprint: a hash of every field of the emitted
+ * thread record. The connector's `1:*` aggregation re-derives the
+ * record on every run; without this gate, even a thread whose
+ * semantic shape hasn't moved emits a fresh RECORD and grows
+ * version history. The fingerprint includes every field on the
+ * record — none excluded — because every field is source-derived
+ * (subject, participants, counts, dates, labels). No run-clock
+ * fields participate.
+ *
+ * Thin wrapper over the shared `recordFingerprint` helper so the gmail
+ * connector and the shared `openFingerprintCursor` agree byte-for-byte
+ * on what an unchanged thread hashes to. Without that agreement the
+ * STATE cursor written by an old build and read by a new one would
+ * force a one-time re-emit of every thread.
+ */
+export function buildThreadFingerprint(agg: ThreadAggregate): string {
+  return recordFingerprint(buildThreadRecord(agg));
 }
 
 // ─── Body selection + record builders ───────────────────────────────────

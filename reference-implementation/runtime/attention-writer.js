@@ -39,7 +39,7 @@
  * messages never enter the store from this path.
  */
 
-import { createAttention } from './attention.ts';
+import { createAttention, recordNotificationOutcome } from './attention.ts';
 
 /**
  * Map a connector-emitted INTERACTION kind to the non-secret action_target
@@ -179,11 +179,15 @@ export function createAttentionWriter(opts) {
   // table. Multiple open ASSISTANCE prompts may legitimately share kind/stream;
   // resolving one request must not orphan the earlier row by overwriting an
   // in-memory entry with the same dedupe key.
-  const open = new Map(); // attentionId -> { dedupeKey, requestId }
+  //
+  // `record` is the last persisted shape; the notification-outcome path
+  // upserts the same id with the new `notification_state`, so we need the
+  // current axes locally without re-reading the store on every push attempt.
+  const open = new Map(); // attentionId -> { dedupeKey, requestId, record }
   const byRequestId = new Map(); // requestId -> attentionId
 
-  function trackOpen(dedupeKey, attentionId, requestId) {
-    open.set(attentionId, { dedupeKey, requestId });
+  function trackOpen(dedupeKey, attentionId, requestId, record) {
+    open.set(attentionId, { dedupeKey, requestId, record });
     if (requestId) byRequestId.set(requestId, attentionId);
   }
 
@@ -273,7 +277,7 @@ export function createAttentionWriter(opts) {
       }
       const upserted = await safeUpsert(record);
       if (upserted) {
-        trackOpen(dedupeKey, attentionId, requestId);
+        trackOpen(dedupeKey, attentionId, requestId, upserted);
         return attentionId;
       }
       return null;
@@ -322,7 +326,7 @@ export function createAttentionWriter(opts) {
       }
       const upserted = await safeUpsert(record);
       if (upserted) {
-        trackOpen(dedupeKey, attentionId, requestId);
+        trackOpen(dedupeKey, attentionId, requestId, upserted);
         return attentionId;
       }
       return null;
@@ -363,6 +367,53 @@ export function createAttentionWriter(opts) {
         if (next) drained.push(attentionId);
       }
       return drained;
+    },
+
+    /**
+     * Update the durable `notification_state` on a tracked attention row.
+     * Called from the push fanout seam so the operator console can show
+     * "we notified the owner" vs. "delivery failed" without re-querying
+     * transport logs.
+     *
+     * Returns the updated record (or `null` when nothing was tracked or
+     * the upsert failed). Lifecycle is preserved — a `failed` outcome
+     * does NOT terminate the attention; the unresolved owner action is
+     * still real and the projection must keep surfacing it. This is the
+     * spec requirement that notification failure not become permission
+     * to relaunch the same scheduled run.
+     */
+    async recordNotificationOutcome(attentionId, outcome, reason) {
+      if (!attentionId) return null;
+      const entry = open.get(attentionId);
+      if (!entry?.record) return null;
+      let next;
+      try {
+        next = recordNotificationOutcome(entry.record, {
+          outcome,
+          now: nowIso(),
+          reason: reason ?? null,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[attention-writer] recordNotificationOutcome ${attentionId} invalid outcome: ${message}`);
+        return null;
+      }
+      const upserted = await safeUpsert(next);
+      if (upserted) {
+        open.set(attentionId, { ...entry, record: upserted });
+      }
+      return upserted;
+    },
+
+    /**
+     * Look up the tracked attentionId for a given runtime request id
+     * (interaction request_id or assistance_request_id). The push fanout
+     * seam uses this to address `recordNotificationOutcome` without
+     * having to know the writer's id naming scheme.
+     */
+    attentionIdForRequest(requestId) {
+      if (!requestId) return null;
+      return byRequestId.get(requestId) || null;
     },
 
     /** Test/inspection hook — read-only view of tracked rows. */

@@ -64,12 +64,19 @@ async function listConnectorDirs() {
 }
 
 /**
- * Scan a single connector's `index.ts` (if present) for `reason: "<code>"`
- * literals. This catches the two emission shapes the brief calls out:
+ * Scan a single connector's `index.ts` (if present) for the reason codes it
+ * emits. This catches the emission shapes the brief calls out:
  *   - SKIP_RESULT entries:   { type: "SKIP_RESULT", reason: "..." }
  *   - connector_error reasons embedded inline in run records.
- * The regex is deliberately permissive (any `reason: "<code>"` literal)
- * because both shapes converge on the same string-literal pattern.
+ *   - terminal/decision objects: { kind: "terminal", reason: "..." }
+ *
+ * The scan reads the *value expression* of every `reason:` property and
+ * collects every string literal in it. A direct literal (`reason: "x"`) and a
+ * ternary (`reason: cond ? "a" : "b"`) both surface their codes — the ternary
+ * form previously slipped past a literal-only regex, so codes like
+ * `missing_mapping` were emitted live with no vetted display message and the
+ * dashboard would have shown `null`. Reading the whole value expression closes
+ * that blind spot without an allowlist.
  */
 async function reasonsEmittedBy(connectorDir) {
   const indexPath = join(connectorDir, 'index.ts');
@@ -80,10 +87,22 @@ async function reasonsEmittedBy(connectorDir) {
     return [];
   }
   const reasons = new Set();
-  const re = /reason\s*:\s*"([a-z][a-z0-9_]*)"/g;
+  // Capture the value expression of each `reason:` property: everything from
+  // the colon up to the end of that line (connector emissions keep the reason
+  // value on one line). Then pull every snake_case string literal out of it,
+  // so both `reason: "x"` and `reason: cond ? "a" : "b"` are covered.
+  const reasonValue = /\breason\s*:\s*([^\n]*)/g;
+  const literal = /"([a-z][a-z0-9_]*)"/g;
   let match;
-  while ((match = re.exec(source)) !== null) {
-    reasons.add(match[1]);
+  while ((match = reasonValue.exec(source)) !== null) {
+    let lit;
+    literal.lastIndex = 0;
+    while ((lit = literal.exec(match[1])) !== null) {
+      if (lit[1] === 'reason' && /\[\s*["']reason["']\s*\]/.test(match[1])) {
+        continue;
+      }
+      reasons.add(lit[1]);
+    }
   }
   return [...reasons];
 }

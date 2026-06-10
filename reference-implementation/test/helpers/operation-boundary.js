@@ -64,8 +64,14 @@ export const forbiddenOperationImports = Object.freeze([
   '../server/auth',
   '../server/index',
   // Sandbox UI/page code and fixture builders.
-  'apps/web',
+  'apps/site',
   '_demo/',
+  // Route-contract runtime. The contract package owns JSON-Schema +
+  // request/response validators used at the HTTP wire edge; operation
+  // modules must remain pure of HTTP-wire concerns. Spec:
+  // openspec/changes/wire-route-contract-validation/specs/
+  // reference-implementation-architecture/spec.md
+  '@pdpp/reference-contract',
   // Node process module — covers the indirection paths around
   // `process.env`. Both the bare and `node:` specifiers are forbidden so
   // `import { env } from "node:process"` and

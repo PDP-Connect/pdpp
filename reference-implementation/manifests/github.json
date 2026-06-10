@@ -1,7 +1,9 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/github",
-  "version": "1.0.0",
+  "connector_key": "github",
+  "manifest_uri": "https://registry.pdpp.org/connectors/github",
+  "version": "1.1.0",
   "display_name": "GitHub",
   "runtime_requirements": {
     "bindings": {
@@ -53,42 +55,7 @@
       "incremental": true
     },
     {
-      "name": "commits",
-      "description": "Your commit history across repositories",
-      "semantics": "append_only",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "repo_full_name": { "type": "string" },
-          "sha": { "type": "string" },
-          "message": { "type": "string" },
-          "additions": { "type": "integer" },
-          "deletions": { "type": "integer" },
-          "source_created_at": { "type": "string", "format": "date-time" }
-        },
-        "required": ["id", "sha", "repo_full_name"]
-      },
-      "primary_key": ["id"],
-      "cursor_field": "source_created_at",
-      "consent_time_field": "source_created_at",
-      "selection": { "fields": true, "resources": false },
-      "views": [
-        {
-          "id": "basic",
-          "label": "Commit messages and dates",
-          "fields": ["id", "repo_full_name", "message", "source_created_at"]
-        },
-        {
-          "id": "stats",
-          "label": "Commit stats",
-          "fields": ["id", "repo_full_name", "sha", "message", "additions", "deletions", "source_created_at"]
-        }
-      ],
-      "incremental": true
-    },
-    {
-      "name": "starred_repos",
+      "name": "starred",
       "description": "Repositories you have starred",
       "semantics": "mutable_state",
       "schema": {
@@ -122,8 +89,7 @@
       "id": "developer_profile",
       "label": "Developer activity summary",
       "streams": [
-        { "name": "repositories", "view": "basic" },
-        { "name": "commits", "view": "basic" }
+        { "name": "repositories", "view": "basic" }
       ]
     }
   ]

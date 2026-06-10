@@ -6,9 +6,11 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type {
   AccountRecord,
+  AccountStatsRecord,
   BillingKv,
   ClosingContext,
   CreditCardBillingRecord,
+  CreditCardBillingStatsRecord,
   DashboardAccount,
   InboxMessageRecord,
   InboxRow,
@@ -58,6 +60,7 @@ const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)
 const LAST4_REF_RE = /\*(\d{4})/;
 const MET_RE = /met/i;
 const UNREAD_RE = /UNREAD/i;
+const EXTERNAL_ACCOUNT_FRESHNESS_SUFFIX_RE = /\s+as of\b.*$/i;
 
 // Backfill window tunables (ms). Used by buildCandidateStarts.
 const MS_PER_DAY = 24 * 3600 * 1000;
@@ -520,16 +523,48 @@ export function checkNumberFromDescription(description: string): string | null {
 
 // ─── Per-stream record builders ──────────────────────────────────────────
 
+/** Stable account id shared by the entity record and the observation
+ *  record so `account_stats.account_id` joins back to `accounts.id`. USAA
+ *  exposes no account id on some dashboard tiles, so we fall back to a hash
+ *  of the raw tile text — identical input across the two builders. */
+export function accountId(a: DashboardAccount): string {
+  return a.account_id_raw || hashId(a.raw_text);
+}
+
 export function buildAccountRecord(a: DashboardAccount, fetchedAt: string): AccountRecord {
   return {
-    id: a.account_id_raw || hashId(a.raw_text),
+    id: accountId(a),
     type: a.account_type,
-    name: a.name,
+    name: stableAccountName(a),
     last_four: a.last_four,
-    balance_cents: a.balance_cents,
-    available_balance_cents: null,
     status: "open",
     fetched_at: fetchedAt,
+  };
+}
+
+function stableAccountName(a: DashboardAccount): string | null {
+  if (!a.name || a.account_type !== "external-account") {
+    return a.name;
+  }
+  const stable = a.name.replace(EXTERNAL_ACCOUNT_FRESHNESS_SUFFIX_RE, "").trim();
+  return stable || a.name;
+}
+
+/**
+ * Family-2 observation record for one account's balances on one UTC day.
+ * Keyed `{account_id}:{observed_on}` so a same-day re-pull is idempotent
+ * and a later-day pull appends a new point in the balance time series. The
+ * point-in-time balance fields moved here out of `buildAccountRecord` so a
+ * balance tick no longer versions the entity record.
+ */
+export function buildAccountStatsRecord(a: DashboardAccount, observedOn: string): AccountStatsRecord {
+  const id = accountId(a);
+  return {
+    id: `${id}:${observedOn}`,
+    account_id: id,
+    observed_on: observedOn,
+    balance_cents: a.balance_cents,
+    available_balance_cents: null,
   };
 }
 
@@ -550,26 +585,54 @@ export function buildInboxMessageRecord(m: InboxRow, year: number, fetchedAt: st
   };
 }
 
+/** Stable credit-card id shared by the entity record and the observation
+ *  record so `credit_card_billing_stats.card_id` joins back to
+ *  `credit_card_billing.id`. Identical fallback chain across both builders. */
+export function creditCardId(a: DashboardAccount): string {
+  return a.account_id_raw || a.last_four || hashId(a.raw_text);
+}
+
 export function buildCreditCardBillingRecord(
   a: DashboardAccount,
   billing: BillingKv,
   fetchedAt: string
 ): CreditCardBillingRecord {
-  const id = a.account_id_raw || a.last_four || hashId(a.raw_text);
   return {
-    id,
+    id: creditCardId(a),
     account_id: a.account_id_raw,
     account_nickname: billing["Account Nickname"] ?? billing.Nickname ?? null,
-    current_balance_cents: currencyToCents(billing["Current Balance"] ?? null),
-    available_credit_cents: currencyToCents(billing["Available Credit"] ?? null),
     credit_limit_cents: currencyToCents(billing["Credit Limit"] ?? null),
     annual_percent_rate: billing["Annual Percent Rate"] ?? null,
     cash_advance_apr: billing["Cash Advance APR"] ?? null,
+    card_holders: billing["Card Holders"] ?? null,
+    fetched_at: fetchedAt,
+  };
+}
+
+/**
+ * Family-2 observation record for one credit card's per-cycle volatile
+ * state on one UTC day. Keyed `{card_id}:{observed_on}`. Current balance,
+ * available credit, accrued rewards, and the cycle billing-status flip moved
+ * here out of `buildCreditCardBillingRecord` so they no longer version the
+ * entity record. Stable settings (credit limit, APRs, nickname, card
+ * holders) stay on the entity.
+ */
+export function buildCreditCardBillingStatsRecord(
+  a: DashboardAccount,
+  billing: BillingKv,
+  observedOn: string
+): CreditCardBillingStatsRecord {
+  const id = creditCardId(a);
+  return {
+    id: `${id}:${observedOn}`,
+    card_id: id,
+    account_id: a.account_id_raw,
+    observed_on: observedOn,
+    current_balance_cents: currencyToCents(billing["Current Balance"] ?? null),
+    available_credit_cents: currencyToCents(billing["Available Credit"] ?? null),
     cash_rewards_cents: currencyToCents(billing["Cash Rewards"] ?? null),
     billing_status: billing["Billing Information"] ?? null,
     minimum_payment_met: MET_RE.test(billing["Billing Information"] ?? ""),
-    card_holders: billing["Card Holders"] ?? null,
-    fetched_at: fetchedAt,
   };
 }
 

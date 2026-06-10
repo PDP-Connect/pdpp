@@ -19,6 +19,7 @@ import {
   tsToIso,
   unwrapGizmo,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { ChatGptNode, ConversationListItem, RawGizmo } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -171,6 +172,91 @@ test("extractContent: unrecognized shape falls back to JSON-stringified payload"
 
 test("extractContent: empty / null-shaped content falls back to null", () => {
   assert.equal(extractContent({}), null);
+});
+
+test("extractContent: content with U+0000 (NUL) returns null, not shape-check-failing string", () => {
+  // Simulates a real ChatGPT message whose text field contains an embedded NUL byte.
+  // Previously this would pass through extractContent as a raw string, reach
+  // pdppSafeText in the schema validator, and cause a shape_check_failed SKIP_RESULT
+  // that made the message non-backfillable. The fix: sanitize at extraction time.
+  assert.equal(extractContent({ content_type: "text", parts: ["hello\x00world"] }), null);
+});
+
+test("extractContent: content with other forbidden control char (VT U+000B) returns null", () => {
+  assert.equal(extractContent({ content_type: "text", parts: ["line1\x0Bline2"] }), null);
+});
+
+test("extractContent: content with only allowed whitespace (\\t \\n \\r) is preserved", () => {
+  assert.equal(extractContent({ content_type: "text", parts: ["a\tb\nc\rd"] }), "a\tb\nc\rd");
+});
+
+test("extractContent: safe full message content is not preview-truncated", () => {
+  const content = "x".repeat(5001);
+  assert.equal(extractContent({ content_type: "text", parts: [content] }), content);
+});
+
+// ─── oversized content (>1 MB) safe-landing ───────────────────────────────
+//
+// The messages schema caps `content` at 1_048_576 chars. A safe-but-oversized
+// body (control-clean) passes sanitization yet would fail that cap, producing
+// a terminal shape_check_failed SKIP that makes the whole message
+// non-backfillable. extractContent truncates the head in-band so the record
+// still lands, with a self-describing recovery marker.
+
+const CONTENT_CAP = 1_048_576;
+
+test("extractContent: body exactly at the 1 MB cap is preserved verbatim", () => {
+  const atCap = "x".repeat(CONTENT_CAP);
+  const out = extractContent({ content_type: "text", parts: [atCap] });
+  assert.equal(out, atCap);
+  assert.equal(out?.length, CONTENT_CAP);
+});
+
+test("extractContent: oversized (>1 MB) safe body truncates in-band under the cap with a recovery marker", () => {
+  const oversized = "y".repeat(CONTENT_CAP * 3); // ~3 MB, well over the cap
+  const out = extractContent({ content_type: "text", parts: [oversized] });
+  assert.ok(typeof out === "string", "oversized content must still produce a string, not null");
+  assert.ok((out?.length ?? 0) <= CONTENT_CAP, "truncated content must fit the schema cap");
+  assert.ok(out?.startsWith("yyy"), "the head of the original body is preserved");
+  assert.ok(out?.includes("truncated by PDPP"), "a self-describing recovery marker is appended");
+  assert.ok(out?.includes("conversation detail"), "marker names the backfill path");
+});
+
+test("extractContent: oversized truncation never splits a surrogate pair (stays PDPP-safe)", () => {
+  // Fill right up to the boundary with astral code points (each is a surrogate
+  // pair, length 2) so the truncation point is forced onto a pair edge.
+  const emoji = "😀"; // U+1F600, two UTF-16 code units
+  const oversized = emoji.repeat(CONTENT_CAP); // length 2 * CONTENT_CAP, > cap
+  const out = extractContent({ content_type: "text", parts: [oversized] });
+  assert.ok(typeof out === "string");
+  // No lone surrogate at the truncation seam: the kept body must round-trip
+  // through pdppSafeText (which rejects forbidden control chars; a lone
+  // surrogate would not be a control char, so additionally assert no half-pair
+  // by checking the last code unit before the marker is not a high surrogate).
+  const headOnly = out?.slice(0, out?.indexOf("\n\n[…truncated") ?? out.length) ?? "";
+  const lastUnit = headOnly.length > 0 ? headOnly.charCodeAt(headOnly.length - 1) : 0;
+  assert.ok(!(lastUnit >= 0xd8_00 && lastUnit <= 0xdb_ff), "no dangling high surrogate at the seam");
+});
+
+test("messages schema: oversized message record passes validation instead of shape_check_failed", () => {
+  // End-to-end proof of the lane goal: a message whose raw body is >1 MB must
+  // NOT become a terminal shape_check_failed SKIP_RESULT. Build the full record
+  // via extractMessage and run it through the exact validator the runtime uses.
+  const oversizedNode: ChatGptNode = {
+    parent: "u1",
+    children: [],
+    message: {
+      author: { role: "assistant" },
+      content: { content_type: "text", parts: ["z".repeat(CONTENT_CAP * 2)] },
+      create_time: 1_700_000_000,
+      metadata: { model_slug: "gpt-4o" },
+    },
+  };
+  const rec = extractMessage("oversized-node", oversizedNode, "conv1", true);
+  assert.ok(rec, "extractMessage must produce a record");
+  const result = validateRecord("messages", rec as Record<string, unknown>);
+  assert.equal(result.ok, true, "oversized message must pass the messages schema (no terminal shape_check_failed)");
+  assert.ok(typeof rec?.content === "string" && (rec.content as string).includes("truncated by PDPP"));
 });
 
 // ─── extractToolCalls ──────────────────────────────────────────────────

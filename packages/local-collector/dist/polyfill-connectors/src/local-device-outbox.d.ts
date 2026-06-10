@@ -66,6 +66,50 @@ export interface LocalDeviceOutboxDeadLetterInput extends LocalDeviceOutboxLease
 export interface LocalDeviceOutboxRenewInput extends LocalDeviceOutboxLeaseInput {
     leaseMs: number;
 }
+export interface LocalDeviceOutboxRequeueDeadLettersInput {
+    dryRun?: boolean;
+    kind?: LocalDeviceOutboxKind;
+    limit?: number;
+    sourceInstanceId?: string;
+}
+export interface LocalDeviceOutboxRequeueDeadLettersResult {
+    matched: number;
+    requeued: number;
+}
+export interface LocalDeviceOutboxPruneSentInput {
+    dryRun?: boolean;
+    keepCount?: number;
+    olderThanIso?: string;
+    sourceInstanceId?: string;
+}
+export interface LocalDeviceOutboxPruneSentResult {
+    matched: number;
+    pruned: number;
+}
+export interface LocalDeviceOutboxPageStats {
+    freelistPages: number;
+    pageCount: number;
+    pageSizeBytes: number;
+    reclaimableBytes: number;
+}
+export interface LocalDeviceOutboxCompactResult {
+    after: LocalDeviceOutboxPageStats;
+    before: LocalDeviceOutboxPageStats;
+    reclaimedBytes: number;
+}
+export interface LocalDeviceOutboxDeadLetterErrorClass {
+    count: number;
+    error_class: string;
+}
+export interface LocalDeviceOutboxDeadLetterErrorSummary {
+    dead_letter_count: number;
+    null_error_count: number;
+    top_classes: LocalDeviceOutboxDeadLetterErrorClass[];
+}
+export interface LocalDeviceOutboxDeadLetterErrorSummaryInput {
+    limit?: number;
+    sourceInstanceId?: string;
+}
 export declare class LocalDeviceOutbox {
     #private;
     constructor(options: LocalDeviceOutboxOptions);
@@ -84,6 +128,12 @@ export declare class LocalDeviceOutbox {
     }): number;
     get(id: string): LocalDeviceOutboxItem | null;
     deleteSucceeded(id: string): boolean;
+    backupTo(path: string): void;
+    requeueDeadLetters(input?: LocalDeviceOutboxRequeueDeadLettersInput): LocalDeviceOutboxRequeueDeadLettersResult;
+    pruneSent(input?: LocalDeviceOutboxPruneSentInput): LocalDeviceOutboxPruneSentResult;
+    countNonSucceeded(): number;
+    pageStats(): LocalDeviceOutboxPageStats;
+    compact(): LocalDeviceOutboxCompactResult;
     hasNonSucceededWork(input: {
         excludeKinds?: readonly LocalDeviceOutboxKind[];
         kinds?: readonly LocalDeviceOutboxKind[];
@@ -111,5 +161,14 @@ export declare class LocalDeviceOutbox {
     summary(input?: {
         sourceInstanceId?: string;
     }): LocalDeviceOutboxSummary;
+    hasObservedStream(input: {
+        sourceInstanceId: string;
+        stream: string;
+    }): boolean | null;
+    countRecordBatches(input: {
+        sourceInstanceId: string;
+    }): number;
+    deadLetterErrorSummary(input?: LocalDeviceOutboxDeadLetterErrorSummaryInput): LocalDeviceOutboxDeadLetterErrorSummary;
 }
 export declare function buildLocalDeviceOutboxId(input: BuildLocalDeviceOutboxIdInput): string;
+export declare function classifyDeadLetterError(raw: string): string;

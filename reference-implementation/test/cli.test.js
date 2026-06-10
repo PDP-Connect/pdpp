@@ -13,6 +13,7 @@ import { parsePendingConsentRequestUri } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -20,6 +21,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const CLI_PATH = join(REFERENCE_IMPL_DIR, 'cli/index.js');
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
+
+// Registering the URL-shaped spotify manifest stores the catalog row,
+// connector_instances, and records under the canonical connector key
+// (Decision 1). The owner read/mutation/state routes canonicalize the
+// connector id at the boundary, so error messages and trace source
+// descriptors carry this canonical key. Raw-SQL fixtures that target those
+// rows by connector_id must also use the canonical key.
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('https://registry.pdpp.org/connectors/spotify');
 
 
 async function closeServer(server) {
@@ -454,6 +463,18 @@ function assertMalformedPolyfillClientArtifacts({
   assert.equal(stderr, '');
 }
 
+// Strip the one-line "warning: \"pdpp <group> <sub>\" is deprecated; use
+// \"pdpp ref <group> <sub>\" instead." emitted by the legacy operator
+// aliases (cli/index.js:126). The aliases route to the same handlers as
+// the canonical `pdpp ref ...` forms, so the warning is operationally
+// invisible to test expectations that assert `stderr === ''`. Coverage
+// of the deprecation behavior itself lives in the dedicated legacy-alias
+// test below.
+const LEGACY_ALIAS_DEPRECATION_RE = /^warning: "pdpp [^"]+" is deprecated; use "[^"]+" instead\.\n/gm;
+function scrubLegacyAliasWarning(stderr) {
+  return (stderr || '').replace(LEGACY_ALIAS_DEPRECATION_RE, '');
+}
+
 async function runCli(args, env = {}) {
   const { stdout, stderr } = await execFile(process.execPath, [CLI_PATH, ...args], {
     cwd: REFERENCE_IMPL_DIR,
@@ -478,7 +499,7 @@ async function runCli(args, env = {}) {
 
   return {
     stdout,
-    stderr,
+    stderr: scrubLegacyAliasWarning(stderr),
     json,
   };
 }
@@ -501,7 +522,7 @@ async function runCliExpectFailure(args, env = {}) {
   } catch (error) {
     return {
       stdout: error.stdout || '',
-      stderr: error.stderr || '',
+      stderr: scrubLegacyAliasWarning(error.stderr || ''),
       code: error.code,
     };
   }
@@ -963,13 +984,18 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(result.json.pushed_authorization_request_supported, true);
       assert.equal(result.json.pushed_authorization_request_endpoint, `${asUrl}/oauth/par`);
       assert.equal(result.json.registration_endpoint, `${asUrl}/oauth/register`);
-      assert.equal('authorization_endpoint' in result.json, false);
-      assert.equal('response_types_supported' in result.json, false);
-      assert.equal('code_challenge_methods_supported' in result.json, false);
+      assert.equal(result.json.authorization_endpoint, `${asUrl}/oauth/authorize`);
+      assert.deepEqual(result.json.response_types_supported, ['code']);
+      assert.deepEqual(result.json.code_challenge_methods_supported, ['S256']);
       assert.deepEqual(result.json.token_endpoint_auth_methods_supported, ['none']);
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('owner_self_export'));
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('third_party_client_connect'));
-      assert.deepEqual(result.json.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+      assert.deepEqual(result.json.pdpp_registration_modes_supported, [
+        'dynamic',
+        'pre_registered_public',
+        'client_id_metadata_document',
+      ]);
+      assert.equal(result.json.client_id_metadata_document_supported, true);
       assert.equal(result.stderr, '');
     });
   });
@@ -1109,7 +1135,7 @@ test('PDPP CLI smoke', async (t) => {
       writeFileSync(requestPath, JSON.stringify({
         client_name: 'Native Longview',
         token_endpoint_auth_method: 'none',
-        application_type: 'native',
+        application_type: 'browser',
       }, null, 2));
 
       const result = await runCliExpectFailure(
@@ -1117,7 +1143,7 @@ test('PDPP CLI smoke', async (t) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /application_type metadata is not supported/i);
+      assert.match(result.stderr, /Unsupported application_type/i);
     });
   });
 
@@ -1129,7 +1155,7 @@ test('PDPP CLI smoke', async (t) => {
         writeFileSync(unsupportedGrantTypesPath, JSON.stringify({
           client_name: 'Grant Types Longview',
           token_endpoint_auth_method: 'none',
-          grant_types: ['authorization_code'],
+          grant_types: ['client_credentials'],
         }, null, 2));
 
         const unsupportedGrantTypesResult = await runCliExpectFailure(
@@ -1137,13 +1163,13 @@ test('PDPP CLI smoke', async (t) => {
         );
 
         assert.notEqual(unsupportedGrantTypesResult.code, 0);
-        assert.match(unsupportedGrantTypesResult.stderr, /grant_types metadata is not supported/i);
+        assert.match(unsupportedGrantTypesResult.stderr, /Unsupported grant_types/i);
 
         const unsupportedResponseTypesPath = join(tmpDir, 'unsupported-response-types.json');
         writeFileSync(unsupportedResponseTypesPath, JSON.stringify({
           client_name: 'Response Types Longview',
           token_endpoint_auth_method: 'none',
-          response_types: ['code'],
+          response_types: ['token'],
         }, null, 2));
 
         const unsupportedResponseTypesResult = await runCliExpectFailure(
@@ -1151,7 +1177,7 @@ test('PDPP CLI smoke', async (t) => {
         );
 
         assert.notEqual(unsupportedResponseTypesResult.code, 0);
-        assert.match(unsupportedResponseTypesResult.stderr, /response_types metadata is not supported/i);
+        assert.match(unsupportedResponseTypesResult.stderr, /Unsupported response_types/i);
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -1733,7 +1759,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejected.object_type, 'pending_consent');
       assert.equal(rejected.client_id, registration.json.client_id);
       assert.equal(rejected.data?.source?.kind, 'connector');
-      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejected.data?.error?.code, 'invalid_client');
       assert.match(rejected.data?.error?.message || '', /Unknown client_id/);
       assert.equal(result.stderr, '');
@@ -1782,7 +1808,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(approved, 'trace show should keep consent.approved on the original staged trace');
       assert.equal(approved.data?.source?.kind, 'connector');
-      assert.equal(approved.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(approved.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const grantIssued = (result.json.data || []).find((event) =>
         event.event_type === 'grant.issued'
@@ -1790,7 +1816,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(grantIssued, 'trace show should keep grant.issued on the original staged trace');
       assert.equal(grantIssued.data?.source?.kind, 'connector');
-      assert.equal(grantIssued.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(grantIssued.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const tokenIssued = (result.json.data || []).find((event) =>
         event.event_type === 'token.issued'
@@ -1798,7 +1824,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(tokenIssued, 'trace show should keep token.issued on the original staged trace');
       assert.equal(tokenIssued.data?.source?.kind, 'connector');
-      assert.equal(tokenIssued.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(tokenIssued.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(tokenIssued.data?.issuance_path, 'grant_approval');
       assert.equal(result.stderr, '');
     });
@@ -1913,7 +1939,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(rejected, 'trace show should keep request.rejected on the original staged trace');
       assert.equal(rejected.data?.source?.kind, 'connector');
-      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(result.stderr, '');
     });
   });
@@ -2045,7 +2071,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(denied.object_type, 'pending_consent');
       assert.equal(denied.status, 'denied');
       assert.equal(denied.data?.source?.kind, 'connector');
-      assert.equal(denied.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(denied.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(result.stderr, '');
     });
   });
@@ -2272,7 +2298,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCli(
         ['grant', 'revoke', approved.grant.grant_id, '--rs-url', rsUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.equal(result.json.revoked, true);
@@ -2319,7 +2348,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.notEqual(result.code, 0);
@@ -2622,7 +2654,11 @@ test('PDPP CLI smoke', async (t) => {
       });
 
       const updateResp = await fetch(
-        `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
+        // Grant-scoped state writes resolve the grant's storage binding, which
+        // is persisted under the canonical connector key (Decision 1). The PUT
+        // route compares that binding against the path connector id verbatim,
+        // so the path must carry the canonical key to stay in scope.
+        `${rsUrl}/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
         {
           method: 'PUT',
           headers: {
@@ -2654,7 +2690,9 @@ test('PDPP CLI smoke', async (t) => {
       assert.deepEqual(stateUpdated.data?.persisted_streams, ['top_artists']);
 
       const rejectedResp = await fetch(
-        `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
+        // Canonical connector key keeps the path in grant scope so the rejection
+        // is driven by the out-of-grant stream, not a connector-id mismatch.
+        `${rsUrl}/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
         {
           method: 'PUT',
           headers: {
@@ -2727,7 +2765,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.notEqual(result.code, 0);
@@ -3087,7 +3128,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.data?.has_changes_since, true);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3098,7 +3139,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.data?.has_changes_since, true);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data?.error?.message || '', /Filter on field 'popularity' not in grant/);
 
@@ -3157,7 +3198,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, rejectedId);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3168,7 +3209,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, rejectedId);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 
@@ -3263,7 +3304,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
         assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
         assert.equal(queryReceived.data?.source?.kind, 'connector');
-        assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
         const rejectedEvent = (timeline.json.data || []).find((event) =>
           event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3274,7 +3315,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
         assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
         assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-        assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.equal(rejectedEvent.data?.error?.code, scenario.expectedCode);
         assert.match(rejectedEvent.data?.error?.message || '', scenario.expectedMessage);
 
@@ -3350,7 +3391,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, hiddenRecord.id);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3361,7 +3402,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, hiddenRecord.id);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 
@@ -3469,7 +3510,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(skippedEvent.status, 'skipped');
         assert.equal(skippedEvent.stream_id, 'saved_tracks');
         assert.equal(skippedEvent.data?.source?.kind, 'connector');
-        assert.equal(skippedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(skippedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(skippedEvent.data?.reason, 'rate_limited');
         assert.equal(skippedEvent.data?.message, 'Platform returned 429');
 
@@ -3548,7 +3589,7 @@ rl.on('line', (line) => {
         const interactionRequired = (timeline.json.data || []).find((event) => event.event_type === 'run.interaction_required');
         assert.ok(interactionRequired, 'run timeline should include run.interaction_required');
         assert.equal(interactionRequired.data?.source?.kind, 'connector');
-        assert.equal(interactionRequired.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(interactionRequired.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(interactionRequired.data?.kind, 'credentials');
         assert.equal(interactionRequired.data?.stream, 'saved_tracks');
 
@@ -4514,7 +4555,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime authentication failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'authentication_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4568,7 +4609,7 @@ rl.on('line', (line) => {
           return;
         }
 
-        if (req.method === 'PUT' && url.pathname === `/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`) {
+        if (req.method === 'PUT' && url.pathname === `/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}`) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             error: {
@@ -4620,7 +4661,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime permission failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'permission_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -4712,7 +4753,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for deterministic runtime connector_invalid failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_invalid');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4800,7 +4841,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for retryable runtime rate_limit_error failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'rate_limit_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4865,7 +4906,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_reported_failed');
         assert.equal(failedEvent.data?.connector_error_message, 'Remote provider rate limit');
         assert.equal(failedEvent.data?.connector_error_retryable, true);
@@ -4932,7 +4973,7 @@ rl.on('line', (line) => {
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared cancellations');
         assert.equal(failedEvent.status, 'cancelled');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_reported_cancelled');
         assert.equal(failedEvent.data?.connector_error_message, 'User denied follow-up verification');
         assert.equal(failedEvent.data?.connector_error_retryable, false);
@@ -5017,7 +5058,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for terminal counter mismatch');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.reported_records_emitted, 2);
@@ -5104,7 +5145,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for invalid DONE.status');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5213,7 +5254,7 @@ rl.on('line', (line) => {
           const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
           assert.ok(failedEvent, `run timeline should include run.failed for ${scenario.name}`);
           assert.equal(failedEvent.data?.source?.kind, 'connector');
-          assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+          assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
           assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
           assert.equal(failedEvent.data?.exit_code, scenario.expectedExitCode);
           assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5283,7 +5324,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for contradictory success-terminal errors');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.checkpoint_commit_status, 'not_committed');
         assert.ok(!('connector_error_message' in failedEvent.data), 'protocol-violation timeline should not surface contradictory DONE.error details');
@@ -5374,7 +5415,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for post-DONE protocol violations');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_flushed, 1);
         assert.equal(failedEvent.data?.buffered_records_dropped, 0);
@@ -5636,7 +5677,7 @@ rl.on('line', (line) => {
       assert.ok(ingestRequested, 'trace show should include mutation.requested for owner ingest');
       assert.equal(ingestRequested.data?.operation, 'ingest_records');
       assert.equal(ingestRequested.data?.source?.kind, 'connector');
-      assert.equal(ingestRequested.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const ingestCompleted = (ingestTrace.json.data || []).find((event) => event.event_type === 'mutation.completed');
       assert.ok(ingestCompleted, 'trace show should include mutation.completed for owner ingest');
@@ -5674,7 +5715,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5686,9 +5727,12 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
+      // Owner mutation routes canonicalize the connector id at the namespace
+      // boundary, so traces and diagnostics carry the operational key even
+      // when the caller supplied the first-party manifest URL.
       assert.match(
         rejectedBody.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const requestId = rejectedResp.headers.get('Request-Id');
       const traceId = rejectedResp.headers.get('PDPP-Reference-Trace-Id');
@@ -5705,11 +5749,11 @@ rl.on('line', (line) => {
       assert.ok(mutationRejected, 'trace show should include mutation.rejected for malformed polyfill owner mutations');
       assert.equal(mutationRejected.data?.operation, 'delete_stream_records');
       assert.equal(mutationRejected.data?.source?.kind, 'connector');
-      assert.equal(mutationRejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(mutationRejected.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(mutationRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         mutationRejected.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
     });
   });
@@ -5739,7 +5783,7 @@ rl.on('line', (line) => {
       assert.equal(stateRequested.data?.operation, 'write');
       assert.deepEqual(stateRequested.data?.requested_streams, ['top_artists']);
       assert.equal(stateRequested.data?.source?.kind, 'connector');
-      assert.equal(stateRequested.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(stateRequested.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const stateUpdated = (updateTrace.json.data || []).find((event) => event.event_type === 'state.updated');
       assert.ok(stateUpdated, 'trace show should include state.updated for owner state writes');
@@ -5772,7 +5816,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5782,9 +5826,12 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
+      // Owner state routes canonicalize the connector id at the namespace
+      // boundary, so traces and diagnostics carry the operational key even
+      // when the caller supplied the first-party manifest URL.
       assert.match(
         rejectedBody.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const requestId = rejectedResp.headers.get('Request-Id');
       const traceId = rejectedResp.headers.get('PDPP-Reference-Trace-Id');
@@ -5802,11 +5849,11 @@ rl.on('line', (line) => {
       assert.equal(stateRejected.data?.state_scope, 'owner');
       assert.equal(stateRejected.data?.operation, 'read');
       assert.equal(stateRejected.data?.source?.kind, 'connector');
-      assert.equal(stateRejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(stateRejected.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(stateRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         stateRejected.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
     });
   });
@@ -6549,18 +6596,27 @@ rl.on('line', (line) => {
   });
 
 
-  await t.test('owner streams fails honestly without --connector-id against a polyfill RS', async () => {
+  await t.test('owner streams works without --connector-id against a polyfill RS', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      const result = await runCliExpectFailure(
+      const result = await runCli(
         ['owner', 'streams', '--rs-url', rsUrl, '--format', 'json'],
         { PDPP_OWNER_TOKEN: ownerToken },
       );
 
-      assert.notEqual(result.exitCode, 0);
-      assert.match(result.stderr, /connector_id must be a single non-empty string for polyfill owner access/);
+      assert.equal(result.json.object, 'list');
+      assert.ok(Array.isArray(result.json.data));
+      assert.ok(result.json.data.some((stream) =>
+        stream.name === 'top_artists' && stream.connector_id === SPOTIFY_CONNECTOR_KEY
+      ));
+      assert.ok(result.json.data.some((stream) =>
+        stream.name === 'saved_tracks' && stream.connector_id === SPOTIFY_CONNECTOR_KEY
+      ));
+      assert.ok(result.json.request_id?.startsWith('req_'));
+      assert.ok(typeof result.json.reference_trace_id === 'string' && result.json.reference_trace_id.length > 0);
+      assert.equal(result.stderr, '');
     });
   });
 
@@ -6589,7 +6645,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'streams', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl, '--format', 'json'],
@@ -6597,7 +6653,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner read should surface a request id on stderr');
@@ -6613,7 +6669,7 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for malformed polyfill owner reads');
       assert.equal(queryReceived.data?.query_shape, 'stream_list');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6621,11 +6677,11 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for malformed polyfill owner reads');
       assert.equal(rejectedEvent.data?.query_shape, 'stream_list');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>
@@ -6651,7 +6707,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'get', 'top_artists', protectedRecordId, '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],
@@ -6659,7 +6715,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner record-detail read should surface a request id on stderr');
@@ -6676,7 +6732,7 @@ rl.on('line', (line) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6685,11 +6741,11 @@ rl.on('line', (line) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>
@@ -6708,7 +6764,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'export', 'top_artists', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],
@@ -6716,7 +6772,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner record-list read should surface a request id on stderr');
@@ -6733,7 +6789,7 @@ rl.on('line', (line) => {
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6742,11 +6798,11 @@ rl.on('line', (line) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>
@@ -6888,5 +6944,38 @@ rl.on('line', (line) => {
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /connector_id must be a single non-empty string for polyfill owner access/);
     });
+  });
+});
+
+// Explicit coverage for the `pdpp ref` migration deprecation hint emitted
+// by cli/index.js when legacy operator aliases are invoked. The
+// per-call-site stderr assertions in this file scrub this warning via
+// `scrubLegacyAliasWarning`; this test pins the warning behavior itself
+// so a future change to the alias surface still trips a test rather than
+// silently being masked.
+test('legacy operator aliases emit a deprecation hint pointing at `pdpp ref ...`', async () => {
+  await withHarness(async ({ asUrl }) => {
+    // Use a bogus identifier so the handler returns quickly; we only
+    // need to observe the stderr deprecation line, not a successful
+    // round-trip.
+    const { stderr } = await execFile(
+      process.execPath,
+      [CLI_PATH, 'trace', 'show', 'trc_nope', '--as-url', asUrl, '--format', 'json'],
+      {
+        cwd: REFERENCE_IMPL_DIR,
+        env: {
+          ...process.env,
+          PDPP_AS_URL: '',
+          PDPP_RS_URL: '',
+          AS_URL: '',
+          RS_URL: '',
+        },
+      },
+    ).catch((error) => ({ stderr: error.stderr || '' }));
+    assert.match(
+      stderr,
+      /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m,
+      'legacy `pdpp trace show` alias should emit a single deprecation hint on stderr',
+    );
   });
 });

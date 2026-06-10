@@ -10,7 +10,9 @@
 // The input surface is deliberately permissive: callers pass whatever they
 // have (often `unknown` from JSON) and we coerce. `PrimitiveValue` captures
 // every scalar we accept as a form-urlencoded value source; anything outside
-// this set is either an array (handled separately) or ignored.
+// this set is either an array (handled separately) or ignored. Query filters
+// are the exception: malformed filters must survive to schema/runtime
+// validation so they fail loudly instead of widening the read.
 type PrimitiveValue = string | number | boolean | null | undefined;
 
 type ObjectLike = Record<string, unknown>;
@@ -81,7 +83,7 @@ export type RecordsQueryInput = ExpandParamsInput & {
 
 export function buildRecordsQuery(params: RecordsQueryInput = {}): ObjectLike {
   const expandParams = buildExpandParams(params);
-  return compactObject({
+  const query = compactObject({
     limit: params.limit,
     cursor: params.cursor,
     order: params.order,
@@ -93,6 +95,10 @@ export function buildRecordsQuery(params: RecordsQueryInput = {}): ObjectLike {
     subject_id: params.subject_id,
     ...expandParams,
   });
+  if ("filter" in params && params.filter !== undefined && params.filter !== null && !isPlainObject(params.filter)) {
+    query.filter = params.filter;
+  }
+  return query;
 }
 
 export interface OwnerDeviceAuthorizationInput {

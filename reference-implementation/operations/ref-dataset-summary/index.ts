@@ -45,10 +45,10 @@
 
 export interface RefDatasetSummaryCounts {
   /**
-   * Distinct connector identifiers contributing to the live records
-   * substrate. Adapter-defined ("distinct (connector_id) in records WHERE
-   * deleted = 0" on the native SQLite side; `DEMO_CONNECTORS.length` on the
-   * sandbox side).
+   * Live configured connections contributing records. The legacy field name
+   * remains `connector_count`, but reference adapters should count configured
+   * connection identity (`connector_instance_id`) where available, not only
+   * connector implementation type.
    */
   connector_count: number;
   /**
@@ -254,7 +254,7 @@ export async function executeRefDatasetSummary(
     candidates,
     metadata: {
       computed_at: null,
-      state: "refreshing",
+      state: "fresh",
       stale_since: null,
       rebuild_status: "idle",
       last_error: null,

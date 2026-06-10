@@ -1,6 +1,29 @@
 import { getDb } from './db.js';
+import { isPostgresStorageBackend } from './postgres-storage.js';
 
 const GLOBAL_KEY = 'global';
+// Postgres mode owns dataset-summary truth via the retained-size
+// projection (`getRetainedSizeDatasetSummaryProjection` in
+// `server/index.js`). This module is the SQLite projection. Any caller
+// that reaches it while `PDPP_STORAGE_BACKEND=postgres` is configured is
+// either reading stale SQLite rows or silently dropping writes — both
+// are the failure mode `complete-postgres-runtime-boundary` exists to
+// prevent. Fail fast with a typed error rather than serve or swallow
+// the wrong answer.
+//
+// Design note:
+// design-notes/postgres-runtime-boundary-sqlite-classification-2026-05-28.md
+function assertSqliteBackendForDatasetSummary(operation) {
+  if (isPostgresStorageBackend()) {
+    const err = new Error(
+      `SQLite dataset-summary read model reached in Postgres mode (operation: ${operation}). ` +
+      'In Postgres mode the dashboard summary reads from the retained-size projection ' +
+      'via getRetainedSizeDatasetSummaryProjection; this module must not be invoked.'
+    );
+    err.code = 'storage_backend_mismatch';
+    throw err;
+  }
+}
 // Cap the candidate list the projection persists. The operation only
 // emits the top three; anything beyond a small multiple of that is just
 // noise that bloats the projection JSON, the wire response, and the
@@ -84,7 +107,69 @@ export function __setDatasetSummaryProjectionFaultHookForTest(hook) {
   projectionFaultHook = typeof hook === 'function' ? hook : null;
 }
 
+/**
+ * Read the per-`(connector_id, stream)` rows that the dataset-summary
+ * projection already maintains. This is a thin read over
+ * `dataset_summary_stream_projection`; it does not scan canonical
+ * `records`, `record_changes`, or `blobs`.
+ *
+ * The returned rows surface NULL and dirty time-bound values honestly so
+ * downstream surfaces can distinguish "we don't know yet" from
+ * "definitely zero". Specifically:
+ *   - `earliest_record_time` / `latest_record_time` pass through as
+ *     `null` when the projection has no value for them (no
+ *     manifest-declared `consent_time_field`, or not yet reconciled).
+ *   - `dirty_record_time_bounds` is coerced to a boolean — `true` means
+ *     the projection believes the record-time bounds are no longer
+ *     trustworthy and need reconciliation.
+ *
+ * When `connectorId` is supplied, the result is filtered to rows whose
+ * `connector_id` equals that value. Otherwise every row is returned,
+ * sorted by `connector_id` then `stream` for deterministic output.
+ */
+export function listStreamProjections({ connectorId } = {}) {
+  assertSqliteBackendForDatasetSummary('listStreamProjections');
+  const db = getDb();
+  const params = [];
+  let where = '';
+  if (typeof connectorId === 'string' && connectorId.length > 0) {
+    where = ' WHERE connector_id = ?';
+    params.push(connectorId);
+  }
+  const rows = db
+    .prepare(
+      `SELECT connector_id,
+              stream,
+              record_count,
+              record_json_bytes,
+              earliest_ingested_at,
+              latest_ingested_at,
+              earliest_record_time,
+              latest_record_time,
+              consent_time_field,
+              dirty_record_time_bounds,
+              computed_at
+         FROM dataset_summary_stream_projection${where}
+        ORDER BY connector_id ASC, stream ASC`,
+    )
+    .all(...params);
+  return rows.map((row) => ({
+    connector_id: row.connector_id,
+    stream: row.stream,
+    record_count: Number(row.record_count || 0),
+    record_json_bytes: Number(row.record_json_bytes || 0),
+    earliest_ingested_at: row.earliest_ingested_at || null,
+    latest_ingested_at: row.latest_ingested_at || null,
+    earliest_record_time: row.earliest_record_time || null,
+    latest_record_time: row.latest_record_time || null,
+    consent_time_field: row.consent_time_field || null,
+    dirty_record_time_bounds: Number(row.dirty_record_time_bounds || 0) !== 0,
+    computed_at: row.computed_at || null,
+  }));
+}
+
 export function getDatasetSummaryProjection() {
+  assertSqliteBackendForDatasetSummary('getDatasetSummaryProjection');
   const db = getDb();
   const row = db
     .prepare(
@@ -132,6 +217,7 @@ export function getDatasetSummaryProjection() {
 }
 
 export function applyDatasetSummaryRecordDelta(delta) {
+  assertSqliteBackendForDatasetSummary('applyDatasetSummaryRecordDelta');
   try {
     maybeProjectionFault('before-record-delta', delta);
     const db = getDb();
@@ -211,6 +297,7 @@ export function applyDatasetSummaryRecordDelta(delta) {
 }
 
 export function applyDatasetSummaryBlobDelta(delta) {
+  assertSqliteBackendForDatasetSummary('applyDatasetSummaryBlobDelta');
   try {
     maybeProjectionFault('before-blob-delta', delta);
     const current = getDatasetSummaryProjection();
@@ -241,6 +328,7 @@ export function applyDatasetSummaryBlobDelta(delta) {
 }
 
 export function markDatasetSummaryProjectionStale(reason) {
+  assertSqliteBackendForDatasetSummary('markDatasetSummaryProjectionStale');
   try {
     const current = getDatasetSummaryProjection();
     const staleAt = nowIso();
@@ -269,6 +357,7 @@ export function markDatasetSummaryProjectionStale(reason) {
 }
 
 export async function rebuildDatasetSummaryProjection(dependencies, { signal } = {}) {
+  assertSqliteBackendForDatasetSummary('rebuildDatasetSummaryProjection');
   const startedAt = nowIso();
   // Advance generation and stamp rebuild_status='running'. Capture the
   // post-advance generation so the final commit can detect a concurrent
@@ -396,6 +485,7 @@ export async function rebuildDatasetSummaryProjection(dependencies, { signal } =
 }
 
 export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies, { signal } = {}) {
+  assertSqliteBackendForDatasetSummary('reconcileDirtyDatasetSummaryRecordTimeBounds');
   // Capture each dirty row's current `computed_at` while reading the dirty
   // set. The transactional update below only clears the dirty flag and
   // writes new bounds for rows whose `computed_at` still matches — a

@@ -87,7 +87,7 @@ test('every first-party manifest declares capabilities.refresh_policy', () => {
   }
 });
 
-test('automatic first-party manifests declare cadence + background_safe', () => {
+test('automatic first-party manifests declare cadence + background_safe + a staleness window', () => {
   for (const name of POLYFILL_MANIFEST_NAMES) {
     const manifest = readManifest(name);
     const policy = manifest.capabilities?.refresh_policy;
@@ -110,6 +110,28 @@ test('automatic first-party manifests declare cadence + background_safe', () => 
       policy.background_safe,
       true,
       `${name}: automatic policy must set background_safe: true`,
+    );
+    // `maximum_staleness_seconds` is the single field that makes freshness
+    // computable: `deriveReferenceFreshness` returns `unknown` (never `current`)
+    // when it is absent, so a local-device collector whose heartbeat is fresh
+    // could not project `healthy` without it. The validator treats the field as
+    // optional, so an automatic manifest could silently drop it and regress a
+    // green local collector back to `idle` with no other test failing. Pin it
+    // for every automatic policy. See
+    // `openspec/changes/add-local-device-collection-verdict/` — the verdict is
+    // gated on freshness `fresh`, which depends on this window.
+    assert.equal(
+      typeof policy.maximum_staleness_seconds,
+      'number',
+      `${name}: automatic policy must declare maximum_staleness_seconds (freshness is otherwise unknown and a fresh local collector cannot project healthy)`,
+    );
+    assert.ok(
+      Number.isFinite(policy.maximum_staleness_seconds) && policy.maximum_staleness_seconds > 0,
+      `${name}: maximum_staleness_seconds must be a positive finite number (got ${policy.maximum_staleness_seconds})`,
+    );
+    assert.ok(
+      policy.maximum_staleness_seconds >= policy.minimum_interval_seconds,
+      `${name}: maximum_staleness_seconds (${policy.maximum_staleness_seconds}) must be >= minimum_interval_seconds (${policy.minimum_interval_seconds}); a staleness window shorter than the minimum refresh interval can never be satisfied`,
     );
   }
 });

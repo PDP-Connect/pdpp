@@ -15,18 +15,28 @@
  */
 
 import type { Page } from "playwright";
-import { type AdaptiveLaneEvent, createAdaptiveLane, currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
+import {
+  type AdaptiveLane,
+  AdaptiveLaneCancelledError,
+  type AdaptiveLaneEvent,
+  createAdaptiveLane,
+  currentAdaptiveLaneRunContext,
+} from "../../src/adaptive-lane.ts";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
+  buildDetailCoverageMessage,
+  buildDetailGap,
   type CollectContext,
   type DetailCoverageMessage,
   type DetailGapMessage,
   nowIso,
+  type ProviderBudgetProgress,
   type RecordData,
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import {
   RetryExhaustedError,
@@ -35,6 +45,13 @@ import {
   TerminalHttpStatusError,
 } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import {
+  type ProviderBudgetCircuitTransition,
+  ProviderBudgetController,
+  type ProviderBudgetGate,
+  retryBudgetCapacityFromRequestCap,
+} from "../../src/provider-budget.ts";
+import { RunBudget } from "../../src/run-budget.ts";
 import {
   buildConversationRecord,
   buildCustomInstructionsRecord,
@@ -45,6 +62,7 @@ import {
   extractMessage,
   flattenTreeCurrentBranch,
   maxUpdateTimeIso,
+  minUpdateTimeIso,
   tsToIso,
 } from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
@@ -129,7 +147,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
  * successful response is auto-captured when PDPP_CAPTURE_FIXTURES=1.
  *
  * Retry policy:
- *   - Retryable: 429, 502/503/504, browser-level network errors
+ *   - Retryable: 429, 408, 5xx, browser-level network errors
  *   - Terminal: 401/403 (auth dead)
  *   - Non-retryable 4xx return to stream code for SKIP_RESULT handling
  *   - Caller decides what to do with a successful response body
@@ -139,6 +157,384 @@ const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
+// Source-pressure fast-open. The live A/B probe (2026-06-02) showed ChatGPT's
+// private detail endpoint returns BARE 429s — no `Retry-After` — and that the
+// throttle is per-account, recovering over minutes, not per-conversation. A
+// bare 429 is therefore a signal about the whole account/source bucket, not the
+// one conversation in hand. Retrying the same conversation up to the full
+// `CHATGPT_RATE_LIMIT_MAX_ATTEMPTS` budget would spend ~23–70 min of jittered
+// exponential backoff hammering an already-hot account before the connector's
+// upstream-pressure circuit opens and defers the rest as DETAIL_GAP.
+//
+// So a bare 429 (429 WITHOUT `Retry-After`) exhausts retryHttp after only
+// `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts. That throws the same
+// `RetryExhaustedError` the full budget would, opening the existing
+// observed-pressure circuit fast: the rest of the tranche is deferred to
+// resumable DETAIL_GAP records instead of grinding the hot bucket.
+//
+// A 429 that DOES carry `Retry-After`, plus 408/5xx, keep the full budget:
+// those are bounded transient waits we should respect, not blind hammering.
+const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
+
+// ─── Cumulative 429-density early-stop ───────────────────────────────────
+//
+// The existing upstream-pressure circuit (observedRecoverablePressure) only
+// opens when a SINGLE conversation exhausts its retry budget (a thrown
+// ChatGptRecoverableRetryExhaustedError). That catches the hard-throttled
+// case, but NOT the slow-bleed case the 2026-06-02 429-efficiency audit
+// measured: an account that serves a 429, honors a Retry-After, then SUCCEEDS
+// — over and over. Each conversation "succeeds", so nothing ever throws, yet
+// the run pays ~30–50s of served backoff per conversation and can grind for
+// hours against a pressured account before finishing (or before a later
+// conversation finally exhausts).
+//
+// This density stop counts served 429s ACROSS the run (each one already
+// surfaces to the detail lane as a `rate_limited` cooldown event). Once the
+// cumulative count crosses a conservative threshold, we open the SAME defer
+// circuit the exhaustion path uses: the remaining tail is emitted as resumable
+// DETAIL_GAP records (reason "upstream_pressure"), the cursor still commits the
+// hydrated prefix, and the run exits the hot bucket instead of hammering it for
+// hours. It can only ever make a pressured run defer EARLIER — never retry more
+// — so it is strictly safer than today's behavior.
+//
+// Default 8: at the measured ~30–50s per served 429 that is ~4–7 min of
+// cumulative honored backoff — enough to ride out a brief blip, far short of
+// the multi-hour grind. Owner-tunable via env; set to 0 (or any value < 1) to
+// disable the density stop entirely and fall back to exhaustion-only behavior.
+const CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT = 8;
+const CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV = "PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER";
+
+/**
+ * Resolve the cumulative served-429 count after which the detail lane defers
+ * the remaining conversation tail as upstream_pressure DETAIL_GAP records.
+ * Unset/invalid → the conservative default. An explicit value < 1 disables the
+ * density stop (returns Infinity), preserving exhaustion-only behavior.
+ */
+export function resolveChatGptRateLimitDensityStop(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    return CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT;
+  }
+  // An explicit non-positive value is the documented disable escape hatch.
+  return parsed < 1 ? Number.POSITIVE_INFINITY : parsed;
+}
+
+/**
+ * Tiny run-scoped accumulator for served 429s. Pure and lane-agnostic so the
+ * stop decision is unit-testable without standing up the adaptive lane: feed it
+ * the lane's `rate_limited` cooldown events, ask `shouldStop()` before each
+ * launch. `threshold` of Infinity (the disable sentinel) never trips.
+ *
+ * `initialCount` seeds the accumulator with served 429s the run already absorbed
+ * BEFORE the detail lane started — list pagination and the other streams run
+ * their fetches OUTSIDE any adaptive lane, so their served 429s never reach the
+ * lane's cooldown event. Carrying that pre-detail pressure into the tracker lets
+ * the detail phase defer the tail earlier on an account the run has already
+ * shown to be hot, instead of resetting to zero and grinding up to `threshold`
+ * more served 429s. Strictly safer: a higher starting count can only ever make
+ * the lane defer sooner, never launch more requests.
+ */
+export class ChatGptRateLimitDensityTracker {
+  private rateLimitedCount: number;
+  readonly threshold: number;
+
+  constructor(threshold: number, initialCount = 0) {
+    this.threshold = threshold;
+    this.rateLimitedCount = Math.max(0, Math.trunc(initialCount));
+  }
+
+  /** Record one served 429 (a `rate_limited` cooldown reported by the lane). */
+  recordRateLimited(): void {
+    this.rateLimitedCount += 1;
+  }
+
+  get count(): number {
+    return this.rateLimitedCount;
+  }
+
+  /** True once cumulative served 429s have reached the stop threshold. */
+  shouldStop(): boolean {
+    return this.rateLimitedCount >= this.threshold;
+  }
+}
+
+// ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
+//
+// The density stop bounds a *pressured* run: it defers the tail once the
+// account serves enough 429s. But a large-history account that is genuinely
+// COLD (0% 429) has no such brake — a serial detail lane at ~3s/conversation
+// can walk tens of thousands of conversations for many hours before it
+// finishes. That is safe when an owner is present and watching, but it is the
+// one thing that keeps unattended scheduling from being ideal (readiness report
+// F4 #1 / Next slice #1): a single nudge could turn into an unbounded run.
+//
+// This budget bounds every run by SIZE and/or TIME, independent of source
+// pressure. In this lane one admitted conversation-detail hydration maps to
+// one provider request budget unit. When the run has admitted
+// `maxDetailFetchesPerRun` conversation-detail requests, or has spent
+// `maxRunWallClockMs` of wall-clock in the detail phase, it stops launching new
+// detail fetches and defers the remaining tail as
+// resumable DETAIL_GAP records — the SAME deferral the density stop and the
+// per-conversation exhaustion path use, so a later run recovers the gaps first
+// and walks forward. Strictly safer than today: it can only ever make a run
+// stop EARLIER, never fetch more.
+//
+// Crucially this is NOT a source-pressure signal — the account did not throttle
+// us, the run chose to stop. So the deferred gaps carry reason
+// `retry_exhausted` (resumable, does NOT arm the cross-run source-pressure
+// cooldown governor) with a distinct `run_cap_deferred` error class, rather
+// than `upstream_pressure` (which would falsely tell the governor the source is
+// hot). The records already collected stay valid and the cursor still commits
+// the hydrated prefix.
+//
+// ChatGPT ships an adaptive provider-control profile by default: conservative
+// cold-start pacing, AIMD speed-up on clean success, retry-budget protection,
+// and source-pressure deferral on real throttling. Size/time caps are explicit
+// owner/system envelopes only; they are not the default throttle.
+const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
+const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
+const CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV = "PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN";
+// When only a fetch/wall-clock cap is set (no explicit tail bound), derive a
+// sane finite chunk so an owner who opts into a run cap also gets a bounded
+// tail materialization. `max(fetchCap, 50)` keeps a small fetch cap from
+// shrinking the per-run drain rate below a useful floor.
+const CHATGPT_DERIVED_TAIL_DEFERRAL_GAPS_FLOOR = 50;
+const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS";
+const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
+const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
+const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
+const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
+// Default-OFF convergence flag (design-notes/provider-rate-governance-
+// convergence-2026-06-10.md). OFF (default): the provider-budget controller
+// owns the single pre-flight wait via GCRA `pacing.admit()` and the adaptive
+// lane's launch delay is neutralized — today's byte-identical behavior. ON: the
+// adaptive lane becomes the SOLE send governor; pacing is folded into the lane's
+// one launch wait as a `launchDelayHint` (controller switches to
+// `pacingMode: "signal"` and performs no pre-flight wait). The total per-request
+// wait and GCRA interval are unchanged; only the OWNER of the single wait flips,
+// so concurrency > 1 composes with pacing as one gate instead of two. Flip is
+// owner-gated on live ChatGPT calibration.
+const CHATGPT_CONVERGED_GOVERNANCE_ENV = "PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE";
+const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 2500;
+const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
+const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
+const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Resolve the maximum conversation-detail provider requests a single run may
+ * admit before deferring the remaining tail as resumable DETAIL_GAP records.
+ * Unset or any value < 1 returns Infinity: no detail-count cap. A positive
+ * integer opts into an owner/system envelope. The env var keeps its legacy
+ * detail-fetch name because this lane has a one-detail-fetch-to-one-provider-
+ * request mapping.
+ */
+export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return parsed;
+}
+
+/**
+ * Resolve the maximum wall-clock (ms) the conversation-detail phase may spend
+ * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
+ * any value <= 0 returns Infinity: no wall-clock cap. A positive value opts into
+ * an owner/system envelope. The budget spans the gap-recovery pass and the
+ * forward-walk pass of a single run.
+ */
+export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.floor(parsed);
+}
+
+/**
+ * Resolve the maximum number of per-key `DETAIL_GAP` rows a single run may write
+ * for the cap-tail deferral before folding the remaining older tail into ONE
+ * durable backlog gap (carrying a content-derived `before_update_time`
+ * watermark the next run re-lists from). This bounds the *foreground burn* of a
+ * cap trip: a huge cold account no longer spends a long run writing thousands of
+ * gap rows after it has already stopped fetching details.
+ *
+ * Resolution:
+ * - explicit `PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN` (positive integer) wins;
+ * - unset but a fetch cap is configured → derived `max(fetchCap, 50)` so an owner
+ *   who set only a fetch cap still gets a bounded tail;
+ * - otherwise (no fetch cap either) → `Infinity`: today's per-key behavior is
+ *   byte-for-byte preserved. The bound is inert until an owner opts into a cap.
+ */
+export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV]?.trim();
+  if (trimmed != null && trimmed !== "") {
+    const parsed = Number(trimmed);
+    if (Number.isInteger(parsed) && parsed >= 1) {
+      return parsed;
+    }
+    // Non-integer / non-positive explicit value is a disable sentinel.
+    return Number.POSITIVE_INFINITY;
+  }
+  const fetchCap = resolveChatGptMaxDetailFetchesPerRun(env);
+  if (Number.isFinite(fetchCap)) {
+    return Math.max(fetchCap, CHATGPT_DERIVED_TAIL_DEFERRAL_GAPS_FLOOR);
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
+  const trimmed = env[CHATGPT_RETRY_BUDGET_CAPACITY_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.isFinite(maxRequests)
+      ? retryBudgetCapacityFromRequestCap({ maxRequests })
+      : CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+function resolveChatGptCircuitBreakerEnabled(env: NodeJS.ProcessEnv): boolean {
+  const trimmed = env[CHATGPT_CIRCUIT_BREAKER_ENV]?.trim().toLowerCase();
+  return trimmed !== "0" && trimmed !== "false" && trimmed !== "off";
+}
+
+/**
+ * Default-OFF: is the rate-governance convergence enabled for ChatGPT? When ON,
+ * the adaptive lane is the sole send governor and pacing rides as a launch-delay
+ * signal (`pacingMode: "signal"`). OFF preserves today's controller-owned
+ * pre-flight wait byte-for-byte. Owner-gated on live calibration.
+ */
+export function resolveChatGptConvergedGovernance(env: NodeJS.ProcessEnv = process.env): boolean {
+  const trimmed = env[CHATGPT_CONVERGED_GOVERNANCE_ENV]?.trim().toLowerCase();
+  return trimmed === "1" || trimmed === "true" || trimmed === "on";
+}
+
+function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | null {
+  const trimmed = env[key]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.env): ProviderBudgetController | null {
+  const pacingInitialOverride = env[CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV]?.trim();
+  const initialIntervalMs =
+    pacingInitialOverride == null || pacingInitialOverride === ""
+      ? CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS
+      : resolvePositiveFiniteMs(env, CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV);
+  const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
+  const retryBudgetCapacity = resolveChatGptRetryBudgetCapacity(env, maxRequests);
+  const hasRetryBudget = retryBudgetCapacity != null;
+  const hasCircuitBreaker = resolveChatGptCircuitBreakerEnabled(env);
+  if (initialIntervalMs == null && !hasRetryBudget && !hasCircuitBreaker) {
+    return null;
+  }
+  const minIntervalMs =
+    resolvePositiveFiniteMs(env, CHATGPT_PACING_MIN_INTERVAL_MS_ENV) ?? CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS;
+  const burstToleranceMs =
+    initialIntervalMs == null
+      ? null
+      : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
+  const converged = resolveChatGptConvergedGovernance(env);
+  return new ProviderBudgetController({
+    ...(hasCircuitBreaker
+      ? {
+          circuitBreaker: {
+            resetTimeoutMs: CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+          },
+        }
+      : {}),
+    ...(initialIntervalMs == null
+      ? {}
+      : {
+          pacing: {
+            ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
+            initialIntervalMs,
+            minIntervalMs,
+          },
+        }),
+    // Converged: pacing is a signal for the lane's single wait, not a second
+    // pre-flight gate. Default (off): pacing stays the controller's own
+    // pre-flight wait — byte-identical.
+    ...(converged ? { pacingMode: "signal" as const } : {}),
+    ...(hasRetryBudget ? { retryBudget: { capacity: retryBudgetCapacity, refillPerSuccess: 0.2 } } : {}),
+  });
+}
+
+/**
+ * Run-scoped budget for the ChatGPT connector's bounded-run budget. Thin adapter
+ * over the shared `RunBudget` that preserves the connector-specific API
+ * (`maxFetches`, `recordDetailFetch`, `reason`) for backward compat with
+ * existing tests and call sites. New code should use `RunBudget` directly.
+ */
+export class ChatGptRunBudget {
+  readonly maxFetches: number;
+  readonly maxWallClockMs: number;
+  private readonly inner: RunBudget;
+
+  constructor(options: { maxFetches?: number; maxWallClockMs?: number; now?: () => number } = {}) {
+    this.maxFetches = options.maxFetches ?? Number.POSITIVE_INFINITY;
+    this.maxWallClockMs = options.maxWallClockMs ?? Number.POSITIVE_INFINITY;
+    this.inner = new RunBudget({
+      ...(options.maxFetches == null ? {} : { maxRequests: options.maxFetches }),
+      ...(options.maxWallClockMs == null ? {} : { maxWallClockMs: options.maxWallClockMs }),
+      ...(options.now == null ? {} : { now: options.now }),
+    });
+  }
+
+  /** Record one admitted conversation-detail request against the run budget. */
+  recordDetailFetch(): void {
+    this.inner.recordRequest();
+  }
+
+  get count(): number {
+    return this.inner.count;
+  }
+
+  /** Wall-clock spent since the budget was first consulted, in ms. */
+  elapsedMs(): number {
+    return this.inner.elapsedMs();
+  }
+
+  /** Returns the trip reason or null. Anchors clock on first call. */
+  reason(): "max_detail_fetches" | "max_wall_clock" | null {
+    const trip = this.inner.tripReason();
+    if (trip === "max_requests") {
+      return "max_detail_fetches";
+    }
+    if (trip === "max_wall_clock") {
+      return "max_wall_clock";
+    }
+    return null;
+  }
+
+  /** True once any cap has been reached. */
+  shouldStop(): boolean {
+    return this.reason() !== null;
+  }
+}
+
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_BACKEND_FETCH_TIMEOUT_ENV = "PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS";
 const CHATGPT_BACKEND_FETCH_TIMEOUT_MS = 45_000;
@@ -146,6 +542,8 @@ const CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS = 5000;
 const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
 const CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN = /^\/conversation\/[^/?#]+(?:[?#].*)?$/;
 const URL_QUERY_OR_FRAGMENT_PATTERN = /[?#].*$/;
+
+export type ChatGptRunCapReason = "circuit_open" | "max_detail_fetches" | "max_wall_clock" | "provider_retry_budget";
 
 export type ChatGptRetryExhaustedClass = "rate_limited" | "temporary_unavailable" | "upstream_pressure";
 
@@ -181,10 +579,23 @@ export class ChatGptRecoverableRetryExhaustedError extends Error {
   }
 }
 
+export class ChatGptPlannedProviderBudgetDeferredError extends Error {
+  readonly gate: (ProviderBudgetGate & { ok: false }) | null;
+  readonly reason: ChatGptRunCapReason;
+
+  constructor(message: string, reason: ChatGptRunCapReason, gate: (ProviderBudgetGate & { ok: false }) | null = null) {
+    super(message);
+    this.name = "ChatGptPlannedProviderBudgetDeferredError";
+    this.reason = reason;
+    this.gate = gate;
+  }
+}
+
 interface ChatGptBackendFetchArgs {
   auth: ChatGptAuth;
   body?: unknown;
   method: string;
+  parseJson?: boolean;
   path: string;
   timeoutMs: number;
 }
@@ -205,6 +616,7 @@ export async function chatGptBackendFetchInBrowser({
   auth,
   body,
   method,
+  parseJson = true,
   path,
   timeoutMs,
 }: ChatGptBackendFetchArgs): Promise<ChatGptFetchResult> {
@@ -237,10 +649,12 @@ export async function chatGptBackendFetchInBrowser({
     const status = res.status;
     const retryAfter = res.headers.get("retry-after") ?? undefined;
     let json: unknown = null;
-    try {
-      json = await res.json();
-    } catch {
-      json = null;
+    if (parseJson) {
+      try {
+        json = await res.json();
+      } catch {
+        json = null;
+      }
     }
     return {
       status,
@@ -286,14 +700,124 @@ function formatSleepDuration(ms: number): string {
   return remainderSeconds ? `${minutes}m ${remainderSeconds}s` : `${minutes}m`;
 }
 
+/**
+ * `retryHttp` early-stop predicate implementing the bare-429 source-pressure
+ * fast-open. Returns `false` (stop retrying, exhaust now) once a bare 429 —
+ * status 429 with no `Retry-After` — has been seen on
+ * `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts. Every other retryable
+ * response (429 + `Retry-After`, 408, 5xx) keeps the full budget.
+ *
+ * Exported for direct unit testing of the boundary; `retryHttp` owns the
+ * exhaustion accounting and error shape.
+ */
+export function shouldKeepRetryingChatGptDetail({
+  attempt,
+  response,
+  retryAfterMs,
+}: {
+  attempt: number;
+  response: { status: number };
+  retryAfterMs: number | null;
+}): boolean {
+  const isBare429 = response.status === 429 && retryAfterMs == null;
+  if (isBare429 && attempt >= CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS) {
+    return false;
+  }
+  return true;
+}
+
+export function consumeChatGptProviderRetryBudget(
+  providerBudget?: ProviderBudgetController | null
+): ChatGptPlannedProviderBudgetDeferredError | null {
+  const retryGate = providerBudget?.consumeRetry();
+  if (!retryGate || retryGate.ok) {
+    return null;
+  }
+  const reason = chatGptRunCapReasonFromProviderGate(retryGate);
+  return new ChatGptPlannedProviderBudgetDeferredError(
+    `ChatGPT provider retry budget exhausted (${retryGate.reason}); deferring remaining conversation details`,
+    reason,
+    retryGate
+  );
+}
+
+async function admitChatGptProviderBudgetAttempt(
+  providerBudget?: ProviderBudgetController | null
+): Promise<ChatGptPlannedProviderBudgetDeferredError | null> {
+  const providerGate = await providerBudget?.beforeRequest();
+  if (!providerGate) {
+    return null;
+  }
+  if (providerGate.ok) {
+    providerBudget?.recordRequest();
+    return null;
+  }
+  const reason = chatGptRunCapReasonFromProviderGate(providerGate);
+  return new ChatGptPlannedProviderBudgetDeferredError(
+    `ChatGPT provider budget gate closed (${providerGate.reason}); deferring remaining conversation details`,
+    reason,
+    providerGate
+  );
+}
+
 function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
   if (status === 429) {
     return "rate_limited";
   }
-  if (status === 502 || status === 503 || status === 504) {
+  if (status === 408 || (status != null && status >= 500 && status < 600)) {
     return "temporary_unavailable";
   }
   return "upstream_pressure";
+}
+
+function isChatGptRetryableStatus(status: number | undefined): boolean {
+  return status === 429 || status === 408 || (status != null && status >= 500 && status < 600);
+}
+
+function providerBudgetRetryTokensForProgress(value: number): number | "unbounded" | undefined {
+  if (value === Number.POSITIVE_INFINITY) {
+    return "unbounded";
+  }
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function providerBudgetTransitionProgress(transition: ProviderBudgetCircuitTransition): ProviderBudgetProgress {
+  const retryTokensRemaining = providerBudgetRetryTokensForProgress(transition.retryTokensRemaining);
+  const progress: ProviderBudgetProgress = {
+    circuit: {
+      previous_state: transition.previousState,
+      reason: transition.reason,
+      state: transition.state,
+      trigger: transition.trigger,
+    },
+    elapsed_ms: transition.elapsedMs,
+    object: "provider_budget_circuit_transition" as const,
+    request_count: transition.requestCount,
+  };
+  if (retryTokensRemaining !== undefined) {
+    progress.retry_tokens_remaining = retryTokensRemaining;
+  }
+  return progress;
+}
+
+async function emitChatGptProviderBudgetTransitions({
+  emit,
+  providerBudget,
+}: {
+  emit?: CollectContext["emit"] | undefined;
+  providerBudget?: ProviderBudgetController | null | undefined;
+}): Promise<void> {
+  if (!(emit && providerBudget)) {
+    providerBudget?.drainCircuitTransitions();
+    return;
+  }
+  for (const transition of providerBudget.drainCircuitTransitions()) {
+    await emit({
+      type: "PROGRESS",
+      message: `Provider-budget circuit ${transition.previousState} -> ${transition.state} (${transition.reason})`,
+      provider_budget: providerBudgetTransitionProgress(transition),
+    });
+  }
 }
 
 function chatGptEndpointRoute(path: string): string {
@@ -328,14 +852,65 @@ function makeChatGptNetworkPressureDiagnostic({
   };
 }
 
+/**
+ * Route one retry's source pressure. retryHttp already slept `delayMs` inside
+ * the request, so the lane report is marked `absorbedByRequestWait` to avoid
+ * double-paying the backoff on the next launch. In-lane 429s are counted by the
+ * lane's cooldown event; 429s OUTSIDE any lane (list pagination, non-detail
+ * streams) are surfaced to the run-scoped accumulator so the detail phase can
+ * inherit pressure the run already absorbed. Extracted to keep `onRetry` simple.
+ */
+async function reportChatGptRetryPressure({
+  delayMs,
+  emit,
+  onUnlanedRateLimited,
+  providerBudget,
+  response,
+  retryAfterMs,
+}: {
+  delayMs: number;
+  emit?: CollectContext["emit"] | undefined;
+  onUnlanedRateLimited?: (() => void) | undefined;
+  providerBudget?: ProviderBudgetController | null | undefined;
+  response?: { status?: number } | undefined;
+  retryAfterMs?: number | undefined;
+}): Promise<void> {
+  if (isChatGptRetryableStatus(response?.status)) {
+    providerBudget?.recordThrottle({
+      retryAfterAlreadySlept: true,
+      ...(retryAfterMs == null ? {} : { retryAfterMs }),
+    });
+    await emitChatGptProviderBudgetTransitions({ emit, providerBudget });
+  }
+  const laneContext = currentAdaptiveLaneRunContext();
+  await laneContext?.reportPressure({
+    absorbedByRequestWait: true,
+    delayMs,
+    kind: response?.status === 429 ? "rate_limited" : "transient_error",
+    ...(retryAfterMs == null ? {} : { retryAfterMs }),
+  });
+  if (laneContext == null && response?.status === 429) {
+    onUnlanedRateLimited?.();
+  }
+}
+
 function createChatGptApi({
   capture,
   emit,
+  onUnlanedRateLimited,
   page,
+  providerBudget,
 }: {
   capture: CaptureSession | null;
   emit?: CollectContext["emit"];
+  // Invoked once per served 429 that happens OUTSIDE an adaptive lane run
+  // context (list pagination, memories, custom_gpts, shared_conversations).
+  // In-lane 429s are already counted by the detail lane's cooldown event, so
+  // they intentionally do NOT call this — avoiding a double count. Lets the run
+  // carry pre-detail source pressure into the detail-phase density stop.
+  onUnlanedRateLimited?: () => void;
   page: Page;
+  providerBudget?: ProviderBudgetController | null;
 }): ChatGptApi {
   let authCache: ChatGptAuth | null = null;
   async function auth(): Promise<ChatGptAuth> {
@@ -352,15 +927,124 @@ function createChatGptApi({
 
   async function fetchOnce(
     path: string,
-    { method, body }: { method: string; body?: unknown }
+    { method, body, parseJson = true }: { method: string; body?: unknown; parseJson?: boolean }
   ): Promise<ChatGptFetchResult> {
     const a = await auth();
     const timeoutMs = resolveChatGptBackendFetchTimeoutMs();
     return await withTimeout(
-      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, auth: a, timeoutMs }),
+      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, parseJson, auth: a, timeoutMs }),
       timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS,
       `chatgpt_backend_fetch_evaluate_timeout after ${timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS}ms`
     );
+  }
+
+  function fetchWithRetry(
+    path: string,
+    {
+      body,
+      captureResult,
+      method,
+      parseJson,
+    }: { body?: unknown; captureResult: boolean; method: string; parseJson: boolean }
+  ): Promise<ChatGptFetchResult> {
+    let plannedProviderBudgetDefer: ChatGptPlannedProviderBudgetDeferredError | null = null;
+    return retryHttp({
+      baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
+      beforeAttempt: async () => {
+        plannedProviderBudgetDefer = await admitChatGptProviderBudgetAttempt(providerBudget);
+        await emitChatGptProviderBudgetTransitions({ emit, providerBudget });
+        if (plannedProviderBudgetDefer) {
+          throw plannedProviderBudgetDefer;
+        }
+      },
+      maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
+      maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
+      maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
+      // Fast-open the source-pressure circuit on a bare 429 (no Retry-After):
+      // a few short attempts, then exhaust so the lane defers the rest as
+      // resumable DETAIL_GAP instead of burning the full 12-attempt budget
+      // (~23–70 min of backoff) against an already-throttled account.
+      shouldKeepRetrying: (input) => {
+        if (!shouldKeepRetryingChatGptDetail(input)) {
+          return false;
+        }
+        plannedProviderBudgetDefer = consumeChatGptProviderRetryBudget(providerBudget);
+        return plannedProviderBudgetDefer == null;
+      },
+      onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
+        // retryHttp sleeps `delayMs` itself immediately after this callback,
+        // inside the same (serialized) detail attempt. Route the pressure to
+        // either the active detail lane or the run-scoped accumulator (extracted
+        // so this callback stays simple); see reportChatGptRetryPressure.
+        await reportChatGptRetryPressure({
+          delayMs,
+          emit,
+          onUnlanedRateLimited,
+          providerBudget,
+          response,
+          retryAfterMs,
+        });
+        if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
+          return;
+        }
+        const status = response?.status ? `HTTP ${response.status}` : "network error";
+        const policy =
+          retryAfterMs == null
+            ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
+            : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
+        await emit?.({
+          type: "PROGRESS",
+          message: `ChatGPT rate limit/backoff on ${method} ${chatGptEndpointRoute(path)}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
+        });
+      },
+      request: async () => {
+        try {
+          const result = await fetchOnce(path, { method, body, parseJson });
+          if (captureResult && capture && !isChatGptRetryableStatus(result.status)) {
+            capture.captureHttp(`${method}-${path}`, result.json, {
+              status: result.status,
+              path,
+              method,
+            });
+          }
+          return result;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
+        }
+      },
+      shouldAbort: (result) => result.status === 401 || result.status === 403,
+    }).catch((err: unknown) => {
+      if (err instanceof TerminalHttpStatusError) {
+        throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
+      }
+      if (err instanceof RetryExhaustedError) {
+        if (plannedProviderBudgetDefer) {
+          throw plannedProviderBudgetDefer;
+        }
+        const cause = err.originalCause;
+        const status =
+          cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
+            ? cause.status
+            : null;
+        throw new ChatGptRecoverableRetryExhaustedError(
+          status
+            ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
+            : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
+          {
+            class: classifyRetryExhaustedStatus(status),
+            httpStatus: status,
+            networkPressure: makeChatGptNetworkPressureDiagnostic({
+              attempts: err.attempts,
+              cause,
+              method,
+              path,
+            }),
+          }
+        );
+      }
+      throw err;
+    });
   }
 
   return {
@@ -369,78 +1053,14 @@ function createChatGptApi({
       path: string,
       { method = "GET", body }: { method?: string; body?: unknown } = {}
     ): Promise<ChatGptFetchResult> {
-      return retryHttp({
-        baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
-        maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
-        maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
-        maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
-        onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
-          await currentAdaptiveLaneRunContext()?.reportPressure({
-            delayMs,
-            kind: response?.status === 429 ? "rate_limited" : "transient_error",
-            ...(retryAfterMs == null ? {} : { retryAfterMs }),
-          });
-          if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
-            return;
-          }
-          const status = response?.status ? `HTTP ${response.status}` : "network error";
-          const policy =
-            retryAfterMs == null
-              ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
-              : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
-          await emit?.({
-            type: "PROGRESS",
-            message: `ChatGPT rate limit/backoff on ${method} ${chatGptEndpointRoute(path)}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
-          });
-        },
-        request: async () => {
-          try {
-            const result = await fetchOnce(path, { method, body });
-            if (
-              capture &&
-              !(result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504)
-            ) {
-              capture.captureHttp(`${method}-${path}`, result.json, {
-                status: result.status,
-                path,
-                method,
-              });
-            }
-            return result;
-          } catch (err) {
-            const m = err instanceof Error ? err.message : String(err);
-            throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
-          }
-        },
-        shouldAbort: (result) => result.status === 401 || result.status === 403,
-      }).catch((err: unknown) => {
-        if (err instanceof TerminalHttpStatusError) {
-          throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
-        }
-        if (err instanceof RetryExhaustedError) {
-          const cause = err.originalCause;
-          const status =
-            cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
-              ? cause.status
-              : null;
-          throw new ChatGptRecoverableRetryExhaustedError(
-            status
-              ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
-              : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
-            {
-              class: classifyRetryExhaustedStatus(status),
-              httpStatus: status,
-              networkPressure: makeChatGptNetworkPressureDiagnostic({
-                attempts: err.attempts,
-                cause,
-                method,
-                path,
-              }),
-            }
-          );
-        }
-        throw err;
-      });
+      return fetchWithRetry(path, { method, body, parseJson: true, captureResult: true });
+    },
+    async fetchStatus(
+      path: string,
+      { method = "GET", body }: { method?: string; body?: unknown } = {}
+    ): Promise<Pick<ChatGptFetchResult, "headers" | "status">> {
+      const result = await fetchWithRetry(path, { method, body, parseJson: false, captureResult: false });
+      return { status: result.status, ...(result.headers ? { headers: result.headers } : {}) };
     },
   };
 }
@@ -575,9 +1195,11 @@ async function runChatGptSideEffectProbe({
       "ChatGPT side-effect probe enabled; running one GET-only list/detail/list comparison and skipping collection",
   });
   const auth = await api.auth();
-  const result = (await page.evaluate(async ({ accessToken, deviceId }) => {
-    const metadata = (value: unknown, index: number): ChatGptConversationProbeItem => {
-      const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const result = (await page.evaluate(`(async () => {
+    const accessToken = ${JSON.stringify(auth.accessToken)};
+    const deviceId = ${JSON.stringify(auth.deviceId)};
+    const metadata = (value, index) => {
+      const item = value && typeof value === "object" ? value : {};
       return {
         index,
         id: typeof item.id === "string" ? item.id : null,
@@ -586,26 +1208,26 @@ async function runChatGptSideEffectProbe({
         current_node: typeof item.current_node === "string" ? item.current_node : null,
       };
     };
-    const pickList = (json: unknown): ChatGptConversationProbeItem[] => {
-      const body = json && typeof json === "object" ? (json as { items?: unknown }) : {};
+    const pickList = (json) => {
+      const body = json && typeof json === "object" ? json : {};
       const items = Array.isArray(body.items) ? body.items : [];
       return items.slice(0, 5).map((item, index) => metadata(item, index));
     };
-    const getJson = async (path: string): Promise<{ json: unknown; status: number }> => {
-      const headers: Record<string, string> = {
+    const getJson = async (path) => {
+      const headers = {
         accept: "*/*",
-        authorization: `Bearer ${accessToken}`,
+        authorization: "Bearer " + accessToken,
         "oai-language": "en-US",
       };
       if (deviceId) {
         headers["oai-device-id"] = deviceId;
       }
-      const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
+      const res = await fetch("https://chatgpt.com/backend-api" + path, {
         credentials: "include",
         headers,
         method: "GET",
       });
-      let json: unknown = null;
+      let json = null;
       if (res.ok) {
         try {
           json = await res.json();
@@ -617,22 +1239,21 @@ async function runChatGptSideEffectProbe({
     };
 
     if (!accessToken) {
-      return { ok: false, stage: "auth_extract" } satisfies ChatGptSideEffectProbeResult;
+      return { ok: false, stage: "auth_extract" };
     }
 
     const beforeRes = await getJson("/conversations?offset=0&limit=5&order=updated");
     if (beforeRes.status !== 200) {
-      return { ok: false, stage: "before_list", status: beforeRes.status } satisfies ChatGptSideEffectProbeResult;
+      return { ok: false, stage: "before_list", status: beforeRes.status };
     }
     const before = pickList(beforeRes.json);
     const target = before[0];
-    if (!target?.id) {
-      return { ok: false, stage: "select_target", before } satisfies ChatGptSideEffectProbeResult;
+    if (!target || !target.id) {
+      return { ok: false, stage: "select_target", before };
     }
 
-    const detailRes = await getJson(`/conversation/${encodeURIComponent(target.id)}`);
-    const detailBody =
-      detailRes.json && typeof detailRes.json === "object" ? (detailRes.json as Record<string, unknown>) : {};
+    const detailRes = await getJson("/conversation/" + encodeURIComponent(target.id));
+    const detailBody = detailRes.json && typeof detailRes.json === "object" ? detailRes.json : {};
     const detail = {
       status: detailRes.status,
       create_time: typeof detailBody.create_time === "number" ? detailBody.create_time : null,
@@ -649,7 +1270,7 @@ async function runChatGptSideEffectProbe({
         before,
         detail,
         target_id: target.id,
-      } satisfies ChatGptSideEffectProbeResult;
+      };
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const after2Res = await getJson("/conversations?offset=0&limit=5&order=updated");
@@ -662,7 +1283,7 @@ async function runChatGptSideEffectProbe({
         after1: pickList(after1Res.json),
         detail,
         target_id: target.id,
-      } satisfies ChatGptSideEffectProbeResult;
+      };
     }
 
     return {
@@ -672,8 +1293,8 @@ async function runChatGptSideEffectProbe({
       after2: pickList(after2Res.json),
       detail,
       target_id: target.id,
-    } satisfies ChatGptSideEffectProbeResult;
-  }, auth)) as ChatGptSideEffectProbeResult;
+    };
+  })()`)) as ChatGptSideEffectProbeResult;
 
   await emit({
     type: "PROGRESS",
@@ -692,8 +1313,26 @@ export interface StreamDeps {
   detailGaps?: CollectContext["detailGaps"];
   emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  // Run-scoped accumulator for served 429s seen OUTSIDE the detail lane (list
+  // pagination + the non-detail streams). Read once when the detail phase starts
+  // to seed its density tracker, so the run carries pre-detail source pressure
+  // forward instead of resetting the budget to zero. A holder object (not a bare
+  // number) so the count `createChatGptApi` increments is visible by reference.
+  preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
+  providerBudget?: ProviderBudgetController | null;
+  requestDetailGapPage?: CollectContext["requestDetailGapPage"];
   requested: CollectContext["requested"];
+  // Run-scoped bounded-run cap shared across the gap-recovery pass and the
+  // forward-walk pass, so a large recovery backlog plus new conversations are
+  // bounded together. Absent means helpers fall back to the connector defaults;
+  // tests can pass an empty budget object to exercise the no-cap primitive.
+  runBudget?: ChatGptRunBudget;
+}
+
+/** Mutable holder for the run-scoped pre-detail served-429 count. */
+export interface ChatGptPreDetailPressure {
+  rateLimited: number;
 }
 
 const MEMORIES_PATH = "/memories?include_memory_entries=true";
@@ -719,6 +1358,7 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
       stream: "memories",
       reason: "http_error",
       message: `memories fetch http ${res.status}`,
+      diagnostics: { http_status: res.status },
     });
     return;
   }
@@ -743,7 +1383,10 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
  * other non-200 → SKIP "http_error". Success path emits the record and a
  * STATE heartbeat.
  */
-export async function runCustomInstructionsStream(deps: StreamDeps): Promise<void> {
+export async function runCustomInstructionsStream(
+  deps: StreamDeps,
+  state: CollectContext["state"] = {}
+): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "custom_instructions",
@@ -765,14 +1408,25 @@ export async function runCustomInstructionsStream(deps: StreamDeps): Promise<voi
       stream: "custom_instructions",
       reason: "http_error",
       message: `user_system_messages http ${res.status}`,
+      diagnostics: { http_status: res.status },
     });
     return;
   }
-  await deps.emitRecord("custom_instructions", buildCustomInstructionsRecord(res.json as RawCustomInstructionsBody));
+  // `/user_system_messages` returns the full custom-instructions body every run.
+  // The record carries a stable synthetic id and no run-clock field, so a
+  // per-record fingerprint over the whole body is the exact "did the source
+  // move?" gate. Without it, this single record re-versions on every run even
+  // when the user never edits their instructions (the dashboard's
+  // custom_instructions churn was 100% byte-identical no-op re-emit).
+  const fingerprintCursor = openFingerprintCursor(state.custom_instructions);
+  const record = buildCustomInstructionsRecord(res.json as RawCustomInstructionsBody);
+  if (fingerprintCursor.shouldEmit(record)) {
+    await deps.emitRecord("custom_instructions", record);
+  }
   deps.emit({
     type: "STATE",
     stream: "custom_instructions",
-    cursor: { fetched_at: nowIso() },
+    cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
   });
 }
 
@@ -801,8 +1455,9 @@ export async function processConversationDetail(
     deps.emit({
       type: "SKIP_RESULT",
       stream: "messages",
-      reason: "http_error",
+      reason: detail.status === 200 ? "missing_mapping" : "http_error",
       message: `conversation ${c.id} http ${detail.status}`,
+      diagnostics: { http_status: detail.status, conversation_id: c.id },
     });
     // Fall back to list-only conversation record.
     await emitConversation(c, null);
@@ -813,13 +1468,43 @@ export async function processConversationDetail(
   const mapping = detail.json.mapping;
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
+  let emittedMessageCount = 0;
   for (const [nodeId, node] of Object.entries(mapping)) {
     const msg = extractMessage(nodeId, node, c.id, currentBranchIds.has(nodeId));
     if (!msg?.role) {
       // synthetic root — skip
       continue;
     }
+    emittedMessageCount += 1;
     await deps.emitRecord("messages", msg);
+  }
+  if (emittedMessageCount === 0) {
+    // Completeness guard. A 200-with-mapping detail whose graph contains NO
+    // message-bearing node leaves a bare conversation row with zero messages
+    // and, without this, no signal at all — indistinguishable downstream from
+    // data loss. This is the silent-empty class the dataconnect completeness
+    // audit (2026-06-02) flagged as recommendation #5: "a 200-response whose
+    // mapping yields zero kept nodes for a conversation with a non-empty title
+    // should be flagged, not emitted as an empty conversation."
+    //
+    // It is NOT a fetch failure (the conversation record still emitted and the
+    // conversation still counts as hydrated/covered — we successfully reached
+    // it), so this is a SKIP_RESULT diagnostic, not a DETAIL_GAP. It exists so
+    // an empty conversation is observable rather than silent, which matters
+    // more as detail concurrency rises and partial/interleaved states become
+    // more likely. The `node_count` lets a reviewer distinguish a genuinely
+    // empty graph (0) from one whose every node was synthetic/role-less (>0).
+    deps.emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "empty_detail",
+      message: `conversation ${c.id} returned http 200 with a mapping but no message-bearing nodes`,
+      diagnostics: {
+        http_status: 200,
+        conversation_id: c.id,
+        node_count: Object.keys(mapping).length,
+      },
+    });
   }
 }
 
@@ -854,6 +1539,7 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
         stream: "custom_gpts",
         reason: "http_error",
         message: `gizmos/mine http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       anyError = true;
       break;
@@ -883,12 +1569,24 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-export async function runSharedConversationsStream(deps: StreamDeps): Promise<void> {
+export async function runSharedConversationsStream(
+  deps: StreamDeps,
+  state: CollectContext["state"] = {}
+): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "shared_conversations",
     message: "Fetching shared conversations",
   });
+  // `/shared_conversations` is re-listed in full every run; each share record
+  // carries a stable id and no run-clock field, so a per-record fingerprint
+  // over the whole body is the exact "did this share move?" gate. Without it
+  // every still-present share re-versions on every run even when nothing
+  // changed (the dashboard's shared_conversations churn was 100%
+  // byte-identical no-op re-emit). This is a full scan, so stale ids (shares
+  // the user deleted on the source) are pruned from the carry-forward map
+  // after a clean pass.
+  const fingerprintCursor = openFingerprintCursor(state.shared_conversations);
   let offset = 0;
   const limit = 100;
   let sawError = false;
@@ -910,6 +1608,7 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
         stream: "shared_conversations",
         reason: "http_error",
         message: `shared_conversations http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       sawError = true;
       break;
@@ -920,7 +1619,7 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
     }
     for (const s of items) {
       const rec = buildSharedConversationRecord(s);
-      if (rec) {
+      if (rec && fingerprintCursor.shouldEmit(rec)) {
         await deps.emitRecord("shared_conversations", rec);
       }
     }
@@ -933,10 +1632,13 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
     }
   }
   if (!sawError) {
+    // Only prune after a clean full pass — an aborted/errored scan never saw
+    // every id and must not drop carry-forward entries it failed to observe.
+    fingerprintCursor.pruneStale();
     deps.emit({
       type: "STATE",
       stream: "shared_conversations",
-      cursor: { fetched_at: nowIso() },
+      cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
     });
   }
 }
@@ -959,7 +1661,7 @@ async function listConversationsSinceCursor(
   deps.emit({
     type: "PROGRESS",
     stream: "conversations",
-    message: "Listing conversations",
+    message: priorCursor ? `Listing conversations updated after ${priorCursor}` : "Listing conversations (full pass)",
   });
   while (!stopPaging) {
     const res = await deps.api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`);
@@ -969,6 +1671,7 @@ async function listConversationsSinceCursor(
         stream: "conversations",
         reason: "http_error",
         message: `conversations list http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       break;
     }
@@ -995,17 +1698,388 @@ async function listConversationsSinceCursor(
   return convosToSync;
 }
 
+function conversationIsAfterCursor(c: ConversationListItem, priorCursor: string | null): boolean {
+  if (!priorCursor) {
+    return true;
+  }
+  const updateIso = c.update_time ? tsToIso(c.update_time) : null;
+  return !updateIso || updateIso > priorCursor;
+}
+
+function oldestConversationCursor(a: string | null, b: string | null): string | null {
+  if (!(a && b)) {
+    return null;
+  }
+  return a <= b ? a : b;
+}
+
+type ConversationListForCursor = (cursor: string | null) => Promise<ConversationListItem[]>;
+
+async function selectConversationListsForRequestedStreams({
+  wantsConversations,
+  wantsMessages,
+  priorConversationsCursor,
+  priorMessagesCursor,
+  listForCursor,
+}: {
+  wantsConversations: boolean;
+  wantsMessages: boolean;
+  priorConversationsCursor: string | null;
+  priorMessagesCursor: string | null;
+  listForCursor: ConversationListForCursor;
+}): Promise<{
+  conversationsToSync: ConversationListItem[];
+  messageDetailConversations: ConversationListItem[];
+}> {
+  if (wantsConversations && wantsMessages) {
+    const sharedCursor = oldestConversationCursor(priorConversationsCursor, priorMessagesCursor);
+    const sharedList = await listForCursor(sharedCursor);
+    return {
+      conversationsToSync: sharedList.filter((c) => conversationIsAfterCursor(c, priorConversationsCursor)),
+      messageDetailConversations: sharedList.filter((c) => conversationIsAfterCursor(c, priorMessagesCursor)),
+    };
+  }
+  if (wantsConversations) {
+    return {
+      conversationsToSync: await listForCursor(priorConversationsCursor),
+      messageDetailConversations: [],
+    };
+  }
+  if (wantsMessages) {
+    return {
+      conversationsToSync: [],
+      messageDetailConversations: await listForCursor(priorMessagesCursor),
+    };
+  }
+  return { conversationsToSync: [], messageDetailConversations: [] };
+}
+
 const CONVO_DETAIL_PAUSE_MIN_MS = 1500;
 const CONVO_DETAIL_PAUSE_MAX_MS = 3000;
 const CONVO_DETAIL_INITIAL_CONCURRENCY = 1;
 const CONVO_DETAIL_MAX_CONCURRENCY = 1;
 
+// ─── Cold-state A/B probe overrides (DEFAULTS FROZEN) ────────────────────
+//
+// The detail-lane concurrency MUST stay at `1` in production until a
+// genuinely cold-state live run produces clean evidence — see
+// openspec/changes/add-connector-adaptive-lanes (design.md "Live Evidence":
+// "ChatGPT `maxConcurrency` MUST stay at `1`...") and its Tasks §6 owner-only
+// gate. The 2026-06-02 A/B probe showed even the minimal serial lane hits
+// ~38% bare-429 on a hot account, so raising request rate is unsafe while
+// hot and only justified from a cold start.
+//
+// These resolvers exist solely to let the OWNER run that cold-state A/B
+// against the REAL connector lane (with real DETAIL_GAP/cursor semantics)
+// without hand-editing — and committing — the frozen constants. They are
+// PROBE-ONLY knobs: when the env vars are unset/invalid the production
+// defaults (1 / 1 / 1500ms / 3000ms) hold exactly, so normal runs are
+// byte-for-byte unchanged. Do NOT set these in a production environment;
+// setting concurrency > 1 against a hot account increases 429 pressure.
+const CHATGPT_DETAIL_INITIAL_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE";
+const CHATGPT_DETAIL_MAX_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE";
+const CHATGPT_DETAIL_PAUSE_MIN_MS_ENV = "PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE";
+const CHATGPT_DETAIL_PAUSE_MAX_MS_ENV = "PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE";
+// Hard ceiling on the probe override. Even a cold-state A/B should not fan out
+// beyond dataconnect's own batch size (5); anything higher is not an A/B, it is
+// a different, untested posture.
+const CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING = 5;
+
+function resolvePositiveIntOverride(raw: string | undefined, fallback: number, ceiling: number): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.min(parsed, ceiling);
+}
+
+function resolvePositiveMsOverride(raw: string | undefined, fallback: number): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+export interface ChatGptDetailLaneTuning {
+  initialConcurrency: number;
+  maxConcurrency: number;
+  pauseMaxMs: number;
+  pauseMinMs: number;
+}
+
+/**
+ * Resolve the conversation-detail lane tuning. With no probe env vars set this
+ * returns the frozen production defaults; the OpenSpec concurrency constraint is
+ * therefore preserved by default. Invalid values fall back to the default for
+ * that knob. `maxConcurrency` is capped at `CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING`
+ * and clamped to be >= `initialConcurrency`; `pauseMaxMs` is clamped to be >=
+ * `pauseMinMs` so the lane's jitter window is always valid.
+ */
+export function resolveChatGptDetailLaneTuning(env: NodeJS.ProcessEnv = process.env): ChatGptDetailLaneTuning {
+  const initialConcurrency = resolvePositiveIntOverride(
+    env[CHATGPT_DETAIL_INITIAL_CONCURRENCY_ENV],
+    CONVO_DETAIL_INITIAL_CONCURRENCY,
+    CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING
+  );
+  const maxConcurrency = Math.max(
+    initialConcurrency,
+    resolvePositiveIntOverride(
+      env[CHATGPT_DETAIL_MAX_CONCURRENCY_ENV],
+      CONVO_DETAIL_MAX_CONCURRENCY,
+      CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING
+    )
+  );
+  const pauseMinMs = resolvePositiveMsOverride(env[CHATGPT_DETAIL_PAUSE_MIN_MS_ENV], CONVO_DETAIL_PAUSE_MIN_MS);
+  const pauseMaxMs = Math.max(
+    pauseMinMs,
+    resolvePositiveMsOverride(env[CHATGPT_DETAIL_PAUSE_MAX_MS_ENV], CONVO_DETAIL_PAUSE_MAX_MS)
+  );
+  return { initialConcurrency, maxConcurrency, pauseMinMs, pauseMaxMs };
+}
+
+// ─── Cold-state preflight source-pressure classifier ────────────────────
+//
+// The cold-state A/B (PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE > 1) is the
+// owner-only test that decides whether ChatGPT detail concurrency may ever rise
+// above the frozen serial default. The 2026-06-02 evidence showed the throttle
+// is per-ACCOUNT and time-varying: the same serial lane saw ~38% bare-429 while
+// hot, then 0% hours later once cold. Raising concurrency is only safe from a
+// genuinely cold start; firing a faster posture into a hot account is exactly
+// the escalation the prior probe declined.
+//
+// This preflight closes that gap WITHOUT touching production. When the owner
+// opts into the A/B by raising probe concurrency, the connector first fires a
+// few SERIAL, content-free GET detail probes to classify the account. The
+// request necessarily targets a conversation id, but the probe never parses or
+// captures bodies and never emits bodies, titles, ids, or tokens. If any probe
+// 429s, the run is forced back to the frozen serial posture (1/1) for safety
+// and the faster posture is abandoned for this run. Only a clean preflight lets
+// the requested faster tuning through.
+//
+// Invariants:
+//   - Skipped entirely when maxConcurrency === 1 (production). No extra requests
+//     on a normal run; the OpenSpec serial constraint holds byte-for-byte.
+//   - Fails SAFE: any probe error or 429 → serial. It can only ever make a run
+//     MORE conservative, never less.
+//   - Reads only HTTP status. Emits no records and no sensitive strings.
+const CHATGPT_PREFLIGHT_PROBE_COUNT = 3;
+
+export interface ChatGptSourcePressureClassification {
+  attempted: number;
+  classification: "cold" | "pressured";
+  rateLimited: number;
+}
+
+function isChatGptPressureStatus(status: number | undefined): boolean {
+  return isChatGptRetryableStatus(status);
+}
+
+function rateLimitedCountForPreflightError(error: unknown): number {
+  return error instanceof ChatGptRecoverableRetryExhaustedError ? 1 : 0;
+}
+
+function fetchChatGptPressureProbeStatus(
+  deps: Pick<StreamDeps, "api">,
+  id: string
+): Promise<Pick<ChatGptFetchResult, "headers" | "status">> {
+  if (!deps.api.fetchStatus) {
+    throw new Error("ChatGPT status-only preflight is unavailable");
+  }
+  return deps.api.fetchStatus(`/conversation/${encodeURIComponent(id)}`);
+}
+
+async function classifyChatGptSerialPressure(
+  deps: Pick<StreamDeps, "api">,
+  ids: readonly string[]
+): Promise<ChatGptSourcePressureClassification> {
+  let attempted = 0;
+  let rateLimited = 0;
+  for (const id of ids) {
+    attempted += 1;
+    let status: number;
+    try {
+      const res = await fetchChatGptPressureProbeStatus(deps, id);
+      status = res.status;
+    } catch (err) {
+      rateLimited += rateLimitedCountForPreflightError(err);
+      return { attempted, classification: "pressured", rateLimited };
+    }
+    if (isChatGptPressureStatus(status)) {
+      rateLimited += 1;
+      return { attempted, classification: "pressured", rateLimited };
+    }
+  }
+  return { attempted, classification: "cold", rateLimited };
+}
+
+async function classifyChatGptBurstPressure(
+  deps: Pick<StreamDeps, "api">,
+  probeIds: readonly string[],
+  burstConcurrency: number
+): Promise<ChatGptSourcePressureClassification> {
+  const burstSize = Math.max(0, Math.floor(burstConcurrency));
+  const ids = probeIds.slice(0, Math.min(probeIds.length, burstSize));
+  if (ids.length <= 1) {
+    return { attempted: 0, classification: "cold", rateLimited: 0 };
+  }
+  const results = await Promise.allSettled(ids.map((id) => fetchChatGptPressureProbeStatus(deps, id)));
+  let rateLimited = 0;
+  for (const result of results) {
+    if (result.status === "rejected") {
+      rateLimited += rateLimitedCountForPreflightError(result.reason);
+      return { attempted: results.length, classification: "pressured", rateLimited };
+    }
+    if (isChatGptPressureStatus(result.value.status)) {
+      rateLimited += 1;
+      return { attempted: results.length, classification: "pressured", rateLimited };
+    }
+  }
+  return { attempted: results.length, classification: "cold", rateLimited };
+}
+
+/**
+ * Fire up to `probeCount` SERIAL, content-free detail probes and classify the
+ * account, then optionally replay the same ids as one bounded burst canary that
+ * matches the requested raised concurrency. Any 429 (or required-detail HTTP
+ * failure) marks the account `pressured`; an all-200 sweep marks it `cold`.
+ * Stops at the first serial 429 — one rate-limit signal is enough to force the
+ * conservative posture, and continuing would add load to an already-pressured
+ * bucket.
+ *
+ * Probes reuse the connector's own `api.fetchStatus` (so they ride the same
+ * browser transport, auth, and `retryHttp`/fast-open path the real lane uses).
+ * The browser fetch does not parse response JSON; only `status` is inspected.
+ */
+export async function classifyChatGptSourcePressure(
+  deps: Pick<StreamDeps, "api">,
+  probeIds: readonly string[],
+  probeCount = CHATGPT_PREFLIGHT_PROBE_COUNT,
+  burstConcurrency = 1
+): Promise<ChatGptSourcePressureClassification> {
+  if (!deps.api.fetchStatus) {
+    return { attempted: 0, classification: "pressured", rateLimited: 0 };
+  }
+  const ids = probeIds.slice(0, Math.max(0, probeCount));
+  const serial = await classifyChatGptSerialPressure(deps, ids);
+  if (serial.classification === "pressured") {
+    return serial;
+  }
+  const burst = await classifyChatGptBurstPressure(deps, probeIds, burstConcurrency);
+  if (burst.classification === "pressured") {
+    return {
+      attempted: serial.attempted + burst.attempted,
+      classification: "pressured",
+      rateLimited: serial.rateLimited + burst.rateLimited,
+    };
+  }
+  return { attempted: serial.attempted + burst.attempted, classification: "cold", rateLimited: 0 };
+}
+
+/** The frozen serial posture a pressured preflight forces a run back to. */
+const CHATGPT_SERIAL_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
+  maxConcurrency: CONVO_DETAIL_MAX_CONCURRENCY,
+  pauseMinMs: CONVO_DETAIL_PAUSE_MIN_MS,
+  pauseMaxMs: CONVO_DETAIL_PAUSE_MAX_MS,
+};
+
+/**
+ * Decide the effective detail-lane tuning for this run. When the requested
+ * tuning is the serial production default (maxConcurrency === 1) this is a
+ * no-op: it returns the requested tuning without firing any probe, so a normal
+ * run is byte-for-byte unchanged. When the owner has opted into a faster A/B
+ * posture (maxConcurrency > 1), it runs a content-free serial preflight and
+ * forces the run back to serial if the account is pressured.
+ */
+export async function applyChatGptColdStatePreflight(
+  deps: StreamDeps,
+  convosToSync: readonly ConversationListItem[],
+  requestedTuning: ChatGptDetailLaneTuning
+): Promise<ChatGptDetailLaneTuning> {
+  if (requestedTuning.maxConcurrency <= 1) {
+    return requestedTuning;
+  }
+  const probeIds = convosToSync.slice(0, CHATGPT_PREFLIGHT_PROBE_COUNT).map((c) => c.id);
+  if (!probeIds.length) {
+    return requestedTuning;
+  }
+  deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `ChatGPT cold-state preflight: probing source pressure with ${probeIds.length} serial detail request(s) before raising detail concurrency to ${requestedTuning.maxConcurrency}`,
+  });
+  const result = await classifyChatGptSourcePressure(
+    deps,
+    probeIds,
+    CHATGPT_PREFLIGHT_PROBE_COUNT,
+    requestedTuning.maxConcurrency
+  );
+  if (result.classification === "pressured") {
+    deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT cold-state preflight: source is pressured (rate_limited=${result.rateLimited}/${result.attempted}); holding detail lane at serial concurrency=1 for this run`,
+    });
+    return CHATGPT_SERIAL_TUNING;
+  }
+  deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `ChatGPT cold-state preflight: source is cold (${result.attempted}/${result.attempted} ok); allowing requested detail concurrency=${requestedTuning.maxConcurrency}`,
+  });
+  return requestedTuning;
+}
+
 interface ConversationDetailPacingOptions {
+  // Cumulative served-429 count after which the lane defers the remaining tail
+  // as upstream_pressure DETAIL_GAP records. Defaults to
+  // resolveChatGptRateLimitDensityStop(); tests inject a small value to exercise
+  // the trip without standing up real backoff.
+  densityStopThreshold?: number;
+  // Served 429s the run absorbed before this detail pass (list pagination + the
+  // non-detail streams). Seeds the density tracker so pre-detail source pressure
+  // carries forward. Defaults to the run-scoped accumulator on `deps`; tests
+  // inject a fixed value to exercise the seed without a real list phase.
+  preDetailRateLimited?: number;
+  // Connector-agnostic provider budget controller. When present it owns
+  // inter-request pacing for the detail lane, so the lane's ordinary launch
+  // delay is neutralized to avoid stacking two pacing controllers.
+  providerBudget?: ProviderBudgetController | null;
   random?: () => number;
+  // Bounded-run budget for this detail pass. Tests inject a ChatGptRunBudget
+  // (with a fake clock and/or a small request budget) to exercise the budget
+  // deterministically without a real multi-hour run. Defaults to the run-scoped
+  // budget on `deps`, and falls back to an env-resolved budget so production honors
+  // PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN / PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS.
+  runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
+  // Max per-key DETAIL_GAP rows a run-cap tail materializes before folding the
+  // older remainder into one backlog gap. Tests inject a small value to exercise
+  // the bounded tail writer + backlog-cursor recovery without thousands of rows.
+  // Defaults to resolveChatGptMaxTailDeferralGapsPerRun() (Infinity = unbounded
+  // per-key behavior preserved). Only the run-cap deferral path honors it;
+  // source-pressure deferrals stay per-key (their backlog IS the cooldown signal).
+  tailGapBound?: number;
+  tuning?: ChatGptDetailLaneTuning;
 }
 
 interface ConversationDetailCoverage {
+  // When a cap-tail deferral folds the older tail into a backlog gap, this is
+  // that backlog gap's synthetic record_key. The forward-pass coverage must list
+  // it as a required key so the commit gate sees it backed by a durable gap; the
+  // older tail conversations are intentionally NOT required keys this run (they
+  // become required when a later run re-lists and materializes them). Absent
+  // (undefined) when the run materialized every tail conversation per-key.
+  backlogGapKey?: string;
   gapKeys: Array<string | number>;
   hydratedKeys: Array<string | number>;
 }
@@ -1016,6 +2090,9 @@ function sleepMs(ms: number): Promise<void> {
 
 function shouldEmitConversationDetailLaneProgress(event: AdaptiveLaneEvent): boolean {
   if (event.type === "queued" || event.outcome === "ok") {
+    return false;
+  }
+  if (event.type === "completed" && event.outcome === "terminal" && event.reason === "upstream_pressure_deferred") {
     return false;
   }
   return true;
@@ -1080,30 +2157,22 @@ function makeConversationDetailGap(
   c: ConversationListItem,
   error: ChatGptRecoverableRetryExhaustedError
 ): DetailGapMessage {
-  return {
-    type: "DETAIL_GAP",
+  const networkPressure = omitAttemptBudget(error.networkPressure);
+  return buildDetailGap({
     stream: "messages",
-    record_key: c.id,
-    status: "pending",
+    recordKey: c.id,
     reason: error.class,
-    detail_locator: {
+    locator: {
       kind: "chatgpt.conversation",
       conversation_id: c.id,
       list_item: safeConversationListItemHint(c),
     },
-    retryable: true,
-    reference_only: true,
-    detail: {
+    error: {
       class: error.class,
-      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
-      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+      ...(error.httpStatus == null ? {} : { httpStatus: error.httpStatus }),
+      ...(networkPressure == null ? {} : { networkPressure }),
     },
-    last_error: {
-      class: error.class,
-      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
-      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
-    },
-  };
+  });
 }
 
 function omitAttemptBudget(
@@ -1121,46 +2190,156 @@ function makeDeferredConversationDetailGap(
   observedPressure: ChatGptRecoverableRetryExhaustedError
 ): DetailGapMessage {
   const networkPressure = omitAttemptBudget(observedPressure.networkPressure);
-  return {
-    type: "DETAIL_GAP",
+  return buildDetailGap({
     stream: "messages",
-    record_key: c.id,
-    status: "pending",
+    recordKey: c.id,
     reason: "upstream_pressure",
-    detail_locator: {
+    locator: {
       kind: "chatgpt.conversation",
       conversation_id: c.id,
       list_item: safeConversationListItemHint(c),
     },
-    retryable: true,
-    reference_only: true,
-    detail: {
+    error: {
       class: "upstream_pressure_deferred",
-      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
-      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
+      ...(observedPressure.httpStatus == null ? {} : { httpStatus: observedPressure.httpStatus }),
+      ...(networkPressure == null ? {} : { networkPressure }),
     },
-    last_error: {
-      class: "upstream_pressure_deferred",
-      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
-      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
+  });
+}
+
+/**
+ * Synthesize the same recoverable-pressure error the per-conversation
+ * exhaustion path throws, so a cumulative-429-density trip opens the EXISTING
+ * upstream-pressure defer circuit (and emits identical DETAIL_GAP shapes)
+ * rather than introducing a parallel deferral mechanism. No HTTP status: the
+ * trip is a run-level density signal, not a single bad response.
+ */
+function makeRateLimitDensityPressureError(observedRateLimited: number): ChatGptRecoverableRetryExhaustedError {
+  return new ChatGptRecoverableRetryExhaustedError(
+    `ChatGPT conversation-detail lane observed ${observedRateLimited} served 429s; deferring remaining details to avoid grinding a pressured account`,
+    {
+      class: "upstream_pressure",
+      networkPressure: {
+        endpoint_route: "/conversation/{id}",
+        error_class: "rate_limit_density",
+        method: "GET",
+      },
+    }
+  );
+}
+
+/**
+ * Build a resumable DETAIL_GAP for a conversation deferred because this run hit
+ * its bounded-run cap (size or time), NOT because the source pressured us. The
+ * wire `reason` is `retry_exhausted` — resumable and retryable next run, but it
+ * does NOT arm the cross-run source-pressure cooldown governor the way
+ * `upstream_pressure` / `rate_limited` would. A distinct `run_cap_deferred`
+ * error class keeps the cap visibly separate from a source-pressure defer so
+ * the console never reads a self-imposed bound as "the service is busy". No HTTP
+ * status: nothing failed — the run simply stopped at its budget.
+ */
+function chatGptRunCapReasonFromProviderGate(gate: ProviderBudgetGate & { ok: false }): ChatGptRunCapReason {
+  if (gate.reason === "max_wall_clock") {
+    return "max_wall_clock";
+  }
+  if (gate.reason === "retry_budget") {
+    return "provider_retry_budget";
+  }
+  if (gate.reason === "circuit_open") {
+    return "circuit_open";
+  }
+  return "max_detail_fetches";
+}
+
+function makeRunCapDeferredConversationDetailGap(
+  c: ConversationListItem,
+  capReason: ChatGptRunCapReason
+): DetailGapMessage {
+  return buildDetailGap({
+    stream: "messages",
+    recordKey: c.id,
+    reason: "retry_exhausted",
+    locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: c.id,
+      list_item: safeConversationListItemHint(c),
     },
-  };
+    error: {
+      class: "run_cap_deferred",
+      networkPressure: {
+        endpoint_route: "/conversation/{id}",
+        error_class: capReason,
+        method: "GET",
+      },
+    },
+  });
+}
+
+// Synthetic, stable record_key for the single backlog DETAIL_GAP a capped run
+// folds its un-materialized older tail into. Stable so a rewrite (an older
+// watermark) targets the same coverage slot; the durable row itself is replaced
+// run-over-run (old resolved, fresh emitted) because the gap-store natural key
+// includes detail_locator_json, which carries the watermark.
+const CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY = "__chatgpt_conversation_backlog__";
+const CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND = "chatgpt.conversation_backlog";
+
+/**
+ * Build the ONE durable backlog `DETAIL_GAP` that represents a capped run's
+ * un-materialized older conversation tail. It carries a content-derived
+ * `before_update_time` watermark (ISO) the next run re-lists from — NEVER an
+ * offset — plus the count of conversations still owed. Same resumable
+ * `retry_exhausted` / `run_cap_deferred` contract as the per-key cap gaps, so it
+ * never arms the source-pressure cooldown. The `list_cursor` mirror is set for
+ * protocol honesty even though recovery reads the watermark from the locator
+ * (the recovery start-entry round-trips `detail_locator`, not `list_cursor`).
+ */
+function makeRunCapBacklogConversationDetailGap(
+  beforeUpdateTimeIso: string,
+  remaining: number,
+  capReason: ChatGptRunCapReason
+): DetailGapMessage {
+  return buildDetailGap({
+    stream: "messages",
+    recordKey: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
+    reason: "retry_exhausted",
+    listCursor: { before_update_time: beforeUpdateTimeIso },
+    locator: {
+      kind: CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND,
+      before_update_time: beforeUpdateTimeIso,
+      remaining,
+    },
+    error: {
+      class: "run_cap_deferred",
+      networkPressure: {
+        endpoint_route: "/conversations",
+        error_class: capReason,
+        method: "GET",
+      },
+    },
+  });
+}
+
+/** The inclusive watermark a backlog-gap recovery re-lists from, or null if absent/invalid. */
+function backlogGapBeforeUpdateTime(gap: CollectContext["detailGaps"][number]): string | null {
+  const locator = gap.detail_locator;
+  if (!locator || locator.kind !== CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND) {
+    return null;
+  }
+  const before = (locator as { before_update_time?: unknown }).before_update_time;
+  return typeof before === "string" && before !== "" ? before : null;
 }
 
 function makeConversationDetailCoverage(
-  convosToSync: ConversationListItem[],
+  requiredKeys: Array<string | number>,
   coverage: ConversationDetailCoverage
 ): DetailCoverageMessage {
-  const gapKeys = coverage.gapKeys;
-  return {
-    type: "DETAIL_COVERAGE",
-    reference_only: true,
-    state_stream: "conversations",
+  return buildDetailCoverageMessage({
     stream: "messages",
-    required_keys: convosToSync.map((c) => c.id),
-    hydrated_keys: coverage.hydratedKeys,
-    ...(gapKeys.length ? { gap_keys: gapKeys } : {}),
-  };
+    stateStream: "conversations",
+    requiredKeys,
+    hydratedKeys: coverage.hydratedKeys,
+    gapKeys: coverage.gapKeys,
+  });
 }
 
 /**
@@ -1177,23 +2356,87 @@ export async function runMessagesAndConversationsWithDetail(
 ): Promise<ConversationDetailCoverage> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
+  const providerBudget = pacing.providerBudget ?? deps.providerBudget ?? null;
+  // Defaults are the frozen production values (1 / 1 / 1500ms / 3000ms). A
+  // cold-state A/B probe may override them via PDPP_CHATGPT_DETAIL_*_PROBE env
+  // vars; see resolveChatGptDetailLaneTuning. Tests may also inject `tuning`.
+  const rawRequestedTuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
+  // Converged (`pacingMode: "signal"`): the lane is the SOLE send governor and
+  // owns the single pre-flight wait, so its launch-delay window is retained and
+  // pacing rides in as a `launchDelayHint`. Legacy: when a controller owns the
+  // pre-flight pacing wait, the lane's launch delay is neutralized to avoid two
+  // pre-flight waits (today's behavior). No controller → ordinary lane delay.
+  const convergedGovernor = providerBudget?.pacingMode === "signal";
+  const requestedTuning =
+    providerBudget == null || convergedGovernor
+      ? rawRequestedTuning
+      : {
+          ...rawRequestedTuning,
+          pauseMaxMs: 0,
+          pauseMinMs: 0,
+        };
+  // Cold-state preflight: only when the owner has opted into the faster A/B
+  // posture (maxConcurrency > 1). Production (maxConcurrency === 1) skips this
+  // entirely — no extra requests, frozen serial behavior preserved byte-for-byte.
+  // A pressured account forces the run back to serial so the faster posture is
+  // never fired into a hot bucket.
+  const tuning = await applyChatGptColdStatePreflight(deps, convosToSync, requestedTuning);
   const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
+  // Cumulative served-429 early-stop. Each `rate_limited` cooldown the lane
+  // surfaces (one per served 429, success-after-backoff included) bumps the
+  // tracker; once it crosses threshold we open the same upstream-pressure
+  // circuit the per-conversation exhaustion path uses. Strictly safer: it can
+  // only defer the tail earlier, never add requests.
+  //
+  // Seed the tracker with served 429s the run already absorbed BEFORE this
+  // detail pass — list pagination and the non-detail streams fetch outside any
+  // lane, so their 429s never reached the lane's cooldown counter. `pacing`
+  // wins for tests; production reads the run-scoped accumulator on `deps`.
+  const seededRateLimited = pacing.preDetailRateLimited ?? deps.preDetailPressure?.rateLimited ?? 0;
+  const densityTracker = new ChatGptRateLimitDensityTracker(
+    pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop(),
+    seededRateLimited
+  );
+  // Bounded-run budget. `pacing` wins for tests; production reads the run-scoped
+  // budget on `deps` (shared across the recovery + forward passes); if neither
+  // is supplied, fall back to an env-resolved budget so a single-pass call still
+  // honors the connector defaults and env overrides. Non-positive env values are
+  // explicit disable sentinels for owner-supervised probes.
+  const runBudget =
+    pacing.runBudget ??
+    deps.runBudget ??
+    new ChatGptRunBudget({
+      maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
+      maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
+    });
+  // Max per-key DETAIL_GAP rows a run-cap tail may materialize before folding
+  // the older remainder into one backlog gap. `pacing` wins for tests; otherwise
+  // env-resolved (Infinity = today's unbounded per-key behavior). This bounds the
+  // FOREGROUND WRITE burn of a cap trip; it does not change fetching.
+  const tailGapBound = pacing.tailGapBound ?? resolveChatGptMaxTailDeferralGapsPerRun();
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
-    initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
-    maxConcurrency: CONVO_DETAIL_MAX_CONCURRENCY,
-    maxDelayMs: CONVO_DETAIL_PAUSE_MAX_MS,
+    initialConcurrency: tuning.initialConcurrency,
+    maxConcurrency: tuning.maxConcurrency,
+    maxDelayMs: tuning.pauseMaxMs,
     maxQueueSize: Math.max(1, convosToSync.length),
     minConcurrency: 1,
-    minDelayMs: CONVO_DETAIL_PAUSE_MIN_MS,
+    minDelayMs: tuning.pauseMinMs,
+    // Converged: fold GCRA pacing into the lane's single launch wait so there is
+    // exactly one pre-flight gate. The controller computes the pacing delay
+    // without sleeping (signal mode); the lane takes max(launchDelay, hint).
+    ...(convergedGovernor && providerBudget ? { launchDelayHint: (): number => providerBudget.pacingDelayHint() } : {}),
     pressureMaxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
     pressureMinDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
     classifyOutcome: ({ result }) => {
       if (!result) {
         return { kind: "retryable" };
       }
-      if (result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504) {
+      if (result.deferredDueToPressure) {
+        return { kind: "terminal", reason: "upstream_pressure_deferred" };
+      }
+      if (isChatGptRetryableStatus(result.status)) {
         return { kind: "rate_limited" };
       }
       return { kind: "ok" };
@@ -1201,6 +2444,12 @@ export async function runMessagesAndConversationsWithDetail(
     random,
     sleep,
     emitProgress: (event) => {
+      // A `cooldown` event with a `rate_limited` outcome is the lane surfacing a
+      // served 429 (reported by the per-request onRetry, whether or not the
+      // request later succeeds). Count it for the cumulative density stop.
+      if (event.type === "cooldown" && event.outcome === "rate_limited") {
+        densityTracker.recordRateLimited();
+      }
       if (event.type === "started") {
         if (emittedConversationDetailLaneStart) {
           return;
@@ -1218,38 +2467,216 @@ export async function runMessagesAndConversationsWithDetail(
     },
   });
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
-  await lane.runAll(convosToSync, async (c) => {
+  let runCapDeferReason: ChatGptRunCapReason | null = null;
+  const gapKeys = new Set<string>();
+  const hydratedKeys = new Set<string>();
+  // Once run-cap or source-pressure deferral trips, all later conversation
+  // details are local bookkeeping: emit durable DETAIL_GAP rows for the tail,
+  // then abort queued lane work so the paced launch delay is not paid for each
+  // no-op tail item.
+  const tailStopController = new AbortController();
+
+  async function emitConversationDetailGapOnce(c: ConversationListItem, gap: DetailGapMessage): Promise<void> {
+    if (gapKeys.has(c.id) || hydratedKeys.has(c.id)) {
+      return;
+    }
+    gapKeys.add(c.id);
+    await deps.emit(gap);
+    coverage.gapKeys.push(c.id);
+  }
+
+  async function emitTailConversationDetailGaps(
+    from: ConversationListItem,
+    makeGap: (item: ConversationListItem, indexFromTailStart: number) => DetailGapMessage
+  ): Promise<ChatGptFetchResult> {
+    const start = Math.max(
+      0,
+      convosToSync.findIndex((item) => item.id === from.id)
+    );
+    const tail = convosToSync.slice(start);
+    for (const [index, item] of tail.entries()) {
+      await emitConversationDetailGapOnce(item, makeGap(item, index));
+    }
+    tailStopController.abort();
+    return { deferredDueToPressure: true, status: 0, json: null };
+  }
+
+  // Bounded run-cap tail writer. A capped run stopped FETCHING at its budget;
+  // this stops it from spending a long foreground stretch WRITING one durable
+  // gap row per remaining conversation. It materializes at most `tailGapBound`
+  // per-key `run_cap_deferred` gaps (newest of the tail — these recover first
+  // next run via their `list_item` hint), then folds every OLDER conversation
+  // into ONE durable backlog gap carrying a content-derived `before_update_time`
+  // watermark (the newest un-materialized update_time). A later run's recovery
+  // re-lists at-or-older than that inclusive watermark and drains the next bounded chunk, so a
+  // huge history converges oldest-ward over several bounded runs while each run
+  // writes ≤ bound + 1 durable rows. NOT source pressure — same resumable
+  // `retry_exhausted` / `run_cap_deferred` contract, no cooldown armed.
+  //
+  // `tailGapBound === Infinity` (no cap configured, or only this path's default)
+  // collapses to the per-key behavior: the backlog branch is never taken and the
+  // output is byte-for-byte identical to the unbounded writer above.
+  async function emitRunCapTailConversationDetailGaps(
+    from: ConversationListItem,
+    capReason: ChatGptRunCapReason
+  ): Promise<ChatGptFetchResult> {
+    const start = Math.max(
+      0,
+      convosToSync.findIndex((item) => item.id === from.id)
+    );
+    const tail = convosToSync.slice(start);
+    const perKey = Number.isFinite(tailGapBound) ? tail.slice(0, tailGapBound) : tail;
+    const backlog = Number.isFinite(tailGapBound) ? tail.slice(tailGapBound) : [];
+    for (const item of perKey) {
+      await emitConversationDetailGapOnce(item, makeRunCapDeferredConversationDetailGap(item, capReason));
+    }
+    if (backlog.length) {
+      // Watermark: the NEWEST update_time in the un-materialized backlog. Recovery
+      // re-lists conversations `update_time <= watermark` — an INCLUSIVE upper
+      // bound. Using the backlog's own newest boundary (rather than the accounted
+      // set's oldest) is stranding-proof at a tie: if a boundary update_time is
+      // shared between an accounted item and a backlog item, the inclusive filter
+      // re-lists the tied accounted item and the bounded writer simply re-defers
+      // it — wasteful by at most a tie group, never lost. Convergence holds: the
+      // next watermark is the next backlog's newest, strictly older than the
+      // current chunk's oldest accounted item.
+      const watermark = maxUpdateTimeIso(backlog) ?? minUpdateTimeIso(backlog);
+      if (watermark) {
+        coverage.backlogGapKey = CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY;
+        await deps.emit(makeRunCapBacklogConversationDetailGap(watermark, backlog.length, capReason));
+      } else {
+        // Pathological: no usable timestamp anywhere in the backlog. Rather than
+        // silently drop the older tail (non-convergent), fall back to per-key gaps.
+        for (const item of backlog) {
+          await emitConversationDetailGapOnce(item, makeRunCapDeferredConversationDetailGap(item, capReason));
+        }
+      }
+    }
+    tailStopController.abort();
+    return { deferredDueToPressure: true, status: 0, json: null };
+  }
+
+  async function maybeDeferForRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+    if (!densityTracker.shouldStop()) {
+      return null;
+    }
+    observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
+    });
+    return emitTailConversationDetailGaps(from, (item) =>
+      makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
+    );
+  }
+
+  async function maybeDeferForRunBudget(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+    const capReason = runBudget.reason();
+    if (!capReason) {
+      return null;
+    }
+    runCapDeferReason = capReason;
+    const budgetDescription =
+      capReason === "max_wall_clock"
+        ? `wall-clock budget after ${runBudget.elapsedMs()}ms elapsed`
+        : `provider-request budget after ${runBudget.count} conversation-detail request(s)`;
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
+    });
+    return emitRunCapTailConversationDetailGaps(from, capReason);
+  }
+
+  async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
+    if (err instanceof ChatGptPlannedProviderBudgetDeferredError) {
+      runCapDeferReason = err.reason;
+      const providerBudgetReason = err.gate?.reason ?? err.reason;
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `ChatGPT conversation-detail lane reached its per-run provider budget (${providerBudgetReason}); deferring remaining conversation details as resumable DETAIL_GAP records`,
+      });
+      return emitRunCapTailConversationDetailGaps(from, err.reason);
+    }
+    if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+      providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
+      await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
+      observedRecoverablePressure = err;
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message:
+          "ChatGPT conversation-detail lane opened upstream-pressure circuit; deferring remaining conversation details as DETAIL_GAP records",
+      });
+      return emitTailConversationDetailGaps(from, (item, index) =>
+        index === 0 ? makeConversationDetailGap(item, err) : makeDeferredConversationDetailGap(item, err)
+      );
+    }
+    return null;
+  }
+
+  await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
       return { status: 404, json: null };
     }
     if (observedRecoverablePressure) {
-      await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
-      coverage.gapKeys.push(c.id);
-      return { status: 200, json: null };
+      return emitTailConversationDetailGaps(c, (item) =>
+        makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
+      );
+    }
+    // Bounded-run budget already tripped earlier in this pass. Any later task that
+    // managed to start before the abort is local-only: materialize its tail as
+    // resumable run-cap gaps and stop queued lane work.
+    if (runCapDeferReason) {
+      return emitRunCapTailConversationDetailGaps(c, runCapDeferReason as ChatGptRunCapReason);
+    }
+    // Cumulative 429-density trip. If the run has already absorbed enough served
+    // 429s, stop launching new detail fetches into the pressured account: open
+    // the upstream-pressure circuit so this and every later conversation defer
+    // as resumable DETAIL_GAP records. Catches the slow-bleed "succeeds after
+    // backoff, over and over, for hours" regime the exhaustion-only circuit
+    // never trips on.
+    const densityDefer = await maybeDeferForRateLimitDensity(c);
+    if (densityDefer) {
+      return densityDefer;
+    }
+    // Bounded-run budget trip. Independent of source pressure: when the run has
+    // spent its provider-request budget, or spent its wall-clock budget, stop
+    // launching new fetches and defer this + every later conversation as a
+    // resumable run-cap DETAIL_GAP. NOT a source failure — `reason` stays
+    // `retry_exhausted` so no source-pressure cooldown is armed. The ChatGPT
+    // default has no fixed size/time cap; this branch is for explicit envelopes.
+    const runBudgetDefer = await maybeDeferForRunBudget(c);
+    if (runBudgetDefer) {
+      return runBudgetDefer;
     }
     let detail: ChatGptFetchResult;
     try {
       detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
     } catch (err) {
-      if (err instanceof ChatGptRecoverableRetryExhaustedError) {
-        observedRecoverablePressure = err;
-        await deps.emit({
-          type: "PROGRESS",
-          stream: "messages",
-          message:
-            "ChatGPT conversation-detail lane opened upstream-pressure circuit; deferring remaining conversation details as DETAIL_GAP records",
-        });
-        await deps.emit(makeConversationDetailGap(c, err));
-        coverage.gapKeys.push(c.id);
-        return { status: 200, json: null };
+      const fetchErrorDefer = await maybeDeferForFetchError(c, err);
+      if (fetchErrorDefer) {
+        return fetchErrorDefer;
       }
       throw err;
     }
     if (detail.status !== 200) {
+      providerBudget?.recordFailure();
+      await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
       throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
     }
     await processConversationDetail(deps, c, detail, emitConversation);
+    providerBudget?.recordSuccess();
+    await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
+    hydratedKeys.add(c.id);
     coverage.hydratedKeys.push(c.id);
+    // Count this hydration against the bounded-run cap. Done after a successful
+    // fetch so deferred/failed conversations never consume the size budget; the
+    // next `reason()` check (this pass or the forward pass sharing the budget)
+    // sees the updated count.
+    runBudget.recordDetailFetch();
     const synced = convosToSync.indexOf(c) + 1;
     const progressMsg = {
       type: "PROGRESS",
@@ -1264,41 +2691,212 @@ export async function runMessagesAndConversationsWithDetail(
   return coverage;
 }
 
+/**
+ * Run `task` over every item via `lane.runAll`, but treat an abort on
+ * `tailStopSignal` as a CLEAN early stop rather than a failure.
+ *
+ * The bounded-run and upstream-pressure paths abort this signal after they have
+ * materialized durable local DETAIL_GAP rows for the remaining listed tail.
+ * Draining those no-op tail items through the serial lane would pay a 1.5-3s
+ * launch delay per item (the idle-active hang seen live in run_1780693320152).
+ * Aborting rejects queued-but-not-started tasks immediately, before their launch
+ * delay, so `runAll` settles right after the local tail is represented.
+ *
+ * Only the abort WE triggered is swallowed. Any other AdaptiveLaneCancelledError
+ * (e.g. an external cancel) or unrelated failure still propagates.
+ */
+async function runLaneUntilTailStopped(
+  lane: AdaptiveLane<ChatGptFetchResult>,
+  items: ConversationListItem[],
+  tailStopSignal: AbortSignal,
+  task: (c: ConversationListItem) => Promise<ChatGptFetchResult>
+): Promise<void> {
+  try {
+    await lane.runAll(items, task, { signal: tailStopSignal });
+  } catch (err) {
+    if (tailStopSignal.aborted && err instanceof AdaptiveLaneCancelledError) {
+      return;
+    }
+    throw err;
+  }
+}
+
 async function recoverPendingConversationDetailGaps(
   deps: StreamDeps,
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
-): Promise<void> {
-  const recoveryItems = (deps.detailGaps ?? [])
-    .filter((gap) => gap.stream === "messages")
-    .map((gap) => ({ gap, conversation: conversationListItemFromGap(gap) }))
-    .filter(
-      (item): item is { gap: CollectContext["detailGaps"][number]; conversation: ConversationListItem } =>
-        item.conversation !== null
-    );
-  if (!recoveryItems.length) {
-    return;
+): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  let recovered = 0;
+  let page = deps.detailGaps ?? [];
+
+  while (page.length > 0) {
+    const result = await recoverPendingConversationDetailGapPage(deps, page, emitConversation, pacing);
+    recovered += result.recovered;
+    if (result.stoppedWithPending || !deps.requestDetailGapPage) {
+      return { recovered, stoppedWithPending: result.stoppedWithPending };
+    }
+    page = await deps.requestDetailGapPage({ streams: ["messages"] });
   }
 
-  const coverage = await runMessagesAndConversationsWithDetail(
-    deps,
-    recoveryItems.map((item) => item.conversation),
-    emitConversation,
-    pacing
-  );
-  const hydrated = new Set(coverage.hydratedKeys.map(String));
-  for (const { gap, conversation } of recoveryItems) {
-    if (!hydrated.has(conversation.id)) {
-      continue;
-    }
+  return { recovered, stoppedWithPending: false };
+}
+
+/**
+ * Expand a single cap-tail backlog gap: re-list the parent conversation list and
+ * materialize the next bounded chunk of conversations at-or-older than the
+ * backlog's inclusive `before_update_time` watermark, then resolve the backlog
+ * gap. The same bounded `runMessagesAndConversationsWithDetail` writer runs over
+ * that window, so it hydrates what the shared run budget allows and folds ITS
+ * remainder into a fresh backlog gap carrying a new content-derived watermark —
+ * draining the history oldest-ward over runs, ≤ bound + 1 durable rows per run.
+ * No offset arithmetic: the boundary is a content-derived `update_time`
+ * watermark, re-listed each run.
+ *
+ * Returns `expanded: true` so the caller STOPS this run's recovery before any
+ * forward walk — the freshly-rewritten backlog gap is attacked on the NEXT run,
+ * never re-expanded inside the same run.
+ */
+async function expandBacklogConversationDetailGap(
+  deps: StreamDeps,
+  gap: CollectContext["detailGaps"][number],
+  beforeUpdateTime: string,
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<{ recovered: number; expanded: boolean }> {
+  // `listConversationsSinceCursor` returns the parent list `order=updated`
+  // descending (newest-first), preserving source order. Keep conversations at or
+  // older than the backlog watermark (`<= watermark`, the backlog's own newest
+  // boundary) — that is the un-materialized older window. The inclusive bound is
+  // stranding-proof at a tie; an already-accounted tie is harmlessly re-deferred.
+  // No re-sort: source order is already the descending order the bounded writer
+  // expects (materialize the newest of the window per-key, fold the rest).
+  const listed = await listConversationsSinceCursor(deps, null);
+  const olderWindow = listed.filter((c) => {
+    const iso = c.update_time ? tsToIso(c.update_time) : null;
+    return iso != null && iso <= beforeUpdateTime;
+  });
+  if (!olderWindow.length) {
+    // The backlog is fully drained: nothing older remains. Resolve the gap.
     await deps.emit({
       type: "DETAIL_GAP_RECOVERED",
       reference_only: true,
       gap_id: gap.gap_id,
       stream: "messages",
-      record_key: conversation.id,
+      record_key: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
     });
+    return { recovered: 1, expanded: false };
   }
+  const coverage = await runMessagesAndConversationsWithDetail(deps, olderWindow, emitConversation, pacing);
+  // The old backlog gap is now superseded: its window was re-listed and the run
+  // either hydrated/per-key-gapped a bounded chunk and emitted a FRESH backlog
+  // gap (older watermark) for the remainder, or accounted the whole window. Mark
+  // it recovered so it is never re-served; the fresh backlog gap (if any) carries
+  // the remainder forward.
+  await deps.emit({
+    type: "DETAIL_GAP_RECOVERED",
+    reference_only: true,
+    gap_id: gap.gap_id,
+    stream: "messages",
+    record_key: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
+  });
+  return { recovered: coverage.hydratedKeys.length, expanded: true };
+}
+
+async function recoverPendingConversationDetailGapPage(
+  deps: StreamDeps,
+  detailGaps: readonly CollectContext["detailGaps"][number][],
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  const messagesGaps = detailGaps.filter((gap) => gap.stream === "messages");
+  // Per-key conversation gaps recover FIRST — they are the newest deferred slice
+  // (the cap chunk and prior per-record exhaustions) and self-hydrate from their
+  // stored `list_item` hint. A backlog gap is only expanded once every per-key
+  // gap on this page is drained AND the shared run budget still allows fetching,
+  // so the older window is never re-listed while newer per-key gaps remain owed
+  // (which would strand the chunk).
+  const recoveryItems = messagesGaps
+    .map((gap) => ({ gap, conversation: conversationListItemFromGap(gap) }))
+    .filter(
+      (item): item is { gap: CollectContext["detailGaps"][number]; conversation: ConversationListItem } =>
+        item.conversation !== null
+    );
+
+  let recovered = 0;
+  let stoppedWithPending = false;
+  if (recoveryItems.length) {
+    const coverage = await runMessagesAndConversationsWithDetail(
+      deps,
+      recoveryItems.map((item) => item.conversation),
+      emitConversation,
+      pacing
+    );
+    const hydrated = new Set(coverage.hydratedKeys.map(String));
+    for (const { gap, conversation } of recoveryItems) {
+      if (!hydrated.has(conversation.id)) {
+        continue;
+      }
+      await deps.emit({
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: gap.gap_id,
+        stream: "messages",
+        record_key: conversation.id,
+      });
+    }
+    recovered = hydrated.size;
+    // A backlog gap may itself have been (re)written into this coverage's
+    // accounted set when the recovery run capped; if so the older window is
+    // already represented and re-expanding here would double-list. Stop when any
+    // per-key gap remains owed OR the recovery run capped (signalled by a fresh
+    // backlog key), so the rewritten backlog is attacked next run.
+    stoppedWithPending = hydrated.size < recoveryItems.length || coverage.backlogGapKey != null;
+    if (stoppedWithPending) {
+      return { recovered, stoppedWithPending };
+    }
+  }
+
+  // Every per-key gap on this page recovered and the run did not cap. If a backlog
+  // gap is present, expand exactly one: re-list the older window and drain its
+  // next bounded chunk, then stop the run so the rewritten backlog waits for the
+  // next run rather than being re-expanded in place.
+  const backlogGap = messagesGaps.find((gap) => backlogGapBeforeUpdateTime(gap) != null);
+  if (backlogGap) {
+    const beforeUpdateTime = backlogGapBeforeUpdateTime(backlogGap);
+    if (beforeUpdateTime) {
+      const result = await expandBacklogConversationDetailGap(
+        deps,
+        backlogGap,
+        beforeUpdateTime,
+        emitConversation,
+        pacing
+      );
+      return { recovered: recovered + result.recovered, stoppedWithPending: result.expanded };
+    }
+  }
+
+  return { recovered, stoppedWithPending };
+}
+
+async function recoverPendingMessageDetailGapsBeforeForwardRun(
+  deps: StreamDeps,
+  wantsMessages: boolean,
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<boolean> {
+  if (!wantsMessages) {
+    return false;
+  }
+  const recovery = await recoverPendingConversationDetailGaps(deps, emitConversation, pacing);
+  if (!recovery.stoppedWithPending) {
+    return false;
+  }
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: "Stopped pending message-detail recovery because the current page still has retryable gaps",
+  });
+  return true;
 }
 
 export async function runConversationsAndMessagesStreams(
@@ -1307,51 +2905,109 @@ export async function runConversationsAndMessagesStreams(
   options: { detailPacing?: ConversationDetailPacingOptions } = {}
 ): Promise<void> {
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
-  const priorCursor = conversationsCursor?.last_update_time || null;
+  const messagesCursor = state.messages as { last_update_time?: string | null } | undefined;
+  const priorConversationsCursor = conversationsCursor?.last_update_time || null;
+  const priorMessagesCursor = messagesCursor?.last_update_time || null;
+  const wantsConversations = deps.requested.has("conversations");
+  const wantsMessages = deps.requested.has("messages");
+  const listedByCursor = new Map<string, Promise<ConversationListItem[]>>();
+  const listForCursor = (cursor: string | null): Promise<ConversationListItem[]> => {
+    const key = cursor ?? "";
+    const existing = listedByCursor.get(key);
+    if (existing) {
+      return existing;
+    }
+    const listed = listConversationsSinceCursor(deps, cursor);
+    listedByCursor.set(key, listed);
+    return listed;
+  };
   const emitConversation = async (c: ConversationListItem, detail: ConversationDetail | null): Promise<void> => {
-    if (!deps.requested.has("conversations")) {
+    if (!wantsConversations) {
       return;
     }
     await deps.emitRecord("conversations", buildConversationRecord(c, detail));
   };
 
-  if (deps.requested.has("messages")) {
-    await recoverPendingConversationDetailGaps(deps, emitConversation, options.detailPacing);
+  if (
+    await recoverPendingMessageDetailGapsBeforeForwardRun(deps, wantsMessages, emitConversation, options.detailPacing)
+  ) {
+    return;
   }
 
-  const convosToSync = await listConversationsSinceCursor(deps, priorCursor);
-  const foundProgressMsg = {
-    type: "PROGRESS",
-    stream: "conversations",
-    message: `Found ${convosToSync.length} conversations to sync`,
-    count: convosToSync.length,
-    total: convosToSync.length,
-  } as const;
-  deps.emit(foundProgressMsg);
+  const { conversationsToSync, messageDetailConversations } = await selectConversationListsForRequestedStreams({
+    wantsConversations,
+    wantsMessages,
+    priorConversationsCursor,
+    priorMessagesCursor,
+    listForCursor,
+  });
+  if (wantsConversations) {
+    const foundProgressMsg = {
+      type: "PROGRESS",
+      stream: "conversations",
+      message: `Found ${conversationsToSync.length} conversations to sync`,
+      count: conversationsToSync.length,
+      total: conversationsToSync.length,
+    } as const;
+    deps.emit(foundProgressMsg);
+  }
 
-  if (deps.requested.has("messages")) {
+  if (wantsMessages) {
+    const foundMessageDetailProgressMsg = {
+      type: "PROGRESS",
+      stream: "messages",
+      message: `Found ${messageDetailConversations.length} conversations requiring message detail`,
+      count: messageDetailConversations.length,
+      total: messageDetailConversations.length,
+    } as const;
+    deps.emit(foundMessageDetailProgressMsg);
     const coverage = await runMessagesAndConversationsWithDetail(
       deps,
-      convosToSync,
+      messageDetailConversations,
       emitConversation,
       options.detailPacing
     );
-    if (convosToSync.length) {
-      await deps.emit(makeConversationDetailCoverage(convosToSync, coverage));
+    if (messageDetailConversations.length) {
+      // Required keys are the set the run ACCOUNTED FOR: every hydrated and
+      // per-key-gapped conversation, plus — when a cap-tail deferral folded the
+      // older tail into a backlog gap — that backlog gap's synthetic key (backed
+      // by its durable row). Without a backlog gap this is exactly
+      // `messageDetailConversations` (byte-identical to today). With one, the
+      // older tail conversations are intentionally NOT required this run; the
+      // backlog gap represents them and a later run re-lists + materializes them,
+      // so the commit gate passes with a bounded row count instead of one
+      // required key per conversation.
+      const requiredKeys: Array<string | number> = coverage.backlogGapKey
+        ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
+        : messageDetailConversations.map((c) => c.id);
+      await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
+      const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
+      deps.emit({
+        type: "STATE",
+        stream: "messages",
+        cursor: { last_update_time: maxMessagesUpdate || priorMessagesCursor || null },
+      });
     }
-  } else if (deps.requested.has("conversations")) {
-    // Conversations-only sync: emit from list (detail fields stay null).
-    for (const c of convosToSync) {
+  }
+
+  if (wantsConversations) {
+    const detailedIds = new Set(messageDetailConversations.map((c) => c.id));
+    // Emit list-only parents for conversation rows not already repaired by
+    // message-detail fetches in this run.
+    for (const c of conversationsToSync) {
+      if (detailedIds.has(c.id)) {
+        continue;
+      }
       await emitConversation(c, null);
     }
   }
 
-  if (convosToSync.length) {
-    const maxUpdate = maxUpdateTimeIso(convosToSync);
+  if (wantsConversations && conversationsToSync.length) {
+    const maxUpdate = maxUpdateTimeIso(conversationsToSync);
     deps.emit({
       type: "STATE",
       stream: "conversations",
-      cursor: { last_update_time: maxUpdate || priorCursor || null },
+      cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
     });
   }
 }
@@ -1404,16 +3060,50 @@ if (isMainModule(import.meta.url)) {
       const { state, requested, emit, emitRecord: baseEmitRecord, progress, capture } = ctx;
       const { page } = ctx as BrowserCollectContext;
 
+      // Run-scoped accumulator for served 429s seen outside the detail lane
+      // (list pagination + the non-detail streams). createChatGptApi bumps it
+      // via onUnlanedRateLimited; the detail phase reads it to seed its density
+      // stop so pre-detail source pressure defers the tail earlier.
+      const preDetailPressure: ChatGptPreDetailPressure = { rateLimited: 0 };
+
+      // Run-scoped bounded-run envelope, created once so the gap-recovery pass
+      // and the forward-walk pass share one budget. By default ChatGPT has no
+      // fixed size/time cap; positive env values opt into explicit envelopes.
+      const runBudget = new ChatGptRunBudget({
+        maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
+        maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
+      });
+      const providerBudget = resolveChatGptProviderBudget();
+
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
-      const api = createChatGptApi({ page, capture, emit });
+      const api = createChatGptApi({
+        page,
+        capture,
+        emit,
+        onUnlanedRateLimited: () => {
+          preDetailPressure.rateLimited += 1;
+        },
+        providerBudget,
+      });
       const emitRecord = makeEmitRecord(baseEmitRecord);
 
       // Verify session (extract bearer token for /backend-api calls)
       const auth = await api.auth();
       progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`);
 
-      const deps: StreamDeps = { api, detailGaps: ctx.detailGaps, emit, emitRecord, progress, requested };
+      const deps: StreamDeps = {
+        api,
+        detailGaps: ctx.detailGaps,
+        emit,
+        emitRecord,
+        preDetailPressure,
+        progress,
+        providerBudget,
+        requested,
+        requestDetailGapPage: ctx.requestDetailGapPage,
+        runBudget,
+      };
 
       if (isChatGptSideEffectProbeEnabled()) {
         await runChatGptSideEffectProbe({ api, emit, page });
@@ -1427,10 +3117,10 @@ if (isMainModule(import.meta.url)) {
         await runCustomGptsStream(deps);
       }
       if (requested.has("custom_instructions")) {
-        await runCustomInstructionsStream(deps);
+        await runCustomInstructionsStream(deps, state);
       }
       if (requested.has("shared_conversations")) {
-        await runSharedConversationsStream(deps);
+        await runSharedConversationsStream(deps, state);
       }
       if (requested.has("conversations") || requested.has("messages")) {
         await runConversationsAndMessagesStreams(deps, state);

@@ -55,6 +55,21 @@ export interface DetailGapStartEntry {
   stream: string;
 }
 
+export interface DetailGapsPageRequestMessage {
+  max_bytes?: number;
+  reference_only: true;
+  request_id: string;
+  streams?: readonly string[];
+  type: "DETAIL_GAPS_PAGE_REQUEST";
+}
+
+export interface DetailGapsPageResponse {
+  detail_gaps: readonly DetailGapStartEntry[];
+  reference_only: true;
+  request_id: string;
+  type: "DETAIL_GAPS_PAGE_RESPONSE";
+}
+
 export interface InteractionResponse {
   data?: Record<string, string>;
   error?: { message: string };
@@ -98,20 +113,30 @@ export interface AssistanceCompletion {
   status: AssistanceCompletionStatus;
 }
 
+/**
+ * Pre-redacted source-pressure diagnostic carried on a `DETAIL_GAP`'s `detail`
+ * and `last_error`. It MUST carry only safe, bounded fields (endpoint route,
+ * method, error class, optional status/retry-after metadata) — never bearer tokens,
+ * cookies, secret-bearing URLs, request bodies, or raw payloads. The
+ * attempt/max-attempt budget is internal and SHOULD be stripped before the gap
+ * is deferred (see the connector source-pressure defer paths).
+ */
+export interface DetailGapNetworkPressure {
+  attempt?: number;
+  endpoint_route: string;
+  error_class: string;
+  max_attempts?: number;
+  method: string;
+  retry_after_ms?: number;
+  safe_headers?: Record<string, string | number>;
+  status?: number;
+}
+
 export interface DetailGapMessage {
   detail?: {
     class?: string;
     http_status?: number;
-    network_pressure?: {
-      attempt?: number;
-      endpoint_route: string;
-      error_class: string;
-      max_attempts?: number;
-      method: string;
-      retry_after_ms?: number;
-      safe_headers?: Record<string, string | number>;
-      status?: number;
-    };
+    network_pressure?: DetailGapNetworkPressure;
   };
   detail_locator: {
     kind: string;
@@ -121,16 +146,7 @@ export interface DetailGapMessage {
     class?: string;
     http_status?: number;
     message?: string;
-    network_pressure?: {
-      attempt?: number;
-      endpoint_route: string;
-      error_class: string;
-      max_attempts?: number;
-      method: string;
-      retry_after_ms?: number;
-      safe_headers?: Record<string, string | number>;
-      status?: number;
-    };
+    network_pressure?: DetailGapNetworkPressure;
   };
   list_cursor?: unknown;
   parent_stream?: string;
@@ -144,6 +160,31 @@ export interface DetailGapMessage {
 }
 
 export interface DetailCoverageMessage {
+  /**
+   * Optional connector-declared `considered` denominator: how many items the run
+   * weighed for this stream (an inventory size, or the boundary the run took into
+   * account). The runtime normalizes it to a trusted safe non-negative integer or
+   * `unknown` (task 2.1) and prefers it over the `required_keys.length` fallback
+   * when deriving the per-stream collection-fact `considered`. It is evidence
+   * only and is NEVER inferred from the collected count — a list stream that
+   * enumerated its boundary may declare it with empty key arrays.
+   */
+  considered?: number;
+  /**
+   * Optional connector-declared `covered` count: how many of the `considered`
+   * in-boundary items the run actually accounted for — the items it emitted plus
+   * the items it deliberately suppressed because they were unchanged (a full-sync
+   * stream gated by a per-record fingerprint). The runtime normalizes it to a
+   * trusted safe non-negative integer or `unknown` and, when present, the
+   * control-plane projection compares `considered` against it instead of the
+   * collected count, so a steady-state run that suppressed every unchanged record
+   * reads `complete` rather than a false `partial`. It MUST be measured at the
+   * enumeration site from objective per-record outcomes and MUST NOT count an item
+   * the run weighed but dropped (a malformed record, a filtered-out item) — a
+   * dropped item is in neither the collected nor the covered count, so it still
+   * reads `partial`. NEVER inferred from the collected count.
+   */
+  covered?: number;
   gap_keys?: Array<string | number>;
   hydrated_keys: Array<string | number>;
   optional_skip_keys?: Array<string | number>;
@@ -162,6 +203,19 @@ export interface DetailGapRecoveredMessage {
   type: "DETAIL_GAP_RECOVERED";
 }
 
+export interface ProviderBudgetProgress {
+  circuit: {
+    previous_state: "closed" | "half_open" | "open";
+    reason: "provider_failure" | "provider_throttle" | "reset_timeout" | "success";
+    state: "closed" | "half_open" | "open";
+    trigger: "before_request" | "provider_failure" | "provider_throttle" | "success";
+  };
+  elapsed_ms: number;
+  object: "provider_budget_circuit_transition";
+  request_count: number;
+  retry_tokens_remaining?: number | "unbounded";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -173,7 +227,7 @@ export type EmittedMessage =
       op?: "delete";
     }
   | { type: "STATE"; stream: string; cursor: unknown }
-  | { type: "PROGRESS"; message: string; stream?: string }
+  | { type: "PROGRESS"; message: string; stream?: string; provider_budget?: ProviderBudgetProgress }
   | ({ type: "ASSISTANCE" } & AssistanceRequest)
   | ({ type: "ASSISTANCE_STATUS" } & AssistanceCompletion)
   | {
@@ -186,6 +240,7 @@ export type EmittedMessage =
   | DetailGapMessage
   | DetailCoverageMessage
   | DetailGapRecoveredMessage
+  | DetailGapsPageRequestMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";

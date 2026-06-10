@@ -13,14 +13,21 @@ const UNICODE_TOKEN_RE = /[\p{L}\p{N}]+/gu;
 const WORD_OR_PHRASE_RE = /^[\p{L}\p{N}\s_-]+$/u;
 const WHITESPACE_RUN_RE = /\s+/g;
 
-// Stream manifests carry two timestamp hints the reference honors
-// when picking a record's "semantic" (emitted by the source) time:
-// consent_time_field is the primary, cursor_field is the fallback.
-// The structural shape matches what connector manifests declare but
-// stays loose (consumers of this helper only care about these two
-// fields).
+// Stream manifests carry timestamp hints and optional coverage-policy
+// declarations the reference honors for semantic-time selection and the
+// accepted-coverage axis projection. The shape matches what connector
+// manifests declare but stays loose — consumers of this helper only care
+// about the fields they read. See `ManifestStream` in ref-control.ts for
+// the full typed shape used by the coverage projection.
 export interface ManifestStreamLike {
   consent_time_field?: string | null | undefined;
+  /**
+   * Accepted-coverage policy for the stream. Absent means `collect` (the
+   * default). Other values declare the stream's absence as accepted:
+   * `unsupported` | `unavailable` | `deferred` | `inventory_only`.
+   * Combining with `required: true` is contradictory and degrades health.
+   */
+  coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
   cursor_field?: string | null | undefined;
   [extension: string]: unknown;
 }

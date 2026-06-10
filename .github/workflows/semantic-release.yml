@@ -97,8 +97,17 @@ jobs:
       - name: Check package release policy
         run: pnpm release:policy-check
 
-      - name: Typecheck web app
-        run: pnpm --dir apps/web run types:check
+      - name: Test package release policy checks
+        run: pnpm release:policy-check:test
+
+      - name: Test beta release-cadence guard
+        run: pnpm release:cadence-check:test
+
+      - name: Test dist-tag posture classifier
+        run: pnpm release:dist-tag-check:test
+
+      - name: Typecheck operator console app
+        run: pnpm --dir apps/console run types:check
 
       - name: Verify CLI package
         run: pnpm --filter @pdpp/cli run verify
@@ -124,9 +133,9 @@ jobs:
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
           - image: web
-            target: web
-            title: PDPP reference web
-            description: PDPP browser-facing reference dashboard and docs
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
 
     steps:
       - name: Checkout
@@ -166,6 +175,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           push: false
@@ -235,9 +246,9 @@ jobs:
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
           - image: web
-            target: web
-            title: PDPP reference web
-            description: PDPP browser-facing reference dashboard and docs
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
 
     steps:
       - name: Checkout
@@ -284,6 +295,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           provenance: mode=max

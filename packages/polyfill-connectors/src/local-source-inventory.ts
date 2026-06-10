@@ -3,6 +3,7 @@ import { type Dirent, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { RecordData } from "./connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "./fingerprint-cursor.ts";
 
 export type SourceClassification = "collect" | "collect_redacted" | "inventory_only" | "exclude" | "defer";
 export type CoverageStatus = "collected" | "inventory_only" | "excluded" | "deferred" | "missing" | "unsupported";
@@ -105,7 +106,11 @@ export async function buildLocalSourceInventory(
     const pathMeta = await statKind(fullPath);
     const status = coverageStatus(store.classification, pathMeta.exists);
     coverage.push({
-      id: `${store.store}:${status}`,
+      // Stable key: upsert on re-run replaces the prior record rather than
+      // accumulating one row per distinct status. The server's
+      // listLocalCoverageDiagnostics deduplications by store — a changing
+      // key would let a stale row shadow the current one in alphabetical order.
+      id: `coverage:${store.store}`,
       store: store.store,
       stream: store.stream,
       status,
@@ -178,4 +183,44 @@ export async function listDirectoryInventory(input: {
     });
   }
   return records;
+}
+
+// ─── Inventory-record churn gate ──────────────────────────────────────────
+//
+// An `inventory_only` record exists to answer the local-agent-collector
+// completeness contract: "this known store exists, here is its path, type,
+// privacy classification, and reason." Its meaningful version transition is a
+// change in that inventory meaning — the store appearing/disappearing, a file
+// becoming a directory, a path-hash moving, or the classification/reason
+// changing. The `mtime_epoch` and `size_bytes` fields are incidental file-stat
+// metadata: every normal tool write touches the underlying file or directory
+// and ticks the mtime (and, for files, the size), which re-versions an
+// otherwise-unchanged metadata record on every run. That is the same class of
+// run-clock churn the `fetched_at`-excluding fingerprint gates already stop on
+// the API/browser connectors — the volatile freshness signal (does the store
+// exist? when did the collector last look?) is already carried by the sibling
+// `coverage_diagnostics` stream and the per-stream STATE `fetched_at`, not by
+// re-versioning the inventory record itself.
+//
+// These two keys are excluded from the change-detection fingerprint so a pure
+// mtime/size tick is a no-op emit, while a real inventory transition (type,
+// path, classification, reason) still re-emits. The fields stay in the record
+// body for point-in-time inspection; only version churn is suppressed.
+
+/** Payload keys excluded from inventory-record change detection. Incidental
+ *  file-stat metadata that moves on every tool write without changing the
+ *  store's inventory meaning. Mirrored by the compaction policy in
+ *  `reference-implementation/scripts/compact-record-history.mjs`. */
+export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"] as const;
+
+/** Open a fingerprint cursor for an inventory stream, seeded from the prior
+ *  STATE cursor. Excludes the incidental `mtime_epoch`/`size_bytes` file-stat
+ *  fields so an unchanged store does not re-version on every run. Inventory
+ *  enumeration is a full scan of the known stores under the source home, so
+ *  callers SHOULD `pruneStale()` before serializing STATE: a store that
+ *  disappears must drop out of the cursor so its re-appearance re-emits. */
+export function openInventoryFingerprintCursor(priorState: unknown): FingerprintCursor {
+  return openFingerprintCursor(priorState, {
+    excludeFromFingerprint: INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
+  });
 }

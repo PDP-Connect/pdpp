@@ -20,7 +20,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -440,5 +440,150 @@ test("scanProjectDirs: pass 2 alone (after pass 1) emits only children, no sessi
     assert.ok(streams.has("attachments"), "pass 2 emits attachments");
   } finally {
     await cleanup();
+  }
+});
+
+test("scanProjectDirs: an unchanged session does NOT re-emit a sessions record on a later run", async () => {
+  // Version-churn gate (ri-version-churn-watch-zero-v1): the `sessions` stream
+  // has no body-fingerprint cursor — it relies entirely on the per-file mtime
+  // cursor in processJsonlFile to decide what to rebuild. A session whose JSONL
+  // mtime is unchanged must be SKIPPED in the build pass, so no accumulator is
+  // built and emitSessionsFromAccumulators emits nothing. Without this gate the
+  // stream would re-emit a byte-identical record every run = true no-op churn
+  // (vpr climbing with removableVersions > 0). This test pins that it does not.
+  const { baseDir, cleanup } = await makeSyntheticProjectTree();
+  try {
+    const requested = makeRequested(["sessions"]);
+
+    // Run 1: empty prior cursor → reparse, build the accumulator, emit one session.
+    const run1Accumulators = new Map<string, SessionAccumulator>();
+    const run1 = makeRecordingEmit();
+    const persistedMtimes: Record<string, number> = {};
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: run1.emitRecord,
+      fileMtimes: {},
+      newMtimes: persistedMtimes,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
+    await emitSessionsFromAccumulators({
+      emitRecord: run1.emitRecord,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
+    assert.equal(run1.emitted.filter((r) => r.stream === "sessions").length, 1, "run 1 emits the session once");
+
+    // Run 2: feed run 1's captured mtimes as the prior cursor. The file is
+    // untouched, so its mtime matches → processJsonlFile returns early →
+    // accumulator is never built → no session is emitted.
+    const run2Accumulators = new Map<string, SessionAccumulator>();
+    const run2 = makeRecordingEmit();
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: run2.emitRecord,
+      fileMtimes: { ...persistedMtimes },
+      newMtimes: {},
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
+    await emitSessionsFromAccumulators({
+      emitRecord: run2.emitRecord,
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
+
+    assert.equal(run2Accumulators.size, 0, "unchanged session file is skipped — no accumulator rebuilt");
+    assert.equal(
+      run2.emitted.filter((r) => r.stream === "sessions").length,
+      0,
+      "unchanged session does not re-emit — no no-op churn"
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("scanProjectDirs: a grown session re-emits once with the higher message_count (real change, not no-op)", async () => {
+  // Companion to the unchanged-session gate: when a session DOES grow (new
+  // JSONL lines → later mtime), it re-emits exactly one sessions record whose
+  // message_count reflects the new lines. This is why claude-code/sessions can
+  // legitimately accumulate versions (vpr ≥ 5) for an active heavy user without
+  // being a defect — every retained version is a distinct real snapshot, so a
+  // lossless compaction would remove nothing (removableVersions = 0).
+  const root = await mkdtemp(join(tmpdir(), "pdpp-cc-grow-"));
+  const projectDir = join(root, "-Users-test-grow");
+  const sessionId = "99999999-9999-4999-8999-999999999999";
+  const sessionFile = join(projectDir, `${sessionId}.jsonl`);
+  const line = (uuid: string, ts: string, content: string): string =>
+    JSON.stringify({ sessionId, type: "user", uuid, timestamp: ts, cwd: "/Users/user/grow", message: { content } });
+  try {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(sessionFile, `${line("g1", "2026-04-23T10:00:00Z", "first")}\n`, "utf8");
+
+    const requested = makeRequested(["sessions"]);
+
+    // Run 1: one message.
+    const run1Accumulators = new Map<string, SessionAccumulator>();
+    const run1 = makeRecordingEmit();
+    const persistedMtimes: Record<string, number> = {};
+    await scanProjectDirs({
+      baseDir: root,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: run1.emitRecord,
+      fileMtimes: {},
+      newMtimes: persistedMtimes,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
+    await emitSessionsFromAccumulators({
+      emitRecord: run1.emitRecord,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
+    const firstSession = run1.emitted.find((r) => r.stream === "sessions");
+    assert.equal(firstSession?.data.message_count, 1, "run 1 session has one message");
+
+    // Grow the session: append a second line and force the mtime forward so the
+    // cursor reliably sees a change regardless of filesystem timestamp coarseness.
+    await writeFile(
+      sessionFile,
+      `${line("g1", "2026-04-23T10:00:00Z", "first")}\n${line("g2", "2026-04-23T10:05:00Z", "second")}\n`,
+      "utf8"
+    );
+    const bumped = (persistedMtimes[sessionFile] ?? 0) / 1000 + 60;
+    await utimes(sessionFile, bumped, bumped);
+
+    // Run 2: prior cursor still holds the OLD mtime → file is reparsed → one
+    // session re-emitted, now with the grown message_count.
+    const run2Accumulators = new Map<string, SessionAccumulator>();
+    const run2 = makeRecordingEmit();
+    await scanProjectDirs({
+      baseDir: root,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: run2.emitRecord,
+      fileMtimes: { ...persistedMtimes },
+      newMtimes: {},
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
+    await emitSessionsFromAccumulators({
+      emitRecord: run2.emitRecord,
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
+
+    const sessions2 = run2.emitted.filter((r) => r.stream === "sessions");
+    assert.equal(sessions2.length, 1, "grown session re-emits exactly once");
+    assert.equal(sessions2[0]?.data.message_count, 2, "re-emitted session carries the higher message_count");
+    assert.equal(sessions2[0]?.data.last_event_at, "2026-04-23T10:05:00Z", "last_event_at advances to the new line");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

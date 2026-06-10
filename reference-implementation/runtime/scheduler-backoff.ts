@@ -25,7 +25,7 @@
  * the counter resets.
  */
 
-import { BLOCKED_PROMOTION_THRESHOLD } from "./connector-health.ts";
+import { BLOCKED_PROMOTION_THRESHOLD } from "./connection-health-policy.ts";
 import type { RunRecord, RunStatus } from "./scheduler.ts";
 
 // ─── Tunables ──────────────────────────────────────────────────────────────

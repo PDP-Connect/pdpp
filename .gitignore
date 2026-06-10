@@ -18,12 +18,16 @@ agent-access.md
 *.yml
 __pycache__/
 *.pyc
+# Commit-anchored Explorer UAT evidence is durable proof, not a working artifact.
+!docs/explorer/uat/**/*.png
 !lefthook.yml
 !.github/**/*.yml
 !docker-compose.yml
 !docker-compose.dev.yml
 !docker-compose.neko.yml
 core.*
+# `core.*` is for core dumps; committed deploy env examples are exempt.
+!deploy/*/core.env.example
 tmp/
 docs/inbox/
 docs/outbox/
@@ -46,10 +50,6 @@ skills-lock.json
 skills/*
 !skills/pdpp-data-access/
 !skills/pdpp-data-access/**
-!apps/web/src/app/well-known/skills/
-!apps/web/src/app/well-known/skills/[[...path]]/
-!apps/web/src/app/well-known/skills/[[...path]]/route.ts
-!apps/web/src/app/well-known/skills/route.test.ts
 
 # Agent config dirs (from skills installer)
 .adal/
@@ -81,3 +81,6 @@ skills/*
 .vibe/
 .windsurf/
 .zencoder/
+
+# Design-review screenshot evidence — kept on disk, never committed (binary bloat)
+design-evidence/**/*.png

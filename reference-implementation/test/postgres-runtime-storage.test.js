@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   emitSpineEvent,
+  listSpineCorrelations,
   listSpineEventsPage,
   searchSpine,
 } from '../lib/spine.ts';
@@ -24,7 +25,7 @@ import {
   revokeGrant,
   seedPreRegisteredClients,
 } from '../server/auth.js';
-import { initDb, closeDb } from '../server/db.js';
+import { initDb, closeDb, getDb } from '../server/db.js';
 import {
   postgresPersistContentAddressedBlob,
 } from '../server/postgres-records.js';
@@ -35,11 +36,13 @@ import {
   postgresSemanticSearch,
 } from '../server/postgres-search.js';
 import { listPendingApprovals } from '../server/ref-control.ts';
-import { runLexicalSearch } from '../server/search.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
+import { lexicalIndexBackfillForManifest, runLexicalSearch } from '../server/search.js';
 import {
   configureSemanticBackend,
   makeStubBackend,
   runSemanticSearch,
+  semanticIndexBackfillForManifest,
   semanticIndexUpsert,
 } from '../server/search-semantic.js';
 import {
@@ -50,10 +53,15 @@ import {
   resolveStorageBackend,
 } from '../server/postgres-storage.js';
 import {
+  createPostgresConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from '../server/stores/connector-instance-store.js';
+import {
   shouldAutoReconcilePolyfillManifests,
   startServer,
 } from '../server/index.js';
 import {
+  aggregateRecords,
   deleteRecord,
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
@@ -64,6 +72,11 @@ import {
   listDatasetTopConnectorCandidates,
   queryRecords,
 } from '../server/records.js';
+import {
+  getRetainedSizeGlobal,
+  listRetainedSizeConnections,
+  rebuildRetainedSize,
+} from '../server/retained-size-read-model.js';
 import { createBlobStore } from '../server/stores/blob-store.js';
 import { createConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSchedulerStore } from '../server/stores/scheduler-store.ts';
@@ -95,13 +108,49 @@ async function closeStartedServer(server) {
   ]);
 }
 
-test('Postgres runtime storage config fails fast without PDPP_DATABASE_URL', () => {
+test('Postgres runtime storage config fails fast without a database URL', () => {
   assert.throws(
     () =>
       resolveStorageBackend({
         env: { PDPP_STORAGE_BACKEND: 'postgres' },
       }),
-    /requires PDPP_DATABASE_URL/,
+    /requires PDPP_DATABASE_URL or DATABASE_URL/,
+  );
+});
+
+test('Postgres runtime storage auto-selects Postgres when PDPP_DATABASE_URL is present', () => {
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: { PDPP_DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp' },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://user:pass@localhost:5432/pdpp' },
+  );
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: {
+        PDPP_STORAGE_BACKEND: 'sqlite',
+        PDPP_DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp',
+      },
+    }),
+    { backend: 'sqlite' },
+  );
+});
+
+test('Postgres runtime storage accepts standard DATABASE_URL when PDPP_DATABASE_URL is absent', () => {
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: { DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp' },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://user:pass@localhost:5432/pdpp' },
+  );
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: {
+        PDPP_DATABASE_URL: 'postgres://explicit:pass@localhost:5432/pdpp',
+        DATABASE_URL: 'postgres://standard:pass@localhost:5432/pdpp',
+      },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://explicit:pass@localhost:5432/pdpp' },
   );
 });
 
@@ -144,8 +193,489 @@ if (!POSTGRES_URL) {
         reconcilePolyfillManifests: false,
       });
       assert.equal(getStorageBackendKind(), 'postgres');
+      const cimdTable = await postgresQuery(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_name = 'cimd_client_documents'
+         ORDER BY ordinal_position`,
+      );
+      assert.deepEqual(
+        cimdTable.rows.map((row) => row.column_name),
+        ['document_id', 'client_name', 'redirect_uris', 'logo_uri', 'created_at', 'updated_at'],
+      );
     } finally {
       await closeStartedServer(server);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres semantic startup backfill writes Postgres index without touching SQLite vector index', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_semantic_backfill_${suffix}`;
+    const connectorInstanceId = `cin_pg_semantic_backfill_${suffix}`;
+    const stream = 'messages';
+    const manifest = {
+      connector_id: connectorId,
+      streams: [
+        {
+          name: stream,
+          query: {
+            search: {
+              semantic_fields: ['subject', 'body'],
+            },
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    configureSemanticBackend(makeStubBackend({ dimensions: 8 }));
+
+    try {
+      getDb().exec(`
+        CREATE TABLE IF NOT EXISTS semantic_search_vec(
+          connector_id TEXT,
+          scope_key TEXT,
+          record_key TEXT,
+          embedding BLOB
+        )
+      `);
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES
+           ($1, $2, $3, 'gmail-1', $4::jsonb, $5, 1, FALSE, 'gmail-1'),
+           ($1, $2, $3, 'gmail-2', $6::jsonb, $5, 1, FALSE, 'gmail-2')`,
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          JSON.stringify({ id: 'gmail-1', subject: 'Gmail backfill alpha', body: 'Postgres semantic startup path' }),
+          '2026-04-01T00:00:00.000Z',
+          JSON.stringify({ id: 'gmail-2', subject: '', body: 'Second indexed body' }),
+        ],
+      );
+
+      await semanticIndexBackfillForManifest({ manifest });
+
+      const pgRows = await postgresQuery(
+        'SELECT scope_key, record_key FROM semantic_search_blob WHERE connector_instance_id = $1 ORDER BY scope_key, record_key',
+        [connectorInstanceId],
+      );
+      assert.deepEqual(
+        pgRows.rows.map((row) => [row.scope_key, row.record_key]),
+        [
+          ['["messages","body"]', 'gmail-1'],
+          ['["messages","body"]', 'gmail-2'],
+          ['["messages","subject"]', 'gmail-1'],
+        ],
+      );
+
+      const pgMeta = await postgresQuery(
+        'SELECT fields_fingerprint, model_id, dimensions, distance_metric FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(pgMeta.rows.length, 1);
+      assert.equal(pgMeta.rows[0].fields_fingerprint, '["body","subject"]');
+      assert.equal(Number(pgMeta.rows[0].dimensions), 8);
+
+      const progressColumns = await postgresQuery(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_name = 'semantic_search_backfill_progress'
+           AND column_name = 'fields_fingerprint'`,
+        [],
+      );
+      assert.equal(progressColumns.rows.length, 1, 'Postgres progress rows carry the same semantic identity as SQLite');
+
+      assert.equal(
+        getDb().prepare('SELECT COUNT(*) AS n FROM semantic_search_blob').get().n,
+        0,
+        'SQLite blob-flat semantic index remains unused during Postgres backfill',
+      );
+      assert.equal(
+        getDb().prepare('SELECT COUNT(*) AS n FROM semantic_search_vec').get().n,
+        0,
+        'SQLite vec semantic index remains unused during Postgres backfill',
+      );
+    } finally {
+      await postgresQuery('DELETE FROM semantic_search_blob WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM semantic_search_meta WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      configureSemanticBackend(null);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres lexical backfill rebuilds partial historical indexes', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_lexical_backfill_${suffix}`;
+    const connectorInstanceId = `cin_pg_lexical_backfill_${suffix}`;
+    const stream = 'messages';
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Lexical Backfill Test',
+      streams: [
+        {
+          name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+          query: {
+            search: {
+              lexical_fields: ['text'],
+            },
+          },
+        },
+      ],
+    };
+    const grant = {
+      source: { kind: 'connector', id: connectorId },
+      streams: [{ name: stream, fields: ['id', 'text'] }],
+    };
+    const tokenInfo = {
+      pdpp_token_kind: 'client',
+      subject_id: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      client_id: 'cl_pg_lexical_backfill',
+      grant_id: 'grt_pg_lexical_backfill',
+      grant,
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await registerConnector(manifest);
+      const instanceStore = createPostgresConnectorInstanceStore();
+      const now = new Date().toISOString();
+      await instanceStore.upsert({
+        connectorInstanceId,
+        ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId,
+        displayName: 'Postgres lexical backfill account',
+        status: 'active',
+        sourceKind: 'account',
+        sourceBindingKey: `account_${suffix}`,
+        sourceBinding: { account: `account_${suffix}` },
+        createdAt: now,
+        updatedAt: now,
+      });
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES
+           ($1, $2, $3, 'msg-1', $4::jsonb, $6, 1, FALSE, 'msg-1'),
+           ($1, $2, $3, 'msg-2', $5::jsonb, $6, 2, FALSE, 'msg-2')`,
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          JSON.stringify({ id: 'msg-1', text: 'Redactable alpha historical row' }),
+          JSON.stringify({ id: 'msg-2', text: 'Redactable beta historical row' }),
+          '2026-06-01T00:00:00.000Z',
+        ],
+      );
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        recordKey: 'msg-1',
+        fields: { text: 'Redactable alpha historical row' },
+      });
+      await postgresQuery(
+        `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+         VALUES($1, $2, $3, $4, $5)
+         ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+           connector_id = EXCLUDED.connector_id,
+           fields_fingerprint = EXCLUDED.fields_fingerprint,
+           updated_at = EXCLUDED.updated_at`,
+        [connectorId, connectorInstanceId, stream, '["text"]', new Date().toISOString()],
+      );
+
+      const before = await postgresQuery(
+        'SELECT COUNT(*)::int AS count FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(before.rows[0].count), 1);
+
+      await lexicalIndexBackfillForManifest({ manifest });
+
+      const after = await postgresQuery(
+        'SELECT COUNT(*)::int AS count FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(after.rows[0].count), 2);
+
+      const page = await runLexicalSearch({
+        req: { query: { q: 'Redactable' } },
+        opts: {},
+        tokenInfo,
+        resolveOwnerVisibleConnectorIds: () => [connectorId],
+        resolveOwnerScopeForConnector: () => ({ connectorId }),
+        resolveOwnerManifestFromScope: async () => ({ manifest }),
+        buildOwnerReadGrantForManifest: () => grant,
+        resolveGrantManifest: async () => ({ manifest, storageBinding: { connector_id: connectorId } }),
+      });
+      assert.deepEqual(page.envelope.data.map((hit) => hit.record_key).sort(), ['msg-1', 'msg-2']);
+    } finally {
+      await postgresQuery('DELETE FROM lexical_search_index WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM lexical_search_meta WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM lexical_search_snapshots WHERE query = $1', ['Redactable']);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM connector_instances WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres public reads enforce grant visibility and aggregate over active storage', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_visibility_${suffix}`;
+    const stream = 'events';
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Visibility Test',
+      streams: [
+        {
+          name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+          query: {
+            aggregations: { count: true },
+          },
+        },
+      ],
+    };
+    const fields = ['id', 'title', 'created_at'];
+    const fullGrant = { streams: [{ name: stream, fields }] };
+    const resourceGrant = { streams: [{ name: stream, fields, resources: ['a'] }] };
+    const timeGrant = {
+      streams: [
+        {
+          name: stream,
+          fields,
+          time_range: {
+            since: '2026-04-02T00:00:00.000Z',
+            until: '2026-04-03T00:00:00.000Z',
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await ingestRecord(connectorId, {
+        stream,
+        key: 'a',
+        data: {
+          id: 'a',
+          title: 'Alpha launch',
+          created_at: '2026-04-01T00:00:00.000Z',
+        },
+      });
+      await ingestRecord(connectorId, {
+        stream,
+        key: 'b',
+        data: {
+          id: 'b',
+          title: 'Beta proof',
+          created_at: '2026-04-02T00:00:00.000Z',
+        },
+      });
+
+      const filteredAggregate = await aggregateRecords(
+        connectorId,
+        stream,
+        fullGrant,
+        { metric: 'count', filter: { title: 'Alpha launch' } },
+        manifest,
+      );
+      assert.equal(filteredAggregate.value, 1);
+      assert.equal(filteredAggregate.filtered_record_count, 1);
+
+      const wrongAggregate = await aggregateRecords(
+        connectorId,
+        stream,
+        fullGrant,
+        { metric: 'count', filter: { title: 'Missing title' } },
+        manifest,
+      );
+      assert.equal(wrongAggregate.value, 0);
+      assert.equal(wrongAggregate.filtered_record_count, 0);
+
+      const resourcePage = await queryRecords(connectorId, stream, resourceGrant, { limit: 10 }, manifest);
+      assert.deepEqual(resourcePage.data.map((row) => row.id), ['a']);
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'b', resourceGrant, manifest),
+        { code: 'not_found' },
+      );
+      const resourceChanges = await queryRecords(
+        connectorId,
+        stream,
+        resourceGrant,
+        { changes_since: 'beginning' },
+        manifest,
+      );
+      assert.deepEqual(resourceChanges.data.map((row) => row.id), ['a']);
+
+      const timePage = await queryRecords(connectorId, stream, timeGrant, { limit: 10 }, manifest);
+      assert.deepEqual(timePage.data.map((row) => row.id), ['b']);
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'a', timeGrant, manifest),
+        { code: 'not_found' },
+      );
+      const timeChanges = await queryRecords(
+        connectorId,
+        stream,
+        timeGrant,
+        { changes_since: 'beginning' },
+        manifest,
+      );
+      assert.deepEqual(timeChanges.data.map((row) => row.id), ['b']);
+
+      await postgresQuery(
+        'DELETE FROM record_changes WHERE connector_id = $1 AND stream = $2 AND version = 1',
+        [connectorId, stream],
+      );
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, fullGrant, { changes_since: 'beginning' }, manifest),
+        { code: 'cursor_expired' },
+      );
+    } finally {
+      await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres run summaries include terminal events beyond the prefix sample', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_large_run_${suffix}`;
+    const runId = `run_pg_large_${suffix}`;
+    const traceId = `trc_pg_large_${suffix}`;
+    const sourceData = { source: { kind: 'connector', id: connectorId } };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    async function insertRunEvent(eventType, status, occurredAt, extraData = {}) {
+      await postgresQuery(
+        `INSERT INTO spine_events (
+           event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, subject_type, subject_id, object_type, object_id,
+           status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
+           token_id, interaction_id, data_json, version
+         )
+         VALUES (
+           $1, $2, $3, $3, 'scn_pg_large_summary', $4,
+           'runtime', $5, NULL, NULL, 'run', $6,
+           $7, NULL, NULL, $6, 'connector', $5, NULL, NULL,
+           NULL, NULL, $8::jsonb, 'reference.spine.v1'
+         )`,
+        [
+          `evt_${eventType.replaceAll('.', '_')}_${suffix}`,
+          eventType,
+          occurredAt,
+          traceId,
+          connectorId,
+          runId,
+          status,
+          JSON.stringify({ ...sourceData, ...extraData }),
+        ],
+      );
+    }
+
+    try {
+      await insertRunEvent('run.started', 'started', '2026-06-02T00:00:00.000Z');
+      await postgresQuery(
+        `INSERT INTO spine_events (
+           event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, subject_type, subject_id, object_type, object_id,
+           status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
+           token_id, interaction_id, data_json, version
+         )
+         SELECT
+           'evt_pg_large_progress_${suffix}_' || g,
+           'run.progress_reported',
+           '2026-06-02T00:00:01.000Z',
+           '2026-06-02T00:00:01.000Z',
+           'scn_pg_large_summary',
+           $1,
+           'runtime',
+           $2,
+           NULL,
+           NULL,
+           'run',
+           $3,
+           'in_progress',
+           NULL,
+           NULL,
+           $3,
+           'connector',
+           $2,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           $4::jsonb,
+           'reference.spine.v1'
+         FROM generate_series(1, 5100) AS g`,
+        [traceId, connectorId, runId, JSON.stringify(sourceData)],
+      );
+      await insertRunEvent('run.failed', 'failed', '2026-06-02T00:00:02.000Z', {
+        reason: 'connector_exit_without_done',
+      });
+      await insertRunEvent('run.browser_surface_released', 'released', '2026-06-02T00:00:03.000Z');
+
+      const page = await listSpineCorrelations('run', {
+        sourceKind: 'connector',
+        sourceId: connectorId,
+        limit: 5,
+      });
+      const summary = page.summaries.find((row) => row.run_id === runId || row.id === runId);
+
+      assert.ok(summary, 'expected a summary for the large Postgres run');
+      assert.equal(summary.status, 'failed');
+      assert.equal(summary.event_count, 5103);
+      assert.equal(summary.last_at, '2026-06-02T00:00:03.000Z');
+      assert.equal(summary.failure?.reason, 'connector_exit_without_done');
+
+      const search = await searchSpine(runId);
+      const searchSummary = search.runs.find((row) => row.run_id === runId || row.id === runId);
+      assert.ok(searchSummary, 'expected search to return the large run summary');
+      assert.equal(searchSummary.status, 'failed');
+      assert.equal(searchSummary.event_count, 5103);
+    } finally {
+      await postgresQuery('DELETE FROM spine_events WHERE run_id = $1', [runId]);
       await closePostgresStorage();
       closeDb();
     }
@@ -204,6 +734,23 @@ if (!POSTGRES_URL) {
     };
 
     initDb(':memory:');
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_global(
+           projection_key,
+           current_record_json_bytes,
+           record_history_json_bytes,
+           blob_bytes,
+           record_count,
+           record_history_count,
+           blob_count,
+           dirty,
+           computed_at,
+           metadata_json
+         )
+         VALUES('global', 999999, 999999, 999999, 999999, 0, 0, 0, '2000-01-01T00:00:00.000Z', '{}')`,
+      )
+      .run();
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
     configureSemanticBackend(makeStubBackend());
 
@@ -350,6 +897,17 @@ if (!POSTGRES_URL) {
           (candidate) => candidate.connector_id === connectorId && candidate.record_count >= 2,
         ),
       );
+
+      await rebuildRetainedSize();
+      const retainedGlobal = await getRetainedSizeGlobal();
+      assert.notEqual(retainedGlobal.current_record_json_bytes, 999999);
+      assert.ok(retainedGlobal.record_count >= 4);
+      assert.equal(retainedGlobal.metadata.state, 'fresh');
+      const retainedConnections = await listRetainedSizeConnections({
+        connectorInstanceId: accountA.connector_instance_id,
+      });
+      assert.equal(retainedConnections.length, 1);
+      assert.ok(retainedConnections[0].total_retained_bytes > 0);
 
       const grantInit = await initiateGrant({
         client_id: clientId,
@@ -696,6 +1254,283 @@ if (!POSTGRES_URL) {
       await postgresQuery('DELETE FROM semantic_search_meta WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1', [connectorId]);
       configureSemanticBackend(null);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  // Postgres-backed public-read MUST honor the same canonical
+  // `sort` / `count` contract as the SQLite reference path. The owner
+  // flagged a footgun where postgres-records.js silently accepted these
+  // params and no-oped — re-introducing exactly the "silent no-op"
+  // behavior the canonical contract was written to eliminate.
+  //
+  // These tests fail if:
+  //   - `sort=-<cursor>` is ignored and the page returns ascending order.
+  //   - `count=exact` / `count=estimated` is ignored (no `meta.count`).
+  //   - `sort` and `order` disagree but the runtime silently picks one.
+  //   - `count` outside the canonical vocabulary is silently accepted.
+  //   - `sort` on an unadvertised field is silently accepted.
+  //
+  // Spec: openspec/changes/canonicalize-public-read-contract/specs/
+  //       reference-implementation-architecture/spec.md (#"Sort",
+  //       #"Counts").
+  test('postgres records list honors canonical sort and graded count', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_canonical_${suffix}`;
+    const connectorInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', connectorId);
+    const stream = 'events';
+    const grant = {
+      streams: [{ name: stream, fields: ['id', 'title', 'created_at'] }],
+    };
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Canonical Contract Test',
+      capabilities: { human_interaction: [] },
+      streams: [
+        {
+          name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          selection: { fields: true, resources: false },
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await registerConnector(manifest);
+
+      const items = [
+        { id: 'a', title: 'Alpha', created_at: '2026-04-01T00:00:00.000Z' },
+        { id: 'b', title: 'Beta',  created_at: '2026-04-02T00:00:00.000Z' },
+        { id: 'c', title: 'Gamma', created_at: '2026-04-03T00:00:00.000Z' },
+      ];
+      for (const data of items) {
+        await ingestRecord(connectorId, { stream, key: data.id, data });
+      }
+
+      const canonicalConnection = await queryRecords(connectorId, stream, grant, {
+        connection_id: connectorInstanceId,
+        order: 'asc',
+      }, manifest);
+      assert.deepEqual(
+        canonicalConnection.data.map((row) => row.id),
+        ['a', 'b', 'c'],
+        'Postgres records list must accept the canonical connection_id for the bound storage',
+      );
+      assert.equal(
+        canonicalConnection.meta?.warnings,
+        undefined,
+        'canonical connection_id must not emit a deprecated-alias warning',
+      );
+
+      const deprecatedAlias = await queryRecords(connectorId, stream, grant, {
+        connector_instance_id: connectorInstanceId,
+        order: 'asc',
+      }, manifest);
+      assert.equal(
+        deprecatedAlias.meta?.warnings?.[0]?.code,
+        'deprecated_alias_used',
+        'Postgres records list must warn when the deprecated alias is used',
+      );
+
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          connection_id: 'cin_other_connection',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'connection_not_found');
+          assert.equal(err.param, 'connection_id');
+          return true;
+        },
+        'Postgres records list must reject a connection_id outside the grant storage binding',
+      );
+
+      const recordWithAlias = await getRecord(connectorId, stream, 'a', grant, manifest, {
+        connector_instance_id: connectorInstanceId,
+      });
+      assert.equal(recordWithAlias.meta?.warnings?.[0]?.code, 'deprecated_alias_used');
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'a', grant, manifest, {
+          connection_id: 'cin_other_connection',
+        }),
+        (err) => {
+          assert.equal(err.code, 'connection_not_found');
+          assert.equal(err.param, 'connection_id');
+          return true;
+        },
+        'Postgres records detail must reject a connection_id outside the grant storage binding',
+      );
+
+      // sort=-created_at MUST return rows in DESC order.
+      const desc = await queryRecords(connectorId, stream, grant, {
+        sort: '-created_at',
+      }, manifest);
+      assert.deepEqual(
+        desc.data.map((row) => row.id),
+        ['c', 'b', 'a'],
+        'sort=-created_at must yield DESC order on the Postgres path',
+      );
+
+      // sort=created_at MUST return rows in ASC order.
+      const asc = await queryRecords(connectorId, stream, grant, {
+        sort: 'created_at',
+      }, manifest);
+      assert.deepEqual(
+        asc.data.map((row) => row.id),
+        ['a', 'b', 'c'],
+        'sort=created_at must yield ASC order on the Postgres path',
+      );
+
+      // sort and order disagreement must be rejected, not silently picked.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          sort: '-created_at',
+          order: 'asc',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_sort');
+          return true;
+        },
+        'Postgres path must reject sort/order disagreement with typed invalid_sort',
+      );
+
+      // sort on an unadvertised field must be rejected.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          sort: 'title',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_sort');
+          return true;
+        },
+        'Postgres path must reject sort on an unadvertised field',
+      );
+
+      // count=exact must populate meta.count.kind='exact' with the value
+      // matching all visible rows in the stream (3), not just the page.
+      const exactPage1 = await queryRecords(connectorId, stream, grant, {
+        count: 'exact',
+        limit: 1,
+        order: 'asc',
+      }, manifest);
+      assert.equal(exactPage1.data.length, 1, 'limit=1 must return one row');
+      assert.equal(exactPage1.has_more, true, 'limit=1 over 3 rows must signal has_more');
+      assert.equal(
+        exactPage1.meta?.count?.kind,
+        'exact',
+        'count=exact must surface meta.count.kind=exact on the Postgres path',
+      );
+      assert.equal(
+        exactPage1.meta?.count?.value,
+        3,
+        'count=exact value must reflect all matching visible rows (3), not the page size',
+      );
+      assert.equal(
+        Array.isArray(exactPage1.meta?.warnings) && exactPage1.meta.warnings.some((w) => w.code === 'count_downgraded'),
+        false,
+        'count=exact on the Postgres path must NOT emit count_downgraded',
+      );
+
+      // count=estimated must silently upgrade to exact on the Postgres
+      // reference path (cheap to compute the exact value via the same
+      // filter clause). No count_downgraded warning — that vocabulary
+      // slot is reserved for true downgrades.
+      const estimated = await queryRecords(connectorId, stream, grant, {
+        count: 'estimated',
+        limit: 5,
+        order: 'asc',
+      }, manifest);
+      assert.equal(
+        estimated.meta?.count?.kind,
+        'exact',
+        'count=estimated must surface meta.count.kind=exact (silent upgrade) on the Postgres path',
+      );
+      assert.equal(
+        estimated.meta?.count?.value,
+        3,
+        'count=estimated value must reflect all matching visible rows (3)',
+      );
+      assert.equal(
+        Array.isArray(estimated.meta?.warnings) && estimated.meta.warnings.some((w) => w.code === 'count_downgraded'),
+        false,
+        'count=estimated upgrading to exact is not a downgrade and must NOT emit count_downgraded',
+      );
+
+      // count=none (and absent count) MUST omit meta.count.
+      const none = await queryRecords(connectorId, stream, grant, {
+        count: 'none',
+        order: 'asc',
+      }, manifest);
+      assert.equal(none.meta?.count, undefined, 'count=none must omit meta.count on the Postgres path');
+
+      // Unknown count value must be rejected, not silently treated as none.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          count: 'guessed',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_request');
+          return true;
+        },
+        'Postgres path must reject count values outside the canonical vocabulary',
+      );
+
+      // changes_since is a version-ordered change feed. List-only ordering
+      // and count parameters must be rejected instead of accepted and ignored.
+      for (const params of [
+        { changes_since: 'beginning', sort: '-created_at' },
+        { changes_since: 'beginning', count: 'exact' },
+        { changes_since: 'beginning', order: 'asc' },
+      ]) {
+        await assert.rejects(
+          () => queryRecords(connectorId, stream, grant, params, manifest),
+          (err) => {
+            assert.equal(err.code, 'invalid_request');
+            assert.match(err.message, /not supported with changes_since/);
+            return true;
+          },
+          'Postgres changes_since must reject list-only sort/count/order params',
+        );
+      }
+
+      // Filter narrowing must be reflected in the count: a filter that
+      // matches a single visible row must yield count.value === 1.
+      const filtered = await queryRecords(connectorId, stream, grant, {
+        count: 'exact',
+        filter: { id: 'b' },
+        order: 'asc',
+      }, manifest);
+      assert.deepEqual(
+        filtered.data.map((row) => row.id),
+        ['b'],
+        'filter={id:b} must narrow the page to one row on the Postgres path',
+      );
+      assert.equal(
+        filtered.meta?.count?.value,
+        1,
+        'count must reflect filter narrowing, not the unfiltered total',
+      );
+    } finally {
+      await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM connectors WHERE connector_id = $1', [connectorId]);
       await closePostgresStorage();
       closeDb();
     }

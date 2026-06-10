@@ -57,3 +57,4 @@ For every completed tranche:
 - Any learned discrepancy is folded back into `design.md` or the spec delta.
 - Design notes are marked decided, deferred, superseded, or promoted.
 - The change is archived when accepted.
+- A `✓ Complete` change should not remain active for more than one merge cycle without an explicit reason. If only owner-only live verification remains, record it as a residual risk instead of leaving the change pseudo-active.

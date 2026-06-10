@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/anthropic",
+  "connector_key": "anthropic",
+  "manifest_uri": "https://registry.pdpp.org/connectors/anthropic",
   "version": "0.1.0",
   "display_name": "Claude (Anthropic)",
   "runtime_requirements": {

@@ -89,9 +89,9 @@ function cleanup(filepath) {
 // SCHEMA TESTS
 // ============================================================================
 
-test('schema: TABLES is an array of 31 entries', () => {
+test('schema: TABLES is an array of 32 entries', () => {
   assert.ok(Array.isArray(TABLES));
-  assert.equal(TABLES.length, 31);
+  assert.equal(TABLES.length, 32);
 });
 
 test('schema: 7 derived tables marked skipMigration=true with reason', () => {
@@ -117,9 +117,9 @@ test('schema: every non-skip table has at least one column', () => {
   }
 });
 
-test('schema: 24 non-skip tables in stable dependency order', () => {
+test('schema: 25 non-skip tables in stable dependency order', () => {
   const migratable = TABLES.filter((t) => !t.skipMigration);
-  assert.equal(migratable.length, 24);
+  assert.equal(migratable.length, 25);
 
   // Verify connectors is first
   assert.equal(migratable[0].name, 'connectors');

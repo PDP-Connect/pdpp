@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/chase",
+  "connector_key": "chase",
+  "manifest_uri": "https://registry.pdpp.org/connectors/chase",
   "version": "0.1.0",
   "display_name": "Chase",
   "runtime_requirements": {
@@ -21,6 +23,7 @@
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
@@ -211,10 +214,12 @@
           "date": {
             "type": "string",
             "format": "date",
+            "x_pdpp_type": "timestamp",
             "description": "Posted date. QFX DTPOSTED."
           },
           "amount": {
             "type": "integer",
+            "x_pdpp_type": "currency",
             "description": "Signed amount in cents. Negative for debits, positive for credits."
           },
           "currency": {
@@ -233,6 +238,7 @@
               "string",
               "null"
             ],
+            "x_pdpp_type": "text",
             "description": "Payee or merchant name. QFX NAME."
           },
           "memo": {
@@ -397,6 +403,7 @@
           },
           "amount": {
             "type": "integer",
+            "x_pdpp_type": "currency",
             "description": "Signed amount in cents. Negative for visible debits, positive for visible credits."
           },
           "currency": {
@@ -552,7 +559,21 @@
               "string",
               "null"
             ],
-            "description": "SHA-256 of the downloaded PDF bytes."
+            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — Chase re-encrypts the PDF per download, so it churns on no-op re-fetches)."
+          },
+          "pdf_text_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Positive content fingerprint: SHA-256 of the statement's extracted PDF text after deterministic normalization (NFC, whitespace collapse, trim). Stable across raw-byte churn so a re-download with unchanged content is provably a no-op. Null when text extraction failed or returned empty text."
+          },
+          "pdf_page_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Integer page count from the PDF structure. A structural content invariant alongside pdf_text_sha256. Null when extraction failed."
           },
           "fetched_at": {
             "type": "string",

@@ -11,9 +11,18 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const packageJsonPath = path.join(packageRoot, "package.json");
 const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
 
+const EXPECTED_PACKAGE_NAME = "@opendatalabs/remote-surface";
+assert.equal(
+  packageJson.name,
+  EXPECTED_PACKAGE_NAME,
+  `package.json#name must be ${EXPECTED_PACKAGE_NAME}, got ${packageJson.name}`,
+);
+
 const allowedPackageFilePatterns = [
   /^package\.json$/,
   /^README\.md$/,
+  /^LICENSE$/,
+  /^SECURITY\.md$/,
   /^dist\/.+\.(js|js\.map|d\.ts|d\.ts\.map)$/,
 ];
 
@@ -41,38 +50,23 @@ const hostNeutralCompatibilityAllowlist = [
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
   {
-    name: "lease compatibility declarations still expose legacy reference-shaped database fields",
-    files: /^dist\/leases\/browser-surface-leases\.d\.ts$/,
-    patterns: new Set(["run_id"]),
-  },
-  {
-    name: "lease compatibility implementation still maps generic lease requests to legacy reference-shaped fields",
-    files: /^dist\/leases\/browser-surface-leases\.js(\.map)?$/,
-    patterns: new Set(["run_id"]),
-  },
-  {
-    name: "stream-viewer protocol keeps reference wire fields for route parity fixtures",
-    files: /^dist\/protocol\/(index|stream-viewer)\.(d\.ts|js|js\.map)$/,
+    name: "reference-only subpath is the canonical home for PDPP-shaped wire and store fields",
+    files: /^dist\/reference\/.+\.(d\.ts|js|js\.map)$/,
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
   {
-    name: "server store compatibility declarations keep legacy streaming aliases beside host-neutral surface APIs",
-    files: /^dist\/server\/streaming-session-store\.d\.ts$/,
+    name: "host-neutral SurfaceSessionStore adapter must rename camelCase requests to the reference store's snake_case API at the call boundary; declarations stay host-neutral",
+    files: /^dist\/server\/surface-session-store\.js(\.map)?$/,
     patterns: new Set(["run_id", "interaction_id"]),
   },
   {
-    name: "server store compatibility implementation adapts host-neutral surface APIs to legacy streaming aliases",
-    files: /^dist\/server\/streaming-session-store\.js(\.map)?$/,
+    name: "deprecated @deprecated jsdoc blocks in re-export index files mention the reference field names as part of the migration notice",
+    files: /^dist\/(leases|protocol|server|testing)\/(index|stream-viewer)\.(d\.ts|js|js\.map)$/,
     patterns: new Set(["run_id", "interaction_id"]),
-  },
-  {
-    name: "reference wire fixtures intentionally preserve PDPP route fields for compatibility tests",
-    files: /^dist\/testing\/reference-wire-fixtures\.(d\.ts|js|js\.map)$/,
-    patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
 ];
 
-const publicPackageNamePattern = /@pdpp\/(?!remote-surface\b)[a-z0-9._-]+/g;
+const publicPackageNamePattern = /@pdpp\/[a-z0-9._-]+/g;
 
 const exportTargets = collectExportTargets(packageJson.exports);
 const typeTargets = collectTypeTargets(packageJson.exports);
@@ -98,6 +92,11 @@ for (const [sectionName, deps] of Object.entries({
     assert.equal(range.startsWith("file:"), false, `${sectionName}.${name} leaks file range ${range}`);
     assert.equal(range.startsWith("link:"), false, `${sectionName}.${name} leaks link range ${range}`);
     assert.equal(name.startsWith("@pdpp/"), false, `${sectionName}.${name} leaks a private PDPP package dependency`);
+    assert.equal(
+      name.startsWith("@opendatalabs/") && name !== EXPECTED_PACKAGE_NAME,
+      false,
+      `${sectionName}.${name} declares a sibling OpenDataLabs workspace dependency; only ${EXPECTED_PACKAGE_NAME} may appear in this manifest`,
+    );
   }
 }
 
@@ -123,7 +122,14 @@ try {
     );
   }
 
-  for (const requiredFile of ["package.json", "README.md", "dist/index.js", "dist/index.d.ts"]) {
+  for (const requiredFile of [
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "dist/index.js",
+    "dist/index.d.ts",
+  ]) {
     assert.equal(packedFiles.includes(requiredFile), true, `missing required package file: ${requiredFile}`);
   }
 
@@ -171,7 +177,7 @@ async function validatePublicArtifactBoundaries(packedFiles) {
   const privatePackageLeaks = [];
 
   for (const file of packedFiles) {
-    if (!(file === "README.md" || file.startsWith("dist/"))) {
+    if (!(file === "README.md" || file === "SECURITY.md" || file.startsWith("dist/"))) {
       continue;
     }
 
@@ -223,7 +229,7 @@ async function validateCleanConsumer(tarballPath) {
           private: true,
           type: "module",
           dependencies: {
-            "@pdpp/remote-surface": tarballPath,
+            "@opendatalabs/remote-surface": tarballPath,
             typescript: "^6.0.3",
           },
         },
@@ -251,20 +257,21 @@ async function validateCleanConsumer(tarballPath) {
     await writeFile(
       path.join(fixtureDir, "consumer.ts"),
       [
-        'import { createSurfaceSessionStore } from "@pdpp/remote-surface/server";',
-        'import "@pdpp/remote-surface";',
-        'import "@pdpp/remote-surface/adapters";',
-        'import "@pdpp/remote-surface/backends/cdp";',
-        'import "@pdpp/remote-surface/backends/neko";',
-        'import "@pdpp/remote-surface/backends/types";',
-        'import "@pdpp/remote-surface/client";',
-        'import "@pdpp/remote-surface/controllers";',
-        'import "@pdpp/remote-surface/diagnostics";',
-        'import "@pdpp/remote-surface/ime";',
-        'import "@pdpp/remote-surface/leases";',
-        'import "@pdpp/remote-surface/protocol";',
-        'import "@pdpp/remote-surface/server";',
-        'import "@pdpp/remote-surface/testing";',
+        'import { createSurfaceSessionStore } from "@opendatalabs/remote-surface/server";',
+        'import "@opendatalabs/remote-surface";',
+        'import "@opendatalabs/remote-surface/adapters";',
+        'import "@opendatalabs/remote-surface/backends/cdp";',
+        'import "@opendatalabs/remote-surface/backends/neko";',
+        'import "@opendatalabs/remote-surface/backends/types";',
+        'import "@opendatalabs/remote-surface/client";',
+        'import "@opendatalabs/remote-surface/controllers";',
+        'import "@opendatalabs/remote-surface/diagnostics";',
+        'import "@opendatalabs/remote-surface/ime";',
+        'import "@opendatalabs/remote-surface/leases";',
+        'import "@opendatalabs/remote-surface/protocol";',
+        'import "@opendatalabs/remote-surface/reference";',
+        'import "@opendatalabs/remote-surface/server";',
+        'import "@opendatalabs/remote-surface/testing";',
         'const store = createSurfaceSessionStore();',
         'const issued = store.mint({ surfaceSessionId: "surface", actionId: "action", browserSessionId: "browser" });',
         'store.attach({ token: issued.token, surfaceSessionId: "surface", actionId: "action" });',
@@ -286,19 +293,20 @@ async function validateCleanConsumer(tarballPath) {
         "--input-type=module",
         "--eval",
         [
-          'await import("@pdpp/remote-surface");',
-          'await import("@pdpp/remote-surface/adapters");',
-          'await import("@pdpp/remote-surface/backends/cdp");',
-          'await import("@pdpp/remote-surface/backends/neko");',
-          'await import("@pdpp/remote-surface/backends/types");',
-          'await import("@pdpp/remote-surface/client");',
-          'await import("@pdpp/remote-surface/controllers");',
-          'await import("@pdpp/remote-surface/diagnostics");',
-          'await import("@pdpp/remote-surface/ime");',
-          'await import("@pdpp/remote-surface/leases");',
-          'await import("@pdpp/remote-surface/protocol");',
-          'await import("@pdpp/remote-surface/server");',
-          'await import("@pdpp/remote-surface/testing");',
+          'await import("@opendatalabs/remote-surface");',
+          'await import("@opendatalabs/remote-surface/adapters");',
+          'await import("@opendatalabs/remote-surface/backends/cdp");',
+          'await import("@opendatalabs/remote-surface/backends/neko");',
+          'await import("@opendatalabs/remote-surface/backends/types");',
+          'await import("@opendatalabs/remote-surface/client");',
+          'await import("@opendatalabs/remote-surface/controllers");',
+          'await import("@opendatalabs/remote-surface/diagnostics");',
+          'await import("@opendatalabs/remote-surface/ime");',
+          'await import("@opendatalabs/remote-surface/leases");',
+          'await import("@opendatalabs/remote-surface/protocol");',
+          'await import("@opendatalabs/remote-surface/reference");',
+          'await import("@opendatalabs/remote-surface/server");',
+          'await import("@opendatalabs/remote-surface/testing");',
         ].join("\n"),
       ],
       { cwd: fixtureDir, maxBuffer: 1024 * 1024 },

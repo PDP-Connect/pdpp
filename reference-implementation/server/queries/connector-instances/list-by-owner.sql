@@ -15,5 +15,6 @@ SELECT
   revoked_at
 FROM connector_instances
 WHERE owner_subject_id = ?
+  AND status <> 'draft'
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
 LIMIT ?;

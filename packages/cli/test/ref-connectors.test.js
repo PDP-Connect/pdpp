@@ -75,6 +75,42 @@ const SUMMARY_FIXTURE = {
       outbox: 'idle',
     },
     badges: { stale: false, syncing: true },
+    conditions: [
+      {
+        id: 'AttentionClear:otp_required',
+        type: 'AttentionClear',
+        status: 'false',
+        severity: 'blocked',
+        reason: 'otp_required',
+        message: 'Owner action is required before collection can continue.',
+        origin: 'runtime',
+        observed_at: '2026-05-19T00:30:00Z',
+        expires_at: null,
+        current: true,
+        sensitivity: 'owner',
+        remediation: {
+          action: 'satisfy_attention',
+          label: 'Open the requested interaction and complete the action',
+          retryable: false,
+          target: 'dashboard',
+        },
+      },
+      {
+        id: 'SourceCoverageComplete:partial',
+        type: 'SourceCoverageComplete',
+        status: 'false',
+        severity: 'warning',
+        reason: 'partial',
+        message: 'Required source coverage is incomplete.',
+        origin: 'connector',
+        observed_at: '2026-05-19T00:30:00Z',
+        expires_at: null,
+        current: true,
+        sensitivity: 'owner',
+        remediation: null,
+      },
+    ],
+    dominant_condition_id: 'AttentionClear:otp_required',
     last_success_at: '2026-05-19T00:30:00Z',
     next_action: {
       action_target: 'dashboard',
@@ -88,6 +124,7 @@ const SUMMARY_FIXTURE = {
     next_attempt_at: '2026-05-19T01:00:00Z',
     reason_code: 'attention_open',
     state: 'needs_attention',
+    supporting_condition_ids: ['AttentionClear:otp_required', 'SourceCoverageComplete:partial'],
     unknown_reasons: [],
   },
 };
@@ -121,6 +158,13 @@ test('ref connectors list: projects summary fields in JSON list', async () => {
   assert.equal(row.syncing, true);
   assert.equal(row.stale, false);
   assert.equal(row.reason_code, 'attention_open');
+  assert.equal(row.dominant_condition_id, 'AttentionClear:otp_required');
+  assert.equal(row.dominant_condition_type, 'AttentionClear');
+  assert.equal(row.dominant_condition_reason, 'otp_required');
+  assert.equal(row.dominant_condition_severity, 'blocked');
+  assert.equal(row.dominant_condition_message, 'Owner action is required before collection can continue.');
+  assert.equal(row.dominant_condition_origin, 'runtime');
+  assert.deepEqual(row.supporting_condition_ids, ['AttentionClear:otp_required', 'SourceCoverageComplete:partial']);
   assert.deepEqual(row.unknown_reasons, []);
   assert.equal(row.next_action_source, 'structured');
   assert.equal(row.next_action_reason, 'otp_required');
@@ -162,8 +206,11 @@ test('ref connectors list: table format includes projected columns', async () =>
 
   assert.match(captured.stdout, /connector_id/);
   assert.match(captured.stdout, /state/);
+  assert.match(captured.stdout, /dominant_condition_reason/);
   assert.match(captured.stdout, /github/);
   assert.match(captured.stdout, /needs_attention/);
+  assert.match(captured.stdout, /otp_required/);
+  assert.doesNotMatch(captured.stdout, /Owner action is required before collection can continue/);
 });
 
 test('ref connectors list: handles missing axes / next_action without crashing', async () => {
@@ -200,6 +247,9 @@ test('ref connectors list: handles missing axes / next_action without crashing',
   assert.equal(row.freshness, 'unknown');
   assert.equal(row.attention, 'none');
   assert.equal(row.outbox, 'unknown');
+  assert.equal(row.dominant_condition_id, null);
+  assert.equal(row.dominant_condition_reason, null);
+  assert.deepEqual(row.supporting_condition_ids, []);
   assert.equal(row.next_action_source, 'none');
   assert.equal(row.next_action_target, null);
   assert.deepEqual(row.unknown_reasons, ['no_runs']);
@@ -223,6 +273,7 @@ test('ref connectors show: returns projected row for connector id', async () => 
   const parsed = JSON.parse(captured.stdout);
   assert.equal(parsed.connector_id, 'github');
   assert.equal(parsed.state, 'needs_attention');
+  assert.equal(parsed.dominant_condition_reason, 'otp_required');
   assert.equal(parsed.next_action_source, 'structured');
 });
 
@@ -347,4 +398,113 @@ test('runCli ref --help mentions connectors commands', async () => {
   assert.equal(code, 0);
   assert.match(captured.stdout, /ref connectors list/);
   assert.match(captured.stdout, /ref connectors show/);
+});
+
+// ---- canonical envelope warnings -------------------------------------------
+
+test('ref connectors list: surfaces canonical meta.warnings to stderr without polluting stdout JSON', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': {
+      body: {
+        object: 'list',
+        data: [SUMMARY_FIXTURE],
+        meta: {
+          warnings: [
+            { code: 'deprecated_alias', message: 'connector_instance_id is deprecated; use connection_id' },
+            { code: 'count_downgraded', dropped_parameter: 'count=exact' },
+          ],
+        },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  // stdout stays clean JSON (no warning prose mixed in).
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.object, 'list');
+  assert.equal(parsed.data.length, 1);
+  // stderr carries the warnings.
+  assert.match(captured.stderr, /warning: deprecated_alias/);
+  assert.match(captured.stderr, /connector_instance_id is deprecated/);
+  assert.match(captured.stderr, /warning: count_downgraded/);
+  assert.match(captured.stderr, /\(dropped: count=exact\)/);
+});
+
+test('ref connectors show: surfaces canonical meta.warnings on single-record responses', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors/github': {
+      body: {
+        ...SUMMARY_FIXTURE,
+        meta: { warnings: [{ code: 'skipped_source', message: 'one binding had no snapshot' }] },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ['show', 'github', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  // stdout is still a parseable record projection.
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.connector_id, 'github');
+  // stderr surfaces the warning.
+  assert.match(captured.stderr, /warning: skipped_source — one binding had no snapshot/);
+});
+
+test('ref connectors list: emits no stderr noise when meta.warnings is absent (backward compat)', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': { body: { object: 'list', data: [SUMMARY_FIXTURE] } },
+  });
+
+  const captured = capture();
+  await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  // No canonical envelope today ⇒ no warnings line.
+  assert.equal(captured.stderr, '');
+});
+
+test('ref connectors list: ignores malformed warnings entries', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': {
+      body: {
+        object: 'list',
+        data: [SUMMARY_FIXTURE],
+        meta: {
+          warnings: [
+            'not-an-object',
+            { message: 'missing code field' },
+            null,
+            { code: 'ok_warning', message: 'this one is well-formed' },
+          ],
+        },
+      },
+    },
+  });
+
+  const captured = capture();
+  await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  // Only the well-formed entry surfaces.
+  assert.match(captured.stderr, /warning: ok_warning/);
+  assert.doesNotMatch(captured.stderr, /not-an-object/);
+  assert.doesNotMatch(captured.stderr, /missing code field/);
 });

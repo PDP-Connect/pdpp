@@ -218,6 +218,41 @@ test("paginate: follows 'after' through multiple pages until exhausted", async (
   assert.ok(calls[1]?.includes("after=t1_b"), "page 2 must carry the 'after' cursor");
 });
 
+test("paginate: progress reports cursor presence without raw cursor values", async () => {
+  const progressEvents: Array<{ message: string; extra?: { cursor_present?: boolean; page_index?: number } }> = [];
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/comments.json`]: [
+      okResult(listing([makeComment("t1_a", 300), makeComment("t1_b", 200)], "t1_b")),
+      okResult(listing([makeComment("t1_c", 100)], null)),
+    ],
+  });
+
+  await paginate(
+    fetch,
+    `${USER_PATH}/comments.json`,
+    null,
+    null,
+    NO_DELAY,
+    (message, extra) => {
+      progressEvents.push(extra === undefined ? { message } : { message, extra });
+      return Promise.resolve();
+    },
+    "comments"
+  );
+
+  const serialized = JSON.stringify(progressEvents);
+  assert.equal(serialized.includes("t1_b"), false, "raw after cursor must not appear in progress");
+  assert.equal(serialized.includes(`${USER_PATH}/comments.json`), false, "endpoint path must not appear in progress");
+  assert.equal(
+    progressEvents.some((event) => event.extra?.cursor_present === true),
+    true
+  );
+  assert.equal(
+    progressEvents.some((event) => event.extra?.page_index === 1),
+    true
+  );
+});
+
 // ─── Invariant 5: empty page terminates pagination gracefully ───────────
 
 test("paginate: empty listing children → returns empty, no further fetches", async () => {

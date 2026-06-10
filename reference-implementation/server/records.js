@@ -2,6 +2,28 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
+
+// Optional post-commit hook for outbound client event subscriptions. The
+// hook is invoked after a `record_changes` row has been durably committed
+// for an `ingestRecord` call. It is intentionally untyped here so the
+// records module stays decoupled from the subscriptions store; the host
+// adapter installs the real implementation in `startServer`.
+let __clientEventEnqueueHook = null;
+export function setClientEventEnqueueHook(fn) {
+  __clientEventEnqueueHook = typeof fn === 'function' ? fn : null;
+}
+function __invokeClientEventEnqueueHook(change) {
+  if (!__clientEventEnqueueHook) return;
+  try {
+    const result = __clientEventEnqueueHook(change);
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => { /* surfaced via attempt log */ });
+    }
+  } catch {
+    /* hook errors must not retroactively roll back ingest */
+  }
+}
+
 import {
   allowUnboundedReadAcknowledged,
   exec,
@@ -13,6 +35,7 @@ import {
   referenceQueries,
   writeTransaction,
 } from '../lib/db.ts';
+import { withPostgresTransaction } from './postgres-storage.js';
 import {
   lexicalIndexDelete,
   lexicalIndexDeleteByConnectorStream,
@@ -42,25 +65,68 @@ import {
   postgresListStreams,
   postgresQueryRecords,
 } from './postgres-records.js';
-import { isPostgresStorageBackend } from './postgres-storage.js';
+import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+import { canonicalConnectorKey } from './connector-key.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   applyDatasetSummaryRecordDelta,
   markDatasetSummaryProjectionStale,
 } from './dataset-summary-read-model.js';
+import {
+  applyRetainedSizeRecordDelta,
+  markRetainedSizeConnectionDirty,
+  markRetainedSizeStreamDirty,
+} from './retained-size-read-model.js';
+import {
+  buildLimitClampedWarning,
+  CANONICAL_WARNING_CODES,
+  clampRecordsPageLimit,
+  CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  enforceConnectionNarrowing,
+  projectStorageDisplayName,
+  resolveRequestConnectionId,
+  validateConnectionAlias as validateConnectionAliasShared,
+} from './connection-id-request.js';
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from './stores/connector-instance-store.js';
+import {
+  AmbiguousConnectionError,
+  lookupConnectionDisplayName,
+  projectBindingForWire,
+  resolveRecordIdentityForBinding,
+  resolveRequestBindings,
+} from './connection-identity.js';
+import {
+  SAFE_JSON_FIELD,
+  assertSafeJsonField,
+  buildEffectiveFilter,
+  invalidQueryError,
+  normalizeExpandRequest,
+  normalizePrimaryKey,
+  parseIntegerValue,
+} from './record-expand-helpers.js';
+
+export { resolveRecordIdentityForBinding };
 
 function nowIso() {
   return new Date().toISOString();
 }
 
 function resolveStorageConnectorId(storageTarget) {
+  const normalize = (value) => {
+    const trimmed = typeof value === 'string' ? value.trim() : null;
+    if (!trimmed) return null;
+    return canonicalConnectorKey(trimmed) ?? trimmed;
+  };
   if (typeof storageTarget === 'string' && storageTarget.trim()) {
-    return storageTarget.trim();
+    return normalize(storageTarget);
   }
   if (storageTarget && typeof storageTarget === 'object' && typeof storageTarget.connector_id === 'string' && storageTarget.connector_id.trim()) {
-    return storageTarget.connector_id.trim();
+    return normalize(storageTarget.connector_id);
   }
   return null;
 }
@@ -79,7 +145,7 @@ function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
     err.code = 'invalid_connector_id';
     throw err;
   }
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {
@@ -90,6 +156,22 @@ function byteLength(value) {
   return value == null ? 0 : Buffer.byteLength(String(value));
 }
 
+// The retained-size delta accounting MUST count/sum exactly the rows the prune
+// DELETE will remove. Both helpers therefore carry the SAME anchor-preserving
+// `NOT EXISTS` clause as `recordsIngestPruneRecordChanges` (see
+// queries/records/ingest/prune-record-changes.sql). If these predicates ever
+// diverge, the retained-size read model would over-report pruned bytes/rows
+// for keys whose anchor we now keep. Kept in lockstep on purpose.
+const PRUNE_ANCHOR_PRESERVE_CLAUSE = `
+  AND NOT EXISTS (
+    SELECT 1
+      FROM records r
+     WHERE r.connector_instance_id = record_changes.connector_instance_id
+       AND r.stream = record_changes.stream
+       AND r.record_key = record_changes.record_key
+       AND r.version = record_changes.version
+  )`;
+
 function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefore) {
   const row = getDb()
     .prepare(
@@ -97,10 +179,23 @@ function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefo
          FROM record_changes
         WHERE connector_instance_id = ?
           AND stream = ?
-          AND version <= ?`,
+          AND version <= ?${PRUNE_ANCHOR_PRESERVE_CLAUSE}`,
     )
     .get(connectorInstanceId, stream, versionBefore);
   return Number(row?.bytes || 0);
+}
+
+function getPrunedRecordChangeCount(connectorInstanceId, stream, versionBefore) {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM record_changes
+        WHERE connector_instance_id = ?
+          AND stream = ?
+          AND version <= ?${PRUNE_ANCHOR_PRESERVE_CLAUSE}`,
+    )
+    .get(connectorInstanceId, stream, versionBefore);
+  return Number(row?.count || 0);
 }
 
 /**
@@ -179,6 +274,11 @@ export async function ingestRecord(storageTarget, record) {
       const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
       const { stream, key, data, op = 'upsert' } = record;
       const recordKey = encodeKey(key);
+      if (outcome.retainedSizeDelta) {
+        await applyRetainedSizeRecordDelta(outcome.retainedSizeDelta);
+      } else {
+        await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+      }
       if (op === 'delete') {
         await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
         await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
@@ -224,9 +324,41 @@ export async function ingestRecord(storageTarget, record) {
       return { kind: 'noop' };
     }
 
-    if (op !== 'delete' && current && !current.deleted && current.record_json === recordJson) {
-      return { kind: 'noop' };
+    // Self-heal of an unanchored current row. An unchanged reingest is
+    // normally a no-op (suppressing it is what keeps re-sent identical
+    // payloads from churning the version space). But history pruning by
+    // stream-global version cutoff can remove the only retained
+    // `record_changes` row for a still-current, unchanged record: a cold
+    // key whose anchor falls below the retention horizon while a hot key
+    // churns the stream forward. The current `records` row then has no
+    // provenance anchor — the exact orphan/unresolved_pruned class the
+    // operator repair tool refuses to reconstruct from the DB alone.
+    //
+    // The ingest path is in a stronger epistemic position than that
+    // offline tool: the source just re-sent the authoritative payload and
+    // it is byte-identical to the current row, so the current projection is
+    // proven correct. We re-anchor it by appending a fresh change row at a
+    // NEW stream version (not the stale existing version, which would land
+    // below the prune horizon and be re-pruned on the very next changed
+    // write). The downstream changed-write delta math is already correct
+    // for an unchanged payload at a new version: the record-count and
+    // current-bytes deltas are zero, and only one history row is appended.
+    const wouldBeUnchangedUpsert = op !== 'delete'
+      && current
+      && !current.deleted
+      && current.record_json === recordJson;
+    if (wouldBeUnchangedUpsert) {
+      const anchor = getOne(
+        referenceQueries.recordsIngestGetRecordChangeAnchor,
+        [connectorInstanceId, stream, recordKey, current.version],
+      );
+      // Anchor present → genuine no-op. Anchor missing → fall through to
+      // the changed-write path below to re-anchor the current row.
+      if (anchor) {
+        return { kind: 'noop' };
+      }
     }
+    const selfHeal = Boolean(wouldBeUnchangedUpsert);
 
     const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
@@ -260,40 +392,48 @@ export async function ingestRecord(storageTarget, record) {
 
     maybeFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
 
+    const sharedRecordCountDelta = op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1;
+    const sharedRecordJsonBytesDelta = op === 'delete'
+      ? -byteLength(current.record_json)
+      : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0);
+    const insertedChangeJsonBytes = byteLength(op === 'delete' ? current.record_json : recordJson);
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
-      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedBytesForDelta = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedRowsForDelta = getPrunedRecordChangeCount(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: effectiveEmittedAt,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
-        recordJsonBytesDelta: op === 'delete'
-          ? -byteLength(current.record_json)
-          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
-        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson) - prunedBytes,
-        dirtyRecordTimeBounds: true,
-      });
-    } else {
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: effectiveEmittedAt,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
-        recordJsonBytesDelta: op === 'delete'
-          ? -byteLength(current.record_json)
-          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
-        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson),
-        dirtyRecordTimeBounds: true,
-      });
     }
+    applyDatasetSummaryRecordDelta({
+      connectorId,
+      stream,
+      emittedAt: effectiveEmittedAt,
+      consentTimeField: getManifestConsentTimeField(connectorId, stream),
+      recordCountDelta: sharedRecordCountDelta,
+      recordJsonBytesDelta: sharedRecordJsonBytesDelta,
+      recordChangesJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+      dirtyRecordTimeBounds: true,
+    });
+    // Retained-size projection delta mirrors the dataset-summary delta but
+    // is grain-aware (connector_instance_id, connector_id, stream). The
+    // dataset-summary projection is global only; the retained-size
+    // projection serves the bounded `_ref` reads at every supported grain.
+    // Maintenance failures cannot retroactively roll back the durable record
+    // mutation — the projection module marks rows dirty internally.
+    applyRetainedSizeRecordDelta({
+      connectorInstanceId,
+      connectorId,
+      stream,
+      currentRecordJsonBytesDelta: sharedRecordJsonBytesDelta,
+      recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+      recordCountDelta: sharedRecordCountDelta,
+      recordHistoryCountDelta: 1 - prunedRowsForDelta,
+    });
 
-    return { kind: 'changed', op };
+    return { kind: 'changed', op, version: nextVersion, selfHeal };
   });
 
   if (outcome.kind === 'noop') {
@@ -311,34 +451,25 @@ export async function ingestRecord(storageTarget, record) {
     await semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
   }
 
-  return { accepted: true, changed: true };
-}
+  // After-commit notification for client event subscriptions. Failures
+  // here MUST NOT retroactively roll back the durable record mutation.
+  __invokeClientEventEnqueueHook({
+    connectorId,
+    connectorInstanceId,
+    connectionId: connectorInstanceId,
+    stream,
+    version: outcome.version ?? null,
+    emittedAt: effectiveEmittedAt,
+  });
 
-/**
- * Build an effective filter from grant + request params.
- * Returns { fieldFilter, timeRangeFilter, resourceFilter } for use in queries.
- */
-function buildEffectiveFilter(streamGrant, requestParams, requiredFields = []) {
-  const effective = {
-    fields: streamGrant.fields || null,          // null = all fields
-    timeRange: streamGrant.time_range || null,
-    resources: streamGrant.resources || null,
-    consentTimeField: null,
-  };
-
-  // Request can only narrow, not widen
-  if (requestParams.fields && effective.fields) {
-    // Intersect: request fields must be subset of grant fields
-    effective.fields = requestParams.fields.filter(f => effective.fields.includes(f));
-  } else if (requestParams.fields && !effective.fields) {
-    effective.fields = requestParams.fields;
-  }
-
-  if (effective.fields) {
-    effective.fields = [...new Set([...requiredFields, ...effective.fields])];
-  }
-
-  return effective;
+  // `self_healed` flags the case where the incoming payload was unchanged
+  // but the current row's provenance anchor was missing and had to be
+  // re-appended at a new version. It is purely additive — existing callers
+  // key off `changed` / `accepted` — and lets operators/tests distinguish a
+  // re-anchor from an ordinary content change.
+  const result = { accepted: true, changed: true };
+  if (outcome.selfHeal) result.self_healed = true;
+  return result;
 }
 
 /**
@@ -353,9 +484,20 @@ function projectFields(data, fields) {
   return result;
 }
 
+// Canonical public read query-param allowlist. `connection_id` is the
+// canonical public connection identifier; `connector_instance_id` is the
+// deprecated wire alias accepted during the migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`. Both are
+// optional filters today; when storage enumerates multiple connections per
+// owner they will narrow the result set. `subject_id` is forwarded by some
+// MCP / dashboard clients for diagnostic context and is allowlisted alongside
+// `connector_id` for parity with `/v1/streams` and `/v1/schema`.
 const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'changes_since',
+  'connection_id',
   'connector_id',
+  'connector_instance_id',
+  'count',
   'cursor',
   'expand',
   'expand_limit',
@@ -363,32 +505,57 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'filter',
   'limit',
   'order',
+  'sort',
+  'subject_id',
   'view',
+  'window',
 ]);
+
+// Canonical graded-count vocabulary. Spec:
+//   openspec/changes/canonicalize-public-read-contract design.md ("Counts")
+//   reference-contract `CountKindSchema`
+const SUPPORTED_COUNT_KINDS = new Set(['none', 'estimated', 'exact']);
+
+// Canonical bounded-window opt-in vocabulary. `meta.window` is opt-in via the
+// `window` query parameter, mirroring the `count` opt-in discipline: absence,
+// empty, or `none` omits `meta.window`; `exact` requests the bounded aggregate
+// over the filtered, grant-scoped corpus. Any other value is a typed
+// invalid-query error. Spec:
+//   openspec/changes/complete-explorer-slvp-ideal/specs/
+//   reference-implementation-architecture/spec.md
+//   (#"The record-list read MAY expose bounded window aggregate metadata")
+const SUPPORTED_WINDOW_KINDS = new Set(['none', 'exact']);
 const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
+  'connection_id',
   'connector_id',
+  'connector_instance_id',
   'field',
   'filter',
+  'granularity',
   'group_by',
+  'group_by_time',
   'limit',
   'metric',
   'subject_id',
+  'time_zone',
 ]);
-const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max']);
+
+/**
+ * Re-export the canonical alias contract helpers so existing imports from
+ * `./records.js` continue to work. The single source of truth is
+ * `./connection-id-request.js`, which records.js, postgres-records.js, and
+ * future read-path runtime share without duplication.
+ */
+export { resolveRequestConnectionId, CONNECTION_ALIAS_DEPRECATED_WARNING_CODE };
+export const validateConnectionAlias = validateConnectionAliasShared;
+const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max', 'count_distinct']);
 const MAX_AGGREGATE_GROUP_LIMIT = 100;
 const DEFAULT_AGGREGATE_GROUP_LIMIT = 10;
-
-function invalidQueryError(message, code = 'invalid_request') {
-  const err = new Error(message);
-  err.code = code;
-  return err;
-}
-
-function normalizePrimaryKey(primaryKey) {
-  if (Array.isArray(primaryKey)) return primaryKey.filter((field) => typeof field === 'string' && field.length > 0);
-  if (typeof primaryKey === 'string' && primaryKey.length > 0) return [primaryKey];
-  return [];
-}
+// Calendar `date_trunc` granularity set for `group_by_time` (weeks start
+// Monday). See openspec/changes/add-aggregate-time-buckets-and-distinct.
+const SUPPORTED_AGGREGATE_GRANULARITIES = new Set([
+  'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year',
+]);
 
 function getFieldSchema(manifestStream, field) {
   return manifestStream?.schema?.properties?.[field] || null;
@@ -427,12 +594,6 @@ function isMinMaxAggregateSchema(fieldSchema) {
   if (types.size !== 1) return false;
   if (types.has('integer') || types.has('number')) return true;
   return types.has('string') && (fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time');
-}
-
-function parseIntegerValue(value) {
-  if (typeof value === 'number' && Number.isInteger(value)) return value;
-  if (typeof value !== 'string' || !/^-?\d+$/.test(value.trim())) return null;
-  return Number.parseInt(value.trim(), 10);
 }
 
 function parseNumberValue(value) {
@@ -478,6 +639,99 @@ function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   }
 
   return String(value);
+}
+
+// --- group_by_time calendar bucketing --------------------------------------
+//
+// The in-process aggregate floor computes time buckets with calendar
+// `date_trunc` semantics (weeks start Monday) in the effective IANA zone,
+// using `Intl.DateTimeFormat` so day/week/month/quarter/year boundaries
+// respect the zone and DST without a SQL round trip. Bucket keys are ISO
+// strings: a date (`YYYY-MM-DD`) for day/week/month/quarter/year, and a
+// minute/hour timestamp (`YYYY-MM-DDTHH:MM:00Z`-style, zone-qualified) for the
+// sub-day units. See openspec/changes/add-aggregate-time-buckets-and-distinct.
+
+function resolveAggregateTimeZone(rawZone) {
+  if (!rawZone) return 'UTC';
+  try {
+    // Throws RangeError for an unknown IANA zone.
+    new Intl.DateTimeFormat('en-US', { timeZone: rawZone });
+    return rawZone;
+  } catch {
+    throw invalidQueryError(`Unknown time_zone: '${rawZone}'`);
+  }
+}
+
+// Decompose an absolute instant into wall-clock parts for the given IANA zone.
+function zonedParts(epochMs, timeZone) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(new Date(epochMs))) {
+    if (p.type !== 'literal') parts[p.type] = p.value;
+  }
+  // `Intl` emits hour "24" at midnight in some engines; normalize to 0.
+  const hour = parts.hour === '24' ? 0 : Number(parts.hour);
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour,
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+// ISO day-of-week (1 = Monday .. 7 = Sunday) for a Y/M/D in proleptic
+// Gregorian terms. Used to snap weeks to a Monday start.
+function isoDayOfWeek(year, month, day) {
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=Sun
+  return dow === 0 ? 7 : dow;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * Calendar-truncate the instant `value` to the start of its `granularity`
+ * bucket in `timeZone`, returning a stable ISO key string. Returns `null`
+ * when the value is null or unparseable so the caller can route it to the
+ * single null bucket.
+ */
+function bucketStartForGranularity(value, granularity, timeZone) {
+  const epochMs = parseDateValue(value);
+  if (epochMs == null) return null;
+  const { year, month, day, hour, minute } = zonedParts(epochMs, timeZone);
+
+  switch (granularity) {
+    case 'minute':
+      return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}`;
+    case 'hour':
+      return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:00`;
+    case 'day':
+      return `${year}-${pad2(month)}-${pad2(day)}`;
+    case 'week': {
+      // Snap back to Monday in the zone's wall-clock calendar.
+      const offset = isoDayOfWeek(year, month, day) - 1;
+      const monday = new Date(Date.UTC(year, month - 1, day - offset));
+      return `${monday.getUTCFullYear()}-${pad2(monday.getUTCMonth() + 1)}-${pad2(monday.getUTCDate())}`;
+    }
+    case 'month':
+      return `${year}-${pad2(month)}-01`;
+    case 'quarter': {
+      const quarterStartMonth = month - ((month - 1) % 3);
+      return `${year}-${pad2(quarterStartMonth)}-01`;
+    }
+    case 'year':
+      return `${year}-01-01`;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -549,6 +803,34 @@ function parsePageOrder(rawOrder) {
   throw invalidQueryError('order must be asc or desc');
 }
 
+/**
+ * Resolve the effective list order from the canonical `sort` parameter
+ * and the legacy `order` parameter.
+ *
+ * Canonical `sort` wins: `sort=-emitted_at` is DESC, `sort=emitted_at` is
+ * ASC. Legacy `order` is honored only when `sort` is absent. If both are
+ * sent and disagree, we reject with `invalid_sort` rather than silently
+ * picking one — this is the strict-validation discipline the contract
+ * requires for sort behavior.
+ */
+function resolveListOrder(rawOrder, resolvedSort) {
+  if (resolvedSort) {
+    if (rawOrder != null && rawOrder !== '') {
+      const legacyOrder = parsePageOrder(rawOrder);
+      if (legacyOrder !== resolvedSort.direction) {
+        const err = invalidQueryError(
+          `sort and order disagree: sort resolves to ${resolvedSort.direction}, order=${rawOrder}. Send only canonical \`sort\`.`,
+          'invalid_sort',
+        );
+        err.param = 'sort';
+        throw err;
+      }
+    }
+    return resolvedSort.direction;
+  }
+  return parsePageOrder(rawOrder);
+}
+
 function normalizePaginationCursor(cursor, order) {
   if (!cursor) return null;
   if (cursor.session !== 'records') {
@@ -566,11 +848,123 @@ function normalizePaginationCursor(cursor, order) {
   };
 }
 
-function validateTopLevelQueryParams(requestParams) {
+function validateTopLevelQueryParams(requestParams, manifestStream = null) {
   const unsupported = Object.keys(requestParams).filter((key) => !SUPPORTED_RECORD_QUERY_PARAMS.has(key));
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
+  validateConnectionAlias(requestParams);
+  validateCountKind(requestParams.count);
+  validateWindowKind(requestParams.window);
+  return validateCanonicalSort(requestParams.sort, manifestStream);
+}
+
+/**
+ * Validate the requested count grade against the canonical
+ * `none|estimated|exact` vocabulary. Absent / empty values pass through;
+ * the server applies `none` as the default. Spec:
+ *   openspec/changes/canonicalize-public-read-contract/specs/
+ *   reference-implementation-architecture/spec.md (#"Counts are opt-in
+ *   and cost-graded").
+ */
+function validateCountKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_COUNT_KINDS.has(value)) {
+    throw invalidQueryError(`count must be one of: ${[...SUPPORTED_COUNT_KINDS].join(', ')}`);
+  }
+}
+
+/**
+ * Validate the requested `window` grade against the canonical
+ * `none|exact` vocabulary. Absent / empty / `none` values pass through; the
+ * server omits `meta.window` for those. `exact` requests the bounded
+ * aggregate. Any other value is a typed invalid-query error, mirroring the
+ * strict-validation discipline used for `count`. Spec:
+ *   openspec/changes/complete-explorer-slvp-ideal/specs/
+ *   reference-implementation-architecture/spec.md
+ *   (#"The record-list read MAY expose bounded window aggregate metadata").
+ */
+function validateWindowKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_WINDOW_KINDS.has(value)) {
+    throw invalidQueryError(`window must be one of: ${[...SUPPORTED_WINDOW_KINDS].join(', ')}`);
+  }
+}
+
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order', 'window']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
+/**
+ * Validate the canonical `sort` parameter against the manifest stream's
+ * declared cursor field, and return the resolved direction the runtime
+ * will apply.
+ *
+ * The wire vocabulary is sign-prefix CSV (`sort=-emitted_at`). Today the
+ * reference runtime supports ordering by the stream's declared cursor
+ * field only, so any other field is rejected with a typed `invalid_sort`
+ * error. The sign prefix MUST control direction: `sort=field` is asc,
+ * `sort=-field` is desc — silently ignoring the sign would amount to
+ * accepting `sort` as a no-op, which the canonical contract forbids.
+ *
+ * Returns `null` when no `sort` is supplied, or
+ *   `{ field: <cursor_field>, direction: 'ASC' | 'DESC' }`
+ * when a single-field sort matches the advertised cursor field. Multi-key
+ * sort (`sort=-emitted_at,name`) is not yet implemented; if a caller
+ * supplies more than one entry that all happen to be the same advertised
+ * field, we still resolve to its direction. Anything else is rejected.
+ *
+ * Conformance: every advertised sort field MUST be enforced by the
+ * runtime. The reference runtime advertises only the cursor field as
+ * sortable via `/v1/schema` (see operations/rs-schema-get); this helper
+ * rejects all other fields rather than silently no-oping.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Sort").
+ */
+function validateCanonicalSort(value, manifestStream) {
+  if (value == null || value === '') return null;
+  const raw = Array.isArray(value) ? value.join(',') : String(value);
+  const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (entries.length === 0) return null;
+  const cursorField = manifestStream?.cursor_field || null;
+  const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  let resolved = null;
+  for (const entry of entries) {
+    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+    const field = direction === 'DESC' ? entry.slice(1) : entry;
+    if (!field) {
+      const err = invalidQueryError(`Empty sort field`, 'invalid_sort');
+      err.param = 'sort';
+      throw err;
+    }
+    if (sortableFields.size === 0 || !sortableFields.has(field)) {
+      const err = invalidQueryError(
+        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    if (resolved && resolved.direction !== direction) {
+      const err = invalidQueryError(
+        `Conflicting sort directions for field '${field}'`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    resolved = { field, direction };
+  }
+  return resolved;
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -578,19 +972,20 @@ function validateTopLevelAggregateParams(requestParams) {
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
+  validateConnectionAlias(requestParams);
 }
 
 function normalizeAggregateMetric(value) {
   const metric = String(value || '').trim();
   if (!SUPPORTED_AGGREGATE_METRICS.has(metric)) {
-    throw invalidQueryError('metric must be one of count, sum, min, max');
+    throw invalidQueryError('metric must be one of count, sum, min, max, count_distinct');
   }
   return metric;
 }
 
-function normalizeAggregateLimit(value, groupBy) {
-  if (!groupBy) {
-    if (value != null) throw invalidQueryError('limit is only supported with group_by');
+function normalizeAggregateLimit(value, grouped) {
+  if (!grouped) {
+    if (value != null) throw invalidQueryError('limit is only supported with group_by or group_by_time');
     return null;
   }
   if (value == null || value === '') return DEFAULT_AGGREGATE_GROUP_LIMIT;
@@ -636,15 +1031,61 @@ function normalizeAggregateRequest(requestParams, streamGrant, manifestStream) {
   const groupBy = requestParams.group_by == null || requestParams.group_by === ''
     ? null
     : String(requestParams.group_by).trim();
-  const limit = normalizeAggregateLimit(requestParams.limit, groupBy);
+  const groupByTime = requestParams.group_by_time == null || requestParams.group_by_time === ''
+    ? null
+    : String(requestParams.group_by_time).trim();
+  const granularityRaw = requestParams.granularity == null || requestParams.granularity === ''
+    ? null
+    : String(requestParams.granularity).trim();
+  const timeZoneRaw = requestParams.time_zone == null || requestParams.time_zone === ''
+    ? null
+    : String(requestParams.time_zone).trim();
+
+  // Exactly one grouping dimension in v1: group_by XOR group_by_time.
+  if (groupBy && groupByTime) {
+    throw invalidQueryError('group_by and group_by_time cannot be combined; choose one grouping dimension');
+  }
+  const grouped = Boolean(groupBy || groupByTime);
+  const limit = normalizeAggregateLimit(requestParams.limit, grouped);
+
+  // granularity is required with group_by_time and forbidden otherwise.
+  let granularity = null;
+  let timeZone = null;
+  if (groupByTime) {
+    if (!granularityRaw) {
+      throw invalidQueryError('granularity is required when group_by_time is present');
+    }
+    if (!SUPPORTED_AGGREGATE_GRANULARITIES.has(granularityRaw)) {
+      throw invalidQueryError(`granularity must be one of ${[...SUPPORTED_AGGREGATE_GRANULARITIES].join(', ')}`);
+    }
+    granularity = granularityRaw;
+    timeZone = resolveAggregateTimeZone(timeZoneRaw);
+  } else {
+    if (granularityRaw) {
+      throw invalidQueryError('granularity is only supported with group_by_time');
+    }
+    if (timeZoneRaw) {
+      throw invalidQueryError('time_zone is only supported with group_by_time');
+    }
+  }
 
   if (metric === 'count') {
     if (field) throw invalidQueryError('field is not supported for count');
     if (aggregations.count !== true) {
       throw invalidQueryError(`Count aggregation is not declared for stream '${manifestStream?.name || ''}'`);
     }
+  } else if (metric === 'count_distinct') {
+    if (grouped) throw invalidQueryError('count_distinct does not support grouping; omit group_by and group_by_time');
+    if (!field) throw invalidQueryError('field is required for count_distinct');
+    const fieldSchema = getFieldSchema(manifestStream, field);
+    if (!fieldSchema) throw invalidQueryError(`Unknown field: ${field}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, field);
+    requireDeclaredAggregate(manifestStream, 'count_distinct', field);
+    if (!isScalarAggregateSchema(fieldSchema)) {
+      throw invalidQueryError(`count_distinct requires a scalar field; '${field}' is not scalar`);
+    }
   } else {
-    if (groupBy) throw invalidQueryError('group_by is supported only with metric=count');
+    if (grouped) throw invalidQueryError(`${metric} does not support grouping; group_by and group_by_time are only valid with metric=count`);
     if (!field) throw invalidQueryError(`field is required for ${metric}`);
     const fieldSchema = getFieldSchema(manifestStream, field);
     if (!fieldSchema) throw invalidQueryError(`Unknown field: ${field}`, 'unknown_field');
@@ -668,110 +1109,22 @@ function normalizeAggregateRequest(requestParams, streamGrant, manifestStream) {
     }
   }
 
-  return { metric, field, groupBy, limit };
-}
-
-function normalizeExpandRequest(requestParams, stream, grant, manifestStream, order) {
-  if (requestParams.expand_limit != null && (!requestParams.expand || requestParams.expand === '')) {
-    throw invalidQueryError('expand_limit requires a matching expand relation', 'invalid_expand');
-  }
-
-  if (requestParams.expand == null || requestParams.expand === '') {
-    if (requestParams.expand_limit != null) {
-      throw invalidQueryError('expand_limit requires a matching expand relation', 'invalid_expand');
+  if (groupByTime) {
+    if (metric !== 'count') {
+      throw invalidQueryError('group_by_time is only valid with metric=count');
     }
-    return [];
-  }
-
-  if (requestParams.expand && typeof requestParams.expand === 'object' && !Array.isArray(requestParams.expand)) {
-    throw invalidQueryError('expand must be a relation name or repeated expand values', 'invalid_expand');
-  }
-
-  const requestedNames = (Array.isArray(requestParams.expand) ? requestParams.expand : [requestParams.expand])
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  if (!requestedNames.length) {
-    throw invalidQueryError('expand must include at least one relation name', 'invalid_expand');
-  }
-
-  const seenNames = new Set();
-  const relationships = new Map((manifestStream?.relationships || []).map((relationship) => [relationship.name, relationship]));
-  const capabilities = new Map((manifestStream?.query?.expand || []).map((capability) => [capability.name, capability]));
-  const requestedLimits = requestParams.expand_limit == null
-    ? {}
-    : requestParams.expand_limit;
-
-  if (requestedLimits && (typeof requestedLimits !== 'object' || Array.isArray(requestedLimits))) {
-    throw invalidQueryError('expand_limit must use expand_limit[relation]=N', 'invalid_expand');
-  }
-
-  const expansions = [];
-  for (const relationName of requestedNames) {
-    if (seenNames.has(relationName)) continue;
-    seenNames.add(relationName);
-
-    if (relationName.includes('.')) {
-      throw invalidQueryError(`Nested expansion '${relationName}' is not supported`, 'invalid_expand');
-    }
-
-    const relationship = relationships.get(relationName);
-    const capability = capabilities.get(relationName);
-    if (!relationship || !capability) {
-      throw invalidQueryError(`Unsupported expand relation '${relationName}' on '${stream}'`, 'invalid_expand');
-    }
-
-    const childGrant = grant.streams.find((entry) => entry.name === relationship.stream);
-    if (!childGrant) {
-      throw invalidQueryError(`Expand relation '${relationName}' requires grant access to '${relationship.stream}'`, 'insufficient_scope');
-    }
-
-    const defaultLimit = parseIntegerValue(capability.default_limit) ?? 10;
-    const maxLimit = parseIntegerValue(capability.max_limit) ?? 50;
-    let appliedLimit = defaultLimit;
-
-    if (requestedLimits && Object.prototype.hasOwnProperty.call(requestedLimits, relationName)) {
-      if (relationship.cardinality !== 'has_many') {
-        throw invalidQueryError(`expand_limit is only valid for has_many relations; '${relationName}' is ${relationship.cardinality}`, 'invalid_expand');
-      }
-      const parsedLimit = parseIntegerValue(requestedLimits[relationName]);
-      if (parsedLimit == null || parsedLimit <= 0) {
-        throw invalidQueryError(`expand_limit[${relationName}] must be a positive integer`, 'invalid_expand');
-      }
-      if (parsedLimit > maxLimit) {
-        throw invalidQueryError(`expand_limit[${relationName}] exceeds max_limit ${maxLimit}`, 'invalid_expand');
-      }
-      appliedLimit = parsedLimit;
-    }
-
-    expansions.push({
-      name: relationName,
-      relationship,
-      childGrant,
-      limit: appliedLimit,
-      order,
-    });
-  }
-
-  if (requestedLimits) {
-    for (const relationName of Object.keys(requestedLimits)) {
-      if (!seenNames.has(relationName)) {
-        throw invalidQueryError(`expand_limit[${relationName}] requires a matching expand relation`, 'invalid_expand');
-      }
+    const timeSchema = getFieldSchema(manifestStream, groupByTime);
+    if (!timeSchema) throw invalidQueryError(`Unknown field: ${groupByTime}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, groupByTime);
+    requireDeclaredAggregate(manifestStream, 'group_by_time', groupByTime);
+    if (!isMinMaxAggregateSchema(timeSchema) || nonNullSchemaTypes(timeSchema).has('string') === false) {
+      // group_by_time fields are declared date/date-time strings (validated at
+      // manifest time); reject anything that slipped through as non-date.
+      throw invalidQueryError(`group_by_time requires a date or date-time field; '${groupByTime}' is not supported`);
     }
   }
 
-  return expansions;
-}
-
-// JSON-path identifiers that come from the manifest are already validated by
-// `validateConnectorManifest`, but we re-validate here with a tight regex so
-// the SQL builders can only produce safely-quoted `$.<field>` paths.
-const SAFE_JSON_FIELD = /^[A-Za-z_][A-Za-z_0-9]*$/;
-
-function assertSafeJsonField(field, label) {
-  if (typeof field !== 'string' || !SAFE_JSON_FIELD.test(field)) {
-    throw new Error(`[records] Unsafe JSON field ${label}: ${JSON.stringify(field)}`);
-  }
+  return { metric, field, groupBy, groupByTime, granularity, timeZone, limit };
 }
 
 function jsonExtractExpr(field) {
@@ -1202,14 +1555,40 @@ function fetchVisibleRecordRowsPaginated({
   return { rows, hasMore, scanned, underread: hasRequestFilters && !hasMore && scanned >= sqlLimit };
 }
 
-function buildResponseRecord(stream, row, effective) {
-  return {
+function buildResponseRecord(stream, row, effective, identity = null) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
     data: projectFields(row.rawData, effective.fields),
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
+}
+
+/**
+ * Attach `connection_id` (canonical) and the deprecated `connector_instance_id`
+ * alias to a response record when the runtime knows the binding without
+ * guessing. `identity` is `null` (e.g. legacy callers) or
+ * `{ connectionId, displayName? }`. Empty/missing values are skipped so we
+ * never fabricate identity for pre-binding rows.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+function decorateRecordWithConnectionIdentity(record, identity) {
+  if (!record || !identity) return;
+  const connectionId = typeof identity.connectionId === 'string' ? identity.connectionId.trim() : '';
+  if (connectionId) {
+    record.connection_id = connectionId;
+    record.connector_instance_id = connectionId;
+  }
+  const displayName = typeof identity.displayName === 'string' ? identity.displayName.trim() : '';
+  if (displayName) {
+    record.display_name = displayName;
+  }
 }
 
 async function hydrateExpandedRelations({
@@ -1219,6 +1598,7 @@ async function hydrateExpandedRelations({
   effectiveParentRows,
   expansions,
   manifest,
+  childIdentity: childIdentityOverride = null,
 }) {
   if (!expansions.length || !effectiveParentRows.length) return;
 
@@ -1241,6 +1621,10 @@ async function hydrateExpandedRelations({
       limit: expansion.limit,
     });
 
+    // Expansion children belong to the same connector_instance_id as the
+    // parent, so reuse the resolved record identity (including display_name)
+    // rather than constructing a bare `{ connectionId }` shape.
+    const childIdentity = childIdentityOverride || { connectionId: connectorInstanceId };
     for (const parentRow of effectiveParentRows) {
       const relationKey = parentRow.record_key;
       const matches = groupedChildren.get(relationKey) || [];
@@ -1249,7 +1633,7 @@ async function hydrateExpandedRelations({
       if (expansion.relationship.cardinality === 'has_one') {
         const first = matches[0];
         parentRow.responseRecord.expanded[expansion.name] = first
-          ? buildResponseRecord(expansion.relationship.stream, first, childEffective)
+          ? buildResponseRecord(expansion.relationship.stream, first, childEffective, childIdentity)
           : null;
         continue;
       }
@@ -1258,7 +1642,7 @@ async function hydrateExpandedRelations({
         object: 'list',
         has_more: matches.length > expansion.limit,
         data: matches.slice(0, expansion.limit).map((childRow) =>
-          buildResponseRecord(expansion.relationship.stream, childRow, childEffective),
+          buildResponseRecord(expansion.relationship.stream, childRow, childEffective, childIdentity),
         ),
       };
     }
@@ -1581,6 +1965,95 @@ async function getSnapshotAtVersion(connectorInstanceId, stream, recordKey, vers
 }
 
 /**
+ * Stream on which local collectors emit coverage diagnostics. Records on
+ * this stream carry `{ id, store, stream, status, reason }`; the reader
+ * below projects only the safe `store`/`stream`/`status` triple.
+ */
+const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = 'coverage_diagnostics';
+
+const SAFE_COVERAGE_STATUSES = new Set([
+  'collected',
+  'inventory_only',
+  'excluded',
+  'deferred',
+  'missing',
+  'unsupported',
+  'unaccounted',
+]);
+
+function projectCoverageRow(rawData) {
+  if (!rawData || typeof rawData !== 'object') {
+    return null;
+  }
+  const store = typeof rawData.store === 'string' && rawData.store ? rawData.store : null;
+  if (!store) {
+    return null;
+  }
+  const status =
+    typeof rawData.status === 'string' && SAFE_COVERAGE_STATUSES.has(rawData.status)
+      ? rawData.status
+      : 'unaccounted';
+  const stream =
+    typeof rawData.stream === 'string' && rawData.stream ? rawData.stream : null;
+  // Deliberately omit `id`, `reason`, and anything else: the operator
+  // diagnostic only needs the safe store/stream/status triple, never the
+  // reason free-text or any payload.
+  return { store, stream, status };
+}
+
+/**
+ * Read the latest `coverage_diagnostics` records for one connector instance
+ * and return only the safe `{ store, stream, status }` triple per store.
+ *
+ * This is the server-side source for Section 5.3 operator completeness
+ * diagnostics. It reads live records (the inventory rebuilds them each run,
+ * so the live row is the latest), and never returns paths, payloads, the
+ * coverage `reason` text, or secrets. Returns an empty array when the
+ * instance has no coverage records (a run that never requested the stream).
+ */
+export async function listLocalCoverageDiagnostics(storageTarget) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  if (!connectorInstanceId) {
+    return [];
+  }
+
+  const byStore = new Map();
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT record_key, record_json FROM records
+         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
+         ORDER BY record_key ASC`,
+      [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
+    );
+    for (const row of result.rows) {
+      const projected = projectCoverageRow(
+        typeof row.record_json === 'string' ? JSON.parse(row.record_json) : row.record_json,
+      );
+      if (projected) {
+        byStore.set(projected.store, projected);
+      }
+    }
+  } else {
+    const rows = getDb()
+      .prepare(
+        `SELECT record_key, record_json FROM records
+           WHERE connector_instance_id = ? AND stream = ? AND deleted = 0
+           ORDER BY record_key ASC`,
+      )
+      .all(connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+    for (const row of rows) {
+      const projected = projectCoverageRow(JSON.parse(row.record_json));
+      if (projected) {
+        byStore.set(projected.store, projected);
+      }
+    }
+  }
+
+  return [...byStore.values()].sort((a, b) => a.store.localeCompare(b.store));
+}
+
+/**
  * Query records for a stream under grant enforcement
  */
 export async function queryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
@@ -1604,9 +2077,22 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
-  const order = parsePageOrder(requestParams.order);
+  const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
+  const order = resolveListOrder(requestParams.order, resolvedSort);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  // Public-read contract: a `connection_id` (or deprecated alias) that does
+  // not address this grant's bound storage MUST be a typed error, never a
+  // silent zero-result narrowing. Today the reference runtime pins one
+  // binding per grant, so any other value is unaddressable.
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
-  validateTopLevelQueryParams(requestParams);
+  // Resolve the canonical record identity once for this request. When the
+  // runtime can pin (connector_instance_id, display_name) from the store
+  // this populates `display_name`; otherwise we fall back to connection_id
+  // only. Identity is reused across the changes_since branch, the primary
+  // page rows, and one-hop expansion children so the wire shape stays
+  // consistent without a per-record store roundtrip.
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   // Validate request fields against grant
   if (requestParams.fields && streamGrant.fields) {
@@ -1623,7 +2109,11 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const effective = buildEffectiveFilter(streamGrant, requestParams, requiredFields);
   const expansions = normalizeExpandRequest(requestParams, stream, grant, mStream, order);
 
-  const limit = Math.min(parseInt(requestParams.limit) || 25, 100);
+  const { limit, clamped: limitClamped, requested: requestedLimit } =
+    clampRecordsPageLimit(requestParams.limit);
+  if (limitClamped) {
+    requestWarnings.push(buildLimitClampedWarning(requestedLimit));
+  }
 
   // Parse changes_since cursor
   const changesSince = requestParams.changes_since ? parseChangesSinceCursor(requestParams.changes_since) : null;
@@ -1639,6 +2129,10 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const err = new Error('Malformed cursor');
     err.code = 'invalid_cursor';
     throw err;
+  }
+
+  if (changesSince !== null || paginationCursor?.session === 'changes') {
+    rejectListOnlyParamsForChangesFeed(requestParams);
   }
 
   if ((changesSince !== null || paginationCursor?.session === 'changes') && expansions.length) {
@@ -1703,16 +2197,18 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
 
         if (current?.deleted) {
           if (!previousVisible || !passesRequestFilters(previous.data, compiledFilters)) continue;
+          const deletedRecord = {
+            object: 'record',
+            id: group.record_key,
+            stream,
+            deleted: true,
+            deleted_at: current.deleted_at,
+            emitted_at: current.emitted_at,
+          };
+          decorateRecordWithConnectionIdentity(deletedRecord, recordIdentity);
           visibleChanges.push({
             latestVersion: group.latest_version,
-            responseRecord: {
-              object: 'record',
-              id: group.record_key,
-              stream,
-              deleted: true,
-              deleted_at: current.deleted_at,
-              emitted_at: current.emitted_at,
-            },
+            responseRecord: deletedRecord,
           });
           if (visibleChanges.length > limit) break;
           continue;
@@ -1727,15 +2223,17 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
           continue;
         }
 
+        const changeRecord = {
+          object: 'record',
+          id: group.record_key,
+          stream,
+          data: currentProjection,
+          emitted_at: current.emitted_at,
+        };
+        decorateRecordWithConnectionIdentity(changeRecord, recordIdentity);
         visibleChanges.push({
           latestVersion: group.latest_version,
-          responseRecord: {
-            object: 'record',
-            id: group.record_key,
-            stream,
-            data: currentProjection,
-            emitted_at: current.emitted_at,
-          },
+          responseRecord: changeRecord,
         });
         if (visibleChanges.length > limit) break;
       }
@@ -1763,6 +2261,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     }
 
     response.next_changes_since = encodeChangesSinceCursor(effectiveSessionMaxVersion);
+    attachRequestWarningsToResponse(response, requestWarnings);
     return response;
   }
 
@@ -1787,7 +2286,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   });
   const effectivePageRows = pagedRows.map((row) => ({
     ...row,
-    responseRecord: buildResponseRecord(stream, row, effective),
+    responseRecord: buildResponseRecord(stream, row, effective, recordIdentity),
   }));
 
   await hydrateExpandedRelations({
@@ -1797,6 +2296,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     effectiveParentRows: effectivePageRows,
     expansions,
     manifest,
+    childIdentity: recordIdentity,
   });
 
   const data = effectivePageRows.map((row) => row.responseRecord);
@@ -1811,7 +2311,260 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     response.next_cursor = encodeRecordsPageCursor(effectivePageRows[effectivePageRows.length - 1].sortPosition, order);
   }
 
+  const countOutcome = computeGradedRecordCount({
+    requestParams,
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+  if (countOutcome) {
+    response.meta = mergeMetaCount(response.meta, countOutcome.count);
+    if (countOutcome.warning) {
+      attachRequestWarningsToResponse(response, [countOutcome.warning]);
+    }
+  }
+
+  // `meta.window` is the bounded corpus aggregate (total + logical min/max).
+  // Like `meta.count` it is opt-in and page-independent: it reflects the whole
+  // filtered, grant-scoped result set, so `limit=1` still reports full bounds.
+  // It is intentionally NOT emitted on the `changes_since` branch above (a
+  // delta feed has no meaningful corpus window).
+  const windowOutcome = computeRecordWindow({
+    requestParams,
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+  if (windowOutcome) {
+    response.meta = mergeMetaWindow(response.meta, windowOutcome);
+  }
+
+  attachRequestWarningsToResponse(response, requestWarnings);
+
   return response;
+}
+
+/**
+ * Compute the requested graded count for a records list response.
+ *
+ * The canonical grades are `none`, `estimated`, and `exact`. This first
+ * surface implements `exact` by scanning the same visible-row set the
+ * records list would have scanned for the aggregate path (cheap on the
+ * SQLite reference; future tranches can add planner-style estimates).
+ *
+ * Behavior:
+ *   - `count` absent or `none`: return `null` (callers omit `meta.count`).
+ *   - `count=exact`:     returns `{ count: { kind: 'exact', value } }`.
+ *   - `count=estimated`: returns `{ count: { kind: 'exact', value } }`
+ *     (silent upgrade). `count_downgraded` is reserved for the strict
+ *     case where the server returned a *lower* grade than requested
+ *     (e.g. `count=exact` -> delivered `estimated`/`none`). Returning a
+ *     higher-fidelity value than asked for is not a downgrade, so the
+ *     reference does not invent a warning for it.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Counts") and specs/reference-implementation-architecture/
+ *       spec.md (#"Requested count is downgraded").
+ */
+function computeGradedRecordCount({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
+  if (!requested || requested === 'none') return null;
+
+  const exactValue = countVisibleRecordsForStream({
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+
+  if (requested === 'exact' || requested === 'estimated') {
+    return { count: { kind: 'exact', value: exactValue } };
+  }
+
+  return null;
+}
+
+/**
+ * Scan visible records under the same grant + filter set the list path
+ * uses and return the visible count. Mirrors `aggregateRecords` count
+ * semantics so the two surfaces stay in lock-step.
+ */
+function countVisibleRecordsForStream({ connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  if (isPostgresStorageBackend()) {
+    // Postgres path falls back to scanning visible rows; postgres-records.js
+    // owns the storage-specific count helper. For now records.js's count
+    // helper only handles the SQLite reference because the Postgres list
+    // path runs entirely through postgres-records.js.
+    return 0;
+  }
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+  let visibleCount = 0;
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+    visibleCount += 1;
+  }
+  return visibleCount;
+}
+
+/**
+ * Merge a `meta.count` payload into an existing response.meta, preserving
+ * `warnings` and any other meta members. Returns the new meta object.
+ */
+function mergeMetaCount(existingMeta, count) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.count = count;
+  return base;
+}
+
+/**
+ * Merge a `meta.window` payload into an existing response.meta, preserving
+ * `count`, `warnings`, and any other meta members. Returns the new meta
+ * object.
+ */
+function mergeMetaWindow(existingMeta, window) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.window = window;
+  return base;
+}
+
+/**
+ * Compute the bounded `meta.window` aggregate for a records list response,
+ * when the request opted in via `window=exact`.
+ *
+ * The window describes the *whole filtered, grant-scoped corpus* — not the
+ * paginated page — so `limit=1` still reports the full bounds. It reuses the
+ * exact visible-row scan `countVisibleRecordsForStream` uses (same grant
+ * resources, time-range, and compiled filters), so the two surfaces stay in
+ * lock-step and we never duplicate grant/filter semantics on a divergent path.
+ *
+ * Timestamp source is the stream's logical `consent_time_field` — the same
+ * field `passesTimeRange` filters on — never the storage ingest `emitted_at`.
+ *
+ * Honest-omission rules (never estimate; see spec scenario "Window metadata is
+ * omitted rather than estimated"):
+ *   - `window` absent / empty / `none`: return `null` (callers omit
+ *     `meta.window`).
+ *   - empty filtered corpus: `{ total: 0 }` with no timestamps.
+ *   - stream declares no `consent_time_field`: `{ total: N }` with no
+ *     timestamps (do NOT substitute `emitted_at`).
+ *   - rows whose `consent_time_field` value is missing/unparseable are
+ *     excluded from min/max; if every visible row lacks a parseable value,
+ *     emit `{ total: N }` with no timestamps.
+ *   - `earliest_at` and `latest_at` are emitted together or both omitted.
+ *
+ * Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
+ *       reference-implementation-architecture/spec.md.
+ */
+function computeRecordWindow({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  const requested = typeof requestParams.window === 'string' ? requestParams.window : null;
+  if (!requested || requested === 'none') return null;
+
+  if (isPostgresStorageBackend()) {
+    // The Postgres list path runs entirely through postgres-records.js, which
+    // owns its own (currently omitted) window computation. Guard here so a
+    // SQLite-only helper never silently returns a zero window under Postgres.
+    return null;
+  }
+
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+
+  let total = 0;
+  let earliestMs = null;
+  let latestMs = null;
+
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+
+    total += 1;
+
+    if (!consentTimeField) continue;
+    const value = rawData[consentTimeField];
+    if (value == null || value === '') continue;
+    const ms = new Date(value).getTime();
+    if (Number.isNaN(ms)) continue;
+    if (earliestMs == null || ms < earliestMs) earliestMs = ms;
+    if (latestMs == null || ms > latestMs) latestMs = ms;
+  }
+
+  const window = { total };
+  if (earliestMs != null && latestMs != null) {
+    // Normalize to ISO 8601 UTC via the same `new Date(...)` parse the
+    // time-range filter uses; `earliest_at`/`latest_at` are emitted together.
+    window.earliest_at = new Date(earliestMs).toISOString();
+    window.latest_at = new Date(latestMs).toISOString();
+  }
+  return window;
+}
+
+/**
+ * Attach a `meta.warnings[]` envelope to a public-read response only when
+ * the runtime has non-empty structured warnings to surface. Keeps the wire
+ * shape backwards-compatible for the common no-warning case while opening
+ * the canonical `meta.warnings` slot for deprecated-alias usage and any
+ * future graded outcomes (skipped sources, count downgrade, etc.).
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+function attachRequestWarningsToResponse(response, warnings) {
+  if (!response || typeof response !== 'object') return;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  const existingMeta = response.meta && typeof response.meta === 'object' && !Array.isArray(response.meta)
+    ? response.meta
+    : null;
+  const existingWarnings = existingMeta && Array.isArray(existingMeta.warnings)
+    ? existingMeta.warnings
+    : [];
+  response.meta = {
+    ...(existingMeta || {}),
+    warnings: [...existingWarnings, ...warnings],
+  };
+}
+
+async function listRowsForAggregation(connectorInstanceId, stream) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT record_key, record_json
+         FROM records
+        WHERE connector_instance_id = $1
+          AND stream = $2
+          AND deleted = FALSE
+        ORDER BY record_key ASC`,
+      [connectorInstanceId, stream],
+    );
+    return result.rows.map((row) => ({
+      record_key: row.record_key,
+      record_json: typeof row.record_json === 'string'
+        ? row.record_json
+        : JSON.stringify(row.record_json),
+    }));
+  }
+
+  return iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
 }
 
 /**
@@ -1838,20 +2591,24 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   }
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const effective = buildEffectiveFilter(streamGrant, {});
   const consentTimeField = manifestStream?.consent_time_field || null;
 
-  const rows = iterate(
-    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
-    [connectorInstanceId, stream],
-  );
+  const rows = await listRowsForAggregation(connectorInstanceId, stream);
 
   let visibleCount = 0;
   let sum = 0;
   let bestComparable = null;
   let bestValue = null;
   const groups = new Map();
+  // group_by_time buckets keyed by ISO bucket start; the null/unparseable
+  // bucket is keyed separately and sorted last.
+  const timeBuckets = new Map();
+  // count_distinct: distinct non-null values keyed by canonical JSON.
+  const distinctValues = new Set();
   const aggregateFieldSchema = aggregateRequest.field
     ? getFieldSchema(manifestStream, aggregateRequest.field)
     : null;
@@ -1870,6 +2627,25 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
       const entry = groups.get(key) || { key: rawGroupValue, count: 0 };
       entry.count += 1;
       groups.set(key, entry);
+      continue;
+    }
+
+    if (aggregateRequest.groupByTime) {
+      const bucketKey = bucketStartForGranularity(
+        rawData[aggregateRequest.groupByTime] ?? null,
+        aggregateRequest.granularity,
+        aggregateRequest.timeZone,
+      );
+      const mapKey = bucketKey == null ? '__null__' : bucketKey;
+      const entry = timeBuckets.get(mapKey) || { key: bucketKey, count: 0 };
+      entry.count += 1;
+      timeBuckets.set(mapKey, entry);
+      continue;
+    }
+
+    if (aggregateRequest.metric === 'count_distinct') {
+      const value = rawData[aggregateRequest.field] ?? null;
+      if (value != null) distinctValues.add(JSON.stringify(value));
       continue;
     }
 
@@ -1899,6 +2675,14 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
     metric: aggregateRequest.metric,
     field: aggregateRequest.field,
     group_by: aggregateRequest.groupBy,
+    // Additive time-bucket fields: null for non-time aggregations so the
+    // payload stays backward-compatible.
+    group_by_time: aggregateRequest.groupByTime,
+    granularity: aggregateRequest.granularity,
+    time_zone: aggregateRequest.timeZone,
+    // The in-process floor is exact; only a future accelerated estimator
+    // would flip this to true.
+    approximate: false,
     filtered_record_count: visibleCount,
   };
 
@@ -1911,13 +2695,28 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
         return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
       })
       .slice(0, aggregateRequest.limit);
+  } else if (aggregateRequest.groupByTime) {
+    response.limit = aggregateRequest.limit;
+    // Time buckets are a series: order by bucket start ascending, with the
+    // null/unparseable bucket sorted last.
+    response.groups = [...timeBuckets.values()]
+      .sort((left, right) => {
+        if (left.key == null) return right.key == null ? 0 : 1;
+        if (right.key == null) return -1;
+        return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+      })
+      .slice(0, aggregateRequest.limit);
   } else if (aggregateRequest.metric === 'count') {
     response.value = visibleCount;
+  } else if (aggregateRequest.metric === 'count_distinct') {
+    response.value = distinctValues.size;
   } else if (aggregateRequest.metric === 'sum') {
     response.value = sum;
   } else {
     response.value = bestValue;
   }
+
+  attachRequestWarningsToResponse(response, requestWarnings);
 
   return response;
 }
@@ -1940,6 +2739,9 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     err.code = 'grant_stream_not_allowed';
     throw err;
   }
+
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
   const row = getOne(
     referenceQueries.recordsGetLiveRecordByKey,
@@ -1971,6 +2773,8 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     }
   }
 
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+
   const responseRow = {
     record_key: row.record_key,
     rawData,
@@ -1980,7 +2784,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
       record_key: row.record_key,
       rawData,
       emitted_at: row.emitted_at,
-    }, effective),
+    }, effective, recordIdentity),
   };
 
   const expansions = normalizeExpandRequest({
@@ -1996,8 +2800,10 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     expansions,
     manifest,
     grant,
+    childIdentity: recordIdentity,
   });
 
+  attachRequestWarningsToResponse(responseRow.responseRecord, requestWarnings);
   return responseRow.responseRecord;
 }
 
@@ -2028,6 +2834,11 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     if (outcome.changed) {
       const connectorId = resolveStorageConnectorId(storageTarget);
       const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+      if (outcome.retainedSizeDelta) {
+        await applyRetainedSizeRecordDelta(outcome.retainedSizeDelta);
+      } else {
+        await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+      }
       await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
       await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
     }
@@ -2070,34 +2881,35 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
     maybeDeleteFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
-      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedBytesForDelta = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedRowsForDelta = getPrunedRecordChangeCount(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: now,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: -1,
-        recordJsonBytesDelta: -byteLength(current.record_json),
-        recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytes,
-        dirtyRecordTimeBounds: true,
-      });
-    } else {
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: now,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: -1,
-        recordJsonBytesDelta: -byteLength(current.record_json),
-        recordChangesJsonBytesDelta: byteLength(current.record_json),
-        dirtyRecordTimeBounds: true,
-      });
     }
+    applyDatasetSummaryRecordDelta({
+      connectorId,
+      stream,
+      emittedAt: now,
+      consentTimeField: getManifestConsentTimeField(connectorId, stream),
+      recordCountDelta: -1,
+      recordJsonBytesDelta: -byteLength(current.record_json),
+      recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytesForDelta,
+      dirtyRecordTimeBounds: true,
+    });
+    applyRetainedSizeRecordDelta({
+      connectorInstanceId,
+      connectorId,
+      stream,
+      currentRecordJsonBytesDelta: -byteLength(current.record_json),
+      recordHistoryJsonBytesDelta: byteLength(current.record_json) - prunedBytesForDelta,
+      recordCountDelta: -1,
+      recordHistoryCountDelta: 1 - prunedRowsForDelta,
+    });
 
     return { kind: 'changed' };
   });
@@ -2124,8 +2936,8 @@ export async function listAllStreams(storageTarget) {
   // connector's manifest declares at most a few dozen streams, well under
   // the registry's @max_rows=256 cap on the records table read.
   const rows = allowUnboundedReadAcknowledged(
-    referenceQueries.recordsAggregateStreamsByConnector,
-    [connectorInstanceId],
+    referenceQueries.recordsAggregateStreamsByConnectorInstance,
+    [connectorId, connectorInstanceId],
   );
 
   return rows.map((row) => ({
@@ -2144,6 +2956,9 @@ export async function deleteAllRecords(storageTarget, stream) {
     const deletedRecordCount = await postgresDeleteAllRecords(storageTarget, stream);
     const connectorId = resolveStorageConnectorId(storageTarget);
     const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+    if (deletedRecordCount > 0) {
+      await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    }
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return deletedRecordCount;
@@ -2156,11 +2971,14 @@ export async function deleteAllRecords(storageTarget, stream) {
     [connectorInstanceId, stream],
   );
   const deletedRecordCount = countRow?.count || 0;
-  exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+  writeTransaction(() => {
+    exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+  });
   if (deletedRecordCount > 0) {
     markDatasetSummaryProjectionStale('bulk stream record delete bypassed exact dataset summary projection deltas');
+    await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
   }
   await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
@@ -2184,36 +3002,257 @@ export async function deleteAllRecordsForConnector(connectorId) {
   if (typeof connectorId !== 'string' || !connectorId) {
     return { deletedCount: 0, streams: [] };
   }
+  const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (isPostgresStorageBackend()) {
+    return postgresDeleteAllRecordsForConnector(storageConnectorId);
+  }
   // REVIEWED-BOUNDED: rows are one per distinct (connector instance, stream)
   // pair a connector type has produced. Manifest stream counts are bounded by
   // the registry cap; instance cardinality is the connector-instance registry's
   // configured connection set, not record-table cardinality.
   const namespaceRows = allowUnboundedReadAcknowledged(
     referenceQueries.recordsDeleteListInstanceStreamsByConnector,
-    [connectorId],
+    [storageConnectorId],
   );
   const countRow = getOne(
     referenceQueries.recordsDeleteCountRecordsByConnector,
-    [connectorId],
+    [storageConnectorId],
   );
   const deletedCount = countRow?.count || 0;
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
 
+  writeTransaction(() => {
+    for (const row of namespaceRows) {
+      const connectorInstanceId = row.connector_instance_id;
+      const stream = row.stream;
+      exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
+    }
+  });
   for (const row of namespaceRows) {
     const connectorInstanceId = row.connector_instance_id;
     const stream = row.stream;
-    exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
-    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    await lexicalIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
   }
   if (deletedCount > 0) {
     markDatasetSummaryProjectionStale('bulk connector record delete bypassed exact dataset summary projection deltas');
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
   }
 
   return { deletedCount, streams };
+}
+
+// Postgres equivalent of `deleteAllRecordsForConnector`. The reconcile loop
+// runs at every startup in Postgres deployments
+// (`shouldAutoReconcilePolyfillManifests` defaults on for the postgres
+// backend), so the connector-wide invalidation contract must reach Postgres
+// records — not the empty/legacy rows in the SQLite shadow table — when the
+// reference-fixture → polyfill fingerprint transition fires.
+//
+// Strategy: discover (connector_instance_id, stream) pairs from the
+// authoritative postgres `records ∪ record_changes ∪ blob_bindings` set for
+// this connector_id, count the live (deleted = FALSE) records to mirror the
+// SQLite path's return-shape contract, then compose the per-stream
+// `postgresDeleteAllRecords` helper once per pair (records, record_changes,
+// version_counter, lexical/semantic search tables) and drop `blob_bindings`
+// separately, mirroring the SQLite per-connector path's extra fourth delete
+// vs. the per-stream owner-reset path.
+async function postgresDeleteAllRecordsForConnector(connectorId) {
+  // Union of (instance, stream) pairs across `records`, `record_changes`,
+  // and `blob_bindings` so a stream that has only history rows or only
+  // surviving blob bindings (records already pruned) is still discovered.
+  const pairsResult = await postgresQuery(
+    `SELECT DISTINCT connector_instance_id, stream FROM (
+       SELECT connector_instance_id, stream FROM records WHERE connector_id = $1
+       UNION
+       SELECT connector_instance_id, stream FROM record_changes WHERE connector_id = $1
+       UNION
+       SELECT connector_instance_id, stream FROM blob_bindings WHERE connector_id = $1
+     ) AS t
+     ORDER BY connector_instance_id, stream`,
+    [connectorId],
+  );
+  const namespaceRows = pairsResult.rows;
+  const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
+
+  const countResult = await postgresQuery(
+    `SELECT COUNT(*)::int AS count FROM records
+       WHERE connector_id = $1 AND deleted = FALSE`,
+    [connectorId],
+  );
+  const deletedCount = Number(countResult.rows[0]?.count || 0);
+
+  for (const row of namespaceRows) {
+    const connectorInstanceId = row.connector_instance_id;
+    const stream = row.stream;
+    const storageTarget = { connector_id: connectorId, connector_instance_id: connectorInstanceId };
+    // Per-stream tail: records, record_changes, version_counter, and the
+    // lexical/semantic search tables for the (instance, stream) pair. The
+    // shared helper runs atomically inside withPostgresTransaction.
+    await postgresDeleteAllRecords(storageTarget, stream);
+    // blob_bindings is the connector-wide extra that the per-stream owner
+    // reset does not touch (mirrors the SQLite per-connector path's fourth
+    // delete vs. the SQLite per-stream path's three).
+    await postgresQuery(
+      `DELETE FROM blob_bindings WHERE connector_instance_id = $1 AND stream = $2`,
+      [connectorInstanceId, stream],
+    );
+    await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    // The lexical/semantic index helpers already branch on
+    // isPostgresStorageBackend() internally and clear the postgres
+    // lexical_search_* / semantic_search_* tables for the (instance, stream)
+    // pair, matching the SQLite path's index teardown. This second call is
+    // a no-op against the rows postgresDeleteAllRecords already cleared, but
+    // it keeps the connector-wide path's shape identical to the SQLite arm
+    // and lets the search helpers own any future backend-specific cleanup.
+    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+  }
+
+  if (deletedCount > 0) {
+    // Postgres dashboard summary reads from the retained-size projection
+    // (see `getRetainedSizeDatasetSummaryProjection` in server/index.js).
+    // The SQLite `dataset_summary_projection` is unused in Postgres mode,
+    // so only the retained-size projection is marked dirty here.
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
+  }
+
+  return { deletedCount, streams };
+}
+
+/**
+ * Records-side building blocks for the owner-agent connection-delete cascade
+ * (`add-owner-connection-delete-contract`), keyed STRICTLY on a single
+ * connector_instance_id. Unlike `deleteAllRecords` (one stream) and
+ * `deleteAllRecordsForConnector` (connector-WIDE, across sibling connections),
+ * these erase every stream for exactly one connection and NEVER widen to
+ * connector_id — deleting one connection leaves sibling connections of the same
+ * connector type fully intact (invariant I1).
+ *
+ * The cascade is split into three explicit phases so the STORE can run the
+ * source-of-truth row deletes in the SAME transaction as its own row/schedule/
+ * device cleanup — making the whole durable cascade atomic (invariant I8),
+ * not two independently-committed transactions:
+ *
+ *   1. enumerateConnectionStreams(target)            — pre-commit bounded read
+ *   2. deleteConnectionRecordRows{Sqlite,Postgres}() — the record-family DELETEs,
+ *      run INSIDE the store's transaction (no transaction of their own)
+ *   3. teardownConnectionSearchProjection(...)       — post-commit projection
+ *      teardown + dirty markers
+ *
+ * What phase 2 erases (all by connector_instance_id):
+ *   - records, record_changes, version_counter   (the record + history spine)
+ *   - blob_bindings, blobs                        (this connection's blobs)
+ *   - connector_attention_records                 (open attention for it)
+ *
+ * What these helpers do NOT touch: connector_instances row, connector_schedules,
+ * controller_active_runs, device_source_instances, spine_events, grants. The
+ * store owns the row + schedule + device back-ref (now in the SAME transaction);
+ * controller_active_runs is never erased (an in-flight run is REFUSED, not
+ * deleted); the audit spine + grants are deliberately preserved.
+ *
+ * Transactionality (invariant I8): phase 2's record-family deletes carry NO
+ * transaction of their own. The store calls them inside its single
+ * `writeTransaction` / `withPostgresTransaction`, alongside the schedule +
+ * device back-ref + connector_instances row deletes, so the ENTIRE
+ * source-of-truth cascade commits or rolls back as one unit. A failure anywhere
+ * in the cascade — record purge OR schedule/device/row cleanup — leaves the
+ * connection fully intact: row present, data present, schedule present.
+ *
+ * Phase 3 (search indices) is a REBUILDABLE projection of `records` (the SQLite
+ * semantic path maintains a vec0 rowid sidecar that a flat by-instance DELETE
+ * cannot tear down correctly), so it is torn down per-stream AFTER the durable
+ * commit through the proven stream-scoped helpers. A phase-3 failure after the
+ * commit leaves orphaned index rows pointing at gone records — a derived-cache
+ * inconsistency (the records are gone, so a lookup returns nothing), recoverable
+ * by reindex, NOT a data-integrity loss and NOT a reason to report the committed
+ * source-of-truth delete as failed. The durable delete is already committed.
+ */
+
+/**
+ * Phase 1: enumerate the (instance) streams so the post-commit search teardown
+ * knows which (instance, stream) pairs to clear. Backend-aware bounded read.
+ * Returns `{ connectorId, connectorInstanceId, streams }`.
+ */
+export async function enumerateConnectionStreams(storageTarget) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  if (isPostgresStorageBackend()) {
+    const streamRows = await postgresQuery(
+      `SELECT DISTINCT stream FROM records WHERE connector_instance_id = $1 ORDER BY stream ASC`,
+      [connectorInstanceId],
+    );
+    return { connectorId, connectorInstanceId, streams: streamRows.rows.map((row) => row.stream) };
+  }
+  const streamRows = allowUnboundedReadAcknowledged(
+    referenceQueries.recordsDeleteListStreamsByInstance,
+    [connectorInstanceId],
+  );
+  return { connectorId, connectorInstanceId, streams: streamRows.map((row) => row.stream) };
+}
+
+/**
+ * Phase 2 (SQLite): erase the record-family + blobs + attention rows for one
+ * connection. Runs INSIDE the caller's `writeTransaction` — it opens NO
+ * transaction of its own, so it composes atomically with the store's schedule /
+ * device / row deletes. Synchronous (better-sqlite3 idiom). Returns the deleted
+ * record count.
+ */
+export function deleteConnectionRecordRowsSqlite(connectorInstanceId) {
+  const countRow = getOne(referenceQueries.recordsDeleteCountRecordsByInstance, [connectorInstanceId]);
+  const count = countRow?.count || 0;
+  exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
+  return count;
+}
+
+/**
+ * Phase 2 (Postgres): same as the SQLite arm, but binds against the explicit
+ * transaction `client` the store opened, so the record-family deletes run in
+ * the SAME BEGIN/COMMIT as the store's schedule / device / row deletes. Returns
+ * the deleted record count.
+ */
+export async function deleteConnectionRecordRowsPostgres(client, connectorInstanceId) {
+  const countResult = await client.query(
+    `SELECT COUNT(*)::int AS count FROM records WHERE connector_instance_id = $1`,
+    [connectorInstanceId],
+  );
+  const count = Number(countResult.rows[0]?.count || 0);
+  await client.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM blob_bindings WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM blobs WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM connector_attention_records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  return count;
+}
+
+/**
+ * Phase 3: tear down the per-stream search-index projection AFTER the durable
+ * cascade has committed, and mark the derived dashboard projections dirty. This
+ * is a rebuildable derived-cache cleanup — it runs post-commit and its failure
+ * does NOT mean the committed source-of-truth delete failed (see the cascade
+ * doc above). Idempotent if a stream had no index.
+ */
+export async function teardownConnectionSearchProjection({ connectorId, connectorInstanceId, streams, deletedRecordCount }) {
+  for (const stream of streams) {
+    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+  }
+  if (deletedRecordCount > 0) {
+    if (!isPostgresStorageBackend()) {
+      markDatasetSummaryProjectionStale('connection delete erased a connection\'s records across all streams');
+    }
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
+  }
 }
 
 /**
@@ -2259,6 +3298,696 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   return result;
 }
 
+// ─── Multi-binding fan-in helpers ──────────────────────────────────────────
+//
+// Closes the deferred runtime work tracked under
+// `openspec/changes/expose-connection-identity-on-public-read/tasks.md`
+// Section 3 / 4 / 6. These helpers wrap the existing per-binding storage
+// primitives (`queryRecords`, `getRecord`, `listStreams`, `aggregateRecords`,
+// `getBlob`-style flows) with the canonical (connection_id, stream)
+// addressing rule from the public read contract:
+//
+//   - omitted `connection_id` SHALL fan in across the granted connections;
+//   - exactly one matching connection SHALL be auto-selected;
+//   - record/blob identifier ambiguity SHALL raise the typed
+//     `ambiguous_connection` error with `available_connections`.
+//
+// The helpers stay deliberately thin: they iterate the existing per-binding
+// SQL paths and union results so the storage layer does not need a new
+// query shape. A future tranche can push fan-in into the SQL itself for
+// pagination performance.
+
+function buildBindingStorageTarget(connectorId, connectorInstanceId) {
+  return { connector_id: connectorId, connector_instance_id: connectorInstanceId };
+}
+
+function mergeMetaWarnings(target, incoming) {
+  if (!incoming) return target;
+  const next = { ...(target || {}) };
+  if (Array.isArray(incoming.warnings) && incoming.warnings.length) {
+    const seen = new Set();
+    const merged = [];
+    for (const w of [...(next.warnings || []), ...incoming.warnings]) {
+      const key = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(w);
+    }
+    next.warnings = merged;
+  }
+  return next;
+}
+
+function appendUniqueWarning(meta, warning) {
+  const next = { ...(meta || {}) };
+  const existing = Array.isArray(next.warnings) ? next.warnings : [];
+  const key = `${warning.code}|${warning.param || ''}|${warning.message || ''}|${JSON.stringify(warning.detail || null)}`;
+  for (const w of existing) {
+    const k = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+    if (k === key) {
+      next.warnings = existing;
+      return next;
+    }
+  }
+  next.warnings = [...existing, warning];
+  return next;
+}
+
+function ensureBindingsOrThrow(bindings, { connectorId, missingMessage }) {
+  if (!bindings || bindings.length === 0) {
+    const err = new Error(
+      missingMessage
+        || `No active connection is available for connector '${connectorId}'.`,
+    );
+    err.code = 'connection_not_found';
+    throw err;
+  }
+}
+
+/**
+ * Fan-in records list across multiple bindings under one grant.
+ *
+ * Returns a canonical list envelope whose `data` is the union of records
+ * across the addressed bindings. Each record carries `connection_id`,
+ * deprecated `connector_instance_id`, and `display_name` when known —
+ * already wired by per-binding `queryRecords`.
+ *
+ * Cursor / count honesty under fan-in:
+ *
+ * - `changes_since` is NOT supported under multi-binding fan-in. The
+ *   per-binding `next_changes_since` cursors are per-(connector_instance_id,
+ *   stream) version counters, and merging them across bindings would either
+ *   silently skip changes on the binding(s) whose counter lags or wrap
+ *   numeric semantics in a base64 lexical comparison. We reject `changes_since`
+ *   with a typed `invalid_argument` carrying recovery guidance (narrow the
+ *   call with `connection_id`). Spec: P1 fix in
+ *   `tmp/workstreams/fan-in-branch-owner-review-report.md`.
+ *
+ * - Per-binding `next_cursor` cannot be safely unioned today. When any
+ *   binding has more pages, the response emits a structured
+ *   `meta.warnings[{code:"partial_results"}]` so callers know that fan-in
+ *   pagination is partial and they should narrow with `connection_id` to
+ *   page exhaustively. `next_cursor` is intentionally omitted on the
+ *   multi-binding envelope.
+ *
+ * - `meta.count` is summed across bindings only when every binding produced
+ *   an `exact` count over the same shape; if any binding omits or downgrades
+ *   it, the fan-in response drops `meta.count` and emits a
+ *   `count_downgraded` warning. The previous behavior (carrying whichever
+ *   binding's count ran last) is removed.
+ */
+export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId, missingMessage: 'No active connection is available under this grant.' });
+
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
+  if (bindings.length === 1) {
+    const single = await queryRecords(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      grant,
+      requestParams,
+      manifest,
+    );
+    if (extraWarnings.length) {
+      let meta = single.meta && typeof single.meta === 'object' && !Array.isArray(single.meta)
+        ? { ...single.meta }
+        : null;
+      for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+      single.meta = meta;
+    }
+    return single;
+  }
+
+  // P1: reject `changes_since` under multi-binding fan-in. Per-binding
+  // version counters cannot be combined into a single forward-progress
+  // cursor without silently skipping changes on a lagging binding. The
+  // caller must narrow with `connection_id` to get a sound cursor.
+  const changesSinceRaw = requestParams?.changes_since;
+  const changesSinceProvided =
+    typeof changesSinceRaw === 'string' && changesSinceRaw.length > 0;
+  if (changesSinceProvided) {
+    const err = new Error(
+      '`changes_since` is not supported across multiple connections. Retry with `connection_id` to bind the cursor to a single connection.',
+    );
+    err.code = 'invalid_argument';
+    err.param = 'changes_since';
+    err.retry_with = 'connection_id';
+    err.available_connections = bindings
+      .map((b) => projectBindingForWire({
+        connectorInstanceId: b.connectorInstanceId,
+        connectorId: b.connectorId,
+        displayName: b.displayName,
+      }))
+      .filter(Boolean);
+    throw err;
+  }
+
+  // Drop request-time connection_id when fanning in across multiple bindings;
+  // queryRecords would reject an unrelated id with connection_not_found, but
+  // here we have already filtered the binding list per the grant + request.
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  const unioned = [];
+  let hasMoreAny = false;
+  let meta = null;
+
+  // For meta.count fan-in: sum exact-grade counts only when every binding
+  // produced one; otherwise drop count and warn count_downgraded.
+  const requestedCount = typeof requestParams?.count === 'string' ? requestParams.count : null;
+  let countAllExact = !!requestedCount && requestedCount !== 'none';
+  let countSum = 0;
+
+  // For meta.window fan-in: merge only when every binding produced a window.
+  // `total` sums; `earliest_at` is the global min; `latest_at` is the global
+  // max. If any binding cannot produce a window, the merged window is omitted
+  // (all-or-omit), mirroring the count fan-in honesty rule. A binding whose
+  // window carries only `total` (no timestamps) collapses the merged
+  // timestamps too: we can still sum totals, but we cannot honestly claim
+  // bounds the binding did not report.
+  const requestedWindow = typeof requestParams?.window === 'string' ? requestParams.window : null;
+  let windowAllPresent = !!requestedWindow && requestedWindow !== 'none';
+  let windowTotalSum = 0;
+  let windowEarliestMs = null;
+  let windowLatestMs = null;
+  let windowBoundsAllPresent = true;
+
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const result = await queryRecords(target, stream, grant, perBindingParams, manifest);
+    if (Array.isArray(result?.data)) unioned.push(...result.data);
+    if (result?.has_more) hasMoreAny = true;
+    meta = mergeMetaWarnings(meta, result?.meta);
+    if (countAllExact) {
+      const c = result?.meta?.count;
+      if (c && c.kind === 'exact' && Number.isFinite(Number(c.value))) {
+        countSum += Number(c.value);
+      } else {
+        countAllExact = false;
+      }
+    }
+    if (windowAllPresent) {
+      const w = result?.meta?.window;
+      if (w && Number.isFinite(Number(w.total))) {
+        windowTotalSum += Number(w.total);
+        const hasBounds = typeof w.earliest_at === 'string' && typeof w.latest_at === 'string';
+        if (hasBounds) {
+          const e = new Date(w.earliest_at).getTime();
+          const l = new Date(w.latest_at).getTime();
+          if (Number.isNaN(e) || Number.isNaN(l)) {
+            windowBoundsAllPresent = false;
+          } else {
+            if (windowEarliestMs == null || e < windowEarliestMs) windowEarliestMs = e;
+            if (windowLatestMs == null || l > windowLatestMs) windowLatestMs = l;
+          }
+        } else {
+          windowBoundsAllPresent = false;
+        }
+      } else {
+        windowAllPresent = false;
+      }
+    }
+  }
+
+  const response = {
+    object: 'list',
+    has_more: hasMoreAny,
+    data: unioned,
+  };
+
+  // P2: explicit structured warning when fan-in collapses pagination. We do
+  // not emit `next_cursor` here because per-binding cursors cannot be
+  // unioned today.
+  if (hasMoreAny) {
+    meta = appendUniqueWarning(meta, {
+      code: CANONICAL_WARNING_CODES.PARTIAL_RESULTS,
+      param: 'connection_id',
+      message:
+        'has_more=true and next_cursor is not emitted under multi-connection fan-in. Retry with `connection_id` to page a single connection.',
+    });
+  }
+
+  // P3: honest meta.count under fan-in.
+  if (requestedCount && requestedCount !== 'none') {
+    if (countAllExact) {
+      meta = { ...(meta || {}), count: { kind: 'exact', value: countSum } };
+    } else {
+      meta = appendUniqueWarning(meta, {
+        code: CANONICAL_WARNING_CODES.COUNT_DOWNGRADED,
+        param: 'count',
+        message:
+          'Requested count grade could not be produced as a single value across multiple connections. Retry with `connection_id` to receive an exact per-connection count.',
+      });
+    }
+  }
+
+  // Honest meta.window under fan-in: merge only all-present windows. `total`
+  // sums; bounds are the global min/max, and are emitted only when every
+  // binding reported them. If any binding omits its window, the merged window
+  // is omitted entirely (no warning — absence already means "not available").
+  if (requestedWindow && requestedWindow !== 'none' && windowAllPresent) {
+    const mergedWindow = { total: windowTotalSum };
+    if (windowBoundsAllPresent && windowEarliestMs != null && windowLatestMs != null) {
+      mergedWindow.earliest_at = new Date(windowEarliestMs).toISOString();
+      mergedWindow.latest_at = new Date(windowLatestMs).toISOString();
+    }
+    meta = { ...(meta || {}), window: mergedWindow };
+  }
+
+  // P3: resolver-supplied warnings (e.g. deprecated_alias_used) are
+  // stripped from per-binding params for multi-binding fan-in, so they
+  // would never appear on the response unless the route threads them
+  // back in here.
+  for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+
+  if (meta && Object.keys(meta).length) response.meta = meta;
+  return response;
+}
+
+/**
+ * Fan-in records detail across multiple bindings under one grant.
+ *
+ * Emits the typed `ambiguous_connection` error when the identifier resolves
+ * to more than one binding. Returns the single record otherwise. Falls back
+ * to a normal `not_found` when no binding holds the identifier.
+ */
+export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}, opts = {}) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
+  function applyExtraWarnings(record) {
+    if (!record || !extraWarnings.length) return record;
+    let meta = record.meta && typeof record.meta === 'object' && !Array.isArray(record.meta)
+      ? { ...record.meta }
+      : null;
+    for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+    record.meta = meta;
+    return record;
+  }
+
+  if (bindings.length === 1) {
+    const single = await getRecord(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      recordId,
+      grant,
+      manifest,
+      requestParams,
+    );
+    return applyExtraWarnings(single);
+  }
+
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  const matches = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    try {
+      const record = await getRecord(target, stream, recordId, grant, manifest, perBindingParams);
+      matches.push({ binding, record });
+    } catch (err) {
+      if (err?.code === 'not_found') continue;
+      throw err;
+    }
+  }
+
+  if (matches.length === 0) {
+    const err = new Error('Record not found');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (matches.length === 1) {
+    return applyExtraWarnings(matches[0].record);
+  }
+  const candidates = matches
+    .map(({ binding }) => projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    }))
+    .filter(Boolean);
+  throw new AmbiguousConnectionError(
+    `Record '${recordId}' is present under more than one connection. Retry with \`connection_id\`.`,
+    candidates,
+  );
+}
+
+/**
+ * Fan-in records aggregate across multiple bindings.
+ *
+ * The reference computes each binding with the same aggregate semantic floor
+ * and only merges operations that are mathematically composable across
+ * disjoint connection partitions.
+ */
+export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
+  if (bindings.length === 1) {
+    const single = await aggregateRecords(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      grant,
+      requestParams,
+      manifest,
+    );
+    if (extraWarnings.length) {
+      let meta = single.meta && typeof single.meta === 'object' && !Array.isArray(single.meta)
+        ? { ...single.meta }
+        : null;
+      for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+      single.meta = meta;
+    }
+    return single;
+  }
+
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  // Exact count_distinct cannot be soundly merged from per-binding distinct
+  // counts (summing would overcount values shared across connections). Rather
+  // than silently return a wrong number, reject the cross-connection case and
+  // tell the caller to scope with `connection_id`. This preserves the
+  // semantic-floor contract: never diverge from the exact distinct meaning.
+  if ((requestParams.metric || '') === 'count_distinct') {
+    throw invalidQueryError(
+      'count_distinct across multiple connections is not supported; scope with connection_id',
+    );
+  }
+
+  const isTimeBucket = typeof requestParams.group_by_time === 'string'
+    && requestParams.group_by_time.trim() !== '';
+  const isScalarGroup = typeof requestParams.group_by === 'string'
+    && requestParams.group_by.trim() !== '';
+  const metric = requestParams.metric || 'count';
+  const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
+  const aggregateFieldSchema = requestParams.field && manifestStream
+    ? getFieldSchema(manifestStream, requestParams.field)
+    : null;
+
+  let value = metric === 'sum' || metric === 'count' ? 0 : null;
+  let filteredRecordCount = 0;
+  let bestComparable = null;
+  let meta = null;
+  let responseShape = null;
+  // Merge grouped buckets across disjoint bindings: counts in the same bucket
+  // key are additive because each binding sees a disjoint record set.
+  const mergedBuckets = new Map();
+  let mergedLimit = null;
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
+    if (!responseShape) {
+      responseShape = {
+        metric: result.metric,
+        field: result.field ?? null,
+        group_by: result.group_by ?? null,
+        group_by_time: result.group_by_time ?? null,
+        granularity: result.granularity ?? null,
+        time_zone: result.time_zone ?? null,
+        approximate: result.approximate === true,
+      };
+    }
+    filteredRecordCount += Number(result?.filtered_record_count || 0);
+    meta = mergeMetaWarnings(meta, result?.meta);
+    if ((isScalarGroup || isTimeBucket) && Array.isArray(result?.groups)) {
+      mergedLimit = result.limit ?? mergedLimit;
+      for (const bucket of result.groups) {
+        const mapKey = JSON.stringify(bucket.key ?? null);
+        const entry = mergedBuckets.get(mapKey) || { key: bucket.key ?? null, count: 0 };
+        entry.count += Number(bucket.count || 0);
+        mergedBuckets.set(mapKey, entry);
+      }
+      continue;
+    }
+    if (metric === 'sum' || metric === 'count') {
+      value += Number(result?.value || 0);
+      continue;
+    }
+    if (metric === 'min' || metric === 'max') {
+      const comparable = coerceComparableValue(result?.value, aggregateFieldSchema);
+      if (comparable == null) continue;
+      const shouldReplace = bestComparable == null
+        || (metric === 'min' ? comparable < bestComparable : comparable > bestComparable);
+      if (shouldReplace) {
+        bestComparable = comparable;
+        value = result.value;
+      }
+    }
+  }
+  for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+
+  responseShape ||= {
+    metric,
+    field: requestParams.field ?? null,
+    group_by: requestParams.group_by ?? null,
+    group_by_time: requestParams.group_by_time ?? null,
+    granularity: requestParams.granularity ?? null,
+    time_zone: null,
+    approximate: false,
+  };
+
+  const response = {
+    object: 'aggregation',
+    stream,
+    metric: responseShape.metric,
+    field: responseShape.field,
+    group_by: responseShape.group_by,
+    group_by_time: responseShape.group_by_time,
+    granularity: responseShape.granularity,
+    time_zone: responseShape.time_zone,
+    approximate: responseShape.approximate,
+    filtered_record_count: filteredRecordCount,
+  };
+
+  if (isScalarGroup || isTimeBucket) {
+    const groupedResponse = {
+      ...response,
+      groups: [...mergedBuckets.values()]
+        .sort((left, right) => {
+          if (isScalarGroup) {
+            const countCmp = right.count - left.count;
+            if (countCmp !== 0) return countCmp;
+            return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
+          }
+          if (left.key == null) return right.key == null ? 0 : 1;
+          if (right.key == null) return -1;
+          return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+        })
+        .slice(0, mergedLimit ?? undefined),
+    };
+    if (mergedLimit != null) groupedResponse.limit = mergedLimit;
+    if (meta && Object.keys(meta).length) groupedResponse.meta = meta;
+    return groupedResponse;
+  }
+
+  response.value = value;
+  if (meta && Object.keys(meta).length) response.meta = meta;
+  return response;
+}
+
+/**
+ * Fan-in stream-list summaries across multiple bindings.
+ *
+ * Emits one entry per (stream, connection_id) so multi-connection
+ * deployments can disambiguate. Single-binding deployments preserve the
+ * pre-existing shape with `connection_id`/`display_name` populated from
+ * the sole active binding.
+ *
+ * When the grant pins per-stream `connection_id`, those streams resolve
+ * against the named binding(s) only; streams without the constraint fan
+ * in across `defaultBindings`. The `resolveBindingsForStream` callback
+ * lets the route adapter apply the same `(request connection_id, grant
+ * per-stream connection_id)` rules per stream. When callers do not pass
+ * a resolver, the helper falls back to using `defaultBindings` for every
+ * stream (preserving the prior single-resolution behavior for callers
+ * that do not need per-stream constraint accuracy).
+ */
+export async function listStreamsAcrossBindings(defaultBindings, grant, manifest, opts = {}) {
+  ensureBindingsOrThrow(defaultBindings, { connectorId: defaultBindings?.[0]?.connectorId });
+
+  const resolveBindingsForStream = typeof opts.resolveBindingsForStream === 'function'
+    ? opts.resolveBindingsForStream
+    : null;
+
+  const summaries = [];
+  const grantStreams = Array.isArray(grant?.streams) ? grant.streams : [];
+
+  // When no per-stream resolver is wired, fall back to the prior shape:
+  // iterate every (binding, stream-in-grant) pair once.
+  if (!resolveBindingsForStream) {
+    for (const binding of defaultBindings) {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      const perBinding = await listStreams(target, grant, manifest);
+      const wireBinding = projectBindingForWire({
+        connectorInstanceId: binding.connectorInstanceId,
+        connectorId: binding.connectorId,
+        displayName: binding.displayName,
+      });
+      for (const summary of perBinding) {
+        const decorated = { ...summary };
+        if (wireBinding?.connection_id) {
+          decorated.connection_id = wireBinding.connection_id;
+          decorated.connector_instance_id = wireBinding.connection_id;
+          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+        }
+        summaries.push(decorated);
+      }
+    }
+    return summaries;
+  }
+
+  // Per-stream resolver path: each stream's bindings honor its own
+  // grant-scope `connection_id` constraint. Streams whose grant entry
+  // pins different connections do not bleed each other's counts.
+  for (const streamGrant of grantStreams) {
+    if (!streamGrant?.name) continue;
+    let bindingsForStream;
+    try {
+      bindingsForStream = await resolveBindingsForStream(streamGrant);
+    } catch (err) {
+      // A per-stream resolution failure (e.g. grant-pinned connection no
+      // longer active) is surfaced honestly rather than swallowed: the
+      // caller's grant references a connection that we cannot serve.
+      throw err;
+    }
+    if (!bindingsForStream || bindingsForStream.length === 0) continue;
+    const singleStreamGrant = { ...grant, streams: [streamGrant] };
+    for (const binding of bindingsForStream) {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      const perBinding = await listStreams(target, singleStreamGrant, manifest);
+      const wireBinding = projectBindingForWire({
+        connectorInstanceId: binding.connectorInstanceId,
+        connectorId: binding.connectorId,
+        displayName: binding.displayName,
+      });
+      for (const summary of perBinding) {
+        const decorated = { ...summary };
+        if (wireBinding?.connection_id) {
+          decorated.connection_id = wireBinding.connection_id;
+          decorated.connector_instance_id = wireBinding.connection_id;
+          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+        }
+        summaries.push(decorated);
+      }
+    }
+  }
+  return summaries;
+}
+
+/**
+ * Fan-in stream-detail summaries across multiple bindings.
+ *
+ * Returns a single stream view aggregating record counts and last_updated
+ * across bindings, plus `available_connections` so callers can disambiguate
+ * if they want to follow up with a `connection_id` filter.
+ */
+export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  let recordCount = 0;
+  let lastUpdated = null;
+  const available = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const summaries = await listStreams(target, { streams: grant.streams.filter((s) => s.name === streamName) }, manifest);
+    const summary = summaries.find((s) => s.name === streamName);
+    if (summary) {
+      recordCount += Number(summary.record_count || 0);
+      if (!lastUpdated || (summary.last_updated && summary.last_updated > lastUpdated)) {
+        lastUpdated = summary.last_updated || lastUpdated;
+      }
+    }
+    const wire = projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    });
+    if (wire) available.push(wire);
+  }
+  return {
+    object: 'stream',
+    name: streamName,
+    record_count: recordCount,
+    last_updated: lastUpdated,
+    available_connections: available,
+  };
+}
+
+/**
+ * Resolve the request's bindings for a public-read route.
+ *
+ * Returns `{ bindings, requestConnectionId, warnings }`. `bindings` carries
+ * `{ connectorInstanceId, connectorId, displayName? }` entries the caller
+ * should iterate. `warnings` contains the deprecated-alias warning when
+ * the caller used `connector_instance_id` on the wire.
+ *
+ * Honors per-stream `grant.streams[].connection_id` when present; absent
+ * constraint preserves cross-connection (fan-in) semantics.
+ */
+export async function resolveReadRequestBindings({
+  ownerSubjectId,
+  storageBinding,
+  grant,
+  requestParams,
+  streamName,
+  nativeProviderStorage = false,
+}) {
+  // Canonicalize the storage binding's connector_id at the shared admission
+  // boundary. A grant or owner storage binding may still carry the legacy
+  // URL-shaped connector id (e.g. https://registry.pdpp.org/connectors/gmail);
+  // connector_instances and records are keyed by the canonical key (`gmail`),
+  // so listActiveByConnector must look up under that same canonical key or it
+  // returns zero rows and the read fails connection_not_found. This mirrors
+  // getConnectorManifestRow, which already accepts the URL alias at the
+  // boundary and resolves canonically. See canonicalize-connector-keys
+  // Decision 1: storage bindings and grants key by connector_key.
+  const rawConnectorId = storageBinding?.connector_id || null;
+  const connectorId = rawConnectorId
+    ? canonicalConnectorKey(rawConnectorId) ?? rawConnectorId
+    : null;
+  if (nativeProviderStorage && connectorId) {
+    const { connectionId } = resolveRequestConnectionId(requestParams);
+    if (connectionId) {
+      const err = new Error('connection_id is not applicable to provider_native sources.');
+      err.code = 'invalid_argument';
+      err.param =
+        typeof requestParams?.connection_id === 'string' && requestParams.connection_id
+          ? 'connection_id'
+          : 'connector_instance_id';
+      throw err;
+    }
+    return {
+      bindings: [{
+        connectorId,
+        connectorInstanceId: storageBinding?.connector_instance_id
+          || makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId),
+        displayName: null,
+      }],
+      requestConnectionId: null,
+      warnings: [],
+    };
+  }
+
+  const connectorInstanceIdHint = storageBinding?.connector_instance_id || null;
+  const streamGrant = grant?.streams?.find?.((s) => s.name === streamName) || null;
+  const grantStreamConnectionId = streamGrant?.connection_id || null;
+  return await resolveRequestBindings({
+    ownerSubjectId,
+    connectorId,
+    connectorInstanceIdHint,
+    requestParams,
+    grantStreamConnectionId,
+  });
+}
+
 /**
  * Get/put sync state (Collection Profile, owner-authenticated).
  *
@@ -2297,8 +4026,10 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  * - `record_count`, `connector_count`, `stream_count`, and `record_json_bytes`
  *   count only live (non-soft-deleted) records — what normal reads would
  *   surface.
- * - `connector_count` and `stream_count` are distinct `(connector_id, stream)`
- *   observations in the live records table, not manifest-declared counts.
+ * - `connector_count` is the legacy wire name for live configured
+ *   connections (`connector_instance_id`); `stream_count` counts distinct
+ *   `(connector_instance_id, stream)` observations in the live records table,
+ *   not manifest-declared counts.
  * - `record_changes_json_bytes` sums the `record_changes` table — historical
  *   versions retained by design for change tracking. Included in
  *   `total_retained_bytes` because the substrate is honestly holding them.

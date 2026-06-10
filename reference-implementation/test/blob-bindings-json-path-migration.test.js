@@ -22,10 +22,10 @@ import os from 'node:os';
 import Database from 'better-sqlite3';
 
 import { initDb, closeDb } from '../server/db.js';
-import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
-function legacyInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId('owner_local', connectorId);
+function defaultAccountInstanceId(connectorId) {
+  return makeDefaultAccountConnectorInstanceId('owner_local', connectorId);
 }
 
 function tempDbPath() {
@@ -49,13 +49,12 @@ test('fresh DB has json_path in blob_bindings PK + CHECK constraint', () => {
     assert.ok(tableColumns(raw, 'blob_bindings').includes('json_path'));
 
     // The default for new rows is '@record'.
-    raw.exec(`
-      INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-      VALUES ('blob_sha256_aa', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'aa', x'aa');
-    `);
+    raw.prepare(
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_aa', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', 'application/octet-stream', 1, 'aa', Buffer.from([0xaa]));
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key) VALUES (?,?,?,?,?)'
-    ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1');
+    ).run('blob_sha256_aa', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1');
     const row = raw.prepare('SELECT json_path FROM blob_bindings').get();
     assert.equal(row.json_path, '@record');
 
@@ -63,14 +62,14 @@ test('fresh DB has json_path in blob_bindings PK + CHECK constraint', () => {
     assert.throws(
       () => raw.prepare(
         'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-      ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1', 'output_preview'),
+      ).run('blob_sha256_aa', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', 'output_preview'),
       /CHECK constraint failed/,
     );
 
     // JSON Pointer values pass.
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-    ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview');
+    ).run('blob_sha256_aa', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', '/output_preview');
     const all = raw.prepare(
       "SELECT json_path FROM blob_bindings ORDER BY json_path"
     ).all().map((r) => r.json_path);
@@ -204,12 +203,12 @@ test('uniq_blobs_sha256 actually rejects duplicate sha256 values', () => {
   const raw = new Database(dbPath);
   try {
     raw.prepare(
-      'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-    ).run('blob_sha256_a', 'c', 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xaa]));
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_a', 'c', defaultAccountInstanceId('c'), 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xaa]));
     assert.throws(
       () => raw.prepare(
-        'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-      ).run('blob_sha256_b', 'c', 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xbb])),
+        'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run('blob_sha256_b', 'c', defaultAccountInstanceId('c'), 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xbb])),
       /UNIQUE constraint failed: blobs\.sha256/,
     );
   } finally {
@@ -224,17 +223,17 @@ test('PK includes json_path: same blob can bind to same record at multiple json_
   const raw = new Database(dbPath);
   try {
     raw.prepare(
-      'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'x', Buffer.from([0xaa]));
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_x', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', 'application/octet-stream', 1, 'x', Buffer.from([0xaa]));
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview');
+    ).run('blob_sha256_x', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', '/output_preview');
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/arguments');
+    ).run('blob_sha256_x', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', '/arguments');
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '@record');
+    ).run('blob_sha256_x', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', '@record');
     const rows = raw.prepare(
       'SELECT json_path FROM blob_bindings ORDER BY json_path'
     ).all().map((r) => r.json_path);
@@ -244,7 +243,7 @@ test('PK includes json_path: same blob can bind to same record at multiple json_
     assert.throws(
       () => raw.prepare(
         'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
-      ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview'),
+      ).run('blob_sha256_x', 'c1', defaultAccountInstanceId('c1'), 's1', 'r1', '/output_preview'),
       /UNIQUE constraint failed/,
     );
   } finally {

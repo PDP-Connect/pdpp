@@ -2,6 +2,8 @@
 // parsers.ts and tests can import them without pulling in the Playwright-
 // flavored runtime entry.
 
+import type { StatementContentFingerprint } from "../../src/statement-content-fingerprint.ts";
+
 export type ChaseAccountType = "credit_card" | "checking" | "savings" | "unknown";
 
 export interface ChaseAccount {
@@ -63,6 +65,7 @@ export interface StatementRow {
 }
 
 export interface StatementDownloadOk {
+  content: StatementContentFingerprint;
   ok: true;
   pdfPath: string;
   pdfSha256: string;

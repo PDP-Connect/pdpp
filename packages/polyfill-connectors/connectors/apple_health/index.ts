@@ -22,6 +22,7 @@ import {
   isBeforeCursor,
   parseAttrs,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { AppleHealthAttrs, AppleHealthState, StreamParseArgs } from "./types.ts";
 
 // Streaming buffer size — 64 KB balances memory and syscalls on large exports.
@@ -127,6 +128,7 @@ function handleWorkout(
 
 runConnector({
   name: "apple_health",
+  validateRecord,
   async collect({ state, requested, emit, emitRecord, progress }) {
     const dir = process.env.APPLE_HEALTH_EXPORT_DIR || join(homedir(), ".pdpp/imports/apple_health");
     const path = resolveExportPath(dir);
@@ -135,7 +137,7 @@ runConnector({
         type: "SKIP_RESULT",
         stream: "records",
         reason: "export_not_found",
-        message: `no export.xml in ${dir}/ or ${dir}/apple_health_export/`,
+        message: "Apple Health export data was not found in the configured import directory",
       });
       return;
     }
@@ -151,11 +153,12 @@ runConnector({
       latest: workoutsState.last_start_date,
     };
 
-    await progress(`Streaming ${path}`);
+    await progress("Apple Health phase=emit pass=emit starting stream parse");
 
     await streamParse({
       path,
-      onProgress: (rc, wc): Promise<void> => progress(`Parsed ${rc} records, ${wc} workouts`),
+      onProgress: (rc, wc): Promise<void> =>
+        progress(`Apple Health phase=emit pass=emit records_parsed=${rc} workouts_parsed=${wc}`),
       onRecord: (attrs): Promise<void> => handleRecord(attrs, recordRef, requested, emitRecord),
       onWorkout: (attrs): Promise<void> => handleWorkout(attrs, workoutRef, requested, emitRecord),
     });

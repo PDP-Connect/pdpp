@@ -12,7 +12,6 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// biome-ignore lint/correctness/noUnresolvedImports: dotenv is declared in package.json; Biome's resolver can't follow its conditional exports
 import { config as dotenvConfig } from "dotenv";
 import { handleInteraction } from "../src/interaction-handler.ts";
 import {

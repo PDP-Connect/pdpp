@@ -1,10 +1,22 @@
 services:
   reference:
+    # NOTE (2026-06-10): the default GHCR image (and the `reference` build
+    # target below) is deliberately browser-free (Dockerfile f45ba058,
+    # 2026-06-06). Deployments that run browser-backed connectors (ChatGPT,
+    # USAA, ...) INSIDE this container must pin a browser-capable image:
+    # build the `reference-browser` Dockerfile target and select it via
+    # PDPP_REFERENCE_IMAGE (plus a deploy-local, gitignored
+    # docker-compose.override.yml overriding image/build.target). Otherwise
+    # the next `compose pull && up -d` reverts to a browser-free image and
+    # every browser run fails at Patchright launch ("Executable doesn't
+    # exist at /opt/patchright-browsers/...").
     image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
     build:
       context: .
       dockerfile: Dockerfile
       target: reference
+      args:
+        PDPP_REFERENCE_REVISION: ${PDPP_REFERENCE_REVISION:-unknown}
     environment:
       AS_PORT: "7662"
       RS_PORT: "7663"
@@ -13,6 +25,10 @@ services:
       PDPP_TRUSTED_HOSTS: ${PDPP_TRUSTED_HOSTS:-}
       AS_PUBLIC_URL: ${AS_PUBLIC_URL:-}
       RS_PUBLIC_URL: ${RS_PUBLIC_URL:-}
+      # Explicit internal RS base for server-internal hosted-MCP self-calls.
+      # Keep this distinct from RS_PUBLIC_URL so the adapter does not hairpin
+      # PATCH/GET/POST/DELETE self-calls through the public reverse proxy.
+      PDPP_RS_URL: ${PDPP_RS_URL:-http://127.0.0.1:7663}
       AS_ISSUER: ${AS_ISSUER:-}
       PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
       PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}
@@ -25,19 +41,32 @@ services:
       PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
       PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
       PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
+      PDPP_CREDENTIAL_ENCRYPTION_KEY: ${PDPP_CREDENTIAL_ENCRYPTION_KEY:-}
+      PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: ${PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE:-}
       PDPP_DCR_INITIAL_ACCESS_TOKENS: ${PDPP_DCR_INITIAL_ACCESS_TOKENS:-}
       PDPP_WEB_PUSH_VAPID_PUBLIC_KEY: ${PDPP_WEB_PUSH_VAPID_PUBLIC_KEY:-}
       PDPP_WEB_PUSH_VAPID_PRIVATE_KEY: ${PDPP_WEB_PUSH_VAPID_PRIVATE_KEY:-}
       PDPP_WEB_PUSH_VAPID_SUBJECT: ${PDPP_WEB_PUSH_VAPID_SUBJECT:-}
       YNAB_PERSONAL_ACCESS_TOKEN: ${YNAB_PERSONAL_ACCESS_TOKEN:-}
+      # Converged rate governor opt-in (see converge-provider-rate-governance).
+      PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE: ${PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE:-}
       YNAB_PAT: ${YNAB_PAT:-}
       USAA_USERNAME: ${USAA_USERNAME:-}
       USAA_PASSWORD: ${USAA_PASSWORD:-}
       GOOGLE_APP_PASSWORD_PDPP: ${GOOGLE_APP_PASSWORD_PDPP:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      # Gmail attachment hydration/backfill uploads bytes through the
+      # reference blob API. Operators mint this token from the deployment-token
+      # surface and supply it only for connector runs that need blob upload.
+      PDPP_OWNER_TOKEN: ${PDPP_OWNER_TOKEN:-}
+      PDPP_GMAIL_MAX_ATTACHMENT_BYTES: ${PDPP_GMAIL_MAX_ATTACHMENT_BYTES:-}
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: ${PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS:-}
       CHATGPT_USERNAME: ${CHATGPT_USERNAME:-}
       CHATGPT_PASSWORD: ${CHATGPT_PASSWORD:-}
       PDPP_CHATGPT_SIDE_EFFECT_PROBE: ${PDPP_CHATGPT_SIDE_EFFECT_PROBE:-}
+      PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: ${PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN:-}
+      PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: ${PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS:-}
+      PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: ${PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER:-}
       PDPP_CAPTURE_FIXTURES: ${PDPP_CAPTURE_FIXTURES:-}
       PDPP_BROWSER_SURFACE_DIAGNOSTICS: ${PDPP_BROWSER_SURFACE_DIAGNOSTICS:-}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
@@ -77,8 +106,8 @@ services:
       # filesystem-class Claude Code / Codex collectors, not browser-backed
       # Patchright connectors.
     ports:
-      - "7662:7662"
-      - "7663:7663"
+      - "${PDPP_REFERENCE_AS_PORT:-7662}:7662"
+      - "${PDPP_REFERENCE_RS_PORT:-7663}:7663"
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,7 +158,7 @@ services:
     environment:
       POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
       POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
-      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp_proof}
+      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp}
     # Loopback-only by default. The proof service ships with default
     # `pdpp/pdpp` credentials and must not be reachable from LAN/WAN out of
     # the box. Operators who deliberately want LAN exposure must change
@@ -142,19 +171,26 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp_proof}",
+          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp}",
         ]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 10s
 
+  # Operator console service. Renamed/repurposed from the previous "web"
+  # service so the operator default (`docker compose up`) brings up the
+  # self-hosted dashboard + BFF instead of the public pdpp.dev surface.
+  # The service alias is kept as `web` to preserve docker-compose env-var
+  # contracts (PDPP_WEB_IMAGE, PDPP_WEB_PORT, PDPP_WEB_BASE_URL) for
+  # existing operators. The build target is now the `console` stage.
+  # See openspec/changes/split-public-site-and-operator-console.
   web:
     image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
     build:
       context: .
       dockerfile: Dockerfile
-      target: web
+      target: console
     depends_on:
       reference:
         condition: service_healthy

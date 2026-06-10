@@ -40,22 +40,33 @@ export interface RuntimeBrowserSurfaceEnv {
 }
 
 export interface RuntimeRunConnectorOptions {
+  automationMode?: RuntimeRunAutomationMode | null;
+  /**
+   * Owner-cancel signal for this run. The controller passes one `AbortSignal`
+   * per run; aborting it requests cooperative cancellation of THIS run only.
+   * The runtime records a non-terminal `run.cancel_requested` event, terminates
+   * the connector child via the graceful-then-`SIGKILL` escalation, and (when
+   * the child exits without `DONE`) resolves the run terminal as
+   * `run.cancelled` with `owner_cancelled` / `owner_cancel_forced`. Abort after
+   * a terminal event is recorded is a no-op.
+   * See add-owner-run-cancellation-control.
+   */
+  cancelSignal?: AbortSignal | null;
+  /**
+   * Explicit browser-surface child env override for tests and integration
+   * seams. Values here win over `browserSurfaceLease` fields.
+   */
+  browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   /**
    * Managed browser-surface lease selected by the controller. When present
    * with a CDP URL, `runConnector` forwards the lease-scoped
    * `PDPP_BROWSER_SURFACE_*` env block to the connector child.
    */
   browserSurfaceLease?: RuntimeBrowserSurfaceLease | null;
-  /**
-   * Explicit browser-surface child env override for tests and integration
-   * seams. Values here win over `browserSurfaceLease` fields.
-   */
-  browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
   connectorInstanceId?: string | null;
   connectorPath: string;
-  automationMode?: RuntimeRunAutomationMode | null;
   grantId?: string | null;
   manifest: Record<string, unknown>;
   onInteraction?: (...args: unknown[]) => unknown;
@@ -77,6 +88,16 @@ export interface RuntimeRunConnectorOptions {
   scenarioId?: string;
   scope?: Record<string, unknown> | null;
   state?: Record<string, unknown> | null;
+  /**
+   * Connection-scoped static-secret env fragment (Gmail app password /
+   * GitHub PAT) resolved by the controller from the per-connection encrypted
+   * credential store. Carries ONLY this one connection's secret env var(s)
+   * and is merged LAST over `process.env` at spawn, so a stored credential
+   * overrides any process-global provider secret. Null/absent means no stored
+   * credential applies and the legacy process-env path is used.
+   * See add-static-secret-owner-connect-primitive design Decision 5.
+   */
+  staticSecretEnv?: Record<string, string> | null;
   /**
    * Mode-A streaming-target registration: per-run shared secret minted
    * by the controller. Forwarded as
@@ -115,8 +136,8 @@ export interface ConnectorRunDiagnostics {
 export type RuntimeFailureOrigin = "connector" | "runtime" | "transport" | "storage";
 
 export interface RuntimeRunConnectorResult {
-  checkpoint_summary?: Record<string, unknown> | null;
   automation_mode?: RuntimeRunAutomationMode | null;
+  checkpoint_summary?: Record<string, unknown> | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
   connector_error?: { message?: string; retryable?: boolean | null } | null;
   failure_message?: string;
@@ -127,7 +148,7 @@ export interface RuntimeRunConnectorResult {
   reported_records_emitted?: number | null;
   run_id?: string | null;
   state?: unknown;
-  status: "failed" | "skipped" | "succeeded";
+  status: "cancelled" | "failed" | "skipped" | "succeeded";
   terminal_reason?: string | null;
   trace_id?: string | null;
   trigger_kind?: RuntimeRunTriggerKind | null;

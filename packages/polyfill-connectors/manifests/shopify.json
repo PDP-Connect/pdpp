@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/shopify",
+  "connector_key": "shopify",
+  "manifest_uri": "https://registry.pdpp.org/connectors/shopify",
   "version": "0.1.0",
   "display_name": "Shopify Shop",
   "runtime_requirements": {

@@ -31,19 +31,38 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CDPSession, Page, Response } from "playwright";
+import type { Page } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {
+  attachBodyResponseQueue,
+  type BodyResponseQueue,
+  isLikelyPdfResponseBody as isLikelyPdfResponseBodyShared,
+} from "../../src/browser-artifact-response.ts";
+import {
   type BrowserCollectContext,
+  buildDetailCoverageMessage,
+  type DetailGapMessage,
   type EmittedMessage,
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CaptureSession, LocatorProbe } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
+import {
+  extractStatementContentFingerprint,
+  statementFingerprintExcludeKeys,
+} from "../../src/statement-content-fingerprint.ts";
+import {
+  isHydrated,
+  openStatementHydrationCursor,
+  readPriorStatementHydration,
+  type StatementHydration,
+  type StatementHydrationCursor,
+} from "../../src/statement-hydration-carry-forward.ts";
 import {
   ACTIVITY_LABELS,
   accountSlug,
@@ -54,6 +73,7 @@ import {
   fileUrl,
   isOfxRecord,
   isoToPacked,
+  isUsablePdfBuffer,
   parseCurrentActivityDom,
   parseDashboardAccountsDom,
   parseDateDelivered,
@@ -98,11 +118,16 @@ const HASH_SHORT_LEN = 16;
 const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
 const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAccountActivity/iu;
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
-const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;
-const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
-const SURROUNDING_QUOTES_RE = /^"|"$/g;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
+export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
+  "#downloadActivityOptionId",
+  "#select-downloadActivityOptionId",
+] as const;
+export const CHASE_QFX_FILE_TYPE_SELECT_SELECTORS = [
+  "#downloadFileTypeOption",
+  "#select-downloadFileTypeOption",
+] as const;
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -112,43 +137,6 @@ const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
 
 export function chaseTimeRangeField(stream: string): string {
   return TIME_RANGE_FIELD_BY_STREAM[stream] ?? "date";
-}
-
-interface CapturedBodyResponse {
-  body: Buffer;
-  contentType: string;
-  method: string;
-  source: "cdp" | "playwright";
-  status: number;
-  suggestedFilename: string | null;
-  url: string;
-}
-
-type CapturedQfxResponse = CapturedBodyResponse;
-
-interface BodyResponseQueue {
-  detach(): void;
-  diagnostics(): BodyResponseDiagnostics;
-  ready: Promise<void>;
-  waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedBodyResponse>;
-}
-
-interface BodyResponseCandidateDiagnostic {
-  bodyBytes?: number;
-  bodyError?: string;
-  contentDisposition: string;
-  contentType: string;
-  method: string;
-  reason: "body_error" | "matched" | "not_expected_body";
-  source: "cdp" | "playwright";
-  status: number;
-  url: string;
-}
-
-interface BodyResponseDiagnostics {
-  candidates: BodyResponseCandidateDiagnostic[];
-  cdpError: string | null;
-  cdpReady: boolean;
 }
 
 interface NoActivityConfirmation {
@@ -201,7 +189,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
 // We use the visible labels as locators (Playwright's `getByRole('option')`
 // pierces shadow DOM).
 async function selectActivity(page: Page, optionLabel: string): Promise<void> {
-  await page.locator("#select-downloadActivityOptionId").click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${optionLabel}$`, "i"),
   });
@@ -217,25 +205,12 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
  * Range on Activity) revert file type back to CSV. Clicking is durable.
  */
 async function selectFileType(page: Page, label: string): Promise<void> {
-  await page.locator("#select-downloadFileTypeOption").click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${label}`, "i"),
   });
   await opt.waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
   await opt.click({ timeout: OPTION_WAIT_MS });
-}
-
-function suggestedFilenameFromHeaders(headers: Record<string, string>): string | null {
-  const disposition = headers["content-disposition"];
-  if (!disposition) {
-    return null;
-  }
-  const utf8 = disposition.match(FILENAME_UTF8_RE);
-  if (utf8?.[1]) {
-    return decodeURIComponent(utf8[1].replace(SURROUNDING_QUOTES_RE, ""));
-  }
-  const plain = disposition.match(FILENAME_PLAIN_RE);
-  return plain?.[1] ?? null;
 }
 
 function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>): boolean {
@@ -255,25 +230,7 @@ export function isLikelyChaseQfxResponse(headers: Record<string, string>, url = 
   return DOWNLOAD_RESPONSE_HINT_RE.test(hint) || CHASE_DOWNLOAD_ROUTE_RE.test(url);
 }
 
-export function isLikelyPdfResponseBody(body: Buffer, headers: Record<string, string>): boolean {
-  if (body.length === 0) {
-    return false;
-  }
-  const contentType = headers["content-type"]?.toLowerCase() ?? "";
-  const disposition = headers["content-disposition"]?.toLowerCase() ?? "";
-  if (body.subarray(0, 5).toString("latin1") === "%PDF-") {
-    return true;
-  }
-  return contentType.includes("application/pdf") || disposition.includes(".pdf");
-}
-
-function normalizeHeaders(headers: Record<string, unknown>): Record<string, string> {
-  const normalized: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : String(value);
-  }
-  return normalized;
-}
+export const isLikelyPdfResponseBody = isLikelyPdfResponseBodyShared;
 
 function redactChaseEvidenceUrl(rawUrl: string): string {
   try {
@@ -286,339 +243,28 @@ function redactChaseEvidenceUrl(rawUrl: string): string {
   }
 }
 
-function attachBodyResponseQueue(
-  page: Page,
-  shouldInspect: (headers: Record<string, string>, url: string) => boolean,
-  isExpectedBody: (body: Buffer, headers: Record<string, string>) => boolean
-): BodyResponseQueue {
-  const pending: CapturedBodyResponse[] = [];
-  const waiters: ((response: CapturedBodyResponse) => void)[] = [];
-  const diagnostics: BodyResponseDiagnostics = {
-    candidates: [],
-    cdpError: null,
-    cdpReady: false,
-  };
-  const cdpMethodsByRequestId = new Map<string, string>();
-  const cdpCandidatesByRequestId = new Map<
-    string,
-    {
-      contentDisposition: string;
-      contentType: string;
-      headers: Record<string, string>;
-      method: string;
-      status: number;
-      url: string;
-    }
-  >();
-  let detached = false;
-  let cdpSession: CDPSession | null = null;
-
-  const enqueue = (response: CapturedBodyResponse): void => {
-    const waiter = waiters.shift();
-    if (waiter) {
-      waiter(response);
-      return;
-    }
-    pending.push(response);
-  };
-
-  const addDiagnostic = (diagnostic: BodyResponseCandidateDiagnostic): void => {
-    const next: BodyResponseCandidateDiagnostic = {
-      ...diagnostic,
-      url: redactChaseEvidenceUrl(diagnostic.url),
-    };
-    if (diagnostic.bodyError) {
-      next.bodyError = truncate(diagnostic.bodyError, ERROR_MESSAGE_SLICE_LONG);
-    }
-    diagnostics.candidates.push(next);
-    if (diagnostics.candidates.length > 20) {
-      diagnostics.candidates.shift();
-    }
-  };
-
-  const inspectBody = ({
-    body,
-    contentDisposition,
-    contentType,
-    headers,
-    method,
-    source,
-    status,
-    url,
-  }: {
-    body: Buffer;
-    contentDisposition: string;
-    contentType: string;
-    headers: Record<string, string>;
-    method: string;
-    source: "cdp" | "playwright";
-    status: number;
-    url: string;
-  }): void => {
-    if (!isExpectedBody(body, headers)) {
-      addDiagnostic({
-        bodyBytes: body.length,
-        contentDisposition,
-        contentType,
-        method,
-        reason: "not_expected_body",
-        source,
-        status,
-        url,
-      });
-      return;
-    }
-    addDiagnostic({
-      bodyBytes: body.length,
-      contentDisposition,
-      contentType,
-      method,
-      reason: "matched",
-      source,
-      status,
-      url,
-    });
-    enqueue({
-      body,
-      contentType,
-      method,
-      source,
-      status,
-      suggestedFilename: suggestedFilenameFromHeaders(headers),
-      url,
-    });
-  };
-
-  const onResponse = (response: Response): void => {
-    const headers = normalizeHeaders(response.headers());
-    const contentType = headers["content-type"] ?? "";
-    const contentDisposition = headers["content-disposition"] ?? "";
-    const url = response.url();
-    if (!shouldInspect(headers, url)) {
-      return;
-    }
-    response
-      .body()
-      .then((body) => {
-        if (detached) {
-          return;
-        }
-        inspectBody({
-          body,
-          contentDisposition,
-          contentType,
-          headers,
-          method: response.request().method(),
-          source: "playwright",
-          status: response.status(),
-          url,
-        });
-      })
-      .catch((err): undefined => {
-        addDiagnostic({
-          bodyError: errMessage(err),
-          contentDisposition,
-          contentType,
-          method: response.request().method(),
-          reason: "body_error",
-          source: "playwright",
-          status: response.status(),
-          url,
-        });
-        return;
-      });
-  };
-
-  page.on("response", onResponse);
-
-  const onCdpRequestWillBeSent = (event: { request?: { method?: string }; requestId?: string }): void => {
-    if (event.requestId) {
-      cdpMethodsByRequestId.set(event.requestId, event.request?.method ?? "");
-    }
-  };
-  const onCdpResponseReceived = (event: {
-    requestId?: string;
-    response?: {
-      headers?: Record<string, unknown>;
-      mimeType?: string;
-      status?: number;
-      url?: string;
-    };
-  }): void => {
-    if (!(event.requestId && event.response)) {
-      return;
-    }
-    const headers = normalizeHeaders(event.response.headers ?? {});
-    if (!headers["content-type"] && event.response.mimeType) {
-      headers["content-type"] = event.response.mimeType;
-    }
-    const url = event.response.url ?? "";
-    if (!shouldInspect(headers, url)) {
-      return;
-    }
-    cdpCandidatesByRequestId.set(event.requestId, {
-      contentDisposition: headers["content-disposition"] ?? "",
-      contentType: headers["content-type"] ?? "",
-      headers,
-      method: cdpMethodsByRequestId.get(event.requestId) ?? "",
-      status: event.response.status ?? 0,
-      url,
-    });
-  };
-  const onCdpLoadingFinished = (event: { requestId?: string }): void => {
-    if (!(event.requestId && cdpSession)) {
-      return;
-    }
-    const candidate = cdpCandidatesByRequestId.get(event.requestId);
-    if (!candidate) {
-      return;
-    }
-    cdpCandidatesByRequestId.delete(event.requestId);
-    cdpSession
-      .send("Network.getResponseBody", { requestId: event.requestId })
-      .then((payload: { base64Encoded?: boolean; body?: string }) => {
-        if (detached) {
-          return;
-        }
-        const body = payload.base64Encoded
-          ? Buffer.from(payload.body ?? "", "base64")
-          : Buffer.from(payload.body ?? "", "utf8");
-        inspectBody({
-          body,
-          contentDisposition: candidate.contentDisposition,
-          contentType: candidate.contentType,
-          headers: candidate.headers,
-          method: candidate.method,
-          source: "cdp",
-          status: candidate.status,
-          url: candidate.url,
-        });
-      })
-      .catch((err): undefined => {
-        addDiagnostic({
-          bodyError: errMessage(err),
-          contentDisposition: candidate.contentDisposition,
-          contentType: candidate.contentType,
-          method: candidate.method,
-          reason: "body_error",
-          source: "cdp",
-          status: candidate.status,
-          url: candidate.url,
-        });
-        return;
-      });
-  };
-  const onCdpLoadingFailed = (event: { errorText?: string; requestId?: string }): void => {
-    if (!event.requestId) {
-      return;
-    }
-    const candidate = cdpCandidatesByRequestId.get(event.requestId);
-    if (!candidate) {
-      return;
-    }
-    cdpCandidatesByRequestId.delete(event.requestId);
-    addDiagnostic({
-      bodyError: event.errorText ?? "loading_failed",
-      contentDisposition: candidate.contentDisposition,
-      contentType: candidate.contentType,
-      method: candidate.method,
-      reason: "body_error",
-      source: "cdp",
-      status: candidate.status,
-      url: candidate.url,
-    });
-  };
-
-  const ready = page
-    .context()
-    .newCDPSession(page)
-    .then(async (session) => {
-      if (detached) {
-        await session.detach().catch((): undefined => undefined);
-        return;
-      }
-      cdpSession = session;
-      session.on("Network.requestWillBeSent", onCdpRequestWillBeSent);
-      session.on("Network.responseReceived", onCdpResponseReceived);
-      session.on("Network.loadingFinished", onCdpLoadingFinished);
-      session.on("Network.loadingFailed", onCdpLoadingFailed);
-      await session.send("Network.enable");
-      diagnostics.cdpReady = true;
-    })
-    .catch((err): undefined => {
-      diagnostics.cdpError = truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG);
-      return;
-    });
-
-  return {
-    ready,
-    detach(): void {
-      detached = true;
-      page.off("response", onResponse);
-      if (cdpSession) {
-        cdpSession.off("Network.requestWillBeSent", onCdpRequestWillBeSent);
-        cdpSession.off("Network.responseReceived", onCdpResponseReceived);
-        cdpSession.off("Network.loadingFinished", onCdpLoadingFinished);
-        cdpSession.off("Network.loadingFailed", onCdpLoadingFailed);
-        cdpSession.detach().catch((): undefined => undefined);
-        cdpSession = null;
-      }
-    },
-    diagnostics(): BodyResponseDiagnostics {
-      return {
-        ...diagnostics,
-        candidates: diagnostics.candidates.map((candidate) => ({ ...candidate })),
-      };
-    },
-    waitForNextResponse({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}): Promise<CapturedBodyResponse> {
-      const first = pending.shift();
-      if (first) {
-        return Promise.resolve(first);
-      }
-      return new Promise<CapturedBodyResponse>((resolve, reject) => {
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          const idx = waiters.indexOf(resolveOnce);
-          if (idx >= 0) {
-            waiters.splice(idx, 1);
-          }
-          reject(new Error(`body_response_timeout after ${timeoutMs}ms`));
-        }, timeoutMs);
-        const resolveOnce = (response: CapturedQfxResponse): void => {
-          if (settled) {
-            pending.unshift(response);
-            return;
-          }
-          settled = true;
-          clearTimeout(timer);
-          resolve(response);
-        };
-        waiters.push(resolveOnce);
-      });
-    },
-  };
-}
-
 function attachQfxResponseQueue(page: Page): BodyResponseQueue {
-  return attachBodyResponseQueue(page, isLikelyChaseQfxResponse, isLikelyQfxResponseBody);
+  return attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyQfxResponseBody,
+    redactUrl: redactChaseEvidenceUrl,
+    shouldInspect: isLikelyChaseQfxResponse,
+    truncateMessageLength: ERROR_MESSAGE_SLICE_LONG,
+  });
 }
 
 function attachPdfResponseQueue(page: Page): BodyResponseQueue {
-  return attachBodyResponseQueue(
-    page,
-    (headers) => {
+  return attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    redactUrl: redactChaseEvidenceUrl,
+    shouldInspect(headers) {
       const contentDisposition = headers["content-disposition"]?.toLowerCase() ?? "";
       const contentType = headers["content-type"]?.toLowerCase() ?? "";
       return (
         contentType.includes("pdf") || contentDisposition.includes(".pdf") || contentDisposition.includes("attachment")
       );
     },
-    isLikelyPdfResponseBody
-  );
+    truncateMessageLength: ERROR_MESSAGE_SLICE_LONG,
+  });
 }
 
 function captureBodyResponseDiagnostics(
@@ -1112,6 +758,17 @@ async function downloadStatementPdf(
     downloadQueue.detach();
     pdfResponseQueue.detach();
   }
+  // Reject an empty / non-PDF download instead of recording it as a
+  // successful hydration. A 0-byte body otherwise hashes to the empty-string
+  // sha256 and is stored as a "captured" statement, which (a) points the
+  // owner at a 0-byte file and (b) churns the statement's version every time
+  // the real PDF flips back in. Falling through to ok:false routes the row to
+  // the same index-only fallback a download failure already uses.
+  if (!isUsablePdfBuffer(buffer)) {
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-empty-pdf`);
+    return { ok: false, error: `download_empty_pdf: ${buffer.length}b` };
+  }
+
   const pdfSha256 = sha256Hex(buffer);
 
   const isoDate = parseDateDelivered(row.date_delivered_raw);
@@ -1126,7 +783,14 @@ async function downloadStatementPdf(
     await writeFile(pdfPath, buffer);
   }
 
-  return { ok: true, pdfPath, pdfSha256 };
+  // Positive content fingerprint over the decrypted text + page count. Chase
+  // statement PDFs are RC4-encrypted and re-encrypted per download, so
+  // `pdf_sha256` (and the path/url that embed it) churns with no content
+  // change; this content fingerprint is what makes excluding those blob fields
+  // from the canonical fingerprint lossless. Fail-closed to all-null.
+  const content = await extractStatementContentFingerprint(buffer);
+
+  return { ok: true, pdfPath, pdfSha256, content };
 }
 
 async function capturePageCheckpoint(
@@ -1160,7 +824,7 @@ function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
         description: "QFX activity select host.",
         id: "qfx-activity-select-host",
         kind: "css",
-        selector: "#select-downloadActivityOptionId",
+        selector: CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", "),
       },
       {
         description: "Whether the activity select has a stable accessible combobox name.",
@@ -1173,7 +837,7 @@ function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
         description: "QFX file-type select host.",
         id: "qfx-file-type-select-host",
         kind: "css",
-        selector: "#select-downloadFileTypeOption",
+        selector: CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", "),
       },
       {
         description: "Whether the file-type select has a stable accessible combobox name.",
@@ -1272,6 +936,12 @@ export type RequestedScopes = BrowserCollectContext["requested"];
  *  orchestration and the helpers are individually testable. */
 export interface EmitDeps {
   capture: CaptureDep;
+  /** Per-row fingerprint cursor for `current_activity` (excludes the
+   *  run-clock `fetched_at`). One cursor for the whole stream because row
+   *  ids (`account_id|ui_transaction_id` or an account-scoped fallback
+   *  hash) are globally unique. Optional so legacy callers/tests emit
+   *  unconditionally. */
+  currentActivityFingerprintCursor?: FingerprintCursor | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -1280,6 +950,11 @@ export interface EmitDeps {
   requested: RequestedScopes;
   resFilters: Map<string, ReadonlySet<string> | null>;
   tmpDir: string;
+  /** Per-transaction fingerprint cursor (excludes the run-clock
+   *  `fetched_at`). Shared across all accounts for the whole transactions
+   *  stream because record ids (`account_id|fitid`) are globally unique.
+   *  Optional so legacy callers/tests emit unconditionally. */
+  transactionsFingerprintCursor?: FingerprintCursor | undefined;
   txState: TransactionsStateShape;
   wantsAccounts: boolean;
   wantsBalances: boolean;
@@ -1316,10 +991,33 @@ export function filterAccountsByScope(
  * Emit one `accounts` record per filtered account. Balance fields are
  * null here; they're populated later from QFX LEDGERBAL/AVAILBAL as
  * separate `balances` records.
+ *
+ * Every field except `fetched_at` is stable across runs (the account
+ * identity; all balance fields are hardcoded `null` and live in the
+ * `balances` stream). Without a gate, the run-clock `fetched_at` forced
+ * a fresh version of every account on every run (~20 versions/record of
+ * pure run-clock churn). The fingerprint cursor excludes `fetched_at`,
+ * so an account re-emits only when its identity actually changes.
+ *
+ * Emits a per-stream STATE carrying the fingerprint map so the next run
+ * can suppress unchanged accounts. When no cursor is supplied
+ * (legacy callers/tests) the records emit unconditionally and no STATE
+ * is written.
  */
-export async function emitAccountsStream(deps: EmitDeps, filteredAccounts: readonly ChaseAccount[]): Promise<void> {
+export async function emitAccountsStream(
+  deps: EmitDeps,
+  filteredAccounts: readonly ChaseAccount[],
+  fingerprintCursor?: FingerprintCursor
+): Promise<void> {
+  // `covered` is the in-boundary accounts this run accounted for: emitted plus
+  // suppressed-because-unchanged. Counted independently at the loop site from
+  // objective per-record outcomes, never aliased to the emitted count — every
+  // dashboard account reaches the gate (the record literal never drops a row),
+  // so a real shortfall could only come from a future pre-gate drop, which
+  // would raise `considered` without raising `covered`.
+  let covered = 0;
   for (const a of filteredAccounts) {
-    await deps.emitRecord("accounts", {
+    const record = {
       id: a.internal_id,
       name: a.name,
       type: a.type,
@@ -1332,8 +1030,141 @@ export async function emitAccountsStream(deps: EmitDeps, filteredAccounts: reado
       status: null,
       balance_as_of: null,
       fetched_at: deps.emittedAt,
-    });
+    };
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("accounts", record);
+    }
+    if (fingerprintCursor) {
+      // Emitted or suppressed-unchanged: either way the account was accounted
+      // for. The no-cursor path (legacy callers/tests) declares no coverage.
+      covered += 1;
+    }
   }
+  if (!fingerprintCursor) {
+    return;
+  }
+  // The dashboard scan re-enumerates the full account boundary every run and
+  // suppresses unchanged accounts via the per-record fingerprint, so on a
+  // steady-state run `collected` is a churn-reduced subset (often 0), not a
+  // coverage count. Declare `considered = filteredAccounts.length` (the
+  // enumerated boundary) with the objective `covered` count so the Collection
+  // Report reads `complete` instead of a false `partial`
+  // (define-connector-progress-evidence-contract task 4.4). This self-coverage
+  // message (`stream === state_stream === "accounts"`, empty required/hydrated
+  // keys) is distinct from the transactions→accounts DETAIL_COVERAGE emitted by
+  // `emitTransactionsDetailCoverage` (`stream === "transactions"`), so the two
+  // do not collide in the runtime's per-stream considered/covered lookup.
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "accounts",
+      stateStream: "accounts",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: filteredAccounts.length,
+      covered,
+    })
+  );
+  // Accounts enumeration is a full dashboard scan: prune fingerprints for
+  // accounts no longer present so a re-added account re-emits.
+  fingerprintCursor.pruneStale();
+  const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+  if (fingerprintCursor.size() > 0) {
+    cursor.fingerprints = fingerprintCursor.toState();
+  }
+  await deps.emit({
+    type: "STATE",
+    stream: "accounts",
+    cursor,
+  });
+}
+
+/**
+ * Parse the prior `accounts` STATE cursor's `fingerprints` map. Keyed by
+ * Chase internal account id. Legacy/missing cursors decode to an empty
+ * map; the first post-deploy run rebuilds it and re-emits every account
+ * exactly once.
+ */
+export function readPriorAccountFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.accounts ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the prior `statements` STATE cursor's `fingerprints` map. Keyed
+ * by statement `id` (hash of account_reference|date|title). Legacy
+ * cursors (only `{ fetched_at }`) decode to an empty map, so the first
+ * post-deploy run rebuilds the map and re-emits every statement exactly
+ * once.
+ */
+export function readPriorStatementFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.statements ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the prior `current_activity` STATE cursor's `fingerprints` map.
+ * Keyed by the row `id` (`account_id|ui_transaction_id`, or an
+ * account-scoped fallback hash). Legacy cursors (only `{ fetched_at }`)
+ * decode to an empty map, so the first post-deploy run rebuilds the map
+ * and re-emits every still-listed activity row exactly once.
+ */
+export function readPriorCurrentActivityFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.current_activity ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the prior `transactions` STATE cursor's `fingerprints` map. Keyed
+ * by transaction `id` (`account_id|fitid`). The cursor shape is
+ * `{ per_account, fingerprints }`; `collect()` may also see the bare
+ * inner shape (legacy state), so both `state.transactions.fingerprints`
+ * and `state.fingerprints` are tolerated. Legacy cursors (only
+ * `per_account`) decode to an empty map, so the first post-deploy run
+ * rebuilds the map and re-emits every in-window transaction exactly once.
+ */
+export function readPriorTransactionFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.transactions ?? state ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1352,7 +1183,8 @@ export async function emitTransactionsForAccount(
   deps: EmitDeps,
   account: ChaseAccount,
   activity: ActivityKind,
-  transactions: ReturnType<typeof extractFromQfx>["transactions"]
+  transactions: ReturnType<typeof extractFromQfx>["transactions"],
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   const prior = deps.maxSeenByAccount[account.internal_id];
   let maxDate: string | null = prior?.max_seen_date ?? null;
@@ -1360,7 +1192,7 @@ export async function emitTransactionsForAccount(
     if (!t.date) {
       continue;
     }
-    await deps.emitRecord("transactions", {
+    const record = {
       id: `${account.internal_id}|${t.fitid}`,
       account_id: account.internal_id,
       account_name: account.name,
@@ -1375,7 +1207,23 @@ export async function emitTransactionsForAccount(
       reference_number: t.reference_number,
       source: `qfx_download_${activity}_${t.date}`,
       fetched_at: deps.emittedAt,
-    });
+    };
+    // Gate on a per-transaction fingerprint that excludes run/acquisition
+    // metadata (`fetched_at`, `source`). A posted transaction's identity
+    // (id = account_id|fitid) and its fields (date, amount, name, memo, …)
+    // are immutable, but overlapping windows re-download transactions with
+    // a fresh run clock and sometimes a different activity-mode source. With
+    // this gate an already-seen transaction whose transaction fields are
+    // unchanged is suppressed; a genuinely-new transaction (new id) or a real
+    // field move is a fingerprint boundary and still emits.
+    //
+    // NOTE: transactions is a PARTIAL scan (per-account incremental
+    // windows), so this cursor is never `pruneStale()`d — pruning ids the
+    // run did not look at would drop their fingerprints and re-churn them
+    // on the next overlapping window.
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("transactions", record);
+    }
     if (!maxDate || t.date > maxDate) {
       maxDate = t.date;
     }
@@ -1393,11 +1241,12 @@ export async function emitTransactionsForAccount(
 export async function emitCurrentActivityForAccount(
   deps: EmitDeps,
   account: ChaseAccount,
-  html: string
+  html: string,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<number> {
   const rows = parseCurrentActivityDom(html, deps.emittedAt.slice(0, 10));
   for (const row of rows) {
-    await deps.emitRecord("current_activity", {
+    const record = {
       id: currentActivityId(account.internal_id, row),
       account_id: account.internal_id,
       account_name: account.name,
@@ -1411,7 +1260,24 @@ export async function emitCurrentActivityForAccount(
       ui_transaction_id: row.ui_transaction_id,
       source: "chase_activity_ui",
       fetched_at: deps.emittedAt,
-    });
+    };
+    // Gate on a per-row fingerprint that excludes the run-clock
+    // `fetched_at`. The dashboard overview re-renders the same recent
+    // rows every run, so without this gate each still-listed activity row
+    // appended a fresh version differing only in `fetched_at`. A row keyed
+    // by a stable `ui_transaction_id` that transitions pending → posted
+    // (status / posted_date / amount move) IS a fingerprint boundary and
+    // re-emits; a fallback-keyed row whose fields change gets a new id and
+    // appends as a distinct row. Only a byte-identical re-render modulo
+    // `fetched_at` is suppressed.
+    //
+    // NOTE: current_activity is a PARTIAL scan (only the dashboard's
+    // recent rows), so this cursor is never `pruneStale()`d — pruning ids
+    // the overview stopped showing would drop their fingerprints and
+    // re-churn a row that scrolls back into the recent window.
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("current_activity", record);
+    }
   }
   return rows.length;
 }
@@ -1435,29 +1301,82 @@ export function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | n
 }
 
 /**
- * Emit a `statements` record with no hydrated PDF. Used when the PDF
- * download click fails — the caller still wants a record that the
- * statement exists so the owner can see it in the archive, even if the
- * bytes aren't available this run.
+ * Emit a `statements` record when the PDF could not be hydrated this run —
+ * the caller still wants a record that the statement exists so the owner
+ * can see it in the archive, even though this run did not fetch the bytes.
+ *
+ * Carry-forward: if the statement was previously hydrated, re-emit the
+ * prior `document_url`/`pdf_path`/`pdf_sha256` (which point at content-
+ * addressed bytes a prior run stored and that never move) instead of null.
+ * A statement that was never hydrated stays all-null (honest index-only).
+ * Either way the statement detail-coverage report remains the authoritative
+ * record of whether PDF bytes were present this run. The carried body asserts
+ * the artifact's last known location, not that this run re-verified it. This
+ * stops the `value -> null` hydration-availability flap from re-versioning an
+ * immutable statement.
+ *
+ * Gated on the per-statement fingerprint cursor (excludes `fetched_at`) so a
+ * re-listed statement that is byte-identical modulo the run clock does not
+ * append a fresh version every run; with carry-forward the carried body
+ * matches the prior hydrated body, so the cursor suppresses the re-emit.
  */
 export async function emitStatementIndexOnly(
   deps: EmitDeps,
   id: string,
   row: StatementRow,
   accountId: string | null,
-  dateIso: string | null
-): Promise<void> {
-  await deps.emitRecord("statements", {
+  dateIso: string | null,
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
+): Promise<StatementHydration> {
+  const carried: StatementHydration = hydrationCursor
+    ? hydrationCursor.resolveOnFailure(id)
+    : { document_url: null, pdf_path: null, pdf_sha256: null, pdf_text_sha256: null, pdf_page_count: null };
+  const record = {
     id,
     account_id: accountId,
     title: row.title,
     date_delivered: dateIso,
     account_reference: row.account_reference,
-    document_url: null,
-    pdf_path: null,
-    pdf_sha256: null,
+    document_url: carried.document_url,
+    pdf_path: carried.pdf_path,
+    pdf_sha256: carried.pdf_sha256,
+    pdf_text_sha256: carried.pdf_text_sha256 ?? null,
+    pdf_page_count: carried.pdf_page_count ?? null,
     fetched_at: deps.emittedAt,
-  });
+  };
+  // Record the resolved pointers (carried or all-null) so the next run's
+  // prior map stays complete and the prune step has the right inputs.
+  hydrationCursor?.note(id, carried);
+  if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+    await deps.emitRecord("statements", record);
+  }
+  return carried;
+}
+
+export type StatementDetailOutcome = { kind: "hydrated"; id: string } | { kind: "index_only"; id: string };
+
+export async function emitStatementDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly StatementDetailOutcome[]
+): Promise<void> {
+  if (!deps.wantsStatements || outcomes.length === 0) {
+    return;
+  }
+  const requiredKeys = outcomes.map((outcome) => outcome.id);
+  const hydratedKeys = outcomes.filter((outcome) => outcome.kind === "hydrated").map((outcome) => outcome.id);
+  const optionalSkipKeys = outcomes.filter((outcome) => outcome.kind === "index_only").map((outcome) => outcome.id);
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "statements",
+      stateStream: "statements",
+      requiredKeys,
+      hydratedKeys,
+      optionalSkipKeys,
+      considered: outcomes.length,
+      covered: outcomes.length,
+    })
+  );
 }
 
 /**
@@ -1470,23 +1389,31 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
   if (!(deps.wantsTransactions && Object.keys(deps.maxSeenByAccount).length > 0)) {
     return;
   }
+  const cursor: Record<string, unknown> = { per_account: deps.maxSeenByAccount };
+  // Carry the per-transaction fingerprint map forward so the next run can
+  // suppress re-downloaded transactions whose body is unchanged modulo the
+  // run clock. NOT pruned: transactions is a partial incremental scan.
+  const fp = deps.transactionsFingerprintCursor;
+  if (fp && fp.size() > 0) {
+    cursor.fingerprints = fp.toState();
+  }
   const stateMsg: StateMessage = {
     type: "STATE",
     stream: "transactions",
-    cursor: { per_account: deps.maxSeenByAccount },
+    cursor,
   };
   await deps.emit(stateMsg);
 }
 
 export async function emitNoActivityProgress(
   deps: Pick<EmitDeps, "emit">,
-  account: ChaseAccount,
+  _account: ChaseAccount,
   activity: ActivityKind
 ): Promise<void> {
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: no activity found for QFX download (activity=${activity})`,
+    message: `QFX download complete: no activity found (activity=${activity})`,
   });
 }
 
@@ -1510,22 +1437,63 @@ async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void>
   });
 }
 
+function accountProgressLabel(accountProgress?: { index: number; total: number }): string {
+  return accountProgress ? `${accountProgress.index}/${accountProgress.total}` : "?/?";
+}
+
+function accountProgressDiagnostic(accountProgress?: { index: number; total: number }): {
+  account_index: number | null;
+  account_total: number | null;
+} {
+  return {
+    account_index: accountProgress?.index ?? null,
+    account_total: accountProgress?.total ?? null,
+  };
+}
+
+/**
+ * Per-account outcome of the QFX (transactions/balances) detail pass. The
+ * `accounts` stream is Chase's enumerated inventory — a known denominator —
+ * and each account is one key considered for the per-account QFX detail
+ * fetch. The runtime turns these outcomes into an honest DETAIL_COVERAGE
+ * report (`required_keys` = accounts considered; `hydrated_keys` = accounts
+ * the connector successfully reached; `gap_keys` = retryable failures).
+ *
+ * Three outcomes, deliberately distinct:
+ *   - `hydrated`: QFX downloaded and parsed for this account. Includes the
+ *     0-transaction parse — the account WAS reached; an empty ledger is
+ *     real coverage, not a failure.
+ *   - `no_activity`: Chase reported no activity for the requested window.
+ *     This is source-limited completeness ("won't backfill"), NOT a gap —
+ *     the account was reached and the source had nothing to return. Counts
+ *     as hydrated coverage so it is never projected as broken.
+ *   - `gap`: the QFX download or parse failed transiently. A retryable
+ *     DETAIL_GAP is emitted so the next run retries this account, and the
+ *     key lands in `gap_keys` — partial, not complete, and not silently
+ *     dropped.
+ */
+export type AccountDetailOutcome =
+  | { kind: "hydrated"; accountId: string }
+  | { kind: "no_activity"; accountId: string }
+  | { kind: "gap"; accountId: string; reason: DetailGapMessage["reason"]; errorClass: string };
+
 async function processAccountDownload(
   deps: EmitDeps,
   page: Page,
   account: ChaseAccount,
   accountProgress?: { index: number; total: number }
-): Promise<void> {
+): Promise<AccountDetailOutcome> {
   const activityChoice = chooseActivity(
     deps.requested,
     deps.txState,
     deps.wantsTransactions ? "transactions" : "balances",
     account.internal_id
   );
+  const progressLabel = accountProgressLabel(accountProgress);
   const progressMsg = {
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: downloading QFX (activity=${activityChoice.activity})`,
+    message: `Downloading QFX for account ${progressLabel} (activity=${activityChoice.activity}, timeout=${DOWNLOAD_TIMEOUT_MS / 1000}s)`,
     ...(accountProgress ? { count: accountProgress.index, total: accountProgress.total } : {}),
   } as const;
   await deps.emit(progressMsg);
@@ -1536,16 +1504,27 @@ async function processAccountDownload(
   const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
   if ("noActivity" in result) {
     await emitNoActivityProgress(deps, account, result.activity);
-    return;
+    // Source-limited completeness: the account was reached, the source had
+    // no activity in the requested window. Coverage, not a gap.
+    return { kind: "no_activity", accountId: account.internal_id };
   }
   if (!result.downloaded) {
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_download_failed",
-      message: `${account.name}: ${result.error}`,
+      message: `QFX download failed for account ${progressLabel}: ${result.error}`,
+      diagnostics: {
+        error: result.error,
+        ...accountProgressDiagnostic(accountProgress),
+      },
     });
-    return;
+    return {
+      kind: "gap",
+      accountId: account.internal_id,
+      reason: "temporary_unavailable",
+      errorClass: "qfx_download_failed",
+    };
   }
 
   let parsed: unknown;
@@ -1556,15 +1535,31 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_parse_failed",
-      message: `${account.name}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `QFX parse failed for account ${progressLabel}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),
+        artifact: "qfx",
+      },
     });
-    return;
+    return {
+      kind: "gap",
+      accountId: account.internal_id,
+      reason: "temporary_unavailable",
+      errorClass: "qfx_parse_failed",
+    };
   }
 
   const { transactions, balance } = extractFromQfx(parsed);
 
   if (deps.wantsTransactions) {
-    await emitTransactionsForAccount(deps, account, activityChoice.activity, transactions);
+    await emitTransactionsForAccount(
+      deps,
+      account,
+      activityChoice.activity,
+      transactions,
+      deps.transactionsFingerprintCursor
+    );
   }
 
   if (deps.wantsBalances && balance) {
@@ -1581,8 +1576,81 @@ async function processAccountDownload(
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: emitted ${transactions.length} transactions`,
+    message: `Parsed account ${progressLabel}: emitted ${transactions.length} transaction(s)`,
   });
+  // Reached and parsed (even a 0-transaction QFX is real coverage of this
+  // account's ledger for the window).
+  return { kind: "hydrated", accountId: account.internal_id };
+}
+
+/**
+ * Build the retryable DETAIL_GAP for an account whose QFX download or parse
+ * failed transiently. `record_key` is the account id — the next run's detail
+ * pass retries exactly this account. Mirrors the chatgpt DETAIL_GAP contract
+ * (reference_only, retryable, pending) so the runtime persists one resumable
+ * gap per failed key and the per-account coverage stays honest.
+ */
+export function buildAccountDetailGap(outcome: {
+  accountId: string;
+  reason: DetailGapMessage["reason"];
+  errorClass: string;
+}): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "transactions",
+    parent_stream: "accounts",
+    record_key: outcome.accountId,
+    status: "pending",
+    reason: outcome.reason,
+    detail_locator: {
+      kind: "chase.account",
+      account_id: outcome.accountId,
+    },
+    retryable: true,
+    reference_only: true,
+    detail: { class: outcome.errorClass },
+    last_error: { class: outcome.errorClass },
+  };
+}
+
+/**
+ * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
+ * fan-out. `accounts` is Chase's enumerated inventory (a known denominator),
+ * so this reports honest partial-vs-complete coverage of the QFX detail pass
+ * without inferring it from gaps alone:
+ *   - `required_keys`: every account considered for the QFX detail fetch.
+ *   - `hydrated_keys`: accounts reached, including source-limited no-activity
+ *     ones (won't-backfill is coverage, never a broken signal).
+ *   - `gap_keys`: accounts whose QFX failed transiently; each also carries a
+ *     pending DETAIL_GAP so the runtime's coverage invariant is satisfied and
+ *     the next run retries them.
+ * Only emitted when the denominator is genuinely known: transactions AND
+ * accounts are both in scope (the runtime validates `stream` / `state_stream`
+ * against requested scope) and at least one account was considered. When the
+ * denominator is unknown the connector emits nothing rather than invent a
+ * `complete` projection.
+ */
+export async function emitTransactionsDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly AccountDetailOutcome[]
+): Promise<void> {
+  if (!(deps.wantsTransactions && deps.wantsAccounts) || outcomes.length === 0) {
+    return;
+  }
+  const requiredKeys = outcomes.map((o) => o.accountId);
+  const hydratedKeys = outcomes
+    .filter((o) => o.kind === "hydrated" || o.kind === "no_activity")
+    .map((o) => o.accountId);
+  const gapKeys = outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId);
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "transactions",
+      stateStream: "accounts",
+      requiredKeys,
+      hydratedKeys,
+      gapKeys,
+    })
+  );
 }
 
 async function runTransactionsAndBalances(
@@ -1590,13 +1658,22 @@ async function runTransactionsAndBalances(
   page: Page,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
+  const outcomes: AccountDetailOutcome[] = [];
   for (let i = 0; i < filteredAccounts.length; i++) {
     const account = filteredAccounts[i];
     if (!account) {
       continue;
     }
-    await processAccountDownload(deps, page, account, { index: i + 1, total: filteredAccounts.length });
+    const outcome = await processAccountDownload(deps, page, account, {
+      index: i + 1,
+      total: filteredAccounts.length,
+    });
+    outcomes.push(outcome);
+    if (outcome.kind === "gap") {
+      await deps.emit(buildAccountDetailGap(outcome));
+    }
   }
+  await emitTransactionsDetailCoverage(deps, outcomes);
 }
 
 /**
@@ -1631,6 +1708,20 @@ export async function runCurrentActivity(
   dashboardHtml: string,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
+  const fingerprintCursor = deps.currentActivityFingerprintCursor;
+  // Build the STATE cursor carrying the per-row fingerprints forward.
+  // NOT pruned (partial scan — see emitCurrentActivityForAccount), so a
+  // run that emits zero rows (no accounts in scope, ambiguous multi-account
+  // overview, or a parse miss) still surfaces every prior fingerprint and
+  // never re-churns a row the next run re-lists.
+  const buildCursor = (): Record<string, unknown> => {
+    const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+    if (fingerprintCursor && fingerprintCursor.size() > 0) {
+      cursor.fingerprints = fingerprintCursor.toState();
+    }
+    return cursor;
+  };
+
   if (filteredAccounts.length === 0) {
     return;
   }
@@ -1647,11 +1738,12 @@ export async function runCurrentActivity(
       reason: "ambiguous_multi_account_overview",
       message:
         "Chase dashboard overview aggregates recent activity across multiple accounts and provides no per-row account attribution; current_activity collection requires a per-account activity surface (not yet wired)",
+      diagnostics: { account_count: filteredAccounts.length },
     });
     await deps.emit({
       type: "STATE",
       stream: "current_activity",
-      cursor: { fetched_at: deps.emittedAt },
+      cursor: buildCursor(),
     });
     return;
   }
@@ -1664,32 +1756,34 @@ export async function runCurrentActivity(
   const progressMsg = {
     type: "PROGRESS",
     stream: "current_activity",
-    message: `${account.name}: parsing dashboard overview MDS activity rows`,
+    message: "Parsing current_activity dashboard overview rows for account 1/1",
     count: 1,
     total: 1,
   } as const;
   await deps.emit(progressMsg);
 
-  const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml);
+  const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml, fingerprintCursor);
   if (emitted === 0) {
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "current_activity",
       reason: "selectors_pending",
-      message: `${account.name}: no parseable MDS activity rows (tr.mds-activity-table__row[data-values]) found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run`,
+      message:
+        "No parseable current_activity rows found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run",
+      diagnostics: { account_count: 1 },
     });
   } else {
     await deps.emit({
       type: "PROGRESS",
       stream: "current_activity",
-      message: `${account.name}: emitted ${emitted} current_activity row(s) from dashboard overview`,
+      message: `Emitted ${emitted} current_activity row(s) from dashboard overview`,
     });
   }
 
   await deps.emit({
     type: "STATE",
     stream: "current_activity",
-    cursor: { fetched_at: deps.emittedAt },
+    cursor: buildCursor(),
   });
 }
 
@@ -1699,8 +1793,10 @@ async function processStatementRow(
   row: StatementRow,
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
-  accountsResFilter: ReadonlySet<string> | null
-): Promise<void> {
+  accountsResFilter: ReadonlySet<string> | null,
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
+): Promise<StatementDetailOutcome | null> {
   try {
     const dateIso = parseDateDelivered(row.date_delivered_raw);
     const accountId = resolveAccountIdForRow(row, filteredAccounts) ?? resolveAccountIdForRow(row, accounts);
@@ -1709,34 +1805,43 @@ async function processStatementRow(
     // statement's account, skip it. (emitRecord will also skip, but doing
     // it here saves the PDF download.)
     if (accountsResFilter?.size && accountId && !accountsResFilter.has(accountId)) {
-      return;
+      return null;
     }
     if (statementRowOutsideTimeRange(deps, dateIso)) {
-      return;
+      return null;
     }
 
     const id = shortHash(`${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`);
     await deps.emit({
       type: "PROGRESS",
       stream: "statements",
-      message: `Downloading ${row.title}`,
+      message: "Downloading statement PDF",
     });
 
     const dlResult = await downloadStatementPdf(page, row, accountId, deps.capture);
     if (!dlResult.ok) {
       await deps.emit({
-        type: "SKIP_RESULT",
+        type: "PROGRESS",
         stream: "statements",
-        reason: "pdf_download_failed",
-        message: `${row.title}: ${dlResult.error}`,
+        message: "Statement PDF not hydrated this run; emitting index-only statement",
       });
-      // Still emit the index row so the owner has a record the statement
-      // exists, just without hydrated bytes.
-      await emitStatementIndexOnly(deps, id, row, accountId, dateIso);
-      return;
+      // Still emit a record so the owner has proof the statement exists.
+      // If it was previously hydrated, carry the prior pointers forward so a
+      // transient download failure does not flap them to null and re-version
+      // an immutable statement.
+      const carried = await emitStatementIndexOnly(
+        deps,
+        id,
+        row,
+        accountId,
+        dateIso,
+        fingerprintCursor,
+        hydrationCursor
+      );
+      return { kind: isHydrated(carried) ? "hydrated" : "index_only", id };
     }
 
-    await deps.emitRecord("statements", {
+    const record = {
       id,
       account_id: accountId,
       title: row.title,
@@ -1745,15 +1850,44 @@ async function processStatementRow(
       document_url: fileUrl(dlResult.pdfPath),
       pdf_path: dlResult.pdfPath,
       pdf_sha256: dlResult.pdfSha256,
+      pdf_text_sha256: dlResult.content.pdf_text_sha256,
+      pdf_page_count: dlResult.content.pdf_page_count,
       fetched_at: deps.emittedAt,
+    };
+    // Record this run's fresh hydration so a later run that fails to
+    // re-download can carry these content-addressed pointers AND the positive
+    // content fingerprint forward (so a transient failure does not drop the
+    // content fields and flip the canonical exclusion back to conservative).
+    hydrationCursor?.note(id, {
+      document_url: record.document_url,
+      pdf_path: record.pdf_path,
+      pdf_sha256: record.pdf_sha256,
+      pdf_text_sha256: record.pdf_text_sha256,
+      pdf_page_count: record.pdf_page_count,
     });
+    // Gate on a per-statement fingerprint that excludes the run-clock
+    // `fetched_at`. A statement's identity (id = hash(account_reference|
+    // date|title)) is immutable and pdf_path/pdf_sha256/document_url are
+    // content-addressed (the path embeds the sha256), so a re-downloaded
+    // identical statement is byte-identical modulo `fetched_at`. Without
+    // this gate every run appended a fresh version of every statement
+    // (~10 versions/record of pure run-clock churn).
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("statements", record);
+    }
+    return { kind: "hydrated", id };
   } catch (rowErr) {
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "row_exception",
-      message: `${row.title}: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `Statement row processing failed: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
+      diagnostics: {
+        error_class: rowErr instanceof Error ? rowErr.constructor.name : "unknown",
+        message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
+      },
     });
+    return null;
   }
 }
 
@@ -1762,7 +1896,9 @@ async function runStatements(
   page: Page,
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
-  accountsResFilter: ReadonlySet<string> | null
+  accountsResFilter: ReadonlySet<string> | null,
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1779,6 +1915,7 @@ async function runStatements(
       message: `Found ${rows.length} statement row(s)`,
     });
 
+    const outcomes: StatementDetailOutcome[] = [];
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!row) {
@@ -1792,13 +1929,39 @@ async function runStatements(
         total: rows.length,
       } as const;
       await deps.emit(progressMsg);
-      await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter);
+      const outcome = await processStatementRow(
+        deps,
+        page,
+        row,
+        filteredAccounts,
+        accounts,
+        accountsResFilter,
+        fingerprintCursor,
+        hydrationCursor
+      );
+      if (outcome) {
+        outcomes.push(outcome);
+      }
     }
+    await emitStatementDetailCoverage(deps, outcomes);
 
+    // Statements is a full scan of the documents index: prune fingerprints
+    // (and the carried hydration pointers, in lockstep) for statements no
+    // longer listed so a re-appearance re-emits and a delisted statement
+    // stops being carried forever.
+    fingerprintCursor?.pruneStale();
+    hydrationCursor?.pruneStale();
+    const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+    if (fingerprintCursor && fingerprintCursor.size() > 0) {
+      cursor.fingerprints = fingerprintCursor.toState();
+    }
+    if (hydrationCursor && hydrationCursor.size() > 0) {
+      cursor.hydration = hydrationCursor.toState();
+    }
     const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
       type: "STATE",
       stream: "statements",
-      cursor: { fetched_at: deps.emittedAt },
+      cursor,
     };
     await deps.emit(stateMsg);
   } catch (err) {
@@ -1807,6 +1970,10 @@ async function runStatements(
       stream: "statements",
       reason: "statements_scrape_failed",
       message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
+      },
     });
   }
 }
@@ -1859,8 +2026,35 @@ if (isMainModule(import.meta.url)) {
 
       const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-chase-"));
 
+      // Per-transaction fingerprint cursor (excludes the run-clock
+      // `fetched_at`). One cursor for the whole transactions stream —
+      // record ids (`account_id|fitid`) are globally unique across
+      // accounts. Only opened when transactions are requested. NOT pruned:
+      // transactions is a partial incremental scan (see
+      // emitTransactionsForAccount).
+      const transactionsFingerprintCursor = requested.has("transactions")
+        ? openFingerprintCursor(startState.transactions, {
+            excludeFromFingerprint: ["fetched_at", "source"],
+            priorFingerprints: readPriorTransactionFingerprints(startState),
+          })
+        : undefined;
+
+      // Per-row fingerprint cursor for `current_activity` (excludes the
+      // run-clock `fetched_at`). One cursor for the whole stream — row ids
+      // (`account_id|ui_transaction_id` or an account-scoped fallback hash)
+      // are globally unique. Only opened when current_activity is
+      // requested. NOT pruned: the dashboard overview is a partial
+      // (recent-rows) scan (see emitCurrentActivityForAccount).
+      const currentActivityFingerprintCursor = requested.has("current_activity")
+        ? openFingerprintCursor(startState.current_activity, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorCurrentActivityFingerprints(startState),
+          })
+        : undefined;
+
       const deps: EmitDeps = {
         capture,
+        currentActivityFingerprintCursor,
         emit,
         emitRecord,
         emittedAt,
@@ -1870,6 +2064,7 @@ if (isMainModule(import.meta.url)) {
         resFilters,
         tmpDir,
         txState,
+        transactionsFingerprintCursor,
         wantsAccounts: requested.has("accounts"),
         wantsBalances: requested.has("balances"),
         wantsCurrentActivity: requested.has("current_activity"),
@@ -1908,7 +2103,11 @@ if (isMainModule(import.meta.url)) {
         // directly — stable, no hashing needed. Keeps transactions.account_id
         // aligned with the download URL param.
         if (deps.wantsAccounts) {
-          await emitAccountsStream(deps, filteredAccounts);
+          const accountsFingerprintCursor = openFingerprintCursor(startState.accounts, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorAccountFingerprints(startState),
+          });
+          await emitAccountsStream(deps, filteredAccounts, accountsFingerprintCursor);
         }
 
         // Transactions + balances: download QFX per account, parse, emit.
@@ -1922,9 +2121,32 @@ if (isMainModule(import.meta.url)) {
 
         // Statements: navigate to Statements & Documents, enumerate rows,
         // download each PDF, emit one record per statement with
-        // content-addressed path.
+        // content-addressed path. Content-gated per-statement fingerprint
+        // cursor: when the record carries a positive content fingerprint
+        // (pdf_text_sha256 + pdf_page_count), the blob/acquisition-identity
+        // fields are excluded too, so an RC4 re-encryption re-download with
+        // unchanged content is a no-op; when absent (legacy/index-only) only
+        // `fetched_at` is excluded (conservative fallback).
         if (deps.wantsStatements) {
-          await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter);
+          const statementsFingerprintCursor = openFingerprintCursor(startState.statements, {
+            resolveExcludeFromFingerprint: statementFingerprintExcludeKeys,
+            priorFingerprints: readPriorStatementFingerprints(startState),
+          });
+          // Carry-forward of prior hydrated PDF pointers: seeded from the
+          // prior statements STATE so a transient re-download failure re-emits
+          // the prior content-addressed pointers instead of null.
+          const statementsHydrationCursor = openStatementHydrationCursor(
+            readPriorStatementHydration(startState.statements)
+          );
+          await runStatements(
+            deps,
+            page,
+            filteredAccounts,
+            accounts,
+            accountsResFilter,
+            statementsFingerprintCursor,
+            statementsHydrationCursor
+          );
         }
       } finally {
         await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);

@@ -208,11 +208,24 @@ async function clickIntermediateLogin(page: Page): Promise<void> {
   await page.waitForTimeout(3000);
 }
 
+/**
+ * Hand the unexpected/Cloudflare-challenge login UI to the operator, then
+ * re-probe the session. Returns `true` when the operator completed login in
+ * the streaming companion (or on a host desktop) and the session is now
+ * active; `false` when login still has not happened.
+ *
+ * This mirrors `fallbackForPostSubmitLogin` and the reddit connector's
+ * captcha fallback: completing the manual step is a *signal to re-check*, not
+ * an instruction to end the run. Earlier this helper threw unconditionally
+ * after `manualAction` resolved, so the operator's "I completed login" click
+ * always ended the run even when they had just solved the challenge — the
+ * message tells them to "complete login," so the connector must honor that.
+ */
 async function fallbackForUnexpectedLoginUi({
   capture,
   page,
   sendInteraction,
-}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<never> {
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
   await manualAction(
     {
       ...(capture ? { capture } : {}),
@@ -224,9 +237,18 @@ async function fallbackForUnexpectedLoginUi({
     },
     sendInteraction
   );
-  throw new Error("chatgpt_login_unexpected_ui");
+  await page.waitForTimeout(3000);
+  return await isChatGptSessionActive(page);
 }
 
+/**
+ * Returns `true` when login is already complete (the operator finished it in
+ * the streaming companion during the unexpected-UI fallback) and the caller
+ * should stop the automated flow; `false` when the connector should continue
+ * driving the form. Throws `chatgpt_login_unexpected_ui` only when the
+ * expected inputs never appear *and* the operator's manual step did not yield
+ * an active session.
+ */
 async function findAndFillEmail({
   capture,
   email,
@@ -234,10 +256,13 @@ async function findAndFillEmail({
   sendInteraction,
 }: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly email: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const emailIn = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
   if (!(await emailIn.count())) {
-    await fallbackForUnexpectedLoginUi({ ...(capture ? { capture } : {}), page, sendInteraction });
+    if (await fallbackForUnexpectedLoginUi({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+      return true;
+    }
+    throw new Error("chatgpt_login_unexpected_ui");
   }
 
   await emailIn.fill(email);
@@ -247,6 +272,7 @@ async function findAndFillEmail({
     .click()
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
+  return false;
 }
 
 async function continueWithPasswordIfPresent(page: Page): Promise<void> {
@@ -439,7 +465,13 @@ export async function ensureChatGptSession({
 
   await openChatGptLogin(page);
   await clickIntermediateLogin(page);
-  await findAndFillEmail({ ...(capture ? { capture } : {}), email, page, sendInteraction });
+  // If the expected login UI is missing (e.g. a Cloudflare challenge), the
+  // operator completes login in the streaming companion. When that succeeds we
+  // stop here instead of driving the password form against an already
+  // authenticated page.
+  if (await findAndFillEmail({ ...(capture ? { capture } : {}), email, page, sendInteraction })) {
+    return true;
+  }
   await continueWithPasswordIfPresent(page);
 
   if (

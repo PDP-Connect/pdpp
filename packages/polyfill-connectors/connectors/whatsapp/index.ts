@@ -18,6 +18,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 interface ParsedMessage {
   author: string;
@@ -102,6 +103,7 @@ function parseChatFile(filename: string, content: string): ParsedChat {
 
 runConnector({
   name: "whatsapp",
+  validateRecord,
   async collect({ requested, emit, emitRecord }) {
     const importDir = process.env.WHATSAPP_EXPORT_DIR || join(homedir(), ".pdpp/imports/whatsapp");
 

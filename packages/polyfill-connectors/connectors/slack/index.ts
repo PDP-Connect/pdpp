@@ -55,7 +55,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
-import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  type CollectContext,
+  type EmittedMessage,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
@@ -63,6 +71,7 @@ import {
   buildChannelCanvasIndex,
   buildChannelMembershipRecord,
   buildChannelRecord,
+  buildChannelStatsRecord,
   buildFileRecord,
   buildMessageAttachmentRecords,
   buildMessageRecord,
@@ -478,13 +487,193 @@ export async function emitMessagesPass(
 /**
  * Shared deps bag for every per-stream helper. Mirrors gmail/usaa EmitDeps —
  * bundle the few things every stream needs so helper signatures stay 2 args.
+ *
+ * `fingerprintCursors` carry the per-record semantic fingerprints across
+ * runs for the workspace/users/files streams via the shared
+ * `openFingerprintCursor` primitive. Without them, slackdump's
+ * archive-rebuild churn produces a fresh RECORD per (record, run) pair
+ * even when source state hasn't moved. One cursor per fingerprinted
+ * stream; cursors for streams not requested this run carry forward
+ * untouched (their `pruneStale` is never called).
  */
-interface StreamDeps {
+export interface StreamDeps {
   db: DatabaseSync;
+  /**
+   * Protocol-message side-channel (non-RECORD). Used today only to declare a
+   * list stream's enumerated `considered` denominator via a self-coverage
+   * DETAIL_COVERAGE (see `declareListConsidered`). Narrowed to the single
+   * message kind this connector emits through it so a future RECORD emit can't
+   * accidentally route here instead of `emitRecord`.
+   */
+  emit: (msg: Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
+  fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+}
+
+/**
+ * Declare a list stream's enumerated `considered` denominator for the
+ * per-stream Collection Report (OpenSpec
+ * `define-connector-progress-evidence-contract`, task 4.2). Mirrors the GitHub
+ * list-stream mechanism (task 4.1): a stream with no detail-hydration phase
+ * emits a DETAIL_COVERAGE for itself (`state_stream === stream`) with EMPTY
+ * `required_keys`/`hydrated_keys` and an explicit `considered` count. Empty key
+ * arrays mean the runtime's pre-commit coverage gate has nothing to mark
+ * missing (the committed STATE still commits); the only signal carried is the
+ * denominator the terminal collection-fact block reads.
+ *
+ * Honesty contract (identical to GitHub's): `considered` is the number of items
+ * the run actually enumerated from the source within its boundary — measured at
+ * the enumeration site, NEVER the count it chose to emit. When the run emitted
+ * every enumerated item the stream reads `complete`; when a weighed item was not
+ * emitted (e.g. a record dropped by shape validation) `collected < considered`
+ * reads an honest `partial`.
+ *
+ * A fingerprint-suppressed full-sync stream re-enumerates its whole boundary
+ * every run and suppresses the records it determined to be unchanged, so
+ * `collected` is a churn-reduced subset, not a coverage count. Such a stream
+ * still has an objective coverage numerator — the items it accounted for: emitted
+ * plus suppressed-because-unchanged — and declares it as the optional `covered`
+ * count (task 4.4). When `covered` is supplied the projection compares
+ * `considered` against `covered` instead of `collected`, so a steady-state run
+ * reads `complete` rather than a false `partial`; a row weighed but dropped is in
+ * neither `collected` nor `covered`, so a real shortfall still reads `partial`.
+ * A stream that cannot know its full inventory for the run — incrementally
+ * windowed past an unknowable boundary, or derived per-parent — MUST NOT call
+ * this; it leaves `considered` unknown rather than fabricating a denominator.
+ */
+async function declareListConsidered(
+  deps: StreamDeps,
+  stream: string,
+  considered: number,
+  covered?: number
+): Promise<void> {
+  if (!Number.isInteger(considered) || considered < 0) {
+    return;
+  }
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream,
+      stateStream: stream,
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered,
+      ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
+    })
+  );
+}
+
+/**
+ * Streams that use the per-record fingerprint cursor. Workspace + users +
+ * files were re-emitting on every slackdump pass even when source state
+ * hadn't moved — see record-version-churn-data-quality-report.md
+ * (31k+ versions/key on workspace, 250 versions/key on users, bimodal on
+ * files). Channels, canvases, messages, reactions and message_attachments
+ * are intentionally NOT on this list:
+ *   - channels: low cardinality, low version count today; out of scope
+ *     for this batch.
+ *   - canvases: tied to channel index; low cardinality.
+ *   - messages/reactions/message_attachments: already incremental via
+ *     last_ts cursor.
+ *
+ * `channel_memberships` WAS deferred here on the assumption that its churn
+ * was not load-bearing. Live retained-history later contradicted that: its
+ * record body is `{id, channel_id, user_id, fetched_at}`, so the per-run
+ * `fetched_at` forced a brand-new version of every membership on every run,
+ * and it grew into the single largest churn stream by absolute history
+ * volume (tens of thousands of `record_changes` rows for a membership set
+ * that barely moves). It is the exact `fetched_at`-volatility class already
+ * fixed for `workspace`, so it now joins the fingerprinted set with the same
+ * `fetched_at` exclusion. A membership only re-emits when it actually
+ * appears or disappears.
+ */
+export const FINGERPRINTED_STREAMS = ["workspace", "users", "files", "channel_memberships", "channels"] as const;
+type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
+
+/**
+ * Per-stream emitted-record fields that participate in the emitted shape
+ * but must NOT participate in change detection — typically run-clock
+ * fields like `fetched_at` whose value is "when this run happened",
+ * not "when the source row changed". Without exclusion, the fingerprint
+ * would never match across runs even when the source has not moved.
+ *
+ *   workspace: fetched_at advances on every run by design.
+ *   users / files: no run-clock fields, fingerprint covers the whole record.
+ *   channel_memberships: fetched_at is the run clock; the only other fields
+ *     (id, channel_id, user_id) are the membership identity itself, so
+ *     excluding fetched_at means the fingerprint moves only when a
+ *     membership is added or removed.
+ */
+export const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]> = {
+  workspace: ["fetched_at"],
+  users: [],
+  files: [],
+  channel_memberships: ["fetched_at"],
+  channels: [],
+};
+
+/**
+ * Per-stream fingerprint gate. Computes the record's fingerprint against
+ * the prior cursor (with `FINGERPRINT_EXCLUDE[stream]` removed from the
+ * input) and emits only when the fingerprint moved or there is no prior.
+ * Records whose fingerprint matches the prior one do NOT emit — that
+ * suppression is the load-bearing line for the workspace/users/files
+ * churn fix.
+ *
+ * Records without an id pass through unconditionally (they cannot be
+ * fingerprinted; the cursor leaves its state alone).
+ */
+export async function emitWithFingerprint(
+  deps: StreamDeps,
+  stream: FingerprintedStream,
+  record: RecordData
+): Promise<boolean> {
+  const cursor = deps.fingerprintCursors.get(stream);
+  if (!cursor) {
+    // Programmer error: the collect() bootstrap opens a cursor for every
+    // fingerprinted stream regardless of whether it was requested, so this
+    // branch shouldn't fire. Fall back to a raw emit rather than throw.
+    await deps.emitRecord(stream, record);
+    return true;
+  }
+  if (!cursor.shouldEmit(record)) {
+    // Suppressed because the record was unchanged since the prior run. The item
+    // is still COVERED — the run accounted for it and confirmed it needs no new
+    // version — so the caller counts it toward the `covered` numerator even
+    // though no RECORD was emitted. This is the line that lets a steady-state
+    // full-sync run read `complete` instead of a false `partial`.
+    return false;
+  }
+  await deps.emitRecord(stream, record);
+  return true;
+}
+
+/**
+ * Run a fingerprinted full-sync stream over `rows`, building one record per row
+ * and routing it through {@link emitWithFingerprint}. Returns the objective
+ * coverage counts the Collection Report needs: `considered` is the enumerated row
+ * count (the full source boundary the run weighed) and `covered` is the number of
+ * rows the run accounted for — emitted plus suppressed-because-unchanged. They are
+ * counted independently: a row dropped before reaching the emit helper (a future
+ * malformed-row `continue`) raises `considered` without raising `covered`, so the
+ * shortfall reads an honest `partial` rather than being assumed complete.
+ */
+async function runFingerprintedFullSync<Row>(
+  deps: StreamDeps,
+  stream: FingerprintedStream,
+  rows: readonly Row[],
+  buildRecord: (row: Row) => RecordData
+): Promise<{ considered: number; covered: number }> {
+  let covered = 0;
+  for (const r of rows) {
+    // Every row that reaches the emit helper is covered (emitted or
+    // suppressed-unchanged); `emitWithFingerprint` never drops an enumerated row.
+    await emitWithFingerprint(deps, stream, buildRecord(r));
+    covered += 1;
+  }
+  return { considered: rows.length, covered };
 }
 
 async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
@@ -492,12 +681,13 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     deps.db,
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
-  for (const r of rows) {
-    await deps.emitRecord("workspace", buildWorkspaceRecord(r, deps.emittedAt));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "workspace", rows, (r) =>
+    buildWorkspaceRecord(r, deps.emittedAt)
+  );
+  await declareListConsidered(deps, "workspace", considered, covered);
 }
 
-async function runChannelsStream(deps: StreamDeps): Promise<void> {
+export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
   const rows = safeAll<ChannelRow>(
     deps.db,
@@ -508,8 +698,32 @@ async function runChannelsStream(deps: StreamDeps): Promise<void> {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  const observedOn = deps.emittedAt.slice(0, 10);
+  const wantsChannels = deps.requested.has("channels");
+  let channelsCovered = 0;
   for (const r of rows) {
-    await deps.emitRecord("channels", buildChannelRecord(r));
+    if (wantsChannels) {
+      // Entity record: fingerprinted so unchanged structural fields don't re-emit.
+      // Every enumerated channel row is accounted for (emitted or
+      // suppressed-unchanged), so it counts toward the `covered` numerator.
+      const entityRec = buildChannelRecord(r);
+      await emitWithFingerprint(deps, "channels", entityRec);
+      channelsCovered += 1;
+    }
+    // Stats record: append-keyed observation (one per channel per day).
+    if (deps.requested.has("channel_stats")) {
+      await deps.emitRecord("channel_stats", buildChannelStatsRecord(r, observedOn));
+    }
+  }
+  // `channels` is a fingerprint-suppressed full-sync stream: it re-enumerates the
+  // whole channel inventory every run and suppresses unchanged rows. Declaring
+  // `considered = rows.length` with `covered = channelsCovered` lets a
+  // steady-state run read `complete` instead of a false `partial`. `channel_stats`
+  // is append-keyed (one observation per channel per day), not an inventory, so it
+  // declares no denominator. The denominators are measured at the query site,
+  // never aliased to the emitted count.
+  if (wantsChannels) {
+    await declareListConsidered(deps, "channels", rows.length, channelsCovered);
   }
 }
 
@@ -520,12 +734,13 @@ async function runChannelMembershipsStream(deps: StreamDeps): Promise<void> {
     SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
   `
   );
-  for (const r of rows) {
-    await deps.emitRecord("channel_memberships", buildChannelMembershipRecord(r, deps.emittedAt));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "channel_memberships", rows, (r) =>
+    buildChannelMembershipRecord(r, deps.emittedAt)
+  );
+  await declareListConsidered(deps, "channel_memberships", considered, covered);
 }
 
-async function runUsersStream(deps: StreamDeps): Promise<void> {
+export async function runUsersStream(deps: StreamDeps): Promise<void> {
   const rows = safeAll<UserRow>(
     deps.db,
     `
@@ -535,9 +750,8 @@ async function runUsersStream(deps: StreamDeps): Promise<void> {
       ON m.ID = u.ID AND m.mx = u.CHUNK_ID
   `
   );
-  for (const r of rows) {
-    await deps.emitRecord("users", buildUserRecord(r));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "users", rows, buildUserRecord);
+  await declareListConsidered(deps, "users", considered, covered);
 }
 
 /**
@@ -610,12 +824,11 @@ async function runFilesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE != 'quip'
   `
   );
-  for (const r of rows) {
-    await deps.emitRecord("files", buildFileRecord(r));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "files", rows, buildFileRecord);
+  await declareListConsidered(deps, "files", considered, covered);
 }
 
-async function runCanvasesStream(deps: StreamDeps): Promise<void> {
+export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   // Canvases are stored as FILE rows with MODE='quip' (mimetype
   // application/vnd.slack-docs). A single canvas can appear multiple times
   // across CHUNK_IDs (channel share + thread shares); dedupe on file ID by
@@ -651,6 +864,17 @@ async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   for (const r of canvasRows) {
     await deps.emitRecord("canvases", buildCanvasRecord(r, channelCanvasIndex));
   }
+  // `canvases` is the one Slack stream where `considered` is objectively
+  // honest: it full-syncs every run (NOT fingerprint-suppressed, unlike
+  // workspace/users/files/channels/channel_memberships), and every enumerated
+  // `canvasRows` row is emitted unconditionally — so `collected` equals the
+  // enumerated quip-file inventory, never a churn-reduced subset. Declaring
+  // `canvasRows.length` (the deduped MODE='quip' count read at the query site)
+  // as `considered` lets the report read a real `complete` when every canvas
+  // emitted, and an honest `partial` if a canvas was weighed but dropped (e.g.
+  // by record-shape validation). The denominator is measured here, never
+  // aliased to the emitted count.
+  await declareListConsidered(deps, "canvases", canvasRows.length);
 }
 
 export const UNAVAILABLE_STREAMS: ReadonlyArray<{ name: string; reason: string }> = [
@@ -694,6 +918,7 @@ interface StateEmitDeps {
   archivePath: string;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
+  fingerprintCursors: Map<string, FingerprintCursor>;
   requested: CollectContext["requested"];
 }
 
@@ -706,7 +931,12 @@ interface StateEmitDeps {
  *   moves onto the messages cursor so `-resume` continues to work; it's
  *   workspace-global but messages is the canonical stream for slackdump
  *   state on the PDPP side.
- * - other mutable_state streams (channels, users, files, canvases):
+ * - workspace / users / files / channel_memberships: persist the per-record
+ *   fingerprint map alongside the freshness marker so the next run can skip
+ *   emitting records whose semantic shape hasn't moved (see
+ *   emitWithFingerprint). A legacy cursor (no `fingerprints` key) is
+ *   tolerated on the read side; the first post-deploy run rebuilds the map.
+ * - other mutable_state streams (channels, canvases):
  *   low cardinality, we full-sync each run; the cursor is just a freshness
  *   marker for visibility.
  */
@@ -720,12 +950,25 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       fetched_at: nowIso(),
     },
   });
-  for (const stream of ["channels", "users", "files", "canvases", "workspace"]) {
+  for (const stream of [
+    "channels",
+    "channel_stats",
+    "channel_memberships",
+    "users",
+    "files",
+    "canvases",
+    "workspace",
+  ]) {
     if (deps.requested.has(stream)) {
+      const cursor: Record<string, unknown> = { synced_at: nowIso() };
+      const fingerprintCursor = deps.fingerprintCursors.get(stream);
+      if (fingerprintCursor && fingerprintCursor.size() > 0) {
+        cursor.fingerprints = fingerprintCursor.toState();
+      }
       deps.emit({
         type: "STATE",
         stream,
-        cursor: { synced_at: nowIso() },
+        cursor,
       });
     }
   }
@@ -807,15 +1050,19 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
  */
 async function runRequestedStreams(deps: StreamDeps, state: CollectContext["state"]): Promise<string | null> {
   if (deps.requested.has("workspace")) {
+    deps.progress("Slack: emitting workspace record", { stream: "workspace" });
     await runWorkspaceStream(deps);
   }
-  if (deps.requested.has("channels")) {
+  if (deps.requested.has("channels") || deps.requested.has("channel_stats")) {
+    deps.progress("Slack: emitting channels", { stream: "channels" });
     await runChannelsStream(deps);
   }
   if (deps.requested.has("channel_memberships")) {
+    deps.progress("Slack: emitting channel memberships", { stream: "channel_memberships" });
     await runChannelMembershipsStream(deps);
   }
   if (deps.requested.has("users")) {
+    deps.progress("Slack: emitting users", { stream: "users" });
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
@@ -823,13 +1070,19 @@ async function runRequestedStreams(deps: StreamDeps, state: CollectContext["stat
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = messagesState?.last_ts || null;
+    deps.progress(
+      priorTs ? `Slack: emitting messages newer than ${priorTs}` : "Slack: emitting all messages (full pass)",
+      { stream: "messages" }
+    );
     const result = await runMessagesUnifiedPass(deps, priorTs);
     maxMessageTs = result.maxMessageTs;
   }
   if (deps.requested.has("files")) {
+    deps.progress("Slack: emitting files", { stream: "files" });
     await runFilesStream(deps);
   }
   if (deps.requested.has("canvases")) {
+    deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
   }
   return maxMessageTs;
@@ -895,16 +1148,46 @@ if (isMainModule(import.meta.url)) {
       });
 
       const db = new DatabaseSync(sqlitePath, { readOnly: true });
+      // One per-record fingerprint cursor per fingerprinted stream. The
+      // primitive seeds itself from the prior cursor so a record we skip
+      // this run carries its fingerprint forward into the next STATE
+      // write — without that, a single skipped record would drop from
+      // STATE on the next write and re-emit on the run after.
+      const fingerprintCursors = new Map<string, FingerprintCursor>();
+      for (const stream of FINGERPRINTED_STREAMS) {
+        fingerprintCursors.set(
+          stream,
+          openFingerprintCursor(state[stream], {
+            excludeFromFingerprint: FINGERPRINT_EXCLUDE[stream],
+          })
+        );
+      }
       const deps: StreamDeps = {
         db,
+        // Narrow the ctx.emit union to the single message kind StreamDeps.emit
+        // accepts (DETAIL_COVERAGE). runConnector's emit accepts the full
+        // EmittedMessage union, so this is a contravariant widening at the call
+        // boundary, not a coercion of message shape.
+        emit: (msg) => emit(msg),
         emitRecord: ctx.emitRecord,
         emittedAt: ctx.emittedAt,
+        fingerprintCursors,
         progress,
         requested,
       };
       const maxMessageTs = await runRequestedStreams(deps, state);
 
       emitUnavailableStreams(requested, emit);
+
+      // Drop fingerprint entries for IDs that disappeared from the source
+      // since the prior run on streams we actually requested. Streams the
+      // caller did not exercise keep their full carry-forward — an
+      // unrequested stream's cursor must not be silently wiped.
+      for (const stream of FINGERPRINTED_STREAMS) {
+        if (requested.has(stream)) {
+          fingerprintCursors.get(stream)?.pruneStale();
+        }
+      }
 
       const messagesState = state.messages as MessagesState | undefined;
       const priorMaxTs = messagesState?.last_ts || null;
@@ -913,6 +1196,7 @@ if (isMainModule(import.meta.url)) {
         archivePath,
         committedMaxTs,
         emit,
+        fingerprintCursors,
         requested,
       });
     },

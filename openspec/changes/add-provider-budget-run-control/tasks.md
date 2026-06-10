@@ -1,0 +1,118 @@
+# Tasks — add-provider-budget-run-control
+
+This change began as a proposal lane and now tracks implementation tranches. Keep
+the spec, design, tasks, and implementation in lockstep until archive.
+
+## 1. Spec delta (this lane — proposal only)
+
+- [x] Write `proposal.md` — change rationale, scope, capability targets.
+- [x] Write `design.md` — design decisions, tradeoffs, acceptance checks.
+- [x] Write `tasks.md` — this file.
+- [x] Write `specs/polyfill-runtime/spec.md` — normative requirement deltas.
+- [x] `openspec validate add-provider-budget-run-control --strict`.
+- [x] `openspec validate --all --strict`.
+
+## 2. Implementation (future lanes)
+
+The following tasks are stubs for implementation lanes. Each should be a
+separate lane or tranche with its own acceptance checks.
+
+### 2.1 Per-provider token-bucket pacing
+
+- [x] Implement a per-provider token bucket in the polyfill-runtime base.
+  - [x] Fill rate and burst depth configurable per connector; unset → conservative default.
+  - [x] AIMD adaptive fill-rate adjustment: additive increase on success,
+        multiplicative decrease on 429/503/elevated-latency.
+  - [x] One-way ratchet: error responses may only increase delay, never decrease.
+  - [x] Conservative starting delay before first response signal.
+  - [x] Per-provider isolation: slow or rate-limited provider does not stall other providers.
+- [x] Unit-test the token bucket with an injectable clock (no live provider required).
+- [x] Verify that the generic primitive can run unbounded when no budget is configured.
+
+### 2.2 Retry budget (ratio-based token bucket)
+
+- [x] Implement a run-scoped retry budget token bucket.
+  - [x] Capacity ≈ 20% of per-run request cap (or a configurable minimum).
+  - [x] Tokens consumed on retry; refilled proportionally to successes.
+  - [x] Full jitter backoff: `sleep = random(0, min(cap, base × 2^attempt))`.
+  - [x] Retry only on 429, 408, 5xx. Non-retryable 4xx logs and skips (no budget consumed).
+  - [x] When bucket empty: defer run as resumable gap with reason not in source-pressure set.
+- [x] Unit-test retry budget exhaustion path.
+
+### 2.3 Circuit breaker integration
+
+- [x] Integrate a circuit breaker into the provider-budget admission path.
+  - [x] Composition order in the implemented ChatGPT path: provider-budget admission gates each real API/retry attempt before the provider request.
+  - [x] Closed → Open on failure-rate threshold over a sliding window.
+  - [x] Open → Half-Open after configurable reset timeout.
+  - [x] Half-Open: probe request; success → Closed; failure → Open.
+  - [x] Minimum-throughput guard: breaker cannot open before a minimum request count.
+  - [x] When Open: propagate planned deferral immediately, without launching the provider request.
+- [x] Expose circuit breaker state transitions as structured run progress
+      evidence from the generic provider-budget primitive.
+- [x] Unit-test all three state transitions.
+
+### 2.4 Run budget envelope (request cap + wall-clock deadline)
+
+- [x] Implement run-scoped request cap and wall-clock deadline.
+  - [x] Generic primitive supports unbounded mode; ChatGPT defaults to adaptive
+        pacing/retry protection, with fixed caps only as explicit envelopes.
+  - [x] Wall-clock checked between fetch attempts, never mid-fetch.
+  - [x] On exhaustion: emit resumable gap record; checkpoint reflects last durable write only.
+  - [x] Gap reason is not in source-pressure reason set.
+  - [x] Does not arm source-pressure cooldown governor.
+- [x] Unit-test with injectable clock (request cap trip, wall-clock trip, unbounded mode).
+
+### 2.5 Commit-gated monotonic checkpoint
+
+- [ ] Audit all connectors: checkpoint advancement must follow, not precede, durable write confirmation.
+- [ ] Enforce opaque cursor storage: no reconstructed offset cursors in any first-party connector.
+- [ ] Add a CI assertion or test that fails when a connector advances its checkpoint before durable write.
+
+### 2.6 Catch-up vs. steady-state separation (where applicable)
+
+- [ ] For connectors with a historical backfill phase, implement separate bookmarks for
+      catch-up and steady-state modes.
+- [ ] Verify that catch-up runs do not advance the steady-state incremental cursor.
+- [ ] Document the mode-switching predicate (when to shift from catch-up windows to
+      steady-state incremental).
+
+### 2.7 Operator progress/visibility
+
+- [x] Emit run-scoped structured circuit state changes from connector runtime progress.
+- [ ] Project circuit breaker state (Closed/Open/Half-Open) in the connector health view.
+- [ ] Distinguish budget-exhaustion deferrals from source-pressure deferrals in display copy.
+- [ ] Ensure run-progress reporting distinguishes: pages fetched this run, pages deferred,
+      retry events, circuit breaker state changes.
+
+### 2.8 Detail-gap recovery drain loop
+
+- [x] Replace the single-page `START.detail_gaps` recovery behavior with a
+      reference-only page request/response loop that drains all eligible pending
+      detail gaps in one logical run until storage is drained or adaptive
+      provider/run safety stops.
+- [x] Bound internal detail-gap pages by serialized payload byte budget, adapting
+      candidate row size from observed payload size. The remaining SQL row
+      candidate cap is a storage safety fallback only and cannot cap recovery
+      progress because the connector keeps requesting pages until drained or
+      stopped.
+- [x] Preserve connector-local provider budget, retry, and circuit-breaker state
+      across pages by keeping one connector process alive for the whole drain.
+- [x] Unit-test recovery beyond 100 pending gaps in one run, adaptive-stop
+      behavior, and byte-budget paging for large gap payloads.
+
+## 3. Owner closeout
+
+- [ ] Per-provider live calibration: run at least one connector under the new control model
+      against a real provider, confirm pacing converges, retry budget is not exhausted on
+      a healthy run, and wall-clock/request-cap deferrals do not arm source-pressure cooldown.
+- [ ] Archive this change once all §2 implementation tranches land and the per-provider
+      calibration is recorded.
+
+## Acceptance Checks (proposal validation)
+
+```sh
+openspec validate add-provider-budget-run-control --strict
+openspec validate --all --strict
+git diff --check
+```

@@ -1,7 +1,6 @@
 // Pure parsers for the Amazon connector. Kept free of Playwright / Node
 // I/O so they can be unit-tested in isolation.
 
-// biome-ignore lint/correctness/noUnresolvedImports: linkedom is declared in package.json; Biome's resolver can't follow its conditional exports
 import { parseHTML } from "linkedom";
 import type {
   DetailItem,

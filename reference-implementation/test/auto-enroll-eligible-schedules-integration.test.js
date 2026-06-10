@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { closeDb, initDb } from '../server/db.js';
 import {
   getConnectorManifest,
@@ -119,8 +120,10 @@ test(
     assert.equal(schedule.interval_seconds, 3600);
     assert.equal(schedule.ineligibility_reason, null, 'eligible under current manifest');
     // Pin the persisted store too: the row went through createSchedule().
+    // The store key is the canonical short key (e.g. "notion"), not the URI.
+    const canonicalId = canonicalConnectorKey(notion.connector_id) ?? notion.connector_id;
     const persisted = await Promise.resolve(
-      getDefaultSchedulerStore().getSchedule(notion.connector_id),
+      getDefaultSchedulerStore().getSchedule(canonicalId),
     );
     assert.equal(persisted.enabled, true);
   }),

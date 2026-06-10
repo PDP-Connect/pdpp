@@ -1,0 +1,17 @@
+# Railway CLI upload context.
+#
+# Keep this narrow: Docker builds still need the repository sources, but local
+# agent/skill symlinks are machine-local and can include broken links that make
+# `railway up` fail while walking the tree.
+
+skills
+.agents
+.claude
+.codex
+.playwright-mcp
+
+tmp
+node_modules
+**/node_modules
+.next
+**/.next

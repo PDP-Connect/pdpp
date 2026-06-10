@@ -11,6 +11,7 @@ import {
   fileUrl,
   isOfxRecord,
   isoToPacked,
+  isUsablePdfBuffer,
   ofxDateToFullIso,
   ofxDateToIso,
   ofxGet,
@@ -108,6 +109,28 @@ test("shortHash: deterministic, 32-char slice of sha256", () => {
   const h = shortHash("abc");
   assert.equal(h.length, 32);
   assert.equal(h, "ba7816bf8f01cfea414140de5dae2223");
+});
+
+// ─── isUsablePdfBuffer ───────────────────────────────────────────────────
+
+test("isUsablePdfBuffer: a real PDF (with %PDF magic) is usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("%PDF-1.7\n%âãÏÓ\n1 0 obj", "latin1")), true);
+});
+
+test("isUsablePdfBuffer: an empty buffer is NOT usable (the empty-sha256 churn bug)", () => {
+  // The empty buffer otherwise hashes to the empty-string sha256, which is
+  // the exact value observed flapping in live chase/statements history.
+  const empty = Buffer.alloc(0);
+  assert.equal(isUsablePdfBuffer(empty), false);
+  assert.equal(sha256Hex(empty), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+});
+
+test("isUsablePdfBuffer: an HTML error page served as 200 is NOT usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("<!DOCTYPE html><html>Error</html>")), false);
+});
+
+test("isUsablePdfBuffer: a sub-magic-length buffer is NOT usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("%PD")), false);
 });
 
 // ─── fileUrl ─────────────────────────────────────────────────────────────
@@ -408,6 +431,36 @@ test("currentActivityId: prefers UI id and otherwise uses deterministic fallback
   assert.equal(currentActivityId("ACC", withoutUiId), fallback);
 });
 
+test("currentActivityId: positional MDS row ids fall back to transaction content", () => {
+  const slotOneHtml = `
+    <table><tbody>
+      <tr
+        id="ovd-recent-activity-table-dataTableId-row-1"
+        class="mds-activity-table__row"
+        data-values="May 14, 2026,STORE MERCHANT,$39.08,"
+      ></tr>
+    </tbody></table>
+  `;
+  const slotOneLaterHtml = `
+    <table><tbody>
+      <tr
+        id="ovd-recent-activity-table-dataTableId-row-1"
+        class="mds-activity-table__row"
+        data-values="May 14, 2026,OTHER MERCHANT,$98.84,"
+      ></tr>
+    </tbody></table>
+  `;
+
+  const first = parseCurrentActivityDom(slotOneHtml, "2026-05-15")[0];
+  const later = parseCurrentActivityDom(slotOneLaterHtml, "2026-05-15")[0];
+  assert.ok(first);
+  assert.ok(later);
+  assert.equal(first.ui_transaction_id, null);
+  assert.equal(later.ui_transaction_id, null);
+  assert.match(currentActivityId("ACC", first), /^ACC\|fallback:[0-9a-f]{32}$/);
+  assert.notEqual(currentActivityId("ACC", first), currentActivityId("ACC", later));
+});
+
 test("parseCurrentActivityDom: ignores ancestor activity containers and emits only leaf rows", () => {
   const rows = parseCurrentActivityDom(readFixture("current-activity-wrapped-rows.html"), "2026-05-15");
   assert.equal(rows.length, 2);
@@ -446,11 +499,7 @@ test("parseCurrentActivityDom: real dashboard overview shape (committed extract)
     [15_804, 10_124, 3908, 9884, 7099]
   );
   for (const r of rows) {
-    assert.match(
-      r.ui_transaction_id ?? "",
-      /^ovd-recent-activity-table-dataTableId-row-\d+$/,
-      "MDS row tr#id should propagate as ui_transaction_id"
-    );
+    assert.equal(r.ui_transaction_id, null, "positional MDS row ids must not become stable transaction ids");
   }
 });
 

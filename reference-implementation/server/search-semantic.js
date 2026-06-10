@@ -46,19 +46,40 @@ import {
 } from '../operations/rs-search-semantic/index.ts';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
 import {
+  postgresAnySemanticProgressRow,
   postgresSemanticIndexDelete,
   postgresSemanticIndexDeleteByConnectorStream,
   postgresSemanticIndexUpsertMany,
   postgresSemanticSearch,
   postgresGetSemanticRecord,
+  postgresCountIndexableSemanticValues,
+  postgresCountSemanticIndexByScope,
+  postgresCountSemanticRecords,
+  postgresDeleteSemanticMeta,
+  postgresDeleteSemanticProgress,
+  postgresGetSemanticMeta,
+  postgresGetSemanticProgress,
+  postgresListAllSemanticMetaIdentities,
+  postgresListExistingSemanticKeys,
+  postgresListSemanticConnectorInstanceIds,
+  postgresListSemanticStreamsForConnector,
+  postgresSemanticRecordsPage,
+  postgresUpsertSemanticMeta,
+  postgresUpsertSemanticProgress,
 } from './postgres-search.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+import {
+  listActiveOwnerBindingsForConnectors,
+  resolveDisplayNamesForBindings,
+  resolveFanInBindings,
+} from './connection-identity.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -1113,8 +1134,9 @@ async function rebuildSemanticIndexForStream({
   existingKeys = null,
   signal = null,
 }) {
-  const index = ensureVectorIndex();
-  if (!index || !backend) return 0;
+  const usePostgres = isPostgresStorageBackend();
+  const index = usePostgres ? null : ensureVectorIndex();
+  if ((!usePostgres && !index) || !backend) return 0;
 
   const PAGE = 500;
   let lastId = 0;
@@ -1127,19 +1149,22 @@ async function rebuildSemanticIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('semantic backfill aborted');
     }
-    const page = getMany(
-      referenceQueries.searchSemanticRecordsPageNonDeleted,
-      [connectorInstanceId, stream, lastId],
-      { limit: PAGE },
-    );
-    const rows = page.rows;
+    const rows = usePostgres
+      ? await postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit: PAGE })
+      : getMany(
+        referenceQueries.searchSemanticRecordsPageNonDeleted,
+        [connectorInstanceId, stream, lastId],
+        { limit: PAGE },
+      ).rows;
     if (rows.length === 0) break;
     const entries = [];
     for (const row of rows) {
       lastId = Number(row.id);
       let data;
       try {
-        data = row.record_json ? JSON.parse(row.record_json) : null;
+        data = typeof row.record_json === 'string'
+          ? JSON.parse(row.record_json)
+          : row.record_json;
       } catch {
         continue;
       }
@@ -1160,7 +1185,17 @@ async function rebuildSemanticIndexForStream({
         });
       }
     }
-    if (entries.length > 0 && typeof index.upsertMany === 'function') {
+    if (usePostgres) {
+      const byRecordKey = new Map();
+      for (const entry of entries) {
+        const recordEntries = byRecordKey.get(entry.recordKey) || [];
+        recordEntries.push(entry);
+        byRecordKey.set(entry.recordKey, recordEntries);
+      }
+      for (const [recordKey, recordEntries] of byRecordKey) {
+        await postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId, stream, recordKey, entries: recordEntries });
+      }
+    } else if (entries.length > 0 && typeof index.upsertMany === 'function') {
       await index.upsertMany(entries);
     } else {
       for (const entry of entries) {
@@ -1177,7 +1212,7 @@ async function rebuildSemanticIndexForStream({
       });
     }
     await yieldImmediate();
-    if (!page.truncated) break;
+    if (rows.length < PAGE) break;
   }
   return indexed;
 }
@@ -1246,8 +1281,9 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   backfillJobs.set(progressJob.id, progressJob);
   try {
   const connectorId = manifest.connector_id;
-  const index = ensureVectorIndex();
-  if (!index) return;
+  const usePostgres = isPostgresStorageBackend();
+  const index = usePostgres ? null : ensureVectorIndex();
+  if (!usePostgres && !index) return;
 
   const currentModel = backendStorageIdentity(backend);
   const currentDims = backend.dimensions();
@@ -1267,17 +1303,25 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
     if (!isParticipating) {
-      const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream });
+      const connectorInstanceIds = usePostgres
+        ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream })
+        : listSemanticConnectorInstanceIds({ connectorId, stream });
       if (connectorInstanceIds.length > 0) {
         log(`[PDPP] Semantic index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares semantic_fields — dropping stale index + meta/progress`);
         for (const connectorInstanceId of connectorInstanceIds) {
-          await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-          execDynamicSqlAcknowledged(
-            'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
-            [connectorInstanceId, stream],
-          );
-          deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+          if (usePostgres) {
+            await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+            await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
+            await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+          } else {
+            await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+            execDynamicSqlAcknowledged(
+              'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+              [connectorInstanceId, stream],
+            );
+            deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+          }
         }
       }
       continue;
@@ -1298,10 +1342,16 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       dimensions: currentDims,
       distanceMetric: currentMetric,
     };
-    const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream });
+    const connectorInstanceIds = usePostgres
+      ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream })
+      : listSemanticConnectorInstanceIds({ connectorId, stream });
     for (const connectorInstanceId of connectorInstanceIds) {
-    const metaRow = getOne(referenceQueries.searchSemanticMetaGetByStream, [connectorInstanceId, stream]);
-    const progressRow = getOne(referenceQueries.searchSemanticProgressGetByStream, [connectorInstanceId, stream]);
+    const metaRow = usePostgres
+      ? await postgresGetSemanticMeta({ connectorInstanceId, stream })
+      : getOne(referenceQueries.searchSemanticMetaGetByStream, [connectorInstanceId, stream]);
+    const progressRow = usePostgres
+      ? await postgresGetSemanticProgress({ connectorInstanceId, stream })
+      : getOne(referenceQueries.searchSemanticProgressGetByStream, [connectorInstanceId, stream]);
     const progressMatches = semanticIdentityMatches(progressRow, currentIdentity);
 
     const fingerprintChanged = !metaRow || metaRow.fields_fingerprint !== newFingerprint;
@@ -1318,17 +1368,22 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       // large local stores; use exact expected rows only to distinguish
       // "empty because no indexable text exists" from "empty because the index
       // was never built". Non-zero in-band counts are treated as usable.
-      const recordCountRow = getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream]);
-      const recordCount = Number(recordCountRow?.n || 0);
+      const recordCount = usePostgres
+        ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
+        : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
 
       // Index count across all declared (stream, field) scope_keys.
       let indexCount = 0;
       for (const field of declaredFields) {
-        indexCount += index.countByConnectorScope(connectorId, encodeScopeKey(stream, field), connectorInstanceId);
+        indexCount += usePostgres
+          ? await postgresCountSemanticIndexByScope({ connectorId, connectorInstanceId, scopeKey: encodeScopeKey(stream, field) })
+          : index.countByConnectorScope(connectorId, encodeScopeKey(stream, field), connectorInstanceId);
       }
       const maxIndexRows = recordCount * declaredFields.length;
       const expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
-        ? countIndexableSemanticValues({ connectorInstanceId, stream, declaredFields })
+        ? (usePostgres
+          ? await postgresCountIndexableSemanticValues({ connectorInstanceId, stream, declaredFields })
+          : countIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }))
         : null;
       const inSync = indexCount > 0
         ? indexCount <= maxIndexRows
@@ -1339,7 +1394,11 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
         log(`[PDPP] Semantic index drift for ${connectorId} stream='${stream}' ` +
             `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}, max=${maxIndexRows}) — rebuilding`);
       } else if (progressRow) {
-        deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+        if (usePostgres) {
+          await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+        } else {
+          deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+        }
       }
     } else if (canResume) {
       log(`[PDPP] Semantic index resume for ${connectorId} stream='${stream}' ` +
@@ -1356,16 +1415,33 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
 
     if (!needsRebuild) continue;
 
-    upsertBackfillProgress({ connectorId, connectorInstanceId, stream, ...currentIdentity });
+    if (usePostgres) {
+      await postgresUpsertSemanticProgress({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        fieldsFingerprint: currentIdentity.fieldsFingerprint,
+        modelId: currentIdentity.modelId,
+        dimensions: currentIdentity.dimensions,
+        distanceMetric: currentIdentity.distanceMetric,
+      });
+    } else {
+      upsertBackfillProgress({ connectorId, connectorInstanceId, stream, ...currentIdentity });
+    }
     let existingKeys = null;
-    if (canResume && typeof index.listExistingKeys === 'function') {
+    if (usePostgres && canResume) {
+      existingKeys = await postgresListExistingSemanticKeys({ connectorId, connectorInstanceId, stream });
+    } else if (canResume && typeof index.listExistingKeys === 'function') {
       existingKeys = await index.listExistingKeys({ connectorId, connectorInstanceId, stream });
+    } else if (usePostgres) {
+      await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     } else {
       await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     }
 
-    const recordCountRow = getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream]);
-    const recordsToScan = Number(recordCountRow?.n || 0);
+    const recordsToScan = usePostgres
+      ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
+      : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
     progressJob = updateBackfillJob(progressJob, {
       stream,
       phase: 'rebuilding',
@@ -1388,11 +1464,24 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, indexed=${indexed})`);
 
-    exec(
-      referenceQueries.searchSemanticMetaUpsert,
-      [connectorInstanceId, connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString()],
-    );
-    deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+    if (usePostgres) {
+      await postgresUpsertSemanticMeta({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        fieldsFingerprint: newFingerprint,
+        modelId: currentModel,
+        dimensions: currentDims,
+        distanceMetric: currentMetric,
+      });
+      await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+    } else {
+      exec(
+        referenceQueries.searchSemanticMetaUpsert,
+        [connectorInstanceId, connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString()],
+      );
+      deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+    }
     }
   }
   progressJob = updateBackfillJob(progressJob, {
@@ -1409,33 +1498,47 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   // and the stream count per connector is bounded by the manifest, well
   // below the @max_rows=1024 declared on each artifact.
   const orphanStreams = new Set();
-  for (const row of allowUnboundedReadAcknowledged(
-    referenceQueries.searchSemanticMetaListStreamsForConnector,
-    [connectorId],
-  )) {
-    orphanStreams.add(row.stream);
-  }
-  // REVIEWED-BOUNDED: progress rows are keyed by (connector_id, stream); the
-  // stream count per connector is bounded by the manifest, well below the
-  // @max_rows=1024 declared on the artifact.
-  for (const row of allowUnboundedReadAcknowledged(
-    referenceQueries.searchSemanticProgressListStreamsForConnector,
-    [connectorId],
-  )) {
-    orphanStreams.add(row.stream);
+  if (usePostgres) {
+    for (const stream of await postgresListSemanticStreamsForConnector({ connectorId })) {
+      orphanStreams.add(stream);
+    }
+  } else {
+    for (const row of allowUnboundedReadAcknowledged(
+      referenceQueries.searchSemanticMetaListStreamsForConnector,
+      [connectorId],
+    )) {
+      orphanStreams.add(row.stream);
+    }
+    // REVIEWED-BOUNDED: progress rows are keyed by (connector_id, stream); the
+    // stream count per connector is bounded by the manifest, well below the
+    // @max_rows=1024 declared on the artifact.
+    for (const row of allowUnboundedReadAcknowledged(
+      referenceQueries.searchSemanticProgressListStreamsForConnector,
+      [connectorId],
+    )) {
+      orphanStreams.add(row.stream);
+    }
   }
   for (const orphanStream of orphanStreams) {
     if (visitedStreams.has(orphanStream)) continue;
     log(`[PDPP] Semantic index: stream='${orphanStream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta/progress`);
-    const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
+    const connectorInstanceIds = usePostgres
+      ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream: orphanStream })
+      : listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
     for (const connectorInstanceId of connectorInstanceIds) {
-      await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
-      execDynamicSqlAcknowledged(
-        'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
-        [connectorInstanceId, orphanStream],
-      );
-      deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+      if (usePostgres) {
+        await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
+        await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
+        await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
+      } else {
+        await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
+        execDynamicSqlAcknowledged(
+          'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+          [connectorInstanceId, orphanStream],
+        );
+        deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+      }
     }
   }
   } finally {
@@ -1450,18 +1553,36 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
  * persisted (model_id, dimensions, distance_metric) against the currently
  * configured backend. Any mismatch ⇒ stale.
  *
+ * Reads from the active storage backend so Postgres-mode deployments do
+ * not observe orphaned SQLite progress/meta rows left from an earlier
+ * configuration.
+ *
  * Returns 'built' | 'building' | 'stale'.
+ *
+ * The `deps` argument is a test seam; production callers pass nothing and
+ * get the live storage-backend wiring.
  */
-export function computeIndexState() {
+export async function computeIndexState(deps = {}) {
   if (!backend) return 'stale';
   if (isSemanticIndexBackfillActive()) return 'building';
-  const progressRow = getOne(referenceQueries.searchSemanticProgressExistsAny, []);
+  const usePostgres = deps.isPostgresStorageBackend
+    ? deps.isPostgresStorageBackend()
+    : isPostgresStorageBackend();
+  const readProgressExistsAny = usePostgres
+    ? (deps.postgresAnySemanticProgressRow || postgresAnySemanticProgressRow)
+    // REVIEWED-BOUNDED: small_enumeration_table — single-row existence probe.
+    : () => getOne(referenceQueries.searchSemanticProgressExistsAny, []);
+  const readMetaIdentities = usePostgres
+    ? (deps.postgresListAllSemanticMetaIdentities || postgresListAllSemanticMetaIdentities)
+    // REVIEWED-BOUNDED: semantic_search_meta is keyed by (connector_id,
+    // stream); total row count is bounded by the live manifest's stream
+    // count summed across connectors and stays well under
+    // @max_rows=1024 in practice.
+    : () => allowUnboundedReadAcknowledged(referenceQueries.searchSemanticMetaListAllIdentities, []);
+
+  const progressRow = await readProgressExistsAny();
   if (progressRow) return 'stale';
-  // REVIEWED-BOUNDED: semantic_search_meta is keyed by (connector_id,
-  // stream); total row count is bounded by the live manifest's stream
-  // count summed across connectors and stays well under
-  // @max_rows=1024 in practice.
-  const rows = allowUnboundedReadAcknowledged(referenceQueries.searchSemanticMetaListAllIdentities, []);
+  const rows = await readMetaIdentities();
   // No meta rows means nothing has been backfilled yet. If any participating
   // manifest exists, backfill hasn't run → stale. If no manifests declare
   // semantic_fields at all, there's nothing to index and "built" is honest.
@@ -1539,6 +1660,52 @@ function hasGrantRecordConstraints(streamGrant) {
   );
 }
 
+function needsCandidateRecordScan(streamGrant, compiledFilters) {
+  return !!(compiledFilters?.length || hasGrantRecordConstraints(streamGrant));
+}
+
+function allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters }) {
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}
+
+async function buildPostgresCandidateRecordKeys({ connectorId, connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
+  if (!needsCandidateRecordScan(streamGrant, compiledFilters)) return null;
+
+  const where = connectorInstanceId
+    ? ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE']
+    : ['connector_id = $1', 'stream = $2', 'deleted = FALSE'];
+  const binds = [connectorInstanceId || connectorId, streamName];
+  if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
+    const placeholders = streamGrant.resources.map((_, index) => `$${binds.length + index + 1}`);
+    where.push(`record_key IN (${placeholders.join(', ')})`);
+    binds.push(...streamGrant.resources);
+  }
+
+  // REVIEWED-DYNAMIC: candidate-key scan includes a variable resources IN
+  // clause and optional JS-side grant/filter predicates, so the SQL shape is
+  // grant-dependent and cannot be a static registry artifact.
+  const rows = (await postgresQuery(
+    `SELECT record_key, record_json::text AS record_json
+     FROM records
+     WHERE ${where.join(' AND ')}`,
+    binds,
+  )).rows;
+
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
+}
+
 function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
@@ -1561,19 +1728,7 @@ function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName
     WHERE ${where.join(' AND ')}
   `, binds);
 
-  const allowed = [];
-  for (const row of rows) {
-    let data;
-    try {
-      data = row.record_json ? JSON.parse(row.record_json) : null;
-    } catch {
-      continue;
-    }
-    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
-    if (!passesRequestFilters(data, compiledFilters)) continue;
-    allowed.push(row.record_key);
-  }
-  return allowed;
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
 }
 
 export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
@@ -1586,6 +1741,14 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
 
     const streamGrant = grant.streams.find((s) => s.name === mStream.name);
     if (!streamGrant) continue;
+    if (
+      typeof streamGrant.connection_id === 'string'
+      && streamGrant.connection_id.length > 0
+      && connectorInstanceId
+      && streamGrant.connection_id !== connectorInstanceId
+    ) {
+      continue;
+    }
 
     const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
       ? new Set(streamGrant.fields)
@@ -1595,7 +1758,8 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       : declared.slice();
     if (searchable.length === 0) continue;
     const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
-    const candidateRecordKeys = connectorId
+    const shouldScanCandidates = needsCandidateRecordScan(streamGrant, filters);
+    const candidateRecordKeys = connectorId && shouldScanCandidates && !isPostgresStorageBackend()
       ? buildCandidateRecordKeys({
         connectorId,
         connectorInstanceId,
@@ -1605,6 +1769,9 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
         compiledFilters: filters,
       })
       : null;
+    const postgresCandidateFilter = connectorId && shouldScanCandidates && isPostgresStorageBackend()
+      ? { streamGrant, manifestStream: mStream, compiledFilters: filters }
+      : null;
 
     plan.push({
       streamName: mStream.name,
@@ -1612,6 +1779,7 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       scopeKeys: searchable.map((f) => encodeScopeKey(mStream.name, f)),
       ...(connectorInstanceId ? { connectorInstanceId } : {}),
       ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
+      ...(postgresCandidateFilter ? { postgresCandidateFilter } : {}),
     });
   }
   return plan;
@@ -1680,6 +1848,7 @@ export async function runSemanticSearch({
   resolveOwnerManifestFromScope,
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
+  getOwnerSubjectId,
 }) {
   if (!backend || !backend.available()) {
     // Route registration should prevent reaching this helper when no backend
@@ -1701,6 +1870,12 @@ export async function runSemanticSearch({
         grant: tokenInfo.grant ?? { streams: [] },
       };
 
+  const ownerSubjectId = isOwner
+    ? (typeof getOwnerSubjectId === 'function'
+        ? getOwnerSubjectId()
+        : OWNER_AUTH_DEFAULT_SUBJECT_ID)
+    : null;
+
   // Native dependencies wire the operation against the existing embedding
   // pipeline, vector index, snapshot tables, and records-table snippet
   // hydration. The operation owns the public-contract slice; these helpers
@@ -1709,6 +1884,13 @@ export async function runSemanticSearch({
     getAdvertisement: () => advertisement,
     getCurrentBackendIdentity: () => hashBackendIdentity(backend),
     listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
+    listOwnerVisibleBindings: async () => {
+      const connectorIds = await resolveOwnerVisibleConnectorIds();
+      return await listActiveOwnerBindingsForConnectors({
+        ownerSubjectId,
+        connectorIds,
+      });
+    },
     resolveOwnerManifestForConnector: async (connectorId) => {
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
@@ -1721,11 +1903,80 @@ export async function runSemanticSearch({
         return null;
       }
     },
+    resolveOwnerManifestForBinding: async (binding) => {
+      try {
+        const ownerScope = resolveOwnerScopeForConnector(binding.connectorId);
+        const pinnedScope = {
+          ...ownerScope,
+          storage_binding: {
+            ...(ownerScope.storage_binding || {}),
+            connector_id: binding.connectorId,
+            connector_instance_id: binding.connectorInstanceId,
+          },
+        };
+        const resolved = await resolveOwnerManifestFromScope(pinnedScope);
+        const manifest = resolved.manifest ?? null;
+        if (manifest) {
+          return {
+            ...manifest,
+            storage_binding: {
+              ...(manifest.storage_binding || {}),
+              connector_instance_id:
+                resolved.storageBinding?.connector_instance_id
+                ?? binding.connectorInstanceId,
+            },
+          };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
     buildOwnerReadGrantForManifest: (manifest) =>
       buildOwnerReadGrantForManifest(manifest),
     resolveClientManifest: async () => {
       const grantResolved = await resolveGrantManifest(tokenInfo);
       return grantResolved.manifest;
+    },
+    resolveClientBindings: async (clientActor, { connectionId }) => {
+      const grantResolved = await resolveGrantManifest(tokenInfo);
+      const baseManifest = grantResolved.manifest;
+      const connectorId = baseManifest?.storage_binding?.connector_id
+        || baseManifest?.connector_id
+        || null;
+      const ownerSubjectIdForGrant =
+        tokenInfo?.grant?.subject?.id
+        || tokenInfo?.subject_id
+        || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      const grantStreams = clientActor?.grant?.streams || [];
+      let grantStreamConnectionId = null;
+      const pinned = grantStreams
+        .map((s) => s?.connection_id)
+        .filter((v) => typeof v === 'string' && v.length > 0);
+      if (pinned.length === grantStreams.length && pinned.length > 0) {
+        const unique = new Set(pinned);
+        if (unique.size === 1) grantStreamConnectionId = pinned[0];
+      }
+      const { bindings } = await resolveFanInBindings({
+        ownerSubjectId: ownerSubjectIdForGrant,
+        connectorId,
+        connectorInstanceIdHint:
+          grantResolved.storageBinding?.connector_instance_id || null,
+        requestConnectionId: connectionId,
+        grantStreamConnectionId,
+      });
+      return bindings.map((b) => ({
+        manifest: {
+          ...baseManifest,
+          storage_binding: {
+            ...(baseManifest.storage_binding || {}),
+            connector_id: b.connectorId || connectorId,
+            connector_instance_id: b.connectorInstanceId,
+          },
+        },
+        connectorInstanceId: b.connectorInstanceId,
+        ...(b.displayName ? { displayName: b.displayName } : {}),
+      }));
     },
     buildSearchPlanForGrant: ({
       manifest,
@@ -1792,6 +2043,10 @@ export async function runSemanticSearch({
         ? { next_cursor: result.envelope.next_cursor }
         : {}),
       data: result.envelope.data,
+      // Carry the operation's canonical `meta.warnings[]` (limit_clamped,
+      // deprecated_alias_used, source_skipped_not_applicable) through to the
+      // REST response. Omitted when the operation produced no warnings.
+      ...(result.envelope.meta ? { meta: result.envelope.meta } : {}),
     },
     disclosureData: result.disclosureData,
   };
@@ -1828,13 +2083,23 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
       for (const entry of planEntries) {
         if (entry.scopeKeys.length === 0) continue;
         if (isPostgresStorageBackend()) {
+          const recordKeys = Array.isArray(entry.candidateRecordKeys)
+            ? entry.candidateRecordKeys
+            : entry.postgresCandidateFilter
+              ? await buildPostgresCandidateRecordKeys({
+                connectorId,
+                connectorInstanceId: entry.connectorInstanceId,
+                streamName: entry.streamName,
+                ...entry.postgresCandidateFilter,
+              })
+              : null;
           entryHits.push(...await postgresSemanticSearch({
             connectorId,
             connectorInstanceId: entry.connectorInstanceId,
             scopeKeys: entry.scopeKeys,
             queryVector,
             limit: PER_CONNECTOR_LIMIT,
-            recordKeys: entry.candidateRecordKeys,
+            recordKeys,
           }));
         } else {
           entryHits.push(...await index.queryPerConnector({
@@ -1891,6 +2156,20 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
   }
   const collapsedArr = Array.from(collapsed.values()).sort(compareHits);
 
+  // Decorate each hit with the owner-facing display_name when the store has
+  // a non-placeholder label for the binding. Lookups are deduped per
+  // connection_id; placeholder labels are omitted, not faked.
+  const displayNames = await resolveDisplayNamesForBindings(
+    collapsedArr.map((hit) => ({
+      connectorInstanceId: hit.connectorInstanceId,
+      connectorId: hit.connectorId,
+    })),
+  );
+  for (const hit of collapsedArr) {
+    const displayName = displayNames.get(hit.connectorInstanceId);
+    if (displayName) hit.displayName = displayName;
+  }
+
   return {
     snapshot_id: generateSnapshotId(),
     query: q,
@@ -1927,12 +2206,14 @@ async function hydrateSemanticSearchResult({ hit }) {
       );
 
   const emittedAt = recordRow?.emitted_at ?? null;
+  let authoredAt = null;
   let snippet = null;
   if (recordRow?.record_json) {
     try {
       const data = typeof recordRow.record_json === 'string'
         ? JSON.parse(recordRow.record_json)
         : recordRow.record_json;
+      authoredAt = authoredTimestampFromRecordData(data);
       const value = data?.[hit.topField];
       if (typeof value === 'string' && value.length > 0) {
         snippet = { field: hit.topField, text: pickVerbatimExcerpt(value) };
@@ -1941,7 +2222,16 @@ async function hydrateSemanticSearchResult({ hit }) {
       // Corrupt record_json — skip snippet rather than fabricate.
     }
   }
-  return { emittedAt, snippet };
+  return { emittedAt, authoredAt, snippet };
+}
+
+function authoredTimestampFromRecordData(data) {
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['sent_at', 'sentAt', 'authored_at', 'authoredAt', 'created_at', 'createdAt', 'source_created_at', 'sourceCreatedAt', 'occurred_at', 'occurredAt', 'updated_at', 'updatedAt']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
 }
 
 /**
@@ -1971,13 +2261,25 @@ function generateSnapshotId() {
 }
 
 function hashSemanticPlan({ perConnectorPlans, isOwner }) {
+  // Include `connector_instance_id` per plan entry and sort
+  // deterministically so the snapshot's binding set is part of the cursor
+  // identity. A request that adds or removes a binding mid-pagination
+  // yields a different hash, invalidating cursor reuse.
   const summary = perConnectorPlans.map((p) => ({
     c: p.connectorId,
-    e: p.planEntries.map((pe) => ({
-      s: pe.streamName,
-      f: pe.searchableFields.slice().sort(),
-    })),
-  }));
+    e: p.planEntries
+      .map((pe) => ({
+        i: pe.connectorInstanceId || null,
+        s: pe.streamName,
+        f: pe.searchableFields.slice().sort(),
+      }))
+      .sort((a, b) => {
+        const ia = a.i || '';
+        const ib = b.i || '';
+        if (ia !== ib) return ia < ib ? -1 : 1;
+        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+      }),
+  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
   return JSON.stringify({ isOwner, summary });
 }
 

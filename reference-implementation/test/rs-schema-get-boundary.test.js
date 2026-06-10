@@ -38,7 +38,7 @@ test('rs.schema.get operation has no host or storage concretes', () => {
 });
 
 test('sandbox /sandbox/v1/schema route does not import buildLiveSchemaResponse', () => {
-  const src = read('apps/web/src/app/sandbox/v1/schema/route.ts');
+  const src = read('apps/site/src/app/sandbox/v1/schema/route.ts');
   const importPattern =
     /\bimport\b[^;]*\bbuildLiveSchemaResponse\b[^;]*\bfrom\b[^;]*;/;
   assert.equal(
@@ -49,7 +49,7 @@ test('sandbox /sandbox/v1/schema route does not import buildLiveSchemaResponse',
 });
 
 test('sandbox builders.ts no longer exports buildLiveSchemaResponse', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveSchemaResponse\b/.test(src),
     false,

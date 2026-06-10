@@ -33,6 +33,10 @@ const REF_READ_ROUTES = [
   '/_ref/grants/grant_does_not_exist/timeline',
   '/_ref/runs/run_does_not_exist/timeline',
   '/_ref/dataset/summary',
+  '/_ref/dataset/summary/streams',
+  '/_ref/dataset/size',
+  '/_ref/dataset/top',
+  '/_ref/records/version-stats',
   '/_ref/connectors',
   '/_ref/connectors/connector_does_not_exist',
   '/_ref/approvals',
@@ -129,6 +133,45 @@ async function login(asUrl, password) {
   return sessionCookie;
 }
 
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const body = await resp.json();
+  return { body, status: resp.status };
+}
+
+async function issueOwnerToken(asUrl, sessionCookie) {
+  const clientId = 'cli_longview';
+  const { body: device, status: deviceStatus } = await fetchJson(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId }),
+  });
+  assert.equal(deviceStatus, 200);
+
+  const approveResp = await fetch(`${asUrl}/device/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+    body: JSON.stringify({
+      user_code: device.user_code,
+      subject_id: 'owner_token_must_not_unlock_ref_reads',
+    }),
+  });
+  assert.equal(approveResp.status, 200);
+
+  const { body: tokenBody, status: tokenStatus } = await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: device.device_code,
+      client_id: clientId,
+    }),
+  });
+  assert.equal(tokenStatus, 200);
+  assert.ok(tokenBody.access_token, 'device exchange should issue an owner token');
+  return tokenBody.access_token;
+}
+
 test('_ref reads: password-enabled rejects unauthenticated callers with 401 owner_session_required', async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     for (const route of REF_READ_ROUTES) {
@@ -137,6 +180,30 @@ test('_ref reads: password-enabled rejects unauthenticated callers with 401 owne
         redirect: 'manual',
       });
       assert.equal(resp.status, 401, `expected 401 for ${route}, got ${resp.status}`);
+      const body = await resp.json();
+      assert.equal(
+        body?.error?.code,
+        'owner_session_required',
+        `expected owner_session_required for ${route}, got ${JSON.stringify(body)}`,
+      );
+    }
+  });
+});
+
+test('_ref reads: password-enabled rejects owner bearer without owner session', async () => {
+  await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
+    const sessionCookie = await login(asUrl, TEST_PASSWORD);
+    const ownerToken = await issueOwnerToken(asUrl, sessionCookie);
+
+    for (const route of REF_READ_ROUTES) {
+      const resp = await fetch(`${asUrl}${route}`, {
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        redirect: 'manual',
+      });
+      assert.equal(resp.status, 401, `expected 401 for ${route} with owner bearer but no session, got ${resp.status}`);
       const body = await resp.json();
       assert.equal(
         body?.error?.code,
@@ -180,7 +247,7 @@ test('_ref reads: password-enabled accepts an owner-session cookie', async () =>
 });
 
 test('_ref reads: password-disabled local-dev mode remains open', async () => {
-  await withServer({}, async ({ asUrl }) => {
+  await withServer({ ownerAuthPassword: '' }, async ({ asUrl }) => {
     for (const route of REF_READ_ROUTES) {
       const resp = await fetch(`${asUrl}${route}`, {
         headers: { Accept: 'application/json' },

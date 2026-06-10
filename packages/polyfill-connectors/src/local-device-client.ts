@@ -18,7 +18,34 @@ export interface LocalDeviceClientOptions {
   deviceId?: string;
   deviceToken?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Hard per-request ceiling in milliseconds. A reference server that
+   * stalls mid-request (for example during a projection rebuild) would
+   * otherwise hang `fetch` indefinitely, pinning the collector process
+   * until the host supervisor's start-timeout reaps it. Bounding the
+   * request makes a stalled call fail fast and *durably*: a hung drain
+   * row is marked retryable/dead-lettered by the outbox path exactly like
+   * any other send failure, and a hung state read surfaces an honest
+   * `state_read_failed` block instead of a silent 15-minute timeout.
+   *
+   * Defaults to {@link DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS}, which is
+   * well under the documented systemd `TimeoutStartSec=900`. Pass `0` to
+   * disable the ceiling (the caller then owns liveness via its own signal).
+   */
+  requestTimeoutMs?: number;
 }
+
+/**
+ * Default hard per-request timeout for {@link LocalDeviceClient}.
+ *
+ * 120s is generous enough for a large ingest batch under recovery load
+ * yet far below the host supervisor's 15-minute start timeout, so a
+ * stalled server fails the run fast — durably, since the outbox keeps the
+ * work — rather than holding a process slot and blocking the next
+ * scheduled drain. See `docs/local-collector.md` and
+ * `systemd-durable-limits.test.js` for the `TimeoutStartSec=900` posture.
+ */
+export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface EnrollmentExchangeRequest {
   device_label?: string;
@@ -50,8 +77,35 @@ export interface HeartbeatOutboxDiagnostics {
   total: number;
 }
 
+/**
+ * Optional redacted "why" carried alongside a heartbeat. The reference
+ * server already accepts and re-sanitizes `last_error` on a heartbeat
+ * source instance (it persists to `last_error_json`, which the dashboard
+ * reads), so this lets the control plane answer "why did these block /
+ * dead-letter?" without host-local spelunking. Reference-only and additive:
+ * stable error classes and counts, never payloads, paths, tokens, cookies,
+ * or auth material.
+ */
+export interface HeartbeatLastError {
+  /** Discriminates the stall shape so the dashboard can pick remediation. */
+  kind: "state_read_failed" | "dead_letter_backlog";
+  /** Top redacted dead-letter error classes (present for backlog stalls). */
+  top_dead_letter_classes?: { count: number; error_class: string }[];
+}
+
 export interface HeartbeatRequest {
+  /**
+   * Build-derived agent version of the running collector (e.g.
+   * `0.0.0+43f63825f01a`, or `0.0.0+source` for an unbuilt run). Optional and
+   * additive: the reference server already accepts this field on the heartbeat
+   * wire schema and persists it to `device_exporters.agent_version` via a
+   * COALESCE update, so an absent value preserves the last stored one. Carries
+   * only a version string and a short revision token — never a path or secret.
+   * See `collector-build-info.ts`.
+   */
+  agent_version?: string;
   connector_id: string;
+  last_error?: HeartbeatLastError | null;
   outbox?: HeartbeatOutboxDiagnostics;
   records_pending?: number;
   source_instance_id: string;
@@ -137,6 +191,8 @@ export interface RecoverLocalCollectorGapRequest {
 
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
+  readonly envelopeMessage: string | null;
+  readonly param: string | null;
   readonly status: number;
   /**
    * Typed PDPP error code parsed from the response body when the server
@@ -150,23 +206,31 @@ export class LocalDeviceHttpError extends Error {
 
   constructor(status: number, body: string) {
     const parsed = parseLocalDeviceErrorEnvelope(body);
-    const detail = parsed?.code ? ` ${parsed.code}` : "";
+    const detail = formatLocalDeviceErrorDetail(parsed);
     super(`local device request failed: ${status}${detail}`);
     this.name = "LocalDeviceHttpError";
     this.status = status;
     this.body = body;
     this.code = parsed?.code ?? null;
+    this.param = parsed?.param ?? null;
+    this.envelopeMessage = parsed?.message ?? null;
   }
 }
 
-function parseLocalDeviceErrorEnvelope(body: string): { code: string } | null {
+function parseLocalDeviceErrorEnvelope(
+  body: string
+): { code: string; message: string | null; param: string | null } | null {
   if (!body) {
     return null;
   }
   try {
-    const parsed = JSON.parse(body) as { error?: { code?: unknown } };
+    const parsed = JSON.parse(body) as { error?: { code?: unknown; message?: unknown; param?: unknown } };
     if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
-      return { code: parsed.error.code };
+      return {
+        code: parsed.error.code,
+        message: typeof parsed.error.message === "string" ? sanitizeErrorDetail(parsed.error.message) : null,
+        param: typeof parsed.error.param === "string" ? sanitizeErrorDetail(parsed.error.param) : null,
+      };
     }
   } catch {
     // Body wasn't JSON. Fall through to null.
@@ -174,17 +238,60 @@ function parseLocalDeviceErrorEnvelope(body: string): { code: string } | null {
   return null;
 }
 
+function formatLocalDeviceErrorDetail(
+  parsed: { code: string; message: string | null; param: string | null } | null
+): string {
+  if (!parsed) {
+    return "";
+  }
+  const parts = [parsed.code];
+  if (parsed.param) {
+    parts.push(`param=${parsed.param}`);
+  }
+  if (parsed.message) {
+    parts.push(`message=${parsed.message}`);
+  }
+  return ` ${parts.join(" ")}`;
+}
+
+const ERROR_DETAIL_SECRET_RE =
+  /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
+
+function sanitizeErrorDetail(value: string): string {
+  const compact = value.replace(ERROR_DETAIL_SECRET_RE, "$1=[REDACTED]").replace(/\s+/g, " ").trim();
+  return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
+}
+
+/**
+ * A local-device request exceeded its hard timeout (the server stalled
+ * before responding). Distinct from {@link LocalDeviceHttpError}: there is
+ * no HTTP status because the response never arrived. Carried through the
+ * outbox failure path like any other transient send error so the work
+ * stays durable and retryable instead of crashing the run.
+ */
+export class LocalDeviceRequestTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`local device request timed out after ${timeoutMs}ms`);
+    this.name = "LocalDeviceRequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class LocalDeviceClient {
   readonly #baseUrl: URL;
   readonly #deviceId: string | undefined;
   readonly #deviceToken: string | undefined;
   readonly #fetch: typeof fetch;
+  readonly #requestTimeoutMs: number;
 
   constructor(options: LocalDeviceClientOptions) {
     this.#baseUrl = new URL(options.baseUrl);
     this.#deviceId = options.deviceId;
     this.#deviceToken = options.deviceToken;
     this.#fetch = options.fetchImpl ?? fetch;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS;
   }
 
   exchangeEnrollment(request: EnrollmentExchangeRequest): Promise<EnrollmentExchangeResponse> {
@@ -272,15 +379,47 @@ export class LocalDeviceClient {
     if (options.body !== undefined) {
       init.body = JSON.stringify(options.body);
     }
-    const response = await this.#fetch(new URL(path, this.#baseUrl), init);
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw new LocalDeviceHttpError(response.status, text);
+    // Bound the whole round trip — connect, response headers, and the body
+    // read below — so a server that stalls cannot hang the collector. The
+    // controller is aborted in `finally` so the timer never outlives the
+    // request and keep the process alive past a clean run.
+    const controller = this.#requestTimeoutMs > 0 ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(
+          () => controller.abort(new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs)),
+          this.#requestTimeoutMs
+        )
+      : null;
+    if (controller) {
+      init.signal = controller.signal;
     }
-    if (!text) {
-      return { ok: true } as TResponse;
+
+    try {
+      const response = await this.#fetch(new URL(path, this.#baseUrl), init);
+
+      const text = await response.text();
+      if (!response.ok) {
+        throw new LocalDeviceHttpError(response.status, text);
+      }
+      if (!text) {
+        return { ok: true } as TResponse;
+      }
+      return JSON.parse(text) as TResponse;
+    } catch (error) {
+      // Surface the typed timeout regardless of how the runtime reports the
+      // abort (DOMException "AbortError", or the abort reason passed through).
+      if (controller?.signal.aborted) {
+        const reason = controller.signal.reason;
+        throw reason instanceof LocalDeviceRequestTimeoutError
+          ? reason
+          : new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs);
+      }
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
-    return JSON.parse(text) as TResponse;
   }
 }

@@ -13,6 +13,7 @@ import {
   buildPendingInteractionPushPayload,
   buildTestPushPayload,
   classifyInteractionSensitivity,
+  classifyPushFanoutOutcome,
   createMemoryWebPushSubscriptionStore,
   createPostgresWebPushSubscriptionStore,
   createSqliteWebPushSubscriptionStore,
@@ -583,8 +584,9 @@ test('manual-run controller progress handler fans out assistance Web Push withou
   );
   // It must filter by the documented predicate.
   assert.match(src, /shouldFanoutAssistanceProgressMessage\(msg\)/);
-  // And it must call fireAssistanceWebPush — not fireWebPush — for ASSISTANCE.
-  assert.match(src, /void fireAssistanceWebPush\(\{/);
+  // And it must invoke fireAssistanceWebPush — not fireWebPush — for ASSISTANCE
+  // via the detachControllerTask helper that replaced bare `void` swallows.
+  assert.match(src, /detachControllerTask\(\s*fireAssistanceWebPush\(\{/);
   // The fanout helper must thread runId/ownerSubjectId from controller scope.
   assert.match(
     src,
@@ -595,8 +597,11 @@ test('manual-run controller progress handler fans out assistance Web Push withou
 
 test('controller keeps ntfy and Web Push as independent best-effort notification channels', async () => {
   const src = await readFile(new URL('../runtime/controller.ts', import.meta.url), 'utf8');
-  assert.match(src, /void fireNtfy\(/);
-  assert.match(src, /void fireWebPush\(/);
+  // Each channel is invoked through detachControllerTask so failures do not
+  // affect interaction resolution (the prior `void fireXxx(...)` form was
+  // replaced when controller-fanout cleanups landed).
+  assert.match(src, /detachControllerTask\(\s*fireNtfy\(/);
+  assert.match(src, /detachControllerTask\(\s*fireWebPush\(/);
   assert.match(src, /ntfy fire for run .* failed/);
   assert.match(src, /web push fire for run .* failed/);
 });
@@ -904,4 +909,79 @@ test('410 Gone revokes the subscription but still leaves out-of-band state untou
   const stillActive = await store.list('owner_local');
   assert.equal(stillActive.length, 0, 'subscription is revoked after 410');
   assert.equal(JSON.stringify(attentionLikeState), before);
+});
+
+// ─── classifyPushFanoutOutcome ────────────────────────────────────────────
+
+test('classifyPushFanoutOutcome: VAPID unavailable -> suppressed/channel_unavailable', () => {
+  assert.deepEqual(
+    classifyPushFanoutOutcome({ attempted: 0, sent: 0, unavailable: true }),
+    { state: 'suppressed', reason: 'channel_unavailable' },
+  );
+});
+
+test('classifyPushFanoutOutcome: policy-suppressed (quiet hours, etc.) -> suppressed/policy_suppressed', () => {
+  assert.deepEqual(
+    classifyPushFanoutOutcome({ attempted: 0, sent: 0, suppressed: true, unavailable: false }),
+    { state: 'suppressed', reason: 'policy_suppressed' },
+  );
+});
+
+test('classifyPushFanoutOutcome: no opted-in channel -> suppressed/no_opted_in_channel', () => {
+  assert.deepEqual(
+    classifyPushFanoutOutcome({ attempted: 0, sent: 0, unavailable: false }),
+    { state: 'suppressed', reason: 'no_opted_in_channel' },
+  );
+});
+
+test('classifyPushFanoutOutcome: at least one accepted -> sent', () => {
+  assert.deepEqual(
+    classifyPushFanoutOutcome({ attempted: 2, sent: 1, unavailable: false }),
+    { state: 'sent', reason: null },
+  );
+});
+
+test('classifyPushFanoutOutcome: every subscription rejected -> failed with transport reason', () => {
+  const result = classifyPushFanoutOutcome({
+    attempted: 2,
+    sent: 0,
+    unavailable: false,
+    failureReasons: ['410 gone', 'timeout'],
+  });
+  assert.equal(result.state, 'failed');
+  assert.match(result.reason, /transport:/);
+  assert.match(result.reason, /410 gone/);
+});
+
+test('classifyPushFanoutOutcome: malformed result -> failed/no_result', () => {
+  assert.deepEqual(classifyPushFanoutOutcome(null), { state: 'failed', reason: 'no_result' });
+  assert.deepEqual(classifyPushFanoutOutcome('unexpected'), { state: 'failed', reason: 'no_result' });
+});
+
+test('fanoutPendingInteractionWebPush: recordOutcome callback fires with suppressed when VAPID is unavailable', async () => {
+  // Force VAPID-disabled config so the fanout short-circuits to the
+  // `unavailable: true` branch. The outcome callback must STILL be
+  // invoked so the durable attention row sees notification_state set —
+  // silent suppression is the failure mode this contract prevents.
+  const outcomes = [];
+  await fanoutPendingInteractionWebPush({
+    config: { enabled: false, publicKey: null, privateKey: null, subject: 'mailto:x@y' },
+    store: createMemoryWebPushSubscriptionStore(),
+    sender: async () => {
+      throw new Error('sender should not be called when VAPID is disabled');
+    },
+    interaction: {
+      request_id: 'int_outcome_a',
+      run_id: 'run_outcome_a',
+      kind: 'manual_action',
+    },
+    connectorDisplayName: 'Test',
+    ownerSubjectId: 'owner_a',
+    runId: 'run_outcome_a',
+    log: { warn() {}, info() {} },
+    recordOutcome: async (entry) => {
+      outcomes.push(entry);
+    },
+  });
+  assert.deepEqual(outcomes, [{ state: 'suppressed', reason: 'channel_unavailable' }]);
 });

@@ -268,6 +268,48 @@ test(
   }),
 );
 
+test(
+  '7.6 acceptance: stale unhealthy browser surfaces do not poison a newer ready surface for the same connector',
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_chatgpt_old_unhealthy',
+        health: 'unhealthy',
+        created_at: '2026-05-19T10:00:00.000Z',
+        last_used_at: '2026-05-19T10:05:00.000Z',
+      }),
+    );
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_chatgpt_current_ready',
+        health: 'ready',
+        created_at: '2026-05-19T11:00:00.000Z',
+        last_used_at: '2026-05-19T11:59:00.000Z',
+      }),
+    );
+
+    const projection = await getConnectorBrowserSurfaceProjection('chatgpt');
+    assert.equal(projection.unreliable, false);
+    assert.equal(projection.evidence?.axis, 'idle');
+    assert.equal(projection.evidence?.surfaceHealth, 'ready');
+    assert.equal(projection.evidence?.surfaceId, 'surface_chatgpt_current_ready');
+
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH,
+      lastRun: succeededRun(),
+      lastSuccessfulRun: succeededRun(),
+      nowIso: NOW_ISO,
+      outbox: { axis: 'idle' },
+      remoteSurface: projection.evidence,
+      schedule: { enabled: true, last_successful_at: PRIOR_SUCCESS_ISO },
+    });
+
+    assert.equal(snapshot.state, 'healthy', 'newer ready evidence wins over stale unhealthy history');
+    assert.equal(snapshot.axes.remote_surface, 'idle');
+  }),
+);
+
 // ─── 7.6 structured attention precedence over surface failure ────────────
 
 test(
@@ -440,5 +482,37 @@ test(
     assert.equal(gmail.evidence?.axis, 'waiting');
     assert.equal(gmail.evidence?.leaseId, 'lease_gmail_waiting');
     assert.equal(gmail.evidence?.waitReason, 'surface_starting');
+  }),
+);
+
+test(
+  '7.6 acceptance: remote-surface evidence can be scoped per connection profile so legacy same-connector failures do not contaminate the active connection',
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_usaa_legacy_unhealthy',
+        connector_id: 'usaa',
+        profile_key: 'usaa',
+        health: 'unhealthy',
+      }),
+    );
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_usaa_active_ready',
+        connector_id: 'usaa',
+        profile_key: 'usaa:cin_active',
+        health: 'ready',
+      }),
+    );
+
+    const legacyRollup = await getConnectorBrowserSurfaceProjection('usaa');
+    const activeConnection = await getConnectorBrowserSurfaceProjection('usaa', { profileKey: 'usaa:cin_active' });
+
+    assert.equal(legacyRollup.evidence?.axis, 'failed');
+    assert.equal(legacyRollup.evidence?.surfaceId, 'surface_usaa_legacy_unhealthy');
+    assert.equal(activeConnection.evidence?.axis, 'idle');
+    assert.equal(activeConnection.evidence?.surfaceHealth, 'ready');
+    assert.equal(activeConnection.evidence?.surfaceId, 'surface_usaa_active_ready');
   }),
 );

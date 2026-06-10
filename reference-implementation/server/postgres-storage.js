@@ -2,13 +2,16 @@
  * Explicit Postgres runtime storage bootstrap for the final Postgres slice.
  *
  * SQLite remains the default runtime backend. This module only opens a pg pool
- * when `PDPP_STORAGE_BACKEND=postgres` (or the test opts equivalent) is set.
+ * when `PDPP_STORAGE_BACKEND=postgres` is set or when `PDPP_DATABASE_URL`
+ * (or the platform-standard `DATABASE_URL`) is present and no explicit backend
+ * opts out.
  *
  * Spec: openspec/changes/add-postgres-runtime-storage/
  */
 
 import pg from 'pg';
 import { createHash } from 'node:crypto';
+import { canonicalConnectorKey } from './connector-key.js';
 
 const { Pool } = pg;
 
@@ -17,6 +20,36 @@ const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
 
 let activeBackend = 'sqlite';
 let pool = null;
+
+// Semantic embedding storage mode, detected at bootstrap. 'vector' when the
+// pgvector extension is available and `semantic_search_blob.embedding` carries
+// the pgvector `vector` type; 'jsonb' otherwise (legacy/brute-force fallback).
+// See openspec/changes/migrate-postgres-semantic-index-to-pgvector/.
+let semanticEmbeddingColumnMode = 'jsonb';
+// Whether the server supports `hnsw.iterative_scan` (pgvector >= 0.8), so
+// filtered HNSW scans keep exact distance order without under-returning.
+let semanticIterativeScanSupported = false;
+
+// Production embedding profile dimensionality (search-semantic.js profiles).
+// The HNSW index is a partial expression index pinned at this width — the
+// documented pgvector pattern for a dimension-untyped `vector` column. Rows of
+// other dimensions (test stub backends) fall outside the partial index and are
+// scanned exactly.
+const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
+const SEMANTIC_HNSW_INDEX_NAME = 'idx_pg_semantic_search_embedding_hnsw';
+
+function semanticVectorMigrationBatchSize() {
+  const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_MIGRATION_BATCH_SIZE || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 50_000;
+}
+
+export function isPostgresSemanticVectorEmbedding() {
+  return activeBackend === 'postgres' && semanticEmbeddingColumnMode === 'vector';
+}
+
+export function isPostgresSemanticIterativeScanSupported() {
+  return semanticIterativeScanSupported;
+}
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -78,7 +111,7 @@ function parseSpineSourceShape(value) {
   return null;
 }
 
-function deriveSpineSource(payload, row) {
+export function deriveSpineSource(payload, row) {
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
       const source = parseSpineSourceShape(payload.source);
@@ -122,14 +155,15 @@ function normalizeBackend(value) {
 }
 
 export function resolveStorageBackend({ env = process.env, opts = {} } = {}) {
-  const backend = normalizeBackend(opts.storageBackend ?? env.PDPP_STORAGE_BACKEND ?? 'sqlite');
+  const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL ?? env.DATABASE_URL;
+  const explicitBackend = nonEmptyString(opts.storageBackend ?? env.PDPP_STORAGE_BACKEND);
+  const backend = normalizeBackend(explicitBackend ?? (nonEmptyString(databaseUrl) ? 'postgres' : 'sqlite'));
   if (backend === 'sqlite') {
     return { backend };
   }
 
-  const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL;
   if (!databaseUrl) {
-    throw new Error('PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL.');
+    throw new Error('PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL or DATABASE_URL.');
   }
   return { backend, databaseUrl };
 }
@@ -153,6 +187,110 @@ export async function postgresQuery(sql, params = []) {
   return getPostgresPool().query(sql, params);
 }
 
+// ─── Physical storage footprint (read-only operator diagnostics) ─────────────
+//
+// Surfaces the database's on-disk size so an operator can reconcile the
+// logical retained payload (record/history/blob JSON byte length, reported by
+// `/_ref/dataset/summary`) against what the database process actually occupies
+// on disk. The two are deliberately different measurements: the physical
+// number includes index storage (the `lexical_search_*` / `semantic_search_*`
+// tables), the operational event log, TOAST overhead, page bloat, and free
+// space — none of which the logical projection counts.
+//
+// Strictly read-only by construction: only the pure `pg_database_size` and
+// `pg_total_relation_size` read functions are used. No DDL, no DML, no
+// vacuum/analyze/reindex side effect. Surfacing footprint must never change
+// footprint.
+//
+// Spec: openspec/changes/surface-database-physical-footprint/specs/
+//       reference-implementation-architecture/spec.md
+
+// Bound the relation list so the payload stays small and the operator gets the
+// size drivers, not a full table census. The sizes are an approximate
+// composition: they do not sum to pg_database_size (shared catalogs, the free
+// space map, and WAL are not attributed per relation).
+const PHYSICAL_FOOTPRINT_TOP_RELATIONS = 8;
+
+/**
+ * Read the physical on-disk database footprint for a Postgres backend.
+ *
+ * Returns `{ physical_bytes, top_relations }` where `physical_bytes` is
+ * `pg_database_size(current_database())` and `top_relations` is the largest
+ * relations by `pg_total_relation_size(relid)` (table + indexes + TOAST),
+ * ordered largest-first and bounded to a small top-N.
+ *
+ * Honest about backend and absence: returns `{ physical_bytes: null,
+ * top_relations: null }` on a non-Postgres backend and on any read failure,
+ * mirroring the fail-open diagnostics stance. Never fabricates a `0`.
+ *
+ * @returns {Promise<{ physical_bytes: number | null, top_relations: Array<{ name: string, bytes: number }> | null }>}
+ */
+export async function collectPhysicalFootprint() {
+  if (!isPostgresStorageBackend()) {
+    return { physical_bytes: null, top_relations: null };
+  }
+  try {
+    const totalResult = await postgresQuery(
+      'SELECT pg_database_size(current_database()) AS bytes'
+    );
+    const physicalBytes = coerceByteCount(totalResult?.rows?.[0]?.bytes);
+    if (physicalBytes === null) {
+      // Could not read a usable total — degrade rather than report relations
+      // against an unknown whole.
+      return { physical_bytes: null, top_relations: null };
+    }
+
+    // `relkind = 'r'` restricts to ordinary tables; pg_total_relation_size
+    // already folds in each table's indexes and TOAST, so we do not also
+    // enumerate index relkinds (that would double-count). Catalog/system
+    // relations under pg_catalog / information_schema are excluded so the
+    // operator sees their own data relations.
+    const relationsResult = await postgresQuery(
+      `SELECT c.relname AS name,
+              pg_total_relation_size(c.oid) AS bytes
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        LIMIT $1`,
+      [PHYSICAL_FOOTPRINT_TOP_RELATIONS]
+    );
+    const topRelations = [];
+    for (const row of relationsResult?.rows ?? []) {
+      const name = typeof row?.name === 'string' ? row.name : null;
+      const bytes = coerceByteCount(row?.bytes);
+      if (name === null || bytes === null) {
+        continue;
+      }
+      topRelations.push({ name, bytes });
+    }
+
+    return { physical_bytes: physicalBytes, top_relations: topRelations };
+  } catch {
+    // Read failure (permissions, connection drop, etc.) surfaces as
+    // unmeasured, not as a fabricated zero. The rest of diagnostics still
+    // renders.
+    return { physical_bytes: null, top_relations: null };
+  }
+}
+
+// pg returns BIGINT as a string to avoid JS precision loss. The sizes here are
+// well within Number.MAX_SAFE_INTEGER (a ~51 GB database is ~5.5e10, safe to
+// ~9e15), so we coerce to a finite non-negative Number. Anything that does not
+// coerce to a finite non-negative number degrades to `null`.
+function coerceByteCount(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const n = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    return null;
+  }
+  return n;
+}
+
 export async function withPostgresTransaction(fn) {
   const client = await getPostgresPool().connect();
   try {
@@ -170,7 +308,7 @@ export async function withPostgresTransaction(fn) {
   }
 }
 
-export async function initPostgresStorage(config) {
+export async function initPostgresStorage(config, { log } = {}) {
   if (!config || config.backend !== 'postgres') {
     activeBackend = 'sqlite';
     return null;
@@ -182,7 +320,7 @@ export async function initPostgresStorage(config) {
   pool = new Pool({ connectionString: config.databaseUrl });
   activeBackend = 'postgres';
 
-  await bootstrapPostgresSchema();
+  await bootstrapPostgresSchema({ log });
   return pool;
 }
 
@@ -190,16 +328,20 @@ export async function closePostgresStorage() {
   const current = pool;
   pool = null;
   activeBackend = 'sqlite';
+  semanticEmbeddingColumnMode = 'jsonb';
+  semanticIterativeScanSupported = false;
   if (current) {
     await current.end();
   }
 }
 
-export async function bootstrapPostgresSchema() {
+export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
   const client = await getPostgresPool().connect();
   try {
-    // pgvector is optional. Semantic fallback stores vectors as JSONB and
-    // computes distances after grant-scoped candidate narrowing.
+    // pgvector is optional. When available, the boot migration below moves
+    // semantic embeddings to the pgvector representation; without it the
+    // semantic fallback stores vectors as JSONB and computes distances after
+    // grant-scoped candidate narrowing.
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch {}
@@ -216,8 +358,8 @@ export async function bootstrapPostgresSchema() {
         owner_subject_id TEXT NOT NULL,
         connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
         display_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked', 'draft')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
         source_binding_key TEXT NOT NULL,
         source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TEXT NOT NULL,
@@ -227,6 +369,96 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
         ON connector_instances(owner_subject_id, connector_id, status);
+
+      -- Existing Postgres deployments may have been bootstrapped before the
+      -- static-secret draft lifecycle existed. Widen the status CHECK in place
+      -- so the live reference runtime can create invisible draft connections.
+      DO $$
+      DECLARE
+        status_constraint_name TEXT;
+        status_constraint_def TEXT;
+      BEGIN
+        FOR status_constraint_name, status_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instances'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%active%'
+             AND pg_get_constraintdef(oid) LIKE '%paused%'
+             AND pg_get_constraintdef(oid) LIKE '%revoked%'
+        LOOP
+          IF status_constraint_def NOT LIKE '%draft%' THEN
+            EXECUTE format('ALTER TABLE connector_instances DROP CONSTRAINT %I', status_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instances'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%draft%'
+        ) THEN
+          ALTER TABLE connector_instances
+            ADD CONSTRAINT connector_instances_status_check
+            CHECK (status IN ('active', 'paused', 'revoked', 'draft'));
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        owner_subject_id TEXT NOT NULL,
+        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret TEXT NOT NULL,
+        fingerprint TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at TEXT NOT NULL,
+        rotated_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+
+      -- Existing Postgres deployments may carry the original two-kind CHECK.
+      -- Widen it in place for sealed multi-field static-secret bundles and
+      -- future username/password pairs, without touching stored ciphertext.
+      DO $$
+      DECLARE
+        credential_kind_constraint_name TEXT;
+        credential_kind_constraint_def TEXT;
+      BEGIN
+        FOR credential_kind_constraint_name, credential_kind_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%app_password%'
+             AND pg_get_constraintdef(oid) LIKE '%personal_access_token%'
+        LOOP
+          IF credential_kind_constraint_def NOT LIKE '%secret_bundle%'
+             OR credential_kind_constraint_def NOT LIKE '%username_password%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_kind_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%secret_bundle%'
+             AND pg_get_constraintdef(oid) LIKE '%username_password%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_credential_kind_check
+            CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS oauth_clients (
         client_id TEXT PRIMARY KEY,
@@ -239,6 +471,53 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_clients_registration_mode
         ON oauth_clients(registration_mode, created_at);
+
+      CREATE TABLE IF NOT EXISTS cimd_client_documents (
+        document_id TEXT PRIMARY KEY,
+        client_name TEXT,
+        redirect_uris JSONB NOT NULL DEFAULT '[]'::jsonb,
+        logo_uri TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+        id TEXT PRIMARY KEY,
+        device_code TEXT NOT NULL UNIQUE,
+        code TEXT UNIQUE,
+        client_id TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        state TEXT,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        grant_id TEXT,
+        token_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        issued_at TEXT,
+        consumed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_code
+        ON oauth_authorization_codes(code);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_client_status
+        ON oauth_authorization_codes(client_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+        refresh_token_hash TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        grant_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        expires_at TEXT,
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_grant
+        ON oauth_refresh_tokens(grant_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_client_status
+        ON oauth_refresh_tokens(client_id, status, expires_at);
 
       CREATE TABLE IF NOT EXISTS grants (
         grant_id TEXT PRIMARY KEY,
@@ -260,6 +539,7 @@ export async function bootstrapPostgresSchema() {
       CREATE TABLE IF NOT EXISTS tokens (
         token_id TEXT PRIMARY KEY,
         grant_id TEXT,
+        package_id TEXT,
         subject_id TEXT NOT NULL,
         client_id TEXT,
         token_kind TEXT NOT NULL,
@@ -271,6 +551,69 @@ export async function bootstrapPostgresSchema() {
         ON tokens(grant_id);
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
         ON tokens(client_id);
+
+      CREATE TABLE IF NOT EXISTS grant_packages (
+        package_id TEXT PRIMARY KEY,
+        subject_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        package_json JSONB NOT NULL,
+        parent_package_id TEXT,
+        trace_id TEXT,
+        scenario_id TEXT,
+        created_at TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        revoked_at TEXT,
+        CONSTRAINT grant_packages_parent_package_fk
+          FOREIGN KEY(parent_package_id) REFERENCES grant_packages(package_id) ON DELETE SET NULL
+      );
+      -- Incremental add-source linkage; cumulative-view/audit metadata only,
+      -- carries no source/stream authority. Added via ALTER for DBs created
+      -- before the column existed; the explicit FK keeps migrated and fresh
+      -- Postgres schemas aligned.
+      ALTER TABLE grant_packages
+        ADD COLUMN IF NOT EXISTS parent_package_id TEXT;
+      UPDATE grant_packages child
+         SET parent_package_id = NULL
+       WHERE child.parent_package_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM grant_packages parent
+            WHERE parent.package_id = child.parent_package_id
+         );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'grant_packages'::regclass
+             AND contype = 'f'
+             AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (parent_package_id) REFERENCES grant_packages(package_id)%'
+        ) THEN
+          ALTER TABLE grant_packages
+            ADD CONSTRAINT grant_packages_parent_package_fk
+            FOREIGN KEY(parent_package_id)
+            REFERENCES grant_packages(package_id)
+            ON DELETE SET NULL;
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_client_status
+        ON grant_packages(client_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_parent
+        ON grant_packages(parent_package_id);
+
+      CREATE TABLE IF NOT EXISTS grant_package_members (
+        package_id TEXT NOT NULL REFERENCES grant_packages(package_id) ON DELETE CASCADE,
+        grant_id TEXT NOT NULL REFERENCES grants(grant_id) ON DELETE CASCADE,
+        token_id TEXT NOT NULL,
+        source_json JSONB NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        added_at TEXT NOT NULL,
+        revoked_at TEXT,
+        PRIMARY KEY(package_id, grant_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_package_members_grant
+        ON grant_package_members(grant_id, status);
 
       CREATE TABLE IF NOT EXISTS pending_consents (
         device_code TEXT PRIMARY KEY,
@@ -292,6 +635,21 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
         ON pending_consents(status, expires_at);
+
+      ALTER TABLE tokens
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_authorization_codes
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ALTER COLUMN grant_id DROP NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_package_id
+        ON tokens(package_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_package
+        ON oauth_refresh_tokens(package_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_package
+        ON oauth_authorization_codes(package_id, status);
 
       CREATE TABLE IF NOT EXISTS owner_device_auth (
         device_code TEXT PRIMARY KEY,
@@ -843,6 +1201,7 @@ export async function bootstrapPostgresSchema() {
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
+        fields_fingerprint TEXT NOT NULL,
         model_id TEXT NOT NULL,
         dimensions INTEGER NOT NULL,
         distance_metric TEXT NOT NULL,
@@ -850,6 +1209,163 @@ export async function bootstrapPostgresSchema() {
         updated_at TEXT NOT NULL,
         PRIMARY KEY(connector_instance_id, stream)
       );
+
+      -- Retained-size read model (reference-only, owner-facing).
+      -- See openspec/changes/add-retained-size-read-model/ for spec delta.
+      -- Mirrors the SQLite schema in db.js; same column meaning so the
+      -- backend-agnostic projection module can issue the same statements.
+      CREATE TABLE IF NOT EXISTS retained_size_global (
+        projection_key            TEXT PRIMARY KEY,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        metadata_json             JSONB
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_connection (
+        connector_instance_id     TEXT PRIMARY KEY,
+        connector_id              TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_retained_size_connection_connector
+        ON retained_size_connection(connector_id);
+
+      CREATE TABLE IF NOT EXISTS retained_size_stream (
+        connector_instance_id     TEXT NOT NULL,
+        connector_id              TEXT NOT NULL,
+        stream                    TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_record_family (
+        connector_instance_id     TEXT NOT NULL,
+        connector_id              TEXT NOT NULL,
+        stream                    TEXT NOT NULL,
+        record_family             TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        PRIMARY KEY(connector_instance_id, stream, record_family)
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_top_rows (
+        scope                     TEXT NOT NULL,
+        measure                   TEXT NOT NULL,
+        rank                      INTEGER NOT NULL,
+        grain_key                 TEXT NOT NULL,
+        connector_instance_id     TEXT,
+        connector_id              TEXT,
+        stream                    TEXT,
+        record_key                TEXT,
+        blob_id                   TEXT,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        metadata_json             JSONB,
+        PRIMARY KEY(scope, measure, rank)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_retained_size_top_rows_lookup
+        ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
+
+      -- Outbound event subscriptions (RI extension). Client subscriptions are
+      -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.
+      -- Mirrors the SQLite schema in db.js; the Postgres-backed store applies
+      -- the same operation semantics over pg.
+      CREATE TABLE IF NOT EXISTS client_event_subscriptions (
+        subscription_id        TEXT PRIMARY KEY,
+        authority_kind         TEXT NOT NULL DEFAULT 'client_grant' CHECK (
+          authority_kind IN ('client_grant', 'trusted_owner_agent')
+        ),
+        grant_id               TEXT,
+        client_id              TEXT NOT NULL,
+        subject_id             TEXT NOT NULL,
+        callback_url           TEXT NOT NULL,
+        secret_hash            TEXT NOT NULL,
+        secret_text            TEXT NOT NULL,
+        scope_json             JSONB NOT NULL,
+        status                 TEXT NOT NULL CHECK (status IN (
+          'pending_verification',
+          'active',
+          'disabled',
+          'disabled_failure',
+          'disabled_revoked',
+          'deleted'
+        )),
+        verification_challenge TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        disabled_at            TEXT,
+        disabled_reason        TEXT,
+        CHECK (
+          (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+          OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+        )
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_client
+        ON client_event_subscriptions(client_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_grant
+        ON client_event_subscriptions(grant_id);
+
+      CREATE TABLE IF NOT EXISTS client_event_queue (
+        queue_id        BIGSERIAL PRIMARY KEY,
+        subscription_id TEXT NOT NULL,
+        event_id        TEXT NOT NULL UNIQUE,
+        event_type      TEXT NOT NULL,
+        payload_json    JSONB NOT NULL,
+        enqueued_at     TEXT NOT NULL,
+        next_attempt_at TEXT NOT NULL,
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        status          TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'final_failure', 'dropped')),
+        last_error      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_queue_due
+        ON client_event_queue(status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_queue_subscription
+        ON client_event_queue(subscription_id, status);
+
+      CREATE TABLE IF NOT EXISTS client_event_attempts (
+        attempt_id       BIGSERIAL PRIMARY KEY,
+        queue_id         BIGINT NOT NULL,
+        attempted_at     TEXT NOT NULL,
+        status_code      INTEGER,
+        ok               INTEGER NOT NULL DEFAULT 0,
+        latency_ms       INTEGER,
+        error            TEXT,
+        response_snippet TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_attempts_queue
+        ON client_event_attempts(queue_id, attempt_id);
     `);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
@@ -858,9 +1374,173 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
+    await migratePostgresClientEventSubscriptionAuthority(client);
     await migratePostgresLocalDeviceConnectorInstances(client);
+    await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
+    await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
+    await migratePostgresSemanticEmbeddingToVector(client, log);
   } finally {
     client.release();
+  }
+}
+
+async function hasPgvectorExtension(client) {
+  const result = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'vector' LIMIT 1");
+  return result.rowCount > 0;
+}
+
+async function postgresColumnUdtName(client, table, column) {
+  const result = await client.query(
+    `SELECT udt_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+        AND column_name = $2
+      LIMIT 1`,
+    [table, column],
+  );
+  return result.rows[0]?.udt_name ?? null;
+}
+
+async function detectSemanticIterativeScanSupport(client) {
+  // `hnsw.iterative_scan` exists from pgvector 0.8. SET + RESET outside a
+  // transaction is harmless on this short-lived bootstrap client.
+  try {
+    await client.query("SET hnsw.iterative_scan = strict_order");
+    await client.query('RESET hnsw.iterative_scan');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSemanticEmbeddingHnswIndex(client, log) {
+  const existing = await client.query(
+    `SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND tablename = 'semantic_search_blob' AND indexname = $1
+      LIMIT 1`,
+    [SEMANTIC_HNSW_INDEX_NAME],
+  );
+  if (existing.rowCount > 0) return;
+
+  // HNSW builds want the graph in maintenance_work_mem; the Postgres default
+  // (64MB) forces a much slower build at the live table size. SET values
+  // cannot be bound parameters; the value is validated against a strict
+  // size-literal pattern before interpolation.
+  const workMem = process.env.PDPP_PG_SEMANTIC_INDEX_MAINTENANCE_WORK_MEM || '256MB';
+  const workMemValid = /^\d+(kB|MB|GB)$/.test(workMem);
+  if (workMemValid) {
+    await client.query(`SET maintenance_work_mem = '${workMem}'`);
+  }
+  // Parallel HNSW builds allocate dynamic shared memory proportional to
+  // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
+  // /dev/shm default and dies with "could not resize shared memory segment".
+  // Build serially — no DSM involved — so the boot migration succeeds in any
+  // container (verified against pgvector/pgvector:pg16).
+  await client.query('SET max_parallel_maintenance_workers = 0');
+  log(`[PDPP] Semantic index migration: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ''}, serial build)`);
+  const startedAt = Date.now();
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
+       ON semantic_search_blob
+       USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
+       WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`,
+  );
+  await client.query('RESET max_parallel_maintenance_workers');
+  if (workMemValid) {
+    await client.query('RESET maintenance_work_mem');
+  }
+  log(`[PDPP] Semantic index migration: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+}
+
+/**
+ * Boot migration: move `semantic_search_blob.embedding` from the legacy JSONB
+ * float-array representation to pgvector `vector` so semantic queries can use
+ * the database's cosine-distance operator and HNSW index instead of fetching
+ * candidate embeddings and scoring them in JS.
+ *
+ * Idempotent and resume-safe: every backfill batch is its own statement, the
+ * column swap is one transaction, and re-running after an interruption picks
+ * up at the remaining unconverted rows. When the pgvector extension is not
+ * available the JSONB representation (and the JS brute-force read path) stays
+ * in place unchanged.
+ *
+ * Spec: openspec/changes/migrate-postgres-semantic-index-to-pgvector/
+ */
+async function migratePostgresSemanticEmbeddingToVector(client, log = () => {}) {
+  if (!(await hasPgvectorExtension(client))) {
+    semanticEmbeddingColumnMode = 'jsonb';
+    semanticIterativeScanSupported = false;
+    return;
+  }
+
+  const udtName = await postgresColumnUdtName(client, 'semantic_search_blob', 'embedding');
+  if (udtName === 'vector') {
+    await ensureSemanticEmbeddingHnswIndex(client, log);
+    semanticEmbeddingColumnMode = 'vector';
+    semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
+    return;
+  }
+  if (udtName !== 'jsonb') {
+    // Unknown shape — leave it alone and keep the brute-force path honest.
+    semanticEmbeddingColumnMode = 'jsonb';
+    semanticIterativeScanSupported = false;
+    return;
+  }
+
+  // Index rows are derived data (rebuilt by the semantic backfill machinery),
+  // so rows that cannot cast to a vector — non-array payloads or arrays
+  // containing null — are dropped rather than wedging boot forever.
+  const garbage = await client.query(
+    `DELETE FROM semantic_search_blob
+      WHERE jsonb_typeof(embedding) <> 'array' OR embedding @> 'null'::jsonb`,
+  );
+  if (garbage.rowCount > 0) {
+    log(`[PDPP] Semantic index migration: dropped ${garbage.rowCount} non-castable embedding rows (they will be rebuilt by the semantic backfill)`);
+  }
+
+  const totalResult = await client.query('SELECT COUNT(*) AS n FROM semantic_search_blob');
+  const total = Number(totalResult.rows[0]?.n || 0);
+  if (total > 0) {
+    log(`[PDPP] Semantic index migration: converting semantic_search_blob.embedding JSONB → pgvector (${total} rows)`);
+  }
+
+  await client.query('ALTER TABLE semantic_search_blob ADD COLUMN IF NOT EXISTS embedding_vec vector');
+
+  const batchSize = semanticVectorMigrationBatchSize();
+  let migrated = 0;
+  for (;;) {
+    const batch = await client.query(
+      `UPDATE semantic_search_blob
+          SET embedding_vec = (embedding::text)::vector
+        WHERE ctid IN (
+          SELECT ctid FROM semantic_search_blob WHERE embedding_vec IS NULL LIMIT $1
+        )`,
+      [batchSize],
+    );
+    if (batch.rowCount === 0) break;
+    migrated += batch.rowCount;
+    log(`[PDPP] Semantic index migration: backfilled ${migrated} embeddings`);
+  }
+
+  await client.query('BEGIN');
+  try {
+    await client.query('ALTER TABLE semantic_search_blob DROP COLUMN embedding');
+    await client.query('ALTER TABLE semantic_search_blob RENAME COLUMN embedding_vec TO embedding');
+    await client.query('ALTER TABLE semantic_search_blob ALTER COLUMN embedding SET NOT NULL');
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
+
+  await ensureSemanticEmbeddingHnswIndex(client, log);
+  semanticEmbeddingColumnMode = 'vector';
+  semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
+  if (total > 0) {
+    log('[PDPP] Semantic index migration: complete — semantic queries now use pgvector cosine distance');
   }
 }
 
@@ -877,12 +1557,50 @@ async function hasPostgresColumn(client, table, column) {
   return result.rowCount > 0;
 }
 
-function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  const hash = hashKey(`${ownerSubjectId}\n${connectorId}`);
-  return `cin_legacy_${hash.slice(0, 24)}`;
+async function migratePostgresClientEventSubscriptionAuthority(client) {
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD COLUMN IF NOT EXISTS authority_kind TEXT NOT NULL DEFAULT 'client_grant'`,
+  );
+  await client.query(
+    `UPDATE client_event_subscriptions
+        SET authority_kind = 'client_grant'
+      WHERE authority_kind IS NULL`,
+  );
+  await client.query(`ALTER TABLE client_event_subscriptions ALTER COLUMN grant_id DROP NOT NULL`);
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       DROP CONSTRAINT IF EXISTS client_event_subscriptions_authority_kind_check`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD CONSTRAINT client_event_subscriptions_authority_kind_check
+       CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent'))`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       DROP CONSTRAINT IF EXISTS client_event_subscriptions_authority_grant_check`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD CONSTRAINT client_event_subscriptions_authority_grant_check
+       CHECK (
+         (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+         OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+       )`,
+  );
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_authority
+       ON client_event_subscriptions(authority_kind, subject_id, client_id, status)`,
+  );
 }
 
-async function legacySyncStateConnectorInstanceId(client, connectorId) {
+function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = hashKey(`${ownerSubjectId}\n${connectorId}\naccount\ndefault`);
+  return `cin_${hash.slice(0, 24)}`;
+}
+
+async function defaultConnectorInstanceIdForBackfill(client, connectorId) {
   const result = await client.query(
     `SELECT connector_instance_id
        FROM connector_instances
@@ -893,7 +1611,7 @@ async function legacySyncStateConnectorInstanceId(client, connectorId) {
   if (result.rows.length === 1) {
     return result.rows[0].connector_instance_id;
   }
-  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
 }
 
 async function migratePostgresConnectorSyncStateInstanceColumns(client) {
@@ -922,7 +1640,7 @@ async function migratePostgresConnectorSyncStateInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -974,7 +1692,7 @@ async function migratePostgresConnectorDetailGapInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1013,7 +1731,7 @@ async function migratePostgresSchedulerInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1099,6 +1817,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
   ]) {
     checks.push(await hasPostgresColumn(client, table, 'connector_instance_id'));
   }
+  await client.query("ALTER TABLE semantic_search_backfill_progress ADD COLUMN IF NOT EXISTS fields_fingerprint TEXT");
   if (checks.every(Boolean)) {
     await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
     return;
@@ -1109,7 +1828,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1222,7 +1941,12 @@ async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_connector_stream_deleted ON records(connector_id, stream, deleted)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
+  // Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped
+  // by (connector_instance_id, stream). The record-keyed index above omits
+  // emitted_at, so MAX(emitted_at) otherwise forces a per-row heap visit.
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
 }
@@ -1268,7 +1992,12 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         source_instance_id: row.source_instance_id,
       };
       const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBinding);
-      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+      // connector key, mirroring the SQLite migration and the live ingest/read
+      // paths. Connection isolation is carried by connector_instance_id. See
+      // canonicalize-connector-keys design Decision 7.
+      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+      const newConnectorId = connectorKey;
       const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
 
       const legacyIds = await client.query(
@@ -1303,7 +2032,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
             AND source_kind = 'local_device'
             AND source_binding_key = $3
           LIMIT 1`,
-        [row.owner_subject_id, row.connector_id, sourceBindingKey],
+        [row.owner_subject_id, connectorKey, sourceBindingKey],
       );
       const existingBindingInstanceId = existingBinding.rows[0]?.connector_instance_id || null;
       const legacyInstanceId = legacyIds.rows[0]?.connector_instance_id || null;
@@ -1317,11 +2046,11 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
       const connectorInstanceId = row.connector_instance_id
         || existingBindingInstanceId
         || legacyInstanceId
-        || makeConnectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', sourceBindingKey);
+        || makeConnectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', sourceBindingKey);
       const now = new Date().toISOString();
       const manifest = {
-        connector_id: row.connector_id,
-        display_name: row.display_name || row.connector_id,
+        connector_id: connectorKey,
+        display_name: row.display_name || connectorKey,
         streams: [],
       };
 
@@ -1329,7 +2058,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         `INSERT INTO connectors(connector_id, manifest, created_at)
          VALUES($1, $2::jsonb, $3)
          ON CONFLICT(connector_id) DO NOTHING`,
-        [row.connector_id, JSON.stringify(manifest), row.created_at || now],
+        [connectorKey, JSON.stringify(manifest), row.created_at || now],
       );
 
       await client.query(
@@ -1351,7 +2080,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         [
           connectorInstanceId,
           row.owner_subject_id,
-          row.connector_id,
+          connectorKey,
           row.display_name,
           row.status === 'revoked' ? 'revoked' : 'active',
           sourceBindingKey,
@@ -1365,9 +2094,10 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
       await client.query(
         `UPDATE device_source_instances
             SET connector_instance_id = $1,
-                updated_at = CASE WHEN updated_at > $2 THEN updated_at ELSE $2 END
-          WHERE device_id = $3 AND source_instance_id = $4`,
-        [connectorInstanceId, now, row.device_id, row.source_instance_id],
+                connector_id = $2,
+                updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
+          WHERE device_id = $4 AND source_instance_id = $5`,
+        [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id],
       );
 
       for (const table of [
@@ -1406,66 +2136,301 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
   }
 }
 
-async function migratePostgresSpineSourceColumns(client) {
-  const hadProviderId = await hasPostgresColumn(client, 'spine_events', 'provider_id');
+const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  'connector_state',
+  'grant_connector_state',
+  'records',
+  'record_changes',
+  'version_counter',
+  'blobs',
+  'blob_bindings',
+  'lexical_search_index',
+  'lexical_search_meta',
+  'semantic_search_rowid',
+  'semantic_search_blob',
+  'semantic_search_meta',
+  'semantic_search_backfill_progress',
+  'connector_detail_gaps',
+  'connector_attention_records',
+  'connector_schedules',
+  'controller_active_runs',
+  'scheduler_run_history',
+  'scheduler_last_run_times',
+  'device_source_instances',
+];
+
+function pgUniqueColumnsForLegacyRewrite(table) {
+  switch (table) {
+    case 'connector_state':
+      return ['stream'];
+    case 'grant_connector_state':
+      return ['grant_id', 'stream'];
+    case 'records':
+      return ['stream', 'record_key'];
+    case 'record_changes':
+      return ['stream', 'version'];
+    case 'version_counter':
+      return ['stream'];
+    case 'blob_bindings':
+      return ['blob_id', 'stream', 'record_key', 'json_path'];
+    case 'lexical_search_index':
+      return ['stream', 'record_key', 'field'];
+    case 'lexical_search_meta':
+      return ['stream'];
+    case 'connector_detail_gaps':
+      return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'semantic_search_meta':
+      return ['stream'];
+    case 'semantic_search_backfill_progress':
+      return ['stream'];
+    case 'semantic_search_rowid':
+      return ['scope_key', 'record_key'];
+    case 'semantic_search_blob':
+      return ['scope_key', 'record_key'];
+    case 'connector_schedules':
+      return [];
+    case 'controller_active_runs':
+      return [];
+    case 'scheduler_last_run_times':
+      return [];
+    default:
+      return null;
+  }
+}
+
+function pgIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+async function migratePostgresLegacyConnectorInstancesToDefaultAccount(client) {
   await client.query('BEGIN');
   try {
-    const before = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
-    await client.query(`
-      ALTER TABLE spine_events
-        ADD COLUMN IF NOT EXISTS source_kind TEXT,
-        ADD COLUMN IF NOT EXISTS source_id TEXT
-    `);
-
-    const providerProjection = hadProviderId ? ', provider_id' : '';
-    const rows = await client.query(
-      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
+    // Relax/replace the source_kind CHECK constraint inside the same
+    // transaction as the rewrite. A failed rewrite must not leave schema
+    // DDL advanced while data remains unmigrated.
+    const checkInfo = await client.query(
+      `SELECT conname
+         FROM pg_constraint
+        WHERE conrelid = 'connector_instances'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) ILIKE '%source_kind%'`,
+    );
+    for (const row of checkInfo.rows) {
+      await client.query(`ALTER TABLE connector_instances DROP CONSTRAINT IF EXISTS ${pgIdentifier(row.conname)}`);
+    }
+    await client.query(
+      `ALTER TABLE connector_instances
+         ADD CONSTRAINT connector_instances_source_kind_check
+         CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual'))
+         NOT VALID`,
     );
 
-    for (const row of rows.rows) {
-      const payload = row.data_json && typeof row.data_json === 'object' && !Array.isArray(row.data_json)
-        ? row.data_json
-        : {};
-      const source = deriveSpineSource(payload, row);
-      if (!source) {
+    const legacyRows = await client.query(
+      `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, created_at, updated_at, revoked_at
+         FROM connector_instances
+        WHERE source_kind = 'legacy'
+        ORDER BY connector_instance_id`,
+    );
+
+    // Determine which referencing tables actually have a connector_instance_id column.
+    const existingTables = [];
+    for (const table of PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES) {
+      if (await hasPostgresColumn(client, table, 'connector_instance_id')) {
+        existingTables.push(table);
+      }
+    }
+
+    for (const legacy of legacyRows.rows) {
+      const oldId = legacy.connector_instance_id;
+      const newId = makeDefaultAccountConnectorInstanceId(legacy.owner_subject_id, legacy.connector_id);
+      const now = new Date().toISOString();
+      const dest = await client.query(
+        `SELECT connector_instance_id
+           FROM connector_instances
+          WHERE owner_subject_id = $1
+            AND connector_id = $2
+            AND source_kind = 'account'
+            AND source_binding_key = 'default'
+          LIMIT 1`,
+        [legacy.owner_subject_id, legacy.connector_id],
+      );
+
+      if (dest.rows.length === 0) {
+        if (oldId === newId) {
+          await client.query(
+            `UPDATE connector_instances
+                SET source_kind = 'account',
+                    source_binding_key = 'default',
+                    source_binding_json = $1::jsonb,
+                    updated_at = $2
+              WHERE connector_instance_id = $3`,
+            ['{"kind":"default_account"}', now, oldId],
+          );
+          continue;
+        }
+        const conflict = await client.query(
+          `SELECT 1 FROM connector_instances WHERE connector_instance_id = $1 LIMIT 1`,
+          [newId],
+        );
+        if (conflict.rowCount > 0) {
+          throw new Error(
+            `Cannot migrate legacy connector_instance ${oldId} → ${newId}: destination id already exists for a non-default-account row.`,
+          );
+        }
+        await client.query(
+          `UPDATE connector_instances
+              SET connector_instance_id = $1,
+                  source_kind = 'account',
+                  source_binding_key = 'default',
+                  source_binding_json = $2::jsonb,
+                  updated_at = $3
+            WHERE connector_instance_id = $4`,
+          [newId, '{"kind":"default_account"}', now, oldId],
+        );
+        for (const table of existingTables) {
+          await client.query(
+            `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+            [newId, oldId],
+          );
+        }
         continue;
       }
-      const dataJson = { ...payload, source };
-      if (
-        row.source_kind !== source.kind
-        || row.source_id !== source.id
-        || JSON.stringify(payload.source) !== JSON.stringify(source)
-      ) {
+
+      const destId = dest.rows[0].connector_instance_id;
+      for (const table of existingTables) {
+        const uniqueCols = pgUniqueColumnsForLegacyRewrite(table);
+        if (uniqueCols === null) {
+          await client.query(
+            `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+            [destId, oldId],
+          );
+          continue;
+        }
+        if (uniqueCols.length === 0) {
+          const both = await client.query(
+            `SELECT
+               EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+               EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS dest_present`,
+            [oldId, destId],
+          );
+          if (both.rows[0].legacy_present && both.rows[0].dest_present) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: both ids hold a row in ${table} keyed solely on connector_instance_id; manual reconciliation required.`,
+            );
+          }
+          if (both.rows[0].legacy_present) {
+            await client.query(
+              `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+              [destId, oldId],
+            );
+          }
+          continue;
+        }
+        const keys = await client.query(
+          `SELECT ${uniqueCols.join(', ')} FROM ${table} WHERE connector_instance_id = $1`,
+          [oldId],
+        );
+        for (const k of keys.rows) {
+          const params = [destId, ...uniqueCols.map((c) => k[c])];
+          const whereClause = uniqueCols.map((c, i) => `${c} IS NOT DISTINCT FROM $${i + 2}`).join(' AND ');
+          const conflict = await client.query(
+            `SELECT 1 FROM ${table}
+              WHERE connector_instance_id = $1 AND ${whereClause}
+              LIMIT 1`,
+            params,
+          );
+          if (conflict.rowCount > 0) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: ${table} has a colliding row on (${uniqueCols.join(', ')}) = (${uniqueCols.map((c) => k[c]).join(', ')}); manual reconciliation required.`,
+            );
+          }
+        }
         await client.query(
-          `UPDATE spine_events
-              SET source_kind = $1, source_id = $2, data_json = $3::jsonb
-            WHERE event_id = $4`,
-          [source.kind, source.id, JSON.stringify(dataJson), row.event_id],
+          `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+          [destId, oldId],
         );
       }
+      await client.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [oldId]);
     }
-
-    if (hadProviderId) {
-      await client.query('ALTER TABLE spine_events DROP COLUMN provider_id');
-    }
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
-        ON spine_events(source_kind, source_id, occurred_at, recorded_at)
-    `);
-
-    const after = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
-    if (before.rows[0].count !== after.rows[0].count) {
-      throw new Error(
-        `spine_events source migration row-count mismatch: before=${before.rows[0].count} after=${after.rows[0].count}`
-      );
-    }
+    await client.query(`ALTER TABLE connector_instances VALIDATE CONSTRAINT connector_instances_source_kind_check`);
     await client.query('COMMIT');
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {}
+    await client.query('ROLLBACK');
     throw err;
   }
+}
+
+// Widen the source_kind CHECK to admit `browser_collector` alongside the
+// existing account/local_device/manual kinds. Idempotent: no-op once the
+// constraint already names `browser_collector`. A database created or last
+// migrated before the browser-collector enrollment primitive carries the
+// narrower CHECK; without this a `browser_collector` enrollment would be
+// rejected by the constraint. See add-browser-collector-enrollment-primitive.
+async function migratePostgresConnectorInstancesSourceKindBrowserCollector(client) {
+  const checkInfo = await client.query(
+    `SELECT conname, pg_get_constraintdef(oid) AS def
+       FROM pg_constraint
+      WHERE conrelid = 'connector_instances'::regclass
+        AND contype = 'c'
+        AND pg_get_constraintdef(oid) ILIKE '%source_kind%'`,
+  );
+  const alreadyWidened = checkInfo.rows.some((row) => String(row.def).includes('browser_collector'));
+  if (alreadyWidened) {
+    return;
+  }
+  await client.query('BEGIN');
+  try {
+    for (const row of checkInfo.rows) {
+      await client.query(`ALTER TABLE connector_instances DROP CONSTRAINT IF EXISTS ${pgIdentifier(row.conname)}`);
+    }
+    await client.query(
+      `ALTER TABLE connector_instances
+         ADD CONSTRAINT connector_instances_source_kind_check
+         CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual'))`,
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  }
+}
+
+// Boot-safe spine source schema migration. This installs the
+// `source_kind`/`source_id` columns and their index and drops the superseded
+// `provider_id` column. It is bounded, idempotent DDL only — it does NOT scan
+// or rewrite `spine_events` rows.
+//
+// The per-row value backfill that previously lived here ran a full
+// `SELECT … FROM spine_events` plus per-row `UPDATE` inside one long
+// transaction on every boot. On a large spine (~361k rows on the public
+// reference deployment) that stalled startup for ~90–120s and held a
+// transaction whose locks blocked owner reads. It could never converge
+// because ~8.9k events are legitimately sourceless (token/consent/disclosure
+// events with no data source), so `deriveSpineSource` correctly returns null
+// and they stay NULL forever. The backfill now lives in an explicit operator
+// maintenance script (`scripts/backfill-spine-source/`).
+//
+// NULL legacy `source_*` columns are tolerable: unfiltered correlation
+// summaries derive source from canonical event payloads or runtime actor
+// fallback when the columns are NULL. Source-*filtered* spine correlations
+// under-count not-yet-backfilled legacy rows, which the maintenance script
+// repairs on demand. See
+// openspec/changes/harden-startup-data-backfills.
+async function migratePostgresSpineSourceColumns(client) {
+  await client.query(`
+    ALTER TABLE spine_events
+      ADD COLUMN IF NOT EXISTS source_kind TEXT,
+      ADD COLUMN IF NOT EXISTS source_id TEXT
+  `);
+
+  if (await hasPostgresColumn(client, 'spine_events', 'provider_id')) {
+    await client.query('ALTER TABLE spine_events DROP COLUMN provider_id');
+  }
+
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
+      ON spine_events(source_kind, source_id, occurred_at, recorded_at)
+  `);
 }
 
 /**

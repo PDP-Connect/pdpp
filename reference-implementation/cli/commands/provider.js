@@ -55,6 +55,9 @@ export async function runProvider(argv) {
     if (Array.isArray(metadata.pdpp_registration_modes_supported) && metadata.pdpp_registration_modes_supported.length) {
       summary.pdpp_registration_modes_supported = metadata.pdpp_registration_modes_supported;
     }
+    if ('client_id_metadata_document_supported' in metadata) {
+      summary.client_id_metadata_document_supported = metadata.client_id_metadata_document_supported;
+    }
 
     writeData(summary, resolveFormat(flags, 'table', 'json'));
     return;

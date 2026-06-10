@@ -23,12 +23,27 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
+import { canonicalConnectorKey } from '../server/connector-key.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
 
+// The connector catalog, run summaries, and schedule rows are all keyed by the
+// canonical connector key (Decision 1): registering the URL-shaped manifest
+// connector_id stores and projects it as `spotify`. Output assertions compare
+// against this canonical key; request inputs may still carry the URL shape
+// because the server canonicalizes connector ids at the boundary.
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('spotify');
+const OWNER_SUBJECT_ID = 'owner_local';
+const SPOTIFY_INSTANCE_ID = 'cin_spotify_summary_test';
+const TEST_NOW = '2026-06-02T12:00:00.000Z';
+
 async function closeServer(server) {
+  server.schedulerManager?.stop?.();
+  server.abortStartupBackfill?.('test shutdown');
+  await Promise.resolve(server.startupBackfillDone).catch(() => {});
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
   await Promise.allSettled([
@@ -96,14 +111,38 @@ async function registerConnector(asUrl, manifest) {
   assert.equal(registerResp.status, 201, 'register connector');
 }
 
+async function seedSpotifyConnection(connectorId = SPOTIFY_CONNECTOR_KEY) {
+  const store = createSqliteConnectorInstanceStore();
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+  await store.upsert({
+    connectorInstanceId: SPOTIFY_INSTANCE_ID,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    connectorId: canonicalId,
+    displayName: 'Spotify',
+    sourceKind: 'account',
+    sourceBindingKey: 'acct_spotify_summary_test',
+    sourceBinding: { account_hint: 'summary-test' },
+    createdAt: TEST_NOW,
+    updatedAt: TEST_NOW,
+  });
+}
+
 async function emitSyntheticRun({
-  connectorId,
+  connectorId: rawConnectorId,
   runId,
   status,
   occurredAt,
   knownGaps = [],
-  source = { kind: 'connector', id: connectorId },
+  source: rawSource = null,
 }) {
+  // The live runtime launches runs under the canonical connector key and emits
+  // run.* spine events with source.id = that canonical key. Connector-summary
+  // correlation (last_run / last_successful_run) queries run history by the
+  // canonical key, so a synthetic run must use it too or it correlates to
+  // nothing. Canonicalize the (possibly URL-shaped) test connectorId here. See
+  // canonicalize-connector-keys Decision 1.
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  const source = rawSource ?? { kind: 'connector', id: connectorId };
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   // The spine-layer enforcement requires every run.started to carry
   // boot_epoch+seq. Synthetic-run fixtures use the harness's current
@@ -169,14 +208,15 @@ async function emitSyntheticRun({
   });
 }
 
-test('GET /_ref/connectors lists registered connectors with stream names and freshness', async () => {
+test('GET /_ref/connectors lists configured connections with stream names and freshness', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
+    await seedSpotifyConnection(spotifyManifest.connector_id);
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
     assert.equal(body.object, 'list');
     assert.ok(Array.isArray(body.data));
-    const entry = body.data.find((c) => c.connector_id === spotifyManifest.connector_id);
-    assert.ok(entry, 'spotify connector should be listed');
+    const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.display_name, 'Spotify');
     assert.ok(entry.streams.includes('top_artists'));
     assert.equal(entry.total_records, 0);
@@ -191,6 +231,7 @@ test('GET /_ref/connectors lists registered connectors with stream names and fre
 test('GET /_ref/connectors finds connector runs that are older than newer runs from other connectors', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyConnection(connectorId);
     await emitSyntheticRun({
       connectorId,
       runId: 'run_spotify_older_success',
@@ -199,7 +240,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
     });
     for (let i = 0; i < 8; i += 1) {
       await emitSyntheticRun({
-        connectorId: `https://registry.pdpp.org/connectors/noisy-${i}`,
+        connectorId: `noisy-${i}`,
         runId: `run_noisy_${i}`,
         status: 'failed',
         occurredAt: `2026-04-24T10:0${i + 1}:00.000Z`,
@@ -208,8 +249,8 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
-    const entry = body.data.find((row) => row.connector_id === connectorId);
-    assert.ok(entry, 'spotify connector should be listed');
+    const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_older_success');
     assert.equal(entry.last_run?.status, 'succeeded');
     assert.equal(entry.last_successful_run?.run_id, 'run_spotify_older_success');
@@ -219,6 +260,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
 test('GET /_ref/connectors projects known gaps from the latest run summary', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyConnection(connectorId);
     const knownGaps = [
       {
         kind: 'skip_result',
@@ -237,8 +279,8 @@ test('GET /_ref/connectors projects known gaps from the latest run summary', asy
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
-    const entry = body.data.find((row) => row.connector_id === connectorId);
-    assert.ok(entry, 'spotify connector should be listed');
+    const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_known_gap');
     assert.deepEqual(entry.last_run?.known_gaps, knownGaps);
   });
@@ -294,7 +336,7 @@ test('GET /_ref/connectors projects schedule when one is configured', async () =
     });
     assert.equal(put.status, 200);
     const { body } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = body.data.find((c) => c.connector_id === cid);
+    const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry);
     assert.ok(entry.schedule, 'schedule should be projected when configured');
     assert.equal(entry.schedule.interval_seconds, 900);
@@ -428,7 +470,12 @@ test('GET /_ref/records/timeline honors limit and filters records by stream', as
     const { body: streamFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?stream=saved_tracks`);
     assert.deepEqual(streamFiltered.data, [], 'stream filter excludes wrong streams');
 
-    const { body: connFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`);
+    // Records are keyed by the canonical connector key, and the timeline
+    // connector_id filter matches against that stored key. (Unlike the
+    // /_ref/connections + admission routes, the timeline filter does not
+    // canonicalize a URL-shaped query value — see owner-review note in the
+    // workstream report.)
+    const { body: connFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?connector_id=${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}`);
     assert.equal(connFiltered.data.length, 3);
   } finally {
     await closeServer(server);
@@ -463,7 +510,7 @@ test('POST /_ref/connectors/:connectorId/run starts an async background run and 
     assert.ok(completed, 'manual run should complete in the background');
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = connectors.data.find((row) => row.connector_id === cid);
+    const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'connector should still be listed');
     assert.ok(entry.last_run, 'manual run should project onto connector summaries');
     assert.equal(entry.last_run.run_id, started.run_id);
@@ -527,7 +574,10 @@ test('controller startup reconciles abandoned controller-managed runs after rest
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
-  const connectorId = spotifyManifest.connector_id;
+  // The connector instance, controller_active_runs rows, and run.* spine
+  // events are all keyed by the canonical connector key (Decision 1), so the
+  // seeded abandoned-run state and the reconciler correlate on the same key.
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
   const runId = 'run_controller_restart_orphan';
   let server = null;
 
@@ -543,6 +593,7 @@ test('controller startup reconciles abandoned controller-managed runs after rest
     closeDb();
 
     await initDb(dbPath);
+    await seedSpotifyConnection(connectorId);
     const db = getDb();
     const trace = createTraceContext({ scenarioId: 'scn_controller_restart_orphan' });
     const startedAt = '2026-04-24T09:00:00.000Z';
@@ -626,8 +677,8 @@ test('controller startup reconciles abandoned controller-managed runs after rest
     assert.equal(failed.data?.reason, 'controller_restarted');
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = connectors.data.find((row) => row.connector_id === connectorId);
-    assert.ok(entry, 'connector should still be listed after restart');
+    const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
+    assert.ok(entry, 'configured spotify connection should still be listed after restart');
     assert.equal(entry.last_run?.run_id, runId);
     assert.equal(entry.last_run?.status, 'failed');
     assert.equal(entry.last_run?.failure_reason, 'controller_restarted');
@@ -667,7 +718,7 @@ test('schedule lifecycle: upsert → list → pause → resume → delete', asyn
     assert.equal(putResp.status, 200);
     const upserted = await putResp.json();
     assert.equal(upserted.object, 'schedule');
-    assert.equal(upserted.connector_id, cid);
+    assert.equal(upserted.connector_id, SPOTIFY_CONNECTOR_KEY);
     assert.equal(upserted.interval_seconds, 1800);
     assert.equal(upserted.jitter_seconds, 30);
     assert.equal(upserted.enabled, true);
@@ -677,7 +728,7 @@ test('schedule lifecycle: upsert → list → pause → resume → delete', asyn
     // List shows it.
     const { body: listed } = await fetchJson(`${asUrl}/_ref/schedules`);
     assert.equal(listed.data.length, 1);
-    assert.equal(listed.data[0].connector_id, cid);
+    assert.equal(listed.data[0].connector_id, SPOTIFY_CONNECTOR_KEY);
 
     // Pause.
     const pauseResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(cid)}/schedule/pause`, {
@@ -741,7 +792,7 @@ test('schedule upsert on unknown connector returns 404', async () => {
 test('schedule upsert returns policy_warning when interval is below minimum_interval_seconds', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/policy-warning-test',
+    connector_id: 'policy-warning-test',
     version: '1.0.0',
     display_name: 'Policy Warning Test',
     streams: [
@@ -799,7 +850,7 @@ test('schedule upsert returns policy_warning when interval is below minimum_inte
 test('schedule upsert rejects enabling manual or background-unsafe connector policy', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/manual-unsafe-test',
+    connector_id: 'manual-unsafe-test',
     version: '1.0.0',
     display_name: 'Manual Unsafe Test',
     streams: [
@@ -839,10 +890,63 @@ test('schedule upsert rejects enabling manual or background-unsafe connector pol
   }
 });
 
+test('schedule upsert permits explicit assisted-after-owner-auth schedules', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'assisted-after-owner-auth-test',
+    version: '1.0.0',
+    display_name: 'Assisted After Owner Auth Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      public_listing: {
+        listed: true,
+        status: 'needs_human_auth',
+      },
+      refresh_policy: {
+        recommended_mode: 'automatic',
+        minimum_interval_seconds: 3600,
+        recommended_interval_seconds: 3600,
+        interaction_posture: 'manual_action_likely',
+        background_safe: true,
+        assisted_after_owner_auth: true,
+        rationale: 'Owner-authenticated browser state is required before assisted scheduled runs can proceed.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, manifest);
+
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600, enabled: true }),
+    });
+    assert.equal(putResp.status, 200);
+    const body = await putResp.json();
+    assert.equal(body.object, 'schedule');
+    assert.equal(body.enabled, true);
+    assert.equal(body.automation_mode, 'assisted');
+    assert.equal(body.ineligibility_reason, null);
+    assert.equal(body.policy_warning ?? null, null);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('schedule resume rejects a disabled schedule when connector policy is background-unsafe', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/background-unsafe-test',
+    connector_id: 'background-unsafe-test',
     version: '1.0.0',
     display_name: 'Background Unsafe Test',
     streams: [
@@ -896,7 +1000,7 @@ test('GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row 
   // we do not delete it — but the scheduler skips it and the listing API
   // must surface an explicit reason so the dashboard does not imply the row
   // is running.
-  const connectorId = 'https://registry.pdpp.org/connectors/stale-unsafe-reconcile-test';
+  const connectorId = 'stale-unsafe-reconcile-test';
   const baseManifest = {
     protocol_version: '0.1.0',
     connector_id: connectorId,
@@ -983,7 +1087,7 @@ test('GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row 
 });
 
 test('GET /_ref/schedules omits ineligibility_reason when persisted row is disabled or policy is safe', async () => {
-  const safeId = 'https://registry.pdpp.org/connectors/eligible-schedule-listing-test';
+  const safeId = 'eligible-schedule-listing-test';
   const safeManifest = {
     protocol_version: '0.1.0',
     connector_id: safeId,
@@ -1007,7 +1111,7 @@ test('GET /_ref/schedules omits ineligibility_reason when persisted row is disab
     },
   };
 
-  const disabledId = 'https://registry.pdpp.org/connectors/disabled-unsafe-listing-test';
+  const disabledId = 'disabled-unsafe-listing-test';
   const disabledManifest = {
     protocol_version: '0.1.0',
     connector_id: disabledId,
@@ -1098,7 +1202,7 @@ test('GET /_ref/approvals surfaces pending provider-connect consents with grant 
     assert.ok(entry, 'expected a consent approval entry');
     assert.equal(entry.client_id, 'concert_recommendation_app');
     assert.ok(entry.grant_preview);
-    assert.deepEqual(entry.grant_preview.source, { kind: 'connector', id: spotifyManifest.connector_id });
+    assert.deepEqual(entry.grant_preview.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_KEY });
     assert.equal(entry.grant_preview.access_mode, 'single_use');
     assert.ok(Array.isArray(entry.grant_preview.streams));
   });

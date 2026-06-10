@@ -16,7 +16,7 @@
 import { iterateDynamicSqlAcknowledged, execDynamicSqlAcknowledged } from '../../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
 
 const OPEN_LIFECYCLES = ['open', 'acknowledged', 'in_progress'];
 const VALID_LIFECYCLES = new Set([
@@ -47,7 +47,7 @@ function nonEmptyString(value) {
 }
 
 function defaultConnectorInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function nowIso() {
@@ -123,6 +123,21 @@ function clampLimit(limit) {
 function buildSqliteOpenPredicate(lifecycles) {
   const placeholders = lifecycles.map(() => '?').join(', ');
   return `lifecycle IN (${placeholders})`;
+}
+
+const VALID_NOTIFICATION_STATES = new Set(['acknowledged', 'failed', 'pending', 'sent', 'suppressed']);
+
+function applyNotificationOutcomeToRecord(record, { outcome, reason, now }) {
+  if (!VALID_NOTIFICATION_STATES.has(outcome)) {
+    throw new Error(`recordNotificationOutcomeById: invalid outcome ${outcome}`);
+  }
+  const trimmedReason = nonEmptyString(reason);
+  return {
+    ...record,
+    notification_state: outcome,
+    notification_updated_at: now,
+    notification_reason: trimmedReason,
+  };
 }
 
 export function createSqliteConnectorAttentionStore() {
@@ -224,6 +239,39 @@ export function createSqliteConnectorAttentionStore() {
       );
       return next;
     },
+
+    /**
+     * Update the durable `notification_state` axis on an existing row
+     * without touching lifecycle. The push fanout uses this to record
+     * whether delivery actually reached the owner so the operator
+     * console can answer "did we tell them?" without re-reading
+     * transport logs. Lifecycle is intentionally preserved — a
+     * `failed` outcome must NOT terminate the attention; the spec
+     * scenario "Notification failure does not cause a run storm"
+     * requires the unresolved owner action to remain visible.
+     */
+    async recordNotificationOutcomeById({ attentionId, outcome, reason, now }) {
+      const id = nonEmptyString(attentionId);
+      if (!id) throw new Error('recordNotificationOutcomeById: attentionId is required');
+      const updatedAt = nonEmptyString(now) || nowIso();
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
+      const row = [...iterateDynamicSqlAcknowledged(
+        'SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1',
+        [id],
+      )][0];
+      if (!row) return null;
+      const record = rowToRecord(row);
+      const next = applyNotificationOutcomeToRecord(record, { outcome, reason, now: updatedAt });
+      // REVIEWED-DYNAMIC: notification-axis mutation for the store-owned table.
+      // `updated_at` and `lifecycle` columns are intentionally left as-is so
+      // an external notification outcome does not look like a lifecycle event
+      // to projection consumers that read the column shape.
+      execDynamicSqlAcknowledged(
+        'UPDATE connector_attention_records SET record_json = ? WHERE attention_id = ?',
+        [JSON.stringify(next), id],
+      );
+      return next;
+    },
   };
 }
 
@@ -315,6 +363,25 @@ export function createPostgresConnectorAttentionStore() {
             SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
           WHERE attention_id = $4`,
         [to, updatedAt, JSON.stringify(next), id],
+      );
+      return next;
+    },
+
+    async recordNotificationOutcomeById({ attentionId, outcome, reason, now }) {
+      const id = nonEmptyString(attentionId);
+      if (!id) throw new Error('recordNotificationOutcomeById: attentionId is required');
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const lookup = await postgresQuery(
+        'SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = $1',
+        [id],
+      );
+      const row = lookup.rows[0];
+      if (!row) return null;
+      const record = rowToRecord(row);
+      const next = applyNotificationOutcomeToRecord(record, { outcome, reason, now: updatedAt });
+      await postgresQuery(
+        'UPDATE connector_attention_records SET record_json = $1::jsonb WHERE attention_id = $2',
+        [JSON.stringify(next), id],
       );
       return next;
     },

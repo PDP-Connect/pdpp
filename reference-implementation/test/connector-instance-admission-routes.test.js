@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,10 +71,17 @@ async function registerSpotify(asUrl) {
 
 async function seedTwoSpotifyInstances(connectorId) {
   const store = createSqliteConnectorInstanceStore();
+  // connector_instances.connector_id references connectors(connector_id),
+  // which registerConnector stores under the canonical key (the manifest's
+  // URL-shaped connector_id is canonicalized to `spotify`). Seed instances
+  // under that same canonical key so the FK resolves and the route's
+  // canonical admission lookup finds them. See canonicalize-connector-keys
+  // Decision 1: connector instances bind to canonical keys only.
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
   await store.upsert({
     connectorInstanceId: 'cin_spotify_personal',
     ownerSubjectId: 'owner_local',
-    connectorId,
+    connectorId: canonicalId,
     displayName: 'Spotify - personal',
     sourceKind: 'account',
     sourceBindingKey: 'acct_personal',
@@ -84,7 +92,7 @@ async function seedTwoSpotifyInstances(connectorId) {
   await store.upsert({
     connectorInstanceId: 'cin_spotify_work',
     ownerSubjectId: 'owner_local',
-    connectorId,
+    connectorId: canonicalId,
     displayName: 'Spotify - work',
     sourceKind: 'account',
     sourceBindingKey: 'acct_work',
@@ -221,7 +229,13 @@ test('owner-auth ingest route stores same record key under explicit connector in
       { headers: { Authorization: `Bearer ${ownerToken}` } },
     );
     assert.equal(personalRecord.status, 200);
-    assert.equal(personalRecord.body.connector_instance_id, undefined);
+    // Public read contract (expose-connection-identity-on-public-read):
+    // records carry canonical `connection_id` and the deprecated alias
+    // `connector_instance_id` mirrored to the same value during the
+    // migration window. The previous baseline asserted these were absent;
+    // that pre-dated the canonicalization tranche.
+    assert.equal(personalRecord.body.connection_id, 'cin_spotify_personal');
+    assert.equal(personalRecord.body.connector_instance_id, 'cin_spotify_personal');
     assert.equal(personalRecord.body.data.name, 'personal artist');
 
     const workRecord = await fetchJson(
@@ -229,7 +243,8 @@ test('owner-auth ingest route stores same record key under explicit connector in
       { headers: { Authorization: `Bearer ${ownerToken}` } },
     );
     assert.equal(workRecord.status, 200);
-    assert.equal(workRecord.body.connector_instance_id, undefined);
+    assert.equal(workRecord.body.connection_id, 'cin_spotify_work');
+    assert.equal(workRecord.body.connector_instance_id, 'cin_spotify_work');
     assert.equal(workRecord.body.data.name, 'work artist');
   } finally {
     await closeServer(server);
@@ -366,6 +381,9 @@ test('reference connections list and detail expose owner-facing instance labels'
     const asUrl = `http://localhost:${server.asPort}`;
     const manifest = await registerSpotify(asUrl);
     const connectorId = manifest.connector_id;
+    // The wire exposes the canonical operational key, not the manifest's
+    // URL-shaped connector_id (canonicalize-connector-keys Decision 1).
+    const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     await seedTwoSpotifyInstances(connectorId);
 
     const listResp = await fetchJson(`${asUrl}/_ref/connections?connector_id=${encodeURIComponent(connectorId)}`);
@@ -382,7 +400,7 @@ test('reference connections list and detail expose owner-facing instance labels'
     const detailResp = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_work`);
     assert.equal(detailResp.status, 200);
     assert.equal(detailResp.body.object, 'ref_connection');
-    assert.equal(detailResp.body.connector_id, connectorId);
+    assert.equal(detailResp.body.connector_id, canonicalConnectorId);
     assert.equal(detailResp.body.connector_instance_id, 'cin_spotify_work');
     assert.equal(detailResp.body.display_name, 'Spotify - work');
   } finally {
@@ -396,6 +414,7 @@ test('reference connection schedule actions target one connector instance', asyn
     const asUrl = `http://localhost:${server.asPort}`;
     const manifest = await registerSpotify(asUrl);
     const connectorId = manifest.connector_id;
+    const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     await seedTwoSpotifyInstances(connectorId);
 
     const personalPut = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_personal/schedule`, {
@@ -404,7 +423,7 @@ test('reference connection schedule actions target one connector instance', asyn
       body: JSON.stringify({ interval_seconds: 3600, enabled: true }),
     });
     assert.equal(personalPut.status, 200);
-    assert.equal(personalPut.body.connector_id, connectorId);
+    assert.equal(personalPut.body.connector_id, canonicalConnectorId);
     assert.equal(personalPut.body.connector_instance_id, 'cin_spotify_personal');
     assert.equal(personalPut.body.enabled, true);
 

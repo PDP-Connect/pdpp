@@ -102,7 +102,7 @@ patches ourselves — the maintenance burden goes to where it belongs.
 
 ### Files changed
 
-- **`docker/neko/Dockerfile`** — Added a `patchright-chromium` build stage that runs `patchright install chromium` and copies the resulting browser tree to `/opt/patchright-browsers/` in the runtime stage. Also retained the Google Chrome stable install as a fallback (Patchright also prefers `channel:chrome` when its bundled binary isn't available).
+- **`docker/neko/Dockerfile`** — Added a `patchright-chromium` build stage that runs `patchright install chromium` and copies the resulting browser tree to `/opt/patchright-browsers/` in the runtime stage. Google Chrome stable remains installed only as a compatibility fallback or explicit-channel comparison point; the preferred posture is Patchright's bundled Chromium.
 
 - **`docker/neko/start-chromium.sh`** — Rewritten end-to-end. Binary selection in priority order: Patchright Chromium → Google Chrome stable → system chromium. Launch flags are the verbatim Patchright canonical set from `chromiumSwitches.js`, with `--remote-debugging-port=9222` substituted for the default `--remote-debugging-pipe`.
 

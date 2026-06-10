@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../server/index.js';
 import { closeDb } from '../server/db.js';
 import { createScheduler } from '../runtime/scheduler.ts';
+import { getDefaultSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -313,6 +314,104 @@ test('server-owned scheduler ignores paused and deleted persisted schedules', as
   }
 });
 
+test('autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_id before running', async () => {
+  // GAP A regression: a pre-canonicalization `connector_schedules` row can hold
+  // a URL-shaped (or legacy-alias) `connector_id`. The controller's
+  // `upsertSchedule` canonicalizes on write, but a legacy/migration row seeded
+  // directly into the store bypasses that. `buildConnectors` reads the row and
+  // (before the fix) forwards the non-canonical id straight into the scheduler,
+  // which emits the spine run source and persists run-history / last-run rows
+  // under the non-canonical key — mismatching the canonical key the read and
+  // admission paths key on. This test seeds the legacy row directly, ticks the
+  // scheduler once, and asserts every persisted identity is the canonical key.
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const canonicalKey = spotifyManifest.connector_key; // 'spotify'
+  const legacyConnectorId = spotifyManifest.connector_id; // URL-shaped, non-canonical
+  assert.notEqual(legacyConnectorId, canonicalKey, 'fixture precondition: ids differ');
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-legacy-canonical-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  let server = null;
+
+  try {
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      connectorPathResolver: () => connectorPath,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    // Seed the schedule row directly — NOT via controller.upsertSchedule, which
+    // would canonicalize — to faithfully model a legacy row written before the
+    // canonicalization slice landed.
+    const store = getDefaultSchedulerStore();
+    const now = new Date().toISOString();
+    await store.createSchedule({
+      connector_id: legacyConnectorId,
+      connector_instance_id: legacyConnectorId,
+      interval_seconds: 60,
+      jitter_seconds: 0,
+      enabled: true,
+      created_at: now,
+      updated_at: now,
+    });
+
+    // Re-run buildConnectors over the freshly-seeded legacy row.
+    await server.schedulerManager.refresh();
+
+    await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    // The run record is appended to history asynchronously after the run
+    // completes; poll the durable store (SQLite listRunHistory is synchronous)
+    // until the row lands so the assertion sees the persisted identity.
+    let history = [];
+    await waitFor(() => {
+      history = store.listRunHistory(50);
+      return history.length >= 1;
+    }, 8000);
+
+    history = store.listRunHistory(50);
+    const record = history.find((entry) => entry.status === 'succeeded') || history[0];
+    assert.ok(record, 'expected a persisted run-history record from the scheduled run');
+
+    // The persisted run-history connectorId and the emitted spine run source id
+    // must be the canonical key, not the legacy URL-shaped connector_id.
+    assert.equal(
+      record.connectorId,
+      canonicalKey,
+      `run-history connectorId should be canonical '${canonicalKey}', got '${record.connectorId}'`,
+    );
+    assert.equal(
+      record.source?.id,
+      canonicalKey,
+      `spine run source.id should be canonical '${canonicalKey}', got '${record.source?.id}'`,
+    );
+
+    const lastRunTimes = store.listLastRunTimes();
+    const lastRun = lastRunTimes.find((row) => row.connector_id === canonicalKey);
+    assert.ok(
+      lastRun,
+      `last-run row should be keyed by canonical '${canonicalKey}', got ${JSON.stringify(
+        lastRunTimes.map((row) => row.connector_id),
+      )}`,
+    );
+  } finally {
+    if (server) {
+      await closeServer(server);
+    }
+    closeDb();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('scheduler history records checkpoint summaries from runConnector results', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
@@ -333,7 +432,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
     const scheduler = createScheduler({
       connectors: [
         {
-          connectorId: spotifyManifest.connector_id,
+          connectorId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
           manifest: spotifyManifest,
           ownerToken,
@@ -357,7 +456,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
     assert.equal(record.status, 'succeeded');
     assert.deepEqual(record.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: spotifyManifest.connector_key,
     });
     assert.ok(record.runId);
     assert.ok(record.traceId);
@@ -379,15 +478,15 @@ test('scheduler history records checkpoint summaries from runConnector results',
 
     const stats = scheduler.getStats();
     assert.deepEqual(
-      stats[spotifyManifest.connector_id].lastRun?.source,
+      stats[spotifyManifest.connector_key].lastRun?.source,
       record.source,
     );
     assert.deepEqual(
-      stats[spotifyManifest.connector_id].lastRun?.checkpointSummary,
+      stats[spotifyManifest.connector_key].lastRun?.checkpointSummary,
       record.checkpointSummary,
     );
 
-    const persistedState = stateStore.get(spotifyManifest.connector_id);
+    const persistedState = stateStore.get(spotifyManifest.connector_key);
     assert.ok(persistedState?.top_artists);
     assert.ok(persistedState?.saved_tracks);
   } finally {
@@ -404,10 +503,10 @@ test('scheduler hydrates persisted history without bypassing a fresh persisted l
   const appendedHistory = [];
   const lastRunUpserts = [];
   const persistedHistory = {
-    connectorId: 'https://registry.pdpp.org/connectors/persisted-history',
+    connectorId: 'persisted-history',
     source: {
       kind: 'connector',
-      id: 'https://registry.pdpp.org/connectors/persisted-history',
+      id: 'persisted-history',
     },
     status: 'skipped',
     recordsEmitted: 0,
@@ -481,7 +580,7 @@ test('scheduler hydrates persisted history without bypassing a fresh persisted l
 test('scheduler preserves failure reasons and checkpoint summaries from failed runConnector results', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-failure-test',
+    connector_id: 'scheduler-failure-test',
     version: '1.0.0',
     display_name: 'Scheduler Failure Test Connector',
     streams: [
@@ -598,7 +697,7 @@ rl.on('line', (line) => {
 test('scheduler preserves partial checkpoint commit summaries from state persistence failures after DONE(succeeded)', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-partial-checkpoint-test',
+    connector_id: 'scheduler-partial-checkpoint-test',
     version: '1.0.0',
     display_name: 'Scheduler Partial Checkpoint Test Connector',
     streams: [
@@ -785,7 +884,7 @@ rl.on('line', (line) => {
 test('scheduler preserves terminal counter mismatch failures from runConnector results', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-terminal-counter-mismatch-test',
+    connector_id: 'scheduler-terminal-counter-mismatch-test',
     version: '1.0.0',
     display_name: 'Scheduler Terminal Counter Mismatch Test Connector',
     streams: [
@@ -913,7 +1012,7 @@ rl.on('line', (line) => {
 test('scheduler preserves connector-declared terminal error details from failed runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-terminal-error-test',
+    connector_id: 'scheduler-terminal-error-test',
     version: '1.0.0',
     display_name: 'Scheduler Terminal Error Test Connector',
     streams: [
@@ -1030,7 +1129,7 @@ rl.on('line', (line) => {
 test('scheduler preserves known gaps from partial connector runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-known-gap-test',
+    connector_id: 'scheduler-known-gap-test',
     version: '1.0.0',
     display_name: 'Scheduler Known Gap Test Connector',
     streams: [
@@ -1124,7 +1223,7 @@ rl.on('line', (line) => {
 test('scheduler preserves connector-declared terminal error details from cancelled runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-cancelled-terminal-error-test',
+    connector_id: 'scheduler-cancelled-terminal-error-test',
     version: '1.0.0',
     display_name: 'Scheduler Cancelled Terminal Error Test Connector',
     streams: [
@@ -1241,7 +1340,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry deterministic connector protocol violations', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-no-retry-protocol-violation',
+    connector_id: 'scheduler-no-retry-protocol-violation',
     version: '1.0.0',
     display_name: 'Scheduler No Retry Protocol Violation Connector',
     streams: [
@@ -1335,7 +1434,7 @@ rl.on('line', (line) => {
 test('scheduler retries connector-declared retryable failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-retryable-terminal-error',
+    connector_id: 'scheduler-retryable-terminal-error',
     version: '1.0.0',
     display_name: 'Scheduler Retryable Terminal Error Connector',
     streams: [
@@ -1451,7 +1550,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry connector-declared non-retryable failures', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-nonretryable-terminal-error',
+    connector_id: 'scheduler-nonretryable-terminal-error',
     version: '1.0.0',
     display_name: 'Scheduler Nonretryable Terminal Error Connector',
     streams: [
@@ -1550,7 +1649,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry runtime authentication failures from ingest', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-authentication-error',
+    connector_id: 'scheduler-authentication-error',
     version: '1.0.0',
     display_name: 'Scheduler Authentication Error Connector',
     streams: [
@@ -1679,7 +1778,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry runtime permission failures from state persistence', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-permission-error',
+    connector_id: 'scheduler-permission-error',
     version: '1.0.0',
     display_name: 'Scheduler Permission Error Connector',
     streams: [
@@ -1819,7 +1918,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry deterministic runtime connector_invalid failures', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-connector-invalid',
+    connector_id: 'scheduler-connector-invalid',
     version: '1.0.0',
     display_name: 'Scheduler Connector Invalid Connector',
     streams: [
@@ -1950,7 +2049,7 @@ rl.on('line', (line) => {
 test('scheduler retries runtime rate_limit_error failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-rate-limit-error',
+    connector_id: 'scheduler-rate-limit-error',
     version: '1.0.0',
     display_name: 'Scheduler Rate Limit Error Connector',
     streams: [
@@ -2079,7 +2178,7 @@ rl.on('line', (line) => {
 test('scheduler retries transient runtime 500 failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-runtime-500-retry',
+    connector_id: 'scheduler-runtime-500-retry',
     version: '1.0.0',
     display_name: 'Scheduler Runtime 500 Retry Connector',
     streams: [
@@ -2585,7 +2684,7 @@ test('scheduler start is idempotent and does not launch a second immediate run',
     const scheduler = createScheduler({
       connectors: [
         {
-          connectorId: spotifyManifest.connector_id,
+          connectorId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
           manifest: spotifyManifest,
           ownerToken,
@@ -2618,7 +2717,7 @@ test('scheduler emits one disabled skip after deterministic grant lifecycle fail
   for (const terminalReason of ['grant_invalid', 'grant_revoked', 'grant_expired', 'grant_consumed']) {
     const manifest = {
       protocol_version: '0.1.0',
-      connector_id: `https://registry.pdpp.org/connectors/scheduler-${terminalReason}`,
+      connector_id: `scheduler-${terminalReason}`,
       version: '1.0.0',
       display_name: `Scheduler ${terminalReason} Connector`,
       streams: [
@@ -2798,7 +2897,8 @@ test('scheduler records one not-ready skip for automatic runs when runtime prere
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-test',
+    connector_id: 'scheduler-not-ready-test',
+    connector_key: 'scheduler-not-ready-test',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -2857,7 +2957,8 @@ test('scheduler emits a fresh not-ready skip when readiness reason changes', asy
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-changing-test',
+    connector_id: 'scheduler-not-ready-changing-test',
+    connector_key: 'scheduler-not-ready-changing-test',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -2916,7 +3017,8 @@ test('scheduler default readiness checker skips missing manifest-declared extern
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-missing-tool-test',
+    connector_id: 'scheduler-missing-tool-test',
+    connector_key: 'scheduler-missing-tool-test',
     runtime_requirements: {
       bindings: { network: { required: true } },
       external_tools: [
@@ -2983,7 +3085,8 @@ test('scheduler default readiness checker probes SLACKDUMP_BIN with version desp
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-slackdump-bin-test',
+    connector_id: 'scheduler-slackdump-bin-test',
+    connector_key: 'scheduler-slackdump-bin-test',
     runtime_requirements: {
       bindings: { network: { required: true } },
       external_tools: [
@@ -3048,11 +3151,70 @@ test('scheduler default readiness checker probes SLACKDUMP_BIN with version desp
   }
 });
 
+test('scheduler default readiness checker applies local-source checks to canonical connector keys', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-canonical-local-source-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousSessionsDir = process.env.CODEX_SESSIONS_DIR;
+  const previousStateDb = process.env.CODEX_STATE_DB;
+  const completedRuns = [];
+  const scheduler = createScheduler({
+    connectors: [
+      {
+        connectorId: 'codex',
+        connectorPath,
+        manifest: {
+          capabilities: {
+            refresh_policy: { background_safe: true },
+          },
+          runtime_requirements: {
+            bindings: { filesystem: { required: true }, network: { required: true } },
+          },
+        },
+        ownerToken: 'owner-token',
+        intervalMs: 25,
+        maxRetries: 0,
+      },
+    ],
+    rsUrl: 'http://localhost.invalid',
+    onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+    onRunComplete: (record) => completedRuns.push(record),
+    getState: async () => null,
+    setState: async () => {},
+  });
+
+  try {
+    process.env.CODEX_SESSIONS_DIR = join(tmpDir, 'missing-sessions');
+    process.env.CODEX_STATE_DB = join(tmpDir, 'missing-state.sqlite');
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.match(first.error, /^not_ready: Codex local source path\(s\) are missing or unreadable:/);
+    assert.deepEqual(readAttempts(attemptsPath), [], 'canonical local-source checks must prevent connector spawn');
+  } finally {
+    scheduler.stop();
+    if (previousSessionsDir === undefined) {
+      delete process.env.CODEX_SESSIONS_DIR;
+    } else {
+      process.env.CODEX_SESSIONS_DIR = previousSessionsDir;
+    }
+    if (previousStateDb === undefined) {
+      delete process.env.CODEX_STATE_DB;
+    } else {
+      process.env.CODEX_STATE_DB = previousStateDb;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('scheduler default readiness checker does not treat browser bindings as ready by default', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-browser-not-ready-test',
+    connector_id: 'scheduler-browser-not-ready-test',
+    connector_key: 'scheduler-browser-not-ready-test',
     runtime_requirements: {
       bindings: { browser: { required: true }, network: { required: true } },
     },
@@ -3061,6 +3223,8 @@ test('scheduler default readiness checker does not treat browser bindings as rea
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
   const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3069,6 +3233,8 @@ test('scheduler default readiness checker does not treat browser bindings as rea
   try {
     delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
     delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3114,6 +3280,197 @@ test('scheduler default readiness checker does not treat browser bindings as rea
     } else {
       process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
     }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as managed browser surface', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'scheduler-browser-neko-cdp-ready-test',
+    connector_key: 'scheduler-browser-neko-cdp-ready-test',
+    runtime_requirements: {
+      bindings: { browser: { required: true }, network: { required: true } },
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-browser-neko-cdp-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+  const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    // Simulate reference Docker stack static neko mode — no PDPP_BROWSER_SURFACE_REMOTE_CDP_URL needed.
+    process.env.PDPP_NEKO_CDP_HTTP_URL = 'http://neko:9223';
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_browser_neko_cdp_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    // Readiness gate must pass — connector should run (succeeded or failed), not be skipped as not_ready.
+    assert.ok(
+      first.status !== 'skipped' || !first.error?.startsWith('not_ready:'),
+      `expected run to pass readiness gate but got: ${first.error}`
+    );
+    assert.ok(readAttempts(attemptsPath).length >= 1, 'connector should have been launched');
+  } finally {
+    if (previousRemoteCdp === undefined) {
+      delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    } else {
+      process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = previousRemoteCdp;
+    }
+    if (previousUnmanagedOptIn === undefined) {
+      delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    } else {
+      process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as managed browser surface', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'scheduler-browser-neko-managed-ready-test',
+    connector_key: 'scheduler-browser-neko-managed-ready-test',
+    runtime_requirements: {
+      bindings: { browser: { required: true }, network: { required: true } },
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-browser-neko-managed-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+  const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    // Simulate reference Docker stack dynamic neko mode.
+    process.env.PDPP_NEKO_MANAGED_CONNECTORS = 'https://registry.pdpp.org/connectors/chatgpt';
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_browser_neko_managed_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.ok(
+      first.status !== 'skipped' || !first.error?.startsWith('not_ready:'),
+      `expected run to pass readiness gate but got: ${first.error}`
+    );
+    assert.ok(readAttempts(attemptsPath).length >= 1, 'connector should have been launched');
+  } finally {
+    if (previousRemoteCdp === undefined) {
+      delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    } else {
+      process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = previousRemoteCdp;
+    }
+    if (previousUnmanagedOptIn === undefined) {
+      delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    } else {
+      process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -3122,7 +3479,7 @@ test('scheduler default readiness checker does not treat browser bindings as rea
 test('scheduler marks connector as needs-human when automatic run triggers interaction', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-interaction-test',
+    connector_id: 'scheduler-interaction-test',
     version: '1.0.0',
     display_name: 'Interaction Test Connector',
     streams: [
@@ -3234,7 +3591,8 @@ test('scheduler backoff skip derives next_attempt_at from history when last_run_
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-1970-regression',
+    connector_id: 'scheduler-backoff-1970-regression',
+    connector_key: 'scheduler-backoff-1970-regression',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -3344,7 +3702,8 @@ test('scheduler backoff skip uses gave_up phrasing once health-state crosses blo
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-blocked-msg',
+    connector_id: 'scheduler-backoff-blocked-msg',
+    connector_key: 'scheduler-backoff-blocked-msg',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -3435,7 +3794,8 @@ test('scheduler does not re-emit persisted backoff transition markers on restart
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-restart-noise',
+    connector_id: 'scheduler-backoff-restart-noise',
+    connector_key: 'scheduler-backoff-restart-noise',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;

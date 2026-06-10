@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 
+import { buildAgentVersion } from "./collector-build-info.ts";
 import {
   buildCollectorStartMessage,
   COLLECTOR_STDERR_MAX_BYTES,
@@ -135,6 +136,361 @@ test("runCollectorConnector gives changed emitted_at records a distinct local ba
 
     assert.notEqual(first.bodyHash, second.bodyHash, "server idempotency hash changes when emitted_at changes");
     assert.notEqual(first.batchId, second.batchId, "batch id must change with the body hash to avoid false conflicts");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector summarizes coverage completeness distinct from declared-stream success", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    // The connector reports a clean DONE for its declared stream while the
+    // coverage diagnostic shows a mix of accounted statuses — collected,
+    // excluded, deferred, and missing. Declared-stream success must not
+    // flatten that completeness picture (Section 5.2).
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        const coverage = [
+          { store: "sessions", stream: "sessions", status: "collected", reason: "declared stream" },
+          { store: "auth", stream: null, status: "excluded", reason: "auth-adjacent" },
+          { store: "logs", stream: "logs", status: "deferred", reason: "redaction pending" },
+          { store: "downloads", stream: "downloads", status: "missing", reason: "not present" },
+        ];
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "sessions", key: "s-1",
+          data: { id: "s-1" }, emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        for (const c of coverage) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD", stream: "coverage_diagnostics", key: "coverage:" + c.store,
+            data: { id: "coverage:" + c.store, ...c }, emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 5 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-coverage",
+        runtime_requirements: { bindings: {} },
+        streams: ["sessions", "coverage_diagnostics"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-coverage",
+    });
+
+    // Declared-stream success is reported on `done`.
+    assert.equal(result.done?.status, "succeeded");
+
+    // Completeness is a separate, non-failing signal.
+    assert.ok(result.completeness, "expected a completeness summary");
+    assert.equal(result.completeness?.storeCount, 4);
+    assert.equal(result.completeness?.fullyAccounted, true);
+    assert.deepEqual(result.completeness?.unaccountedStores, []);
+    assert.equal(result.completeness?.countsByStatus.collected, 1);
+    assert.equal(result.completeness?.countsByStatus.excluded, 1);
+    assert.equal(result.completeness?.countsByStatus.deferred, 1);
+    assert.equal(result.completeness?.countsByStatus.missing, 1);
+    assert.equal(result.completeness?.byStore.auth, "excluded");
+    assert.equal(result.completeness?.byStore.downloads, "missing");
+
+    // The summary must not carry paths, payloads, or the reason free-text.
+    const json = JSON.stringify(result.completeness);
+    assert.equal(json.includes("reason"), false);
+    assert.equal(json.includes("redaction pending"), false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports null completeness when no coverage diagnostic is observed", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "messages", key: "m-1",
+          data: { id: "m-1" }, emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-no-coverage",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-no-coverage",
+    });
+
+    // A run that does not request coverage reports absence as absence, not
+    // as "complete".
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.completeness, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+const ONE_RECORD_CONNECTOR_SCRIPT = `
+  await new Promise((r) => {
+    let buf = "";
+    process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+  });
+  process.stdout.write(JSON.stringify({
+    type: "RECORD", stream: "messages", key: "m-1",
+    data: { id: "m-1" }, emitted_at: new Date().toISOString(),
+  }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+`;
+
+test("runCollectorConnector auto-prunes over-retention succeeded rows after a clean drain and reports the count", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const baseConfig = {
+      // Keep only the single most-recent succeeded row. The bound is count-only
+      // — no age floor — so even the second pass's freshly-acknowledged batch
+      // makes pass 1's batch eligible the instant it falls outside the recent
+      // set. (v1 needed a `keepWithinDays: 0` age trick here; the corrected
+      // count-only bound does not.)
+      autoPrune: { keepRecentCount: 1 },
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-auto-prune",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-auto-prune",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.done?.status, "succeeded");
+    assert.equal(pass1.prunedSent.enabled, true);
+    // Pass 1 left exactly one acknowledged batch, which is inside keepRecentCount.
+    assert.equal(pass1.prunedSent.pruned, 0);
+    // The returned summary reflects the post-prune state.
+    assert.equal(pass1.outboxSummary.succeeded, 1);
+
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.equal(pass2.done?.status, "succeeded");
+    assert.equal(pass2.prunedSent.enabled, true);
+    // Pass 2 acknowledges a second batch; keepRecentCount=1 keeps it and prunes
+    // pass 1's batch — regardless of how recently pass 1 was acknowledged.
+    assert.equal(pass2.prunedSent.pruned, 1);
+    // The returned summary is post-prune: one row retained, not two.
+    assert.equal(pass2.outboxSummary.succeeded, 1);
+
+    // The final heartbeat the server received must also carry the post-prune
+    // succeeded count, not the stale pre-prune tail.
+    const lastHeartbeat = harness.heartbeats.at(-1);
+    assert.equal((lastHeartbeat?.outbox as { succeeded?: number } | undefined)?.succeeded, 1);
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(
+        outbox.summary({ sourceInstanceId: "src-auto-prune" }).succeeded,
+        1,
+        "exactly the most-recent succeeded row is retained"
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports the build-derived agent version on every heartbeat", async () => {
+  // Stale-build drift was invisible because the collector reported an empty
+  // `agent_version`. Every heartbeat must now carry the build-derived version so
+  // the reference can persist it to `device_exporters.agent_version` and surface
+  // which build a host is running. In an unbuilt test run this is `…+source`.
+  const harness = await startCollectorHarness({});
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-agent-version",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-agent-version",
+    });
+    assert.equal(result.done?.status, "succeeded");
+
+    const expected = buildAgentVersion();
+    assert.match(expected, /^[^+]+\+source$/, "an unbuilt test run reports the source sentinel");
+    assert.ok(harness.heartbeats.length >= 2, "expected at least the starting and final heartbeats");
+    for (const heartbeat of harness.heartbeats) {
+      assert.equal(
+        heartbeat.agent_version,
+        expected,
+        `every heartbeat must carry the build-derived agent version; saw ${String(heartbeat.agent_version)}`
+      );
+    }
+    // Redaction: the reported version carries no path, home dir, or token.
+    const starting = harness.heartbeats.find((h) => h.status === "starting");
+    const startingVersion = String(starting?.agent_version ?? "");
+    assert.ok(!startingVersion.includes("/"), "agent version must not carry a path separator");
+    assert.ok(!startingVersion.includes(process.env.HOME ?? " never"), "must not carry a home path");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector leaves succeeded rows intact when auto-prune is disabled", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const baseConfig = {
+      // Disabled despite an aggressive count bound that would otherwise prune.
+      autoPrune: { enabled: false, keepRecentCount: 0 },
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-prune-disabled",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-prune-disabled",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.prunedSent.enabled, false);
+    assert.equal(pass2.prunedSent.enabled, false);
+    assert.equal(pass2.prunedSent.pruned, 0);
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(
+        outbox.summary({ sourceInstanceId: "src-prune-disabled" }).succeeded,
+        2,
+        "both acknowledged batches are retained when prune is disabled"
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector under the default policy retains a clean run's acknowledged rows", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    // No autoPrune override → default policy (keep the most-recent 10,000).
+    // A single clean run's one acknowledged batch is well inside the cap.
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-default-prune",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-default-prune",
+    });
+    assert.equal(result.prunedSent.enabled, true);
+    assert.equal(result.prunedSent.pruned, 0, "a clean run within bounds prunes nothing");
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(outbox.summary({ sourceInstanceId: "src-default-prune" }).succeeded, 1);
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector flags an unrecognized coverage status as unaccounted", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "coverage_diagnostics", key: "mystery:weird",
+          data: { id: "mystery:weird", store: "mystery", stream: null, status: "weird-new-status" },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-unaccounted",
+        runtime_requirements: { bindings: {} },
+        streams: ["coverage_diagnostics"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-unaccounted",
+    });
+
+    // An unknown status from a future tool release surfaces as unaccounted,
+    // so declared-stream success cannot read as complete.
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.completeness?.fullyAccounted, false);
+    assert.deepEqual(result.completeness?.unaccountedStores, ["mystery"]);
+    assert.equal(result.completeness?.countsByStatus.unaccounted, 1);
   } finally {
     await harness.close();
   }
@@ -517,7 +873,14 @@ test("runCollectorConnector does not checkpoint when record work dead-letters", 
     assert.equal(result.flushedState, null);
     assert.equal(result.outboxSummary.deadLetter, 1);
     assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
-    assert.equal(harness.heartbeats.at(-1)?.status, "blocked");
+    const blockedHeartbeat = harness.heartbeats.at(-1);
+    assert.equal(blockedHeartbeat?.status, "blocked");
+    // The blocked-on-backlog heartbeat now carries the redacted cause so the
+    // dashboard can answer "why did these dead-letter?" without host access.
+    const lastError = heartbeatLastError(blockedHeartbeat?.last_error);
+    assert.equal(lastError?.kind, "dead_letter_backlog");
+    assert.ok((lastError?.top_dead_letter_classes?.length ?? 0) >= 1, "expected at least one error class");
+    assert.equal(lastError?.top_dead_letter_classes?.[0]?.count, 1);
   } finally {
     await harness.close();
   }
@@ -642,6 +1005,104 @@ test("two-pass replay regression: a second runCollectorConnector call receives t
     assert.deepEqual(pass2.priorState, { attachments: "uid:1" });
     assert.deepEqual(pass2.flushedState, { attachments: "uid:2" });
     assert.equal(harness.ingestedBatches[1]?.records?.[0]?.data?.observed_prior, "uid:1");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Gmail attachment backfill cursor replays from durable STATE after restart", async () => {
+  // Models the historical Gmail attachment backfill cursor specifically:
+  // the connector stores attachments.all_mail.backfilled_through_uid after
+  // a bounded UID window drains. On restart, the next START.state must carry
+  // that nested cursor so Gmail resumes at the next window instead of
+  // rescanning from zero or skipping unpersisted UIDs.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        const start = JSON.parse(buf.split("\\n")[0]);
+        const prior = start.state?.attachments?.all_mail?.backfilled_through_uid ?? 0;
+        const next = prior + 50;
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "attachments",
+          key: "uid-window-" + next,
+          data: { id: "uid-window-" + next, observed_prior_uid: prior },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "attachments",
+          cursor: {
+            all_mail: {
+              uidvalidity: 123,
+              backfilled_through_uid: next,
+              completed_at: null,
+            },
+          },
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    const baseConfig = {
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "gmail-fixture-attachment-backfill",
+        runtime_requirements: { bindings: {} },
+        streams: ["attachments"],
+      } as const,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    };
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.deepEqual(pass1.priorState, {});
+    assert.deepEqual(pass1.flushedState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 50,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.equal(harness.ingestedBatches[0]?.records?.[0]?.data?.observed_prior_uid, 0);
+
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.deepEqual(pass2.priorState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 50,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.deepEqual(pass2.flushedState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 100,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.equal(harness.ingestedBatches[1]?.records?.[0]?.data?.observed_prior_uid, 50);
   } finally {
     await harness.close();
   }
@@ -805,6 +1266,94 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
   }
 });
 
+test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-identical before and after", async () => {
+  // Target: a scheduled run must not rescan/re-enqueue the same tranche while
+  // local backlog is open. The sharpest proof is row identity — the prior
+  // pass's durable rows (id, body_hash, insert_order) must be unchanged after
+  // a second pass whose connector child, if it ran, would emit new records.
+  const harness = await startCollectorHarness({ ingestFailureMode: "always-503", priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const sourceInstanceId = "src-no-reenqueue";
+
+    // Pass 1: ingest fails, so the child's records stay durably queued.
+    const pass1Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); }));
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: "2026-05-19T12:00:00.000Z" }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: "m-1" }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+    const pass1 = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 1,
+      connector: {
+        args: [pass1Fixture],
+        command: "node",
+        connector_id: "fixture-no-reenqueue",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId,
+    });
+    assert.equal(pass1.recordsQueued, 1, "pass 1 must durably queue the record");
+
+    // Snapshot the durable rows after pass 1.
+    const snapshot = () => {
+      const outbox = new LocalDeviceOutbox({ path: queuePath });
+      try {
+        return outbox
+          .list({ sourceInstanceId })
+          .map((row) => ({ body_hash: row.body_hash, id: row.id, insert_order: row.insert_order, kind: row.kind }));
+      } finally {
+        outbox.close();
+      }
+    };
+    const before = snapshot();
+    assert.ok(before.length >= 1, "expected at least the pass-1 record batch row");
+
+    // Pass 2: ingest still fails (backlog stays open). This fixture would
+    // emit a DISTINCT record if it ever spawned, so any re-scan would change
+    // the row set. The backlog guard must skip the spawn entirely.
+    const pass2Fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture must not spawn while backlog is open\\n");
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-2", data: { id: "m-2" }, emitted_at: "2026-05-19T12:05:00.000Z" }) + "\\n");
+        process.exit(0);
+      `,
+    });
+    const pass2 = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 1,
+      connector: {
+        args: [pass2Fixture],
+        command: "node",
+        connector_id: "fixture-no-reenqueue",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId,
+    });
+
+    assert.equal(pass2.skippedScanForBacklog, true, "pass 2 must skip scanning while backlog is open");
+    assert.equal(pass2.recordsQueued, 0, "pass 2 must not enqueue any new records");
+    const after = snapshot();
+    assert.deepEqual(after, before, "the durable rows must be byte-identical: no re-enqueue of the same tranche");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector surfaces state-read failure as a blocked heartbeat and refuses to spawn the connector", async () => {
   const harness = await startCollectorHarness({
     priorState: null,
@@ -851,6 +1400,11 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
       blockedHeartbeats.length >= 1,
       `expected at least one blocked heartbeat, saw ${harness.heartbeats.map((h) => h.status).join(",")}`
     );
+    // The blocked-on-state-read heartbeat discriminates the stall shape so the
+    // dashboard distinguishes a state-read block (re-run to clear) from a
+    // dead-letter backlog — without leaking the raw state-read error text.
+    const stateBlocked = heartbeatLastError(blockedHeartbeats.at(-1)?.last_error);
+    assert.equal(stateBlocked?.kind, "state_read_failed");
   } finally {
     await harness.close();
   }
@@ -861,6 +1415,38 @@ interface CollectorHarnessOptions {
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
   stateReadStatus?: number;
+}
+
+function heartbeatLastError(input: unknown): {
+  kind?: string;
+  top_dead_letter_classes?: { count: number; error_class: string }[];
+} | null {
+  if (!isPlainObject(input)) {
+    return null;
+  }
+  const parsed: {
+    kind?: string;
+    top_dead_letter_classes?: { count: number; error_class: string }[];
+  } = {};
+  if (typeof input.kind === "string") {
+    parsed.kind = input.kind;
+  }
+  const topClasses = input.top_dead_letter_classes;
+  if (Array.isArray(topClasses)) {
+    parsed.top_dead_letter_classes = topClasses.flatMap(asDeadLetterClass);
+  }
+  return parsed;
+}
+
+function asDeadLetterClass(input: unknown): { count: number; error_class: string }[] {
+  if (!isPlainObject(input) || typeof input.count !== "number" || typeof input.error_class !== "string") {
+    return [];
+  }
+  return [{ count: input.count, error_class: input.error_class }];
+}
+
+function isPlainObject(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
 interface CollectorHarness {
@@ -1720,6 +2306,183 @@ test("runCollectorConnector leaves streamed batches durable when the child fails
   }
 });
 
+test("runCollectorConnector corrects the heartbeat off 'starting' to an outbox-derived status when the child fails mid-stream", async () => {
+  // Regression for the codex collector stuck at "starting": the run emits a
+  // "starting" heartbeat before streaming, then the child fails mid-stream and
+  // the run throws BEFORE the final heartbeat. Without a corrective heartbeat
+  // the last persisted status stays "starting" forever even though the
+  // collector keeps delivering across runs. The runner must instead leave a
+  // status derived from the durable outbox: here two streamed batches are left
+  // pending (undrained), so the honest terminal status is "retrying", never
+  // "starting".
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 40; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        await new Promise((r) => process.stdout.write("", () => r(undefined)));
+        process.stderr.write("synthetic mid-stream failure\\n");
+        process.exit(9);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          batchSize: 20,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-mid-stream-heartbeat",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          outboxPolicy: { retryBackoffMs: 60_000 },
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /fixture-mid-stream-heartbeat connector exited 9/
+    );
+
+    const startingCount = harness.heartbeats.filter((h) => h.status === "starting").length;
+    assert.ok(startingCount >= 1, "the run must still emit the initial 'starting' heartbeat");
+    const last = harness.heartbeats.at(-1);
+    assert.equal(
+      last?.status,
+      "retrying",
+      `child-failure terminal heartbeat must reflect pending outbox work, not 'starting'; saw ${harness.heartbeats
+        .map((h) => h.status)
+        .join(",")}`
+    );
+    // Two streamed record batches plus the durable connector_child_failure gap
+    // row the runner persists for partial coverage all remain pending.
+    assert.equal(
+      last?.records_pending,
+      3,
+      "two streamed batches and one gap row remain pending after the mid-stream failure"
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports 'healthy' on the codex shape: prior backlog drains, then the child fails before streaming", async () => {
+  // Faithful reproduction of the live codex collector: an earlier pass left
+  // record batches in the durable outbox, this pass's pre-scan drain delivers
+  // them successfully (the source is healthily delivering), and then the child
+  // fails before emitting any record of its own. The run throws, but because
+  // the outbox is genuinely drained the corrective terminal heartbeat must read
+  // "healthy" — not the "starting" status emitted before the scan. Healthy is
+  // tied to a concrete drain (zero pending, zero dead-letter), not to the
+  // process having booted.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: "prior-backlog-1",
+        batchSeq: 1,
+        connectorId: "codex",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: "prior-1" },
+            emitted_at: "2026-06-01T00:00:00.000Z",
+            key: "prior-1",
+            stream: "sessions",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      seedOutbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: ["prior-backlog-1"],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: "prior-backlog-1",
+          batchSeq: 1,
+          connectorId: "codex",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    } finally {
+      seedOutbox.close();
+    }
+
+    // Child fails immediately after START without emitting any record, so the
+    // backlog the pre-scan drain cleared is the only outbox state.
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stderr.write("synthetic startup failure after backlog drain\\n");
+        process.exit(7);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "codex",
+            runtime_requirements: { bindings: {} },
+            streams: ["sessions"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /codex connector exited 7/
+    );
+
+    // The seeded backlog was delivered by the pre-scan drain.
+    assert.equal(harness.ingestedBatches.length, 1, "pre-scan drain must deliver the prior backlog");
+    const last = harness.heartbeats.at(-1);
+    assert.equal(
+      last?.status,
+      "healthy",
+      `a drained outbox after a child failure must report healthy, not starting; saw ${harness.heartbeats
+        .map((h) => h.status)
+        .join(",")}`
+    );
+    assert.equal(last?.records_pending, 0, "no outbox work remains after the pre-scan drain");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector flushes a partial trailing batch when the child fails mid-stream and still does not advance the checkpoint", async () => {
   // Emit one full batch plus a partial trailing batch (less than batchSize),
   // then exit non-zero before emitting STATE or DONE. The runner must throw,
@@ -2235,6 +2998,87 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
     const remaining = outbox.summary({ sourceInstanceId: "src-1" });
     assert.ok(remaining.ready + remaining.leased > 0, "remaining work must surface for the next pass");
     assert.equal(remaining.deadLetter, 0);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox does not crash when batch-claimed work expires before processing", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path: queuePath });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: `lease-batch-${i}`,
+        batchSeq: i + 1,
+        connectorId: "fixture-lease",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: `lease-${i}` },
+            emitted_at: "2026-05-19T12:00:00.000Z",
+            key: `lease-${i}`,
+            stream: "messages",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      outbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: [`lease-batch-${i}`],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: `lease-batch-${i}`,
+          batchSeq: i + 1,
+          connectorId: "fixture-lease",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    }
+
+    const slowClient: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("lease test must not ack gaps"));
+      },
+      ingestBatch() {
+        now = new Date(now.getTime() + 40);
+        return Promise.resolve({ ok: true });
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("lease test must not send checkpoints"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client: slowClient,
+      connectorId: "fixture-lease",
+      holderId: "holder-lease",
+      outbox,
+      policy: {
+        drainBatchSize: 3,
+        leaseMs: 50,
+        maxAttempts: 5,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 4,
+        maxEnqueuedBatchesPerRun: 2048,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 30_000,
+      },
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.sent, 2);
+    assert.equal(result.failed, 1);
+    assert.equal(result.deadLettered, 0);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-1" }).staleLeases, 1);
   } finally {
     outbox.close();
   }
@@ -2758,6 +3602,103 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
     assert.equal(result.deadLettered, 1);
     const item = outbox.get("src-bad-gap:broken");
     assert.equal(item?.status, "dead_letter");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox sanitizes secrets out of the persisted last_error on dead-letter", async () => {
+  // `last_error` is a durable, operator-readable field. Even though the
+  // network client (LocalDeviceHttpError) already exposes only a sanitized
+  // envelope detail, failOutboxItem is the generic persistence boundary for
+  // *every* error type, so it must guarantee no bearer token, cookie, OTP,
+  // long opaque credential, or unbounded body is ever stored.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "leak-batch",
+      batchSeq: 1,
+      connectorId: "fixture-leak",
+      deviceId: "device-1",
+      messages: [
+        {
+          data: { id: "m-1", note: "ssn 123-45-6789 should never reach last_error" },
+          emitted_at: "2026-05-19T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: "src-leak",
+    });
+    outbox.enqueue({
+      id: "src-leak:record_batch:1",
+      kind: "record_batch",
+      payload: {
+        batchId: "leak-batch",
+        batchSeq: 1,
+        connectorId: "fixture-leak",
+        deviceId: "device-1",
+        records,
+        sourceInstanceId: "src-leak",
+      },
+      sourceInstanceId: "src-leak",
+    });
+
+    const bearer = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const cookie = "session=ZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+    const client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("must not ack"));
+      },
+      ingestBatch() {
+        // An error message that carries secrets and a long body. A naive
+        // persistence path would write all of this into last_error verbatim.
+        return Promise.reject(
+          new Error(
+            `ingest failed 401 authorization: Bearer ${bearer} cookie: ${cookie} otp 482913 body=${"x".repeat(500)}`
+          )
+        );
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("must not write state"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-leak",
+      holderId: "holder-leak",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 1,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 2,
+        maxEnqueuedBatchesPerRun: 2048,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: "src-leak",
+    });
+
+    assert.equal(result.sent, 0);
+    assert.equal(result.deadLettered, 1);
+    const item = outbox.get("src-leak:record_batch:1");
+    assert.equal(item?.status, "dead_letter");
+    const lastError = item?.last_error ?? "";
+    // The status/code-shaped prefix survives so the row is still diagnosable.
+    assert.ok(lastError.includes("ingest failed 401"), `expected diagnosable prefix, got: ${lastError}`);
+    // No raw secrets, opaque credentials, OTP, or record bodies survive.
+    assert.ok(!lastError.includes(bearer), "bearer token leaked into last_error");
+    assert.ok(!lastError.includes("session=ZZZZ"), "cookie value leaked into last_error");
+    assert.ok(!lastError.includes("482913"), "OTP leaked into last_error");
+    assert.ok(!lastError.includes("123-45-6789"), "record data leaked into last_error");
+    assert.ok(!lastError.includes("xxxxxxxxxx"), "unbounded body leaked into last_error");
+    assert.ok(lastError.includes("[REDACTED]"), `expected redaction markers, got: ${lastError}`);
+    // Bounded length (sanitizer caps at 300 chars).
+    assert.ok(lastError.length <= 300, `last_error exceeded bound: ${lastError.length}`);
   } finally {
     outbox.close();
   }

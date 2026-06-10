@@ -19,7 +19,15 @@
 import pRetry, { AbortError } from "p-retry";
 import type { Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
-import { type BrowserCollectContext, nowIso, politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import {
+  type BrowserCollectContext,
+  type DetailGapMessage,
+  emitDetailCoverage,
+  nowIso,
+  politeDelay,
+  runConnector,
+} from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
@@ -43,7 +51,41 @@ interface YearsCursor {
 }
 
 interface OrdersStateShape {
+  /** Per-order fingerprint map (keyed by order id), excluding the
+   *  run-clock `fetched_at`. Sibling to `years` in the orders STATE
+   *  cursor. */
+  fingerprints?: Record<string, string>;
   years?: YearsCursor;
+}
+
+/**
+ * Parse the prior `orders` STATE cursor's `fingerprints` map. Keyed by the
+ * order record `id` (the Amazon order id). The cursor is `{ years,
+ * fingerprints }`; `collect()` reads `state.orders.fingerprints`. Legacy
+ * cursors (only `{ years }`) decode to an empty map, so the first
+ * post-deploy run rebuilds the map and re-emits every re-scraped order
+ * exactly once.
+ */
+function readPriorOrderFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.orders ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+type EmptyListPageAction = "abort" | "terminal";
+
+interface EmptyListPageClassification {
+  action: EmptyListPageAction;
+  reason: string;
 }
 
 // Navigation timeouts + pacing knobs
@@ -215,12 +257,149 @@ export interface RunFlags {
   detailCaptured: boolean;
 }
 
+/**
+ * Per-run, order-item detail coverage accumulator.
+ *
+ * Amazon enumerates the full order list per scraped year BEFORE hydrating any
+ * order-detail page, so the set of list-page order ids it processes is a real
+ * "considered" denominator (not a gap-only inference). The `order_items` stream
+ * is enriched by the per-order detail page (seller, unit_price, item image,
+ * detail-only items). When that detail fetch succeeds the order's items are
+ * hydrated; when it returns null the list-page items still emit but the detail
+ * enrichment is missing — an honest degraded-coverage signal, not silence.
+ *
+ * Each set holds order ids (globally unique across years), so the accumulator
+ * spans every scraped year and is reported once after the year loop:
+ *   - `required`  — every order considered for detail hydration (denominator).
+ *   - `hydrated`  — orders whose detail page fetched and parsed (numerator).
+ *   - `gap`       — orders whose detail fetch was attempted but degraded (null).
+ *   - `optionalSkip` — orders whose detail was skipped by explicit policy
+ *                      (`PDPP_AMAZON_SKIP_DETAIL=1`), a scope choice, not a gap.
+ */
+export interface OrderItemsCoverage {
+  gap: string[];
+  hydrated: string[];
+  optionalSkip: string[];
+  required: string[];
+}
+
+export function newOrderItemsCoverage(): OrderItemsCoverage {
+  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+}
+
+/** The detail-hydration outcome for one considered order. */
+export type DetailOutcome = "hydrated" | "gap" | "skipped";
+
+/**
+ * Classify one order's detail outcome. Detail skipped by explicit policy is an
+ * `optional_skip` (a scope choice); an attempted detail that came back null is
+ * a degraded `gap`; a parsed detail is `hydrated`. Pure so the branch is unit
+ * testable without driving the browser detail stack.
+ */
+export function classifyDetailOutcome(skipDetail: boolean, detail: OrderDetail | null): DetailOutcome {
+  if (skipDetail) {
+    return "skipped";
+  }
+  return detail ? "hydrated" : "gap";
+}
+
+/**
+ * Record one order's detail outcome into the run-level coverage accumulator.
+ * Pure aside from mutating the passed accumulator; only the order id (an opaque
+ * Amazon order number, already carried in SKIP_RESULT diagnostics) crosses in,
+ * never recipient/address/payment fields. Every recorded order joins
+ * `required` (the denominator); the outcome decides which numerator/skip set it
+ * also joins.
+ */
+export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: string, outcome: DetailOutcome): void {
+  coverage.required.push(orderId);
+  if (outcome === "hydrated") {
+    coverage.hydrated.push(orderId);
+  } else if (outcome === "gap") {
+    coverage.gap.push(orderId);
+  } else {
+    coverage.optionalSkip.push(orderId);
+  }
+}
+
+/**
+ * Build the per-order pending DETAIL_GAP for an order whose detail fetch was
+ * attempted but came back null (a degraded gap, not a policy skip). The runtime
+ * treats `DETAIL_COVERAGE.gap_keys` as a projection only — a `required` key is
+ * satisfied at state-commit solely by a hydration, an optional skip, or a
+ * durable pending DETAIL_GAP with a matching `record_key`
+ * (`assertDetailCoverageSatisfiedBeforeCommit`). Emitting `gap_keys` without the
+ * matching DETAIL_GAP would fail an otherwise-successful run at commit, so every
+ * gap order MUST carry exactly one pending DETAIL_GAP on `order_items` (the same
+ * stream the coverage report describes, so the runtime's
+ * `gap.stream === coverage.stream` match holds).
+ *
+ * Reference-only and redacted: the opaque Amazon order id is the only datum that
+ * crosses (it is already the `record_key`/`detail_locator.order_id`); no
+ * recipient, address, payment, item title, or item text is carried. `reason` is
+ * `temporary_unavailable` (retryable): the null-detail paths are mixed — a
+ * pRetry-exhausted transient nav/timeout/5xx, an AbortError redirect (e.g.
+ * Amazon Fresh `/uff/...`), or a structure-less parse — so `retry_exhausted`
+ * would overclaim for the non-exhaustion paths. Retrying next run is the honest,
+ * non-destructive default; the list-page items already emitted regardless.
+ */
+export function buildOrderDetailGap(orderId: string): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "order_items",
+    parent_stream: "orders",
+    record_key: orderId,
+    status: "pending",
+    reason: "temporary_unavailable",
+    retryable: true,
+    reference_only: true,
+    detail_locator: {
+      kind: "amazon.order_detail",
+      order_id: orderId,
+    },
+  };
+}
+
+/**
+ * Emit the run-level `order_items` DETAIL_COVERAGE once after the year loop,
+ * using the shared `emitDetailCoverage` helper. The detail stream described is
+ * `order_items` (enriched by the per-order detail page); its cursor is anchored
+ * by the `orders` list stream (`state_stream`). No-ops when no order was
+ * considered, so a run that scraped zero in-scope years emits nothing rather
+ * than an empty coverage report. Reuses DETAIL_COVERAGE as a reference-only
+ * projection; it is not promoted to portable protocol.
+ */
+export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItemsCoverage): Promise<void> {
+  if (coverage.required.length === 0) {
+    return;
+  }
+  await emitDetailCoverage(deps, {
+    stream: "order_items",
+    stateStream: "orders",
+    requiredKeys: coverage.required,
+    hydratedKeys: coverage.hydrated,
+    gapKeys: coverage.gap,
+    optionalSkipKeys: coverage.optionalSkip,
+  });
+}
+
 /** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
 export interface EmitDeps {
   capture: CaptureDep;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Run-level `order_items` detail coverage accumulator. Optional so legacy
+   *  callers/tests that only exercise emit ordering can omit it; when present,
+   *  processListOrder records each considered order's detail outcome here and
+   *  collect() emits one DETAIL_COVERAGE after the year loop. */
+  orderItemsCoverage?: OrderItemsCoverage | undefined;
+  /** Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
+   *  Shared across all years for the whole orders stream because order ids
+   *  are globally unique. Optional so legacy callers/tests emit
+   *  unconditionally. */
+  ordersFingerprintCursor?: FingerprintCursor | undefined;
+  progress: BrowserCollectContext["progress"];
   skipDetail: boolean;
   wantsItems: boolean;
   wantsOrders: boolean;
@@ -245,7 +424,24 @@ export async function emitOrderAndItems(
   orderDate: string
 ): Promise<void> {
   if (deps.wantsOrders) {
-    await deps.emitRecord("orders", buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt));
+    // Gate on a per-order fingerprint that excludes the run-clock
+    // `fetched_at`. An order's identity (id = order id) is immutable and its
+    // total is fixed once placed, but the current (unfrozen) year is
+    // re-scraped every run and re-emitted with a fresh `fetched_at`. With
+    // this gate an already-seen order whose body is byte-identical modulo
+    // `fetched_at` is suppressed; a real field move (delivery_status /
+    // status_detail transitioning while the order ships) is a fingerprint
+    // boundary and still emits. `order_items` carries no `fetched_at`, so it
+    // does not churn on a no-op re-scrape and is left ungated.
+    //
+    // NOTE: orders is a PARTIAL scan (year-freezing skips historical years),
+    // so this cursor is never `pruneStale()`d — pruning ids in years the run
+    // did not scrape would drop their fingerprints and re-churn them when the
+    // year is next (re)visited.
+    const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);
+    if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
+      await deps.emitRecord("orders", orderRecord);
+    }
   }
   if (deps.wantsItems) {
     for (const merged of mergeOrderItems(listOrder, detail)) {
@@ -308,7 +504,18 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       };
     })
     .catch((): ListPageDiagnostics | null => null);
-  if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+  const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
+  if (classification.action === "terminal") {
+    return;
+  }
+  if (classification.reason === "source_auth_or_challenge") {
+    await emit({
+      type: "PROGRESS",
+      stream: "orders",
+      message: `Amazon year ${year}: sign-in or CAPTCHA challenge detected; manual action required to continue`,
+    });
+  }
+  if (diag && classification.reason === "selector_drift") {
     const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
     await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
     await emit({
@@ -318,7 +525,41 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
       diagnostics: diag,
     });
+  } else {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: classification.reason,
+      message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
+      diagnostics: diag ?? { missing_diagnostics: true },
+    });
   }
+  throw new Error(`amazon_empty_list_page_${classification.reason}`);
+}
+
+export function classifyEmptyListPageDiagnostics(
+  diag: ListPageDiagnostics | null,
+  startIndex: number
+): EmptyListPageClassification {
+  if (!diag) {
+    return startIndex > 0
+      ? { action: "terminal", reason: "pagination_exhausted" }
+      : { action: "abort", reason: "empty_first_page_without_diagnostics" };
+  }
+  const captcha = diag.captcha === "true";
+  if (diag.sign_in_form || captcha || SIGNIN_URL_RE.test(diag.url)) {
+    return { action: "abort", reason: "source_auth_or_challenge" };
+  }
+  if ((diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+    return { action: "abort", reason: "selector_drift" };
+  }
+  if (diag.no_orders_text === "true") {
+    return { action: "terminal", reason: "no_orders_text" };
+  }
+  if (startIndex > 0) {
+    return { action: "terminal", reason: "pagination_exhausted" };
+  }
+  return { action: "abort", reason: "empty_first_page_without_terminal_signal" };
 }
 
 /**
@@ -363,41 +604,198 @@ async function scrapeListPage(
  * Fetch the order detail page (if enabled), capture one detail fixture
  * per run, and emit the order + item records.
  */
-async function processListOrder(page: Page, deps: EmitDeps, flags: RunFlags, listOrder: ListPageOrder): Promise<void> {
+/**
+ * Returns `false` when the order row was dropped because its order date could
+ * not be parsed (caller counts these for a per-year summary). Returns `true`
+ * when the order was processed. We never emit the raw order id here — only the
+ * count crosses into operator-visible evidence.
+ */
+export async function processListOrder(
+  page: Page,
+  deps: EmitDeps,
+  flags: RunFlags,
+  listOrder: ListPageOrder
+): Promise<boolean> {
   const orderDate = parseOrderDate(listOrder.orderDateRaw);
   if (!orderDate) {
-    return;
+    // A list row whose date does not parse never reaches the detail lane, so it
+    // is not counted toward order-item coverage; runYear already accounts for
+    // it via the bounded per-year drop SKIP_RESULT.
+    return false;
   }
   const detail: OrderDetail | null = deps.skipDetail ? null : await fetchOrderDetail(page, listOrder.orderId);
   if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
     await deps.capture.captureDom(page, `order-detail-${listOrder.orderId}`);
     flags.detailCaptured = true;
   }
+  if (deps.orderItemsCoverage) {
+    // The list-page items still emit in every case; this only records whether
+    // the order's detail enrichment was hydrated, degraded, or policy-skipped.
+    const outcome = classifyDetailOutcome(deps.skipDetail, detail);
+    recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
+    // A degraded (attempted-but-null) detail must back its coverage `gap_key`
+    // with a durable pending DETAIL_GAP, or the run fails at state-commit (see
+    // buildOrderDetailGap). One gap per gap order — processListOrder runs once
+    // per order, and these emit during the year loop, strictly before the
+    // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
+    // emit no gap.
+    if (outcome === "gap") {
+      await deps.emit(buildOrderDetailGap(listOrder.orderId));
+    }
+  }
   await emitOrderAndItems(deps, listOrder, detail, orderDate);
+  return true;
+}
+
+interface YearRunResult {
+  orderCount: number;
+  unparseableDateCount: number;
+}
+
+interface YearCompletionArgs {
+  newYearsState: YearsCursor;
+  prior: YearState | undefined;
+  progress: BrowserCollectContext["progress"];
+  unparseableDateCount: number;
+  year: number;
+  yearOrderCount: number;
+}
+
+async function applyYearCompletionState({
+  newYearsState,
+  prior,
+  progress,
+  unparseableDateCount,
+  year,
+  yearOrderCount,
+}: YearCompletionArgs): Promise<void> {
+  // Year completion state with freeze-once-stable policy. If required
+  // list rows were dropped, do not advance `last_scraped`: the next run
+  // must be allowed to retry the year after a parser fix instead of
+  // treating the year as complete forever.
+  if (unparseableDateCount === 0) {
+    const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
+    newYearsState[String(year)] = {
+      order_count: yearOrderCount,
+      frozen: year < new Date().getFullYear() && stableCount,
+      last_scraped: nowIso(),
+    };
+  } else {
+    await progress(
+      `Not advancing Amazon year ${year} cursor because ${unparseableDateCount} order row${
+        unparseableDateCount === 1 ? "" : "s"
+      } could not be emitted`,
+      { stream: "orders" }
+    );
+  }
 }
 
 /**
- * Scrape every list page for one year and emit records. Returns the total
- * order count seen for the year (used for freeze-once-stable policy).
+ * Scrape every list page for one year and emit records. Returns both the total
+ * order count seen for the year (used for freeze-once-stable policy) and the
+ * count of rows we could not emit because their order date was unparseable.
  */
-async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<number> {
+async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
   let startIndex = 0;
   let pageCount = 0;
   let yearOrderCount = 0;
+  let unparseableDateCount = 0;
   while (pageCount < PAGE_LIMIT) {
+    await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
     if (orders.length === 0) {
+      await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
       break;
     }
     yearOrderCount += orders.length;
-    for (const o of orders) {
-      await processListOrder(page, deps, flags, o);
+    await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
+      stream: "orders",
+    });
+    for (const [index, o] of orders.entries()) {
+      await deps.progress(
+        `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
+        { stream: "orders" }
+      );
+      const processed = await processListOrder(page, deps, flags, o);
+      if (!processed) {
+        unparseableDateCount++;
+      }
     }
     pageCount++;
     startIndex += START_INDEX_STEP;
     await politeDelay(POLITE_DELAY_MS);
   }
-  return yearOrderCount;
+  // Bounded per-year coverage evidence: a year that silently drops order rows
+  // with an unparseable order date must not look complete. One count-only
+  // SKIP_RESULT per year (no raw order ids) instead of a per-item flood.
+  if (unparseableDateCount > 0) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "unparseable_order_date",
+      message: `Amazon year ${year}: dropped ${unparseableDateCount} order row${
+        unparseableDateCount === 1 ? "" : "s"
+      } with unparseable dates (of ${yearOrderCount} seen)`,
+      diagnostics: { dropped: unparseableDateCount, total_seen: yearOrderCount, year },
+    });
+  }
+  return { orderCount: yearOrderCount, unparseableDateCount };
+}
+
+// ─── Incremental year planning ───────────────────────────────────────────
+
+/**
+ * Given the full set of discovered years and prior year state, return the
+ * subset that should be scraped on this run.
+ *
+ * Invariants:
+ *   - Current year is always included (orders are ongoing).
+ *   - Previous year is always included (returns / late-arriving shipments
+ *     can post after year-end).
+ *   - Any year ≥2 years ago that already has a `last_scraped` timestamp in
+ *     prior state is skipped — it was captured on a previous run and
+ *     re-scraping it on every incremental run is unbounded behaviour.
+ *   - Any year ≥2 years ago with NO prior `last_scraped` (newly discovered)
+ *     is included so first-time discovery still works.
+ *   - If there is no prior scraped state at all (first run), all years are
+ *     returned so the initial backfill completes normally.
+ *
+ * This function is exported for unit testing. The `currentYear` parameter
+ * is injected to keep the function pure (no `new Date()` at call time).
+ */
+export function planIncrementalYears(
+  years: number[],
+  yearsState: YearsCursor,
+  currentYear: number
+): { planned: number[]; skipped: Array<{ year: number; reason: string }> } {
+  // If there is no prior scraped state at all, treat this as a first run —
+  // return all discovered years so the initial backfill completes normally.
+  const hasAnyScrapeHistory = Object.values(yearsState).some((s) => s?.last_scraped);
+  if (!hasAnyScrapeHistory) {
+    return { planned: [...years], skipped: [] };
+  }
+
+  const planned: number[] = [];
+  const skipped: Array<{ year: number; reason: string }> = [];
+  const prevYear = currentYear - 1;
+
+  for (const year of years) {
+    if (year >= prevYear) {
+      // Current and previous year are always eligible.
+      planned.push(year);
+      continue;
+    }
+    const prior = yearsState[String(year)];
+    if (prior?.last_scraped) {
+      // Historical year with prior state: skip to prevent unbounded re-scrape.
+      skipped.push({ year, reason: `prior state last_scraped=${prior.last_scraped}` });
+    } else {
+      // Newly discovered historical year (no prior state): include once.
+      planned.push(year);
+    }
+  }
+
+  return { planned, skipped };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -414,12 +812,15 @@ if (isMainModule(import.meta.url)) {
     // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
     // stay consistent across runs on the persistent profile.
     browser: { profileName: "amazon" },
-    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, context, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({
+        ...(capture ? { capture } : {}),
+        checkpoint,
         context,
         page,
         sendInteraction,
       });
+      await checkpoint("amazon-deep-session-check");
       const deepOk = await deepSessionCheck(page);
       if (!deepOk) {
         throw new Error("amazon_session_required");
@@ -436,12 +837,35 @@ if (isMainModule(import.meta.url)) {
       const legacyYears = (state as { years?: YearsCursor }).years;
       const yearsState: YearsCursor = ordersState.years ?? legacyYears ?? {};
 
+      // Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
+      // One cursor for the whole orders stream — order ids are globally
+      // unique across years. Only opened when orders are requested. NOT
+      // pruned: orders is a partial scan (year-freezing skips historical
+      // years — see emitOrderAndItems).
+      const ordersFingerprintCursor = requested.has("orders")
+        ? openFingerprintCursor(state.orders, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorOrderFingerprints(state),
+          })
+        : undefined;
+
       await progress("Amazon session verified; discovering years");
-      let years = await discoverYears(page);
-      // Targeted-year override for spot checks and incremental backfills.
+      const discoveredYears = await discoverYears(page);
+      let years: number[];
+      // Targeted-year override for spot checks and explicit backfills.
+      // Bypasses incremental planning entirely.
       if (process.env.PDPP_AMAZON_YEARS) {
         const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim())));
-        years = years.filter((y) => filter.has(y));
+        years = discoveredYears.filter((y) => filter.has(y));
+      } else {
+        // Incremental planning: bound the year set so historical years with
+        // prior scraped state are not re-scraped on every run.
+        const currentYear = new Date().getFullYear();
+        const { planned, skipped } = planIncrementalYears(discoveredYears, yearsState, currentYear);
+        for (const { year, reason } of skipped) {
+          await progress(`Skipping year ${year} (incremental: ${reason})`);
+        }
+        years = planned;
       }
       await progress(`Years to scrape: ${years.join(", ")}`);
 
@@ -449,13 +873,21 @@ if (isMainModule(import.meta.url)) {
       // page per year and one order-detail page overall is enough to drive
       // offline parser tests — more just bloats the fixture tree.
       const flags: RunFlags = { detailCaptured: false };
+      // Order-item detail coverage is only meaningful when the detail-enriched
+      // `order_items` stream is in scope. When it is not requested, the
+      // accumulator stays undefined and processListOrder records nothing.
+      const wantsItems = requested.has("order_items");
+      const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
         emit,
         emitRecord,
         emittedAt,
+        orderItemsCoverage,
+        ordersFingerprintCursor,
+        progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
-        wantsItems: requested.has("order_items"),
+        wantsItems,
         wantsOrders: requested.has("orders"),
       };
 
@@ -469,20 +901,38 @@ if (isMainModule(import.meta.url)) {
           continue;
         }
 
-        const yearOrderCount = await runYear(page, deps, flags, year);
+        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(page, deps, flags, year);
 
-        // Year completion state with freeze-once-stable policy
-        const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
-        newYearsState[String(year)] = {
-          order_count: yearOrderCount,
-          frozen: year < new Date().getFullYear() && stableCount,
-          last_scraped: nowIso(),
-        };
+        await applyYearCompletionState({
+          newYearsState,
+          prior,
+          progress,
+          unparseableDateCount,
+          year,
+          yearOrderCount,
+        });
+        // Carry the per-order fingerprint map forward alongside the year
+        // cursors so the next run can suppress re-scraped orders whose body
+        // is unchanged modulo the run clock. NOT pruned: orders is a partial
+        // scan (frozen years are skipped, so their ids are never re-seen).
+        const cursor: OrdersStateShape = { years: newYearsState };
+        if (ordersFingerprintCursor && ordersFingerprintCursor.size() > 0) {
+          cursor.fingerprints = ordersFingerprintCursor.toState();
+        }
         await emit({
           type: "STATE",
           stream: "orders",
-          cursor: { years: newYearsState },
+          cursor,
         });
+      }
+
+      // After every scraped year settles, emit one run-level `order_items`
+      // DETAIL_COVERAGE: the order list is a real "considered" denominator, so
+      // the console can tell a fully-hydrated run from one that degraded some
+      // order-detail fetches without inferring it from gaps alone. No-ops when
+      // order_items is out of scope or no order was considered.
+      if (orderItemsCoverage) {
+        await emitOrderItemsCoverage(deps, orderItemsCoverage);
       }
     },
   });

@@ -9,6 +9,8 @@ exec /usr/bin/neko serve \
   --server.path_prefix "${NEKO_SERVER_PATH_PREFIX:-/}" \
   --server.proxy="${NEKO_SERVER_PROXY:-false}" \
   --member.provider "${NEKO_MEMBER_PROVIDER:-multiuser}" \
+  --member.multiuser.admin_password "${NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-${NEKO_PASSWORD_ADMIN:-neko}}" \
+  --member.multiuser.user_password "${NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-${NEKO_PASSWORD:-neko}}" \
   --session.implicit_hosting="${NEKO_SESSION_IMPLICIT_HOSTING:-true}" \
   --session.cookie.enabled="${NEKO_SESSION_COOKIE_ENABLED:-false}" \
   --desktop.display "${DISPLAY_NAME}" \

@@ -38,7 +38,7 @@ test('rs.streams.detail operation has no host or storage concretes', () => {
 });
 
 test('sandbox /sandbox/v1/streams/:stream route does not import buildLiveStreamMetadataResponse', () => {
-  const src = read('apps/web/src/app/sandbox/v1/streams/[stream]/route.ts');
+  const src = read('apps/site/src/app/sandbox/v1/streams/[stream]/route.ts');
   const importPattern =
     /\bimport\b[^;]*\bbuildLiveStreamMetadataResponse\b[^;]*\bfrom\b[^;]*;/;
   assert.equal(
@@ -49,7 +49,7 @@ test('sandbox /sandbox/v1/streams/:stream route does not import buildLiveStreamM
 });
 
 test('sandbox builders.ts no longer exports buildLiveStreamMetadataResponse', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveStreamMetadataResponse\b/.test(src),
     false,

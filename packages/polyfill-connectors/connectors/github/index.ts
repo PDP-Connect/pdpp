@@ -20,7 +20,10 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
-import { nowIso, runConnector } from "../../src/connector-runtime.ts";
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import { buildDetailCoverageMessage, type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 import {
   API_BASE as BASE,
   gistRecord,
@@ -34,6 +37,7 @@ import {
   repoRecord,
   starredRecord,
   userRecord,
+  userStatsRecord,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -50,55 +54,172 @@ import type {
 
 const USER_AGENT = "pdpp-connector-github/0.1";
 
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 403-quota/`github_rate_limited` throw byte-identical (cross-run cooldown via
+// `retryablePattern`); raising it activates the wired Retry-After honor.
+const httpGovernor = createConnectorHttpGovernor({ name: "github", maxAttempts: 1 });
+
+interface ProgressExtra {
+  count?: number;
+  cursor_present?: boolean;
+  item_count?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total?: number;
+  total_seen?: number;
+}
+
+interface GhRawResponse {
+  body: string;
+  link: string | null;
+  rateLimited: boolean;
+  retryAfter?: string;
+  status: number;
+}
+
 async function gh<T>(
   path: string,
   token: string,
-  { accept = "application/vnd.github+json" }: GhFetchOptions = {}
+  { accept = "application/vnd.github+json" }: GhFetchOptions = {},
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  extra?: ProgressExtra
 ): Promise<GhResult<T>> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: accept,
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": USER_AGENT,
-    },
-  });
-  if (res.status === 401) {
+  let raw: GhRawResponse;
+  try {
+    const r = await httpGovernor.request<GhRawResponse, GhRawResponse>(
+      async (): Promise<GhRawResponse> => {
+        const res = await fetch(`${BASE}${path}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: accept,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": USER_AGENT,
+          },
+        });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          link: res.headers.get("link"),
+          // GitHub signals quota exhaustion as 403 + x-ratelimit-remaining: 0
+          // (not 429). Surface it to the governor as the rate-limit terminal.
+          rateLimited: res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0",
+          ...(retryAfter == null ? {} : { retryAfter }),
+          status: res.status,
+        };
+      },
+      (resp) => ({
+        // Map GitHub's 403-quota-exhausted onto 429 so the governor's
+        // Retry-After honor and `github_rate_limited` terminal apply uniformly.
+        status: resp.rateLimited ? 429 : resp.status,
+        ...(resp.retryAfter == null ? {} : { headers: { "retry-after": resp.retryAfter } }),
+        value: resp,
+      })
+    );
+    raw = r.value;
+  } catch (error) {
+    if (error instanceof Error && error.message === "github_rate_limited") {
+      await progress?.("GitHub request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (raw.status === 401) {
     throw new Error("github_auth_failed");
   }
-  if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
-    throw new Error("github_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`github_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    const body = await res.text().catch((): string => "");
-    throw new Error(`github_http_${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  const link = res.headers.get("link");
-  const data = (await res.json()) as T;
-  const nextUrl = parseNextLink(link);
+  const data = JSON.parse(raw.body) as T;
+  const nextUrl = parseNextLink(raw.link);
   return { data, nextUrl };
 }
 
 // ─── Stream collectors ──────────────────────────────────────────────────
 
-interface StreamCtx {
-  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+export interface StreamCtx {
+  emit: (
+    msg:
+      | { type: "STATE"; stream: string; cursor: unknown }
+      | Extract<EmittedMessage, { type: "SKIP_RESULT" }>
+      | Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>
+  ) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
-  progress: (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
-  requested: Map<string, { time_range?: { since?: string; until?: string } }>;
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>;
+  requested: Map<string, { name?: string; time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
   token: string;
 }
 
-async function collectUser(ctx: StreamCtx): Promise<void> {
+/**
+ * Declare a list-stream `considered` denominator for the Collection Report
+ * (OpenSpec task 4.1). GitHub's list streams have no detail-hydration phase, so
+ * this emits a DETAIL_COVERAGE whose `state_stream`/`stream` are the list stream
+ * itself with EMPTY `required_keys`/`hydrated_keys` and an explicit `considered`
+ * count. Empty key sets mean the runtime's pre-commit coverage gate has nothing
+ * to mark missing (it never blocks the commit), and the only signal carried is
+ * the denominator the terminal collection-fact block reads.
+ *
+ * Honesty contract: `considered` is the number of items the run actually
+ * enumerated from the source within its boundary (the paginated total it saw),
+ * measured at the fetch site — NEVER the count it chose to emit. When the run
+ * emitted every item it enumerated the stream reads `complete` for that boundary
+ * (the honest verdict: nothing in-boundary was left behind); when it weighed and
+ * excluded in-boundary items (e.g. an `until` filter, a dropped malformed entry)
+ * `collected < considered` reads `partial`. A stream that cannot know its full
+ * inventory for the run (e.g. a search-API cap truncation) MUST NOT call this —
+ * it leaves `considered` unknown and relies on its terminal-gap evidence instead.
+ */
+async function declareListConsidered(ctx: StreamCtx, stream: string, considered: number): Promise<void> {
+  if (!Number.isInteger(considered) || considered < 0) {
+    return;
+  }
+  await ctx.emit(
+    buildDetailCoverageMessage({
+      stream,
+      stateStream: stream,
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered,
+    })
+  );
+}
+
+export async function collectUser(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching user profile", { stream: "user" });
   const { data: u } = await gh<GitHubUser>("/user", ctx.token);
-  await ctx.emitRecord("user", userRecord(u));
-  await ctx.emit({
-    type: "STATE",
-    stream: "user",
-    cursor: { fetched_at: nowIso() },
-  });
+
+  if (ctx.requested.has("user")) {
+    // Entity record: stable identity fields only. Gate on fingerprint so
+    // re-fetches that find no profile changes do not create new entity versions.
+    const entityRec = userRecord(u);
+    const userFpCursor = openFingerprintCursor(ctx.state.user, {
+      excludeFromFingerprint: [],
+    });
+    if (userFpCursor.shouldEmit(entityRec)) {
+      await ctx.emitRecord("user", entityRec);
+    }
+    await ctx.emit({
+      type: "STATE",
+      stream: "user",
+      cursor: {
+        fetched_at: nowIso(),
+        fingerprints: userFpCursor.toState(),
+      },
+    });
+  }
+
+  // Stats record: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
+  // The append key ensures idempotency within a calendar day.
+  if (ctx.requested.has("user_stats")) {
+    const observedOn = nowIso().slice(0, 10);
+    await ctx.emitRecord("user_stats", userStatsRecord(u, observedOn));
+    await ctx.emit({
+      type: "STATE",
+      stream: "user_stats",
+      cursor: { observed_on: observedOn, fetched_at: nowIso() },
+    });
+  }
 }
 
 interface ReposPageResult {
@@ -123,20 +244,44 @@ async function emitRepositoriesPage(
   return { latest, stop: false };
 }
 
-async function collectRepositories(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching repositories", { stream: "repositories" });
+export async function collectRepositories(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching repositories", { stream: "repositories", phase: "start" });
   let path: string | null = "/user/repos?per_page=100&sort=pushed&direction=desc";
   const repoState = ctx.state.repositories as { last_pushed_at?: string } | undefined;
   const priorPushed = repoState?.last_pushed_at;
   let latestPushed: string | null | undefined = priorPushed;
   let stop = false;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path && !stop) {
-    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "repositories",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0,
+    };
+    await ctx.progress("Fetching GitHub repositories page", pageExtra);
+    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub repositories page", {
+      stream: "repositories",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
     latestPushed = result.latest;
     stop = result.stop;
     path = page.nextUrl;
+    pageIndex++;
   }
+  // The run enumerated `totalSeen` repositories from the source within its
+  // boundary (full pages until the cursor stop). Declare that as `considered`;
+  // the runtime counts what was emitted as `collected`.
+  await declareListConsidered(ctx, "repositories", totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "repositories",
@@ -145,6 +290,8 @@ async function collectRepositories(ctx: StreamCtx): Promise<void> {
 }
 
 interface StarredPageResult {
+  /** Entries whose `repo` was missing, so starredRecord() returned null. */
+  dropped: number;
   latest: string | null | undefined;
   stop: boolean;
 }
@@ -156,38 +303,88 @@ async function emitStarredPage(
   latestIn: string | null | undefined
 ): Promise<StarredPageResult> {
   let latest = latestIn;
+  let dropped = 0;
   for (const entry of entries) {
     const starredAt = entry.starred_at || null;
     if (priorStarred && starredAt && starredAt <= priorStarred) {
-      return { latest, stop: true };
+      return { dropped, latest, stop: true };
     }
     const rec = starredRecord(entry);
     if (!rec) {
+      // Entry has no `repo` object (e.g. repo deleted/made private since the
+      // star). starredRecord() returns null; we cannot build a record. Count
+      // it so a run that silently drops such entries does not look complete.
+      dropped++;
       continue;
     }
     await ctx.emitRecord("starred", rec);
     latest = laterIso(latest, starredAt);
   }
-  return { latest, stop: false };
+  return { dropped, latest, stop: false };
 }
 
-async function collectStarred(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching starred repositories", { stream: "starred" });
+export async function collectStarred(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching starred repositories", { stream: "starred", phase: "start" });
   const starredState = ctx.state.starred as { last_starred_at?: string } | undefined;
   const priorStarred = starredState?.last_starred_at;
   let latestStarred: string | null | undefined = priorStarred;
   let path: string | null = "/user/starred?per_page=100&sort=created&direction=desc";
   let stop = false;
+  let pageIndex = 0;
+  let totalSeen = 0;
+  let droppedTotal = 0;
   while (path && !stop) {
     // Use star:timestamp media type to get starred_at
-    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(path, ctx.token, {
-      accept: "application/vnd.github.star+json",
+    const pageExtra = {
+      stream: "starred",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0,
+    };
+    await ctx.progress("Fetching GitHub starred page", pageExtra);
+    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(
+      path,
+      ctx.token,
+      {
+        accept: "application/vnd.github.star+json",
+      },
+      ctx.progress,
+      pageExtra
+    );
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub starred page", {
+      stream: "starred",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
     });
     const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
     latestStarred = result.latest;
     stop = result.stop;
+    droppedTotal += result.dropped;
     path = page.nextUrl;
+    pageIndex++;
   }
+  // Stream-level skip evidence: a run that silently drops malformed/unavailable
+  // starred entries must not look complete. One bounded summary per run (count
+  // only — there is nothing to identify; `repo` was absent). No per-item flood.
+  if (droppedTotal > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "starred",
+      reason: "starred_entry_missing_repo",
+      message: `dropped ${String(droppedTotal)} starred entr${droppedTotal === 1 ? "y" : "ies"} with no repo object (repo deleted or made private since starring)`,
+      diagnostics: { dropped: droppedTotal, total_seen: totalSeen },
+    });
+  }
+  // `totalSeen` is every starred entry enumerated in this run's boundary,
+  // including the ones dropped for a missing `repo`. Declaring it as `considered`
+  // makes a run that silently dropped entries read `partial` (collected <
+  // considered), never falsely complete.
+  await declareListConsidered(ctx, "starred", totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "starred",
@@ -212,8 +409,8 @@ async function emitIssuesPage(
   return latest;
 }
 
-async function collectIssues(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching issues", { stream: "issues" });
+export async function collectIssues(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching issues", { stream: "issues", phase: "start" });
   const req = ctx.requested.get("issues");
   const issuesState = ctx.state.issues as { last_updated_at?: string } | undefined;
   const priorUpdated = issuesState?.last_updated_at;
@@ -226,11 +423,36 @@ async function collectIssues(ctx: StreamCtx): Promise<void> {
     qs.push(`since=${encodeURIComponent(sinceParam)}`);
   }
   let path: string | null = `/issues?${qs.join("&")}`;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path) {
-    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "issues",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+    };
+    await ctx.progress("Fetching GitHub issues page", pageExtra);
+    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub issues page", {
+      stream: "issues",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     latestUpdated = await emitIssuesPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
+    pageIndex++;
   }
+  // `totalSeen` is every issue the run enumerated in its `[since, until]`
+  // boundary; `until`-filtered items are considered-but-not-collected, so
+  // declaring `considered` lets the report show a real partial when a window is
+  // capped, and complete when the run emitted everything it weighed.
+  await declareListConsidered(ctx, "issues", totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "issues",
@@ -248,19 +470,45 @@ async function collectIssues(ctx: StreamCtx): Promise<void> {
 // Search returns summary records; for per-PR detail (merged_at, commits,
 // additions, deletions, changed_files, requested_reviewers) we fetch
 // /repos/{owner}/{repo}/pulls/{number}. That's 1 extra request per PR.
+//
+// SEARCH-API 1000-RESULT CAP. GitHub's search endpoint returns at most ~1000
+// results for any single query and silently stops paginating there (no error,
+// no `next` link) — see https://docs.github.com/en/rest/search. A user with
+// >1000 authored PRs would therefore lose the oldest ones from a single
+// `type:pr author:{login}` query. On a *full* resync (no incremental `since`
+// bound) we partition the query into per-year `created:` windows so each
+// window stays under the cap; `created` is immutable, so every PR falls in
+// exactly one window and the union is the complete set. Incremental runs
+// (a `since` bound is present) keep the single `updated:>=` query — the set of
+// PRs updated since the last cursor is almost never >1000, and a window that
+// somehow still exceeds the cap emits a terminal-gap SKIP_RESULT so the run is
+// honestly incomplete rather than silently truncated.
 const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed/;
+
+// A single search window that still reports more than this many total results
+// cannot be fully drained (the API stops at ~1000). We treat any window whose
+// reported total exceeds this as cap-truncated and surface it as a gap.
+const PR_SEARCH_RESULT_CAP = 1000;
+
+interface PullDetailResult {
+  detail: GitHubPullDetail | null;
+  /** True when the detail fetch failed (non-fatally), so the emitted PR record
+   *  is degraded to search-summary fields only (merged_at, commits, diff stats,
+   *  reviewers absent). False when there was simply no detail to fetch. */
+  detailFailed: boolean;
+}
 
 async function fetchPullDetail(
   repoFull: string | null,
   number: number | undefined,
   token: string
-): Promise<GitHubPullDetail | null> {
+): Promise<PullDetailResult> {
   if (!(repoFull && number != null)) {
-    return null;
+    return { detail: null, detailFailed: false };
   }
   try {
     const r = await gh<GitHubPullDetail>(`/repos/${repoFull}/pulls/${String(number)}`, token);
-    return r.data;
+    return { detail: r.data, detailFailed: false };
   } catch (e) {
     // Non-fatal: emit what we have from search. Rate-limit errors
     // bubble up from gh() and abort the whole run (retryable).
@@ -268,35 +516,93 @@ async function fetchPullDetail(
     if (PR_ERROR_BUBBLE_PATTERN.test(msg)) {
       throw e;
     }
-    return null;
+    return { detail: null, detailFailed: true };
   }
 }
 
-function buildPrSearchPath(login: string, sinceParam: string | null): string {
+interface PrSearchPathOptions {
+  /** Inclusive `created:` window (YYYY-MM-DD..YYYY-MM-DD) for cap partitioning. */
+  createdRange?: { from: string; to: string };
+  sinceParam?: string | null;
+}
+
+function buildPrSearchPath(login: string, options: PrSearchPathOptions = {}): string {
+  const { sinceParam = null, createdRange } = options;
   const qParts = ["type:pr", `author:${login}`];
   if (sinceParam) {
     // Search API date-precision; strict `since` still applied per-item.
     qParts.push(`updated:>=${sinceParam.slice(0, 10)}`);
   }
+  if (createdRange) {
+    // Immutable partitioning field: each PR falls in exactly one window, so
+    // windows can be drained independently and unioned without dedup.
+    qParts.push(`created:${createdRange.from}..${createdRange.to}`);
+  }
   const q = encodeURIComponent(qParts.join(" "));
   return `/search/issues?q=${q}&sort=updated&order=desc&per_page=100`;
 }
 
+/**
+ * Per-year `created:` windows from the current year back to `floorYear`,
+ * descending (newest first, matching the single-query `order=desc` shape).
+ * `floorYear` is the user's account-creation year — no authored PR predates
+ * the account. Exported for unit testing the window math without a network.
+ */
+export function prCreatedWindows(currentYear: number, floorYear: number): Array<{ from: string; to: string }> {
+  const top = Math.max(currentYear, floorYear);
+  const bottom = Math.min(currentYear, floorYear);
+  const windows: Array<{ from: string; to: string }> = [];
+  for (let year = top; year >= bottom; year--) {
+    windows.push({ from: `${String(year)}-01-01`, to: `${String(year)}-12-31` });
+  }
+  return windows;
+}
+
+/** Year of an ISO timestamp, or null when absent/unparseable. */
+export function isoYear(iso: string | null | undefined): number | null {
+  if (!iso) {
+    return null;
+  }
+  const year = Number.parseInt(iso.slice(0, 4), 10);
+  return Number.isInteger(year) && year > 0 ? year : null;
+}
+
 interface PrPageResult {
+  /** PRs emitted with degraded detail because the per-PR detail fetch failed. */
+  detailFailed: number;
+  /** PR records actually emitted after since/until filters. */
+  emitted: number;
   latest: string | null | undefined;
   stop: boolean;
+}
+
+interface PrWindowResult {
+  /** True when this window's reported total exceeded the search cap (gap). */
+  capTruncated: boolean;
+  detailFailed: number;
+  emitted: number;
+  /** Raw search hits seen across this window's pages (before since/until filters). */
+  fetched: number;
+  latest: string | null | undefined;
+  /** Highest reported total_count seen for this window (for gap diagnostics). */
+  reportedTotal: number;
+}
+
+interface PrItemResult {
+  detailFailed: boolean;
+  latest: string | null | undefined;
 }
 
 async function emitPullRequestItem(
   ctx: StreamCtx,
   it: GitHubIssue,
   latestIn: string | null | undefined
-): Promise<string | null | undefined> {
+): Promise<PrItemResult> {
   const repoFull = repoFullFromUrl(it.repository_url);
   // Fetch PR detail for fields not in search summary.
-  const detail = await fetchPullDetail(repoFull, it.number, ctx.token);
+  const { detail, detailFailed } = await fetchPullDetail(repoFull, it.number, ctx.token);
   await ctx.emitRecord("pull_requests", pullRequestRecord(it, detail, repoFull));
-  return laterIso(latestIn, it.updated_at);
+  return { detailFailed, latest: laterIso(latestIn, it.updated_at) };
 }
 
 async function emitPullRequestPage(
@@ -307,20 +613,101 @@ async function emitPullRequestPage(
   latestIn: string | null | undefined
 ): Promise<PrPageResult> {
   let latest = latestIn;
+  let detailFailed = 0;
+  let emitted = 0;
   for (const it of items) {
     if (isBeforeSince(it.updated_at, sinceParam)) {
-      return { latest, stop: true };
+      return { detailFailed, emitted, latest, stop: true };
     }
     if (isAtOrAfterUntil(it.updated_at, until)) {
       continue;
     }
-    latest = await emitPullRequestItem(ctx, it, latest);
+    const item = await emitPullRequestItem(ctx, it, latest);
+    latest = item.latest;
+    emitted++;
+    if (item.detailFailed) {
+      detailFailed++;
+    }
   }
-  return { latest, stop: false };
+  return { detailFailed, emitted, latest, stop: false };
 }
 
-async function collectPullRequests(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching pull requests", { stream: "pull_requests" });
+/**
+ * Drain one search query (a single `since`-bounded query, or one `created:`
+ * window) page by page until pagination ends or a per-item `since` cutoff
+ * stops it. Detects the search-API cap: if the first page reports a
+ * `total_count` above {@link PR_SEARCH_RESULT_CAP}, the window's oldest
+ * results are unreachable and the run is honestly incomplete for that window.
+ */
+async function drainPrSearchWindow(
+  ctx: StreamCtx,
+  login: string,
+  sinceParam: string | null,
+  until: string | null,
+  createdRange: { from: string; to: string } | undefined,
+  latestIn: string | null | undefined,
+  pageIndexStart: number
+): Promise<PrWindowResult & { pageIndexEnd: number }> {
+  let path: string | null = buildPrSearchPath(login, { sinceParam, ...(createdRange ? { createdRange } : {}) });
+  let stop = false;
+  let pageIndex = pageIndexStart;
+  let fetchedCount = 0;
+  let detailFailed = 0;
+  let emitted = 0;
+  let reportedTotal = 0;
+  let latest = latestIn;
+  while (path && !stop) {
+    const pageExtra = {
+      stream: "pull_requests",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: fetchedCount,
+      cursor_present: pageIndex > pageIndexStart || Boolean(sinceParam) || Boolean(createdRange),
+    };
+    await ctx.progress("Fetching GitHub pull requests page", pageExtra);
+    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(
+      path,
+      ctx.token,
+      {},
+      ctx.progress,
+      pageExtra
+    );
+    if (page.data.total_count !== undefined) {
+      reportedTotal = Math.max(reportedTotal, page.data.total_count);
+    }
+    const items = page.data.items || [];
+    const result = await emitPullRequestPage(ctx, items, sinceParam, until, latest);
+    latest = result.latest;
+    stop = result.stop;
+    detailFailed += result.detailFailed;
+    emitted += result.emitted;
+    fetchedCount += items.length;
+    await ctx.progress("Fetched GitHub pull requests page", {
+      stream: "pull_requests",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: items.length,
+      total_seen: fetchedCount,
+      cursor_present: Boolean(page.nextUrl),
+      count: Math.min(fetchedCount, page.data.total_count ?? fetchedCount),
+      ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
+    });
+    path = page.nextUrl;
+    pageIndex++;
+  }
+  return {
+    capTruncated: reportedTotal > PR_SEARCH_RESULT_CAP,
+    detailFailed,
+    emitted,
+    fetched: fetchedCount,
+    reportedTotal,
+    latest,
+    pageIndexEnd: pageIndex,
+  };
+}
+
+export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching pull requests", { stream: "pull_requests", phase: "start" });
   const req = ctx.requested.get("pull_requests");
   const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
   const priorUpdated = prState?.last_updated_at;
@@ -328,30 +715,103 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   const until = req?.time_range?.until || null;
   let latestUpdated: string | null | undefined = priorUpdated;
 
-  // Need the login to build the search query.
+  // Need the login to build the search query (and created_at to floor the
+  // full-resync windowing at the user's account-creation year).
   const { data: me } = await gh<GitHubUser>("/user", ctx.token);
-  let path: string | null = buildPrSearchPath(me.login, sinceParam);
-  let stop = false;
-  let fetchedCount = 0;
-  while (path && !stop) {
-    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(path, ctx.token);
-    const items = page.data.items || [];
-    const result = await emitPullRequestPage(ctx, items, sinceParam, until, latestUpdated);
+
+  // Full resync (no incremental `since`) is the cap-prone path: partition by
+  // immutable `created:` year so each window stays under the search cap.
+  // Incremental runs use one `updated:>=` query (rarely >1000 results).
+  const windows = resolvePrSearchWindows(sinceParam, me.created_at);
+
+  let detailFailedTotal = 0;
+  let emittedCount = 0;
+  let fetchedTotal = 0;
+  let capTruncatedWindows = 0;
+  let maxReportedTotal = 0;
+  let pageIndex = 0;
+  for (const createdRange of windows) {
+    const result = await drainPrSearchWindow(ctx, me.login, sinceParam, until, createdRange, latestUpdated, pageIndex);
     latestUpdated = result.latest;
-    stop = result.stop;
-    fetchedCount += items.length;
-    await ctx.progress(`Fetched pull request page (${items.length} item(s))`, {
+    detailFailedTotal += result.detailFailed;
+    emittedCount += result.emitted;
+    fetchedTotal += result.fetched;
+    maxReportedTotal = Math.max(maxReportedTotal, result.reportedTotal);
+    if (result.capTruncated) {
+      capTruncatedWindows++;
+    }
+    pageIndex = result.pageIndexEnd;
+  }
+
+  // Terminal-gap evidence: a window whose reported total exceeded the search
+  // cap could not be fully drained, so the oldest PRs in that window were never
+  // emitted. One bounded summary per run (counts only — no PR identifiers). The
+  // runtime forwards this to the run's known_gap so the projection is honestly
+  // incomplete rather than silently truncated.
+  if (capTruncatedWindows > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
       stream: "pull_requests",
-      count: Math.min(fetchedCount, page.data.total_count ?? fetchedCount),
-      ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
+      reason: "pr_search_cap_truncated",
+      message:
+        `${String(capTruncatedWindows)} search window(s) reported more than ${String(PR_SEARCH_RESULT_CAP)} ` +
+        "pull requests; GitHub's search API caps results so the oldest in those windows could not be collected",
+      diagnostics: {
+        cap_truncated_windows: capTruncatedWindows,
+        result_cap: PR_SEARCH_RESULT_CAP,
+        max_reported_total: maxReportedTotal,
+      },
     });
-    path = page.nextUrl;
+  }
+
+  // Stream-level evidence that some PR records are degraded: the search summary
+  // was emitted but the per-PR detail fetch failed (merged_at, commit/diff
+  // stats, reviewers are absent on those records). One bounded summary per run
+  // (count only — no repo/PR identifiers). Records are NOT dropped, so this is
+  // a coverage-degradation marker, not a terminal skip of the items.
+  if (detailFailedTotal > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "pull_requests",
+      reason: "pr_detail_fetch_failed",
+      message: `${String(detailFailedTotal)} of ${String(emittedCount)} pull request record(s) emitted without detail fields (per-PR detail fetch failed)`,
+      diagnostics: { detail_failed: detailFailedTotal, total_emitted: emittedCount, total_seen: fetchedTotal },
+    });
+  }
+  // Declare the enumerated inventory as `considered` ONLY when every window
+  // drained fully. A cap-truncated window could not see its oldest results, so
+  // the run's true denominator is unknowable — leave `considered` unknown and
+  // let the `pr_search_cap_truncated` terminal-gap above carry the incompleteness
+  // honestly rather than under-reporting a denominator that looks complete.
+  if (capTruncatedWindows === 0) {
+    await declareListConsidered(ctx, "pull_requests", fetchedTotal);
   }
   await ctx.emit({
     type: "STATE",
     stream: "pull_requests",
     cursor: { last_updated_at: latestUpdated || priorUpdated || null },
   });
+}
+
+/**
+ * Resolve the search windows to drain. Incremental runs (a `since` bound is
+ * present) return a single unwindowed query (`[undefined]`); the updated-since
+ * set is rarely over the cap. A full resync returns one `created:` window per
+ * year from now back to the account-creation year so each stays under the cap.
+ * `now`/`accountCreatedAt` are explicit so the windowing is testable without
+ * wall-clock dependence.
+ */
+export function resolvePrSearchWindows(
+  sinceParam: string | null,
+  accountCreatedAt: string | null | undefined,
+  now: Date = new Date()
+): Array<{ from: string; to: string } | undefined> {
+  if (sinceParam) {
+    return [undefined];
+  }
+  const currentYear = now.getUTCFullYear();
+  const floorYear = isoYear(accountCreatedAt) ?? currentYear;
+  return prCreatedWindows(currentYear, floorYear);
 }
 
 async function emitGistsPage(
@@ -371,8 +831,8 @@ async function emitGistsPage(
   return latest;
 }
 
-async function collectGists(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching gists", { stream: "gists" });
+export async function collectGists(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching gists", { stream: "gists", phase: "start" });
   const req = ctx.requested.get("gists");
   const gistState = ctx.state.gists as { last_updated_at?: string } | undefined;
   const priorUpdated = gistState?.last_updated_at;
@@ -384,11 +844,34 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
     qs.push(`since=${encodeURIComponent(sinceParam)}`);
   }
   let path: string | null = `/gists?${qs.join("&")}`;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path) {
-    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "gists",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+    };
+    await ctx.progress("Fetching GitHub gists page", pageExtra);
+    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub gists page", {
+      stream: "gists",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     latestUpdated = await emitGistsPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
+    pageIndex++;
   }
+  // Every gist enumerated in the run's boundary; `until`-filtered gists are
+  // considered-but-not-collected (see `collectIssues` for the same reasoning).
+  await declareListConsidered(ctx, "gists", totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "gists",
@@ -396,46 +879,48 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
   });
 }
 
-runConnector({
-  name: "github",
-  retryablePattern: /rate_limited|ECONN|fetch failed/,
-  validateRecord,
-  // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
-  auth: {
-    kind: "env",
-    required: [["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]],
-  },
-  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-    const token = credentials.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("github_auth_failed");
-    }
-    const ctx: StreamCtx = {
-      token,
-      state,
-      requested,
-      emit,
-      emitRecord,
-      progress,
-    };
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "github",
+    retryablePattern: /rate_limited|ECONN|fetch failed/,
+    validateRecord,
+    // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
+    auth: {
+      kind: "env",
+      required: [["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]],
+    },
+    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+      const token = credentials.GITHUB_PERSONAL_ACCESS_TOKEN || credentials.GITHUB_TOKEN;
+      if (!token) {
+        throw new Error("github_auth_failed");
+      }
+      const ctx: StreamCtx = {
+        token,
+        state,
+        requested,
+        emit,
+        emitRecord,
+        progress,
+      };
 
-    if (requested.has("user")) {
-      await collectUser(ctx);
-    }
-    if (requested.has("repositories")) {
-      await collectRepositories(ctx);
-    }
-    if (requested.has("starred")) {
-      await collectStarred(ctx);
-    }
-    if (requested.has("issues")) {
-      await collectIssues(ctx);
-    }
-    if (requested.has("pull_requests")) {
-      await collectPullRequests(ctx);
-    }
-    if (requested.has("gists")) {
-      await collectGists(ctx);
-    }
-  },
-});
+      if (requested.has("user") || requested.has("user_stats")) {
+        await collectUser(ctx);
+      }
+      if (requested.has("repositories")) {
+        await collectRepositories(ctx);
+      }
+      if (requested.has("starred")) {
+        await collectStarred(ctx);
+      }
+      if (requested.has("issues")) {
+        await collectIssues(ctx);
+      }
+      if (requested.has("pull_requests")) {
+        await collectPullRequests(ctx);
+      }
+      if (requested.has("gists")) {
+        await collectGists(ctx);
+      }
+    },
+  });
+}

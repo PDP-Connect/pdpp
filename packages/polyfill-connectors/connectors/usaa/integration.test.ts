@@ -39,6 +39,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
@@ -52,6 +53,7 @@ import {
   emitStatementRecords,
   type HydrationSummary,
   hydrationSuccess,
+  isNoDataExportMessage,
   shouldParseStatementTitle,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -70,6 +72,7 @@ interface RecordingHarness {
   messages: EmittedMessage[];
 }
 
+const USAA_MANIFEST_PATH = new URL("../../manifests/usaa.json", import.meta.url);
 const FROZEN_EMITTED_AT = "2026-04-22T12:00:00.000Z";
 
 /** Build an EmitDeps that records every emit() + emitRecord() call
@@ -125,6 +128,7 @@ function makeHydrationOk(overrides: Partial<HydrationResultSuccess> = {}): Hydra
     buffer: Buffer.from("pdf-bytes"),
     pdfPath: "/tmp/usaa-test/statement-0.pdf",
     pdfSha256: "deadbeef".repeat(8),
+    content: { pdf_text_sha256: null, pdf_page_count: null },
     ...overrides,
   };
 }
@@ -232,6 +236,133 @@ test("emitStatementRecords: hydrated rows populate pdf_path + pdf_sha256 + docum
   assert.match(String(stmt.data.document_url), /^file:\/\//, "document_url should be a file:// URL");
 });
 
+// ─── Invariant 4c: per-run detail-coverage evidence on the emit path ─────
+
+function statementCoverage(messages: readonly EmittedMessage[]): EmittedMessage | undefined {
+  return messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "statements");
+}
+function statementGaps(messages: readonly EmittedMessage[]): EmittedMessage[] {
+  return messages.filter((m) => m.type === "DETAIL_GAP" && m.stream === "statements");
+}
+
+test("emitStatementRecords: fully hydrated statement run emits DETAIL_COVERAGE with required === hydrated, no gaps", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow({ rowIndex: 0, id: "S0" }), makeIndexRow({ rowIndex: 1, id: "S1" })];
+  const hydration = new Map<number, HydrationResult>([
+    [0, makeHydrationOk()],
+    [1, makeHydrationOk({ pdfPath: "/tmp/usaa-test/statement-1.pdf" })],
+  ]);
+  const summary: HydrationSummary = { attempts: 2, successes: 2, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE", "a DETAIL_COVERAGE must be emitted");
+  assert.equal(coverage.reference_only, true);
+  assert.equal(coverage.state_stream, "statements");
+  assert.deepEqual([...coverage.required_keys].sort(), ["S0", "S1"]);
+  assert.deepEqual([...coverage.hydrated_keys].sort(), ["S0", "S1"]);
+  assert.equal(coverage.gap_keys, undefined, "no gap_keys when every PDF is present");
+  assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP when fully hydrated");
+});
+
+test("emitStatementRecords: a failed statement PDF surfaces a DETAIL_GAP + gap_key (partial, not complete)", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow({ rowIndex: 0, id: "OK" }), makeIndexRow({ rowIndex: 1, id: "MISS" })];
+  // Only row 0 hydrated; row 1 has no map entry and no carry-forward cursor.
+  const hydration = new Map<number, HydrationResult>([[0, makeHydrationOk()]]);
+  const summary: HydrationSummary = { attempts: 2, successes: 1, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  assert.deepEqual([...coverage.required_keys].sort(), ["MISS", "OK"]);
+  assert.deepEqual(coverage.hydrated_keys, ["OK"]);
+  assert.deepEqual(coverage.gap_keys, ["MISS"]);
+
+  const gaps = statementGaps(messages);
+  assert.equal(gaps.length, 1, "exactly one DETAIL_GAP for the missing PDF");
+  const gap = gaps[0];
+  assert.ok(gap && gap.type === "DETAIL_GAP");
+  assert.equal(gap.record_key, "MISS");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+});
+
+test("emitStatementRecords: required_keys === hydrated_keys ∪ gap_keys (runtime coverage-completeness invariant)", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [
+    makeIndexRow({ rowIndex: 0, id: "H0" }),
+    makeIndexRow({ rowIndex: 1, id: "G1" }),
+    makeIndexRow({ rowIndex: 2, id: "H2" }),
+  ];
+  const hydration = new Map<number, HydrationResult>([
+    [0, makeHydrationOk()],
+    [2, makeHydrationOk({ pdfPath: "/tmp/usaa-test/statement-2.pdf" })],
+  ]);
+  const summary: HydrationSummary = { attempts: 3, successes: 2, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  const union = new Set([...coverage.hydrated_keys, ...(coverage.gap_keys ?? [])]);
+  assert.equal(union.size, coverage.required_keys.length);
+  for (const key of coverage.required_keys) {
+    assert.ok(union.has(key), `required key ${String(key)} is hydrated or a pending gap`);
+  }
+  // Every gap_key has exactly one matching pending DETAIL_GAP.
+  const gapKeys = new Set(statementGaps(messages).map((g) => g.type === "DETAIL_GAP" && g.record_key));
+  for (const key of coverage.gap_keys ?? []) {
+    assert.ok(gapKeys.has(key), `gap key ${String(key)} has a DETAIL_GAP`);
+  }
+});
+
+test("emitStatementRecords: a run with only disclosures (no statement docs) emits no coverage and no gaps", async () => {
+  const { deps, messages } = makeHarness();
+  // Titles the statement-parse predicate rejects (agreement/disclosure).
+  const indexRows = [
+    makeIndexRow({ rowIndex: 0, id: "D0", title: "CARDHOLDER AGREEMENT" }),
+    makeIndexRow({ rowIndex: 1, id: "D1", title: "PRIVACY DISCLOSURE" }),
+  ];
+  const hydration = new Map<number, HydrationResult>();
+  const summary: HydrationSummary = { attempts: 0, successes: 0, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  assert.equal(statementCoverage(messages), undefined, "no DETAIL_COVERAGE without a real denominator");
+  assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP for non-statement rows");
+  // The statement records themselves still emit (index-only) — coverage is additive.
+  // (The disclosure rows are honest `statements` records; only the PDF-detail
+  //  coverage report is suppressed.)
+});
+
+test("emitStatementRecords: DETAIL_GAP and DETAIL_COVERAGE never interpolate statement title or account text", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [
+    makeIndexRow({
+      rowIndex: 0,
+      id: "S0",
+      title: "April 2026 STATEMENT",
+      account_reference: "USAA CLASSIC CHECKING *9241",
+    }),
+  ];
+  const hydration = new Map<number, HydrationResult>();
+  const summary: HydrationSummary = { attempts: 1, successes: 0, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const refMessages = [statementCoverage(messages), ...statementGaps(messages)].filter(Boolean);
+  assert.ok(refMessages.length >= 1, "coverage + at least one gap emitted");
+  const serialized = JSON.stringify(refMessages);
+  // Target the fixture's document-title + account-reference PII (e.g. "April",
+  // "CHECKING", "*9241"), NOT the legitimate lowercase `statements` /
+  // `statement_id` protocol identifiers, which are not PII.
+  assert.doesNotMatch(
+    serialized,
+    /April|CHECKING|CLASSIC|\*9241/,
+    "no title/account text leaks into coverage evidence"
+  );
+  assert.match(serialized, /S0/, "only the opaque statement id appears");
+});
+
 // ─── Invariant 4b: buildIndexRows drops rows missing date_delivered ──────
 
 test("buildIndexRows: rows without a date_delivered are dropped (no undated keys)", () => {
@@ -244,6 +375,13 @@ test("buildIndexRows: rows without a date_delivered are dropped (no undated keys
   assert.equal(rows.length, 2, "undated row dropped; dated rows kept");
   const kept = rows.map((r) => r.rowIndex);
   assert.deepEqual(kept, [0, 2]);
+});
+
+test("buildIndexRows: blank account reference normalizes to null", () => {
+  const rows = buildIndexRows([makeDocRow({ account_reference: "   " })], [makeAccount()]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.account_reference, null);
+  assert.equal(rows[0]?.account_id, null);
 });
 
 // ─── Invariant 5: dedup — repeated hydration map key yields one emit per row ─
@@ -287,7 +425,13 @@ test("emitAccountsStream: emittedAt propagates into every accounts record's fetc
 
 // ─── Invariant 7: backfill ladder exhausted → SKIP_RESULT shape ──────────
 
-test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carrying the last phase", async () => {
+test("emitExportFailure: a missing export affordance is reported as a structure-changed outcome, not export_no_download", async () => {
+  // `no_export_affordance` is one of the two fatal phases the ladder breaks on:
+  // the export button/page was never located, so a shorter date window can't
+  // help. That is the "source UI/API changed" outcome, and it must be visible
+  // to the dashboard as a distinct reason — not collapsed into the transient
+  // `export_no_download` bucket — so a structurally-broken connector is not
+  // mistaken for momentary export pressure.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
     phase: "no_export_affordance",
@@ -304,9 +448,164 @@ test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carr
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip, "SKIP_RESULT must emit when the ladder is exhausted");
   assert.equal(skip.stream, "transactions", "export failure is charged to the transactions stream");
-  assert.equal(skip.reason, "export_no_download", "non-credit-card account uses export_no_download");
+  assert.equal(skip.reason, "export_affordance_missing", "a missing affordance/dialog is a structure-changed outcome");
   assert.match(skip.message, /no_export_affordance/, "message carries the last diagnostic phase");
-  assert.equal(skip.diagnostics, diag, "last diagnostic threads through as structured context");
+  assert.match(skip.message, /source_structure_changed/, "message names the terminal outcome class");
+  assert.match(skip.message, /page=captured/, "message reports whether page diagnostics were captured");
+  assert.doesNotMatch(skip.message, /accountId=|https?:\/\//, "message omits page URLs and URL identifiers");
+  assert.notEqual(skip.diagnostics, diag, "diagnostic context is sanitized before emission");
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "source_structure_changed", "outcome discriminator rides on diagnostics");
+  assert.equal(emittedDiag.phase, diag.phase, "diagnostic phase threads through as structured context");
+  assert.equal(emittedDiag.diag?.url, "", "diagnostic URL is redacted before emission");
+  assert.equal(emittedDiag.diag?.title, "", "diagnostic page title is redacted before emission");
+});
+
+test("emitExportFailure: the dialog-unexpected-shape phase is also a structure-changed outcome", async () => {
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    phase: "export_dialog_unexpected_shape",
+    diag: {
+      url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      title: "Checking",
+      has_utility_bar: false,
+      export_candidates: [],
+      nav_candidates: [],
+      dialogs_open: 1,
+      dialog_html_preview: "<div>unexpected</div>",
+    },
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(
+    skip.reason,
+    "export_affordance_missing",
+    "an unrecognized export dialog is a structure-changed outcome"
+  );
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "source_structure_changed");
+});
+
+test("emitExportFailure: a transient artifact-wait failure stays export_no_download (pressure outcome)", async () => {
+  // The affordance and dialog were found and the export submitted; only the
+  // download/body never materialized. That is recoverable on a later run, so
+  // it must NOT be reported as a structure change.
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: { cdpError: null, cdpReady: true, candidates: [] },
+    diag: null,
+    error: "download_empty",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "export_no_download", "submitted-but-no-download stays the transient pressure reason");
+  assert.match(skip.message, /export_pressure/, "message names the pressure outcome class");
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "export_pressure");
+});
+
+test("emitExportFailure: no diagnostic at all is an honest unknown outcome (still retryable)", async () => {
+  // Every window failed without leaving a diagnostic phase. We don't claim to
+  // know whether it was structural or transient, so the reason stays the
+  // retryable `export_no_download` and the message says so plainly.
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount(), null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "export_no_download", "an unknown exhaustion stays retryable, not a structure change");
+  assert.match(skip.message, /outcome unknown/, "message is honest that the outcome could not be determined");
+  const emittedDiag = skip.diagnostics as { outcome: string };
+  assert.equal(emittedDiag.outcome, "unknown");
+});
+
+test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: {
+      cdpError: null,
+      cdpReady: true,
+      candidates: [
+        {
+          bodyBytes: 128,
+          contentDisposition: "",
+          contentType: "text/plain",
+          method: "POST",
+          reason: "not_expected_body",
+          source: "cdp",
+          status: 200,
+          url: "https://www.usaa.com/export",
+        },
+        {
+          bodyError: "Protocol error",
+          contentDisposition: "",
+          contentType: "text/csv",
+          method: "POST",
+          reason: "body_error",
+          source: "playwright",
+          status: 200,
+          url: "https://www.usaa.com/export",
+        },
+      ],
+    },
+    diag: null,
+    error: "body_response_timeout after 45000ms",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.match(skip.message, /export_artifact_wait_failed/);
+  assert.match(skip.message, /page=unavailable/);
+  assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
+  assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
+  assert.doesNotMatch(skip.message, /url=https?:\/\//);
+  assert.match(skip.message, /body_response_timeout/);
+  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  assert.equal(emittedDiag.artifact?.candidates[0]?.url, "", "artifact candidate URL is redacted before emission");
+});
+
+test("emitExportFailure: download diagnostics surface non-PII wait evidence when present", async () => {
+  // Live-run regression: when `download_empty` fires under remote n.eko,
+  // the candidates list is dominated by Adobe analytics beacons and the
+  // real export URL is invisible. This test confirms non-PII download-side
+  // evidence (byte count, source path, downloadFailure)
+  // reaches the SKIP_RESULT message text so the next run can be triaged
+  // offline without a second human OTP cycle.
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: {
+      cdpError: null,
+      cdpReady: true,
+      candidates: [],
+    },
+    diag: null,
+    download: {
+      url: "https://www.usaa.com/inet/ent_logon/bnk/dmd/chk/transactionDownload",
+      suggestedFilename: "transaction_history.csv",
+      bytes: 0,
+      source: "createReadStream",
+      saveAsError: "saveAs_returned_zero_bytes",
+      streamError: null,
+      downloadFailure: "Download canceled by remote",
+    },
+    error: "download_empty",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.match(skip.message, /export_artifact_wait_failed/);
+  assert.doesNotMatch(skip.message, /https?:\/\/|transaction_history\.csv/);
+  assert.match(skip.message, /bytes=0/);
+  assert.match(skip.message, /source=createReadStream/);
+  assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
+  assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  assert.equal(emittedDiag.download?.url, null, "download URL is redacted before emission");
+  assert.equal(emittedDiag.download?.suggestedFilename, null, "download filename is redacted before emission");
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {
@@ -322,6 +621,12 @@ test("emitExportFailure: credit-card account uses credit_card_export_unverified 
   assert.ok(skip);
   assert.equal(skip.reason, "credit_card_export_unverified", "credit-card export flow is not yet live-verified");
   assert.match(skip.message, /credit-card export flow not verified/, "message carries the design-notes pointer");
+});
+
+test("isNoDataExportMessage: distinguishes source-empty export dialogs from generic failures", () => {
+  assert.equal(isNoDataExportMessage("There are no transactions for the selected date range."), true);
+  assert.equal(isNoDataExportMessage("Nothing to export for this account."), true);
+  assert.equal(isNoDataExportMessage("We couldn't process your request right now."), false);
 });
 
 // ─── Invariant 8: pure filters ───────────────────────────────────────────
@@ -341,4 +646,13 @@ test("hydrationSuccess: narrows ok branch, returns null for err branch + undefin
   assert.equal(hydrationSuccess(ok), ok, "ok branch passes through");
   assert.equal(hydrationSuccess({ err: "download_timed_out" }), null, "err branch narrows to null");
   assert.equal(hydrationSuccess(undefined), null, "missing entry narrows to null");
+});
+
+test("usaa manifest: successful manual runs have a bounded freshness window", () => {
+  const manifest = JSON.parse(readFileSync(USAA_MANIFEST_PATH, "utf8")) as {
+    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+  };
+  const policy = manifest.capabilities?.refresh_policy;
+  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.maximum_staleness_seconds, 86_400);
 });

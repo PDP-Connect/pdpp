@@ -8,6 +8,7 @@ import {
   buildChannelCanvasIndex,
   buildChannelMembershipRecord,
   buildChannelRecord,
+  buildChannelStatsRecord,
   buildFileRecord,
   buildMessageAttachmentRecords,
   buildMessageRecord,
@@ -90,7 +91,7 @@ test("buildWorkspaceRecord: prefers row TEAM_ID, then blob, then stringified ID"
   assert.equal(rec.fetched_at, "2026-04-22T10:00:00.000Z");
 });
 
-test("buildChannelRecord: flattens topic/purpose + canvas/restriction flags from fixture", () => {
+test("buildChannelRecord: flattens topic/purpose + canvas/restriction flags from fixture (no num_members)", () => {
   const data = readFixture("channel-with-canvas.json");
   const row: ChannelRow = { id: "C100", name: "engineering", data };
   const rec = buildChannelRecord(row);
@@ -99,12 +100,53 @@ test("buildChannelRecord: flattens topic/purpose + canvas/restriction flags from
   assert.equal(rec.is_general, true);
   assert.equal(rec.topic, "deploys on green");
   assert.equal(rec.topic_creator, "U123");
-  assert.equal(rec.num_members, 42);
+  // num_members must NOT appear on the entity record (moved to channel_stats).
+  assert.equal("num_members" in rec, false);
   assert.equal(rec.has_canvas, true);
   assert.equal(rec.canvas_file_id, "Fcanvas1");
   assert.equal(rec.posting_restricted, true);
   assert.equal(rec.threads_restricted, false);
   assert.deepEqual(rec.shared_team_ids, ["T456"]);
+});
+
+// ─── buildChannelStatsRecord ──────────────────────────────────────────────
+
+test("buildChannelStatsRecord: key is {channel_id}:{observed_on}", () => {
+  const data = readFixture("channel-with-canvas.json");
+  const row: ChannelRow = { id: "C100", name: "engineering", data };
+  const rec = buildChannelStatsRecord(row, "2026-06-03");
+  assert.equal(rec.id, "C100:2026-06-03");
+  assert.equal(rec.channel_id, "C100");
+  assert.equal(rec.observed_on, "2026-06-03");
+});
+
+test("buildChannelStatsRecord: carries num_members from blob", () => {
+  const data = readFixture("channel-with-canvas.json");
+  const row: ChannelRow = { id: "C100", name: "engineering", data };
+  const rec = buildChannelStatsRecord(row, "2026-06-03");
+  assert.equal(rec.num_members, 42);
+});
+
+test("buildChannelStatsRecord: same-day key is stable (idempotent)", () => {
+  const data = readFixture("channel-with-canvas.json");
+  const row: ChannelRow = { id: "C100", name: "engineering", data };
+  const r1 = buildChannelStatsRecord(row, "2026-06-03");
+  const r2 = buildChannelStatsRecord(row, "2026-06-03");
+  assert.equal(r1.id, r2.id);
+});
+
+test("buildChannelStatsRecord: different-day key is distinct", () => {
+  const data = readFixture("channel-with-canvas.json");
+  const row: ChannelRow = { id: "C100", name: "engineering", data };
+  const r1 = buildChannelStatsRecord(row, "2026-06-03");
+  const r2 = buildChannelStatsRecord(row, "2026-06-04");
+  assert.notEqual(r1.id, r2.id);
+});
+
+test("buildChannelStatsRecord: null blob → num_members null", () => {
+  const row: ChannelRow = { id: "C200", name: "empty", data: null };
+  const rec = buildChannelStatsRecord(row, "2026-06-03");
+  assert.equal(rec.num_members, null);
 });
 
 test("buildChannelMembershipRecord: composite id is channel:user", () => {

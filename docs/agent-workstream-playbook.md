@@ -67,6 +67,47 @@ that toolchain.
 
 ## Communication Model
 
+### Live Owner Ledger
+
+The owner agent must keep one current operating ledger at:
+
+```bash
+tmp/workstreams/ri-owner-current-state.md
+```
+
+The ledger is the live coordination object for long-running RI ownership. It is
+not a committed roadmap or a substitute for OpenSpec; it is a local state file
+that reduces human steering and survives chat drift, compaction, and worker
+handoffs.
+
+Update the ledger before returning to the human owner, before and after major
+delegation/merge/review passes, and immediately after context restoration. A
+clean checkpoint is a ledger update, not a stop reason.
+
+Each ledger update should include:
+
+- live objects: branches, worktrees, tmux panes, reports, OpenSpec changes, and
+  local deployment state relevant to the current pass;
+- active delegated lanes and report paths;
+- current evidence: tests, probes, commits, deployment checks, or unresolved
+  failures;
+- owner decision state for each object: waiting, review, revise, merge, delete,
+  park, or done;
+- next action;
+- exact stop condition.
+
+Return to the human owner only for:
+
+- a named human-only decision;
+- an unresolved verification failure the owner agent cannot clear;
+- an explicit checkpoint the human requested;
+- a real budget, safety, or repository-integrity boundary.
+
+Before asking the human what to do next, classify whether the question is truly
+human-only. If it is not, make the RI-owner decision, document it in the ledger,
+and continue. Worker done is not owner done; the owner remains responsible for
+review, validation, merge, deployment, cleanup, and docket reduction.
+
 ### Mandatory Owner Checkpoint
 
 Codex must not coordinate from memory. Before answering status, launching worker
@@ -333,6 +374,73 @@ meaningful transition:
 Keep entries single-line and append-only. The card remains the human-readable
 source of truth.
 
+### Reliable Worker Launch
+
+**Why `nohup` and background-shell launches fail in this environment**
+
+Running `nohup scripts/claude-workstream.sh ... &` or similar detach patterns is
+unreliable. `nohup` masks SIGHUP, but the spawned process remains a child of the
+login shell and is placed in the same systemd user-session cgroup. When the
+session ends — SSH disconnect, terminal window close, `loginctl kill-session`, or
+PAM cleanup — the kernel sends SIGKILL to every process in the cgroup. SIGKILL
+cannot be caught or masked, so the claude invocation is reaped before completing.
+
+tmux processes are children of the `tmux-server` daemon, which runs in its own
+cgroup outside any login session. They survive disconnection, SSH drops, and user
+session cleanup.
+
+**Recommended: `--tmux` flag**
+
+Pass `--tmux` to `claude-workstream.sh`. The script re-execs itself inside a new
+tmux window named `ws-<lane>`, prints monitoring hints, and exits 0 immediately.
+The actual claude invocation runs inside tmux and is tracked via `status.json`.
+
+```bash
+scripts/claude-workstream.sh \
+  --lane my-lane \
+  --worktree /path/to/worktree \
+  --prompt tmp/workstreams/my-lane-prompt.md \
+  --report tmp/workstreams/my-lane-report.md \
+  --tmux
+# ↳ creates tmux window "ws-my-lane" in session "main" and exits 0
+```
+
+Default session is `main`. Override with `--tmux-session <name>`:
+
+```bash
+scripts/claude-workstream.sh ... --tmux --tmux-session workers
+```
+
+Monitor progress:
+
+```bash
+# Tail the transcript live
+tmux capture-pane -t 'main:ws-my-lane' -p -S -50 | tail -20
+
+# Or attach interactively
+tmux attach -t main
+
+# Check lane status (reads status.json)
+pnpm workstreams:status
+```
+
+The launch is refused if a tmux window `ws-<lane>` already exists in the target
+session. Run `pnpm workstreams:status` to confirm whether the prior run is still
+active before re-launching.
+
+**Manual fallback if `--tmux` is unavailable**
+
+```bash
+tmux new-session -d -s main 2>/dev/null || true
+tmux new-window -t main -n ws-my-lane -- bash -c '
+  scripts/claude-workstream.sh \
+    --lane my-lane \
+    --worktree /path/to/worktree \
+    --prompt tmp/workstreams/my-lane-prompt.md \
+    --report tmp/workstreams/my-lane-report.md
+'
+```
+
 ### Worker Agent
 
 A worker owns one bounded lane. A worker:
@@ -596,4 +704,7 @@ proposal exists.
 - OpenSpec tasks and docs are updated if the work changes durable behavior.
 - The worker branch is clean or remaining uncommitted files are explicitly
   accounted for.
+- Accepted worker tmux windows that have returned to an idle shell are closed, or
+  intentionally left open and noted. Use `pnpm workstreams:status` and its
+  `Idle Tmux Cleanup Candidates` section before final handoff.
 - The next action is either obvious from the report or captured in a task list.

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'recovered', 'terminal']);
 const SECRET_KEY_PATTERN = /(authorization|bearer|cookie|token|secret|password|credential|request_body|body|payload|raw|private)/i;
@@ -28,7 +28,7 @@ function hashIdentity(parts) {
 }
 
 function defaultConnectorInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function safeUrlSummary(value) {
@@ -170,10 +170,37 @@ function firstSqliteRow(sql, params = []) {
   return null;
 }
 
+/**
+ * Coerce a SQL `COUNT(*)` scalar into a finite non-negative integer. SQLite
+ * returns it as a JS number; the Postgres `pg` driver returns a `bigint` as a
+ * string. A NaN / negative / unparseable value throws so the caller can keep
+ * the optional `recovered` rollup `null` (unmeasured) rather than surface a
+ * fabricated count.
+ */
+function coerceCount(value) {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`connector detail gap count is not a non-negative integer: ${String(value)}`);
+  }
+  return Math.floor(n);
+}
+
+/**
+ * Normalize the reason list for a reason-scoped count. Returns a de-duped array
+ * of non-empty strings, or `null` when no usable reason is supplied (the caller
+ * treats `null` as "no reason scope" and counts every reason).
+ */
+function normalizeReasonScope(reasons) {
+  if (!Array.isArray(reasons)) return null;
+  const out = [...new Set(reasons.filter((reason) => typeof reason === 'string' && reason))];
+  return out.length ? out : null;
+}
+
 export function createSqliteConnectorDetailGapStore() {
   return {
     async upsertPendingGap(input) {
       const gap = normalizeGapInput(input);
+      const detailLocatorJson = encodeJson(gap.detailLocator);
       // REVIEWED-DYNAMIC: connector_detail_gaps is owned by this store and
       // not yet represented in the static query registry.
       execDynamicSqlAcknowledged(`
@@ -193,6 +220,16 @@ export function createSqliteConnectorDetailGapStore() {
           last_error_json = excluded.last_error_json,
           last_run_id = excluded.last_run_id,
           updated_at = excluded.updated_at
+        ON CONFLICT(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, '')) DO UPDATE SET
+          source_json = excluded.source_json,
+          list_cursor_json = excluded.list_cursor_json,
+          scope_json = excluded.scope_json,
+          reason = excluded.reason,
+          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          next_attempt_after = excluded.next_attempt_after,
+          last_error_json = excluded.last_error_json,
+          last_run_id = excluded.last_run_id,
+          updated_at = excluded.updated_at
       `, [
         gap.gapId,
         gap.connectorId,
@@ -202,7 +239,7 @@ export function createSqliteConnectorDetailGapStore() {
         gap.stream,
         gap.parentStream,
         gap.recordKey,
-        encodeJson(gap.detailLocator),
+        detailLocatorJson,
         encodeJson(gap.listCursor),
         encodeJson(gap.scope),
         gap.reason,
@@ -214,12 +251,29 @@ export function createSqliteConnectorDetailGapStore() {
         gap.now,
       ]);
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
-      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gap.gapId]));
+      return rowToGap(firstSqliteRow(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_instance_id = ?
+          AND ifnull(grant_id, '') = ?
+          AND stream = ?
+          AND ifnull(parent_stream, '') = ?
+          AND ifnull(record_key, '') = ?
+          AND ifnull(detail_locator_json, '') = ?
+        LIMIT 1
+      `, [
+        gap.connectorInstanceId,
+        gap.grantId || '',
+        gap.stream,
+        gap.parentStream || '',
+        gap.recordKey || '',
+        detailLocatorJson || '',
+      ]));
     },
 
     async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
       const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
+      const streamPlaceholders = streamList?.length ? streamList.map(() => '?').join(', ') : null;
       // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
       const rows = [...iterateDynamicSqlAcknowledged(`
         SELECT * FROM connector_detail_gaps
@@ -227,10 +281,11 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'pending'
+          ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ''}
         ORDER BY created_at
         LIMIT ?
-      `, [connectorInstanceId, connectorId, grantId, grantId, Math.max(1, Math.min(limit, 500))])];
-      return rows.map(rowToGap).filter((gap) => !streamList || streamList.includes(gap.stream));
+      `, [connectorInstanceId, connectorId, grantId, grantId, ...(streamList ?? []), Math.max(1, Math.min(limit, 500))])];
+      return rows.map(rowToGap);
     },
 
     // Diagnostic listing across all connector instances for a connector type.
@@ -247,6 +302,27 @@ export function createSqliteConnectorDetailGapStore() {
         LIMIT ?
       `, [connectorId, Math.max(1, Math.min(limit, 500))])];
       return rows.map(rowToGap);
+    },
+
+    // Exact reason-scoped count-by-status across every connector instance for a
+    // connector type. The operator-console source-pressure backlog rollup uses
+    // this for its optional `recovered` count: a single bounded aggregate that
+    // returns only a scalar integer (no row bodies, locators, or payloads), in
+    // the same connector-wide + reason scope the `pending` projection reads.
+    // Throws on a malformed count so the caller can keep `recovered` `null`.
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const reasonScope = normalizeReasonScope(reasons);
+      const reasonPlaceholders = reasonScope ? reasonScope.map(() => '?').join(', ') : null;
+      // REVIEWED-DYNAMIC: bounded reason-scoped count-by-status aggregate over
+      // the store-owned detail-gap table; only a scalar count is returned.
+      const row = firstSqliteRow(`
+        SELECT COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = ?
+          ${reasonScope ? `AND reason IN (${reasonPlaceholders})` : ''}
+      `, [connectorId, status, ...(reasonScope ?? [])]);
+      return coerceCount(row?.gap_count ?? 0);
     },
 
     async markGapStatus(gapId, status, options = {}) {
@@ -281,6 +357,38 @@ export function createSqliteConnectorDetailGapStore() {
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gapId]));
     },
+
+    // Reset in_progress gaps from prior runs (different runId, same scope) back
+    // to pending so crash leftovers become retryable. Never touches recovered gaps.
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
+      const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const now = nowIso();
+      // REVIEWED-DYNAMIC: bulk status reset for stranded in_progress gaps from prior runs.
+      execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = ?
+        WHERE connector_instance_id = ?
+          AND connector_id = ?
+          AND (? IS NULL OR grant_id = ?)
+          AND status = 'in_progress'
+          AND (last_run_id IS NULL OR last_run_id != ?)
+      `, [now, cii, connectorId, grantId, grantId, currentRunId]);
+    },
+
+    // Reset still-in_progress gaps served by this run (by gap id) back to pending.
+    // Called in run cleanup/finally. Does not decrement attempt_count.
+    async resetServedInProgressGaps(gapIds) {
+      if (!gapIds || !gapIds.length) return;
+      const now = nowIso();
+      const placeholders = gapIds.map(() => '?').join(', ');
+      // REVIEWED-DYNAMIC: bulk reset of specific in_progress gap ids served this run.
+      execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = ?
+        WHERE gap_id IN (${placeholders})
+          AND status = 'in_progress'
+      `, [now, ...gapIds]);
+    },
   };
 }
 
@@ -288,15 +396,14 @@ export function createPostgresConnectorDetailGapStore() {
   return {
     async upsertPendingGap(input) {
       const gap = normalizeGapInput(input);
-      await postgresQuery(`
+      const result = await postgresQuery(`
         INSERT INTO connector_detail_gaps(
           gap_id, connector_id, connector_instance_id, grant_id, source_json, stream, parent_stream, record_key,
           detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
           next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
         ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12, 'pending', 0, $13, $14::jsonb, $15, $16, $17, $17)
-        ON CONFLICT (gap_id) DO UPDATE SET
+        ON CONFLICT (connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, '')) DO UPDATE SET
           source_json = EXCLUDED.source_json,
-          detail_locator_json = EXCLUDED.detail_locator_json,
           list_cursor_json = EXCLUDED.list_cursor_json,
           scope_json = EXCLUDED.scope_json,
           reason = EXCLUDED.reason,
@@ -305,6 +412,7 @@ export function createPostgresConnectorDetailGapStore() {
           last_error_json = EXCLUDED.last_error_json,
           last_run_id = EXCLUDED.last_run_id,
           updated_at = EXCLUDED.updated_at
+        RETURNING *
       `, [
         gap.gapId,
         gap.connectorId,
@@ -324,7 +432,6 @@ export function createPostgresConnectorDetailGapStore() {
         gap.lastRunId,
         gap.now,
       ]);
-      const result = await postgresQuery('SELECT * FROM connector_detail_gaps WHERE gap_id = $1', [gap.gapId]);
       return rowToGap(result.rows[0]);
     },
 
@@ -352,6 +459,22 @@ export function createPostgresConnectorDetailGapStore() {
         LIMIT $2
       `, [connectorId, Math.max(1, Math.min(limit, 500))]);
       return result.rows.map(rowToGap);
+    },
+
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const reasonScope = normalizeReasonScope(reasons);
+      // Bounded reason-scoped count-by-status aggregate (Postgres analogue of
+      // the SQLite path). `$3::text[]` is `NULL` when no reason scope is given,
+      // so the predicate counts every reason; otherwise it restricts to the
+      // supplied source-pressure reasons. Only a scalar count is returned.
+      const result = await postgresQuery(`
+        SELECT COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = $2
+          AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
+      `, [connectorId, status, reasonScope]);
+      return coerceCount(result.rows[0]?.gap_count ?? 0);
     },
 
     async markGapStatus(gapId, status, options = {}) {
@@ -382,6 +505,31 @@ export function createPostgresConnectorDetailGapStore() {
         gapId,
       ]);
       return rowToGap(result.rows[0]);
+    },
+
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
+      const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const now = nowIso();
+      await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = $1
+        WHERE connector_instance_id = $2
+          AND connector_id = $3
+          AND ($4::text IS NULL OR grant_id = $4)
+          AND status = 'in_progress'
+          AND (last_run_id IS NULL OR last_run_id != $5)
+      `, [now, cii, connectorId, grantId, currentRunId]);
+    },
+
+    async resetServedInProgressGaps(gapIds) {
+      if (!gapIds || !gapIds.length) return;
+      const now = nowIso();
+      await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = $1
+        WHERE gap_id = ANY($2::text[])
+          AND status = 'in_progress'
+      `, [now, gapIds]);
     },
   };
 }

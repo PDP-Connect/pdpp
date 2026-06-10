@@ -6,7 +6,7 @@
 // plan dated 2026-05-12.
 //
 // We deliberately do NOT import directly from
-// apps/web/src/app/dashboard/runs/[runId]/stream/neko-client.ts. That module
+// apps/console/src/app/dashboard/runs/[runId]/stream/neko-client.ts. That module
 // is not exposed via a workspace package and several of its
 // adapter-relevant helpers (startNeko, focusNekoKeyboard, paste-to-text
 // path) are file-private. To avoid mutating neko-client.ts during the
@@ -58,7 +58,7 @@ export type RemoteSurfaceLogger = (
  *   - `sendText`      → wraps `nekoInstance.control.paste(text)` (line ~1088)
  *
  * `NekoClientConfig` is intentionally typed as `unknown` here so the
- * adapter doesn't pull in apps/web types. The dashboard owns the cast at
+ * adapter doesn't pull in apps/console types. The dashboard owns the cast at
  * the wiring boundary.
  */
 export interface NekoClientApi {

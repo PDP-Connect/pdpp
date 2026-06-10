@@ -5,13 +5,54 @@ Command-line tools for PDPP providers.
 ## Status
 
 This package is the public npm home for the `pdpp` command. The beta CLI
-supports three command namespaces:
+supports four command namespaces:
 
 - **`pdpp connect <provider-url>`** — delegated access: discovers provider
   metadata, self-registers a public client when the AS advertises dynamic
   registration, asks the owner to approve scoped access in the browser, and
   stores scoped client credentials in the project-local `.pdpp/` cache without
   asking for an owner bearer token.
+
+- **`pdpp owner-agent <onboard|status|control|connectors|setup|revoke>`** — trusted owner-agent
+  onboarding for a local agent that acts as the operator (for example Daisy).
+  This is owner-level local automation, deliberately separate from the default
+  grant-scoped `pdpp connect` path; ordinary agents should not use it.
+  `onboard <entrypoint-url>` discovers the `pdpp_owner_agent_onboarding`
+  advisory block (falling back to the RFC 8628 device-authorization shape in
+  authorization-server metadata), runs browser-mediated owner approval, and
+  writes the issued credential to a local file with `0600` permissions. The
+  bearer is never printed; only the verification URL, code, and non-secret
+  status are shown. Pass `--credential-file` to target Daisy's first supported
+  path `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`; otherwise the
+  credential defaults to `~/.pdpp/owner-agents/<host>.json` and stores the
+  bearer as top-level `access_token` for local agents. `status` introspects the
+  stored credential. `control` lists the non-secret owner-agent control
+  capabilities (`GET /v1/owner/control`) and configured connection instances
+  (`GET /v1/owner/connections`) — each connection's `connection_id`, connector,
+  and label/label-needed state — so a trusted agent can discover what it can do
+  and what is configured without printing the bearer. `connectors list`,
+  `connectors search <query>`, and `connectors explain <connector-id>` read the
+  non-secret connector-template catalog (`GET /v1/owner/connector-templates`) so
+  a human or agent can discover Amazon/Gmail/Slack-like setup options before
+  starting anything. These discovery commands are read-only and do not mint
+  enrollment codes. `setup <connector-id>` is the start command: it requests the
+  same non-secret connection setup plan and next-step contract the console
+  add-source flow and owner-agent REST surface, by calling the shared server
+  planner (`POST /v1/owner/connections/intents`). It sends the stored bearer only
+  as an `Authorization` header, formats the plan's support state (`supported`,
+  `proof-gated`, `unsupported`, `deployment-blocked`), modality, and primary
+  owner next step, and surfaces owner-openable setup material (enrollment codes,
+  enroll endpoints, runbook paths) when present. Pass `--display-name <name>` to
+  label the resulting connection. No connection is created by this call; it
+  materializes only when the owner-mediated step completes. The setup plan never
+  includes provider secrets, owner cookies, browser cookies, or grant-scoped MCP
+  bearer material, and the bearer is never printed. `revoke` deletes its
+  dynamically registered client via the owner-session-gated RFC 7592 dashboard
+  path; run `pdpp ref login <authorization-server>` first or provide
+  `PDPP_OWNER_SESSION_COOKIE`. Owner-agent bearers are REST/control-plane
+  credentials; `/mcp` rejects them. Routine chat-hosted and task-scoped agents
+  should use the grant-scoped `pdpp connect` / MCP path instead, not an owner
+  bearer.
 
 - **`pdpp collector <advertise|enroll|run>`** — operator surface for the
   local collector runner. Pairs a host the operator controls (Claude Code or

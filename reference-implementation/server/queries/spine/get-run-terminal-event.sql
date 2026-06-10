@@ -3,9 +3,11 @@
 -- is still in progress. "Terminal" = run.completed | run.failed |
 -- run.cancelled | run.abandoned. Used by ref-control's run-summary
 -- helper to extract `known_gaps` and `failure_reason` without scanning
--- the run's full event list. Ordering is on `event_seq` (stable logical
--- sequence) so this query no longer leaks SQLite `rowid`.
-SELECT event_type, status, data_json, occurred_at
+-- the run's full event list, and by the `GET /_ref/runs/:runId` run-handle
+-- status route (`trace_id`/`actor_id` identify the run's trace and
+-- connector). Ordering is on `event_seq` (stable logical sequence) so
+-- this query no longer leaks SQLite `rowid`.
+SELECT event_type, status, data_json, occurred_at, trace_id, actor_id
 FROM spine_events
 WHERE run_id = ?
   AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')

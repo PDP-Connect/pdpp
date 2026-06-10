@@ -20,6 +20,8 @@ import { ingestRecord } from '../server/records.js';
 import { getDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
 import { runConnector } from '../runtime/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -104,6 +106,10 @@ async function seedOneRun({ asUrl, rsUrl, spotifyManifest }) {
   return { ownerToken, runResult };
 }
 
+function canonicalManifestConnectorId(manifest) {
+  return canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+}
+
 test('_ref listing helpers', async (t) => {
   await t.test('GET /_ref/traces returns paginated trace summaries', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
@@ -155,7 +161,7 @@ test('_ref listing helpers', async (t) => {
       const run = body.data[0];
       assert.equal(run.object, 'run_summary');
       assert.ok(run.run_id.startsWith('run_'));
-      assert.equal(run.connector_id, spotifyManifest.connector_id);
+      assert.equal(run.connector_id, canonicalManifestConnectorId(spotifyManifest));
     });
   });
 
@@ -167,8 +173,13 @@ test('_ref listing helpers', async (t) => {
       );
       assert.ok(body.data.length > 0);
       for (const r of body.data) {
-        assert.equal(r.connector_id, spotifyManifest.connector_id);
+        assert.equal(r.connector_id, canonicalManifestConnectorId(spotifyManifest));
       }
+
+      const { body: canonical } = await fetchJson(
+        `${asUrl}/_ref/runs?connector_id=${encodeURIComponent(canonicalManifestConnectorId(spotifyManifest))}`,
+      );
+      assert.ok(canonical.data.length > 0);
 
       const { body: none } = await fetchJson(`${asUrl}/_ref/runs?connector_id=does.not.exist`);
       assert.equal(none.data.length, 0);
@@ -189,13 +200,14 @@ test('_ref listing helpers', async (t) => {
 
   await t.test('GET /_ref/runs surfaces browser-surface queued and deferred runs without connector failures', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const source = { kind: 'connector', id: spotifyManifest.connector_id };
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
+      const source = { kind: 'connector', id: spotifyId };
       const base = {
-        actor_id: spotifyManifest.connector_id,
+        actor_id: spotifyId,
         actor_type: 'runtime',
         object_type: 'run',
         scenario_id: 'scn_browser_surface_operator_status',
-        source_id: spotifyManifest.connector_id,
+        source_id: spotifyId,
         source_kind: 'connector',
       };
       await emitSpineEvent({
@@ -286,7 +298,49 @@ test('_ref listing helpers', async (t) => {
 
   await t.test('GET /_ref/runs reports pending interaction state without relying on event-kind sets', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const source = { connector_id: spotifyManifest.connector_id };
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
+      const source = { connector_id: spotifyId };
+      const instances = createSqliteConnectorInstanceStore();
+      const instance = instances.ensureDefaultAccountConnection({
+        ownerSubjectId: 'owner_local',
+        connectorId: spotifyId,
+        displayName: spotifyId,
+        now: '2026-04-24T00:00:00.000Z',
+      });
+      assert.ok(instance?.connectorInstanceId, 'registered test connector must have a default instance');
+      const secondInstance = instances.upsert({
+        connectorInstanceId: 'cin_pending_interaction_second',
+        ownerSubjectId: 'owner_local',
+        connectorId: spotifyId,
+        displayName: `${spotifyId} pending interaction second`,
+        status: 'active',
+        sourceKind: 'account',
+        sourceBindingKey: 'pending-interaction-second',
+        sourceBinding: { kind: 'test_account', label: 'pending-interaction-second' },
+        createdAt: '2026-04-24T00:00:00.000Z',
+        updatedAt: '2026-04-24T00:00:00.000Z',
+      });
+      assert.ok(secondInstance?.connectorInstanceId, 'second active synthetic run needs a distinct connection');
+      const insertActiveRun = getDb().prepare(
+        `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      );
+      insertActiveRun.run(
+        instance.connectorInstanceId,
+        instance.connectorId,
+        'run_pending_input',
+        'trc_pending_interaction_test',
+        'scn_pending_interaction_test',
+        '2026-04-24T00:00:00.000Z',
+      );
+      insertActiveRun.run(
+        secondInstance.connectorInstanceId,
+        secondInstance.connectorId,
+        'run_second_input',
+        'trc_pending_interaction_test',
+        'scn_pending_interaction_test',
+        '2026-04-24T00:02:00.000Z',
+      );
       // Spine-layer stamping requirement: every run.started must carry
       // boot_epoch+seq. Harness ran startServer which initialized the
       // singleton; read it once and merge into every synthetic emit.
@@ -298,7 +352,7 @@ test('_ref listing helpers', async (t) => {
         controller_id: _epoch.controller_id,
       } : { boot_epoch: 'synthetic', seq: 1, controller_id: 'synthetic' };
       const base = {
-        actor_id: spotifyManifest.connector_id,
+        actor_id: spotifyId,
         actor_type: 'runtime',
         object_type: 'run',
         scenario_id: 'scn_pending_interaction_test',
@@ -478,8 +532,8 @@ test('_ref listing helpers', async (t) => {
       assert.ok(timeline.data.length > 0);
       const startedEvent = timeline.data.find((e) => e.event_type === 'run.started');
       assert.ok(startedEvent);
-      // actor_id on runtime events is the connectorId, which the run list should report.
-      assert.equal(startedEvent.actor_id, spotifyManifest.connector_id);
+      // actor_id on runtime events is the canonical connector key, which the run list should report.
+      assert.equal(startedEvent.actor_id, canonicalManifestConnectorId(spotifyManifest));
     });
   });
 });
@@ -526,7 +580,13 @@ test('_ref dataset summary', async (t) => {
       // (saved_at), and `recently_played` (played_at). Seed records matching
       // those streams with real-world timestamps so the dataset summary's
       // `consent_time_field`-driven bounds exercise the live manifest.
-      const spotifyId = spotifyManifest.connector_id;
+      // Records are stored under the canonical connector key (Decision 1), the
+      // same key the connector catalog row is registered under, so the dataset
+      // summary's manifest join (consent_time_field bounds) and the
+      // top_connectors projection correlate. ingestRecord is the low-level
+      // store called directly here, bypassing the route that would otherwise
+      // canonicalize a URL-shaped id, so seed under the canonical key.
+      const spotifyId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
       await ingestRecord(spotifyId, {
         stream: 'saved_tracks',
         key: 'track_1',
@@ -565,8 +625,8 @@ test('_ref dataset summary', async (t) => {
       const body = await resp.json();
       assert.equal(resp.status, 200);
       assert.equal(body.object, 'dataset_summary');
-      assert.equal(body.connector_count, 1, 'one distinct connector_id with live records');
-      assert.equal(body.stream_count, 3, 'distinct (connector_id, stream) pairs with live records');
+      assert.equal(body.connector_count, 1, 'one configured connection with live records');
+      assert.equal(body.stream_count, 3, 'distinct connection/stream pairs with live records');
       assert.equal(body.record_count, 4);
       assert.ok(body.record_json_bytes > 0, 'record_json_bytes should be positive with seeded records');
       assert.ok(
@@ -606,7 +666,9 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('soft-deleted records are excluded from counts, bytes, and timestamp bounds', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      // Seed under the canonical connector key — see the populated-instance
+      // test above for why ingestRecord must match the catalog's canonical key.
+      const spotifyId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
       await ingestRecord(spotifyId, {
         stream: 'saved_tracks',
         key: 'track_live',
@@ -641,7 +703,7 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('streams without consent_time_field do not contribute to record-time bounds', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
       // `tracks` is NOT a spotify manifest stream. Records seeded into it have
       // no manifest-declared consent_time_field, so they MUST NOT contribute
       // to earliest/latest_record_time even if data contains a timestamp-ish
@@ -673,7 +735,7 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('record history is counted separately from live payload and folded into total_retained_bytes', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
       // Three versions of the same record — one live row, two prior versions
       // in record_changes. The live payload counts once under
       // record_json_bytes; every version (including the live one) is mirrored

@@ -1,0 +1,49 @@
+[
+  {
+    "name": "dashboard-explore",
+    "url": "http://localhost:3300/dashboard/explore",
+    "ok": true,
+    "screenshot": "/home/user/code/pdpp/tmp/uat-recapture-97dc8b80/dashboard-explore.png",
+    "probe": {
+      "totalCards": 10,
+      "money": 5,
+      "message": 5,
+      "generic": 0,
+      "moneyAmounts": [
+        "-$12.45",
+        "$4381.20",
+        "-$89.00",
+        "-$28.40",
+        "-$156.00"
+      ],
+      "messageAuthors": [
+        "gmail",
+        "gmail",
+        "gmail",
+        "gmail",
+        "gmail"
+      ]
+    }
+  },
+  {
+    "name": "sandbox-explore",
+    "url": "http://localhost:3301/sandbox/explore",
+    "ok": true,
+    "screenshot": "/home/user/code/pdpp/tmp/uat-recapture-97dc8b80/sandbox-explore.png",
+    "probe": {
+      "totalCards": 9,
+      "money": 9,
+      "message": 0,
+      "generic": 0,
+      "moneyAmounts": [
+        "-$12.45",
+        "$4381.20",
+        "-$284.00",
+        "$6125.00",
+        "$6125.00",
+        "$6125.00"
+      ],
+      "messageAuthors": []
+    }
+  }
+]

@@ -20,9 +20,7 @@
 // runtime behavior, and doesn't smuggle `any` or `as unknown as` into
 // the surface.
 import { createRequire } from "node:module";
-// biome-ignore lint/correctness/noUnresolvedImports: ajv is declared in package.json; Biome's resolver doesn't follow its CJS conditional exports
 import type { Ajv as AjvClass, AnySchema, ErrorObject, Plugin, ValidateFunction } from "ajv";
-// biome-ignore lint/correctness/noUnresolvedImports: ajv-formats is declared in package.json; Biome's resolver doesn't follow its CJS conditional exports
 import type { FormatsPluginOptions } from "ajv-formats";
 import type { JsonSchema, RouteManifest } from "./common/index.ts";
 // The public / reference modules are still JS; their arrays structurally
@@ -110,17 +108,49 @@ interface ValidatorEntry {
   manifest: RouteManifest;
   params: ValidateFunction | null;
   query: ValidateFunction | null;
+  // Response validators compile lazily per HTTP status code: most call sites
+  // only ever look at one response status, and lazy compile lets us share
+  // the per-route ajv discipline (`coerceTypes: false`, `$id` stripped)
+  // without paying for unused statuses at module-init time.
+  responsesByStatus: Map<string, ValidateFunction | null>;
 }
 
 const validators = new Map<string, ValidatorEntry>();
+
+// Body content types where the wire shape is opaque bytes and the
+// manifest's `schema: { type: "string", format: "binary" }` is a
+// contract-design hint, not a runtime check. AJV cannot meaningfully
+// validate a Buffer against a string schema, so skip body validation
+// for these content types. Request validation for these routes still
+// covers params / query / headers, which carry the addressing
+// information.
+const OPAQUE_BODY_CONTENT_TYPES = new Set(["application/octet-stream", "application/x-ndjson"]);
+
+function shouldCompileBodyValidator(manifest: RouteManifest): boolean {
+  const body = manifest.request?.body;
+  if (!body) {
+    return false;
+  }
+  if (!body.schema) {
+    return false;
+  }
+  const contentType = body.contentType?.toLowerCase();
+  if (contentType && OPAQUE_BODY_CONTENT_TYPES.has(contentType)) {
+    return false;
+  }
+  return true;
+}
 
 for (const manifest of allManifests) {
   validators.set(manifest.id, {
     manifest,
     params: compilePart(manifest.request?.params, { coerceTypes: false }),
     query: compilePart(manifest.request?.query, { coerceTypes: true }),
-    body: manifest.request?.body ? compilePart(manifest.request.body.schema, { coerceTypes: false }) : null,
+    body: shouldCompileBodyValidator(manifest)
+      ? compilePart(manifest.request?.body?.schema, { coerceTypes: false })
+      : null,
     headers: compilePart(manifest.request?.headers, { coerceTypes: false }),
+    responsesByStatus: new Map<string, ValidateFunction | null>(),
   });
 }
 
@@ -185,4 +215,94 @@ export function listOperations(): OperationSummary[] {
     surface: m.surface,
     tags: m.tags,
   }));
+}
+
+export interface ValidateResponseInput {
+  body?: unknown;
+  status: number;
+}
+
+export type ResponseValidationResult =
+  | { ok: true; skipped: false }
+  | {
+      // `skipped` is intentional: an operation may legitimately have no
+      // response schema for a given status (e.g. 204 no-content, redirects,
+      // binary bodies, or a status not enumerated in the manifest). Callers
+      // can use the `reason` to decide whether the skip is itself a bug.
+      ok: true;
+      skipped: true;
+      reason: "unknown_operation_id" | "no_schema_for_status";
+    }
+  | {
+      ok: false;
+      errors: Array<{ instancePath?: string; message: string; params?: unknown }>;
+    };
+
+/**
+ * Validate the JSON body of an outgoing response against the declared
+ * contract for an operation + HTTP status.
+ *
+ * Returns `{ ok: true, skipped: false }` when the manifest has a response
+ * schema for the given status and the body matches. Returns
+ * `{ ok: true, skipped: true, reason }` when no schema exists for the
+ * operation id or for the given status. Returns `{ ok: false, errors }`
+ * when validation fails.
+ *
+ * The function is intentionally non-mutating: it never serializes, strips,
+ * coerces, or transforms the response body. Callers must continue to send
+ * the original body when validation passes.
+ */
+export function validateResponse(operationId: string, input: ValidateResponseInput): ResponseValidationResult {
+  const entry = validators.get(operationId);
+  if (!entry) {
+    return { ok: true, skipped: true, reason: "unknown_operation_id" };
+  }
+  const statusKey = String(input.status);
+  let validator = entry.responsesByStatus.get(statusKey);
+  if (validator === undefined) {
+    const responses = entry.manifest.responses ?? {};
+    const responseSpec = responses[statusKey];
+    const schema = responseSpec?.schema;
+    validator = schema ? compilePart(schema, { coerceTypes: false }) : null;
+    entry.responsesByStatus.set(statusKey, validator);
+  }
+  if (!validator) {
+    return { ok: true, skipped: true, reason: "no_schema_for_status" };
+  }
+  if (validator(input.body)) {
+    return { ok: true, skipped: false };
+  }
+  const errors = (validator.errors ?? []).map((e: ErrorObject) => ({
+    instancePath: e.instancePath,
+    message: e.message ?? "validation failed",
+    params: e.params,
+  }));
+  return { ok: false, errors };
+}
+
+/**
+ * Report whether `@pdpp/reference-contract` has a declared response schema
+ * for `(operationId, status)`. Lets the transport allowlist verify at
+ * registration time that an enrolled route actually has a response schema
+ * to validate against, without forcing a validator compile during request
+ * handling.
+ */
+export function hasResponseSchema(operationId: string, status: number): boolean {
+  const entry = validators.get(operationId);
+  if (!entry) {
+    return false;
+  }
+  const responses = entry.manifest.responses ?? {};
+  return Boolean(responses[String(status)]?.schema);
+}
+
+/**
+ * Look up the manifest for an operation id. Returns `null` when the id is
+ * not exported by the package. Used by the transport adapter to read the
+ * declared 400 response schema and pick OAuth-shaped vs PDPP-shaped error
+ * envelopes for allowlisted request-validation failures.
+ */
+export function getManifest(operationId: string): RouteManifest | null {
+  const entry = validators.get(operationId);
+  return entry ? entry.manifest : null;
 }

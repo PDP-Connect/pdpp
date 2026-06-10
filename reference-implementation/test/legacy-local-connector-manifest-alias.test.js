@@ -71,7 +71,7 @@ test('legacy local connector ids read through canonical manifest schemas', withT
 
   const manifest = await getConnectorManifest('claude_code');
 
-  assert.equal(manifest.connector_id, 'claude_code');
+  assert.equal(manifest.connector_id, 'claude-code');
   assert.equal(manifest.display_name, 'Claude Code');
   assert.deepEqual(manifest.streams.map((stream) => stream.name), ['messages']);
 }));

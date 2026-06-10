@@ -30,6 +30,7 @@ import {
 
 export {
   buildCollectorStartMessage,
+  COLLECTOR_COVERAGE_STATUSES,
   COLLECTOR_PROTOCOL_VERSION,
   CollectorStateReadError,
   drainCollectorQueue,
@@ -48,15 +49,21 @@ export {
   buildLocalDeviceRecordEnvelope,
   buildLocalDeviceOutboxId,
   canonicalJson,
+  classifyDeadLetterError,
+  deriveLocalCollectorLifecycleState,
   diffRequiredBindings,
   hashCanonicalJson,
+  LOCAL_COLLECTOR_LIFECYCLE_STATES,
   parseJsonlLine,
   resourceSet,
   runCollectorConnector,
   stringifyForJsonl,
+  summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
   type CollectorChildContext,
+  type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
+  type CollectorCoverageStatus,
   type CollectorEnrollmentConfig,
   type CollectorRunConfig,
   type CollectorRunResult,
@@ -64,9 +71,15 @@ export {
   type ConnectorRuntimeRequirements,
   type EmittedMessage,
   type EnrollmentExchangeResponse,
+  type LocalCollectorLifecycleInput,
+  type LocalCollectorLifecycleState,
   type LocalDeviceRecordEnvelope,
   type BuildLocalDeviceOutboxIdInput,
   type LocalDeviceOutboxClaimInput,
+  type LocalDeviceOutboxCompactResult,
+  type LocalDeviceOutboxDeadLetterErrorClass,
+  type LocalDeviceOutboxDeadLetterErrorSummary,
+  type LocalDeviceOutboxDeadLetterErrorSummaryInput,
   type LocalDeviceOutboxDeadLetterInput,
   type LocalDeviceOutboxEnqueueInput,
   type LocalDeviceOutboxFailInput,
@@ -74,6 +87,11 @@ export {
   type LocalDeviceOutboxKind,
   type LocalDeviceOutboxLeaseInput,
   type LocalDeviceOutboxOptions,
+  type LocalDeviceOutboxPageStats,
+  type LocalDeviceOutboxPruneSentInput,
+  type LocalDeviceOutboxPruneSentResult,
+  type LocalDeviceOutboxRequeueDeadLettersInput,
+  type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
   type PlacementDecision,
@@ -147,6 +165,16 @@ export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>>
     command: commandForEntry(POLYFILL_CLAUDE_CODE_ENTRY),
     args: Object.freeze([POLYFILL_CLAUDE_CODE_ENTRY]) as readonly string[],
     bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
+    // Default stream set mirrors the full manifest-declared safe surface so
+    // an unscoped `run` exercises everything the connector knows how to
+    // account for — including `coverage_diagnostics`. Without the coverage
+    // stream, a healthy drained collector emits zero durable coverage
+    // evidence and the connection-health rollup can only ever project
+    // `coverage_unknown` (the run path writes no spine run). The inventory
+    // streams emit metadata only (path hash, size, mtime); deferred/excluded
+    // stores never read payload. See
+    // `docs/operator/local-collector-runbook.md`§"Coverage and excluded
+    // stores" and `openspec/changes/derive-local-collector-coverage-from-diagnostics`.
     streams: Object.freeze([
       "sessions",
       "messages",
@@ -154,6 +182,13 @@ export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>>
       "memory_notes",
       "skills",
       "slash_commands",
+      "file_history",
+      "cache_inventory",
+      "coverage_diagnostics",
+      "debug_artifacts",
+      "downloads",
+      "backup_inventory",
+      "config_inventory",
     ]) as readonly string[],
   }),
   codex: Object.freeze({
@@ -161,6 +196,10 @@ export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>>
     command: commandForEntry(POLYFILL_CODEX_ENTRY),
     args: Object.freeze([POLYFILL_CODEX_ENTRY]) as readonly string[],
     bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
+    // Mirrors the full manifest-declared safe surface (see the claude_code
+    // note above): `coverage_diagnostics` is what promotes a drained local
+    // collector off `coverage_unknown`, and the inventory streams emit
+    // metadata only.
     streams: Object.freeze([
       "sessions",
       "messages",
@@ -168,6 +207,13 @@ export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>>
       "rules",
       "prompts",
       "skills",
+      "history",
+      "session_index",
+      "logs",
+      "shell_snapshots",
+      "config_inventory",
+      "cache_inventory",
+      "coverage_diagnostics",
     ]) as readonly string[],
   }),
 });

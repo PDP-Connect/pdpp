@@ -129,6 +129,57 @@ Integration tests MUST assert parent-index < first-child-index in the
 emit sequence. See `connectors/chatgpt/integration.test.ts` for the
 pattern.
 
+### Coverage and gap evidence (list-plus-detail connectors)
+
+A connector that fetches a list and then hydrates per-item detail (conversations
+→ messages, accounts → transactions, orders → order_items) SHOULD emit two
+reference-only signals so the runtime can tell a partial run from a complete one
+without guessing from the record count. Use the shared builders from
+`../../src/connector-runtime.ts` — do not hand-roll the message shapes:
+
+- `emitDetailCoverage(ctx, { stream, stateStream, requiredKeys, hydratedKeys, gapKeys })`
+  reports, once after the detail pass, what the run **considered**
+  (`requiredKeys`, the denominator) versus what it **hydrated** (`hydratedKeys`,
+  the numerator). `requiredKeys.length` is the `considered` value the Collection
+  Report uses to distinguish `partial` from `complete`
+  (`define-connector-progress-evidence-contract`); without it a collected-records
+  run reads as `considered: unknown`, never as proven `complete`.
+- `emitDetailGap(ctx, { stream, recordKey, reason, locator, ... })` records a
+  single record whose detail could not be hydrated this run but is expected to be
+  retried. The helper fixes the reference-only / pending / retryable spine; you
+  state only what varies. `stream`, `recordKey`, `reason`, and `locator` are
+  required. The optional, first-class `DETAIL_GAP` fields are:
+  - `parentStream` — the list/parent stream this detail stream hangs off (e.g.
+    `accounts` for Chase `transactions`, `orders` for Amazon `order_items`).
+  - `listCursor` — an opaque cursor so the next run resumes the parent list at
+    this gap instead of re-walking from the top.
+  - `error` — bounded error context fanned into `detail` and `last_error`
+    (`class`, optional `httpStatus`, optional `networkPressure`, and an optional
+    `message` carried on `last_error` only).
+
+  Any optional field you omit is left off the wire — a gap with no `error`
+  carries neither `detail` nor `last_error`, so a connector with nothing safe to
+  say (e.g. USAA's statement gaps) passes just the required four. Pick `reason`
+  honestly: `rate_limited` and `upstream_pressure` are the source-pressure
+  reasons that arm the cross-run cooldown governor
+  (`reference-implementation/runtime/scheduler-source-pressure-cooldown.ts`);
+  `retry_exhausted` and `temporary_unavailable` record a resumable gap without a
+  cooldown.
+
+The helper copies `error` onto the wire verbatim — it does NOT redact. You are
+responsible for passing a safe `error.networkPressure`: endpoint route, method,
+and error class only, with the attempt/max-attempt budget and any secret-bearing
+header stripped at the source before you hand it to the helper. See
+`connectors/chatgpt/index.ts` `omitAttemptBudget` (used by
+`makeDeferredConversationDetailGap`) for the worked stripping example, and
+`connectors/chatgpt/integration.test.ts` for the assertions that pin the emitted
+shapes.
+
+These are reference-only projections, not portable Collection Profile protocol: a
+connector that emits only `RECORD` / `STATE` / `DONE` still produces a valid
+Collection Report whose coverage axis reads `unknown`. Emit them when you have the
+evidence; do not fabricate a `considered` denominator you cannot substantiate.
+
 ### `isMainModule` guard for `runConnector`
 
 Every connector's `index.ts` guards its bootstrap:

@@ -50,14 +50,108 @@ pdpp-local-collector --help
 `@pdpp/cli` is separate:
 
 ```bash
-# @pdpp/cli package, installs the pdpp binary
-npm i -g @pdpp/cli
+# @pdpp/cli@beta package, installs the pdpp binary
+npm i -g @pdpp/cli@beta
 pdpp --help
 ```
 
 A monorepo checkout is only needed for PDPP development or unpublished
 connector work. It is not required for the public Claude Code / Codex collector
 path.
+
+## Deployment Posture: Published vs Dev
+
+A production or operator host MUST run a **pinned, published** package — never
+a monorepo checkout's `dist/`. Mixing the two is the difference between
+operator-host evidence and local-dev evidence, and it is easy to do by
+accident: an `npm link`ed (or otherwise globally symlinked) `pdpp-local-collector`
+resolves the binary into a repo `packages/local-collector/dist/...` tree, so a
+`status`/`doctor`/`run` you believe reflects the published package is really
+exercising your working copy.
+
+**Production / operator host — pin an explicit published version or dist-tag.**
+
+```bash
+# Pin the dist-tag (tracks the latest beta build):
+npm i -g @pdpp/local-collector@beta
+
+# Or pin an exact version for reproducible operator evidence (preferred when
+# capturing host evidence that must be attributable to a known build):
+npm i -g @pdpp/local-collector@0.1.0-beta.7
+```
+
+Confirm what actually resolves before trusting any host evidence. The collector
+classifies its own posture — prefer the mechanical `deployment_posture` block on
+`status`/`doctor` over a manual path check:
+
+```bash
+# Mechanical check (primary): status and doctor carry a redaction-safe
+# deployment_posture block. kind is published_package, repo_dist_override, or
+# unknown; is_placeholder_version flags the 0.0.0 build; location_hint is a
+# redacted descriptor (never a home path).
+pdpp-local-collector status | sed -n '/"deployment_posture"/,/}/p'
+# doctor turns a repo override or the 0.0.0 placeholder into a warning with a
+# remediation hint, so an unhealthy posture surfaces without reading JSON:
+pdpp-local-collector doctor
+```
+
+A `deployment_posture.kind` of `published_package` with `is_placeholder_version:
+false` is the only posture that should back operator-host evidence. A
+`repo_dist_override`, an `unknown`, or `is_placeholder_version: true` means
+re-pin before treating any output as operator-host evidence.
+
+Re-pinning means moving to a published build that is *at least as current as the
+repo build you are leaving*. The published `@beta` is cut from the `beta`
+release branch, which can lag `main`, so a `repo_dist_override` built from a
+newer `main` can be **ahead** of `@beta` — re-pinning it onto a stale `@beta`
+would regress the host. Before re-pinning, confirm `@beta` carries the fixes you
+need: the release owner runs `pnpm release:dist-tag-check` to verify the live
+dist-tag posture, and cuts a fresh `@beta` from `main` if the published build
+lags. Until then, a repo override that is ahead of `@beta` is dev evidence to
+keep, not a build to downgrade.
+
+The manual path check still works as an out-of-band cross-check:
+
+```bash
+# The realpath must be under a global node_modules, NOT a repo dist/ tree.
+command -v pdpp-local-collector
+readlink -f "$(command -v pdpp-local-collector)"
+```
+
+If `readlink -f` lands inside a repo `packages/local-collector/dist/`, the host
+is running a **dev override**, not the published package — and
+`deployment_posture.kind` reports `repo_dist_override` for the same reason.
+
+> **`latest` is a placeholder — do not use it.** The published `latest`
+> dist-tag is currently `0.0.0`, a placeholder that is older than every real
+> build. A bare global install with no tag, or an explicit `@latest`, therefore
+> installs the placeholder, not a working collector. Always pin `@beta` or an
+> explicit `@0.1.0-beta.<n>` until `latest` is promoted to a real version. The
+> in-repo `package.json` version is also `0.0.0`, by design — the published
+> beta version is set at publish time, and the CLI's own
+> `package.version` echoes whatever build is installed, which is exactly why
+> the `deployment_posture` block flags `is_placeholder_version` and the manual
+> cross-check above still matters.
+
+**Dev override (monorepo development only).** When iterating on the collector
+itself, build the package and point the global binary at the repo `dist/` on
+purpose, and label it as a dev override wherever you record evidence:
+
+```bash
+# Monorepo dev override — repo dist/, NOT a published package. Mark any
+# evidence captured this way as dev-only.
+( cd packages/local-collector && pnpm build )
+npm i -g "file:$(pwd)/packages/local-collector"   # or: npm link
+readlink -f "$(command -v pdpp-local-collector)"   # confirm it is the repo dist/
+```
+
+Undo the dev override and return to a pinned published package before capturing
+operator-host evidence again:
+
+```bash
+npm rm -g @pdpp/local-collector
+npm i -g @pdpp/local-collector@0.1.0-beta.7   # re-pin a published version
+```
 
 ## Advertise
 
@@ -159,6 +253,47 @@ Use the host supervisor for periodic execution, boot/login behavior, jitter,
 resource limits, and logs. That keeps the package small and lets each operating
 system own the lifecycle primitives it already provides.
 
+### Persistent State And Scratch Paths
+
+The collector keeps undrained work in a durable SQLite outbox between runs.
+That file, and any output you capture, must live on a **persistent,
+disk-backed** directory — not a RAM-backed `/tmp`.
+
+On many Linux hosts `/tmp` is a `tmpfs` mounted on RAM (the default on recent
+Ubuntu releases, sized at half of physical memory). A wrapper that points the
+outbox or a captured run summary at `/tmp` therefore: (a) silently consumes RAM
+as the outbox or a large backfill summary grows, and (b) loses undrained
+backlog on reboot, so the next run re-scans and re-enqueues the same tranche
+instead of draining what was already collected.
+
+Set these explicitly in your wrapper or env file:
+
+```bash
+# Durable outbox: a disk-backed state dir, never /tmp.
+# Linux (XDG): $XDG_STATE_HOME or ~/.local/state.
+PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.json"
+```
+
+When you capture the `run` or `doctor` JSON, write it under the same persistent
+state/cache dir rather than a raw `/tmp` file:
+
+```bash
+# Capture a run summary on a disk-backed path (not /tmp on a tmpfs host).
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp"
+mkdir -p "$STATE_DIR"
+pdpp-local-collector run --connector claude_code > "$STATE_DIR/last-run.json"
+```
+
+The optional connector-protocol debug dump
+(`PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR`) follows the same rule: point it at a
+persistent directory you can inspect later, not `/tmp`. Leave it unset unless
+you are actively debugging a protocol parse failure.
+
+If a host genuinely has no spare disk and you must use ephemeral scratch, keep
+the durable outbox (`PDPP_COLLECTOR_QUEUE`) on disk regardless — only the
+durable outbox carries undrained backlog across runs, and losing it is what
+causes a re-scan of the same data.
+
 ### systemd
 
 For a durable Linux host, store non-secret settings in an env file and secrets
@@ -188,8 +323,79 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/pdpp/local-collector.env
 EnvironmentFile=/etc/pdpp/local-collector.secret
+# Keep the durable outbox on a disk-backed path so undrained backlog survives
+# reboot and a tmpfs /tmp never holds collector state (see "Persistent State
+# And Scratch Paths" above).
+Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.json
 ExecStart=/usr/bin/pdpp-local-collector run --connector %i
+
+# --- Durable resource limits (do not drop these) --------------------------
+# A collector run scans local source files (for example a very large active
+# Codex session). The connector runtime streams the tail so a healthy run's
+# working set is small, but a future regression, an unusually large source, or
+# a stuck child must not be allowed to consume host memory without bound. These
+# cgroup limits keep one collector run from taking the machine down; the host
+# supervisor — not the package — owns them, so they belong in the unit you
+# install, not only in a manual `systemd-run` wrapper.
+MemoryMax=2G
+MemorySwapMax=0
+OOMPolicy=kill
+# Make this background collector the kernel's preferred victim if the WHOLE HOST
+# (not just this cgroup) runs out of memory. A positive OOMScoreAdjust raises the
+# run's badness score so an unrelated host-wide memory spike sacrifices the
+# collector — which is durable and resumes on the next run — before it reaps an
+# interactive app. This is host-wide victim selection ONLY; the cgroup's own cap
+# above (MemoryMax + MemorySwapMax=0 + OOMPolicy=kill) already self-kills this
+# run if IT is the one over budget, independent of this score. See the note
+# below for why a collector killed under host pressure is expected, not a fault.
+OOMScoreAdjust=500
+# Bound the oneshot start operation so a hung connector child cannot run
+# forever. RuntimeMaxSec is ignored for Type=oneshot services, so the effective
+# wall-clock guard for this unit is TimeoutStartSec.
+TimeoutStartSec=900
+# Reap the whole control group (the collector and any connector child it
+# spawned) on stop so nothing is orphaned.
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=30
 ```
+
+`MemoryMax=2G` is a deliberately generous ceiling: a healthy streamed run stays
+far below it, so the cap only fires on a regression or a pathological source.
+`MemorySwapMax=0` is the load-bearing line — without it the cgroup spills to
+swap under pressure and thrashes the whole host instead of failing the one run,
+which is exactly the failure mode an uncapped unit produced (a multi-gigabyte
+service peak that had to be killed by hand). With `MemorySwapMax=0` and
+`OOMPolicy=kill`, the kernel OOM-kills only this run's cgroup; the next
+scheduled run resumes draining the durable outbox. Lower `MemoryMax` for a small
+host or raise it for a host that legitimately collects very large sources, but
+do not remove it. Use `systemd-run --scope -p MemoryMax=2G -p MemorySwapMax=0`
+with the same values when proving a run by hand before installing the unit.
+
+`OOMScoreAdjust=500` is a **separate, deliberate** policy and is easy to confuse
+with the cgroup cap above. It does **not** affect what happens when this run
+exceeds its own `MemoryMax` — that case is handled entirely by `OOMPolicy=kill`
+on the cgroup, regardless of the score. The score only changes **host-wide**
+victim selection: when some *other* process (a model server, a browser, an
+editor) drives the **whole machine** out of memory, the positive score makes the
+kernel pick this collector first. That is intended — a background data collector
+should yield to the user's foreground work, and it loses nothing by being killed:
+its undelivered work is already durable in the outbox and the next scheduled run
+resumes the drain. The practical consequence to remember when reading health
+signals: **a collector terminated under host-wide memory pressure is expected
+behavior, not a collector fault.** Its tiny resident size means it is almost
+never the cause of the pressure; it is the cheapest thing to sacrifice. If you
+would rather the collector compete on equal footing with other processes during
+a host-wide OOM, set `OOMScoreAdjust=0`; raise it toward `1000` to make the
+collector even more strongly preferred as the victim. Leaving it at `500` keeps
+the collector a willing-but-not-absolute sacrifice.
+
+If Node is installed under a user-managed prefix such as `nvm`, do not rely on
+systemd's minimal default `PATH`. Either point `ExecStart` at a wrapper that
+exports the Node bin directory first, or set an explicit `Environment=PATH=...`
+in the unit before invoking `pdpp-local-collector`. The installed npm binary
+uses a `#!/usr/bin/env node` shebang, so an interactive shell may work while
+the same command fails under systemd unless `node` is on the service `PATH`.
 
 Example timer:
 
@@ -228,6 +434,12 @@ Example wrapper:
 set -eu
 source "$HOME/.config/pdpp/local-collector.env"
 source "$HOME/.config/pdpp/local-collector.secret"
+# Keep the durable outbox on a persistent, disk-backed path so undrained
+# backlog survives reboot and a tmpfs /tmp never holds collector state.
+# (macOS /tmp is disk-backed today, but pinning the path keeps the wrapper
+# portable to Linux hosts where /tmp is tmpfs.)
+export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.json"
+mkdir -p "$(dirname "$PDPP_COLLECTOR_QUEUE")"
 exec /opt/homebrew/bin/pdpp-local-collector run --connector "$1"
 ```
 
@@ -265,6 +477,14 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/fish.vivid.pdpp.l
 launchctl kickstart -k "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
 launchctl print "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
 ```
+
+launchd has no per-job equivalent of systemd's `MemoryMax`/`MemorySwapMax`
+cgroup cap. On macOS the run's memory bound comes from the connector runtime,
+which streams large source files instead of materializing them, so a healthy run
+stays small. If you need a hard ceiling on a macOS host, run the collector under
+a wrapper that sets one (for example a coarse `ulimit -v` in the wrapper script,
+accepting that an address-space limit is blunter than a cgroup memory cap), and
+keep the `StartInterval` long enough that runs do not overlap.
 
 Use one service/timer per connection when a host exports multiple sources. The
 shared reference server distinguishes them by `PDPP_CONNECTION_ID`, not by the

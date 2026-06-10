@@ -8,29 +8,13 @@
 // narrow. A structural `JsonSchema` captures that without pulling in a
 // dependency and keeps the surface inspectable at the call site.
 
-// Every known JSON-Schema keyword we actually use. Anything not listed is
-// still permitted via the index signature, which is how schemas with
-// vendor extensions (`x-...`) continue to pass through untouched.
-export interface JsonSchema {
-  $id?: string;
-  additionalProperties?: boolean | JsonSchema;
-  allOf?: readonly JsonSchema[];
-  anyOf?: readonly JsonSchema[];
-  const?: unknown;
-  description?: string;
-  enum?: readonly unknown[];
-  format?: string;
-  items?: JsonSchema;
-  maximum?: number;
-  maxLength?: number;
-  minimum?: number;
-  minLength?: number;
-  oneOf?: readonly JsonSchema[];
-  properties?: Record<string, JsonSchema>;
-  required?: readonly string[];
-  type?: string | string[];
-  [extension: string]: unknown;
-}
+// The structural JsonSchema type lives in its own module so canonical.ts
+// can depend on the type alone without pulling in this file's runtime
+// values (which would create a value-level cycle now that this module
+// re-exports from canonical.ts).
+export type { JsonSchema } from "./json-schema.ts";
+
+import type { JsonSchema } from "./json-schema.ts";
 
 // Shared shape of a route manifest. Every entry in `publicManifests` and
 // `referenceManifests` conforms to this. Request / response schemas are
@@ -43,6 +27,9 @@ export interface JsonSchema {
 // type will propagate through validate.ts and downstream consumers.
 export interface RouteSchemaBody {
   contentType?: string;
+  // Emitted as OpenAPI `requestBody.required`. Defaults to `true` when
+  // omitted; set `false` for routes whose body is optional.
+  required?: boolean;
   schema?: JsonSchema;
 }
 
@@ -119,6 +106,27 @@ export const FreshnessSchema: JsonSchema = {
   required: ["status"],
 };
 
+// Disambiguation summary carried in an ambiguity error's `available_connections`
+// list. When an owner-agent control action is requested with `connector_id`
+// only and more than one configured connection matches, the typed error names
+// every candidate by stable `connection_id` plus owner-meaningful identity
+// (`connector_id`/`connector_key`, `display_name`, `label_status`) so the agent
+// can re-issue the request against one concrete connection rather than guessing.
+// Mirrors the owner-connection listing's identity fields; secret-free.
+export const ErrorAvailableConnectionSchema: JsonSchema = {
+  $id: "pdpp/common/ErrorAvailableConnection",
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    label_status: { type: "string", enum: ["owner_set", "fallback"] },
+  },
+  required: ["connection_id"],
+};
+
 export const ErrorObjectSchema: JsonSchema = {
   $id: "pdpp/common/PdppError",
   type: "object",
@@ -133,6 +141,17 @@ export const ErrorObjectSchema: JsonSchema = {
         message: { type: "string" },
         param: { type: "string" },
         request_id: { type: "string" },
+        // Optional 401-only hints already emitted by `pdppError`: where to read
+        // protected-resource metadata and what to do next.
+        resource_metadata: { type: "string" },
+        next_step: { type: "string" },
+        // Optional ambiguity-resolution hints. Emitted when an owner-agent
+        // control action is rejected because a connector-only target matches
+        // more than one configured connection: `available_connections` lists
+        // every candidate's stable identity and `retry_with` names the field to
+        // resubmit (e.g. `connection_id`). Absent on unambiguous errors.
+        available_connections: { type: "array", items: ErrorAvailableConnectionSchema },
+        retry_with: { type: "string" },
       },
       required: ["type", "code", "message", "request_id"],
     },
@@ -173,3 +192,10 @@ export const PaginationQuerySchema: JsonSchema = {
     order: OrderSchema,
   },
 };
+
+// Canonical public read contract primitives — envelope, warnings, counts,
+// and shared read-input parameters. Lives in ./canonical.ts to keep the
+// legacy helpers in this file undisturbed during the migration window.
+// See openspec/changes/canonicalize-public-read-contract/.
+// biome-ignore lint/performance/noBarrelFile: ./common is the package's named entry point for shared schema helpers — call sites import members by name; the canonical primitives live in a sibling module to keep this file's legacy helpers untouched during the migration window.
+export * from "./canonical.ts";

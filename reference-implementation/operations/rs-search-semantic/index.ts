@@ -71,8 +71,10 @@
 
 export type SearchSemanticErrorCode =
   | "invalid_request"
+  | "invalid_argument"
   | "invalid_cursor"
-  | "grant_stream_not_allowed";
+  | "grant_stream_not_allowed"
+  | "connection_not_found";
 
 /**
  * Error thrown when the request itself is invalid in a host-independent way.
@@ -180,6 +182,18 @@ export interface SearchSemanticConnectorPlan {
  */
 export interface SearchSemanticSnapshotResult {
   connectorId: string;
+  /**
+   * Connection identifier (canonical) for the binding this hit came from.
+   * Optional only because pre-identity snapshots may omit it; new snapshots
+   * SHOULD always set it so the operation can emit `connection_id` and the
+   * deprecated `connector_instance_id` alias on each result item.
+   */
+  connectorInstanceId?: string | null;
+  /**
+   * Owner-facing label for the connection. Emitted as `display_name` on the
+   * result item only when the snapshot captured a non-placeholder label.
+   */
+  displayName?: string | null;
   stream: string;
   recordKey: string;
   matchedFields: string[];
@@ -202,12 +216,35 @@ export interface SearchSemanticSnapshot {
 
 export interface SearchSemanticHydratedResult {
   emittedAt: string | null;
+  authoredAt?: string | null;
   /**
    * Verbatim contiguous substring of the matched field's stored value.
    * Adapters MUST NOT paraphrase, summarize, or model-generate snippet text.
    * `null` or `undefined` ⇒ omit `snippet` from the public result.
    */
   snippet?: { field: string; text: string } | null;
+}
+
+/**
+ * One owner-visible binding for cross-binding semantic fan-in. Mirrors
+ * `SearchLexicalOwnerBinding` so host wirings can share one resolver
+ * implementation across surfaces.
+ */
+export interface SearchSemanticOwnerBinding {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName?: string | null;
+}
+
+/**
+ * One client-mode binding the grant resolves to under cross-binding fan-in.
+ * `manifest` is pinned to the binding's `connector_instance_id` so the
+ * downstream plan compiler scopes vector queries to that binding.
+ */
+export interface SearchSemanticClientBinding {
+  manifest: SearchSemanticManifest;
+  connectorInstanceId: string;
+  displayName?: string | null;
 }
 
 export interface SearchSemanticDependencies {
@@ -222,8 +259,20 @@ export interface SearchSemanticDependencies {
   getCurrentBackendIdentity(): string;
   /**
    * Owner fan-out: list every connector id whose manifest the owner can read.
+   *
+   * Legacy single-binding-per-connector path. Hosts that support cross-
+   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
+   * below; when present, the operation uses it and ignores this method.
    */
   listOwnerVisibleConnectorIds(): Promise<string[]> | string[];
+  /**
+   * Owner cross-binding fan-out (optional): list every active owner-visible
+   * binding. When provided, the operation emits one connector plan per
+   * binding so the snapshot's total-order merge fans across bindings.
+   */
+  listOwnerVisibleBindings?: () =>
+    | Promise<SearchSemanticOwnerBinding[]>
+    | SearchSemanticOwnerBinding[];
   /**
    * Owner fan-out helper: return the manifest for one connector, or null to
    * skip it (e.g. broken polyfill manifests).
@@ -231,6 +280,17 @@ export interface SearchSemanticDependencies {
   resolveOwnerManifestForConnector(
     connectorId: string,
   ):
+    | Promise<SearchSemanticManifest | null>
+    | SearchSemanticManifest
+    | null;
+  /**
+   * Owner cross-binding fan-out helper (optional): resolve the manifest for
+   * one specific binding. When omitted, the operation falls back to
+   * `resolveOwnerManifestForConnector(binding.connectorId)`.
+   */
+  resolveOwnerManifestForBinding?: (
+    binding: SearchSemanticOwnerBinding,
+  ) =>
     | Promise<SearchSemanticManifest | null>
     | SearchSemanticManifest
     | null;
@@ -245,10 +305,26 @@ export interface SearchSemanticDependencies {
   /**
    * Client-mode helper: resolve the manifest the supplied client grant
    * applies against. Hosts build this from the bearer token information.
+   *
+   * Legacy single-binding path. Hosts that support cross-binding fan-in
+   * SHOULD additionally implement `resolveClientBindings` below; when
+   * present, the operation uses it and ignores this method.
    */
   resolveClientManifest(
     actor: { kind: "client"; grant: SearchSemanticGrant },
   ): Promise<SearchSemanticManifest> | SearchSemanticManifest;
+  /**
+   * Client cross-binding fan-out (optional). Same semantics as the lexical
+   * counterpart: honors grant-scope per-stream constraints, request-time
+   * `connection_id` narrowing, and exactly-one auto-select; raises
+   * `connection_not_found` / `invalid_argument` on resolution failure.
+   */
+  resolveClientBindings?: (
+    actor: { kind: "client"; grant: SearchSemanticGrant },
+    request: { connectionId: string | null },
+  ) =>
+    | Promise<SearchSemanticClientBinding[]>
+    | SearchSemanticClientBinding[];
   /**
    * Compile one connector's grant + manifest + request filter shape into a
    * plan. Implementations MUST enforce field-grant intersection,
@@ -335,8 +411,21 @@ export interface SearchSemanticResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier — present whenever the snapshot result
+   * captured one. `connector_instance_id` mirrors the same value during the
+   * deprecation window so clients can migrate without coordinated cutovers.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Emitted only when the snapshot
+   * captured a non-placeholder label. Mirrors records-list/detail wire shape.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string | null;
+  authored_at?: string;
   matched_fields: string[];
   /**
    * v1: every hit emits `retrieval_mode: "semantic"`. `lexical_blending` is
@@ -347,11 +436,18 @@ export interface SearchSemanticResultItem {
   score?: { kind: "semantic_distance"; value: number; order: "lower_is_better" };
 }
 
+export interface SearchSemanticEnvelopeMeta {
+  warnings?: Array<{ code: string; param?: string; message?: string }>;
+  [extra: string]: unknown;
+}
+
 export interface SearchSemanticEnvelope {
   object: "list";
   has_more: boolean;
   next_cursor?: string;
   data: SearchSemanticResultItem[];
+  /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
+  meta?: SearchSemanticEnvelopeMeta;
 }
 
 export interface SearchSemanticDisclosureData {
@@ -377,6 +473,10 @@ export interface SearchSemanticOutput {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+// `connection_id` is the canonical public connection identifier;
+// `connector_instance_id` is the deprecated wire alias accepted during the
+// migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`.
 const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "q",
   "limit",
@@ -384,6 +484,8 @@ const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "streams",
   "streams[]",
   "filter",
+  "connection_id",
+  "connector_instance_id",
 ]);
 
 /**
@@ -424,6 +526,55 @@ interface NormalizedRequestParams {
   streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  warnings: SearchSemanticWarning[];
+}
+
+/**
+ * Structured warning shape used in `meta.warnings[]`. The canonical
+ * `deprecated_alias_used` code is emitted whenever the request reached the
+ * operation via the deprecated `connector_instance_id` query alias.
+ */
+export interface SearchSemanticWarning {
+  code: string;
+  param?: string;
+  message?: string;
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * Canonical warning code for deprecated-alias usage. Mirrors the
+ * lexical-operation export so REST and MCP clients can detect alias
+ * deprecation uniformly across search modes.
+ */
+export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+/**
+ * Canonical warning code emitted when the owner fan-out had to skip a
+ * connector (broken manifest, empty searchable plan) without failing the
+ * whole request.
+ */
+export const SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
+
+/**
+ * Canonical warning code for a `limit` that exceeded the advertised maximum
+ * page size and was clamped. Mirrors the records-list and lexical/hybrid
+ * `limit_clamped` code so REST and MCP clients read one identical identifier
+ * across read surfaces.
+ */
+export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
+
+function deriveSearchConnectionAliasWarnings(
+  query: Record<string, unknown>,
+): SearchSemanticWarning[] {
+  const alias = query.connector_instance_id;
+  if (typeof alias !== "string" || alias.length === 0) return [];
+  return [
+    {
+      code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+      param: "connector_instance_id",
+      message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+    },
+  ];
 }
 
 function clampLimit(raw: unknown): number {
@@ -431,6 +582,29 @@ function clampLimit(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
   return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
+/**
+ * Derive the structured `limit_clamped` warning for an over-max `limit`.
+ * Returns one warning only when the raw `limit` is a finite integer strictly
+ * greater than `MAX_LIMIT`; absent / non-positive / unparseable limits fall
+ * back to the default and emit nothing (there is no clamp to report). Mirrors
+ * the records-list and lexical wire shape.
+ */
+function deriveLimitClampedWarning(raw: unknown): SearchSemanticWarning[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return [];
+  const requested = Math.floor(n);
+  if (requested <= MAX_LIMIT) return [];
+  return [
+    {
+      code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
+      param: "limit",
+      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+    },
+  ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
@@ -487,6 +661,21 @@ export function parseSearchSemanticParams(
       "streams",
     );
   }
+  const canonicalConn = query.connection_id;
+  const aliasConn = query.connector_instance_id;
+  if (
+    typeof canonicalConn === "string"
+    && canonicalConn.length > 0
+    && typeof aliasConn === "string"
+    && aliasConn.length > 0
+    && canonicalConn !== aliasConn
+  ) {
+    throw new SearchSemanticRequestError(
+      "invalid_argument",
+      "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
+      "connector_instance_id",
+    );
+  }
   return {
     q,
     limit,
@@ -494,6 +683,10 @@ export function parseSearchSemanticParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
+    warnings: [
+      ...deriveSearchConnectionAliasWarnings(query),
+      ...deriveLimitClampedWarning(query.limit),
+    ],
   };
 }
 
@@ -578,6 +771,16 @@ async function buildResultItem(
     matched_fields: hit.matchedFields,
     retrieval_mode: "semantic",
   };
+  if (typeof hydrated.authoredAt === "string" && hydrated.authoredAt.length > 0) {
+    item.authored_at = hydrated.authoredAt;
+  }
+  if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
+    item.connection_id = hit.connectorInstanceId;
+    item.connector_instance_id = hit.connectorInstanceId;
+  }
+  if (typeof hit.displayName === "string" && hit.displayName.length > 0) {
+    item.display_name = hit.displayName;
+  }
   if (hydrated.snippet) {
     item.snippet = hydrated.snippet;
   }
@@ -627,24 +830,94 @@ export async function executeSearchSemantic(
 
   // 3. Per-mode planning fan-out.
   const perConnectorPlans: SearchSemanticConnectorPlan[] = [];
+  // Track owner-fan-out *sources* skipped without failing the request
+  // (broken manifest, empty searchable plan). Each entry optionally carries
+  // `connection_id` when the skipped unit is one binding under a connector
+  // rather than the whole connector. These become
+  // `source_skipped_not_applicable` warnings so the envelope is honest.
+  const skippedSources: Array<{ source: string; connection_id?: string }> = [];
+  const requestConnectionId =
+    typeof input.query.connection_id === "string" && input.query.connection_id.length > 0
+      ? input.query.connection_id
+      : typeof input.query.connector_instance_id === "string"
+            && input.query.connector_instance_id.length > 0
+        ? input.query.connector_instance_id
+        : null;
   if (input.actor.kind === "owner") {
-    const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
-    for (const connectorId of connectorIds) {
-      const manifest = await dependencies.resolveOwnerManifestForConnector(
-        connectorId,
-      );
-      if (!manifest) continue;
-      const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
-      const planEntries = dependencies.buildSearchPlanForGrant({
-        manifest,
-        grant,
-        streamsFilter: params.streams,
-        filter: params.filter,
-        filteredStream: params.filteredStream,
-        connectorId,
-      });
-      if (planEntries.length === 0) continue;
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    if (typeof dependencies.listOwnerVisibleBindings === "function") {
+      const bindings = await dependencies.listOwnerVisibleBindings();
+      const narrowedBindings = requestConnectionId
+        ? bindings.filter((b) => b.connectorInstanceId === requestConnectionId)
+        : bindings;
+      if (requestConnectionId && narrowedBindings.length === 0) {
+        throw new SearchSemanticRequestError(
+          "connection_not_found",
+          `connection_id '${requestConnectionId}' is not addressable for this owner.`,
+          "connection_id",
+        );
+      }
+      for (const binding of narrowedBindings) {
+        const manifest = typeof dependencies.resolveOwnerManifestForBinding
+          === "function"
+          ? await dependencies.resolveOwnerManifestForBinding(binding)
+          : await dependencies.resolveOwnerManifestForConnector(
+              binding.connectorId,
+            );
+        if (!manifest) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId: binding.connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId: binding.connectorId,
+          manifest,
+          grant,
+          planEntries,
+        });
+      }
+    } else {
+      const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
+      for (const connectorId of connectorIds) {
+        const manifest = await dependencies.resolveOwnerManifestForConnector(
+          connectorId,
+        );
+        if (!manifest) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
     // produce zero hits.
@@ -663,25 +936,55 @@ export async function executeSearchSemantic(
         }
       }
     }
-    const manifest = await dependencies.resolveClientManifest({
-      kind: "client",
-      grant,
-    });
     const connectorId =
       (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
       typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
         ? ((grant as { source?: { id?: string } }).source!.id as string)
         : null;
-    const planEntries = dependencies.buildSearchPlanForGrant({
-      manifest,
-      grant,
-      streamsFilter: params.streams,
-      filter: params.filter,
-      filteredStream: params.filteredStream,
-      connectorId,
-    });
-    if (planEntries.length > 0) {
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    if (typeof dependencies.resolveClientBindings === "function") {
+      const clientBindings = await dependencies.resolveClientBindings(
+        { kind: "client", grant },
+        { connectionId: requestConnectionId },
+      );
+      for (const cb of clientBindings) {
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest: cb.manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: connectorId ?? "",
+            connection_id: cb.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId,
+          manifest: cb.manifest,
+          grant,
+          planEntries,
+        });
+      }
+    } else {
+      const manifest = await dependencies.resolveClientManifest({
+        kind: "client",
+        grant,
+      });
+      const planEntries = dependencies.buildSearchPlanForGrant({
+        manifest,
+        grant,
+        streamsFilter: params.streams,
+        filter: params.filter,
+        filteredStream: params.filteredStream,
+        connectorId,
+      });
+      if (planEntries.length > 0) {
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
   }
 
@@ -757,11 +1060,32 @@ export async function executeSearchSemantic(
     );
   }
 
+  const skippedWarnings: SearchSemanticWarning[] = skippedSources.map(
+    (skipped) => {
+      const detail: Record<string, unknown> = { source: skipped.source };
+      if (skipped.connection_id) detail.connection_id = skipped.connection_id;
+      const subject = skipped.connection_id
+        ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
+        : `Connector '${skipped.source}'`;
+      return {
+        code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
+        message: `${subject} is not applicable to this query and was skipped.`,
+        detail,
+      };
+    },
+  );
+  const allWarnings: SearchSemanticWarning[] = [
+    ...params.warnings,
+    ...skippedWarnings,
+  ];
   const envelope: SearchSemanticEnvelope = {
     object: "list",
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
+    ...(allWarnings.length > 0
+      ? { meta: { warnings: allWarnings } }
+      : {}),
   };
 
   const disclosureData: SearchSemanticDisclosureData = {

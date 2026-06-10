@@ -4,6 +4,7 @@
 // index.ts.
 
 import type { RecordData } from "../../src/connector-runtime.ts";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import type {
   ChatGptContent,
   ChatGptMessage,
@@ -280,10 +281,67 @@ const CONTENT_EXTRACTORS: Readonly<Record<string, (c: ChatGptContent) => string 
 };
 
 /**
+ * Sanitize extracted full text without preview-truncating it. Control-rich
+ * payloads become null so the message record still lands instead of failing
+ * shape validation and becoming non-backfillable.
+ */
+function toSafeFullContent(s: string | null): string | null {
+  if (s === null) {
+    return null;
+  }
+  return pdppSafeText.safeParse(s).success ? s : null;
+}
+
+// The messages schema caps `content` at `largeText.max(1_048_576)` chars
+// (schemas.ts). A safe-but-oversized body (e.g. a pasted multi-megabyte log)
+// passes control-char sanitization yet fails that cap, producing a terminal
+// shape_check_failed SKIP that makes the whole message non-backfillable. We
+// truncate the head in-band instead so the record still lands with readable
+// content and the recovery path is self-describing. Kept conservatively under
+// the schema cap to leave headroom for the marker and any future field tweak.
+const CONTENT_MAX_CHARS = 1_048_576;
+const OVERSIZE_HEADROOM = 1024;
+// Names the recovery path inline. The message id + conversation_id on the
+// record let a backfill re-fetch the full body from the conversation detail
+// endpoint, so no content is permanently lost.
+const OVERSIZE_TRUNCATION_MARKER =
+  "\n\n[…truncated by PDPP: original message content exceeded 1048576 characters; " +
+  "re-fetch the full body from the conversation detail by message id]";
+
+/**
+ * Truncate a safe (already control-sanitized) body to the messages-schema
+ * `content` cap, keeping the head and appending a self-describing marker.
+ * Returns the input unchanged when it already fits. The truncation point is a
+ * code-unit boundary that never splits a surrogate pair, so the result stays
+ * valid PDPP-safe text.
+ */
+function toBoundedContent(s: string | null): string | null {
+  if (s === null || s.length <= CONTENT_MAX_CHARS) {
+    return s;
+  }
+  let head = CONTENT_MAX_CHARS - OVERSIZE_HEADROOM - OVERSIZE_TRUNCATION_MARKER.length;
+  if (head < 0) {
+    head = 0;
+  }
+  // Avoid slicing through a surrogate pair: if the last kept code unit is a
+  // high surrogate (U+D800–U+DBFF), drop it so we never emit a lone surrogate.
+  const last = head > 0 ? s.charCodeAt(head - 1) : 0;
+  if (last >= 0xd8_00 && last <= 0xdb_ff) {
+    head -= 1;
+  }
+  return s.slice(0, head) + OVERSIZE_TRUNCATION_MARKER;
+}
+
+/**
  * Extract a string from a ChatGPT message content object. ChatGPT has many
  * content_type shapes; the previous implementation only handled `text` and
  * silently returned null for everything else (67% of records). Each branch
  * returns a string; we return null only if the payload is truly empty.
+ *
+ * Two safe-landing passes run after extraction so a single pathological
+ * message never becomes a terminal shape_check_failed SKIP: control-rich
+ * payloads collapse to null (toSafeFullContent), and safe-but-oversized
+ * payloads truncate in-band with a recovery marker (toBoundedContent).
  */
 export function extractContent(content: ChatGptContent | undefined): string | null {
   if (!content || typeof content !== "object") {
@@ -291,10 +349,8 @@ export function extractContent(content: ChatGptContent | undefined): string | nu
   }
   const type = content.content_type;
   const handler = type ? CONTENT_EXTRACTORS[type] : undefined;
-  if (handler) {
-    return handler(content);
-  }
-  return extractFallback(content);
+  const raw = handler ? handler(content) : extractFallback(content);
+  return toBoundedContent(toSafeFullContent(raw));
 }
 
 // ─── Tool calls ─────────────────────────────────────────────────────────
@@ -559,5 +615,15 @@ export function maxUpdateTimeIso(items: readonly ConversationListItem[]): string
       .filter((x): x is string => Boolean(x))
       .sort()
       .pop() ?? null
+  );
+}
+
+export function minUpdateTimeIso(items: readonly ConversationListItem[]): string | null {
+  return (
+    items
+      .map((c) => (c.update_time ? tsToIso(c.update_time) : null))
+      .filter((x): x is string => Boolean(x))
+      .sort()
+      .shift() ?? null
   );
 }

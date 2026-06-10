@@ -1,7 +1,9 @@
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { createNekoCompanion } from './neko-adapter.js';
+import { createNekoBrowserClient } from './neko-browser-client.js';
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -18,19 +20,6 @@ function createFetchMock({ screenConfigurations = [{ width: 2128, height: 816, r
   const requests = [];
   const fetchImpl = async (url, request = {}) => {
     requests.push({ body: request.body || null, method: request.method || 'GET', url });
-    if (url.endsWith('/json')) {
-      return jsonResponse([
-        {
-          id: 'page-1',
-          type: 'page',
-          url: 'about:blank',
-          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/page-1',
-        },
-      ]);
-    }
-    if (url.endsWith('/json/version')) {
-      return jsonResponse({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/browser-1' });
-    }
     if (url.endsWith('/api/room/screen/configurations')) {
       return jsonResponse(screenConfigurations);
     }
@@ -49,84 +38,81 @@ function createFetchMock({ screenConfigurations = [{ width: 2128, height: 816, r
   return fetchImpl;
 }
 
-function createWebSocketMock({ runtimeStatuses = [] } = {}) {
-  const commands = [];
-
-  class MockWebSocket {
-    constructor(url) {
-      this.url = url;
-      this.readyState = 0;
-      this.listeners = new Map();
-      setImmediate(() => {
-        this.readyState = 1;
-        this.emit('open', {});
-      });
-    }
-
-    addEventListener(name, handler) {
-      const listeners = this.listeners.get(name) || [];
-      listeners.push(handler);
-      this.listeners.set(name, listeners);
-    }
-
-    close() {
-      if (this.readyState === 3) return;
-      this.readyState = 3;
-      this.emit('close', {});
-    }
-
-    emit(name, event) {
-      for (const handler of this.listeners.get(name) || []) handler(event);
-    }
-
-    send(raw) {
-      const message = JSON.parse(raw);
-      commands.push({ method: message.method, params: message.params || {}, sessionId: message.sessionId || null });
-      const result = this.resultFor(message.method, message.params || {});
-      setImmediate(() => {
-        if (this.readyState === 1) {
-          this.emit('message', { data: JSON.stringify({ id: message.id, result }) });
-        }
-      });
-    }
-
-    resultFor(method, params) {
-      if (method === 'Target.attachToTarget') return { sessionId: `session-${commands.length}` };
-      if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-      const expression = String(params.expression || '');
-      // The viewport-status expression is a self-invoking IIFE that
-      // returns a JSON string. It started life as
-      //   `(() => JSON.stringify({ ... }))()`
-      // and was later extended to drain `__pdppPlaygroundEvents`:
-      //   `(() => { const drained = ...; return JSON.stringify({ ... }); })()`
-      // Match either shape via a stable identifier (`screenWidth`) plus
-      // `JSON.stringify` — that combination uniquely identifies the
-      // viewport-status expression and avoids accidentally swallowing
-      // the focus-detection script (which also stringifies but does
-      // NOT mention `screenWidth`).
-      const looksLikeViewportStatus =
-        method === 'Runtime.evaluate' &&
-        expression.includes('JSON.stringify') &&
-        expression.includes('screenWidth');
-      if (looksLikeViewportStatus) {
-        const next = runtimeStatuses.length > 0 ? runtimeStatuses.shift() : {};
-        return { result: { value: JSON.stringify(next) } };
-      }
-      return {};
-    }
-  }
-
-  MockWebSocket.commands = commands;
-  return MockWebSocket;
-}
-
-function abortableSleep(_ms, signal) {
+function testSleep(ms, signal) {
+  if (ms === 50) return Promise.resolve();
   return new Promise((resolve) => {
     if (signal?.aborted) {
       resolve();
       return;
     }
     signal?.addEventListener('abort', resolve, { once: true });
+  });
+}
+
+function createFakeBrowserClient({ copyText = '', statuses = [] } = {}) {
+  const calls = [];
+  const bindings = new Map();
+  const client = {
+    calls,
+    bindings,
+    keyboard: {
+      async insertText(text) {
+        calls.push({ op: 'insertText', text });
+      },
+    },
+    async connect() {
+      calls.push({ op: 'connect' });
+      return client;
+    },
+    async getPage() {
+      calls.push({ op: 'getPage' });
+      return {};
+    },
+    async setViewportSize(viewport) {
+      calls.push({ op: 'setViewportSize', viewport: { ...viewport } });
+    },
+    async goto(url) {
+      calls.push({ op: 'goto', url });
+    },
+    async addInitScript(source) {
+      calls.push({ op: 'addInitScript', source });
+    },
+    async exposeBinding(name, handler) {
+      calls.push({ op: 'exposeBinding', name });
+      bindings.set(name, handler);
+    },
+    async evaluate(source) {
+      calls.push({ op: 'evaluate', source });
+      if (String(source).includes('__pdppPlaygroundEvents')) {
+        return JSON.stringify(statuses.length > 0 ? statuses.shift() : {});
+      }
+      if (String(source).includes('document.getSelection')) {
+        return copyText;
+      }
+      return undefined;
+    },
+    async close() {
+      calls.push({ op: 'close' });
+    },
+    emitFocus(payload) {
+      const handler = bindings.get('__pdppNekoFocusChanged');
+      assert.equal(typeof handler, 'function');
+      handler({}, JSON.stringify(payload));
+    },
+  };
+  return client;
+}
+
+function createCompanionWithBrowserClient(browserClient, options = {}) {
+  return createNekoCompanion({
+    origin: 'http://neko.local/',
+    cdpHttpUrl: 'http://cdp.local/',
+    fetchImpl: createFetchMock(options.fetchOptions),
+    screenEndpoint: 'api/room/screen',
+    screenConfigurationsEndpoint: 'api/room/screen/configurations',
+    sleep: testSleep,
+    browserClient,
+    ...options,
   });
 }
 
@@ -141,176 +127,168 @@ const landscapeViewport = {
   userAgent: 'Mobile Test UA',
 };
 
-test('n.eko start reapplies page CDP viewport after initial navigation', async () => {
-  const fetchImpl = createFetchMock();
-  const WebSocketCtor = createWebSocketMock();
-  const companion = createNekoCompanion({
-    origin: 'http://neko.local/',
-    cdpHttpUrl: 'http://cdp.local/',
-    fetchImpl,
-    WebSocketCtor,
+test('n.eko browser client seam wraps Patchright operations and disconnects', async () => {
+  const calls = [];
+  const page = {
+    keyboard: {
+      async insertText(text) {
+        calls.push({ op: 'insertText', text });
+      },
+    },
+    async evaluate(source) {
+      calls.push({ op: 'evaluate', source });
+      return 'evaluated';
+    },
+    async goto(url, options) {
+      calls.push({ op: 'goto', options, url });
+    },
+    async setViewportSize(viewport) {
+      calls.push({ op: 'setViewportSize', viewport });
+    },
+  };
+  const context = {
+    pages: () => [page],
+    async addInitScript(source) {
+      calls.push({ op: 'addInitScript', source });
+    },
+    async exposeBinding(name, handler) {
+      calls.push({ handlerType: typeof handler, name, op: 'exposeBinding' });
+    },
+  };
+  const browser = {
+    contexts: () => [context],
+    async disconnect() {
+      calls.push({ op: 'disconnect' });
+    },
+  };
+  const chromiumImpl = {
+    async connectOverCDP(url) {
+      calls.push({ op: 'connectOverCDP', url });
+      return browser;
+    },
+  };
+
+  const client = createNekoBrowserClient({ cdpHttpUrl: 'http://cdp.local/', chromiumImpl });
+
+  await client.connect();
+  assert.equal(await client.evaluate('1 + 1'), 'evaluated');
+  await client.setViewportSize({ width: 320, height: 240 });
+  await client.goto('https://example.test/');
+  await client.addInitScript('window.__canary = true');
+  await client.exposeBinding('__binding', () => {});
+  await client.keyboard.insertText('hello');
+  await client.close();
+
+  assert.deepEqual(calls, [
+    { op: 'connectOverCDP', url: 'http://cdp.local/' },
+    { op: 'evaluate', source: '1 + 1' },
+    { op: 'setViewportSize', viewport: { width: 320, height: 240 } },
+    { op: 'goto', options: { waitUntil: 'load' }, url: 'https://example.test/' },
+    { op: 'addInitScript', source: 'window.__canary = true' },
+    { handlerType: 'function', name: '__binding', op: 'exposeBinding' },
+    { op: 'insertText', text: 'hello' },
+    { op: 'disconnect' },
+  ]);
+});
+
+test('n.eko assistive mode uses the browser-client seam before navigation', async () => {
+  const browserClient = createFakeBrowserClient();
+  const loggerMessages = [];
+  const companion = createCompanionWithBrowserClient(browserClient, {
+    logger: {
+      warn(entry) {
+        loggerMessages.push(entry);
+      },
+    },
     startUrl: 'https://example.test/',
-    screenEndpoint: 'api/room/screen',
-    screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
     stealthMode: 'balanced',
   });
 
   await companion.start(landscapeViewport);
   await companion.stop();
 
-  const methods = WebSocketCtor.commands.map((command) => command.method);
-  const navigateIndex = methods.indexOf('Page.navigate');
-  const metricIndexes = methods
-    .map((method, index) => (method === 'Emulation.setDeviceMetricsOverride' ? index : -1))
-    .filter((index) => index >= 0);
-
-  assert.equal(metricIndexes.length, 2);
-  assert.ok(metricIndexes[0] < navigateIndex);
-  assert.ok(navigateIndex < metricIndexes[1]);
-  assert.deepEqual(WebSocketCtor.commands[metricIndexes[1]].params, {
+  assert.equal(companion._internal.stealthMode(), 'assistive');
+  assert.ok(loggerMessages.some((entry) => entry.msg === 'neko_stealth_balanced_normalized'));
+  assert.deepEqual(
+    browserClient.calls.map((call) => call.op),
+    ['connect', 'setViewportSize', 'exposeBinding', 'addInitScript', 'evaluate', 'goto', 'close'],
+  );
+  assert.deepEqual(browserClient.calls.find((call) => call.op === 'setViewportSize').viewport, {
     width: 947,
     height: 364,
-    deviceScaleFactor: 2.25,
-    mobile: true,
-    screenWidth: 2128,
-    screenHeight: 816,
-    positionX: 0,
-    positionY: 0,
-    screenOrientation: { type: 'landscapePrimary', angle: 90 },
-    viewport: { x: 0, y: 0, width: 2128, height: 816, scale: 1 },
   });
+  assert.equal(browserClient.calls.find((call) => call.op === 'goto').url, 'https://example.test/');
+  assert.ok(browserClient.calls.find((call) => call.op === 'addInitScript').source.includes('__pdppNekoFocusChanged'));
 });
 
-test('n.eko high-DPR CDP viewport exposes the full captured surface', async () => {
-  const fetchImpl = createFetchMock({ screenConfigurations: [{ width: 1008, height: 1736, rate: 30 }] });
-  const WebSocketCtor = createWebSocketMock();
-  const companion = createNekoCompanion({
-    origin: 'http://neko.local/',
-    cdpHttpUrl: 'http://cdp.local/',
-    fetchImpl,
-    WebSocketCtor,
-    screenEndpoint: 'api/room/screen',
-    screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
-    stealthMode: 'balanced',
-  });
-
-  await companion.start({
-    width: 448,
-    height: 771,
-    deviceScaleFactor: 2.25,
-    hasTouch: true,
-    mobile: true,
-    screenWidth: 1008,
-    screenHeight: 1736,
-    userAgent: 'Mobile Test UA',
-  });
-  await companion.stop();
-
-  const metrics = WebSocketCtor.commands.find((command) => command.method === 'Emulation.setDeviceMetricsOverride');
-  assert.deepEqual(metrics.params.viewport, { x: 0, y: 0, width: 1008, height: 1736, scale: 1 });
-  assert.equal(metrics.params.width, 448);
-  assert.equal(metrics.params.height, 771);
-  assert.equal(metrics.params.deviceScaleFactor, 2.25);
-  assert.equal('scale' in metrics.params, false);
-
-  assert.ok(
-    WebSocketCtor.commands.some(
-      (command) =>
-        command.method === 'Emulation.setTouchEmulationEnabled' &&
-        command.params.enabled === true &&
-        command.params.maxTouchPoints === 5,
-    ),
-  );
-  assert.ok(
-    WebSocketCtor.commands.some(
-      (command) =>
-        command.method === 'Emulation.setEmitTouchEventsForMouse' &&
-        command.params.enabled === false &&
-        command.params.configuration === 'mobile',
-    ),
-    'n.eko mouse/wheel controls must remain click-capable even when the remote browser advertises touch support',
-  );
-});
-
-test('n.eko status reopens page CDP and reapplies viewport when page metrics mismatch', async () => {
-  const WebSocketCtor = createWebSocketMock({
-    runtimeStatuses: [
-      {
-        innerWidth: 800,
-        innerHeight: 600,
-        screenWidth: 800,
-        screenHeight: 600,
-        devicePixelRatio: 1,
-        hasTouch: false,
-        userAgent: 'Desktop UA',
-      },
-      {
-        innerWidth: 947,
-        innerHeight: 364,
-        screenWidth: 2128,
-        screenHeight: 816,
-        devicePixelRatio: 2.25,
-        hasTouch: true,
-        userAgent: 'Mobile Test UA',
-      },
-    ],
-  });
+test('n.eko strict mode never creates or connects a browser client', async () => {
+  let factoryCalls = 0;
   const companion = createNekoCompanion({
     origin: 'http://neko.local/',
     cdpHttpUrl: 'http://cdp.local/',
     fetchImpl: createFetchMock(),
-    WebSocketCtor,
     screenEndpoint: 'api/room/screen',
     screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
+    sleep: testSleep,
+    createBrowserClient() {
+      factoryCalls += 1;
+      return createFakeBrowserClient();
+    },
+    stealthMode: 'strict',
+  });
+
+  await companion.start(landscapeViewport);
+  const status = await companion.queryNekoStatus();
+  await companion.stop();
+
+  assert.equal(factoryCalls, 0);
+  assert.equal(status.page_cdp_available, false);
+  assert.deepEqual(status.page_cdp_skipped, {
+    browser_owner_mode: 'neko-owned',
+    stealth_mode: 'strict',
+  });
+});
+
+test('n.eko status reapplies browser-client viewport when page dimensions mismatch', async () => {
+  const browserClient = createFakeBrowserClient({
+    statuses: [
+      { innerWidth: 800, innerHeight: 600, screenWidth: 800, screenHeight: 600 },
+      { innerWidth: 947, innerHeight: 364, screenWidth: 2128, screenHeight: 816 },
+    ],
+  });
+  const companion = createCompanionWithBrowserClient(browserClient, {
     stealthMode: 'assistive',
   });
 
   await companion.start(landscapeViewport);
-  const metricsBeforeStatus = WebSocketCtor.commands.filter(
-    (command) => command.method === 'Emulation.setDeviceMetricsOverride',
-  ).length;
+  const setViewportCountBeforeStatus = browserClient.calls.filter((call) => call.op === 'setViewportSize').length;
   const status = await companion.queryNekoStatus();
   await companion.stop();
 
-  const metricCommands = WebSocketCtor.commands.filter(
-    (command) => command.method === 'Emulation.setDeviceMetricsOverride',
-  );
-  const attachCommands = WebSocketCtor.commands.filter((command) => command.method === 'Target.attachToTarget');
-
+  const setViewportCalls = browserClient.calls.filter((call) => call.op === 'setViewportSize');
+  assert.equal(setViewportCountBeforeStatus, 1);
+  assert.equal(setViewportCalls.length, 2);
   assert.equal(status.page_metrics_reapplied, true);
   assert.equal(status.page.innerWidth, 947);
-  assert.equal(status.page.screenWidth, 2128);
   assert.ok(status.page_metrics_mismatch.innerWidth);
-  assert.ok(metricCommands.length > metricsBeforeStatus);
-  assert.ok(attachCommands.length >= 2);
 });
 
-test('n.eko desktop status does not reapply only because Chromium reports stale touch support', async () => {
-  const WebSocketCtor = createWebSocketMock({
-    runtimeStatuses: [
+test('n.eko status ignores stale touch, DPR, screen, and UA values the adapter no longer owns', async () => {
+  const browserClient = createFakeBrowserClient({
+    statuses: [
       {
         innerWidth: 2128,
         innerHeight: 816,
-        screenWidth: 2128,
-        screenHeight: 816,
-        devicePixelRatio: 1.15,
+        screenWidth: 999,
+        screenHeight: 777,
+        devicePixelRatio: 3,
         hasTouch: true,
         maxTouchPoints: 10,
-        userAgent: 'Desktop UA',
+        userAgent: 'Unexpected UA',
       },
     ],
   });
-  const companion = createNekoCompanion({
-    origin: 'http://neko.local/',
-    cdpHttpUrl: 'http://cdp.local/',
-    fetchImpl: createFetchMock(),
-    WebSocketCtor,
-    screenEndpoint: 'api/room/screen',
-    screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
+  const companion = createCompanionWithBrowserClient(browserClient, {
     stealthMode: 'assistive',
   });
 
@@ -321,46 +299,17 @@ test('n.eko desktop status does not reapply only because Chromium reports stale 
     hasTouch: false,
     mobile: false,
   });
-  const metricsBeforeStatus = WebSocketCtor.commands.filter(
-    (command) => command.method === 'Emulation.setDeviceMetricsOverride',
-  ).length;
+  const setViewportCountBeforeStatus = browserClient.calls.filter((call) => call.op === 'setViewportSize').length;
   const status = await companion.queryNekoStatus();
   await companion.stop();
 
-  const metricsAfterStatus = WebSocketCtor.commands.filter(
-    (command) => command.method === 'Emulation.setDeviceMetricsOverride',
-  ).length;
+  const setViewportCountAfterStatus = browserClient.calls.filter((call) => call.op === 'setViewportSize').length;
   assert.equal(status.page_metrics_reapplied, undefined);
   assert.equal(status.page_metrics_mismatch, undefined);
-  assert.equal(metricsAfterStatus, metricsBeforeStatus);
+  assert.equal(setViewportCountAfterStatus, setViewportCountBeforeStatus);
 });
 
-test('n.eko strict stealth mode does not use CDP for viewport application', async () => {
-  const WebSocketCtor = createWebSocketMock();
-  const companion = createNekoCompanion({
-    origin: 'http://neko.local/',
-    cdpHttpUrl: 'http://cdp.local/',
-    fetchImpl: createFetchMock(),
-    WebSocketCtor,
-    screenEndpoint: 'api/room/screen',
-    screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
-    stealthMode: 'strict',
-  });
-
-  await companion.start(landscapeViewport);
-  await companion.stop();
-
-  assert.deepEqual(WebSocketCtor.commands, []);
-});
-
-test('n.eko status drains playgroundEvents from the remote ring buffer', async () => {
-  // The remote playground page maintains a small `__pdppPlaygroundEvents`
-  // ring buffer of click/focus/scroll telemetry. The viewport-status
-  // expression splices it on each poll so each event is reported
-  // exactly once. This test verifies the full chain by assembling a
-  // matching-shape runtime status and confirming `status.page.playgroundEvents`
-  // round-trips through the adapter without dropping or duplicating.
+test('n.eko focus, paste, copy, and playground status route through the browser-client seam', async () => {
   const samplePlaygroundEvents = [
     {
       seq: 1,
@@ -368,68 +317,60 @@ test('n.eko status drains playgroundEvents from the remote ring buffer', async (
       atMs: 1_700_000_000_000,
       clientX: 70,
       clientY: 233,
-      target: { tag: 'button', id: 'counter' },
-      elementAtPoint: { tag: 'button', id: 'counter' },
-    },
-    {
-      seq: 2,
-      type: 'click',
-      atMs: 1_700_000_000_050,
-      clientX: 70,
-      clientY: 233,
-      target: { tag: 'button', id: 'counter' },
-      elementAtPoint: { tag: 'button', id: 'counter' },
+      target: { id: 'counter', tag: 'button' },
     },
   ];
-  const WebSocketCtor = createWebSocketMock({
-    runtimeStatuses: [
+  const browserClient = createFakeBrowserClient({
+    copyText: 'remote selection',
+    statuses: [
       {
         innerWidth: 947,
         innerHeight: 364,
         screenWidth: 2128,
         screenHeight: 816,
-        devicePixelRatio: 2.25,
-        hasTouch: true,
-        userAgent: 'Mobile Test UA',
         playgroundEvents: samplePlaygroundEvents,
       },
     ],
   });
-  const companion = createNekoCompanion({
-    origin: 'http://neko.local/',
-    cdpHttpUrl: 'http://cdp.local/',
-    fetchImpl: createFetchMock(),
-    WebSocketCtor,
-    screenEndpoint: 'api/room/screen',
-    screenConfigurationsEndpoint: 'api/room/screen/configurations',
-    sleep: abortableSleep,
+  const companion = createCompanionWithBrowserClient(browserClient, {
     stealthMode: 'assistive',
   });
+  const events = [];
+  companion.onEvent((event) => events.push(event));
 
   await companion.start(landscapeViewport);
+  browserClient.emitFocus({ type: 'focus', tagName: 'INPUT', id: 'otp' });
+  await companion.dispatch({ type: 'paste', text: 'one-time code 123456' });
+  await companion.dispatch({ type: 'copy' });
   const status = await companion.queryNekoStatus();
   await companion.stop();
 
-  assert.ok(status.page, 'status.page should be present');
-  assert.deepEqual(
-    status.page.playgroundEvents,
-    samplePlaygroundEvents,
-    'playgroundEvents from the remote buffer must round-trip through queryNekoStatus()'
-  );
+  assert.ok(events.some((event) => event.kind === 'keyboard_focus' && event.focused === true));
+  assert.ok(events.some((event) => event.kind === 'clipboard' && event.text === 'remote selection'));
+  assert.ok(browserClient.calls.some((call) => call.op === 'insertText' && call.text === 'one-time code 123456'));
+  assert.deepEqual(status.page.playgroundEvents, samplePlaygroundEvents);
+});
+
+test('n.eko adapter source does not contain forbidden raw helper commands', async () => {
+  const source = await readFile(new URL('./neko-adapter.js', import.meta.url), 'utf8');
+  const forbidden = [
+    ['Runtime', 'enable'],
+    ['Runtime', 'addBinding'],
+    ['Page', 'addScriptToEvaluateOnNewDocument'],
+    ['Browser', 'setWindowBounds'],
+    ['Emulation', 'setUserAgentOverride'],
+    ['Emulation', 'setDeviceMetricsOverride'],
+    ['Emulation', 'setTouchEmulationEnabled'],
+    ['Emulation', 'setEmitTouchEventsForMouse'],
+  ].map(([domain, method]) => `${domain}.${method}`);
+
+  for (const command of forbidden) {
+    assert.equal(source.includes(command), false, `${command} must not be sent by the n.eko adapter`);
+  }
 });
 
 test('buildViewportStatusExpression drains __pdppPlaygroundEvents and includes screenWidth', async () => {
-  const { default: mod } = await import('./neko-adapter.js');
-  void mod;
-  // The exported expression-builder is internal-ish, so test via its
-  // observable string shape: it must reference both the
-  // `__pdppPlaygroundEvents` buffer (so the playground page's events
-  // get drained) and `screenWidth` (so the page metrics mismatch
-  // detector can compare against the requested CSS-screen).
-  const adapterSource = await (await import('node:fs/promises')).readFile(
-    new URL('./neko-adapter.js', import.meta.url),
-    'utf8',
-  );
+  const adapterSource = await readFile(new URL('./neko-adapter.js', import.meta.url), 'utf8');
   assert.match(adapterSource, /__pdppPlaygroundEvents/, 'adapter drains __pdppPlaygroundEvents');
   assert.match(adapterSource, /playgroundEvents:\s*drained/, 'drained events surface as playgroundEvents');
   assert.match(adapterSource, /screenWidth:\s*window\.screen/, 'expression still reports window.screen.width');

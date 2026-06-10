@@ -10,7 +10,10 @@ It contains the current:
 - reference manifests and sample connector
 - executable black-box test suite
 
-It is not the website. The website in `apps/web/` explains and showcases the reference implementation, but the runnable implementation lives here.
+It is not the public site or the operator console. The public site in
+`apps/site/` explains and showcases the reference implementation; the operator
+console in `apps/console/` fronts a running instance. The runnable
+implementation lives here.
 
 ## What it proves today
 
@@ -59,6 +62,18 @@ The current reference is centered on one architectural claim:
 
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
+
+The bare AS/RS root (`GET /`) is content-negotiated:
+
+- `Accept: application/json` (or `?format=json`, or no `Accept` header) returns
+  the existing discovery-index envelope byte-for-byte. Existing JSON-shaped
+  clients are unaffected.
+- `Accept: text/html` returns a small operator/admin landing page that names
+  this server, links to the well-known discovery endpoint above, and points at
+  the operator console origin (taken from `PDPP_REFERENCE_ORIGIN`, defaulting
+  to `http://localhost:3002`). The landing page is reachable from
+  `reference-implementation` alone and does not require `apps/console` to be
+  running. See `openspec/changes/split-public-site-and-operator-console`.
 
 Protected-resource metadata includes advisory agent discovery. The generated
 CLI command is:
@@ -145,10 +160,13 @@ list object with `data[]` and `has_more`. Missing `has_one` children return
 `null`; missing `has_many` children return an empty list.
 
 The first-party Gmail manifest enables `messages -> message_bodies` and
-`messages -> attachments`. Gmail attachment expansion is metadata-only in this
-slice: it does not expose bytes, `blob_ref`, extracted PDF/docx text, or blob
-fetch access. Reverse/belongs-to expansion such as `messages -> thread` remains
-deferred; clients can still query directly by the relevant foreign key.
+`messages -> attachments`. Attachment expansion is grant-safe and field-scoped:
+when the child `attachments` grant includes a hydrated `blob_ref`, the resource
+server decorates it with `blob_ref.fetch_url`, and bytes are fetched only through
+`GET /v1/blobs/{blob_id}` under the same grant. Metadata-only attachment records
+continue to expose no bytes and no fabricated blob reference. Reverse/belongs-to
+expansion such as `messages -> thread` remains deferred; clients can still query
+directly by the relevant foreign key.
 
 ### Filtered retrieval
 
@@ -257,7 +275,7 @@ Routes gated by the placeholder (when enabled):
 
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
-- `/dashboard`, `/dashboard/*` (via the composed web origin)
+- `/dashboard`, `/dashboard/*` (via the composed console origin)
 - every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session — the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
 
 Stable owner-entry routes:
@@ -279,7 +297,7 @@ The placeholder is intentionally narrow:
 
 Server-rendered HTML pages (`GET /consent`, `GET /device` and its result pages, `POST /consent/approve`/`deny` result pages, and the stable owner-entry page at `GET /owner/login`) all go through a small shared hosted-UI module, [`server/hosted-ui.js`](server/hosted-ui.js). That module renders the PDPP brand mark and typography, reuses the `data-surface="human"` / `data-surface="protocol"` language from `packages/pdpp-brand/base.css`, and serves a single shared stylesheet at `GET /__pdpp/hosted-ui.css`.
 
-This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next website in `apps/web/` remains the canonical design-system surface.
+This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next public site in `apps/site/` and operator console in `apps/console/` remain the canonical app-layer design-system surfaces.
 
 ## How to use it
 
@@ -345,7 +363,7 @@ pnpm --dir reference-implementation run server
 ```
 
 That starts the AS/RS directly on their own listen ports (`:7662` / `:7663`)
-without the composed browser-facing web origin.
+without the composed browser-facing console origin.
 
 If you need to force direct mode while other composition-oriented env is set in
 your shell, run:
@@ -374,16 +392,20 @@ pnpm reference-contract:check-generated
 
 ### Docker Compose reference stack
 
+For an end-to-end operator runbook (Docker host or RunPod CPU Pod, env vars,
+dashboard verification, MCP wiring), see
+[`docs/operator/selfhost-quickstart.md`](../docs/operator/selfhost-quickstart.md).
+The notes below are the topology reference; the quickstart is the procedure.
+
 The supported Docker path is a root-level Compose assembly for the live
 reference stack. The quickest self-hosted path uses the public GHCR images:
 
 ```bash
 cp .env.docker.example .env.docker
-# edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
-# (also gates every `_ref` read + mutation so deployed reference instances
-#  never expose grants/runs/timelines/connectors/diagnostics unauthenticated)
+bash scripts/generate-secrets.sh --write  # fills PDPP_OWNER_PASSWORD and VAPID keys
+# set PDPP_REFERENCE_ORIGIN in .env.docker to your deployment URL
 docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+pnpm docker:reference:quick
 ```
 
 Open `http://localhost:${PDPP_WEB_PORT:-3002}` for the browser-facing reference origin. The
@@ -393,17 +415,19 @@ Compose stack runs:
 - `web` — the Next app on container `:3000`, mapped to host `${PDPP_WEB_PORT:-3002}` by default,
   proxying the AS/RS in composed mode
 
-To test the owner-present n.eko interaction-streaming backend, add the n.eko
-Compose overlay:
+To test the owner-present n.eko interaction-streaming backend, use the
+reference-stack wrapper. It always includes the n.eko Compose overlay and the
+`neko-dynamic` profile, then verifies that the running `reference` container
+received the managed browser-surface configuration:
 
 ```bash
 pnpm docker:neko
 ```
 
-or directly:
+or, for the same stack without rebuilding images:
 
 ```bash
-docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build
+pnpm docker:reference:quick
 ```
 
 Then open `http://localhost:${PDPP_WEB_PORT:-3002}/dashboard/stream-playground?backend=neko`.
@@ -511,13 +535,13 @@ volumes in place:
 
 ```bash
 docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+pnpm docker:reference:quick
 ```
 
 To build from the current local checkout instead of pulling public images:
 
 ```bash
-docker compose --env-file .env.docker up --build
+pnpm docker:reference:up
 ```
 
 The `.git` directory is excluded from the Docker build context, so the

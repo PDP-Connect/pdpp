@@ -21,11 +21,22 @@
  * link (`<a>`) which USAA sometimes surfaces as a direct-PDF link.
  */
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
-import type { DownloadQueue } from "../../src/download-queue.ts";
+import {
+  attachBodyResponseQueue,
+  type BodyResponseQueue,
+  isLikelyPdfResponseBody,
+  waitForOptionalBodyResponse,
+} from "../../src/browser-artifact-response.ts";
+import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
+import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
+import {
+  extractStatementContentFingerprint,
+  extractStatementPdfTextAndPages,
+} from "../../src/statement-content-fingerprint.ts";
 import {
   currencyToCentsFromStatement as _currencyFromStatement,
   detectStatementClosing,
@@ -61,7 +72,8 @@ const WS_CLEANUP_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Timing constants ────────────────────────────────────────────────────
-const DOWNLOAD_TIMEOUT_MS = 180_000;
+const DOWNLOAD_TIMEOUT_MS = 45_000;
+const RESPONSE_FALLBACK_GRACE_MS = 3000;
 const DOCUMENTS_NAV_TIMEOUT_MS = 30_000;
 const DOCUMENTS_RELOAD_SETTLE_MS = 5000;
 const CLICK_TIMEOUT_MS = 5000;
@@ -79,6 +91,19 @@ function sleep(ms: number): Promise<void> {
 
 function errMsg(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, MAX_ERROR_MSG);
+}
+
+function attachPdfResponseQueue(page: Page): BodyResponseQueue {
+  return attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect(headers) {
+      const contentDisposition = headers["content-disposition"]?.toLowerCase() ?? "";
+      const contentType = headers["content-type"]?.toLowerCase() ?? "";
+      return (
+        contentType.includes("pdf") || contentDisposition.includes(".pdf") || contentDisposition.includes("attachment")
+      );
+    },
+  });
 }
 
 // ─── Download orchestration ──────────────────────────────────────────────
@@ -128,35 +153,83 @@ async function locateDownloadMenuItem(page: Page): Promise<Locator | null> {
   return null;
 }
 
-/** Read a queued download's bytes off disk. */
-async function consumeDownload(
-  dlPromise: ReturnType<DownloadQueue["waitForNextDownload"]>
-): Promise<{ buffer: Buffer; suggestedFilename: string } | null> {
-  const dl = await dlPromise;
-  const path = await dl.path();
-  if (!path) {
+async function consumeDownloadOrResponse({
+  downloadQueue,
+  responseQueue,
+}: {
+  downloadQueue: DownloadQueue;
+  responseQueue: BodyResponseQueue;
+}): Promise<{ buffer: Buffer; diag?: Record<string, unknown>; suggestedFilename: string } | null> {
+  const responsePromise = responseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  try {
+    const result = await Promise.any([
+      responsePromise.then((response) => ({ kind: "response" as const, response })),
+      downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    ]);
+    if (result.kind === "response") {
+      return {
+        buffer: result.response.body,
+        suggestedFilename: result.response.suggestedFilename || "statement.pdf",
+      };
+    }
+
+    try {
+      const buffer = await readPlaywrightDownloadBuffer(result.download);
+      if (buffer.length > 0) {
+        return { buffer, suggestedFilename: result.download.suggestedFilename() };
+      }
+    } catch (err) {
+      const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
+      if (response) {
+        return {
+          buffer: response.body,
+          diag: { download_error: errMsg(err), response_source: response.source },
+          suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
+        };
+      }
+      throw err;
+    }
+    const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
+    if (response) {
+      return {
+        buffer: response.body,
+        diag: { download_empty: true, response_source: response.source },
+        suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
+      };
+    }
     return null;
+  } catch (err) {
+    return {
+      buffer: Buffer.alloc(0),
+      diag: {
+        error: errMsg(err),
+        response_diagnostics: responseQueue.diagnostics(),
+      },
+      suggestedFilename: "statement.pdf",
+    };
   }
-  const buffer = await readFile(path);
-  return { buffer, suggestedFilename: dl.suggestedFilename() };
 }
 
 /** Fallback path: the row has a direct <a href="*.pdf"> link. */
-async function downloadViaDirectLink(row: Locator, downloadQueue: DownloadQueue): Promise<DownloadResult | null> {
+async function downloadViaDirectLink(page: Page, row: Locator): Promise<DownloadResult | null> {
   const link = row.locator('a[href$=".pdf"], a[href*=".pdf?"]').first();
   if (!(await link.count().catch(() => 0))) {
     return null;
   }
-  const dlPromise = downloadQueue.waitForNextDownload({
-    timeoutMs: DOWNLOAD_TIMEOUT_MS,
-  });
-  await link.click({ timeout: CLICK_TIMEOUT_MS }).catch(() => {
-    /* ignore */
-  });
+  const downloadQueue = attachDownloadQueue(page);
+  const responseQueue = attachPdfResponseQueue(page);
+  await responseQueue.ready;
   try {
-    const result = await consumeDownload(dlPromise);
+    await link.click({ timeout: CLICK_TIMEOUT_MS }).catch(() => {
+      /* ignore */
+    });
+    const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
     if (!result) {
-      return { ok: false, reason: "download_no_path" };
+      return { ok: false, reason: "download_empty" };
+    }
+    if (result.buffer.length === 0) {
+      return { ok: false, reason: "download_timeout", diag: result.diag ?? null };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
@@ -165,6 +238,9 @@ async function downloadViaDirectLink(row: Locator, downloadQueue: DownloadQueue)
       reason: "direct_link_failed",
       diag: { error: errMsg(err) },
     };
+  } finally {
+    downloadQueue.detach();
+    responseQueue.detach();
   }
 }
 
@@ -202,15 +278,15 @@ async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
 }
 
 /** Click the Download menuitem and consume the resulting download. */
-async function clickDownloadAndConsume(
-  page: Page,
-  dlItem: Locator,
-  downloadQueue: DownloadQueue
-): Promise<DownloadResult> {
-  const dlPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<DownloadResult> {
+  const downloadQueue = attachDownloadQueue(page);
+  const responseQueue = attachPdfResponseQueue(page);
+  await responseQueue.ready;
   try {
     await dlItem.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
+    downloadQueue.detach();
+    responseQueue.detach();
     await page.keyboard.press("Escape").catch(() => {
       /* ignore */
     });
@@ -221,12 +297,15 @@ async function clickDownloadAndConsume(
     };
   }
   try {
-    const result = await consumeDownload(dlPromise);
+    const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
     await page.keyboard.press("Escape").catch(() => {
       /* ignore */
     });
     if (!result) {
-      return { ok: false, reason: "download_no_path" };
+      return { ok: false, reason: "download_empty" };
+    }
+    if (result.buffer.length === 0) {
+      return { ok: false, reason: "download_timeout", diag: result.diag ?? null };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
@@ -238,6 +317,9 @@ async function clickDownloadAndConsume(
       reason: "download_timeout",
       diag: { error: errMsg(err) },
     };
+  } finally {
+    downloadQueue.detach();
+    responseQueue.detach();
   }
 }
 
@@ -246,15 +328,7 @@ async function clickDownloadAndConsume(
  *   { ok: true, buffer, suggestedFilename } on success
  *   { ok: false, reason, diag }            on failure
  */
-async function downloadStatementFromRow({
-  page,
-  rowIndex,
-  downloadQueue,
-}: {
-  page: Page;
-  rowIndex: number;
-  downloadQueue: DownloadQueue;
-}): Promise<DownloadResult> {
+async function downloadStatementFromRow({ page, rowIndex }: { page: Page; rowIndex: number }): Promise<DownloadResult> {
   const row = page.locator("tbody tr").nth(rowIndex);
   if (!(await row.count().catch(() => 0))) {
     return { ok: false, reason: "row_missing" };
@@ -262,7 +336,7 @@ async function downloadStatementFromRow({
 
   const optBtn = await locateRowOptionsButton(row);
   if (!optBtn) {
-    const direct = await downloadViaDirectLink(row, downloadQueue);
+    const direct = await downloadViaDirectLink(page, row);
     return direct ?? { ok: false, reason: "no_options_affordance" };
   }
 
@@ -277,7 +351,7 @@ async function downloadStatementFromRow({
     return await noDownloadMenuitemFailure(page);
   }
 
-  return await clickDownloadAndConsume(page, dlItem, downloadQueue);
+  return await clickDownloadAndConsume(page, dlItem);
 }
 
 /**
@@ -346,6 +420,7 @@ async function persistHydratedStatement(
       statement,
       pdfPath,
       pdfSha256,
+      content: await extractStatementContentFingerprint(download.buffer),
       buffer: download.buffer,
       suggestedFilename: download.suggestedFilename,
     });
@@ -365,7 +440,6 @@ async function hydrateOneStatement(
   page: Page,
   statement: StatementRow,
   total: number,
-  downloadQueue: DownloadQueue,
   hydrated: HydratedStatement[],
   { onProgress, onSkip }: HydrateCallbacks
 ): Promise<void> {
@@ -379,7 +453,6 @@ async function hydrateOneStatement(
   const result = await downloadStatementFromRow({
     page,
     rowIndex: statement.rowIndex,
-    downloadQueue,
   });
   if (!result.ok) {
     if (onSkip) {
@@ -407,13 +480,11 @@ async function hydrateOneStatement(
 export async function hydrateStatementPdfs({
   page,
   statements,
-  downloadQueue,
   onProgress,
   onSkip,
 }: {
   page: Page;
   statements: StatementRow[];
-  downloadQueue: DownloadQueue;
   onProgress?: (p: { index: number; total: number; title: string | null }) => void;
   onSkip?: (p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void;
 }): Promise<HydratedStatement[]> {
@@ -421,14 +492,10 @@ export async function hydrateStatementPdfs({
   if (!statements.length) {
     return hydrated;
   }
-  if (!downloadQueue) {
-    throw new Error("hydrateStatementPdfs requires downloadQueue");
-  }
-
   await ensureOnDocumentsPage(page);
 
   for (const s of statements) {
-    await hydrateOneStatement(page, s, statements.length, downloadQueue, hydrated, {
+    await hydrateOneStatement(page, s, statements.length, hydrated, {
       onProgress,
       onSkip,
     });
@@ -466,21 +533,11 @@ export function fileUrlForPath(p: string): string {
  * the USAA connector.
  */
 
+// Statement text extraction reuses the shared `pdf-parse` path so the USAA
+// transaction-splitting parse and the content fingerprint hash identically and
+// no second PDF library is introduced.
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Lazy-load pdf-parse so the connector doesn't pay startup cost on runs
-  // that don't hit the PDF path.
-  // biome-ignore lint/correctness/noUnresolvedImports: pdf-parse is declared in package.json; Biome's resolver can't follow its CJS/ESM conditional exports
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: buffer });
-  let textResult: { text?: string };
-  try {
-    textResult = await parser.getText();
-  } finally {
-    await parser.destroy().catch(() => {
-      /* ignore */
-    });
-  }
-  return textResult.text || "";
+  return (await extractStatementPdfTextAndPages(buffer)).text;
 }
 
 /**

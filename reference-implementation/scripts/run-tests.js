@@ -3,6 +3,7 @@ import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { buildScrubbedTestEnv } from './test-env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -18,10 +19,7 @@ function runNodeTest(filePath, extraArgs) {
     const child = spawn(process.execPath, ['--test', ...extraArgs, filePath], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PDPP_RUNTIME_QUIET: process.env.PDPP_RUNTIME_QUIET || '1',
-      },
+      env: buildScrubbedTestEnv(process.env),
     });
     let output = '';
 
@@ -52,12 +50,17 @@ const topLevelTests = entries
   .filter((entry) => entry.isFile() && entry.name.endsWith('.test.js'))
   .map((entry) => join('test', entry.name));
 
-// Co-located unit tests for focused server modules. The discovery is
-// intentionally narrow (one directory) to keep the runner deterministic and
-// fast; broaden if more co-located tests appear.
-const COLOCATED_TEST_DIRS = [join('server', 'streaming')];
+// Co-located unit tests for focused server modules and operator scripts. The
+// discovery is intentionally narrow (explicit directories, explicit extensions)
+// to keep the runner deterministic and fast; broaden if more co-located tests
+// appear. Scripts use `.test.mjs` so the top-level `test/` discovery (strictly
+// `.test.js`) is unaffected.
+const COLOCATED_TEST_DIRS = [
+  { dir: join('server', 'streaming'), extension: '.test.js' },
+  { dir: 'scripts', extension: '.test.mjs' },
+];
 const colocatedTests = [];
-for (const relDir of COLOCATED_TEST_DIRS) {
+for (const { dir: relDir, extension } of COLOCATED_TEST_DIRS) {
   const absDir = join(repoRoot, relDir);
   let dirEntries;
   try {
@@ -66,7 +69,7 @@ for (const relDir of COLOCATED_TEST_DIRS) {
     continue;
   }
   for (const entry of dirEntries) {
-    if (entry.isFile() && entry.name.endsWith('.test.js')) {
+    if (entry.isFile() && entry.name.endsWith(extension)) {
       colocatedTests.push(join(relDir, entry.name));
     }
   }

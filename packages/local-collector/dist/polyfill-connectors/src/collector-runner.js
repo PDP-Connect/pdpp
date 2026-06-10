@@ -4,10 +4,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { buildAgentVersion } from "./collector-build-info.js";
 import { LocalDeviceClient, } from "./local-device-client.js";
 import { buildLocalDeviceRecordEnvelope, hashCanonicalJson, } from "./local-device-envelope.js";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox, } from "./local-device-outbox.js";
 import { assertPlacementOrThrow, COLLECTOR_RUNTIME_CAPABILITIES, } from "./runtime-capabilities.js";
+const COLLECTOR_AGENT_VERSION = buildAgentVersion();
 export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
 const COLLECTOR_GAP_DETAILS_MAX_CHARS = 300;
 const KEYED_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
@@ -17,7 +19,7 @@ const SCAN_BATCH_LIMIT_DETAIL_RE = /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     drainBatchSize: 4,
-    leaseMs: 60_000,
+    leaseMs: 300_000,
     maxAttempts: 5,
     maxDrainDurationMs: 120_000,
     maxDrainIterations: 256,
@@ -25,6 +27,41 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     maxQueueDepth: 10_000,
     retryBackoffMs: 30_000,
 });
+export const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY = Object.freeze({
+    enabled: true,
+    keepRecentCount: 10_000,
+});
+export function resolveCollectorAutoPrunePolicy(override, env = process.env) {
+    const policy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
+    const enabledRaw = env.PDPP_COLLECTOR_AUTO_PRUNE;
+    if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+        policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+    }
+    const keepCount = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT);
+    if (keepCount !== null) {
+        policy.keepRecentCount = keepCount;
+    }
+    return policy;
+}
+const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
+function parseNonNegativeInt(raw) {
+    if (typeof raw !== "string" || raw.trim() === "") {
+        return null;
+    }
+    const value = Number(raw.trim());
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+export function autoPruneSucceededOutbox(input) {
+    if (!input.policy.enabled) {
+        return { enabled: false, matched: 0, pruned: 0 };
+    }
+    const result = input.outbox.pruneSent({
+        dryRun: false,
+        keepCount: input.policy.keepRecentCount,
+        sourceInstanceId: input.sourceInstanceId,
+    });
+    return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export async function enrollCollector(config) {
@@ -34,6 +71,15 @@ export async function enrollCollector(config) {
         ...(config.deviceLabel ? { deviceLabel: config.deviceLabel } : {}),
     });
 }
+export const COLLECTOR_COVERAGE_STATUSES = [
+    "collected",
+    "inventory_only",
+    "excluded",
+    "deferred",
+    "missing",
+    "unsupported",
+    "unaccounted",
+];
 export class CollectorStateReadError extends Error {
     constructor(message, cause) {
         super(message, { cause });
@@ -44,6 +90,7 @@ export async function runCollectorConnector(config) {
     throwIfAborted(config.abortSignal);
     const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
     const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+    const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
     const holderId = config.collectorHolderId ?? randomUUID();
     const outboxPath = config.outboxPath ?? config.queuePath;
     const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -52,6 +99,7 @@ export async function runCollectorConnector(config) {
         deviceId: config.deviceId,
         deviceToken: config.deviceToken,
     });
+    let startingHeartbeatSent = false;
     try {
         const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
         const preScanDrain = await drainCollectorOutbox({
@@ -65,6 +113,7 @@ export async function runCollectorConnector(config) {
         });
         const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const skipResult = await maybeSkipScanForBacklog({
+            autoPrunePolicy,
             client,
             config,
             outbox,
@@ -83,6 +132,7 @@ export async function runCollectorConnector(config) {
             recordsPending: pendingOutboxWorkCount(postDrainSummary),
         });
         await client.heartbeat({
+            agent_version: COLLECTOR_AGENT_VERSION,
             connector_id: config.connector.connector_id,
             outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
                 backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
@@ -91,6 +141,7 @@ export async function runCollectorConnector(config) {
             source_instance_id: config.sourceInstanceId,
             status: "starting",
         });
+        startingHeartbeatSent = true;
         const streamResult = await streamConnectorIntoOutbox({
             ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
             batchSize: config.batchSize ?? 100,
@@ -130,11 +181,19 @@ export async function runCollectorConnector(config) {
             deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
             outbox,
         });
+        const prunedSent = autoPruneSucceededOutbox({
+            outbox,
+            policy: autoPrunePolicy,
+            sourceInstanceId: config.sourceInstanceId,
+        });
         const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const recordsPending = pendingOutboxWorkCount(finalSummary);
         if (!checkpointResult.statePutFailed) {
+            const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
             await client.heartbeat({
+                agent_version: COLLECTOR_AGENT_VERSION,
                 connector_id: config.connector.connector_id,
+                ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
                 outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
                     backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
                 }),
@@ -144,11 +203,13 @@ export async function runCollectorConnector(config) {
             });
         }
         return {
+            completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
             done,
             enqueuedBatches: enqueueResult.enqueuedBatches,
             flushedState: checkpointResult.flushedState,
             outboxSummary: finalSummary,
             priorState,
+            prunedSent,
             recordsQueued: enqueueResult.recordsQueued,
             recoveredLeases,
             satisfiedBindings,
@@ -159,9 +220,29 @@ export async function runCollectorConnector(config) {
             streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
         };
     }
+    catch (error) {
+        if (startingHeartbeatSent) {
+            await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
+        }
+        throw error;
+    }
     finally {
         outbox.close();
     }
+}
+async function emitCorrectiveHeartbeatFromOutbox(input) {
+    const summary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+    const deadLetterError = buildHeartbeatDeadLetterError(input.outbox, input.config.sourceInstanceId);
+    await safeHeartbeat(input.client, {
+        connector_id: input.config.connector.connector_id,
+        ...(deadLetterError ? { last_error: deadLetterError } : {}),
+        outbox: buildHeartbeatOutboxDiagnostics(summary, {
+            backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+        }),
+        records_pending: pendingOutboxWorkCount(summary),
+        source_instance_id: input.config.sourceInstanceId,
+        status: heartbeatStatusForSummary(summary, input.policy),
+    });
 }
 async function maybeSkipScanForBacklog(input) {
     if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId, input.policy)) {
@@ -180,6 +261,11 @@ async function maybeSkipScanForBacklog(input) {
             sourceInstanceId: input.config.sourceInstanceId,
         });
     }
+    const prunedSent = autoPruneSucceededOutbox({
+        outbox: input.outbox,
+        policy: input.autoPrunePolicy,
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
     const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
     const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
     await safeHeartbeat(input.client, {
@@ -192,11 +278,13 @@ async function maybeSkipScanForBacklog(input) {
         status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
     });
     return {
+        completeness: null,
         done: null,
         enqueuedBatches: 0,
         flushedState: null,
         outboxSummary: summaryAfterGap,
         priorState: Object.freeze({}),
+        prunedSent,
         recordsQueued: 0,
         recoveredLeases: input.recoveredLeases,
         satisfiedBindings: input.satisfiedBindings,
@@ -218,12 +306,57 @@ async function readPriorStateOrBlock(input) {
     catch (error) {
         await safeHeartbeat(input.client, {
             connector_id: input.config.connector.connector_id,
+            last_error: { kind: "state_read_failed" },
             records_pending: input.recordsPending,
             source_instance_id: input.config.sourceInstanceId,
             status: "blocked",
         });
         throw new CollectorStateReadError(`failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`, error);
     }
+}
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+function coverageEntryFromRecord(message) {
+    if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
+        return null;
+    }
+    const data = message.data;
+    const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
+    const keyStore = typeof message.key === "string" && message.key ? message.key : null;
+    const store = dataStore ?? keyStore;
+    if (!store) {
+        return null;
+    }
+    const rawStatus = isRecord(data) && typeof data.status === "string" ? data.status : null;
+    if (!rawStatus) {
+        return null;
+    }
+    const status = COLLECTOR_COVERAGE_STATUSES.includes(rawStatus)
+        ? rawStatus
+        : "unaccounted";
+    return { status, store };
+}
+export function summarizeCollectorCompleteness(coverageByStore) {
+    if (!coverageByStore || coverageByStore.size === 0) {
+        return null;
+    }
+    const countsByStatus = Object.fromEntries(COLLECTOR_COVERAGE_STATUSES.map((status) => [status, 0]));
+    const unaccountedStores = [];
+    const byStore = {};
+    for (const store of [...coverageByStore.keys()].sort()) {
+        const status = coverageByStore.get(store);
+        byStore[store] = status;
+        countsByStatus[status] += 1;
+        if (status === "unaccounted") {
+            unaccountedStores.push(store);
+        }
+    }
+    return {
+        byStore,
+        countsByStatus,
+        fullyAccounted: unaccountedStores.length === 0,
+        storeCount: coverageByStore.size,
+        unaccountedStores,
+    };
 }
 async function streamConnectorIntoOutbox(input) {
     throwIfAborted(input.abortSignal);
@@ -242,6 +375,7 @@ async function streamConnectorIntoOutbox(input) {
     let enqueuedBatches = 0;
     let done = null;
     let scanBudgetExceeded = false;
+    let coverageByStore = null;
     const flushPendingBatch = () => {
         if (pendingRecords.length === 0) {
             return;
@@ -288,8 +422,17 @@ async function streamConnectorIntoOutbox(input) {
             scanBudgetExceeded,
         });
     };
+    const recordCoverageIfPresent = (message) => {
+        const entry = coverageEntryFromRecord(message);
+        if (!entry) {
+            return;
+        }
+        coverageByStore ??= new Map();
+        coverageByStore.set(entry.store, entry.status);
+    };
     const handleMessage = (message) => {
         if (message.type === "RECORD") {
+            recordCoverageIfPresent(message);
             pendingRecords.push(message);
             if (pendingRecords.length > bufferHighWaterMark) {
                 bufferHighWaterMark = pendingRecords.length;
@@ -397,6 +540,7 @@ async function streamConnectorIntoOutbox(input) {
     return {
         bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
         bufferHighWaterMark,
+        coverageByStore,
         done: scanBudgetExceeded ? null : done,
         enqueuedBatches,
         recordsQueued,
@@ -567,7 +711,7 @@ async function recoverResolvedLocalCollectorGaps(input) {
 }
 async function safeHeartbeat(client, request) {
     try {
-        await client.heartbeat(request);
+        await client.heartbeat({ agent_version: COLLECTOR_AGENT_VERSION, ...request });
     }
     catch {
     }
@@ -715,35 +859,53 @@ function hasCheckpointPredecessorBlockingWork(outbox, checkpoint) {
 async function drainClaimedOutboxItem(input, item, result, sentByKind) {
     throwIfAborted(input.abortSignal);
     try {
-        await sendOutboxItem(input.client, item);
-        input.outbox.acknowledge({ holder: input.holderId, id: item.id, leaseEpoch: item.lease_epoch });
+        const current = input.outbox.renewLease({
+            holder: input.holderId,
+            id: item.id,
+            leaseEpoch: item.lease_epoch,
+            leaseMs: input.policy.leaseMs,
+        });
+        await sendOutboxItem(input.client, current);
+        input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
         result.sent++;
-        sentByKind[item.kind] = (sentByKind[item.kind] ?? 0) + 1;
+        sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
     }
     catch (error) {
         failOutboxItem(input, item, error, result);
     }
 }
 function failOutboxItem(input, item, error, result) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
-        input.outbox.deadLetter({
+    const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
+    try {
+        if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+            input.outbox.deadLetter({
+                error: message,
+                holder: input.holderId,
+                id: item.id,
+                leaseEpoch: item.lease_epoch,
+            });
+            result.deadLettered++;
+            return;
+        }
+        input.outbox.failRetryable({
             error: message,
             holder: input.holderId,
             id: item.id,
             leaseEpoch: item.lease_epoch,
+            retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
         });
-        result.deadLettered++;
-        return;
+        result.failed++;
     }
-    input.outbox.failRetryable({
-        error: message,
-        holder: input.holderId,
-        id: item.id,
-        leaseEpoch: item.lease_epoch,
-        retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
-    });
-    result.failed++;
+    catch (transitionError) {
+        if (isLeaseNotCurrentError(transitionError)) {
+            result.failed++;
+            return;
+        }
+        throw transitionError;
+    }
+}
+function isLeaseNotCurrentError(error) {
+    return error instanceof Error && error.message.startsWith("local outbox lease not current");
 }
 class OutboxPayloadShapeError extends Error {
     constructor(message) {
@@ -937,6 +1099,34 @@ function isUnresolvedScanBudgetGap(item, policy) {
     }
     return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
+export const LOCAL_COLLECTOR_LIFECYCLE_STATES = [
+    "healthy_idle",
+    "draining",
+    "retryable_backlog",
+    "dead_letter",
+    "stale_lease",
+    "coverage_missing",
+];
+export function deriveLocalCollectorLifecycleState(input) {
+    const { summary } = input;
+    if (summary.deadLetter > 0) {
+        return "dead_letter";
+    }
+    if (summary.staleLeases > 0) {
+        return "stale_lease";
+    }
+    const claimableNow = Math.max(0, summary.ready - summary.retrying);
+    if (summary.leased > 0 || claimableNow > 0) {
+        return "draining";
+    }
+    if (summary.retrying > 0) {
+        return "retryable_backlog";
+    }
+    if (input.coverageObserved === false && input.recordBatchCount > 0) {
+        return "coverage_missing";
+    }
+    return "healthy_idle";
+}
 function heartbeatStatusForSummary(summary, policy) {
     if (summary.deadLetter > 0) {
         return "blocked";
@@ -961,6 +1151,16 @@ export function buildHeartbeatOutboxDiagnostics(summary, options = {}) {
         stale_leases: summary.staleLeases,
         succeeded: summary.succeeded,
         total: summary.total,
+    };
+}
+function buildHeartbeatDeadLetterError(outbox, sourceInstanceId) {
+    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId });
+    if (summary.dead_letter_count === 0) {
+        return null;
+    }
+    return {
+        kind: "dead_letter_backlog",
+        top_dead_letter_classes: summary.top_classes,
     };
 }
 function countOpenBacklogGaps(outbox, sourceInstanceId) {

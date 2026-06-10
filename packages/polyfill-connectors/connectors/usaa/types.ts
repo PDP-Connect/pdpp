@@ -3,8 +3,10 @@
 // Playwright-flavored runtime entry.
 
 import type { Locator } from "playwright";
+import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
-import type { DownloadQueue } from "../../src/download-queue.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
+import type { StatementContentFingerprint } from "../../src/statement-content-fingerprint.ts";
 
 // ─── Statements index row ────────────────────────────────────────────────
 
@@ -33,14 +35,27 @@ export interface DashboardAccount {
 // ─── Emitted records ─────────────────────────────────────────────────────
 
 export interface AccountRecord extends RecordData {
-  available_balance_cents: number | null;
-  balance_cents: number | null;
   fetched_at: string;
   id: string;
   last_four: string | null;
   name: string | null;
   status: "open";
   type: string;
+}
+
+/**
+ * Family-2 observation record: a daily balance snapshot for one account,
+ * keyed `{account_id}:{observed_on}` so repeated same-day pulls are
+ * idempotent and daily balance history is preserved. The point-in-time
+ * balance fields live here, not on `AccountRecord`, so a balance tick no
+ * longer versions the entity record.
+ */
+export interface AccountStatsRecord extends RecordData {
+  account_id: string;
+  available_balance_cents: number | null;
+  balance_cents: number | null;
+  id: string;
+  observed_on: string;
 }
 
 export interface TransactionRecord extends RecordData {
@@ -75,8 +90,10 @@ export interface StatementRecord extends RecordData {
   document_url: string | null;
   fetched_at: string;
   id: string;
+  pdf_page_count: number | null;
   pdf_path: string | null;
   pdf_sha256: string | null;
+  pdf_text_sha256: string | null;
   title: string | null;
 }
 
@@ -84,16 +101,31 @@ export interface CreditCardBillingRecord extends RecordData {
   account_id: string | null;
   account_nickname: string | null;
   annual_percent_rate: string | null;
-  available_credit_cents: number | null;
-  billing_status: string | null;
   card_holders: string | null;
   cash_advance_apr: string | null;
-  cash_rewards_cents: number | null;
   credit_limit_cents: number | null;
-  current_balance_cents: number | null;
   fetched_at: string;
   id: string;
+}
+
+/**
+ * Family-2 observation record: the per-cycle volatile financial state for
+ * one credit card, keyed `{card_id}:{observed_on}`. Current balance,
+ * available credit, accrued rewards, and the cycle billing-status flip live
+ * here so they no longer version the `credit_card_billing` entity record.
+ * Stable settings (`credit_limit_cents`, APRs, nickname, card holders) stay
+ * on the entity — see design.md for the classification rationale.
+ */
+export interface CreditCardBillingStatsRecord extends RecordData {
+  account_id: string | null;
+  available_credit_cents: number | null;
+  billing_status: string | null;
+  card_id: string;
+  cash_rewards_cents: number | null;
+  current_balance_cents: number | null;
+  id: string;
   minimum_payment_met: boolean;
+  observed_on: string;
 }
 
 // ─── Diagnostics (live-page drift detection) ─────────────────────────────
@@ -115,8 +147,27 @@ export interface PageDiagnostics {
   url: string;
 }
 
+/**
+ * What `download.saveAs()` + the createReadStream fallback actually
+ * produced when the export artifact arrived. Lets `download_empty`-style
+ * failures carry forensic detail (URL, suggested filename, byte count,
+ * remote-failure reason) into the timeline instead of disappearing into
+ * the analytics-noise candidate list.
+ */
+export interface DownloadDiagnostics {
+  bytes?: number | null;
+  downloadFailure?: string | null;
+  saveAsError?: string | null;
+  source?: "dataUrl" | "saveAs" | "createReadStream" | null;
+  streamError?: string | null;
+  suggestedFilename?: string | null;
+  url?: string | null;
+}
+
 export interface DiagnosticInfo {
+  artifact?: BodyResponseDiagnostics | null;
   diag: PageDiagnostics | null;
+  download?: DownloadDiagnostics | null;
   error?: string;
   phase: string;
 }
@@ -132,7 +183,7 @@ export interface DocRow {
 
 export interface IndexRow extends StatementRow {
   account_id: string | null;
-  account_reference: string;
+  account_reference: string | null;
   date_delivered: string | null;
   id: string;
   rowIndex: number;
@@ -143,6 +194,7 @@ export interface IndexRow extends StatementRow {
 
 export interface HydrationResultSuccess {
   buffer: Buffer;
+  content: StatementContentFingerprint;
   pdfPath: string;
   pdfSha256: string;
 }
@@ -168,19 +220,32 @@ export interface BillingKv {
 
 // ─── State / cursor ──────────────────────────────────────────────────────
 
+/** Per-account incremental watermark entry in the transactions cursor. */
+export interface TransactionsAccountCursor {
+  last_date: string | null;
+}
+
+/** The transactions STATE cursor is a flat map of `accountKey ->
+ *  { last_date }`, plus a reserved `fingerprints` key carrying the
+ *  per-transaction fingerprint map (keyed by the record `id`
+ *  `hashId(accountId|date|amount|original|#ord)`). `fingerprints` is read
+ *  and written through casts at the boundary so the per-account index
+ *  signature stays a clean `{ last_date }` for the incremental loop —
+ *  mirroring how chase keeps `per_account` separate from `fingerprints`. */
 export interface TransactionsStreamCursor {
-  [accountKey: string]: { last_date: string | null } | undefined;
+  [accountKey: string]: TransactionsAccountCursor | undefined;
 }
 
 export interface TransactionsPriorState {
-  [accountKey: string]: { last_date: string | null } | undefined;
+  [accountKey: string]: TransactionsAccountCursor | undefined;
 }
 
 // ─── Export driver ───────────────────────────────────────────────────────
 
 export interface DriveExportOptions {
   accountType?: string;
-  downloadQueue: DownloadQueue;
+  capture?: CaptureSession | null;
+  captureLabel?: string;
   onDiagnostics?: (info: DiagnosticInfo) => void;
   sinceDate: string;
   untilDate: string;
@@ -261,6 +326,7 @@ export type DownloadResult = DownloadOk | DownloadFail;
 
 export interface HydratedStatement {
   buffer: Buffer;
+  content: StatementContentFingerprint;
   pdfPath: string;
   pdfSha256: string;
   statement: StatementRow;

@@ -1,15 +1,38 @@
 {
-  "name": "@pdpp/remote-surface",
+  "name": "@opendatalabs/remote-surface",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Host-neutral RemoteSurface abstraction layer for browser interactions over n.eko and CDP backends.",
-  "license": "ISC",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/vana-com/remote-surface#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/remote-surface.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vana-com/remote-surface/issues"
+  },
+  "keywords": [
+    "remote-surface",
+    "browser",
+    "neko",
+    "cdp",
+    "streaming",
+    "clipboard",
+    "mobile-ime",
+    "webrtc"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
   ],
   "exports": {
     ".": {
@@ -56,6 +79,10 @@
       "types": "./dist/protocol/index.d.ts",
       "import": "./dist/protocol/index.js"
     },
+    "./reference": {
+      "types": "./dist/reference/index.d.ts",
+      "import": "./dist/reference/index.js"
+    },
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
@@ -68,12 +95,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "ultracite check",
+    "check:dist": "node ./scripts/check-dist-drift.mjs",
     "fix": "ultracite fix",
     "prepack": "pnpm build",
     "validate:package": "pnpm build && node ./scripts/validate-package.mjs",
     "test": "node --test --test-timeout=15000 --import tsx 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm typecheck && pnpm check && pnpm test && pnpm validate:package"
+    "verify": "pnpm typecheck && pnpm check && pnpm test && pnpm validate:package && pnpm check:dist"
   },
   "dependencies": {
     "transformation-matrix": "^3.1.0"

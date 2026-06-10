@@ -12,6 +12,8 @@ import {
 } from "./db.ts";
 import {
   postgresEmitSpineEvent,
+  postgresGetRunStartedEvent,
+  postgresGetRunTerminalEvent,
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
   postgresSearchSpine,
@@ -207,6 +209,13 @@ export interface SpineSummary {
   failure: SpineFailureSummary | null;
   first_at: string;
   grant_id: string | null;
+  /**
+   * Parent grant-package id when the grant's binding token carries
+   * `package_id`. Populated by `listSpineCorrelations` for kind=`grant`
+   * via a per-row tokens lookup. Surfaced on `_ref/grants` as an
+   * optional field; pre-package-aware consumers ignore it.
+   */
+  grant_package_id?: string | null;
   id?: string;
   kinds: string[];
   last_at: string;
@@ -402,8 +411,8 @@ let currentBootEpoch: BootEpoch | null = null;
 
 export interface BootEpoch {
   readonly boot_epoch: string;
-  readonly seq: number;
   readonly controller_id: string;
+  readonly seq: number;
 }
 
 export function setCurrentBootEpoch(epoch: BootEpoch): void {
@@ -426,13 +435,15 @@ export function getCurrentBootEpoch(): BootEpoch | null {
 export function clearCurrentBootEpoch(): void {
   currentBootEpoch = null;
 }
-
-// biome-ignore lint/suspicious/useAwait: see doc-comment — historical async signature kept for call-site compatibility.
-export async function emitSpineEvent(
+export function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
-  assertRunStartedIsStamped(input);
+  try {
+    assertRunStartedIsStamped(input);
+  } catch (e) {
+    return Promise.reject(e);
+  }
 
   if (!dbHandle && isPostgresStorageBackend()) {
     return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
@@ -440,13 +451,13 @@ export async function emitSpineEvent(
 
   const db = dbHandle ?? (getDb() as SpineDatabase | undefined);
   if (!db) {
-    return null;
+    return Promise.resolve(null);
   }
   const event = normalizeSpineEventInput(input);
 
   execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
-  return hydrateNormalizedEvent(event);
+  return Promise.resolve(hydrateNormalizedEvent(event));
 }
 
 /**
@@ -479,13 +490,13 @@ function assertRunStartedIsStamped(input: SpineEventInput): void {
   if (typeof epoch !== "string" || epoch.length === 0) {
     throw new Error(
       "emitSpineEvent: run.started requires data.boot_epoch (string uuid); controller singleton not initialized? " +
-        "See docs/run-reconciliation-design-brief.md §3.3.",
+        "See docs/run-reconciliation-design-brief.md §3.3."
     );
   }
   if (typeof seq !== "number" || !Number.isFinite(seq) || seq < 1) {
     throw new Error(
       "emitSpineEvent: run.started requires data.seq (positive integer); controller singleton not initialized? " +
-        "See docs/run-reconciliation-design-brief.md §3.3.",
+        "See docs/run-reconciliation-design-brief.md §3.3."
     );
   }
 }
@@ -637,6 +648,131 @@ export function listSpineEventsPage(
 }
 
 /**
+ * Window-independent terminal status for a run. One of `completed`,
+ * `failed`, `cancelled`, `abandoned`, or `null` when the run has no
+ * terminal event yet.
+ */
+export type RunTerminalStatus = "completed" | "failed" | "cancelled" | "abandoned";
+
+interface RunLifecycleEventRow {
+  readonly actor_id?: string | null;
+  readonly data_json?: string | null;
+  readonly event_type: string;
+  readonly occurred_at?: string | null;
+  readonly trace_id?: string | null;
+}
+
+const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
+  "run.completed": "completed",
+  "run.failed": "failed",
+  "run.cancelled": "cancelled",
+  "run.abandoned": "abandoned",
+};
+
+/**
+ * Bounded single-event projection of a run lifecycle milestone
+ * (`run.started` or the most-recent terminal event). `data` is the
+ * event's parsed `data_json` payload (`null` when absent or malformed);
+ * `actor_id` carries the connector id the runtime stamped on the event.
+ * Consumed by the `GET /_ref/runs/:runId` run-handle status route.
+ */
+export interface RunLifecycleEventSummary {
+  readonly actor_id: string | null;
+  readonly data: Record<string, unknown> | null;
+  readonly event_type: string;
+  readonly occurred_at: string | null;
+  readonly trace_id: string | null;
+}
+
+function summarizeRunLifecycleRow(row: RunLifecycleEventRow | null | undefined): RunLifecycleEventSummary | null {
+  if (!row || typeof row.event_type !== "string") {
+    return null;
+  }
+  let data: Record<string, unknown> | null = null;
+  if (typeof row.data_json === "string" && row.data_json) {
+    try {
+      const parsed: unknown = JSON.parse(row.data_json);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed payloads read as "no data", never as a thrown 500.
+    }
+  }
+  return {
+    actor_id: typeof row.actor_id === "string" && row.actor_id ? row.actor_id : null,
+    data,
+    event_type: row.event_type,
+    occurred_at: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
+    trace_id: typeof row.trace_id === "string" && row.trace_id ? row.trace_id : null,
+  };
+}
+
+async function fetchRunTerminalEventRow(runId: string): Promise<RunLifecycleEventRow | null> {
+  if (!runId) {
+    return null;
+  }
+  const row = isPostgresStorageBackend()
+    ? ((await postgresGetRunTerminalEvent(runId)) as RunLifecycleEventRow | null | undefined)
+    : getOne<RunLifecycleEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
+  return row ?? null;
+}
+
+/**
+ * Resolve a run's terminal status from its most-recent terminal spine
+ * event, independent of any paginated timeline window. Uses the bounded
+ * `ORDER BY event_seq DESC LIMIT 1` terminal-event query
+ * (`queries/spine/get-run-terminal-event.sql` for SQLite,
+ * `postgresGetRunTerminalEvent` for Postgres) — it never scans the run's
+ * full event list and never depends on `limit`/`cursor`. Returns `null`
+ * when the run has no terminal event (still active / in progress).
+ */
+export async function getRunTerminalStatus(runId: string): Promise<RunTerminalStatus | null> {
+  const row = await fetchRunTerminalEventRow(runId);
+  if (!row) {
+    return null;
+  }
+  return RUN_TERMINAL_EVENT_TYPE_TO_STATUS[row.event_type] ?? null;
+}
+
+/**
+ * Full bounded projection of a run's most-recent terminal event
+ * (status + occurred_at + connector/trace identity + parsed payload).
+ * Same `LIMIT 1` read as `getRunTerminalStatus`; returns `null` when
+ * the run has no terminal event yet.
+ */
+export async function getRunTerminalEvent(
+  runId: string
+): Promise<(RunLifecycleEventSummary & { readonly status: RunTerminalStatus }) | null> {
+  const summary = summarizeRunLifecycleRow(await fetchRunTerminalEventRow(runId));
+  if (!summary) {
+    return null;
+  }
+  const status = RUN_TERMINAL_EVENT_TYPE_TO_STATUS[summary.event_type];
+  if (!status) {
+    return null;
+  }
+  return { ...summary, status };
+}
+
+/**
+ * Bounded projection of a run's `run.started` event
+ * (`queries/spine/get-run-started-event.sql` for SQLite,
+ * `postgresGetRunStartedEvent` for Postgres; `ORDER BY event_seq ASC
+ * LIMIT 1`). Returns `null` when the run never reached the runtime's
+ * start emit — e.g. a launch failure before the connector child spawned.
+ */
+export async function getRunStartedEvent(runId: string): Promise<RunLifecycleEventSummary | null> {
+  if (!runId) {
+    return null;
+  }
+  const row = isPostgresStorageBackend()
+    ? ((await postgresGetRunStartedEvent(runId)) as RunLifecycleEventRow | null | undefined)
+    : getOne<RunLifecycleEventRow>(referenceQueries.spineGetRunStartedEvent, [runId]);
+  return summarizeRunLifecycleRow(row);
+}
+
+/**
  * Summary cap. Internal callers (`listSpineCorrelations`, `searchSpine`)
  * fetch up to this many events per correlation row to compute summaries.
  * The number is generous enough to fit every current real-world run
@@ -703,7 +839,20 @@ function sourceFromEvent(ev: SpineEventRecord): SourceObject | null {
     return { kind: sourceKind, id: ev.source_id };
   }
   const data = ev.data && typeof ev.data === "object" ? (ev.data as Record<string, unknown>) : {};
-  return normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
+  const source = normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
+  if (source) {
+    return source;
+  }
+  if (typeof data.connector_id === "string") {
+    return { kind: "connector", id: data.connector_id };
+  }
+  if (typeof data.provider_id === "string") {
+    return { kind: "provider_native", id: data.provider_id };
+  }
+  if (ev.actor_type === "runtime" && ev.actor_id) {
+    return { kind: "connector", id: ev.actor_id };
+  }
+  return null;
 }
 
 function pickFirstNonNull<T extends keyof SpineEventRecord>(
@@ -718,6 +867,133 @@ function pickFirstNonNull<T extends keyof SpineEventRecord>(
   }
   return null;
 }
+// RUN_TERMINAL_EVENT_TYPES — the canonical set of terminal events for a
+// run lifecycle. `run.cancelled` and `run.abandoned` were added with
+// boot-epoch reconciliation (see docs/run-reconciliation-design-brief.md
+// §3.7). All run-status projection code must read from this set; never
+// hardcode subset checks like `["completed", "failed"]` elsewhere.
+const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
+
+// Walk events newest-first and pick the most recent status that satisfies
+// `accept`. Returns `null` when no event matches.
+function findLatestStatus(
+  events: readonly SpineEventRecord[],
+  accept: (event: SpineEventRecord) => boolean
+): string | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const ev = events[i];
+    if (!(ev && accept(ev))) {
+      continue;
+    }
+    const s = ev.status;
+    if (s && s !== "unknown") {
+      return s;
+    }
+  }
+  return null;
+}
+
+// Run-correlation summaries must reflect the run's lifecycle status
+// (`run.completed` / `run.failed`), NOT the status of incidental sub-resource
+// events that happen to share the run_id (e.g. `run.stream_session_resolved`,
+// which carries `status: "completed"` when an *operator-side* stream cleanly
+// closes — independent of whether the connector run itself succeeded).
+// Without this filter, a run that emits both `run.failed` AND a
+// `run.stream_session_resolved` (status="completed") would surface as
+// "completed" in the dashboard, which is dishonest about the real outcome.
+//
+// Note: this is a targeted patch over a deeper design tension — the spine
+// event model conflates run-lifecycle status with sub-resource status under
+// a single `status` column. The deeper fix is for the spec to distinguish
+// run-terminal events from sub-resource events explicitly. Tracked in
+// `openspec/changes/refine-spine-status-semantics-for-mixed-correlations/`.
+//
+// A started run with no terminal event is only live if the controller still
+// has an active lease for its run_id. Without that lease, it is an orphaned
+// started run and must not keep the dashboard auto-polling indefinitely.
+function hasActiveRunLease(runId: string | null): boolean {
+  if (!runId) {
+    return false;
+  }
+  const db = getDb() as SpineDatabase | undefined;
+  if (!db) {
+    return false;
+  }
+  const row = db.prepare("SELECT 1 AS active FROM controller_active_runs WHERE run_id = ? LIMIT 1").get(runId) as
+    | { readonly active?: number }
+    | undefined;
+  return Boolean(row);
+}
+
+function pickSummaryStatus(events: readonly SpineEventRecord[]): string {
+  const terminalStatus = findLatestStatus(events, (ev) => RUN_TERMINAL_EVENT_TYPES.has(ev.event_type));
+  if (terminalStatus) {
+    return terminalStatus;
+  }
+
+  const runId = pickFirstNonNull(events, "run_id") as string | null;
+  if (events.some((ev) => ev.event_type === "run.started")) {
+    return hasActiveRunLease(runId) ? "in_progress" : "failed";
+  }
+
+  return findLatestStatus(events, () => true) ?? "unknown";
+}
+
+function findFirstConnectorId(events: readonly SpineEventRecord[]): string | null {
+  for (const ev of events) {
+    const c = connectorIdFromEvent(ev);
+    if (c) {
+      return c;
+    }
+  }
+  return null;
+}
+
+function findFirstSource(events: readonly SpineEventRecord[]): SourceObject | null {
+  for (const ev of events) {
+    const s = sourceFromEvent(ev);
+    if (s) {
+      return s;
+    }
+  }
+  return null;
+}
+
+function findLatestBrowserSurfaceProjection(events: readonly SpineEventRecord[]): Record<string, unknown> | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event?.event_type?.startsWith("run.browser_surface_")) {
+      continue;
+    }
+    const data = event.data && typeof event.data === "object" ? (event.data as Record<string, unknown>) : null;
+    const projection = data?.browser_surface;
+    if (projection && typeof projection === "object" && !Array.isArray(projection)) {
+      return projection as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+const BROWSER_SURFACE_PROJECTION_KEYS = [
+  "browser_surface_status",
+  "browser_surface_wait_reason",
+  "browser_surface_lease_id",
+  "browser_surface_profile_key",
+] as const;
+
+function pickBrowserSurfaceFields(projection: Record<string, unknown> | null): Record<string, string> {
+  if (!projection) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const key of BROWSER_SURFACE_PROJECTION_KEYS) {
+    const value = projection[key];
+    if (typeof value === "string") {
+      out[key] = value;
+    }
+  }
+  return out;
+}
 
 function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
@@ -729,95 +1005,13 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     return null;
   }
   const kinds = Array.from(new Set(events.map((e) => e.event_type))).slice(0, 16);
-
-  // Run-correlation summaries must reflect the run's lifecycle status
-  // (`run.completed` / `run.failed`), NOT the status of incidental sub-resource
-  // events that happen to share the run_id (e.g. `run.stream_session_resolved`,
-  // which carries `status: "completed"` when an *operator-side* stream cleanly
-  // closes — independent of whether the connector run itself succeeded).
-  // Without this filter, a run that emits both `run.failed` AND a
-  // `run.stream_session_resolved` (status="completed") would surface as
-  // "completed" in the dashboard, which is dishonest about the real outcome.
-  //
-  // Note: this is a targeted patch over a deeper design tension — the spine
-  // event model conflates run-lifecycle status with sub-resource status under
-  // a single `status` column. The deeper fix is for the spec to distinguish
-  // run-terminal events from sub-resource events explicitly. Tracked in
-  // `openspec/changes/refine-spine-status-semantics-for-mixed-correlations/`.
-  // RUN_TERMINAL_EVENT_TYPES — the canonical set of terminal events for a
-  // run lifecycle. `run.cancelled` and `run.abandoned` were added with
-  // boot-epoch reconciliation (see docs/run-reconciliation-design-brief.md
-  // §3.7). All run-status projection code must read from this set; never
-  // hardcode subset checks like `["completed", "failed"]` elsewhere.
-  const RUN_TERMINAL_EVENT_TYPES = new Set([
-    "run.completed",
-    "run.failed",
-    "run.cancelled",
-    "run.abandoned",
-  ]);
-  let status = "unknown";
-  // Pass 1: prefer the most recent run-terminal event when summarizing a run.
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const ev = events[i];
-    if (!ev) {
-      continue;
-    }
-    if (!RUN_TERMINAL_EVENT_TYPES.has(ev.event_type)) {
-      continue;
-    }
-    const s = ev.status;
-    if (s && s !== "unknown") {
-      status = s;
-      break;
-    }
-  }
-  // Pass 2 (fallback): if no run-terminal event exists yet (run in flight or
-  // non-run correlation), use the most recent non-"unknown" status as before.
-  if (status === "unknown") {
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const ev = events[i];
-      if (!ev) {
-        continue;
-      }
-      const s = ev.status;
-      if (s && s !== "unknown") {
-        status = s;
-        break;
-      }
-    }
-  }
-
+  const status = pickSummaryStatus(events);
   const terminalFailure = events.find((e) => e.status === "failed" || e.status === "rejected");
-  const needs_input = hasPendingRunInteraction(events, status);
-
-  let connector_id: string | null = null;
-  for (const ev of events) {
-    const c = connectorIdFromEvent(ev);
-    if (c) {
-      connector_id = c;
-      break;
-    }
-  }
-  let source: SourceObject | null = null;
-  for (const ev of events) {
-    source = sourceFromEvent(ev);
-    if (source) {
-      break;
-    }
-  }
-  let browserSurfaceProjection: Record<string, unknown> | null = null;
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (!event?.event_type?.startsWith("run.browser_surface_")) {
-      continue;
-    }
-    const data = event.data && typeof event.data === "object" ? (event.data as Record<string, unknown>) : null;
-    const projection = data?.browser_surface;
-    if (projection && typeof projection === "object" && !Array.isArray(projection)) {
-      browserSurfaceProjection = projection as Record<string, unknown>;
-      break;
-    }
-  }
+  const inferredOrphanFailure =
+    !terminalFailure && status === "failed" && events.some((e) => e.event_type === "run.started")
+      ? { event_type: "run.started", reason: "orphaned_started_run" }
+      : null;
+  const source = findFirstSource(events);
 
   return {
     first_at: first.occurred_at,
@@ -825,7 +1019,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     event_count: events.length,
     status,
     kinds,
-    needs_input,
+    needs_input: hasPendingRunInteraction(events, status),
     request_id: pickFirstNonNull(events, "request_id") as string | null,
     grant_id: pickFirstNonNull(events, "grant_id") as string | null,
     trace_id: pickFirstNonNull(events, "trace_id") as string | null,
@@ -834,27 +1028,16 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     source,
     source_kind: source?.kind ?? null,
     source_id: source?.id ?? null,
-    connector_id,
+    connector_id: findFirstConnectorId(events),
     actor_type: first.actor_type,
     actor_id: first.actor_id,
-    ...(typeof browserSurfaceProjection?.browser_surface_status === "string"
-      ? { browser_surface_status: browserSurfaceProjection.browser_surface_status }
-      : {}),
-    ...(typeof browserSurfaceProjection?.browser_surface_wait_reason === "string"
-      ? { browser_surface_wait_reason: browserSurfaceProjection.browser_surface_wait_reason }
-      : {}),
-    ...(typeof browserSurfaceProjection?.browser_surface_lease_id === "string"
-      ? { browser_surface_lease_id: browserSurfaceProjection.browser_surface_lease_id }
-      : {}),
-    ...(typeof browserSurfaceProjection?.browser_surface_profile_key === "string"
-      ? { browser_surface_profile_key: browserSurfaceProjection.browser_surface_profile_key }
-      : {}),
+    ...pickBrowserSurfaceFields(findLatestBrowserSurfaceProjection(events)),
     failure: terminalFailure
       ? {
           event_type: terminalFailure.event_type,
           reason: readFailureReason(terminalFailure.data),
         }
-      : null,
+      : inferredOrphanFailure,
   };
 }
 
@@ -1027,34 +1210,37 @@ function clampLimit(raw: unknown): number {
  * Backwards-compatible return shape: `{summaries, hasMore, nextCursor}`. The
  * cursor remains `"<last_at>::<id>"`.
  */
-// biome-ignore lint/suspicious/useAwait: historical async signature kept for call-site compatibility.
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SQL+JS pagination flow is inherent; further decomposition would hide the WHERE/HAVING/cursor/page-filter interactions.
-export async function listSpineCorrelations(
+export function listSpineCorrelations(
   key: SpineCorrelationKey | string,
   filters: SpineCorrelationFilters = {}
 ): Promise<SpineCorrelationPage> {
   if (isPostgresStorageBackend()) {
     return postgresListSpineCorrelations(key, filters) as Promise<SpineCorrelationPage>;
   }
+  return Promise.resolve(listSpineCorrelationsSqlite(key, filters));
+}
 
-  const db = getDb() as SpineDatabase | undefined;
-  const empty: SpineCorrelationPage = { summaries: [], hasMore: false, nextCursor: null };
-  if (!db) {
-    return empty;
-  }
-  const column = CORRELATION_COLUMN[key as SpineCorrelationKey];
-  if (!column) {
-    return empty;
-  }
+interface CorrelationAggregateSql {
+  readonly binds: (string | number)[];
+  readonly sql: string;
+}
 
-  const limit = clampLimit(filters.limit);
-
+// Builds the GROUP-BY aggregate query that narrows correlations before
+// per-id event hydration. SQL filters cover columns that are constant across
+// every event in a correlation (client_id, source_kind/id, grant_id),
+// since/until become HAVING clauses over MIN/MAX(occurred_at), and the q
+// LIKE applies only to the indexed correlation column. Secondary-field q
+// matching stays in the per-row page-scope pass.
+function buildCorrelationAggregateSql(
+  column: string,
+  filters: SpineCorrelationFilters,
+  sqlLimit: number
+): CorrelationAggregateSql {
   const whereParts: string[] = [`${column} IS NOT NULL`];
   const whereBinds: (string | number)[] = [];
-
-  // since/until: test against MAX/MIN respectively, done as HAVING after GROUP BY.
   const havingParts: string[] = [];
   const havingBinds: (string | number)[] = [];
+
   if (filters.since) {
     havingParts.push("MAX(occurred_at) >= ?");
     havingBinds.push(filters.since);
@@ -1063,9 +1249,6 @@ export async function listSpineCorrelations(
     havingParts.push("MIN(occurred_at) <= ?");
     havingBinds.push(filters.until);
   }
-
-  // Event-column equality filters. Valid because these columns tag the event
-  // and every event in a correlation carries the same value (or null) for them.
   if (filters.clientId) {
     whereParts.push("client_id = ?");
     whereBinds.push(filters.clientId);
@@ -1082,21 +1265,12 @@ export async function listSpineCorrelations(
     whereParts.push("grant_id = ?");
     whereBinds.push(filters.grantId);
   }
-  // q narrowing on the indexed correlation column. Secondary-field LIKE stays
-  // in the page-scope pass below.
   if (filters.q) {
     whereParts.push(`${column} LIKE ?`);
     whereBinds.push(`%${String(filters.q)}%`);
   }
 
-  // Cursor seek: pages are ordered by (last_at DESC, id DESC) for stability.
   const { lastAt: cursorLastAt, id: cursorId } = parseCursor(decodeCursor(filters.cursor));
-
-  // Over-fetch by a generous multiplier so the remaining page-scope JS filters
-  // (status, connectorId for non-run correlations, fuzzy q on secondary fields)
-  // have room to reject without under-filling the response.
-  const sqlLimit = limit * 4;
-
   if (cursorLastAt && cursorId) {
     havingParts.push(`(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND ${column} < ?))`);
     havingBinds.push(cursorLastAt, cursorLastAt, cursorId);
@@ -1115,46 +1289,100 @@ export async function listSpineCorrelations(
     ORDER BY last_at DESC, id DESC
     LIMIT ?
   `;
+  return { sql, binds: [...whereBinds, ...havingBinds, sqlLimit] };
+}
 
-  const aggRows = [
-    ...iterateDynamicSqlAcknowledged<CorrelationAggregateRow>(sql, [...whereBinds, ...havingBinds, sqlLimit]),
-  ];
+function matchesSecondaryQ(summary: SpineSummary, id: string, q: string | null | undefined): boolean {
+  if (!q) {
+    return true;
+  }
+  const needle = String(q).toLowerCase();
+  const hay =
+    `${id} ${summary.request_id || ""} ${summary.grant_id || ""} ${summary.run_id || ""} ${summary.client_id || ""} ${summary.source_id || ""}`.toLowerCase();
+  return hay.includes(needle);
+}
+
+function hydrateAggregateRow(
+  aggRow: CorrelationAggregateRow,
+  correlationKind: SpineCorrelationKey,
+  key: SpineCorrelationKey | string,
+  filters: SpineCorrelationFilters
+): SpineSummary | null {
+  const events = loadEventsForSummary(correlationKind, aggRow.id);
+  if (events.length === 0) {
+    return null;
+  }
+  const s = summarizeEvents(events);
+  if (!s) {
+    return null;
+  }
+  s.id = aggRow.id;
+  // The hydration sample is capped; the aggregate row carries the full
+  // correlation extent computed by SQL.
+  s.first_at = aggRow.first_at;
+  s.last_at = aggRow.last_at;
+  s.event_count = aggRow.event_count;
+  if (key === "grant") {
+    s.status = deriveGrantLifecycleStatus(events);
+  }
+  if (!applyFilters(s, filters)) {
+    return null;
+  }
+  if (!matchesSecondaryQ(s, aggRow.id, filters.q)) {
+    return null;
+  }
+  return s;
+}
+
+// For grant correlations, attach the grant_package_id when the grant is a
+// member of a package. The membership lookup is one query per page row,
+// guarded by a non-null grant id.
+function attachGrantPackageMembership(summaries: readonly SpineSummary[]): void {
+  for (const s of summaries) {
+    const gid = s.grant_id ?? s.id ?? null;
+    if (!gid) {
+      continue;
+    }
+    const row = getOne<{ readonly package_id: string | null }>(
+      referenceQueries.authGrantPackageMembersGetPackageIdByGrant,
+      [gid]
+    );
+    if (row?.package_id) {
+      s.grant_package_id = row.package_id;
+    }
+  }
+}
+
+function listSpineCorrelationsSqlite(
+  key: SpineCorrelationKey | string,
+  filters: SpineCorrelationFilters
+): SpineCorrelationPage {
+  const empty: SpineCorrelationPage = { summaries: [], hasMore: false, nextCursor: null };
+  if (!(getDb() as SpineDatabase | undefined)) {
+    return empty;
+  }
+  const column = CORRELATION_COLUMN[key as SpineCorrelationKey];
+  if (!column) {
+    return empty;
+  }
+
+  const limit = clampLimit(filters.limit);
+  // Over-fetch by a generous multiplier so the remaining page-scope JS filters
+  // (status, connectorId for non-run correlations, fuzzy q on secondary fields)
+  // have room to reject without under-filling the response.
+  const sqlLimit = limit * 4;
+
+  const { sql, binds } = buildCorrelationAggregateSql(column, filters, sqlLimit);
+  const aggRows = [...iterateDynamicSqlAcknowledged<CorrelationAggregateRow>(sql, binds)];
 
   const correlationKind = CORRELATION_KIND_FOR_COLUMN[column];
   const summaries: SpineSummary[] = [];
-
   for (const aggRow of aggRows) {
-    const events = loadEventsForSummary(correlationKind, aggRow.id);
-    if (events.length === 0) {
+    const summary = hydrateAggregateRow(aggRow, correlationKind, key, filters);
+    if (!summary) {
       continue;
     }
-    const s = summarizeEvents(events);
-    if (!s) {
-      continue;
-    }
-    s.id = aggRow.id;
-    // The hydration sample is capped; the aggregate row carries the full
-    // correlation extent computed by SQL.
-    s.first_at = aggRow.first_at;
-    s.last_at = aggRow.last_at;
-    s.event_count = aggRow.event_count;
-    if (key === "grant") {
-      s.status = deriveGrantLifecycleStatus(events);
-    }
-
-    if (!applyFilters(s, filters)) {
-      continue;
-    }
-    if (filters.q) {
-      const needle = String(filters.q).toLowerCase();
-      const hay =
-        `${aggRow.id} ${s.request_id || ""} ${s.grant_id || ""} ${s.run_id || ""} ${s.client_id || ""} ${s.source_id || ""}`.toLowerCase();
-      if (!hay.includes(needle)) {
-        continue;
-      }
-    }
-
-    summaries.push(s);
+    summaries.push(summary);
     if (summaries.length >= limit + 1) {
       break;
     }
@@ -1164,6 +1392,11 @@ export async function listSpineCorrelations(
   const page = summaries.slice(0, limit);
   const tail = page.at(-1);
   const nextCursor = hasMore && tail ? `${tail.last_at}::${tail.id ?? ""}` : null;
+
+  if (key === "grant" && page.length > 0) {
+    attachGrantPackageMembership(page);
+  }
+
   return { summaries: page, hasMore, nextCursor };
 }
 
@@ -1177,12 +1410,14 @@ interface SpineSearchBySecondaryRow {
  * request_id. Fuzzy matches use LIKE on each indexed column; we fetch at
  * most `limit + 1` distinct ids per column and summarize them page-scope.
  */
-// biome-ignore lint/suspicious/useAwait: historical async signature kept for call-site compatibility.
-export async function searchSpine(query: unknown): Promise<SpineSearchResult> {
+export function searchSpine(query: unknown): Promise<SpineSearchResult> {
   if (isPostgresStorageBackend()) {
     return postgresSearchSpine(query) as Promise<SpineSearchResult>;
   }
+  return Promise.resolve(searchSpineSqlite(query));
+}
 
+function searchSpineSqlite(query: unknown): SpineSearchResult {
   const db = getDb() as SpineDatabase | undefined;
   const empty: SpineSearchResult = { exact: null, traces: [], grants: [], runs: [] };
   if (!db) {
@@ -1193,10 +1428,8 @@ export async function searchSpine(query: unknown): Promise<SpineSearchResult> {
     return empty;
   }
 
-  const exactMatch = findExactMatch(q);
-
   return {
-    exact: exactMatch,
+    exact: findExactMatch(q),
     traces: summariesForLike("trace_id", q),
     grants: summariesForLike("grant_id", q),
     runs: summariesForLike("run_id", q),

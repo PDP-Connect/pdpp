@@ -19,6 +19,7 @@ const BROWSER_SURFACE_ID_ENV = "PDPP_BROWSER_SURFACE_ID";
 const BROWSER_SURFACE_LEASE_ID_ENV = "PDPP_BROWSER_SURFACE_LEASE_ID";
 const BROWSER_SURFACE_PROFILE_KEY_ENV = "PDPP_BROWSER_SURFACE_PROFILE_KEY";
 const BROWSER_SURFACE_REQUIRED_ENV = "PDPP_BROWSER_SURFACE_REQUIRED";
+const BROWSER_SURFACE_REMOTE_CDP_URL_ENV = "PDPP_BROWSER_SURFACE_REMOTE_CDP_URL";
 const BROWSER_SURFACE_STREAM_BASE_URL_ENV = "PDPP_BROWSER_SURFACE_STREAM_BASE_URL";
 function resolveCdpEndpointFromEnv(env) {
     const host = env[BROWSER_CDP_HOST_ENV]?.trim();
@@ -43,12 +44,14 @@ function resolveManagedNekoDescriptorFromEnv(env) {
     const baseUrl = nonEmptyEnv(env, BROWSER_SURFACE_STREAM_BASE_URL_ENV);
     const leaseId = nonEmptyEnv(env, BROWSER_SURFACE_LEASE_ID_ENV);
     const profileKey = nonEmptyEnv(env, BROWSER_SURFACE_PROFILE_KEY_ENV);
+    const cdpHttpUrl = nonEmptyEnv(env, BROWSER_SURFACE_REMOTE_CDP_URL_ENV);
     if (!(baseUrl && leaseId && profileKey)) {
         return;
     }
     return {
         backend: "neko",
         base_url: baseUrl,
+        ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
         lease_id: leaseId,
         profile_key: profileKey,
         ...(nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) ? { surface_id: nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) } : {}),
@@ -57,7 +60,30 @@ function resolveManagedNekoDescriptorFromEnv(env) {
 function generateInteractionId() {
     return `int_${String(Date.now())}_${randomBytes(4).toString("hex")}`;
 }
-async function readManualActionPageMetadata(page) {
+export const DEADLINE_TIMEOUT = Symbol("pdpp.browser-handoff.deadline-timeout");
+const DEFAULT_METADATA_READ_DEADLINE_MS = 2000;
+export async function withDeadline(work, ms, onTimeout) {
+    if (!(Number.isFinite(ms) && ms > 0)) {
+        return work;
+    }
+    let timer;
+    const deadline = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            onTimeout?.();
+            resolve(DEADLINE_TIMEOUT);
+        }, ms);
+        timer.unref?.();
+    });
+    try {
+        return await Promise.race([work, deadline]);
+    }
+    finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+}
+async function readManualActionPageMetadata(page, deadlineMs = DEFAULT_METADATA_READ_DEADLINE_MS) {
     let pageUrl;
     let pageTitle;
     try {
@@ -66,7 +92,12 @@ async function readManualActionPageMetadata(page) {
     catch {
     }
     try {
-        pageTitle = await page.title();
+        const titleResult = await withDeadline(page.title(), deadlineMs, () => {
+            process.stderr.write(`[browser-handoff] page.title() timed out after ${String(deadlineMs)}ms; emitting interaction without page title.\n`);
+        });
+        if (titleResult !== DEADLINE_TIMEOUT) {
+            pageTitle = titleResult;
+        }
     }
     catch {
     }
@@ -115,11 +146,11 @@ function registerCdpManualActionTarget(args) {
         ...(args.reason ? { reason: args.reason } : {}),
     });
 }
-export async function prepareManualAction(args) {
+export async function prepareBrowserInteractionTarget(args) {
     const env = args.env ?? process.env;
     const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
     const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
-    const interactionId = generateInteractionId();
+    const interactionId = args.interactionId ?? generateInteractionId();
     const registration = await resolveStreamingRegistration(env);
     if (!registration) {
         return { interactionId, registered: false };
@@ -161,6 +192,9 @@ export async function prepareManualAction(args) {
     }
     return { interactionId, registered: true };
 }
+export function prepareManualAction(args) {
+    return prepareBrowserInteractionTarget(args);
+}
 function captureManualActionFixture(args) {
     if (!args.capture) {
         return;
@@ -194,4 +228,4 @@ export async function manualAction(args, sendInteraction) {
         ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
     });
 }
-export { BROWSER_CDP_HOST_ENV, BROWSER_CDP_PORT_ENV, BROWSER_SURFACE_ID_ENV, BROWSER_SURFACE_LEASE_ID_ENV, BROWSER_SURFACE_PROFILE_KEY_ENV, BROWSER_SURFACE_REQUIRED_ENV, BROWSER_SURFACE_STREAM_BASE_URL_ENV, };
+export { BROWSER_CDP_HOST_ENV, BROWSER_CDP_PORT_ENV, BROWSER_SURFACE_ID_ENV, BROWSER_SURFACE_LEASE_ID_ENV, BROWSER_SURFACE_PROFILE_KEY_ENV, BROWSER_SURFACE_REMOTE_CDP_URL_ENV, BROWSER_SURFACE_REQUIRED_ENV, BROWSER_SURFACE_STREAM_BASE_URL_ENV, };

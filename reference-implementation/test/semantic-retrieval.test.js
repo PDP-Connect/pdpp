@@ -53,6 +53,7 @@ import {
 } from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ async function closeServer(server) {
 // sometimes not — exercises independence).
 const MANIFEST_A = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/semantic-a',
+  connector_id: 'semantic-a',
   version: '1.0.0',
   display_name: 'Semantic A',
   capabilities: { human_interaction: ['credentials'] },
@@ -164,7 +165,7 @@ const MANIFEST_A = {
 
 const MANIFEST_B = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/semantic-b',
+  connector_id: 'semantic-b',
   version: '1.0.0',
   display_name: 'Semantic B',
   capabilities: { human_interaction: ['credentials'] },
@@ -357,7 +358,7 @@ test('RS metadata omits semantic retrieval and route 404s when backend is unavai
 // ─── Dashboard capability probe — fail-closed on unadvertised, true when on ─
 
 test('dashboard capability probe returns true when semantic is advertised', async () => {
-  // Exercises the same shape that apps/web/src/app/dashboard/lib/rs-client.ts
+  // Exercises the same shape that apps/console/src/app/dashboard/lib/rs-client.ts
   // #isSemanticRetrievalAdvertised reads from the RS metadata document. The
   // dashboard's blended-search composition depends on this probe returning
   // true ONLY when the RS really would serve /v1/search/semantic.
@@ -1250,7 +1251,7 @@ test('semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
-test('semantic index metadata isolates instances and connector-only client search rejects ambiguity', async () => {
+test('semantic index metadata isolates instances and client search fans in across active bindings', async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
 
@@ -1313,8 +1314,20 @@ test('semantic index metadata isolates instances and connector-only client searc
       `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams[]=posts`,
       { headers: { Authorization: `Bearer ${approved.token}` } },
     );
-    assert.equal(status, 400);
-    assert.equal(body.error.code, 'ambiguous_connector_instance');
+    // With cross-binding search fan-in, two active connections under one
+    // connector are no longer an error — the runtime returns the union and
+    // each hit carries its `connection_id`. (Pre-fan-in this surfaced the
+    // scheduler's `ambiguous_connector_instance` error to the read path,
+    // which has been replaced by the typed `connection_not_found` /
+    // `ambiguous_connection` read-path errors covered by
+    // `storage-fan-in-read-contract.test.js` and the route-level
+    // `blob-fan-in-ambiguity.test.js`.)
+    assert.equal(status, 200);
+    const hits = body.data || [];
+    // Both bindings should contribute a hit for the shared record_key.
+    assert.equal(hits.length, 2, 'fan-in returns one hit per binding');
+    const cids = hits.map((h) => h.connection_id).sort();
+    assert.deepEqual(cids, ['cin_semantic_personal', 'cin_semantic_work']);
   });
 });
 
@@ -1692,6 +1705,14 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
       const connectorId = shipped.connector_id;
+      // The server canonicalizes the first-party registry URL
+      // (`https://registry.pdpp.org/connectors/gmail`) to its short key
+      // (`gmail`) at the manifest boundary, so semantic hits are emitted
+      // under the canonical key — not the raw URL. Filter by the canonical
+      // key (falling back to the raw value for custom manifests) to compare
+      // hit.connector_id against what the runtime actually emits.
+      const canonicalConnectorId =
+        canonicalConnectorKeyFromManifest(shipped) ?? shipped.connector_id;
 
       // (1) Register the gmail manifest WITHOUT semantic_fields. Represents
       // the pre-operational-semantic world where a real DB was populated
@@ -1753,7 +1774,7 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
         { headers: { Authorization: `Bearer ${ownerToken}` } },
       );
       const baselineGmailHits = (baselineBody.data || []).filter(
-        (h) => h.connector_id === connectorId,
+        (h) => h.connector_id === canonicalConnectorId,
       );
       assert.deepEqual(
         baselineGmailHits.map((h) => h.record_key),
@@ -1779,7 +1800,7 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
         { headers: { Authorization: `Bearer ${ownerToken}` } },
       );
       const afterGmailHits = (afterBody.data || []).filter(
-        (h) => h.connector_id === connectorId,
+        (h) => h.connector_id === canonicalConnectorId,
       );
       assert.ok(
         afterGmailHits.some((h) => h.record_key === 'm1'),

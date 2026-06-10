@@ -120,6 +120,7 @@ const BROWSER_SURFACE_ID_ENV = "PDPP_BROWSER_SURFACE_ID";
 const BROWSER_SURFACE_LEASE_ID_ENV = "PDPP_BROWSER_SURFACE_LEASE_ID";
 const BROWSER_SURFACE_PROFILE_KEY_ENV = "PDPP_BROWSER_SURFACE_PROFILE_KEY";
 const BROWSER_SURFACE_REQUIRED_ENV = "PDPP_BROWSER_SURFACE_REQUIRED";
+const BROWSER_SURFACE_REMOTE_CDP_URL_ENV = "PDPP_BROWSER_SURFACE_REMOTE_CDP_URL";
 const BROWSER_SURFACE_STREAM_BASE_URL_ENV = "PDPP_BROWSER_SURFACE_STREAM_BASE_URL";
 
 interface ResolvedCdpEndpoint {
@@ -153,12 +154,14 @@ function resolveManagedNekoDescriptorFromEnv(env: NodeJS.ProcessEnv): Record<str
   const baseUrl = nonEmptyEnv(env, BROWSER_SURFACE_STREAM_BASE_URL_ENV);
   const leaseId = nonEmptyEnv(env, BROWSER_SURFACE_LEASE_ID_ENV);
   const profileKey = nonEmptyEnv(env, BROWSER_SURFACE_PROFILE_KEY_ENV);
+  const cdpHttpUrl = nonEmptyEnv(env, BROWSER_SURFACE_REMOTE_CDP_URL_ENV);
   if (!(baseUrl && leaseId && profileKey)) {
     return;
   }
   return {
     backend: "neko",
     base_url: baseUrl,
+    ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
     lease_id: leaseId,
     profile_key: profileKey,
     ...(nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) ? { surface_id: nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) } : {}),
@@ -178,17 +181,18 @@ function generateInteractionId(): string {
   return `int_${String(Date.now())}_${randomBytes(4).toString("hex")}`;
 }
 
-// ─── prepareManualAction: the binding-local handoff helper ─────────────────
+// ─── Browser-interaction target registration ────────────────────────────────
 
 export type ManualActionReason = "login" | "2fa" | "captcha" | "oauth_popup" | "manual_action";
 
-export interface PrepareManualActionArgs {
+export interface PrepareBrowserInteractionTargetArgs {
   /**
    * Test/integration seam. Defaults to `process.env`. The launcher mutates
    * `process.env` directly after a successful patchright launch, so the
    * default is the right thing in production.
    */
   readonly env?: NodeJS.ProcessEnv;
+  readonly interactionId?: string;
   readonly page: Page;
   readonly reason?: ManualActionReason;
   /**
@@ -207,7 +211,9 @@ export interface PrepareManualActionArgs {
   readonly resolveWsUrl?: (page: Page, opts: ResolveWsUrlOptions) => Promise<string>;
 }
 
-export interface PrepareManualActionResult {
+export type PrepareManualActionArgs = PrepareBrowserInteractionTargetArgs;
+
+export interface PrepareBrowserInteractionTargetResult {
   /** Generated interactionId; the connector then includes this in its INTERACTION envelope. */
   readonly interactionId: string;
   /**
@@ -219,21 +225,77 @@ export interface PrepareManualActionResult {
   readonly registered: boolean;
 }
 
+export type PrepareManualActionResult = PrepareBrowserInteractionTargetResult;
+
 interface ManualActionPageMetadata {
   readonly pageTitle?: string;
   readonly pageUrl?: string;
 }
 
-async function readManualActionPageMetadata(page: Page): Promise<ManualActionPageMetadata> {
+/**
+ * Bound `work` by a local deadline. Resolves with `work`'s value when it wins,
+ * or with `DEADLINE_TIMEOUT` (and runs `onTimeout`) when the deadline wins.
+ * Never rejects on timeout. The timer is cleared the moment `work` settles.
+ *
+ * This exists for the session-establishment hang case: against a wedged
+ * renderer, CDP-backed reads such as `page.title()` can hang indefinitely
+ * with no per-call timeout. Racing them against a deadline keeps the
+ * manual-action handoff bounded so the INTERACTION still reaches the owner.
+ */
+export const DEADLINE_TIMEOUT = Symbol("pdpp.browser-handoff.deadline-timeout");
+
+const DEFAULT_METADATA_READ_DEADLINE_MS = 2000;
+
+export async function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  onTimeout?: () => void
+): Promise<T | typeof DEADLINE_TIMEOUT> {
+  if (!(Number.isFinite(ms) && ms > 0)) {
+    return work;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof DEADLINE_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      resolve(DEADLINE_TIMEOUT);
+    }, ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function readManualActionPageMetadata(
+  page: Page,
+  deadlineMs = DEFAULT_METADATA_READ_DEADLINE_MS
+): Promise<ManualActionPageMetadata> {
   let pageUrl: string | undefined;
   let pageTitle: string | undefined;
+  // URL is synchronous (read from the last navigation), so it survives even a
+  // wedged renderer and is read first — the interaction always carries it.
   try {
     pageUrl = page.url();
   } catch {
     /* page may have been closed; metadata is optional */
   }
+  // `page.title()` is CDP-backed and has no per-call timeout: a wedged renderer
+  // can hang it forever, which would block the manual-action INTERACTION from
+  // ever being emitted (the owner never sees the prompt). Bound it so a hung
+  // title read degrades to "no title" instead of stalling the handoff.
   try {
-    pageTitle = await page.title();
+    const titleResult = await withDeadline(page.title(), deadlineMs, () => {
+      process.stderr.write(
+        `[browser-handoff] page.title() timed out after ${String(deadlineMs)}ms; emitting interaction without page title.\n`
+      );
+    });
+    if (titleResult !== DEADLINE_TIMEOUT) {
+      pageTitle = titleResult;
+    }
   } catch {
     /* page may have been closed; metadata is optional */
   }
@@ -310,11 +372,11 @@ function registerCdpManualActionTarget(args: {
 }
 
 /**
- * Prepare a browser handoff for a `manual_action` interaction.
+ * Prepare a browser handoff for an interaction tied to the current page.
  *
- * Generates an interactionId, resolves the CDP page-target wsUrl for the
- * exact `Page`, and registers `(runId, interactionId) -> wsUrl` with the
- * reference server's run-target registry. Returns the interactionId so the
+ * Generates or accepts an interactionId, resolves the CDP page-target wsUrl
+ * for the exact `Page`, and registers `(runId, interactionId) -> wsUrl` with
+ * the reference server's run-target registry. Returns the interactionId so the
  * caller can include it as the request_id on its INTERACTION envelope.
  *
  * Best-effort by design: if the env isn't wired up for streaming, if the
@@ -323,11 +385,13 @@ function registerCdpManualActionTarget(args: {
  * connector run continues; only streaming for that specific interaction
  * is unavailable.
  */
-export async function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
+export async function prepareBrowserInteractionTarget(
+  args: PrepareBrowserInteractionTargetArgs
+): Promise<PrepareBrowserInteractionTargetResult> {
   const env = args.env ?? process.env;
   const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
   const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
-  const interactionId = generateInteractionId();
+  const interactionId = args.interactionId ?? generateInteractionId();
 
   const registration = await resolveStreamingRegistration(env);
   if (!registration) {
@@ -385,6 +449,10 @@ export async function prepareManualAction(args: PrepareManualActionArgs): Promis
   }
 
   return { interactionId, registered: true };
+}
+
+export function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
+  return prepareBrowserInteractionTarget(args);
 }
 
 // ─── manualAction: connector-author convenience layer ──────────────────────
@@ -481,6 +549,7 @@ export {
   BROWSER_SURFACE_ID_ENV,
   BROWSER_SURFACE_LEASE_ID_ENV,
   BROWSER_SURFACE_PROFILE_KEY_ENV,
+  BROWSER_SURFACE_REMOTE_CDP_URL_ENV,
   BROWSER_SURFACE_REQUIRED_ENV,
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
 };

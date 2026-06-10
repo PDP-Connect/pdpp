@@ -29,9 +29,7 @@ export const COLLECTOR_PROTOCOL_HEADER = "x-pdpp-collector-protocol";
 // A future server release that adds version "2" while still accepting "1"
 // would list both here; mismatches are still rejected before any record
 // persists.
-export const SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS: readonly string[] = [
-  COLLECTOR_PROTOCOL_VERSION,
-];
+export const SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS: readonly string[] = [COLLECTOR_PROTOCOL_VERSION];
 
 export type CollectorProtocolVersion = string;
 
@@ -42,7 +40,7 @@ export interface CollectorProtocolMismatch {
 
 export function isAcceptedCollectorProtocolVersion(
   version: string | null | undefined,
-  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
+  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS
 ): boolean {
   if (typeof version !== "string" || version.length === 0) {
     return false;
@@ -64,7 +62,7 @@ export function readCollectorProtocolHeader(headers: Record<string, string | str
 
 export function buildCollectorProtocolMismatchBody(
   receivedVersion: string | null,
-  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
+  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS
 ): CollectorProtocolMismatch {
   return {
     accepted_versions: [...acceptedVersions],

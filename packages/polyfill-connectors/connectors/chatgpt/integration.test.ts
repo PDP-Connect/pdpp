@@ -48,14 +48,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
-import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
+import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
+import { ProviderBudgetController } from "../../src/provider-budget.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
+  applyChatGptColdStatePreflight,
   CHATGPT_RETRYABLE_ERROR_PATTERN,
+  type ChatGptDetailLaneTuning,
+  ChatGptPlannedProviderBudgetDeferredError,
+  ChatGptRateLimitDensityTracker,
   ChatGptRecoverableRetryExhaustedError,
+  ChatGptRunBudget,
   chatGptBackendFetchInBrowser,
+  classifyChatGptSourcePressure,
+  consumeChatGptProviderRetryBudget,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
+  resolveChatGptDetailLaneTuning,
+  resolveChatGptMaxDetailFetchesPerRun,
+  resolveChatGptMaxRunWallClockMs,
+  resolveChatGptMaxTailDeferralGapsPerRun,
+  resolveChatGptProviderBudget,
+  resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -63,6 +78,7 @@ import {
   runMessagesAndConversationsWithDetail,
   runSharedConversationsStream,
   type StreamDeps,
+  shouldKeepRetryingChatGptDetail,
   summarizeChatGptSideEffectProbe,
 } from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
@@ -85,10 +101,199 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
   );
 });
 
+test("shouldKeepRetryingChatGptDetail fast-opens on bare 429 but keeps honest waits", () => {
+  // Bare 429 (no Retry-After): keep retrying for the first two attempts, then
+  // fast-open on the third so retryHttp exhausts and the source-pressure circuit
+  // opens — instead of burning the full 12-attempt budget on a hot account.
+  assert.equal(shouldKeepRetryingChatGptDetail({ attempt: 1, response: { status: 429 }, retryAfterMs: null }), true);
+  assert.equal(shouldKeepRetryingChatGptDetail({ attempt: 2, response: { status: 429 }, retryAfterMs: null }), true);
+  assert.equal(
+    shouldKeepRetryingChatGptDetail({ attempt: 3, response: { status: 429 }, retryAfterMs: null }),
+    false,
+    "third bare 429 fast-opens the circuit"
+  );
+
+  // 429 WITH Retry-After is an honest, server-bounded wait — keep the full budget.
+  assert.equal(
+    shouldKeepRetryingChatGptDetail({ attempt: 5, response: { status: 429 }, retryAfterMs: 120_000 }),
+    true,
+    "honor Retry-After instead of fast-opening"
+  );
+
+  // Transient server errors keep the full budget; they are not an account-bucket signal.
+  for (const status of [502, 503, 504]) {
+    assert.equal(
+      shouldKeepRetryingChatGptDetail({ attempt: 9, response: { status }, retryAfterMs: null }),
+      true,
+      `status ${status} should retry on the full budget`
+    );
+  }
+});
+
+test("ChatGPT detail fetch fast-opens on bare 429 after the configured attempts, not the full budget", async () => {
+  // Drive the REAL connector predicate through the REAL retryHttp with the same
+  // bounds the connector configures. Proves a bare-429 hot account exhausts in 3
+  // attempts (one initial + two short retries), not 12.
+  const sleeps: number[] = [];
+  let calls = 0;
+
+  await assert.rejects(
+    retryHttp({
+      baseDelayMs: 2000,
+      maxAttempts: 12,
+      maxDelayMs: 15 * 60_000,
+      maxRetryAfterMs: 15 * 60_000,
+      random: () => 0.5,
+      request: () => {
+        calls += 1;
+        return { status: 429 };
+      },
+      shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
+      sleep: (ms) => {
+        sleeps.push(ms);
+      },
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof RetryExhaustedError);
+      assert.equal(err.attempts, 3);
+      return true;
+    }
+  );
+
+  assert.equal(calls, 3, "bare-429 detail fetch stops after the fast-open attempt cap");
+  // Only the two pre-fast-open backoffs (2s, 4s) are paid — seconds, not the
+  // ~23–70 min the 11-sleep full budget would burn against a hot account.
+  assert.deepEqual(sleeps, [2000, 4000]);
+});
+
 test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => {
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "7" }), 7);
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "0" }), 45_000);
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "invalid" }), 45_000);
+});
+
+test("resolveChatGptDetailLaneTuning defaults to the frozen production values when no probe env is set", () => {
+  // OpenSpec add-connector-adaptive-lanes: ChatGPT maxConcurrency MUST stay at 1
+  // until cold-state evidence. With no probe env, defaults are byte-identical.
+  assert.deepEqual(resolveChatGptDetailLaneTuning({}), {
+    initialConcurrency: 1,
+    maxConcurrency: 1,
+    pauseMinMs: 1500,
+    pauseMaxMs: 3000,
+  });
+});
+
+test("resolveChatGptDetailLaneTuning applies cold-state A/B probe overrides", () => {
+  assert.deepEqual(
+    resolveChatGptDetailLaneTuning({
+      PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "2",
+      PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "5",
+      PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "100",
+      PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "400",
+    }),
+    { initialConcurrency: 2, maxConcurrency: 5, pauseMinMs: 100, pauseMaxMs: 400 }
+  );
+});
+
+test("resolveChatGptDetailLaneTuning caps probe concurrency at the dataconnect-batch ceiling (5)", () => {
+  const tuning = resolveChatGptDetailLaneTuning({ PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "50" });
+  assert.equal(tuning.maxConcurrency, 5);
+});
+
+test("resolveChatGptDetailLaneTuning clamps maxConcurrency >= initialConcurrency and pauseMax >= pauseMin", () => {
+  const tuning = resolveChatGptDetailLaneTuning({
+    PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "4",
+    PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "2",
+    PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "900",
+    PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "100",
+  });
+  assert.equal(tuning.maxConcurrency, 4); // raised to meet initial
+  assert.equal(tuning.pauseMaxMs, 900); // raised to meet min
+});
+
+test("resolveChatGptDetailLaneTuning falls back to the frozen default per-knob on invalid input", () => {
+  assert.deepEqual(
+    resolveChatGptDetailLaneTuning({
+      PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "0",
+      PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "abc",
+      PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "-5",
+      PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "  ",
+    }),
+    { initialConcurrency: 1, maxConcurrency: 1, pauseMinMs: 1500, pauseMaxMs: 3000 }
+  );
+});
+
+// ─── Cumulative 429-density early-stop ───────────────────────────────────
+
+test("resolveChatGptRateLimitDensityStop defaults to the conservative threshold when unset", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({}), 8);
+});
+
+test("resolveChatGptRateLimitDensityStop honors an explicit positive override", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "3" }), 3);
+});
+
+test("resolveChatGptRateLimitDensityStop disables the stop on a non-positive value (escape hatch)", () => {
+  assert.equal(
+    resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "0" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "-1" }),
+    Number.POSITIVE_INFINITY
+  );
+});
+
+test("resolveChatGptRateLimitDensityStop falls back to the default on invalid (non-integer) input", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "abc" }), 8);
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "2.5" }), 8);
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "  " }), 8);
+});
+
+test("ChatGptRateLimitDensityTracker trips only once cumulative 429s reach the threshold", () => {
+  const tracker = new ChatGptRateLimitDensityTracker(3);
+  assert.equal(tracker.shouldStop(), false);
+  tracker.recordRateLimited();
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 2);
+  assert.equal(tracker.shouldStop(), false, "below threshold must not trip");
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 3);
+  assert.equal(tracker.shouldStop(), true, "at threshold must trip");
+});
+
+test("ChatGptRateLimitDensityTracker with an Infinity threshold never trips (disabled)", () => {
+  const tracker = new ChatGptRateLimitDensityTracker(Number.POSITIVE_INFINITY);
+  for (let i = 0; i < 1000; i++) {
+    tracker.recordRateLimited();
+  }
+  assert.equal(tracker.shouldStop(), false);
+});
+
+test("ChatGptRateLimitDensityTracker seeds with pre-detail served 429s and trips sooner", () => {
+  // Two served 429s already absorbed before the detail lane (list pagination):
+  // the tracker starts at 2 of 3 and trips on a single in-lane 429.
+  const tracker = new ChatGptRateLimitDensityTracker(3, 2);
+  assert.equal(tracker.count, 2, "seed carries the pre-detail count forward");
+  assert.equal(tracker.shouldStop(), false, "still one short of the threshold");
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 3);
+  assert.equal(tracker.shouldStop(), true, "one in-lane 429 trips after the seed");
+});
+
+test("ChatGptRateLimitDensityTracker seed at/over threshold trips before any in-lane 429", () => {
+  // Pre-detail pressure already at the threshold: the detail phase must defer
+  // its whole tail immediately rather than launch even one fetch.
+  const tracker = new ChatGptRateLimitDensityTracker(3, 3);
+  assert.equal(tracker.shouldStop(), true, "seed at threshold trips with zero in-lane 429s");
+});
+
+test("ChatGptRateLimitDensityTracker seed is sanitized (negatives floored, floats truncated)", () => {
+  // The seed comes from a run-scoped counter; defend the invariant that it is a
+  // non-negative integer so a stray value can never make the stop go backwards.
+  assert.equal(new ChatGptRateLimitDensityTracker(5, -4).count, 0, "negative seed floors to 0");
+  assert.equal(new ChatGptRateLimitDensityTracker(5, 2.9).count, 2, "fractional seed truncates");
+  assert.equal(new ChatGptRateLimitDensityTracker(5).count, 0, "default seed is 0 (unchanged behavior)");
 });
 
 test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch promptly", async () => {
@@ -118,6 +323,35 @@ test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch prompt
 
   assert.equal(observedSignal?.aborted, true);
   assert.ok(Date.now() - startedAt < 1000, "timeout should reject promptly");
+});
+
+test("chatGptBackendFetchInBrowser status-only mode does not parse response JSON", async () => {
+  const originalFetch = globalThis.fetch;
+  let parsedJson = false;
+  globalThis.fetch = (): Promise<Response> => {
+    const response = new Response(null, { status: 200, headers: { "retry-after": "7" } });
+    Object.defineProperty(response, "json", {
+      value: (): Promise<never> => {
+        parsedJson = true;
+        return Promise.reject(new Error("json should not be parsed in status-only mode"));
+      },
+    });
+    return Promise.resolve(response);
+  };
+
+  try {
+    const result = await chatGptBackendFetchInBrowser({
+      auth: { accessToken: "redacted-test-token", deviceId: "test-device" },
+      method: "GET",
+      parseJson: false,
+      path: "/conversation/test-conversation",
+      timeoutMs: 1000,
+    });
+    assert.deepEqual(result, { status: 200, json: null, headers: { "retry-after": "7" } });
+    assert.equal(parsedJson, false, "status-only preflight must not parse the body");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("summarizeChatGptSideEffectProbe reports stable list/detail metadata without content", () => {
@@ -205,6 +439,34 @@ function makeConvo(overrides: Partial<ConversationListItem> = {}): ConversationL
   };
 }
 
+function makeDetailGapFromConvo(
+  gapId: string,
+  conversation: ConversationListItem
+): CollectContext["detailGaps"][number] {
+  return {
+    gap_id: gapId,
+    stream: "messages",
+    record_key: conversation.id,
+    status: "pending",
+    reference_only: true,
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: conversation.id,
+      list_item: {
+        id: conversation.id,
+        title: conversation.title,
+        create_time: conversation.create_time,
+        update_time: conversation.update_time,
+        current_node: conversation.current_node,
+        gizmo_id: conversation.gizmo_id,
+        is_archived: conversation.is_archived,
+        is_starred: conversation.is_starred,
+        workspace_id: conversation.workspace_id,
+      },
+    },
+  };
+}
+
 // Shared mapping: root → u1 → {a1 (current branch), a2 (alt branch)}.
 // a1 is the current-branch tip; a2 is an off-branch assistant reply.
 const BASE_MAPPING: Record<string, ChatGptNode> = {
@@ -249,6 +511,23 @@ function makeDetailOk(): ChatGptFetchResult {
     current_node: "a1",
   };
   return { status: 200, json };
+}
+
+async function admitFakeProviderBudget(providerBudget: ProviderBudgetController): Promise<void> {
+  const gate = await providerBudget.beforeRequest();
+  if (gate.ok) {
+    providerBudget.recordRequest();
+    return;
+  }
+  let reason: ChatGptPlannedProviderBudgetDeferredError["reason"] = "max_detail_fetches";
+  if (gate.reason === "max_wall_clock") {
+    reason = "max_wall_clock";
+  } else if (gate.reason === "retry_budget") {
+    reason = "provider_retry_budget";
+  } else if (gate.reason === "circuit_open") {
+    reason = "circuit_open";
+  }
+  throw new ChatGptPlannedProviderBudgetDeferredError("fake provider budget gate closed", reason, gate);
 }
 
 /** Convenience: collect the emitConversation callback the way
@@ -350,6 +629,18 @@ test("runMemoriesStream: empty requested scope — caller guards; direct call em
   assert.equal(states.length, 1, "STATE still fires so the stream cursor advances");
 });
 
+test("runMemoriesStream: 500 → SKIP_RESULT('http_error') with status diagnostics", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 500, json: null }],
+  });
+  await runMemoriesStream(deps);
+  assert.equal(emitted.length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "http_error");
+  assert.deepEqual(skip.diagnostics, { http_status: 500 });
+});
+
 // ─── Invariant 4: null-enrichment fallback ───────────────────────────────
 
 test("processConversationDetail: detail.status=404 — still emits conversation (list-only) + SKIP on messages", async () => {
@@ -378,6 +669,7 @@ test("processConversationDetail: detail.status=404 — still emits conversation 
   assert.equal(skip.stream, "messages", "detail failure is charged to the messages stream");
   assert.equal(skip.reason, "http_error");
   assert.match(skip.message, /convo-abc http 404/, "message carries the conversation id + http status");
+  assert.deepEqual(skip.diagnostics, { http_status: 404, conversation_id: "convo-abc" });
 });
 
 test("processConversationDetail: detail=200 with missing mapping — list-only fallback + SKIP on messages", async () => {
@@ -390,9 +682,75 @@ test("processConversationDetail: detail=200 with missing mapping — list-only f
   assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip, "missing mapping must SKIP messages");
+  assert.equal(skip.reason, "missing_mapping");
+  assert.deepEqual(skip.diagnostics, { http_status: 200, conversation_id: "convo-abc" });
 });
 
-test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped without mid-run cursor advance", async () => {
+test("processConversationDetail: detail=200 with mapping but zero message-bearing nodes — emits empty_detail SKIP", async () => {
+  // Completeness guard for the silent-empty class (dataconnect audit rec #5):
+  // a 200-with-mapping whose graph has only synthetic/role-less nodes lands a
+  // bare conversation row with no messages. Without the guard there is no
+  // signal at all and it is indistinguishable from data loss downstream.
+  const { deps, emitted, messages } = makeHarness();
+  const emptyGraph: ChatGptFetchResult = {
+    status: 200,
+    json: {
+      title: "Voice-only conversation",
+      create_time: 1_700_000_000,
+      update_time: 1_700_000_100,
+      current_node: "root",
+      // Only a synthetic root (no `message`) and a child that is also
+      // message-less — extractMessage returns null for both, so the loop
+      // emits zero message records.
+      mapping: {
+        root: { parent: null, children: ["n1"] },
+        n1: { parent: "root", children: [] },
+      },
+    },
+  };
+  await processConversationDetail(deps, makeConvo(), emptyGraph, makeEmitConversation(deps));
+
+  // The conversation record STILL emits (we reached it; it is covered/hydrated).
+  assert.equal(
+    emitted.filter((r) => r.stream === "conversations").length,
+    1,
+    "empty-but-200 conversation still lands as a row"
+  );
+  // No message records — the graph had nothing message-bearing.
+  assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
+  // ...but the emptiness is now OBSERVABLE via a diagnostic.
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip, "200-with-mapping but zero messages must emit an empty_detail SKIP");
+  assert.equal(skip.stream, "messages", "the empty-detail signal is charged to the messages stream");
+  assert.equal(skip.reason, "empty_detail");
+  assert.match(skip.message, /convo-abc/, "message carries the conversation id");
+  assert.match(skip.message, /no message-bearing nodes/, "message names the empty-graph cause");
+  assert.deepEqual(
+    skip.diagnostics,
+    { http_status: 200, conversation_id: "convo-abc", node_count: 2 },
+    "node_count distinguishes a genuinely empty graph from one with only role-less nodes"
+  );
+});
+
+test("processConversationDetail: detail=200 with at least one message — no empty_detail SKIP fires", async () => {
+  // The guard must NOT fire on a normal conversation. Pins that the common
+  // path stays diagnostic-free so empty_detail SKIPs are a real signal, not
+  // noise on every conversation.
+  const { deps, emitted, messages } = makeHarness();
+  await processConversationDetail(deps, makeConvo(), makeDetailOk(), makeEmitConversation(deps));
+  assert.ok(emitted.filter((r) => r.stream === "messages").length > 0, "messages emit on the normal path");
+  const emptySkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.reason === "empty_detail"
+  );
+  assert.equal(emptySkip, undefined, "a conversation with messages must not emit an empty_detail SKIP");
+});
+
+test("runConversationsAndMessagesStreams: unsafe message content is sanitized to null, message still emits (no shape-skip)", async () => {
+  // SLVP-ideal behavior: a message whose text contains U+0000 or other forbidden
+  // control characters must NOT be dropped or made non-backfillable.
+  // extractContent sanitizes at extraction time: content becomes null and the
+  // record passes the schema. Both messages emit; no SKIP_RESULT is generated.
   const unsafeNodeId = "unsafe-message";
   const safeNodeId = "safe-message";
   const listItem = makeConvo({
@@ -453,18 +811,23 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {});
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, [
     "/conversations?offset=0&limit=100&order=updated",
     "/conversation/convo-with-binary-text",
   ]);
-  assert.equal(harness.skipped.length, 1, "unsafe text should be quarantined by shape-check");
-  assert.equal(harness.skipped[0]?.stream, "messages");
-  assert.equal(harness.skipped[0]?.issues[0]?.path, "content");
-  assert.match(harness.skipped[0]?.issues[0]?.message ?? "", /PDPP-safe Unicode text/);
+  // No SKIP_RESULT: unsafe content is sanitized to null at extraction time.
+  assert.equal(harness.skipped.length, 0, "unsafe text is sanitized to null, not shape-skipped");
+  // Both messages emit: unsafe one with content=null, safe one with text intact.
+  const messageRecords = harness.emitted.filter((r) => r.stream === "messages");
+  assert.equal(messageRecords.length, 2, "both messages emit (unsafe with null content, safe with text)");
+  const unsafeRecord = messageRecords.find((r) => r.data.id === unsafeNodeId);
+  assert.ok(unsafeRecord, "unsafe message record must be present");
+  assert.equal(unsafeRecord?.data.content, null, "unsafe content is null after sanitization");
+  const safeRecord = messageRecords.find((r) => r.data.id === safeNodeId);
+  assert.equal(safeRecord?.data.content, "safe reply", "safe sibling content is preserved");
   assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
-  assert.equal(harness.emitted.filter((r) => r.stream === "messages").length, 1, "safe sibling message still emits");
 
   const coverage = harness.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
@@ -486,10 +849,10 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
   const stateIdx = harness.events.findIndex(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
-  const lastRecordOrSkipIdx = harness.events.findLastIndex((e) => e.kind === "record" || e.kind === "record-skipped");
-  assert.ok(coverageIdx > lastRecordOrSkipIdx, "DETAIL_COVERAGE must emit after detail lane records settle");
+  const lastRecordIdx = harness.events.findLastIndex((e) => e.kind === "record");
+  assert.ok(coverageIdx > lastRecordIdx, "DETAIL_COVERAGE must emit after detail lane records settle");
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
-  assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
+  assert.ok(stateIdx > lastRecordIdx, "STATE must remain after all record attempts");
 });
 
 test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lane with serialized jittered pacing", async () => {
@@ -556,16 +919,25 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   const pauses: number[] = [];
   let activeFetches = 0;
   let maxActiveFetches = 0;
+  // Faithful model of the production retryHttp path: a 429 retry reports the
+  // pressure to the lane AND sleeps `delayMs` itself within the same attempt,
+  // then succeeds. Because the wait was already paid inside the request, the
+  // report is marked absorbed so the lane must NOT also delay the next launch
+  // by the same amount (that was the double-pay this lane previously had).
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
     fetch: async (): Promise<ChatGptFetchResult> => {
       activeFetches += 1;
       maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
       await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
         delayMs: 45_000,
         kind: "rate_limited",
         retryAfterMs: 99_000,
       });
+      // retryHttp sleeps the backoff inside the attempt; model that wait so the
+      // test sees what production actually pays per request.
+      pauses.push(45_000);
       activeFetches -= 1;
       return makeDetailOk();
     },
@@ -591,7 +963,14 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   );
 
   assert.equal(maxActiveFetches, 1, "intermediate pressure must not raise detail concurrency");
-  assert.deepEqual(pauses, [45_000], "retryHttp delay is mirrored as a pressure cooldown before the next launch");
+  // Each conversation's request absorbs its own 45_000 backoff (2 requests).
+  // The launch between them pays only the ordinary minimum pause (1500ms), NOT
+  // a second mirrored 45_000 cooldown. Pre-fix this was [45_000, 45_000, 45_000].
+  assert.deepEqual(
+    pauses,
+    [45_000, 1500, 45_000],
+    "absorbed retry backoff is not double-paid as a launch cooldown; only the ordinary inter-launch pause remains"
+  );
   const progressMessages = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
   );
@@ -600,7 +979,7 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   assert.equal(
     laneMessages.some((m) => m.message.includes("lane cooldown") && m.message.includes("retry_after_ms=99000")),
     true,
-    "intermediate pressure should be visible as bounded lane cooldown progress"
+    "intermediate pressure should still be visible as bounded lane cooldown progress"
   );
   assert.equal(
     laneMessages.every((m) => m.message.includes("concurrency=1/1")),
@@ -617,6 +996,1221 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
     false,
     "lane progress must not expose raw conversation ids or API paths"
   );
+});
+
+test("runMessagesAndConversationsWithDetail: cumulative 429 density defers the remaining tail as upstream_pressure DETAIL_GAP", async () => {
+  // Slow-bleed regime: each fetch is served a 429, honors a Retry-After, then
+  // SUCCEEDS — so nothing ever throws and the exhaustion-only circuit never
+  // opens. With a density threshold of 2, after two served 429s the lane must
+  // stop launching new detail fetches and defer the rest as resumable gaps.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      // Model production: a served 429 reports rate_limited pressure (the lane
+      // surfaces this as a cooldown event the density tracker counts), sleeps
+      // its own backoff, then the conversation succeeds.
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 2 }
+  );
+
+  // Two conversations hydrate (each pays its own served 429); the 3rd launch
+  // sees the tracker at threshold and opens the circuit, so convo-3..5 defer
+  // without a fetch.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "no detail fetch is launched once the density stop trips"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    ["convo-3", "convo-4", "convo-5"],
+    "every deferred conversation gets a resumable DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
+    true,
+    "density-deferred gaps reuse the upstream_pressure, retryable, pending contract"
+  );
+
+  const densityProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" &&
+      m.stream === "messages" &&
+      m.message.includes("opened upstream-pressure circuit after") &&
+      m.message.includes("served 429s")
+  );
+  assert.equal(
+    densityProgress.length,
+    1,
+    "the density trip names upstream pressure and the served-429 count exactly once"
+  );
+  assert.equal(
+    densityProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    false,
+    "the density-trip progress message must not leak conversation ids or API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: served 429s below the density threshold do not defer (no over-trigger)", async () => {
+  // Same slow-bleed shape but only one served 429 below a threshold of 5: the
+  // run must hydrate every conversation, proving the stop is not hair-trigger.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let firstFetch = true;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      if (firstFetch) {
+        firstFetch = false;
+        await currentAdaptiveLaneRunContext()?.reportPressure({
+          absorbedByRequestWait: true,
+          delayMs: 30_000,
+          kind: "rate_limited",
+          retryAfterMs: 30_000,
+        });
+      }
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 5 }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "no gap should be emitted while served 429s stay below the density threshold"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: pre-detail 429s seed the density stop and defer the tail sooner", async () => {
+  // The run already absorbed two served 429s outside the detail lane (list
+  // pagination on a hot account). With a threshold of 3, ONE in-lane served 429
+  // now trips the stop — the seeded pre-detail pressure carries forward instead
+  // of resetting to zero, so the lane defers the tail an account-pressure cycle
+  // earlier than it would on a fresh budget.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 3, preDetailRateLimited: 2 }
+  );
+
+  // Only convo-1 fetches (its served 429 brings the seeded 2 to 3 = threshold);
+  // convo-2..4 see the tracker tripped and defer without a fetch. Without the
+  // seed this same shape would have hydrated three before tripping.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1"],
+    "the pre-detail seed makes a single in-lane 429 trip the stop"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3", "convo-4"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
+    true,
+    "seeded-defer gaps reuse the same resumable upstream_pressure contract"
+  );
+
+  // The trip message reports the FULL count (seed + in-lane), so the operator
+  // sees the run-level pressure, not just the detail-phase slice.
+  const densityProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("opened upstream-pressure circuit after")
+  );
+  assert.equal(densityProgress.length, 1);
+  assert.equal(
+    densityProgress[0]?.message.includes("after 3 served 429s"),
+    true,
+    "the trip names the cumulative seed+in-lane count"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves the unseeded behavior", async () => {
+  // Regression guard: preDetailRateLimited:0 must behave EXACTLY like no seed —
+  // the seed is purely additive and the default (no pre-detail pressure) is the
+  // frozen, byte-for-byte path.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 3, preDetailRateLimited: 0 }
+  );
+
+  // Threshold 3, no seed: convo-1 and convo-2 each pay a served 429 (count 1, 2),
+  // convo-3's launch sees count 2 < 3 so it fetches too and brings count to 3.
+  // All three hydrate; the stop only trips for a hypothetical convo-4. Identical
+  // to the unseeded "below threshold" path.
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
+});
+
+// ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
+
+test("resolveChatGptMaxDetailFetchesPerRun: unset/non-positive → no cap; positive int opts into envelope", () => {
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), Number.POSITIVE_INFINITY);
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0" }),
+    Number.POSITIVE_INFINITY,
+    "0 keeps the adaptive default unbounded by detail count"
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "-5" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "1.5" }),
+    Number.POSITIVE_INFINITY,
+    "non-integer falls back to no cap"
+  );
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "250" }), 250);
+});
+
+test("resolveChatGptMaxRunWallClockMs: unset/non-positive → no cap; positive ms opts into envelope", () => {
+  assert.equal(resolveChatGptMaxRunWallClockMs({}), Number.POSITIVE_INFINITY);
+  assert.equal(
+    resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "0" }),
+    Number.POSITIVE_INFINITY,
+    "0 keeps the adaptive default unbounded by wall-clock"
+  );
+  assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "-1" }), Number.POSITIVE_INFINITY);
+  assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000" }), 1_800_000);
+  assert.equal(
+    resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000.9" }),
+    1_800_000,
+    "fractional ms floors"
+  );
+});
+
+test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; explicit disables stay available", async () => {
+  const defaultBudget = resolveChatGptProviderBudget({});
+  assert.ok(defaultBudget instanceof ProviderBudgetController);
+  assert.ok(defaultBudget.pacing, "ChatGPT default enables adaptive inter-request pacing");
+  assert.equal(defaultBudget.pacing.currentIntervalMs, 2500, "ChatGPT starts at a conservative cold interval");
+  assert.ok(defaultBudget.retryBudget, "ChatGPT default keeps a retry budget even without a request cap");
+  assert.equal(defaultBudget.retryBudget.capacity, 5);
+  assert.ok(defaultBudget.circuitBreaker, "ChatGPT default enables a circuit breaker");
+
+  const retryOnlyByPacingDisable = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
+  assert.ok(retryOnlyByPacingDisable instanceof ProviderBudgetController);
+  assert.equal(retryOnlyByPacingDisable.pacing, null, "pacing can be disabled independently");
+  assert.ok(retryOnlyByPacingDisable.retryBudget);
+  assert.ok(retryOnlyByPacingDisable.circuitBreaker);
+
+  assert.equal(
+    resolveChatGptProviderBudget({
+      PDPP_CHATGPT_CIRCUIT_BREAKER: "0",
+      PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0",
+      PDPP_CHATGPT_RETRY_BUDGET_CAPACITY: "0",
+    }),
+    null,
+    "circuit breaker, retry budget, and pacing can all be disabled for supervised probes"
+  );
+
+  const retryOnly = resolveChatGptProviderBudget({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "10" });
+  assert.ok(retryOnly instanceof ProviderBudgetController);
+  assert.ok(retryOnly.pacing, "run cap override preserves default inter-request pacing");
+  assert.ok(retryOnly.retryBudget, "run cap derives a ratio-based retry budget");
+  assert.equal(retryOnly.retryBudget.capacity, 2);
+
+  const sleeps: number[] = [];
+  const budget = resolveChatGptProviderBudget({
+    PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS: "250",
+    PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "500",
+    PDPP_CHATGPT_PACING_MIN_INTERVAL_MS: "100",
+  });
+  assert.ok(budget instanceof ProviderBudgetController);
+
+  // Replace the production sleep-free resolver proof with a direct controller
+  // check using the same shape: enabled budget has a pacing controller.
+  const injected = new ProviderBudgetController({
+    pacing: {
+      initialIntervalMs: 500,
+      sleep: (ms) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+    },
+  });
+  await injected.beforeRequest();
+  assert.deepEqual(sleeps, [500]);
+});
+
+test("consumeChatGptProviderRetryBudget: exhausted retry budget becomes planned provider-budget defer", () => {
+  const providerBudget = new ProviderBudgetController({ retryBudget: { capacity: 1 } });
+
+  assert.equal(consumeChatGptProviderRetryBudget(providerBudget), null);
+  const plannedDefer = consumeChatGptProviderRetryBudget(providerBudget);
+
+  assert.ok(plannedDefer instanceof ChatGptPlannedProviderBudgetDeferredError);
+  assert.equal(plannedDefer.reason, "provider_retry_budget");
+  assert.equal(plannedDefer.gate?.reason, "retry_budget");
+});
+
+test("ChatGptRunBudget: no caps never stops; request budget and wall-clock budget each trip with the right reason", () => {
+  // Disabled budget primitive: never the reason a run stops.
+  const open = new ChatGptRunBudget();
+  for (let i = 0; i < 100; i += 1) {
+    open.recordDetailFetch();
+  }
+  assert.equal(open.shouldStop(), false, "a budget with no caps never trips");
+  assert.equal(open.reason(), null);
+
+  // Request budget: trips once the admitted conversation-detail count reaches
+  // the provider-request budget.
+  const fetchCapped = new ChatGptRunBudget({ maxFetches: 2 });
+  assert.equal(fetchCapped.reason(), null, "0 < 2: open");
+  fetchCapped.recordDetailFetch();
+  assert.equal(fetchCapped.reason(), null, "1 < 2: open");
+  fetchCapped.recordDetailFetch();
+  assert.equal(fetchCapped.reason(), "max_detail_fetches", "2 >= 2: tripped");
+
+  // Wall-clock budget: clock anchors on the first reason() call, then trips once
+  // the injected clock advances past the budget.
+  let nowMs = 1000;
+  const clockCapped = new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs });
+  assert.equal(clockCapped.reason(), null, "elapsed 0 < 500: open and anchored");
+  nowMs = 1400;
+  assert.equal(clockCapped.reason(), null, "elapsed 400 < 500: open");
+  nowMs = 1500;
+  assert.equal(clockCapped.reason(), "max_wall_clock", "elapsed 500 >= 500: tripped");
+});
+
+test("runMessagesAndConversationsWithDetail: a provider-request budget defers the tail as resumable run-cap DETAIL_GAP", async () => {
+  // A genuinely COLD account (every fetch 200, no 429): the density stop never
+  // trips, so without a size budget a large backlog would run unbounded. With a
+  // request budget of 2, the run hydrates exactly two and defers the rest cleanly.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, runBudget: new ChatGptRunBudget({ maxFetches: 2 }) }
+  );
+
+  // Exactly two fetches launch; convo-3's launch sees the budget and defers it plus
+  // the rest with NO further fetch — proving a large backlog cannot become an
+  // unbounded run.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "no detail fetch is launched once the request budget is reached"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+
+  // The deferred conversations are resumable gaps, NOT a source-pressure defer:
+  // reason retry_exhausted (no cooldown armed), class run_cap_deferred.
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    ["convo-3", "convo-4", "convo-5"],
+    "every conversation past the cap gets a resumable DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.retryable === true && g.status === "pending"),
+    true,
+    "run-cap gaps are resumable retry_exhausted (NOT upstream_pressure / rate_limited — no source-pressure cooldown is armed)"
+  );
+  assert.equal(
+    gaps.every((g) => g.detail?.class === "run_cap_deferred"),
+    true,
+    "the run-cap error class distinguishes a self-imposed bound from a busy-service defer"
+  );
+  assert.equal(
+    gaps.some((g) => g.reason === "upstream_pressure" || g.reason === "rate_limited"),
+    false,
+    "a size cap must never be classified as source pressure / a source failure"
+  );
+
+  // Already-collected records remain valid: the two hydrated conversations
+  // produced records that passed the production zod shape-check (the recording
+  // harness routes failures to .skipped).
+  assert.equal(harness.skipped.length, 0, "no hydrated record was dropped by the shape-check");
+  const conversationRecords = harness.emitted.filter((r) => r.stream === "conversations");
+  assert.equal(
+    conversationRecords.length >= 2,
+    true,
+    "the conversations hydrated before the cap are emitted as valid records"
+  );
+
+  // The trip is reported once, in operator voice, without leaking ids or paths.
+  const capProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("reached its per-run")
+  );
+  assert.equal(capProgress.length, 1, "the cap trip is announced exactly once");
+  assert.equal(
+    capProgress[0]?.message.includes("provider-request budget"),
+    true,
+    "the message names the provider-request budget"
+  );
+  assert.equal(
+    capProgress[0]?.message.includes("detail-count cap"),
+    false,
+    "the message must not frame the run budget as a connector-specific detail-count cap"
+  );
+  assert.equal(
+    capProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    false,
+    "the cap-trip progress message must not leak conversation ids or API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: a wall-clock budget defers the tail via an injected clock", async () => {
+  // Each conversation 'takes' 400ms of wall-clock (advanced by the fake clock
+  // inside the fetch). With a 500ms budget the run hydrates the conversations it
+  // can finish inside the budget, then defers the remainder as resumable gaps —
+  // bounding a slow-but-cold run by TIME, not size.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let nowMs = 10_000;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      // Model time spent serving + processing this conversation.
+      nowMs += 400;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+    ],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      runBudget: new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs }),
+    }
+  );
+
+  // convo-1 launches at elapsed 0 (anchor), hydrates (+400 → elapsed 400).
+  // convo-2 launches at elapsed 400 < 500, hydrates (+400 → elapsed 800).
+  // convo-3's launch sees elapsed 800 >= 500 → defer convo-3..4, no fetch.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "fetches stop once the wall-clock budget is spent"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "wall-clock-deferred gaps reuse the same resumable run-cap contract"
+  );
+  const capProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("wall-clock budget")
+  );
+  assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock budget exactly once");
+});
+
+test("runMessagesAndConversationsWithDetail: empty budget leaves a large backlog unbounded", async () => {
+  // The generic primitive can still run unbounded: a budget with neither knob
+  // set hydrates every conversation and emits zero gaps.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 8 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget(),
+  });
+
+  assert.equal(fetchedIds.length, 8, "every conversation is fetched when no cap is configured");
+  assert.equal(coverage.hydratedKeys.length, 8);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "no gap is emitted when the bounded-run cap is disabled"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes ordinary lane launch delay", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const providerSleeps: number[] = [];
+  const laneSleeps: number[] = [];
+  const providerBudget = new ProviderBudgetController({
+    pacing: {
+      initialIntervalMs: 250,
+      sleep: (ms) => {
+        providerSleeps.push(ms);
+        return Promise.resolve();
+      },
+    },
+  });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        laneSleeps.push(ms);
+      },
+      tuning: {
+        initialConcurrency: 1,
+        maxConcurrency: 1,
+        pauseMaxMs: 3000,
+        pauseMinMs: 1500,
+      },
+    }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.equal(providerSleeps.length >= 2, true, "provider budget admits each conversation through pacing");
+  assert.equal(
+    laneSleeps.some((ms) => ms >= 1500),
+    false,
+    "ordinary lane launch delay is neutralized when provider-budget pacing is active"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: emits structured provider-budget circuit transitions", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  let nowMs = 0;
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs: 1000,
+    },
+  });
+  providerBudget.recordFailure();
+  providerBudget.drainCircuitTransitions();
+  nowMs = 1000;
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-structured-circuit" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  const providerBudgetEvents = harness.protocolMessages.filter(
+    (message): message is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      message.type === "PROGRESS" && message.provider_budget?.object === "provider_budget_circuit_transition"
+  );
+
+  assert.deepEqual(
+    providerBudgetEvents.map((message) => message.provider_budget?.circuit.state),
+    ["half_open", "closed"],
+    "open circuit probe and recovery are emitted as structured provider-budget progress"
+  );
+  assert.equal(
+    JSON.stringify(providerBudgetEvents).includes("convo-structured-circuit"),
+    false,
+    "provider-budget events do not leak conversation ids"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: provider request budget defers cleanly before next fetch", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const providerBudget = new ProviderBudgetController({ runBudget: { maxRequests: 1 } });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1"],
+    "second fetch is not launched after request budget exhaustion"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3"]);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("provider budget (max_requests)")
+  );
+  assert.equal(progress.length, 1, "provider-budget exhaustion is announced once");
+});
+
+test("runMessagesAndConversationsWithDetail: provider retry budget defers tail without source pressure", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      throw new ChatGptPlannedProviderBudgetDeferredError("retry budget exhausted", "provider_retry_budget");
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1"]);
+  assert.deepEqual(coverage.hydratedKeys, []);
+  assert.deepEqual(coverage.gapKeys, ["convo-1", "convo-2"]);
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 2);
+  assert.ok(
+    gaps.every(
+      (gap) =>
+        gap.reason === "retry_exhausted" &&
+        gap.detail?.class === "run_cap_deferred" &&
+        gap.detail.network_pressure?.error_class === "provider_retry_budget"
+    ),
+    "provider retry-budget exhaustion is a planned retry_exhausted gap, not upstream_pressure"
+  );
+});
+
+test("runConversationsAndMessagesStreams: one run budget bounds the recovery pass AND the forward pass together", async () => {
+  // The cap is per-RUN, not per-pass: a pending gap-recovery item plus new
+  // forward conversations share one budget. With a request budget of 2 and one
+  // recovery item, the recovery pass hydrates it (count 1), then the forward
+  // pass hydrates one more (count 2) and defers the rest — the budget is not
+  // reset between passes.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        // List walk: two new forward conversations, newest first.
+        return {
+          status: 200,
+          json: {
+            items: [
+              { id: "fwd-1", title: "f1", create_time: 1_700_000_300, update_time: 1_700_000_300, current_node: "a1" },
+              { id: "fwd-2", title: "f2", create_time: 1_700_000_200, update_time: 1_700_000_200, current_node: "a1" },
+            ],
+          } as ChatGptJson,
+        };
+      }
+      fetchedIds.push(path);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [
+      {
+        gap_id: "gap-rec-1",
+        stream: "messages",
+        record_key: "rec-1",
+        status: "pending" as const,
+        detail_locator: {
+          kind: "chatgpt.conversation",
+          conversation_id: "rec-1",
+          list_item: { id: "rec-1", title: "r1", create_time: 1_700_000_000, update_time: 1_700_000_000 },
+        },
+      },
+    ] as NonNullable<StreamDeps["detailGaps"]>,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // One shared budget for the whole run.
+    runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    {
+      detailPacing: { random: () => 0, sleep: () => undefined },
+    }
+  );
+
+  // recovery hydrates rec-1 (count 1); forward hydrates one of fwd-1/fwd-2
+  // (count 2) then the cap defers the remainder. Exactly two detail fetches.
+  assert.equal(fetchedIds.length, 2, "the shared budget caps recovery + forward fetches together at 2");
+  assert.equal(
+    fetchedIds.includes("/conversation/rec-1"),
+    true,
+    "the recovery pass spends budget before the forward pass"
+  );
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length >= 1, true, "the conversation past the shared budget is deferred as a resumable gap");
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "the forward-pass overflow defers under the same run-cap contract"
+  );
+});
+
+test("runConversationsAndMessagesStreams: capped forward run covers full listed tail before messages STATE", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const listItems = Array.from({ length: 8 }, (_, index) =>
+    makeConvo({
+      id: `convo-${index + 1}`,
+      title: `Conversation ${index + 1}`,
+      update_time: 1_700_000_800 - index,
+    })
+  );
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        return {
+          status: 200,
+          json: { items: listItems, has_missing_conversations: false, total: listItems.length } as ChatGptJson,
+        };
+      }
+      fetchedIds.push(path);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
+  const coverage = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.deepEqual(
+    coverage?.required_keys,
+    listItems.map((item) => item.id)
+  );
+  assert.deepEqual(coverage?.hydrated_keys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage?.gap_keys, ["convo-3", "convo-4", "convo-5", "convo-6", "convo-7", "convo-8"]);
+
+  const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
+  const stateIdx = harness.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "messages"
+  );
+  assert.ok(coverageIdx !== -1, "detail coverage must emit before state");
+  assert.ok(stateIdx > coverageIdx, "messages STATE must only emit after full detail coverage");
+});
+
+// ─── task 16: bounded cap-tail deferral materialization ──────────────────────
+
+test("resolveChatGptMaxTailDeferralGapsPerRun: default-off, explicit, and fetch-cap-derived", () => {
+  // Unset and no fetch cap → Infinity: today's per-key behavior, inert until opt-in.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({}), Number.POSITIVE_INFINITY);
+  // Explicit positive integer wins.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "10" }), 10);
+  // Non-integer / non-positive explicit value is a disable sentinel.
+  assert.equal(
+    resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "0" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "nope" }),
+    Number.POSITIVE_INFINITY
+  );
+  // Only a fetch cap set → derived max(fetchCap, 50): an owner who set a fetch cap
+  // still gets a bounded tail even without naming this knob.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "5" }), 50);
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "300" }), 300);
+});
+
+test("runMessagesAndConversationsWithDetail: a cap trip over a large tail writes a BOUNDED number of gap rows", async () => {
+  // 25 hydrated then a 200-conversation tail. Without a tail bound the run would
+  // synchronously write 200 per-key DETAIL_GAP rows (the live run_1780681611410
+  // burn). With tailGapBound=10 it writes 10 per-key chunk gaps + ONE backlog gap
+  // (11 rows total), folding the older 190 into a single resumable watermark.
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+  // Newest-first, strictly descending update_time so the watermark is well-defined.
+  const convos = Array.from({ length: 225 }, (_, i) =>
+    makeConvo({ id: `convo-${i + 1}`, update_time: 1_700_100_000 - i })
+  );
+
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget({ maxFetches: 25 }),
+    tailGapBound: 10,
+  });
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 11, "bounded tail writes at most chunk (10) per-key gaps + 1 backlog gap, not 200");
+  const perKeyGaps = gaps.filter((g) => g.detail_locator.kind === "chatgpt.conversation");
+  const backlogGaps = gaps.filter((g) => g.detail_locator.kind === "chatgpt.conversation_backlog");
+  assert.equal(perKeyGaps.length, 10, "exactly the chunk of newest tail conversations get per-key gaps");
+  assert.equal(backlogGaps.length, 1, "exactly one durable backlog gap represents the older remainder");
+
+  // The chunk is the 10 conversations immediately after the 25 hydrated (newest tail).
+  assert.deepEqual(
+    perKeyGaps.map((g) => g.record_key),
+    Array.from({ length: 10 }, (_, i) => `convo-${26 + i}`)
+  );
+
+  const backlog = backlogGaps[0];
+  assert.equal(backlog?.record_key, "__chatgpt_conversation_backlog__");
+  // Watermark is a content-derived update_time ISO (NOT an offset). It equals the
+  // NEWEST update_time of the un-materialized backlog (convo-36 — the first folded
+  // conversation right after 25 hydrated + 10-chunk = 35 accounted). Recovery
+  // re-lists `<= watermark`, an inclusive, stranding-proof boundary.
+  const watermark = (backlog?.detail_locator as { before_update_time?: unknown }).before_update_time;
+  assert.equal(typeof watermark, "string", "the backlog gap carries an update_time watermark, not an offset");
+  assert.equal(watermark, new Date((1_700_100_000 - 35) * 1000).toISOString());
+  assert.equal(
+    (backlog?.detail_locator as { remaining?: unknown }).remaining,
+    190,
+    "the backlog gap records how many older conversations remain"
+  );
+  // list_cursor mirror is set for protocol honesty.
+  assert.deepEqual(backlog?.list_cursor, { before_update_time: watermark });
+
+  // coverage.gapKeys still enumerates only the per-key chunk; the backlog key is
+  // tracked separately so forward coverage can require it.
+  assert.deepEqual(
+    coverage.gapKeys,
+    perKeyGaps.map((g) => String(g.record_key))
+  );
+  assert.equal(coverage.backlogGapKey, "__chatgpt_conversation_backlog__");
+});
+
+test("cap-tail backlog deferral is NOT source pressure and arms no cooldown", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+  const convos = Array.from({ length: 50 }, (_, i) =>
+    makeConvo({ id: `convo-${i + 1}`, update_time: 1_700_100_000 - i })
+  );
+
+  await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget({ maxFetches: 5 }),
+    tailGapBound: 5,
+  });
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted"),
+    true,
+    "every cap-tail gap (per-key AND backlog) uses retry_exhausted — outside the source-pressure reason set"
+  );
+  assert.equal(
+    gaps.every((g) => g.detail?.class === "run_cap_deferred"),
+    true,
+    "every cap-tail gap carries the run_cap_deferred error class"
+  );
+  assert.equal(
+    gaps.some((g) => g.reason === "upstream_pressure" || g.reason === "rate_limited"),
+    false,
+    "a self-imposed bound must never be classified as source pressure"
+  );
+  // The backlog gap's network-pressure diagnostic names the cap reason, never a 429/HTTP status.
+  const backlog = gaps.find((g) => g.detail_locator.kind === "chatgpt.conversation_backlog");
+  assert.equal(backlog?.detail?.network_pressure?.error_class, "max_detail_fetches");
+  assert.equal(backlog?.detail?.http_status, undefined, "no HTTP status: nothing failed, the run chose to stop");
+});
+
+test("a follow-up run expands the backlog gap (older window) before any forward work, no offsets", async () => {
+  // Multi-run convergence over a 30-conversation cold history, tailGapBound=10,
+  // fetch budget 10/run. Run 1 hydrates the newest 10 and folds the older 20 into
+  // a backlog gap. Run 2 recovers by RE-LISTING older-than the watermark and
+  // draining the next chunk, rewriting the backlog. Loop until the backlog
+  // resolves. Each run writes a bounded row count; the boundary is a re-listed
+  // update_time watermark — never an offset.
+  const allConvos = Array.from({ length: 30 }, (_, i) =>
+    makeConvo({ id: `convo-${String(i + 1).padStart(2, "0")}`, update_time: 1_700_100_000 - i })
+  );
+  const isoOf = (id: string): string => {
+    const c = allConvos.find((x) => x.id === id);
+    return new Date(((c?.update_time as number) ?? 0) * 1000).toISOString();
+  };
+
+  // Simulate the runtime gap store across runs: detailGaps served to a run are the
+  // pending gaps; DETAIL_GAP emits add/replace pending; DETAIL_GAP_RECOVERED resolves.
+  type PendingGap = NonNullable<StreamDeps["detailGaps"]>[number];
+  const pending = new Map<string, PendingGap>();
+  let gapSeq = 0;
+
+  const hydratedAcross = new Set<string>();
+  let safety = 0;
+  // Threaded forward cursors: a capped run advances the messages STATE cursor to
+  // the newest hydrated window. The next forward-walk lists only conversations
+  // NEWER than it, so already-hydrated conversations are never re-deferred —
+  // exactly the runtime contract. The OLDER tail is recovered via the backlog gap.
+  let messagesCursor: string | null = null;
+  let conversationsCursor: string | null = null;
+
+  while (safety++ < 12) {
+    const harness = makeRecordingEmit(validateRecord);
+    const listCalls: string[] = [];
+    const api: ChatGptApi = {
+      auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+      fetch: async (path: string): Promise<ChatGptFetchResult> => {
+        await Promise.resolve();
+        if (path.startsWith("/conversations?")) {
+          listCalls.push(path);
+          // Always return the full descending list; listConversationsSinceCursor
+          // applies the cursor filter, just like the live `/conversations` route.
+          return { status: 200, json: { items: allConvos } as ChatGptJson };
+        }
+        return makeDetailOk();
+      },
+    };
+    // Snapshot the pending gaps the runtime would serve this run.
+    const served = Array.from(pending.values());
+    const deps: StreamDeps = {
+      api,
+      detailGaps: served,
+      emit: async (msg): Promise<void> => {
+        await harness.emit(msg);
+        if (msg.type === "DETAIL_GAP") {
+          // Upsert by natural key (record_key + detail_locator) the way the store does.
+          const key = `${String(msg.record_key)}::${JSON.stringify(msg.detail_locator)}`;
+          gapSeq += 1;
+          pending.set(key, {
+            gap_id: `gap-${gapSeq}`,
+            stream: "messages",
+            record_key: msg.record_key,
+            status: "pending",
+            reference_only: true,
+            detail_locator: msg.detail_locator,
+          } as PendingGap);
+        }
+        if (msg.type === "DETAIL_GAP_RECOVERED") {
+          // Resolve the served gap by id.
+          for (const [k, g] of pending) {
+            if (g.gap_id === msg.gap_id) {
+              pending.delete(k);
+            }
+          }
+        }
+        if (msg.type === "STATE" && msg.stream === "messages") {
+          const next = (msg.cursor as { last_update_time?: string | null } | undefined)?.last_update_time ?? null;
+          if (next) {
+            messagesCursor = next;
+          }
+        }
+        if (msg.type === "STATE" && msg.stream === "conversations") {
+          const next = (msg.cursor as { last_update_time?: string | null } | undefined)?.last_update_time ?? null;
+          if (next) {
+            conversationsCursor = next;
+          }
+        }
+      },
+      emitRecord: harness.emitRecord,
+      progress: (): Promise<void> => Promise.resolve(),
+      requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+      requestDetailGapPage: () => Promise.resolve([]),
+      runBudget: new ChatGptRunBudget({ maxFetches: 10 }),
+    };
+
+    const hadBacklogBefore = served.some((g) => g.detail_locator?.kind === "chatgpt.conversation_backlog");
+
+    await runConversationsAndMessagesStreams(
+      deps,
+      {
+        conversations: { last_update_time: conversationsCursor },
+        messages: { last_update_time: messagesCursor },
+      } as CollectContext["state"],
+      { detailPacing: { random: () => 0, sleep: () => undefined, tailGapBound: 10 } }
+    );
+
+    for (const id of harness.emitted.filter((r) => r.stream === "conversations").map((r) => String(r.data.id))) {
+      hydratedAcross.add(id);
+    }
+
+    // When a backlog gap was served, the run MUST expand it (a list call) before
+    // doing forward work, and writes a bounded number of rows.
+    if (hadBacklogBefore) {
+      assert.ok(listCalls.length >= 1, "a backlog-gap recovery re-lists the parent conversation list");
+    }
+    const gapsThisRun = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+    assert.ok(gapsThisRun.length <= 11, "each run writes at most chunk (10) + 1 backlog gap");
+
+    // Keep running until EVERY pending gap (per-key chunk and backlog) drains —
+    // the tail converges only when no resumable work remains.
+    if (pending.size === 0) {
+      break;
+    }
+  }
+
+  assert.ok(safety < 12, "the backlog converges to empty in a bounded number of runs");
+  // Every conversation in the cold history was hydrated across the bounded runs —
+  // no data loss, no offset reconstruction.
+  assert.equal(hydratedAcross.size, allConvos.length, "all 30 conversations drained oldest-ward with no loss");
+  assert.equal(isoOf("convo-30") < isoOf("convo-01"), true, "sanity: convo-30 is the oldest");
 });
 
 test("runConversationsAndMessagesStreams: detail failure rejects before conversations STATE", async () => {
@@ -760,8 +2354,6 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -774,8 +2366,6 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -784,6 +2374,14 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
   });
   const serializedGap = JSON.stringify(gap);
   assert.equal(serializedGap.includes("/conversation/convo-gap"), false, "gap must not expose raw API paths");
+  assert.equal(gap.detail?.network_pressure?.attempt, undefined, "gap must not persist attempt counters");
+  assert.equal(gap.detail?.network_pressure?.max_attempts, undefined, "gap must not persist max-attempt counters");
+  assert.equal(gap.last_error?.network_pressure?.attempt, undefined, "last_error must not persist attempt counters");
+  assert.equal(
+    gap.last_error?.network_pressure?.max_attempts,
+    undefined,
+    "last_error must not persist max-attempt counters"
+  );
   assert.equal(
     serializedGap.includes("GET /conversation/{conversation_id}"),
     true,
@@ -881,6 +2479,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget(),
   };
 
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
@@ -939,8 +2538,6 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -953,8 +2550,6 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -966,6 +2561,14 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     serializedGap.includes(`/conversation/${pressureItem.id}`),
     false,
     "gap diagnostic must not expose raw API paths"
+  );
+  assert.equal(gap.detail?.network_pressure?.attempt, undefined, "gap must not persist attempt counters");
+  assert.equal(gap.detail?.network_pressure?.max_attempts, undefined, "gap must not persist max-attempt counters");
+  assert.equal(gap.last_error?.network_pressure?.attempt, undefined, "last_error must not persist attempt counters");
+  assert.equal(
+    gap.last_error?.network_pressure?.max_attempts,
+    undefined,
+    "last_error must not persist max-attempt counters"
   );
   assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
   assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");
@@ -1025,6 +2628,39 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   );
   const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
   assert.ok(stateIdx > coverageIdx, "cursor STATE must only emit after coverage accounts for the pressure gap");
+
+  // RESUMABILITY INVARIANT (ri-chatgpt-429-resume-audit-v1): the messages
+  // cursor advances to the max update_time across the WHOLE listed batch —
+  // including the 249 gapped/deferred conversations — not just the 29 that
+  // hydrated before the circuit opened. This is load-bearing: forward listing
+  // on the next run stops at update_time <= cursor, so it will NOT re-list the
+  // gapped tail. Those conversations are recoverable ONLY through the durable
+  // DETAIL_GAP records replayed as `detail_gaps` on the next START. If a
+  // refactor narrowed this cursor to the hydrated prefix, gaps would either be
+  // wastefully re-listed every run or — combined with a gap-emission regression
+  // — silently stranded. Pin the cursor to the gapped tail's update_time so
+  // that regression fails here.
+  const messagesState = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "messages"
+  );
+  assert.ok(messagesState, "messages STATE cursor must commit even when most details are deferred as gaps");
+  const messagesCursor = messagesState.cursor as { last_update_time: string | null };
+  const lastListedUpdateTime = listItems[277]?.update_time;
+  assert.ok(typeof lastListedUpdateTime === "number");
+  assert.equal(
+    messagesCursor.last_update_time,
+    new Date(lastListedUpdateTime * 1000).toISOString(),
+    "messages cursor must cover the GAPPED tail's update_time, not just the hydrated prefix — else deferred conversations fall behind the cursor and are never re-listed"
+  );
+  // The hydrated prefix ends at item 28 (index 28; item 29 is the pressure
+  // item). A cursor pinned to the hydrated max would be strictly smaller; prove
+  // the committed cursor is past it so the discriminator is real, not vacuous.
+  const lastHydratedUpdateTime = listItems[28]?.update_time;
+  assert.ok(typeof lastHydratedUpdateTime === "number");
+  assert.ok(
+    (messagesCursor.last_update_time ?? "") > new Date(lastHydratedUpdateTime * 1000).toISOString(),
+    "committed messages cursor must be strictly beyond the last hydrated conversation"
+  );
 });
 
 test("runConversationsAndMessagesStreams: recovers pending conversation detail gaps before forward list collection", async () => {
@@ -1080,7 +2716,7 @@ test("runConversationsAndMessagesStreams: recovers pending conversation detail g
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {});
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, [
     "/conversation/convo-recover",
@@ -1103,6 +2739,116 @@ test("runConversationsAndMessagesStreams: recovers pending conversation detail g
       stream: "messages",
       record_key: "convo-recover",
     }
+  );
+});
+
+test("runConversationsAndMessagesStreams: drains paged pending message gaps beyond the first 100 in one run", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const conversations = Array.from({ length: 125 }, (_, index) =>
+    makeConvo({
+      id: `convo-page-${String(index).padStart(3, "0")}`,
+      title: `Paged recovery ${index}`,
+      update_time: 1_700_000_000 + index,
+    })
+  );
+  const pages = [
+    conversations
+      .slice(60, 120)
+      .map((conversation, index) => makeDetailGapFromConvo(`gap_page_2_${index}`, conversation)),
+    conversations.slice(120).map((conversation, index) => makeDetailGapFromConvo(`gap_page_3_${index}`, conversation)),
+    [],
+  ];
+  const fetches: string[] = [];
+  const requestedPages: Array<readonly string[] | undefined> = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversation/")) {
+        return Promise.resolve(makeDetailOk());
+      }
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({ status: 200, json: { items: [], has_missing_conversations: false, total: 0 } });
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: conversations
+      .slice(0, 60)
+      .map((conversation, index) => makeDetailGapFromConvo(`gap_page_1_${index}`, conversation)),
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    requestDetailGapPage: (req) => {
+      requestedPages.push(req?.streams);
+      return Promise.resolve(pages.shift() ?? []);
+    },
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  const detailFetches = fetches.filter((path) => path.startsWith("/conversation/"));
+  assert.equal(detailFetches.length, 125, "all paged pending gaps are fetched in one connector run");
+  assert.equal(
+    harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length,
+    125,
+    "every recovered pending gap is marked recovered"
+  );
+  assert.deepEqual(requestedPages, [["messages"], ["messages"], ["messages"]]);
+  assert.ok(
+    fetches.indexOf("/conversation/convo-page-124") < fetches.findIndex((path) => path.startsWith("/conversations")),
+    "forward list collection starts only after paged recovery drains"
+  );
+});
+
+test("runConversationsAndMessagesStreams: stops paging and skips forward detail when recovery page remains pending", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const first = makeConvo({ id: "convo-budget-first", update_time: 1_700_000_100 });
+  const second = makeConvo({ id: "convo-budget-second", update_time: 1_700_000_200 });
+  const fetches: string[] = [];
+  let requestedNextPage = false;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [
+      makeDetailGapFromConvo("gap_budget_first", first),
+      makeDetailGapFromConvo("gap_budget_second", second),
+    ],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    requestDetailGapPage: () => {
+      requestedNextPage = true;
+      return Promise.resolve([]);
+    },
+    runBudget: new ChatGptRunBudget({ maxFetches: 1 }),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  assert.deepEqual(fetches, ["/conversation/convo-budget-first"]);
+  assert.equal(requestedNextPage, false, "a partially recovered page is the adaptive stop condition");
+  assert.equal(harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length, 1);
+  assert.equal(
+    harness.protocolMessages.some(
+      (message) => message.type === "PROGRESS" && /Stopped pending message-detail recovery/.test(message.message)
+    ),
+    true
+  );
+  assert.equal(
+    fetches.some((path) => path.startsWith("/conversations")),
+    false,
+    "forward message-detail collection is skipped after adaptive recovery stop"
   );
 });
 
@@ -1192,6 +2938,7 @@ test("runCustomInstructionsStream: 500 → SKIP_RESULT('http_error'), no record"
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.equal(skip.reason, "http_error", "non-200 non-404/403 uses the generic http_error bucket");
+  assert.deepEqual(skip.diagnostics, { http_status: 500 });
 });
 
 test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete", async () => {
@@ -1309,4 +3056,572 @@ test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no rec
   assert.equal(skip.stream, "shared_conversations");
   assert.equal(skip.reason, "not_available");
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+});
+
+// ─── Invariant 7: fingerprint no-op suppression (version-churn fix) ──────
+// `custom_instructions` and `shared_conversations` re-derive the full record
+// every run from a source that does not change between most runs. Before the
+// fingerprint gate, every run re-emitted byte-identical records and the
+// dashboard's version-churn surface showed them as high/watch streams whose
+// history was 100% no-op re-emit. These tests pin the gate: a record only
+// re-emits when its body actually moves, and a true no-op refresh emits zero
+// records while STILL advancing STATE so the cursor never stalls.
+
+/** Pull the STATE cursor a stream runner wrote, so a second run can be seeded
+ *  with the same prior state the runtime would persist between runs. */
+function lastStateCursor(messages: readonly EmittedMessage[], stream: string): Record<string, unknown> {
+  const states = messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === stream
+  );
+  const cursor = states.at(-1)?.cursor;
+  return (cursor as Record<string, unknown> | undefined) ?? {};
+}
+
+test("runCustomInstructionsStream: unchanged body on a second run emits zero records but still writes STATE", async () => {
+  const body = { about_user_message: "I'm a tester", about_model_message: "Be concise", enabled: true };
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: body }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(first.deps, {});
+  assert.equal(
+    first.emitted.filter((r) => r.stream === "custom_instructions").length,
+    1,
+    "cold state → the record emits once"
+  );
+  const priorCursor = lastStateCursor(first.messages, "custom_instructions");
+  assert.ok(
+    priorCursor.fingerprints && typeof priorCursor.fingerprints === "object",
+    "STATE carries a fingerprints map so the next run can detect a no-op"
+  );
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: body }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(second.deps, { custom_instructions: priorCursor });
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "custom_instructions").length,
+    0,
+    "byte-identical refresh → no re-emit (no version churn)"
+  );
+  assert.equal(
+    second.messages.filter((m) => m.type === "STATE" && m.stream === "custom_instructions").length,
+    1,
+    "STATE still fires on a no-op run so the cursor advances"
+  );
+});
+
+test("runCustomInstructionsStream: a real edit on the second run re-emits the record", async () => {
+  const v1 = { about_user_message: "I'm a tester", enabled: true };
+  const v2 = { about_user_message: "I'm a tester now with a different bio", enabled: true };
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: v1 }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "custom_instructions");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: v2 }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(second.deps, { custom_instructions: priorCursor });
+  const shares = second.emitted.filter((r) => r.stream === "custom_instructions");
+  assert.equal(shares.length, 1, "an edited body is a fingerprint boundary → it re-emits");
+  assert.equal(shares[0]?.data.about_user, "I'm a tester now with a different bio");
+});
+
+test("runSharedConversationsStream: unchanged shares on a second run emit zero records but still write STATE", async () => {
+  const items = Array.from({ length: 3 }, (_, idx) => ({
+    share_id: `s-${idx}`,
+    conversation_id: `c-${idx}`,
+    title: `Share ${idx}`,
+    create_time: 1_700_000_000 + idx,
+  }));
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(first.deps, {});
+  assert.equal(
+    first.emitted.filter((r) => r.stream === "shared_conversations").length,
+    3,
+    "cold state → all shares emit once"
+  );
+  const priorCursor = lastStateCursor(first.messages, "shared_conversations");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(second.deps, { shared_conversations: priorCursor });
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "shared_conversations").length,
+    0,
+    "byte-identical re-list → no re-emit (no version churn)"
+  );
+  assert.equal(
+    second.messages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations").length,
+    1,
+    "STATE still fires on a no-op run so the cursor advances"
+  );
+});
+
+test("runSharedConversationsStream: a newly-shared conversation on the second run emits only that one", async () => {
+  const run1Items = [
+    { share_id: "s-0", conversation_id: "c-0", title: "Share 0", create_time: 1_700_000_000 },
+    { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 },
+  ];
+  const run2Items = [
+    ...run1Items,
+    { share_id: "s-2", conversation_id: "c-2", title: "Brand new share", create_time: 1_700_000_002 },
+  ];
+
+  const first = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run1Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "shared_conversations");
+
+  const second = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run2Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(second.deps, { shared_conversations: priorCursor });
+  const shares = second.emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 1, "only the new share is a fingerprint boundary → only it re-emits");
+  assert.equal(shares[0]?.data.id, "s-2");
+});
+
+test("runSharedConversationsStream: a deleted share is pruned so it does not block a future re-share", async () => {
+  // Full-scan prune: once a share disappears from the source, dropping it from
+  // the carry-forward map means if the same id is shared again later it is
+  // (correctly) treated as new and re-emits, rather than being gated forever
+  // against a fingerprint the source no longer returns.
+  const run1Items = [
+    { share_id: "s-0", conversation_id: "c-0", title: "Share 0", create_time: 1_700_000_000 },
+    { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 },
+  ];
+  const first = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run1Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(first.deps, {});
+  const cursor1 = lastStateCursor(first.messages, "shared_conversations");
+
+  // Run 2: s-1 is gone from the source. Prune drops it from the map.
+  const second = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [run1Items[0]] } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(second.deps, { shared_conversations: cursor1 });
+  const cursor2 = lastStateCursor(second.messages, "shared_conversations");
+  const fingerprints2 = cursor2.fingerprints as Record<string, unknown>;
+  assert.ok(!("s-1" in fingerprints2), "the vanished share is pruned from the carry-forward map");
+
+  // Run 3: s-1 is re-shared. Because it was pruned, it is treated as new.
+  const reshared = { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 };
+  const third = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [run1Items[0], reshared] } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(third.deps, { shared_conversations: cursor2 });
+  const shares = third.emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 1, "the re-shared conversation re-emits after having been pruned");
+  assert.equal(shares[0]?.data.id, "s-1");
+});
+
+// ─── Cold-state preflight source-pressure classifier ─────────────────────
+// The preflight is an owner-only A/B safety rail: it only fires when the owner
+// has raised detail concurrency above the frozen serial default (a probe env
+// var), and it can only ever make a run MORE conservative. These tests pin:
+//   - production (serial tuning) fires NO probe and is byte-for-byte unchanged,
+//   - a cold account that also passes a burst canary lets the requested faster posture through,
+//   - a pressured account forces the run back to serial concurrency=1,
+//   - burst-sensitive pressure forces the run back to serial even after serial probes pass,
+//   - the classifier stops at the first 429 (no extra load on a hot bucket),
+//   - the preflight emits no records and no sensitive strings.
+
+const FAST_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: 3,
+  maxConcurrency: 3,
+  pauseMinMs: 200,
+  pauseMaxMs: 200,
+};
+const SERIAL_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: 1,
+  maxConcurrency: 1,
+  pauseMinMs: 1500,
+  pauseMaxMs: 3000,
+};
+
+function makeStatusApi(statuses: readonly number[]): { api: ChatGptApi; paths: string[] } {
+  const paths: string[] = [];
+  let cursor = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (): Promise<never> => Promise.reject(new Error("api.fetch() should not run for status-only preflight")),
+    fetchStatus: (path: string): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => {
+      paths.push(path);
+      const status = statuses[cursor] ?? 200;
+      cursor += 1;
+      return Promise.resolve({ status });
+    },
+  };
+  return { api, paths };
+}
+
+test("classifyChatGptSourcePressure: all-200 sweep classifies cold", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200]);
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.deepEqual(result, { attempted: 3, classification: "cold", rateLimited: 0 });
+  assert.deepEqual(paths, ["/conversation/a", "/conversation/b", "/conversation/c"]);
+});
+
+test("classifyChatGptSourcePressure: first 429 classifies pressured and stops probing", async () => {
+  const { api, paths } = makeStatusApi([200, 429, 200]);
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.deepEqual(result, { attempted: 2, classification: "pressured", rateLimited: 1 });
+  // Stopped at the 429 — never probed "c", so no extra load on a hot bucket.
+  assert.deepEqual(paths, ["/conversation/a", "/conversation/b"]);
+});
+
+test("classifyChatGptSourcePressure: a retry-exhausted bare-429 circuit is pressured", async () => {
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (): Promise<never> => Promise.reject(new Error("api.fetch() should not run for status-only preflight")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> =>
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError("apiFetch got 429 after retry budget exhausted", {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.equal(result.classification, "pressured");
+  assert.equal(result.rateLimited, 1);
+  assert.equal(result.attempted, 1);
+});
+
+test("applyChatGptColdStatePreflight: serial production tuning fires NO probe (byte-for-byte unchanged)", async () => {
+  const { api, paths } = makeStatusApi([429, 429, 429]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const effective = await applyChatGptColdStatePreflight(deps, [makeConvo({ id: "convo-1" })], SERIAL_TUNING);
+  assert.deepEqual(effective, SERIAL_TUNING, "serial tuning returned unchanged");
+  assert.deepEqual(paths, [], "no preflight probe was fired in production posture");
+  assert.deepEqual(
+    harness.protocolMessages.filter((m) => m.type === "PROGRESS"),
+    [],
+    "no preflight progress emitted in production posture"
+  );
+});
+
+test("applyChatGptColdStatePreflight: cold account lets the requested faster posture through", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200, 200, 200, 200]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const convos = [
+    makeConvo({ id: "c-1" }),
+    makeConvo({ id: "c-2" }),
+    makeConvo({ id: "c-3" }),
+    makeConvo({ id: "c-4" }),
+  ];
+  const effective = await applyChatGptColdStatePreflight(deps, convos, FAST_TUNING);
+  assert.deepEqual(effective, FAST_TUNING, "cold preflight keeps the requested faster tuning");
+  assert.deepEqual(
+    paths,
+    [
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+    ],
+    "probed first 3 serially, then replayed them as a burst canary"
+  );
+});
+
+test("applyChatGptColdStatePreflight: burst-sensitive pressure forces serial despite clean serial probes", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200, 200, 429, 200]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const convos = [
+    makeConvo({ id: "c-1" }),
+    makeConvo({ id: "c-2" }),
+    makeConvo({ id: "c-3" }),
+    makeConvo({ id: "c-4" }),
+  ];
+  const effective = await applyChatGptColdStatePreflight(deps, convos, FAST_TUNING);
+  assert.equal(effective.maxConcurrency, 1, "burst pressure forces serial maxConcurrency");
+  assert.equal(effective.initialConcurrency, 1);
+  assert.deepEqual(
+    paths,
+    [
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+    ],
+    "serial probes passed before the burst canary detected pressure"
+  );
+});
+
+test("applyChatGptColdStatePreflight: pressured account forces the run back to serial concurrency=1", async () => {
+  const { api } = makeStatusApi([429]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const effective = await applyChatGptColdStatePreflight(deps, [makeConvo({ id: "c-1" })], FAST_TUNING);
+  assert.equal(effective.maxConcurrency, 1, "pressured preflight forces serial maxConcurrency");
+  assert.equal(effective.initialConcurrency, 1);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS"
+  );
+  assert.ok(
+    progress.some((m) => m.message.includes("source is pressured") && m.message.includes("serial concurrency=1")),
+    "emitted a pressured/serial preflight note"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: hot account at probe-concurrency falls back to serial (no overlap)", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  // First call (the preflight probe) 429s → pressured. Subsequent real-lane
+  // fetches succeed. The lane must run serially (maxActive===1) despite the
+  // requested maxConcurrency=3, because the preflight forced it back to serial.
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => Promise.resolve({ status: 429 }),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+      await Promise.resolve();
+      activeFetches -= 1;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "c-1" }), makeConvo({ id: "c-2" }), makeConvo({ id: "c-3" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      tuning: { initialConcurrency: 3, maxConcurrency: 3, pauseMinMs: 200, pauseMaxMs: 200 },
+    }
+  );
+
+  assert.equal(maxActiveFetches, 1, "pressured preflight forced the detail lane to run serially");
+});
+
+test("runMessagesAndConversationsWithDetail: pressure-deferred gaps do not train the lane upward", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => Promise.resolve({ status: 200 }),
+    fetch: (): Promise<ChatGptFetchResult> =>
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError("apiFetch got 429 after retry budget exhausted", {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "c-1" }), makeConvo({ id: "c-2" }), makeConvo({ id: "c-3" }), makeConvo({ id: "c-4" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      tuning: { initialConcurrency: 3, maxConcurrency: 3, pauseMinMs: 200, pauseMaxMs: 200 },
+    }
+  );
+
+  assert.equal(coverage.hydratedKeys.length, 0);
+  assert.equal(coverage.gapKeys.length, 4);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS"
+  );
+  assert.ok(
+    progress.some((m) => m.message.includes("opened upstream-pressure circuit")),
+    "upstream-pressure circuit opened"
+  );
+  assert.equal(
+    progress.filter((m) => m.message.includes("concurrency_increased")).length,
+    0,
+    "deferred gap bookkeeping must not count as clean success"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: serial tuning fires no preflight and behaves exactly as before", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, tuning: SERIAL_TUNING }
+  );
+
+  // Exactly two fetches — one per conversation, no preflight probe in front.
+  assert.deepEqual(fetches, ["/conversation/convo-1", "/conversation/convo-2"]);
+  const preflightNotes = harness.protocolMessages.filter(
+    (m) => m.type === "PROGRESS" && (m as { message?: string }).message?.includes("cold-state preflight")
+  );
+  assert.deepEqual(preflightNotes, [], "no preflight progress in serial posture");
+});
+
+// ─── Run-cap tail materialization tests ─────────────────────────────────────
+
+test("runMessagesAndConversationsWithDetail: post-cap emits full tail gaps and stops idle lane launches", async () => {
+  // Regression for the 2026-06-05 live hang (run_1780693320152): stopping
+  // provider FETCHES is not enough if the paced lane still walks every tail item
+  // just to write local gaps. The correct split is: cap network detail fetches,
+  // then materialize the remaining listed tail as durable DETAIL_GAP rows
+  // immediately and abort queued lane work.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  // A launch-delay spy standing in for production's 1.5–3s serial launch gate.
+  // Each call is one idle wait the lane would pay before a task body runs.
+  let launchDelays = 0;
+  const sleepSpy = (): void => {
+    launchDelays += 1;
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+      makeConvo({ id: "convo-6" }),
+      makeConvo({ id: "convo-7" }),
+      makeConvo({ id: "convo-8" }),
+    ],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: sleepSpy,
+      runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+    }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5", "convo-6", "convo-7", "convo-8"]);
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 6, "every unhydrated listed conversation gets a durable run-cap gap");
+
+  assert.ok(
+    launchDelays <= 2,
+    `lane must not pace-launch the local-only gap tail (saw ${launchDelays} launch delays; pre-fix drains all 8 conversations -> 7)`
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: no-cap run is byte-for-byte unchanged", async () => {
+  // With NO request/wall-clock budget, all conversations are hydrated normally.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+    }
+  );
+
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"],
+    "all conversations hydrated when no cap is configured"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, [], "no gaps materialized on an uncapped run");
+
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 0, "no gaps materialized on an uncapped run");
 });

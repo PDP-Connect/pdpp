@@ -5,6 +5,17 @@ export type AdaptiveLaneOutcomeKind = "ok" | "retryable" | "rate_limited" | "ter
 export type AdaptiveLanePressureKind = "rate_limited" | "transient_error";
 
 export interface AdaptiveLanePressure {
+  /**
+   * Set when the reporting task has *already* slept `delayMs` itself before
+   * reporting (e.g. a per-request retry loop that sleeps and then succeeds on
+   * a later attempt). In that case the lane still reduces concurrency and emits
+   * the pressure event, but does NOT mirror the same wait into the next launch
+   * cooldown — that would double-pay the backoff the request already absorbed.
+   *
+   * Leave unset (the default) when the next launch genuinely still owes the
+   * wait, i.e. the reporting task observed pressure without sleeping for it.
+   */
+  absorbedByRequestWait?: boolean;
   delayMs?: number;
   kind: AdaptiveLanePressureKind;
   retryAfterMs?: number;
@@ -65,6 +76,17 @@ export interface AdaptiveLaneOptions<T> {
   emitProgress?: (event: AdaptiveLaneEvent) => void | Promise<void>;
   emitTelemetry?: (event: AdaptiveLaneEvent) => void | Promise<void>;
   initialConcurrency: number;
+  /**
+   * Optional pre-flight delay signal folded into the lane's single launch wait.
+   * Called once per launch; the launch waits `max(launchDelay, cooldown,
+   * launchDelayHint())`, NOT the sum — so a paced signal (e.g. GCRA
+   * `pacingDelayHint()`) influences send velocity through the ONE governor
+   * instead of adding a second pre-flight `await`. This is the converged
+   * single-gate composition: the lane is the sole send governor; the hint is a
+   * signal input. Absent → the lane uses only its own launch delay/cooldown
+   * (unchanged).
+   */
+  launchDelayHint?: () => number;
   maxAttempts?: number;
   maxConcurrency: number;
   maxDelayMs: number;
@@ -267,7 +289,14 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       pressure.delayMs == null
         ? boundedDelay(outcome, pressureMinDelayMs, pressureMaxDelayMs)
         : boundedExplicitDelay(pressure.delayMs);
-    pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
+    // When the reporting task already slept `delayMs` inside its own retry loop
+    // and then succeeded, mirroring the same wait into the next-launch cooldown
+    // double-pays the backoff. Reduce concurrency and surface the event, but
+    // skip the cooldown — the normal inter-launch pace (launchDelay) still
+    // applies, so this removes duplicated waiting without becoming aggressive.
+    if (!pressure.absorbedByRequestWait) {
+      pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
+    }
     await emit(
       outcomeEvent({
         attempt,
@@ -430,7 +459,11 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       const delayMs = launchDelay();
       const cooldownMs = pendingLaunchCooldownMs;
       pendingLaunchCooldownMs = 0;
-      const launchWaitMs = Math.max(delayMs, cooldownMs);
+      // Fold the optional pre-flight delay signal (e.g. GCRA pacing) into the
+      // SINGLE launch wait. `max`, never sum: pacing influences velocity through
+      // the one governor instead of stacking a second pre-flight wait.
+      const hintMs = options.launchDelayHint?.() ?? 0;
+      const launchWaitMs = Math.max(delayMs, cooldownMs, hintMs);
       launchCount += 1;
       if (launchWaitMs > 0) {
         await wait(launchWaitMs, signal);

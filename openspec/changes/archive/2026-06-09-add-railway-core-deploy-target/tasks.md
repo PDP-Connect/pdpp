@@ -1,0 +1,169 @@
+# Tasks: add-railway-core-deploy-target
+
+Topology is decided (single public origin, private AS/RS listeners, explicit
+durable storage; see `design.md`). The selected Railway button shape is one
+`railway-core` app service plus Postgres. The slices below make the first live
+test reproducible. Doctor CLI is an explicit follow-on, not a blocker. The
+browser-free Core image is part of this change because the live Railway
+pushbutton path must not carry browser runtime bloat.
+
+## 1. Deploy artifacts and env contract
+
+- [x] 1.1 Add `deploy/railway/` with a runbook describing the selected
+  one-service Railway button shape (`core` plus Postgres), the storage choice,
+  the external health probe, and the rollback/cleanup steps.
+  (`deploy/railway/README.md`.)
+- [x] 1.2 Add a documented environment block (public origin, owner password,
+  storage vars, semantic off) and confirm it is consistent with
+  `.env.docker.example`. (`deploy/railway/core.env.example` and consolidated
+  reference `deploy/railway/env.example`; the split-service examples remain a
+  manual fallback.)
+- [x] 1.3 Add the `railway-core` image target and supervisor that run the console
+  on Railway `$PORT` and AS/RS on loopback; keep old service Dockerfile-path
+  artifacts as manual fallback, not the selected button shape. (`Dockerfile`,
+  `deploy/railway/core-supervisor.mjs`, `deploy/railway/reference.Dockerfile`.)
+- [x] 1.4 Add an operator-voice "Deploy on Railway" section to the deployment
+  guide; run the `docs/voice-and-framing.md` self-check (no hosted-service
+  language; Core / Collection / reference / console kept distinct; honest cost
+  framing). (`deploy/railway/README.md`; self-check run, only match for
+  "sign up" is the negation.)
+- [x] 1.5 Add a browser-free `railway-core` image target and keep a
+  template-safe reference service Dockerfile for manual split-service fallback.
+  (`Dockerfile`; `deploy/railway/core-supervisor.mjs`;
+  `deploy/railway/reference.Dockerfile`.)
+- [x] 1.6 Add the Railway Template publication handoff and deploy-button markup,
+  including the exact one-service shape, variable bindings, scratch-template QA, and
+  the rule that the placeholder button URL is not user-facing until Railway
+  assigns a template code. (`deploy/railway/template.md`;
+  `pnpm railway:template:test`.)
+- [x] 1.7 Add a Railway upload ignore file so local runtime proof deployments do
+  not traverse machine-local agent skill symlinks. Local uploads are proof
+  artifacts only; they are not a valid public template source.
+  (`.railwayignore`.)
+
+## 2. Storage persistence
+
+- [x] 2.1 Document the managed-Postgres path
+  (`PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}`, with
+  `PDPP_STORAGE_BACKEND=postgres` optional because the runtime infers Postgres
+  from the database URL, idempotent boot bootstrap, no migrate step, no volume)
+  as the lower-risk default. (README "Storage" Option A; `env.example`.)
+- [x] 2.2 Document the SQLite-on-volume path and the `PDPP_DB_PATH`-onto-mounted-
+  volume requirement, calling out that the default `/var/lib/pdpp/pdpp.sqlite`
+  is not on the documented `/root/.pdpp` volume. (README "Storage" Option B;
+  `env.example`; the env-contract check fails an unmounted-default SQLite path.)
+- [x] 2.3 Verify restart survival for the chosen backend in the local harness
+  (records and owner session persist across a container restart).
+  (`scripts/railway-sqlite-restart-smoke.sh`, `pnpm railway:sqlite-restart-smoke`.)
+  Boots the composed stack with SQLite forced onto the persistent `pdpp-home`
+  volume (`PDPP_DB_PATH=/root/.pdpp/pdpp.sqlite`, overriding the unmounted
+  default), seeds via the step-3.2 harness, force-recreates the `reference`
+  container (`docker compose up -d --force-recreate --no-deps reference` — the
+  named volume persists, the writable layer does not), then re-queries
+  `--no-seed` and re-checks owner login. Requires Docker + a built image, so it
+  is the live-gate proxy (acceptance step 7), not a CI unit test; the pass/fail
+  logic it relies on is unit-tested offline in
+  `scripts/railway-mcp-query-smoke.test.mjs`. The owner-only live run (step 5.1)
+  still observes durability across a real platform restart.
+
+## 3. First-live-test verification harness
+
+- [x] 3.1 Wire the composed-origin smoke (`scripts/docker-smoke.sh`) as the
+  canonical local proxy for the health, metadata-consistency, and
+  owner-gating-redirect acceptance steps. (README "First-live-test gate" cites
+  `pnpm docker:smoke` as the local proxy for steps 2/3/5; confirmed the console
+  proxies `/.well-known/oauth-authorization-server`, the documented healthcheck
+  path.)
+- [x] 3.2 Add a deterministic record-seed (hand-imported fixture, no connector
+  run) and a scripted external MCP `tools/list` + scoped record query that
+  asserts anonymous refusal and scoped success against the local composed-origin
+  stack. (`scripts/railway-mcp-query-smoke.mjs`, `pnpm railway:mcp-query-smoke`.)
+  The seed registers a fixture connector manifest and writes a deterministic
+  record set over the owner-gated `POST /v1/ingest/:stream` path — owner-token
+  mint via owner login + device flow, then RS ingest — with no browser connector
+  run. The query path proves an anonymous `/mcp` request is refused (401), then
+  mints a scoped client grant (DCR + authorization-code + consent approval) and
+  runs `initialize` → `tools/list` (asserts `query_records` is advertised) →
+  `query_records` (asserts the seeded records return). Zero-dependency Node
+  `fetch`, like `check-railway-deploy-env.mjs`; the pure decision logic is
+  unit-tested offline by `scripts/railway-mcp-query-smoke.test.mjs` (19 tests,
+  `pnpm railway:mcp-query-smoke:test`). The go/no-go checklist records the live
+  run as steps 5–6.
+- [x] 3.3 Document the live go/no-go checklist and the rollback/cleanup path.
+  (README "First-live-test gate" and "Rollback and cleanup".)
+
+  Added beyond the original list: `scripts/check-railway-deploy-env.mjs` (+
+  `.test.mjs`, 21 tests) — a deterministic, offline env-contract preflight that
+  catches the avoidable misconfigurations (no/non-HTTPS origin, empty owner
+  password, selected core-service topology variables that would become prompts,
+  split-service fallback mismatches, and non-durable or unmounted-default
+  storage) before a live run.
+
+## 4. Follow-on and image-slimming work
+
+- [x] 4.1 (Deferred) `pdpp doctor` CLI (human + `--json`) consuming
+  `GET /_ref/deployment` for the Core subset. Deferred by design, not required:
+  smoke + diagnostics already cover the gate.
+- [x] 4.2 Promote the Railway button image to a browser-free Core runtime and
+  keep browser execution out of the pushbutton profile. The root Dockerfile
+  retains an explicit `reference-browser` target for profiles that need
+  Patchright/Chromium; `railway-core` uses the slim Core shape directly.
+
+## 5. Owner-only live verification
+
+- [x] 5.1 (Owner-only) Execute the first live Railway run against the acceptance
+  gate in `design.md` (real TLS, real public DNS, durability across a real
+  restart). 2026-06-06: source project `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01`
+  deployed `core` plus Postgres; source origin
+  `https://core-production-b649.up.railway.app` passed well-known, dashboard
+  redirect, full MCP smoke, restart, and no-seed smoke.
+- [x] 5.2 (Owner-only) Publish the Railway Template from a validated project,
+  deploy a new scratch project from the published template, run the live smoke
+  and restart smoke against the scratch deploy, then replace the placeholder in
+  the user-facing button surface. 2026-06-06: template
+  `pdpp-core-template-source` published from source project
+  `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01`; scratch project
+  `6c8a03dd-5ab5-49be-bd8b-5a83f09b05e6` created exactly `core` plus
+  `Postgres`, reached `SUCCESS`, passed the full MCP smoke, then passed the
+  no-seed smoke after restarting `core`.
+- [x] 5.3 (Owner-only) Satisfy the public source gate before publishing the
+  button: either make the template repository source public/reusable by Railway
+  users or use public anonymously pullable app images. 2026-06-06:
+  `pnpm railway:ghcr-public --tag sha-6581820` passed for
+  `ghcr.io/vana-com/pdpp/railway-core`.
+
+## Acceptance checks
+
+Run before handing back and before any live platform run is requested:
+
+- `openspec validate add-railway-core-deploy-target --strict` — passes.
+- `openspec validate --all --strict` — passes.
+- `git diff --check` — clean.
+- `pnpm railway:template:test` — passes: the handoff uses the `railway-core`
+  image shape, the runbook does not require manual target-stage setup, and the
+  handoff carries Railway deploy-button markup plus required variable bindings.
+- `pnpm railway:ghcr-public --tag sha-6581820` — passes: the published
+  `railway-core` image tag is anonymously pullable.
+- 2026-06-06 Railway scratch proof — passes: published template
+  `pdpp-core-template-source` deployed exactly `core` plus Postgres, served
+  well-known metadata over HTTPS, redirected anonymous `/dashboard` to
+  `/owner/login`, refused anonymous `/mcp` with 401, returned seeded records over
+  scoped MCP, restarted `core`, and returned the same records with no reseed.
+- `pnpm docker:smoke` (from the main checkout) — passes: composed-origin
+  assertions (`issuer` / `resource` / `authorization_servers[0]` equal the public
+  origin, no internal-URL leak) and the `/dashboard` -> `/owner/login` redirect on
+  the real images. Proxy for acceptance steps 2, 3, and 5.
+- `node --test scripts/railway-mcp-query-smoke.test.mjs` (offline, zero deps) —
+  19/19 passing. Unit-proves the seed corpus, MCP JSON-RPC framing, dual-
+  transport response parsing, seeded-record assertion, anonymous-refusal
+  classifier, and owner-login form parsing the live harness depends on.
+- `pnpm railway:mcp-query-smoke -- --origin <origin> --owner-password <pw>`
+  (requires a running composed origin) — seeds a deterministic record set with
+  no connector run and proves anonymous `/mcp` refusal plus a scoped
+  `query_records` success (acceptance steps 5–6).
+- `pnpm railway:sqlite-restart-smoke` (from the main checkout, Docker) — boots on
+  SQLite forced onto the persistent volume, seeds, force-recreates the reference
+  container, and survives with the records + owner login intact (acceptance step
+  7 durability check).
+- Documented service env blocks are consistent with `.env.docker.example`; all
+  deploy-doc links/paths exist; voice-guide self-check passes.

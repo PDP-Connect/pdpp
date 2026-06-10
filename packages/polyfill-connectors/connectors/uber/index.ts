@@ -23,10 +23,12 @@ import {
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 runConnector({
   name: "uber",
   browser: {},
+  validateRecord,
 
   async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
     const cookies = await context.cookies("https://riders.uber.com/");

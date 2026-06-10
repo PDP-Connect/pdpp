@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import * as sqliteVec from 'sqlite-vec';
+import { canonicalConnectorKey } from './connector-key.js';
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
@@ -170,8 +171,8 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   owner_subject_id      TEXT NOT NULL,
   connector_id          TEXT NOT NULL,
   display_name          TEXT NOT NULL,
-  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked', 'draft')),
+  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
   source_binding_key    TEXT NOT NULL,
   source_binding_json   TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
@@ -183,6 +184,29 @@ CREATE TABLE IF NOT EXISTS connector_instances (
 
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
   ON connector_instances(owner_subject_id, connector_id, status);
+
+-- Per-connection encrypted static-secret credential store. A peer of the
+-- instance-scoped storage / schedule state: a single connector-declared static
+-- provider secret sealed at rest under the owner/operator key and keyed to
+-- exactly one connector instance. The plaintext is NEVER
+-- stored; sealed_secret is the AES-256-GCM token from credential-encryption.js
+-- and is never returned by any read surface. See
+-- add-static-secret-owner-connect-primitive design Decisions 1 & 7.
+CREATE TABLE IF NOT EXISTS connector_instance_credentials (
+  connector_instance_id TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+  sealed_secret         TEXT NOT NULL,
+  fingerprint           TEXT,
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  captured_at           TEXT NOT NULL,
+  rotated_at            TEXT,
+  revoked_at            TEXT,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+  ON connector_instance_credentials(owner_subject_id, status);
 
 CREATE TABLE IF NOT EXISTS grants (
   grant_id       TEXT PRIMARY KEY,
@@ -202,6 +226,7 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE TABLE IF NOT EXISTS tokens (
   token_id      TEXT PRIMARY KEY,
   grant_id      TEXT,
+  package_id    TEXT,
   subject_id    TEXT NOT NULL,
   client_id     TEXT,
   token_kind    TEXT NOT NULL,
@@ -388,6 +413,81 @@ CREATE TABLE IF NOT EXISTS source_webhook_events (
   PRIMARY KEY(source_id, event_id)
 );
 
+-- Outbound event subscriptions (reference-only). Each subscription is bound
+-- either to a single client + grant or to a trusted owner-agent client +
+-- owner subject. The persisted scope_json is an authority snapshot so
+-- derivation can refuse events outside the original disclosure authority.
+-- secret_hash stores a one-way digest of the per-subscription HMAC secret;
+-- the raw secret is returned exactly once at create time.
+CREATE TABLE IF NOT EXISTS client_event_subscriptions (
+  subscription_id        TEXT PRIMARY KEY,
+  authority_kind         TEXT NOT NULL DEFAULT 'client_grant',
+  grant_id               TEXT,
+  client_id              TEXT NOT NULL,
+  subject_id             TEXT NOT NULL,
+  callback_url           TEXT NOT NULL,
+  secret_hash            TEXT NOT NULL,
+  secret_text            TEXT NOT NULL,
+  scope_json             TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  verification_challenge TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  disabled_at            TEXT,
+  disabled_reason        TEXT,
+  CHECK (status IN (
+    'pending_verification',
+    'active',
+    'disabled',
+    'disabled_failure',
+    'disabled_revoked',
+    'deleted'
+  )),
+  CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent')),
+  CHECK (
+    (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+    OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
+  ON client_event_subscriptions(client_id, status);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
+  ON client_event_subscriptions(grant_id);
+
+CREATE TABLE IF NOT EXISTS client_event_queue (
+  queue_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscription_id TEXT NOT NULL,
+  event_id        TEXT NOT NULL UNIQUE,
+  event_type      TEXT NOT NULL,
+  payload_json    TEXT NOT NULL,
+  enqueued_at     TEXT NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  attempt_count   INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL,
+  last_error      TEXT,
+  CHECK (status IN ('pending', 'delivered', 'final_failure', 'dropped'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_queue_due
+  ON client_event_queue(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_client_event_queue_subscription
+  ON client_event_queue(subscription_id, status);
+
+CREATE TABLE IF NOT EXISTS client_event_attempts (
+  attempt_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  queue_id         INTEGER NOT NULL,
+  attempted_at     TEXT NOT NULL,
+  status_code      INTEGER,
+  ok               INTEGER NOT NULL DEFAULT 0,
+  latency_ms       INTEGER,
+  error            TEXT,
+  response_snippet TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_attempts_queue
+  ON client_event_attempts(queue_id, attempt_id);
+
 CREATE TABLE IF NOT EXISTS connector_schedules (
   connector_instance_id TEXT PRIMARY KEY,
   connector_id      TEXT NOT NULL,
@@ -540,6 +640,94 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
 
 CREATE INDEX IF NOT EXISTS idx_oauth_clients_registration_mode
   ON oauth_clients(registration_mode, created_at);
+
+-- Operator-managed CIMD documents. Each row is a stable
+-- /oauth/client-metadata/:id document that local MCP clients (Claude Code,
+-- Codex) use as their client_id. Public-client only; no secrets stored here.
+CREATE TABLE IF NOT EXISTS cimd_client_documents (
+  document_id    TEXT PRIMARY KEY,
+  client_name    TEXT,
+  redirect_uris  TEXT NOT NULL DEFAULT '[]',
+  logo_uri       TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+  id                    TEXT PRIMARY KEY,
+  device_code           TEXT NOT NULL UNIQUE,
+  code                  TEXT UNIQUE,
+  client_id             TEXT NOT NULL,
+  redirect_uri          TEXT NOT NULL,
+  state                 TEXT,
+  code_challenge        TEXT NOT NULL,
+  code_challenge_method TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'pending',
+  grant_id              TEXT,
+  package_id            TEXT,
+  token_id              TEXT,
+  created_at            TEXT NOT NULL,
+  expires_at            TEXT NOT NULL,
+  issued_at             TEXT,
+  consumed_at           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_code
+  ON oauth_authorization_codes(code);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
+  ON oauth_authorization_codes(client_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+  refresh_token_hash   TEXT PRIMARY KEY,
+  client_id            TEXT NOT NULL,
+  grant_id             TEXT,
+  package_id           TEXT,
+  subject_id           TEXT NOT NULL,
+  status               TEXT NOT NULL DEFAULT 'active',
+  created_at           TEXT NOT NULL,
+  expires_at           TEXT,
+  last_used_at         TEXT,
+  revoked_at           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant
+  ON oauth_refresh_tokens(grant_id, status);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
+  ON oauth_refresh_tokens(client_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS grant_packages (
+  package_id        TEXT PRIMARY KEY,
+  subject_id        TEXT NOT NULL,
+  client_id         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'active',
+  package_json      TEXT NOT NULL,
+  parent_package_id TEXT,
+  trace_id          TEXT,
+  scenario_id       TEXT,
+  created_at        TEXT NOT NULL,
+  approved_at       TEXT NOT NULL,
+  revoked_at        TEXT,
+  FOREIGN KEY(parent_package_id) REFERENCES grant_packages(package_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_grant_packages_client_status
+  ON grant_packages(client_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS grant_package_members (
+  package_id    TEXT NOT NULL,
+  grant_id      TEXT NOT NULL,
+  token_id      TEXT NOT NULL,
+  source_json   TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  added_at      TEXT NOT NULL,
+  revoked_at    TEXT,
+  PRIMARY KEY(package_id, grant_id),
+  FOREIGN KEY(package_id) REFERENCES grant_packages(package_id) ON DELETE CASCADE,
+  FOREIGN KEY(grant_id) REFERENCES grants(grant_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_grant_package_members_grant
+  ON grant_package_members(grant_id, status);
 
 CREATE TABLE IF NOT EXISTS records (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -908,6 +1096,106 @@ CREATE TABLE IF NOT EXISTS semantic_search_snapshots (
   results_json  TEXT NOT NULL,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Retained-size read model (reference-only, owner-facing).
+-- See openspec/changes/add-retained-size-read-model/ for the spec delta.
+--
+-- Three projection tables for three finite grains: global, connection,
+-- stream. The global row carries owner-facing metadata about projection
+-- freshness; connection and stream rows are bounded by the connector
+-- instance/manifest, never by JSON path. All byte measures are logical
+-- (UTF-8 record JSON, retained record_changes JSON, retained blob bytes).
+-- Physical storage metrics are deliberately out of scope.
+CREATE TABLE IF NOT EXISTS retained_size_global (
+  projection_key                TEXT PRIMARY KEY,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  -- 1 means a write happened that the projection could not safely
+  -- incrementally apply (e.g. a bulk delete). Hot reads must surface this
+  -- as 'stale' rather than presenting the row as fresh truth.
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  -- JSON metadata: { state, stale_since, rebuild_status, last_error }.
+  -- Same shape as dataset_summary_projection.metadata_json so the
+  -- existing dashboard surface stays consistent.
+  metadata_json                 TEXT
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_connection (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_retained_size_connection_connector
+  ON retained_size_connection(connector_id);
+
+CREATE TABLE IF NOT EXISTS retained_size_stream (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  stream                        TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id, stream)
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_record_family (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  stream                        TEXT NOT NULL,
+  record_family                 TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id, stream, record_family)
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_top_rows (
+  scope                         TEXT NOT NULL,
+  measure                       TEXT NOT NULL,
+  rank                          INTEGER NOT NULL,
+  grain_key                     TEXT NOT NULL,
+  connector_instance_id         TEXT,
+  connector_id                  TEXT,
+  stream                        TEXT,
+  record_key                    TEXT,
+  blob_id                       TEXT,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  total_retained_bytes          INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  metadata_json                 TEXT,
+  PRIMARY KEY(scope, measure, rank)
+);
+CREATE INDEX IF NOT EXISTS idx_retained_size_top_rows_lookup
+  ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
 `;
 
 /**
@@ -1087,6 +1375,94 @@ function hasTableColumn(raw, table, column) {
   return tableColumns(raw, table).includes(column);
 }
 
+function migrateClientEventSubscriptionAuthority(raw) {
+  const cols = raw.prepare("PRAGMA table_info(client_event_subscriptions)").all();
+  const grantCol = cols.find((c) => c.name === 'grant_id');
+  const hasAuthorityKind = cols.some((c) => c.name === 'authority_kind');
+  if (hasAuthorityKind && grantCol && Number(grantCol.notnull) === 0) return;
+
+  const authorityExpr = hasAuthorityKind ? "authority_kind" : "'client_grant'";
+  raw.transaction(() => {
+    raw.exec(`
+DROP INDEX IF EXISTS idx_client_event_subscriptions_client;
+DROP INDEX IF EXISTS idx_client_event_subscriptions_grant;
+DROP INDEX IF EXISTS idx_client_event_subscriptions_authority;
+
+ALTER TABLE client_event_subscriptions RENAME TO client_event_subscriptions_old_authority;
+
+CREATE TABLE client_event_subscriptions (
+  subscription_id        TEXT PRIMARY KEY,
+  authority_kind         TEXT NOT NULL DEFAULT 'client_grant',
+  grant_id               TEXT,
+  client_id              TEXT NOT NULL,
+  subject_id             TEXT NOT NULL,
+  callback_url           TEXT NOT NULL,
+  secret_hash            TEXT NOT NULL,
+  secret_text            TEXT NOT NULL,
+  scope_json             TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  verification_challenge TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  disabled_at            TEXT,
+  disabled_reason        TEXT,
+  CHECK (status IN (
+    'pending_verification',
+    'active',
+    'disabled',
+    'disabled_failure',
+    'disabled_revoked',
+    'deleted'
+  )),
+  CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent')),
+  CHECK (
+    (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+    OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+  )
+);
+
+INSERT INTO client_event_subscriptions(
+  subscription_id, authority_kind, grant_id, client_id, subject_id,
+  callback_url, secret_hash, secret_text, scope_json, status,
+  verification_challenge, created_at, updated_at, disabled_at, disabled_reason
+)
+SELECT
+  subscription_id,
+  ${authorityExpr},
+  grant_id,
+  client_id,
+  subject_id,
+  callback_url,
+  secret_hash,
+  secret_text,
+  scope_json,
+  status,
+  verification_challenge,
+  created_at,
+  updated_at,
+  disabled_at,
+  disabled_reason
+FROM client_event_subscriptions_old_authority;
+
+DROP TABLE client_event_subscriptions_old_authority;
+
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
+  ON client_event_subscriptions(client_id, status);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
+  ON client_event_subscriptions(grant_id);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
+  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
+`);
+  })();
+}
+
+function ensureClientEventSubscriptionAuthorityIndex(raw) {
+  raw.exec(`
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
+  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
+`);
+}
+
 function stableJson(value) {
   if (value == null) return '{}';
   if (Array.isArray(value)) {
@@ -1118,12 +1494,12 @@ function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
   return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
-function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
-  return `cin_legacy_${hash.slice(0, 24)}`;
+function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}\naccount\ndefault`).digest('hex');
+  return `cin_${hash.slice(0, 24)}`;
 }
 
-function legacySyncStateConnectorInstanceId(raw, connectorId) {
+function defaultConnectorInstanceIdForBackfill(raw, connectorId) {
   const rows = raw.prepare(
     `SELECT connector_instance_id
        FROM connector_instances
@@ -1133,7 +1509,7 @@ function legacySyncStateConnectorInstanceId(raw, connectorId) {
   if (rows.length === 1) {
     return rows[0].connector_instance_id;
   }
-  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
 }
 
 function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
@@ -1170,7 +1546,7 @@ function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
       }
       const connectorId = row.connector_id;
       if (!byConnector.has(connectorId)) {
-        byConnector.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+        byConnector.set(connectorId, defaultConnectorInstanceIdForBackfill(raw, connectorId));
       }
       return byConnector.get(connectorId);
     };
@@ -1367,6 +1743,7 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
     const updateSourceInstance = raw.prepare(
       `UPDATE device_source_instances
           SET connector_instance_id = ?,
+              connector_id = ?,
               updated_at = ?
         WHERE device_id = ?
           AND source_instance_id = ?`
@@ -1382,7 +1759,13 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         source_instance_id: row.source_instance_id,
       };
       const bindingKey = sourceBindingKey(sourceBinding);
-      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+      // connector key — the same key the live ingest/read paths use — rather
+      // than to a still-prefixed `local-device:<id>` form. Connection isolation
+      // is carried by connector_instance_id. See canonicalize-connector-keys
+      // design Decision 7.
+      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+      const newConnectorId = connectorKey;
       const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
       const legacyRows = legacyInstanceRows.all(
         oldConnectorId,
@@ -1409,7 +1792,7 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         ? row.connector_instance_id.trim()
         : null;
       const legacyInstanceId = legacyInstanceIds[0] || null;
-      const existingBinding = getExistingInstanceByBinding.get(row.owner_subject_id, row.connector_id, bindingKey);
+      const existingBinding = getExistingInstanceByBinding.get(row.owner_subject_id, connectorKey, bindingKey);
       const existingBindingInstanceId = existingBinding?.connector_instance_id || null;
       if (currentInstanceId && existingBindingInstanceId && existingBindingInstanceId !== currentInstanceId) {
         throw new Error(
@@ -1424,22 +1807,22 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
       const resolvedInstanceId = currentInstanceId
         || existingBindingInstanceId
         || legacyInstanceId
-        || connectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', bindingKey);
+        || connectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
       const createdAt = row.created_at || now;
       const updatedAt = row.updated_at || now;
       const displayName = row.display_name || row.local_binding_id || row.connector_id;
       const status = row.status === 'revoked' ? 'revoked' : 'active';
       const manifest = stableJson({
-        connector_id: row.connector_id,
+        connector_id: connectorKey,
         display_name: displayName,
         streams: [],
       });
 
-      upsertConnector.run(row.connector_id, manifest, createdAt);
+      upsertConnector.run(connectorKey, manifest, createdAt);
       upsertInstance.run(
         resolvedInstanceId,
         row.owner_subject_id,
-        row.connector_id,
+        connectorKey,
         displayName,
         status,
         bindingKey,
@@ -1448,8 +1831,8 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         updatedAt,
         status === 'revoked' ? (row.revoked_at ?? updatedAt) : null,
       );
-      if (currentInstanceId !== resolvedInstanceId) {
-        updateSourceInstance.run(resolvedInstanceId, updatedAt, row.device_id, row.source_instance_id);
+      if (currentInstanceId !== resolvedInstanceId || row.connector_id !== connectorKey) {
+        updateSourceInstance.run(resolvedInstanceId, connectorKey, updatedAt, row.device_id, row.source_instance_id);
         backfilledRows += 1;
       }
 
@@ -1500,7 +1883,7 @@ function migrateRecordStorageInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -1647,7 +2030,7 @@ function migrateBlobOriginInstanceColumn(raw, opts = {}) {
         : '';
       if (!connectorInstanceId) {
         if (!legacyInstanceIds.has(row.connector_id)) {
-          legacyInstanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+          legacyInstanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
         }
         connectorInstanceId = legacyInstanceIds.get(row.connector_id);
       }
@@ -1685,7 +2068,7 @@ function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -1752,7 +2135,7 @@ function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
     const rows = raw.prepare('SELECT gap_id, connector_id FROM connector_detail_gaps ORDER BY gap_id').all();
     const instanceIds = new Map();
     const resolveInstanceId = (connectorId) => {
-      if (!instanceIds.has(connectorId)) instanceIds.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+      if (!instanceIds.has(connectorId)) instanceIds.set(connectorId, defaultConnectorInstanceIdForBackfill(raw, connectorId));
       return instanceIds.get(connectorId);
     };
     const update = raw.prepare('UPDATE connector_detail_gaps SET connector_instance_id = ? WHERE gap_id = ?');
@@ -1789,7 +2172,7 @@ function migrateSchedulerInstanceColumns(raw) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -1861,6 +2244,552 @@ DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
 CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id ON controller_active_runs(run_id);
 CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON scheduler_run_history(connector_instance_id, completed_at, id);
 `);
+}
+
+// Reference tables that hold a direct `connector_instance_id` reference.
+// Used by `migrateLegacyConnectorInstancesToDefaultAccount` to rewrite ids
+// atomically when a legacy compatibility row is migrated to a deterministic
+// default-account connection id.
+const LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  'connector_state',
+  'grant_connector_state',
+  'records',
+  'record_changes',
+  'version_counter',
+  'blobs',
+  'blob_bindings',
+  'lexical_search_index',
+  'lexical_search_meta',
+  'semantic_search_rowid',
+  'semantic_search_blob',
+  'semantic_search_meta',
+  'semantic_search_backfill_progress',
+  'connector_detail_gaps',
+  'connector_attention_records',
+  'connector_schedules',
+  'controller_active_runs',
+  'scheduler_run_history',
+  'scheduler_last_run_times',
+  'device_source_instances',
+];
+
+function migrateLegacyConnectorInstancesToDefaultAccount(raw, opts = {}) {
+  if (!hasTableColumn(raw, 'connector_instances', 'source_kind')) {
+    return { rewrittenRows: 0, rewrittenInstanceCount: 0 };
+  }
+
+  const legacyRows = raw.prepare(
+    `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, created_at, updated_at, revoked_at
+       FROM connector_instances
+      WHERE source_kind = 'legacy'
+      ORDER BY connector_instance_id`
+  ).all();
+  if (legacyRows.length === 0) {
+    return { rewrittenRows: 0, rewrittenInstanceCount: 0 };
+  }
+
+  const existingTables = LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES.filter(
+    (table) => hasTableColumn(raw, table, 'connector_instance_id'),
+  );
+
+  const migration = raw.transaction(() => {
+    const getDestination = raw.prepare(
+      `SELECT connector_instance_id, status, source_kind, source_binding_key
+         FROM connector_instances
+        WHERE owner_subject_id = ? AND connector_id = ? AND source_kind = 'account' AND source_binding_key = 'default'
+        LIMIT 1`
+    );
+    const renameDestination = raw.prepare(
+      `UPDATE connector_instances
+          SET connector_instance_id = ?,
+              source_kind = 'account',
+              source_binding_key = 'default',
+              source_binding_json = ?,
+              updated_at = ?
+        WHERE connector_instance_id = ?`
+    );
+    const updateDestination = raw.prepare(
+      `UPDATE connector_instances
+          SET source_kind = 'account',
+              source_binding_key = 'default',
+              source_binding_json = ?,
+              updated_at = ?
+        WHERE connector_instance_id = ?`
+    );
+    const deleteRow = raw.prepare(
+      `DELETE FROM connector_instances WHERE connector_instance_id = ?`
+    );
+
+    const defaultBindingJson = stableJson({ kind: 'default_account' });
+    let rewrittenRows = 0;
+    let rewrittenInstanceCount = 0;
+
+    for (const legacy of legacyRows) {
+      const oldId = legacy.connector_instance_id;
+      const newId = makeDefaultAccountConnectorInstanceId(legacy.owner_subject_id, legacy.connector_id);
+      const now = new Date().toISOString();
+      const destination = getDestination.get(legacy.owner_subject_id, legacy.connector_id);
+
+      if (destination && destination.connector_instance_id === oldId) {
+        // Identical id collision (shouldn't happen because oldId starts with
+        // cin_legacy_), but treat as in-place relabel.
+        updateDestination.run(defaultBindingJson, now, oldId);
+        rewrittenInstanceCount += 1;
+        continue;
+      }
+
+      if (!destination) {
+        if (oldId === newId) {
+          updateDestination.run(defaultBindingJson, now, oldId);
+          rewrittenInstanceCount += 1;
+          continue;
+        }
+        // Pre-check uniqueness on the destination id slot.
+        const conflict = raw.prepare(
+          `SELECT 1 FROM connector_instances WHERE connector_instance_id = ? LIMIT 1`
+        ).get(newId);
+        if (conflict) {
+          throw new Error(
+            `Cannot migrate legacy connector_instance ${oldId} → ${newId}: destination id already exists for a non-default-account row.`,
+          );
+        }
+        renameDestination.run(newId, defaultBindingJson, now, oldId);
+        for (const table of existingTables) {
+          const result = raw.prepare(
+            `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+          ).run(newId, oldId);
+          rewrittenRows += result.changes;
+        }
+        rewrittenInstanceCount += 1;
+        continue;
+      }
+
+      // A real default-account row already exists for this owner/connector.
+      // Move references from the legacy id to the existing id, then drop
+      // the legacy row. We never silently discard rows: if a UNIQUE
+      // collision would force a row to be dropped, the migration aborts.
+      const destId = destination.connector_instance_id;
+      for (const table of existingTables) {
+        const conflictColumns = uniqueColumnsForTable(table);
+        if (conflictColumns === null) {
+          // No unique columns beyond connector_instance_id: a plain
+          // re-point is safe.
+          const result = raw.prepare(
+            `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+          ).run(destId, oldId);
+          rewrittenRows += result.changes;
+          continue;
+        }
+
+        if (conflictColumns.length === 0) {
+          // connector_instance_id is itself the entire UNIQUE/PK. If both
+          // ids hold a row, the rows are conceptually duplicates of one
+          // resource; fail rather than silently discard.
+          const both = raw.prepare(
+            `SELECT
+               (SELECT 1 FROM ${table} WHERE connector_instance_id = ? LIMIT 1) AS legacy_present,
+               (SELECT 1 FROM ${table} WHERE connector_instance_id = ? LIMIT 1) AS dest_present`
+          ).get(oldId, destId);
+          if (both?.legacy_present && both?.dest_present) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: both ids hold a row in ${table} keyed solely on connector_instance_id; manual reconciliation required.`,
+            );
+          }
+          if (both?.legacy_present) {
+            const result = raw.prepare(
+              `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+            ).run(destId, oldId);
+            rewrittenRows += result.changes;
+          }
+          continue;
+        }
+
+        const keys = raw.prepare(
+          `SELECT ${conflictColumns.join(', ')} FROM ${table} WHERE connector_instance_id = ?`
+        ).all(oldId);
+        for (const k of keys) {
+          const values = conflictColumns.map((c) => k[c]);
+          const conflictValues = values.flatMap((value) => [value, value]);
+          const conflict = raw.prepare(
+            `SELECT 1 FROM ${table}
+              WHERE connector_instance_id = ?
+                AND ${nullSafeSqliteWhere(conflictColumns)}
+              LIMIT 1`
+          ).get(destId, ...conflictValues);
+          if (conflict) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: ${table} has a colliding row on (${conflictColumns.join(', ')}) = (${values.join(', ')}); manual reconciliation required.`,
+            );
+          }
+        }
+        const result = raw.prepare(
+          `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+        ).run(destId, oldId);
+        rewrittenRows += result.changes;
+      }
+      deleteRow.run(oldId);
+      rewrittenInstanceCount += 1;
+    }
+
+    return { rewrittenRows, rewrittenInstanceCount };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({
+      name: 'legacy_connector_instances_to_default_account',
+      rebuilt: false,
+      backfilledRows: result.rewrittenRows,
+      rewrittenInstanceCount: result.rewrittenInstanceCount,
+    });
+  }
+  return result;
+}
+
+function uniqueColumnsForTable(table) {
+  switch (table) {
+    case 'connector_state':
+      return ['stream'];
+    case 'grant_connector_state':
+      return ['grant_id', 'stream'];
+    case 'records':
+      return ['stream', 'record_key'];
+    case 'record_changes':
+      return ['stream', 'version'];
+    case 'version_counter':
+      return ['stream'];
+    case 'blob_bindings':
+      return ['blob_id', 'stream', 'record_key', 'json_path'];
+    case 'lexical_search_index':
+      return ['stream', 'record_key', 'field'];
+    case 'lexical_search_meta':
+      return ['stream'];
+    case 'connector_detail_gaps':
+      return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'semantic_search_meta':
+      return ['stream'];
+    case 'semantic_search_backfill_progress':
+      return ['stream'];
+    case 'semantic_search_rowid':
+      return ['scope_key', 'record_key'];
+    case 'semantic_search_blob':
+      return ['scope_key', 'record_key'];
+    case 'connector_schedules':
+      return [];
+    case 'controller_active_runs':
+      return [];
+    case 'scheduler_last_run_times':
+      return [];
+    default:
+      return null;
+  }
+}
+
+function nullSafeSqliteWhere(columns) {
+  return columns
+    .map((column) => `(${column} = ? OR (${column} IS NULL AND ? IS NULL))`)
+    .join(' AND ');
+}
+
+function migrateConnectorInstancesSourceKindCheck(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'`
+  ).get();
+  if (!table?.sql || !table.sql.includes("'legacy'")) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const remaining = raw.prepare(
+    `SELECT COUNT(*) AS count FROM connector_instances WHERE source_kind = 'legacy'`
+  ).get();
+  if (Number(remaining?.count || 0) > 0) {
+    throw new Error(
+      `Cannot tighten connector_instances.source_kind CHECK: ${remaining.count} legacy connector instance rows remain.`,
+    );
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instances RENAME TO connector_instances_old_source_kind;
+      DROP INDEX IF EXISTS idx_connector_instances_owner_connector_status;
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+        FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      FROM connector_instances_old_source_kind;
+
+      DROP TABLE connector_instances_old_source_kind;
+      CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+    `);
+    return {
+      rebuilt: true,
+      backfilledRows: 0,
+    };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_instances_source_kind_check', ...result });
+  }
+  return result;
+}
+
+// Widen the connector_instances.source_kind CHECK to admit `browser_collector`
+// alongside the existing account/local_device/manual kinds. A database created
+// before the browser-collector enrollment primitive carries the narrower CHECK;
+// rebuild the table so a `browser_collector` enrollment can persist. No-op once
+// the constraint already names `browser_collector`. See
+// add-browser-collector-enrollment-primitive design Decision 1/2.
+function migrateConnectorInstancesSourceKindBrowserCollector(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'`
+  ).get();
+  if (!table?.sql || table.sql.includes("'browser_collector'")) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instances RENAME TO connector_instances_old_browser_collector;
+      DROP INDEX IF EXISTS idx_connector_instances_owner_connector_status;
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+        FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      FROM connector_instances_old_browser_collector;
+
+      DROP TABLE connector_instances_old_browser_collector;
+      CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_instances_source_kind_browser_collector', ...result });
+  }
+  return result;
+}
+
+// Widen the connector_instances.status CHECK to admit `draft` alongside the
+// existing active/paused/revoked statuses. A database created before the
+// static-secret owner-session connect path carries the narrower CHECK; rebuild
+// the table so a `draft` instance can persist. No-op once the constraint
+// already names `draft`. See add-static-secret-owner-session-connect-path
+// design Decision 1.
+function migrateConnectorInstancesStatusDraft(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'`
+  ).get();
+  if (!table?.sql || table.sql.includes("'draft'")) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instances RENAME TO connector_instances_old_status_draft;
+      DROP INDEX IF EXISTS idx_connector_instances_owner_connector_status;
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked', 'draft')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+        FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      FROM connector_instances_old_status_draft;
+
+      DROP TABLE connector_instances_old_status_draft;
+      CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_instances_status_draft', ...result });
+  }
+  return result;
+}
+
+// Widen the connector_instance_credentials.credential_kind CHECK to admit the
+// sealed multi-field bundle and username/password pair shapes needed to migrate
+// every static-secret connector off deployment-wide env vars. Existing rows are
+// copied byte-for-byte; only the CHECK vocabulary changes.
+function migrateConnectorCredentialKindCheck(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instance_credentials'`
+  ).get();
+  if (!table?.sql || (table.sql.includes("'secret_bundle'") && table.sql.includes("'username_password'"))) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_old_kind;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      FROM connector_instance_credentials_old_kind;
+
+      DROP TABLE connector_instance_credentials_old_kind;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_credential_kind_check', ...result });
+  }
+  return result;
 }
 
 function isSourceKind(value) {
@@ -1944,46 +2873,30 @@ function deriveSpineSource(payload, row) {
   return null;
 }
 
+// Boot-safe spine source schema migration (SQLite). Installs the
+// `source_kind`/`source_id` columns and their index and drops the superseded
+// `provider_id` column. Bounded, idempotent DDL only — it does NOT scan or
+// rewrite `spine_events` rows.
+//
+// The per-row value backfill that previously lived here ran a full
+// `SELECT … FROM spine_events` plus per-row `UPDATE` inside one transaction on
+// every boot, never converging (legitimately sourceless events stay NULL). It
+// now lives in an explicit operator maintenance script
+// (`scripts/backfill-spine-source/`). NULL legacy `source_*` columns are
+// tolerable because unfiltered summaries derive source from canonical event
+// payloads or runtime actor fallback. The prior `user_version = 1` stamp gated
+// nothing (the migration ran every boot
+// regardless) and is removed to avoid implying convergence. See
+// openspec/changes/harden-startup-data-backfills.
 function migrateSpineSourceColumns(raw, opts = {}) {
   if (!tableColumns(raw, 'spine_events').length) {
-    return { backfilledRows: 0, rowCount: 0, droppedProviderId: false };
+    return { droppedProviderId: false };
   }
 
   const hadProviderId = hasTableColumn(raw, 'spine_events', 'provider_id');
   const migration = raw.transaction(() => {
-    const beforeCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
     addColumnIfMissing(raw, 'spine_events', 'source_kind', 'TEXT');
     addColumnIfMissing(raw, 'spine_events', 'source_id', 'TEXT');
-
-    const providerProjection = hadProviderId ? ', provider_id' : '';
-    const rows = raw.prepare(
-      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
-    ).all();
-    const update = raw.prepare(
-      'UPDATE spine_events SET source_kind = @source_kind, source_id = @source_id, data_json = @data_json WHERE event_id = @event_id'
-    );
-    let backfilledRows = 0;
-
-    for (const row of rows) {
-      const payload = parseSpineEventData(row.data_json, row.event_id);
-      const source = deriveSpineSource(payload, row);
-      if (!source) {
-        continue;
-      }
-      const nextPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? { ...payload, source }
-        : { source };
-      const nextDataJson = JSON.stringify(nextPayload);
-      if (row.source_kind !== source.kind || row.source_id !== source.id || row.data_json !== nextDataJson) {
-        update.run({
-          event_id: row.event_id,
-          source_kind: source.kind,
-          source_id: source.id,
-          data_json: nextDataJson,
-        });
-        backfilledRows += 1;
-      }
-    }
 
     if (hadProviderId) {
       raw.exec('ALTER TABLE spine_events DROP COLUMN provider_id');
@@ -1993,12 +2906,7 @@ function migrateSpineSourceColumns(raw, opts = {}) {
         ON spine_events(source_kind, source_id, occurred_at, recorded_at)`
     );
 
-    const afterCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
-    if (beforeCount !== afterCount) {
-      throw new Error(`spine_events source migration row-count mismatch: before=${beforeCount} after=${afterCount}`);
-    }
-    raw.pragma('user_version = 1');
-    return { backfilledRows, rowCount: afterCount, droppedProviderId: hadProviderId };
+    return { droppedProviderId: hadProviderId };
   });
 
   const result = migration();
@@ -2104,7 +3012,7 @@ function migrateSemanticSearchInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -2271,6 +3179,19 @@ export function initDb(path = ':memory:', opts = {}) {
   );
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
+  // Incremental add-source linkage: a later same-client ceremony records the
+  // prior package it extends via `parent_package_id`. Pre-existing reference
+  // DBs predate the column; add it non-destructively (NULL = a root package
+  // with no prior linkage). It is cumulative-view/audit metadata only and
+  // carries no source or stream authority — record access is still governed
+  // solely by active child grants.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'grant_packages', 'parent_package_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(
+      `CREATE INDEX IF NOT EXISTS idx_grant_packages_parent
+         ON grant_packages(parent_package_id)`,
+    );
+  });
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —
@@ -2306,9 +3227,17 @@ DROP INDEX IF EXISTS idx_blob_bindings_record;
 CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
 CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
 CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
+CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
 `);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
+  runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
+  runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
@@ -2335,6 +3264,18 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   // for pre-existing DBs).
   raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_consents_approval_id ON pending_consents(approval_id) WHERE approval_id IS NOT NULL`);
   raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_device_auth_approval_id ON owner_device_auth(approval_id) WHERE approval_id IS NOT NULL`);
+  // cimd_client_documents: added for CIMD operator-managed document service.
+  // CREATE TABLE IF NOT EXISTS in the base schema handles fresh DBs; this
+  // exec ensures the table exists for pre-existing DBs that lack it.
+  raw.exec(`
+CREATE TABLE IF NOT EXISTS cimd_client_documents (
+  document_id    TEXT PRIMARY KEY,
+  client_name    TEXT,
+  redirect_uris  TEXT NOT NULL DEFAULT '[]',
+  logo_uri       TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+)`);
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

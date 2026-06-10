@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 
 const TEST_PASSWORD = 'dcr-owner-token-test-password';
@@ -165,6 +166,44 @@ async function introspect(asUrl, token) {
   return resp.json();
 }
 
+function seedActiveHostedMcpPackageForClient(clientId) {
+  const now = new Date().toISOString();
+  const packageId = 'gpkg_dcr_delete_cascade';
+  const packageTokenId = 'tok_dcr_delete_cascade';
+  const refreshTokenHash = 'rt_hash_dcr_delete_cascade';
+  const db = getDb();
+
+  db.prepare(`
+    INSERT INTO grant_packages(
+      package_id, subject_id, client_id, status, package_json,
+      trace_id, scenario_id, created_at, approved_at, revoked_at
+    ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL)
+  `).run(
+    packageId,
+    TEST_SUBJECT,
+    clientId,
+    JSON.stringify({ version: 'test', package_id: packageId }),
+    'trace_dcr_delete_cascade',
+    'scenario_dcr_delete_cascade',
+    now,
+    now,
+  );
+
+  db.prepare(`
+    INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at, revoked)
+    VALUES (?, NULL, ?, ?, ?, 'mcp_package', NULL, FALSE)
+  `).run(packageTokenId, packageId, TEST_SUBJECT, clientId);
+
+  db.prepare(`
+    INSERT INTO oauth_refresh_tokens(
+      refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+      created_at, expires_at, last_used_at, revoked_at
+    ) VALUES (?, ?, NULL, ?, ?, 'active', ?, NULL, NULL, NULL)
+  `).run(refreshTokenHash, clientId, packageId, TEST_SUBJECT, now);
+
+  return { packageId, packageTokenId, refreshTokenHash };
+}
+
 test('DCR per owner token: owner-issued clients list and cascade-revoke owner bearer', async () => {
   await withServer(async ({ asUrl }) => {
     const sessionCookie = await login(asUrl);
@@ -206,6 +245,8 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
     assert.equal(issuedClient.client_name, 'laptop-export');
     assert.equal(issuedClient.active_token_count, 1);
 
+    const packageState = seedActiveHostedMcpPackageForClient(ownerRegistered.body.client_id);
+
     const deleteResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(ownerRegistered.body.client_id)}`, {
       method: 'DELETE',
       headers: { Cookie: sessionCookie },
@@ -218,6 +259,23 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
 
     const listedAfterDelete = await listOwnerClients(asUrl, sessionCookie);
     assert.ok(!listedAfterDelete.data.some((row) => row.client_id === ownerRegistered.body.client_id));
+
+    const revokedPackage = getDb().prepare(
+      'SELECT status, revoked_at FROM grant_packages WHERE package_id = ?',
+    ).get(packageState.packageId);
+    assert.equal(revokedPackage.status, 'revoked');
+    assert.ok(revokedPackage.revoked_at, 'client deletion must revoke package row');
+
+    const revokedPackageToken = getDb().prepare(
+      'SELECT revoked FROM tokens WHERE token_id = ?',
+    ).get(packageState.packageTokenId);
+    assert.equal(revokedPackageToken.revoked, 1);
+
+    const revokedRefresh = getDb().prepare(
+      'SELECT status, revoked_at FROM oauth_refresh_tokens WHERE refresh_token_hash = ?',
+    ).get(packageState.refreshTokenHash);
+    assert.equal(revokedRefresh.status, 'revoked');
+    assert.ok(revokedRefresh.revoked_at, 'client deletion must revoke package refresh token');
 
     const deleteAgainResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(ownerRegistered.body.client_id)}`, {
       method: 'DELETE',
@@ -236,5 +294,45 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
       headers: { Cookie: sessionCookie },
     });
     assert.equal(deletePreRegisteredResp.status, 403);
+  });
+});
+
+test('owner device approval binds a public dynamic client to the approving owner for revoke', async () => {
+  await withServer(async ({ asUrl }) => {
+    const sessionCookie = await login(asUrl);
+
+    const registered = await registerClient(asUrl, {
+      client_name: 'Daisy local owner agent',
+      token_endpoint_auth_method: 'none',
+    });
+    assert.equal(registered.status, 201);
+    assert.ok(registered.body.client_id);
+
+    const listedBeforeApproval = await listOwnerClients(asUrl, sessionCookie);
+    assert.ok(!listedBeforeApproval.data.some((row) => row.client_id === registered.body.client_id));
+
+    const token = await issueOwnerTokenViaDeviceFlow(asUrl, registered.body.client_id, sessionCookie);
+    assert.ok(token.access_token);
+    const active = await introspect(asUrl, token.access_token);
+    assert.equal(active.active, true);
+    assert.equal(active.pdpp_token_kind, 'owner');
+    assert.equal(active.subject_id, TEST_SUBJECT);
+    assert.equal(active.client_id, registered.body.client_id);
+
+    const listedAfterApproval = await listOwnerClients(asUrl, sessionCookie);
+    const ownerClient = listedAfterApproval.data.find((row) => row.client_id === registered.body.client_id);
+    assert.ok(ownerClient, 'approval should bind the dynamic client to the approving owner');
+    assert.equal(ownerClient.client_name, 'Daisy local owner agent');
+    assert.equal(ownerClient.active_token_count, 1);
+
+    const deleteResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(registered.body.client_id)}`, {
+      method: 'DELETE',
+      headers: { Cookie: sessionCookie },
+    });
+    assert.equal(deleteResp.status, 204);
+
+    const inactive = await introspect(asUrl, token.access_token);
+    assert.equal(inactive.active, false);
+    assert.equal(inactive.inactive_reason, 'token_revoked');
   });
 });

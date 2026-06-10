@@ -27,9 +27,11 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
   type EnrollmentExchangeResponse,
+  type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
 } from "./local-device-client.ts";
@@ -51,6 +53,17 @@ import {
   type ConnectorPlacementInput,
   type RuntimeBindingName,
 } from "./runtime-capabilities.ts";
+
+/**
+ * Build-derived agent version reported on every heartbeat this runner emits,
+ * resolved once at module load. Populates `device_exporters.agent_version` so an
+ * owner can see which collector build a host is running — and catch stale-build
+ * drift — without inspecting `dist/` mtimes on the machine. A built artifact
+ * reports its real revision; an unbuilt source/`tsx` run reports `…+source`.
+ * Redaction-safe: a version string plus a short revision token, never a path or
+ * secret. See `collector-build-info.ts`.
+ */
+const COLLECTOR_AGENT_VERSION = buildAgentVersion();
 
 /**
  * Maximum stderr bytes retained from a connector child before the runner
@@ -112,7 +125,7 @@ export interface CollectorOutboxPolicy {
 
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = Object.freeze({
   drainBatchSize: 4,
-  leaseMs: 60_000,
+  leaseMs: 300_000,
   maxAttempts: 5,
   maxDrainDurationMs: 120_000,
   maxDrainIterations: 256,
@@ -120,6 +133,266 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   maxQueueDepth: 10_000,
   retryBackoffMs: 30_000,
 });
+
+/**
+ * Run-time bound on retained acknowledged (`succeeded`) outbox rows.
+ *
+ * A `succeeded` row is an acknowledged outbox work item — a delivered record
+ * batch, checkpoint, gap, or blob upload. Nothing reads it again: the server
+ * already holds the durable copy, and the local row only survives as a
+ * forensic tail. Without a bound it accumulates one row per acknowledged batch
+ * forever, which is the root cause behind the 35 GB local outbox the
+ * memory-pressure investigation found. The drain path is the natural place to
+ * bound it: after a clean drain the outbox is at its quietest, and pruning only
+ * `succeeded` rows can never race or drop undelivered work.
+ *
+ * The bound is **count only**: keep the most-recent `keepRecentCount`
+ * `succeeded` rows per source instance and prune every older one, *regardless
+ * of how recently it was acknowledged*. This is a true upper bound on retained
+ * rows — the tail can never exceed `keepRecentCount` no matter how fast the
+ * source emits. The v1 implementation ANDed a 30-day age floor with the count
+ * cap, which silently defeated the cap for the exact incident shape it was
+ * meant to fix: a 170k-row outbox whose `succeeded` rows were *all*
+ * acknowledged within the last ~15 days has nothing older than 30 days, so the
+ * ANDed age clause matched zero rows and the file never shrank. Count-only
+ * makes the cap load-bearing on its first post-deploy run.
+ *
+ * This mirrors the manual `prune-sent` CLI, which already drops the age filter
+ * when `--keep-count` is the operator's sole policy "so the count cap works
+ * independently of row age" — the automatic path now uses that same count-only
+ * mechanism.
+ *
+ * `keepRecentCount` (10,000) is the runner's own per-run / per-source bound:
+ * {@link CollectorOutboxPolicy.maxEnqueuedBatchesPerRun} and
+ * {@link CollectorOutboxPolicy.maxQueueDepth} are both `10_000`, so the retained
+ * acknowledged tail is held to roughly one run's enqueue budget / one queue's
+ * depth worth of rows — the amount of in-flight work the runner already permits
+ * — rather than an arbitrary fraction of it. It caps retention more than an
+ * order of magnitude below the ~170k-row incident while keeping ample recent
+ * history for after-the-fact inspection.
+ *
+ * The automatic path never writes a backup file — it runs every drain and a
+ * multi-GB backup every 15 minutes is exactly the disk pressure this bound is
+ * meant to relieve. The manual CLI keeps its backup-before-`--apply` behavior
+ * and its optional `--older-than-days` age window for one-shot operator
+ * compaction; the run-time prune relies on the count bound and the same
+ * single-transaction, `succeeded`-only delete.
+ */
+export interface CollectorAutoPrunePolicy {
+  /** When false, the run-time prune is skipped entirely. */
+  enabled: boolean;
+  /**
+   * Keep the most-recent N succeeded rows per source instance and prune every
+   * older one regardless of age. This is the sole retained-row bound, so it is
+   * a true upper limit on the acknowledged tail.
+   */
+  keepRecentCount: number;
+}
+
+export const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY: Readonly<CollectorAutoPrunePolicy> = Object.freeze({
+  enabled: true,
+  keepRecentCount: 10_000,
+});
+
+/**
+ * Resolve the effective auto-prune policy from (in increasing precedence) the
+ * built-in default, an explicit run-config override, and environment overrides.
+ * Operators get a no-rebuild override path:
+ *
+ * - `PDPP_COLLECTOR_AUTO_PRUNE=0|false|off|no` disables the run-time prune.
+ * - `PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT=<int>` overrides the count bound.
+ *
+ * Invalid or absent env values fall through to the lower-precedence value
+ * rather than throwing, so a malformed override never breaks a collector run.
+ */
+export function resolveCollectorAutoPrunePolicy(
+  override?: Partial<CollectorAutoPrunePolicy>,
+  env: NodeJS.ProcessEnv = process.env
+): CollectorAutoPrunePolicy {
+  const policy: CollectorAutoPrunePolicy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
+
+  const enabledRaw = env.PDPP_COLLECTOR_AUTO_PRUNE;
+  if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+    policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+  }
+
+  const keepCount = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT);
+  if (keepCount !== null) {
+    policy.keepRecentCount = keepCount;
+  }
+
+  return policy;
+}
+
+const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
+
+function parseNonNegativeInt(raw: string | undefined): number | null {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Run the bounded auto-prune for one source instance after a clean drain.
+ *
+ * Returns the prune outcome so the run result can surface it for diagnostics.
+ * Supplies `keepCount` as the *sole* bound — never an `olderThanIso` age floor
+ * — so the count cap is a true upper limit on retained rows regardless of how
+ * recently they were acknowledged. `keepCount` is always present (never a
+ * "prune all succeeded" call) and the prune is scoped to the source instance so
+ * one connection never prunes another's retained tail. Only `succeeded` rows
+ * are eligible inside {@link LocalDeviceOutbox.pruneSent}; the
+ * ready/leased/retrying/dead-letter rows this run may have left behind are
+ * structurally untouchable here.
+ */
+export function autoPruneSucceededOutbox(input: {
+  outbox: Pick<LocalDeviceOutbox, "pruneSent">;
+  policy: CollectorAutoPrunePolicy;
+  sourceInstanceId: string;
+}): CollectorAutoPruneResult {
+  if (!input.policy.enabled) {
+    return { enabled: false, matched: 0, pruned: 0 };
+  }
+  const result = input.outbox.pruneSent({
+    dryRun: false,
+    keepCount: input.policy.keepRecentCount,
+    sourceInstanceId: input.sourceInstanceId,
+  });
+  return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
+
+export interface CollectorAutoPruneResult {
+  /** False when the policy disabled the run-time prune (no prune attempted). */
+  enabled: boolean;
+  /** Succeeded rows that matched the bounded prune predicate. */
+  matched: number;
+  /** Succeeded rows actually deleted this pass. */
+  pruned: number;
+}
+
+/**
+ * Run-time policy for reclaiming the outbox freelist with an in-place `VACUUM`.
+ *
+ * {@link autoPruneSucceededOutbox} DELETEs over-retention `succeeded` rows, but
+ * with `auto_vacuum = NONE` the freed pages stay in the file forever as
+ * freelist — this is why the memory-pressure investigation found a 35 GB local
+ * outbox whose live rows were only ~2 GB (94% freelist). That bloated file is
+ * not a leak in the node heap (the collector's anonymous RSS stays ~100 MB),
+ * but every collector run pulls the outbox pages the kernel touches into the
+ * service cgroup's *file* page cache, so a 35 GB file lets the cgroup's
+ * reclaimable cache climb toward `MemoryHigh` and inflates the reported
+ * `MemoryPeak`. Returning the freelist to the filesystem keeps the on-disk file
+ * — and therefore the cache the cgroup can accumulate from outbox I/O — bounded.
+ *
+ * The auto-compact is deliberately rare and guarded by the caller
+ * ({@link autoCompactOutboxIfBloated}):
+ *
+ * - It runs only when `reclaimableBytes >= minReclaimableBytes`, so a healthy
+ *   small outbox never pays for a whole-file rebuild.
+ * - It runs only on a quiet lane (no `ready`/`leased`/`dead_letter` work),
+ *   mirroring the manual `compact` CLI's refuse-when-unsent guard. `VACUUM` is
+ *   lossless — it copies every row, succeeded or not, so it can never drop
+ *   unsent work — but holding it to a drained lane keeps it a quiet-state
+ *   maintenance op rather than something racing a live drain.
+ *
+ * It changes no cursor, checkpoint, or record semantics: it only returns
+ * already-deleted pages to the OS.
+ */
+export interface CollectorAutoCompactPolicy {
+  /** When false, the run-time auto-compact is skipped entirely. */
+  enabled: boolean;
+  /**
+   * Only rebuild when the outbox freelist is at least this many bytes. The
+   * default is high enough that a healthy outbox never triggers a whole-file
+   * `VACUUM`, but low enough to reclaim long before the file reaches the
+   * tens-of-GB bloat the incident produced.
+   */
+  minReclaimableBytes: number;
+}
+
+export const DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY: Readonly<CollectorAutoCompactPolicy> = Object.freeze({
+  enabled: true,
+  minReclaimableBytes: 512 * 1024 * 1024,
+});
+
+/**
+ * Resolve the effective auto-compact policy from (in increasing precedence) the
+ * built-in default, an explicit run-config override, and environment overrides.
+ * Operators get a no-rebuild override path:
+ *
+ * - `PDPP_COLLECTOR_AUTO_COMPACT=0|false|off|no` disables the run-time compact.
+ * - `PDPP_COLLECTOR_AUTO_COMPACT_MIN_RECLAIM_BYTES=<int>` overrides the byte
+ *   threshold (use `0` to compact whenever any freelist exists).
+ *
+ * Invalid or absent env values fall through to the lower-precedence value
+ * rather than throwing, so a malformed override never breaks a collector run.
+ */
+export function resolveCollectorAutoCompactPolicy(
+  override?: Partial<CollectorAutoCompactPolicy>,
+  env: NodeJS.ProcessEnv = process.env
+): CollectorAutoCompactPolicy {
+  const policy: CollectorAutoCompactPolicy = { ...DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY, ...(override ?? {}) };
+
+  const enabledRaw = env.PDPP_COLLECTOR_AUTO_COMPACT;
+  if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+    policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+  }
+
+  const minBytes = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_COMPACT_MIN_RECLAIM_BYTES);
+  if (minBytes !== null) {
+    policy.minReclaimableBytes = minBytes;
+  }
+
+  return policy;
+}
+
+/**
+ * Reclaim the outbox freelist with an in-place `VACUUM` when the file is bloated
+ * and the lane is quiet. No-op (and never opens a write transaction) unless all
+ * guards pass, so the common healthy-run path pays only two cheap `PRAGMA`
+ * reads.
+ *
+ * Guards, in order:
+ *   1. Policy disabled → skipped.
+ *   2. Reclaimable freelist below `minReclaimableBytes` → not worth a whole-file
+ *      rebuild this run; the next over-threshold run reclaims it.
+ *   3. Any non-`succeeded` row (`ready`/`leased`/`dead_letter`) present → defer
+ *      so the rebuild stays a quiet-state op, matching the manual CLI guard.
+ *
+ * `VACUUM` is lossless and touches no cursor/checkpoint/record state, so the
+ * only observable effect is a smaller on-disk file (and therefore less outbox
+ * page cache charged to the service cgroup on later runs).
+ */
+export function autoCompactOutboxIfBloated(input: {
+  outbox: Pick<LocalDeviceOutbox, "compact" | "countNonSucceeded" | "pageStats">;
+  policy: CollectorAutoCompactPolicy;
+}): CollectorAutoCompactResult {
+  if (!input.policy.enabled) {
+    return { compacted: false, enabled: false, reason: "disabled", reclaimedBytes: 0 };
+  }
+  const before = input.outbox.pageStats();
+  if (before.reclaimableBytes < input.policy.minReclaimableBytes) {
+    return { compacted: false, enabled: true, reason: "below_threshold", reclaimedBytes: 0 };
+  }
+  if (input.outbox.countNonSucceeded() > 0) {
+    return { compacted: false, enabled: true, reason: "lane_not_quiet", reclaimedBytes: 0 };
+  }
+  const result = input.outbox.compact();
+  return { compacted: true, enabled: true, reason: "compacted", reclaimedBytes: result.reclaimedBytes };
+}
+
+export interface CollectorAutoCompactResult {
+  /** True when a `VACUUM` rebuild actually ran this pass. */
+  compacted: boolean;
+  /** False when the policy disabled the run-time compact (no compact attempted). */
+  enabled: boolean;
+  /** Why the compact ran or was skipped. */
+  reason: "disabled" | "below_threshold" | "lane_not_quiet" | "compacted";
+  /** Bytes returned to the filesystem (0 unless `compacted`). */
+  reclaimedBytes: number;
+}
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
@@ -161,6 +434,20 @@ export interface CollectorRunConfig {
    * consumption, and between queue drain iterations.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Override the run-time auto-compact (freelist `VACUUM`) of the durable
+   * outbox. Defaults to {@link DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY}; environment
+   * overrides ({@link resolveCollectorAutoCompactPolicy}) take final precedence so
+   * an operator can disable or retune it on a deployed host without a rebuild.
+   */
+  autoCompact?: Partial<CollectorAutoCompactPolicy>;
+  /**
+   * Override the run-time auto-prune of acknowledged (`succeeded`) outbox
+   * rows. Defaults to {@link DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY}; environment
+   * overrides ({@link resolveCollectorAutoPrunePolicy}) take final precedence so
+   * an operator can disable or retune it on a deployed host without a rebuild.
+   */
+  autoPrune?: Partial<CollectorAutoPrunePolicy>;
   baseUrl: string;
   batchSize?: number;
   /**
@@ -200,7 +487,76 @@ export interface CollectorRunConfig {
   sourceInstanceId: string;
 }
 
+/**
+ * Coverage statuses emitted by the local source inventory's
+ * `coverage_diagnostics` stream. Kept in sync with
+ * `local-source-inventory.ts`'s `CoverageStatus`. `unaccounted` is not a
+ * connector-emitted status today; it is reserved so a future inventory
+ * that cannot classify a discovered store has a home in the summary
+ * without changing this contract.
+ */
+export const COLLECTOR_COVERAGE_STATUSES = [
+  "collected",
+  "inventory_only",
+  "excluded",
+  "deferred",
+  "missing",
+  "unsupported",
+  "unaccounted",
+] as const;
+
+export type CollectorCoverageStatus = (typeof COLLECTOR_COVERAGE_STATUSES)[number];
+
+/**
+ * Completeness summary derived from the `coverage_diagnostics` RECORDs a
+ * connector emits during this run. This is deliberately distinct from
+ * {@link CollectorRunResult.done}: `done.status` reports whether the
+ * declared streams ran to a clean DONE, while this summary reports what
+ * the local source inventory saw, collected, inventoried, excluded,
+ * deferred, or could not account for. A run can succeed on every declared
+ * stream while completeness shows excluded/deferred/missing stores — that
+ * is the honest, non-failing local-completeness signal Section 5.2
+ * requires.
+ *
+ * `null` on the run result means no coverage diagnostic was observed this
+ * pass (the run did not request `coverage_diagnostics`, or the connector
+ * did not spawn — e.g. a backlog skip). Absence is reported as absence,
+ * not as "complete".
+ *
+ * The summary carries only the safe coverage fields — `store`, `stream`,
+ * `status`. Each coverage RECORD's `data` is `{ id, store, stream, status,
+ * reason }`; this summary keeps counts plus the per-store status map and
+ * never copies `reason` text or any path/payload. The inventory itself
+ * keeps `reason` free of paths and secrets.
+ */
+export interface CollectorCompletenessSummary {
+  /** Per-store latest coverage status, keyed by store name. */
+  byStore: Readonly<Record<string, CollectorCoverageStatus>>;
+  /** Count of stores at each coverage status. */
+  countsByStatus: Readonly<Record<CollectorCoverageStatus, number>>;
+  /**
+   * True when every discovered store reached an accounted status
+   * (anything other than `unaccounted`). Declared-stream success does not
+   * imply this; this is the completeness bit Section 5.2 separates out.
+   */
+  fullyAccounted: boolean;
+  /** Total number of distinct stores the coverage diagnostic reported. */
+  storeCount: number;
+  /**
+   * Stores whose coverage status is `unaccounted` — discovered but not
+   * classified. Empty on a healthy run; non-empty means the connector saw
+   * a store it could not place, which must not read as complete.
+   */
+  unaccountedStores: readonly string[];
+}
+
 export interface CollectorRunResult {
+  /**
+   * Local-completeness summary from this run's `coverage_diagnostics`
+   * RECORDs, distinct from {@link CollectorRunResult.done} (declared-stream
+   * success). `null` when no coverage diagnostic was observed this pass.
+   */
+  completeness: CollectorCompletenessSummary | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   /**
@@ -217,6 +573,15 @@ export interface CollectorRunResult {
   outboxSummary: LocalDeviceOutboxSummary;
   /** Prior state replayed into the START message (empty when first run). */
   priorState: Readonly<Record<string, unknown>>;
+  /**
+   * Outcome of this pass's run-time auto-prune of acknowledged (`succeeded`)
+   * outbox rows. `enabled: false` means the prune was turned off; otherwise
+   * `pruned` is how many over-retention succeeded rows this drain reclaimed.
+   * Surfaced so operators and tests can see the bound working without
+   * inspecting the SQLite file. Never reflects ready/leased/retrying/dead-letter
+   * rows — those are not prune candidates.
+   */
+  prunedSent: CollectorAutoPruneResult;
   recordsQueued: number;
   /**
    * Number of leases recovered before scan/spawn. Non-zero means the
@@ -274,6 +639,8 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
 
   const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+  const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
+  const autoCompactPolicy = resolveCollectorAutoCompactPolicy(config.autoCompact);
   const holderId = config.collectorHolderId ?? randomUUID();
   const outboxPath = config.outboxPath ?? config.queuePath;
   const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -283,6 +650,12 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     deviceToken: config.deviceToken,
   });
 
+  // Tracks whether the pre-scan "starting" heartbeat has been sent. The
+  // corrective heartbeat below only fires once it has, so a failure that
+  // happens *before* "starting" (notably the state-read block, which emits its
+  // own honest "blocked") keeps its deliberate status instead of being
+  // overwritten by an outbox-derived one.
+  let startingHeartbeatSent = false;
   try {
     const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
     const preScanDrain = await drainCollectorOutbox({
@@ -297,6 +670,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 
     const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     const skipResult = await maybeSkipScanForBacklog({
+      autoPrunePolicy,
       client,
       config,
       outbox,
@@ -317,6 +691,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     });
 
     await client.heartbeat({
+      agent_version: COLLECTOR_AGENT_VERSION,
       connector_id: config.connector.connector_id,
       outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
         backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
@@ -325,6 +700,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       source_instance_id: config.sourceInstanceId,
       status: "starting",
     });
+    startingHeartbeatSent = true;
 
     const streamResult = await streamConnectorIntoOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
@@ -368,12 +744,37 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
       outbox,
     });
+
+    // Bound the retained acknowledged tail now that the drain has completed,
+    // BEFORE reading the summary the heartbeat and run result report. Only
+    // `succeeded` rows are eligible; the ready/leased/retrying/dead-letter work
+    // this run may have left behind is structurally out of scope. Pruning first
+    // means `finalSummary`, the heartbeat outbox diagnostics, and the returned
+    // `outboxSummary` all reflect the post-prune `succeeded`/`total` counts —
+    // the server never sees a stale pre-prune tail. (Pending/leased/dead-letter
+    // counts and the heartbeat status are unaffected: the prune only ever
+    // removes `succeeded` rows.)
+    const prunedSent = autoPruneSucceededOutbox({
+      outbox,
+      policy: autoPrunePolicy,
+      sourceInstanceId: config.sourceInstanceId,
+    });
+
+    // Reclaim the freelist the prune just left behind when the file is bloated
+    // and the lane is quiet. Lossless rebuild: row counts are unchanged, so
+    // `finalSummary` and the heartbeat below see the same outbox; only the
+    // on-disk file (and the page cache later runs charge to the cgroup) shrinks.
+    autoCompactOutboxIfBloated({ outbox, policy: autoCompactPolicy });
+
     const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
+      const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
+        agent_version: COLLECTOR_AGENT_VERSION,
         connector_id: config.connector.connector_id,
+        ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
         outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
           backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
         }),
@@ -384,11 +785,13 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     }
 
     return {
+      completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
       done,
       enqueuedBatches: enqueueResult.enqueuedBatches,
       flushedState: checkpointResult.flushedState,
       outboxSummary: finalSummary,
       priorState,
+      prunedSent,
       recordsQueued: enqueueResult.recordsQueued,
       recoveredLeases,
       satisfiedBindings,
@@ -398,12 +801,54 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       statePutFailed: checkpointResult.statePutFailed,
       streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
     };
+  } catch (error) {
+    // A throw after the "starting" heartbeat (connector child failure, unclean
+    // exit, abort, protocol-parse error, drain transition error, …) would
+    // otherwise leave "starting" as the last status the server ever saw — even
+    // though the collector is healthily delivering: its already-queued work
+    // drains on the *next* pass's pre-scan drain. Re-derive the status from the
+    // durable outbox so the last heartbeat is honest. Skipped when "starting"
+    // was never sent, preserving the honest "blocked" the state-read block
+    // emits on its own.
+    if (startingHeartbeatSent) {
+      await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
+    }
+    throw error;
   } finally {
     outbox.close();
   }
 }
 
+/**
+ * Best-effort terminal heartbeat re-derived from the durable outbox after a
+ * collector run threw past its final heartbeat. A drained source reports
+ * "healthy", a source with pending work "retrying", and a dead-letter backlog
+ * "blocked" — tying "healthy" to a concrete drain, never merely to the process
+ * having booted. Emitted before the caller re-raises, so it never masks the
+ * original failure.
+ */
+async function emitCorrectiveHeartbeatFromOutbox(input: {
+  client: Pick<LocalDeviceClient, "heartbeat">;
+  config: CollectorRunConfig;
+  outbox: LocalDeviceOutbox;
+  policy: CollectorOutboxPolicy;
+}): Promise<void> {
+  const summary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const deadLetterError = buildHeartbeatDeadLetterError(input.outbox, input.config.sourceInstanceId);
+  await safeHeartbeat(input.client, {
+    connector_id: input.config.connector.connector_id,
+    ...(deadLetterError ? { last_error: deadLetterError } : {}),
+    outbox: buildHeartbeatOutboxDiagnostics(summary, {
+      backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+    }),
+    records_pending: pendingOutboxWorkCount(summary),
+    source_instance_id: input.config.sourceInstanceId,
+    status: heartbeatStatusForSummary(summary, input.policy),
+  });
+}
+
 interface MaybeSkipScanInput {
+  autoPrunePolicy: CollectorAutoPrunePolicy;
   client: Pick<LocalDeviceClient, "heartbeat">;
   config: CollectorRunConfig;
   outbox: LocalDeviceOutbox;
@@ -437,6 +882,18 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
       sourceInstanceId: input.config.sourceInstanceId,
     });
   }
+  // The pre-scan drain has completed, so the bounded prune of acknowledged
+  // rows is safe even though scan was skipped — and bounding the tail on a busy
+  // lane that keeps skipping scans is exactly where it matters most. Prune
+  // BEFORE reading the summary the heartbeat and run result report, so the
+  // server sees the post-prune `succeeded` count rather than the stale tail.
+  // Open backlog rows (ready/leased/retrying/dead-letter) are not prune
+  // candidates, so the pending count and heartbeat status are unaffected.
+  const prunedSent = autoPruneSucceededOutbox({
+    outbox: input.outbox,
+    policy: input.autoPrunePolicy,
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
   const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
   const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
   await safeHeartbeat(input.client, {
@@ -449,11 +906,14 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
   });
   return {
+    // No connector spawned on a backlog skip, so no coverage was observed.
+    completeness: null,
     done: null,
     enqueuedBatches: 0,
     flushedState: null,
     outboxSummary: summaryAfterGap,
     priorState: Object.freeze({}),
+    prunedSent,
     recordsQueued: 0,
     recoveredLeases: input.recoveredLeases,
     satisfiedBindings: input.satisfiedBindings,
@@ -479,6 +939,11 @@ async function readPriorStateOrBlock(input: {
   } catch (error) {
     await safeHeartbeat(input.client, {
       connector_id: input.config.connector.connector_id,
+      // Discriminate the stall shape only — never the raw state-read error,
+      // which may carry AS-reach detail. The dashboard now learns this is a
+      // state-read block (cleared by re-running the collector), not a
+      // dead-letter backlog, instead of an undifferentiated `blocked`.
+      last_error: { kind: "state_read_failed" },
       records_pending: input.recordsPending,
       source_instance_id: input.config.sourceInstanceId,
       status: "blocked",
@@ -502,10 +967,86 @@ interface StreamConnectorIntoOutboxInput {
 interface StreamConnectorIntoOutboxResult {
   bufferedState: Readonly<Record<string, unknown>>;
   bufferHighWaterMark: number;
+  /**
+   * Per-store coverage status accumulated from `coverage_diagnostics`
+   * RECORDs seen this pass, or `null` when none were observed. Last write
+   * wins per store so a re-emitted store keeps its final status.
+   */
+  coverageByStore: Map<string, CollectorCoverageStatus> | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
   scanBudgetExceeded: boolean;
+}
+
+/**
+ * Stream name on which the local source inventory emits coverage records.
+ * Mirrors the connector-side stream contract; the runner only needs the
+ * name to recognize and aggregate the diagnostic.
+ */
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+
+/**
+ * Extract the safe `{ store, status }` coverage entry from a
+ * `coverage_diagnostics` RECORD, or `null` when the message is not a
+ * coverage record or lacks a store. An unrecognized status maps to
+ * `unaccounted` so a future tool release cannot read as complete.
+ */
+function coverageEntryFromRecord(
+  message: Extract<EmittedMessage, { type: "RECORD" }>
+): { status: CollectorCoverageStatus; store: string } | null {
+  if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
+    return null;
+  }
+  const data = message.data;
+  const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
+  const keyStore = typeof message.key === "string" && message.key ? message.key : null;
+  const store = dataStore ?? keyStore;
+  if (!store) {
+    return null;
+  }
+  const rawStatus = isRecord(data) && typeof data.status === "string" ? data.status : null;
+  if (!rawStatus) {
+    return null;
+  }
+  const status = (COLLECTOR_COVERAGE_STATUSES as readonly string[]).includes(rawStatus)
+    ? (rawStatus as CollectorCoverageStatus)
+    : "unaccounted";
+  return { status, store };
+}
+
+/**
+ * Fold the per-store coverage map collected during a run into the safe
+ * {@link CollectorCompletenessSummary} surfaced on the run result. Returns
+ * `null` when no coverage diagnostic was observed so absence reads as
+ * absence rather than "complete".
+ */
+export function summarizeCollectorCompleteness(
+  coverageByStore: Map<string, CollectorCoverageStatus> | null
+): CollectorCompletenessSummary | null {
+  if (!coverageByStore || coverageByStore.size === 0) {
+    return null;
+  }
+  const countsByStatus: Record<CollectorCoverageStatus, number> = Object.fromEntries(
+    COLLECTOR_COVERAGE_STATUSES.map((status) => [status, 0])
+  ) as Record<CollectorCoverageStatus, number>;
+  const unaccountedStores: string[] = [];
+  const byStore: Record<string, CollectorCoverageStatus> = {};
+  for (const store of [...coverageByStore.keys()].sort()) {
+    const status = coverageByStore.get(store) as CollectorCoverageStatus;
+    byStore[store] = status;
+    countsByStatus[status] += 1;
+    if (status === "unaccounted") {
+      unaccountedStores.push(store);
+    }
+  }
+  return {
+    byStore,
+    countsByStatus,
+    fullyAccounted: unaccountedStores.length === 0,
+    storeCount: coverageByStore.size,
+    unaccountedStores,
+  };
 }
 
 /**
@@ -554,6 +1095,10 @@ async function streamConnectorIntoOutbox(
   let enqueuedBatches = 0;
   let done: Extract<EmittedMessage, { type: "DONE" }> | null = null;
   let scanBudgetExceeded = false;
+  // Accumulate coverage diagnostics as we see them so completeness can be
+  // summarized without re-reading the durable outbox. Stays null until the
+  // first coverage record so an absent diagnostic reads as absent.
+  let coverageByStore: Map<string, CollectorCoverageStatus> | null = null;
 
   const flushPendingBatch = (): void => {
     if (pendingRecords.length === 0) {
@@ -604,8 +1149,18 @@ async function streamConnectorIntoOutbox(
     });
   };
 
+  const recordCoverageIfPresent = (message: Extract<EmittedMessage, { type: "RECORD" }>): void => {
+    const entry = coverageEntryFromRecord(message);
+    if (!entry) {
+      return;
+    }
+    coverageByStore ??= new Map<string, CollectorCoverageStatus>();
+    coverageByStore.set(entry.store, entry.status);
+  };
+
   const handleMessage = (message: EmittedMessage): void => {
     if (message.type === "RECORD") {
+      recordCoverageIfPresent(message);
       pendingRecords.push(message);
       if (pendingRecords.length > bufferHighWaterMark) {
         bufferHighWaterMark = pendingRecords.length;
@@ -735,6 +1290,10 @@ async function streamConnectorIntoOutbox(
   return {
     bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
     bufferHighWaterMark,
+    // Coverage is a diagnostic of what the inventory saw, not record-level
+    // checkpoint state, so it is reported even when the scan budget cut the
+    // run short — an honest partial coverage beats none.
+    coverageByStore,
     done: scanBudgetExceeded ? null : done,
     enqueuedBatches,
     recordsQueued,
@@ -978,7 +1537,11 @@ async function safeHeartbeat(
   request: Parameters<LocalDeviceClient["heartbeat"]>[0]
 ): Promise<void> {
   try {
-    await client.heartbeat(request);
+    // Stamp the build-derived agent version on every best-effort heartbeat too
+    // (corrective post-throw, skip-for-backlog, state-read block), so a host
+    // that only ever reports via these paths still surfaces its build. An
+    // explicitly-provided value is preserved.
+    await client.heartbeat({ agent_version: COLLECTOR_AGENT_VERSION, ...request });
   } catch {
     // Heartbeat is best-effort here; the caller is already handling a more
     // important failure and we do not want to mask it with a heartbeat error.
@@ -1297,10 +1860,16 @@ async function drainClaimedOutboxItem(
 ): Promise<void> {
   throwIfAborted(input.abortSignal);
   try {
-    await sendOutboxItem(input.client, item);
-    input.outbox.acknowledge({ holder: input.holderId, id: item.id, leaseEpoch: item.lease_epoch });
+    const current = input.outbox.renewLease({
+      holder: input.holderId,
+      id: item.id,
+      leaseEpoch: item.lease_epoch,
+      leaseMs: input.policy.leaseMs,
+    });
+    await sendOutboxItem(input.client, current);
+    input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
     result.sent++;
-    sentByKind[item.kind] = (sentByKind[item.kind] ?? 0) + 1;
+    sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
   } catch (error) {
     failOutboxItem(input, item, error, result);
   }
@@ -1312,25 +1881,44 @@ function failOutboxItem(
   error: unknown,
   result: DrainCollectorOutboxResult
 ): void {
-  const message = error instanceof Error ? error.message : String(error);
-  if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
-    input.outbox.deadLetter({
+  // Redact and bound the error before it is persisted in `last_error`.
+  // `LocalDeviceHttpError` already exposes only a sanitized envelope detail
+  // (code/param/message), but `failOutboxItem` is the generic persistence
+  // boundary for every error type, so we re-apply the same secret/length
+  // sanitizer here. This guarantees the durable outbox never stores tokens,
+  // cookies, OTPs, opaque credentials, or unbounded request/response bodies
+  // regardless of which error reached this path.
+  const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
+  try {
+    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+      input.outbox.deadLetter({
+        error: message,
+        holder: input.holderId,
+        id: item.id,
+        leaseEpoch: item.lease_epoch,
+      });
+      result.deadLettered++;
+      return;
+    }
+    input.outbox.failRetryable({
       error: message,
       holder: input.holderId,
       id: item.id,
       leaseEpoch: item.lease_epoch,
+      retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
     });
-    result.deadLettered++;
-    return;
+    result.failed++;
+  } catch (transitionError) {
+    if (isLeaseNotCurrentError(transitionError)) {
+      result.failed++;
+      return;
+    }
+    throw transitionError;
   }
-  input.outbox.failRetryable({
-    error: message,
-    holder: input.holderId,
-    id: item.id,
-    leaseEpoch: item.lease_epoch,
-    retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
-  });
-  result.failed++;
+}
+
+function isLeaseNotCurrentError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("local outbox lease not current");
 }
 
 class OutboxPayloadShapeError extends Error {
@@ -1569,6 +2157,94 @@ function isUnresolvedScanBudgetGap(
   return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
 
+/**
+ * The mutually exclusive lifecycle states a local collector lane can be in,
+ * derived from the durable outbox alone. This is the single axis the
+ * status/doctor surface and the runbook describe so an operator (or an
+ * agent) reading a `pdpp-local-collector doctor` JSON never has to infer
+ * the situation from raw counts.
+ *
+ * Priority order (most-actionable first) when several conditions overlap:
+ * `dead_letter` > `stale_lease` > `retryable_backlog` > `draining` >
+ * `coverage_missing` > `healthy_idle`.
+ *
+ * - `dead_letter`: at least one row exhausted retries and needs operator
+ *   recovery (`retry-dead-letters`). Drain bandwidth is otherwise fine.
+ * - `stale_lease`: a previous runner instance crashed mid-drain and left a
+ *   lease past its expiry. The next run recovers it automatically; surfaced
+ *   so a stuck lane is visible before then.
+ * - `retryable_backlog`: ready work remains but every ready row is waiting
+ *   on its retry backoff (nothing claimable this instant). Self-heals on the
+ *   next scheduled run; no operator action required.
+ * - `draining`: claimable-now or leased work exists — the lane is actively
+ *   moving records to the server.
+ * - `coverage_missing`: the lane has drained real records but never carried
+ *   a `coverage_diagnostics` record, so the dashboard can only project
+ *   `coverage_unknown`. Re-running with the default stream set (which
+ *   includes `coverage_diagnostics`) promotes the axis. This is the local
+ *   shape behind the upgrade note in the runbook.
+ * - `healthy_idle`: fully drained with coverage accounted for (or nothing
+ *   has been collected yet, so there is no coverage to miss).
+ */
+export const LOCAL_COLLECTOR_LIFECYCLE_STATES = [
+  "healthy_idle",
+  "draining",
+  "retryable_backlog",
+  "dead_letter",
+  "stale_lease",
+  "coverage_missing",
+] as const;
+
+export type LocalCollectorLifecycleState = (typeof LOCAL_COLLECTOR_LIFECYCLE_STATES)[number];
+
+export interface LocalCollectorLifecycleInput {
+  /**
+   * Whether the lane has durably carried a `coverage_diagnostics` record.
+   * When the caller cannot determine this (e.g. an unscoped status with no
+   * connection id), pass `null` to suppress the `coverage_missing` verdict
+   * rather than guess.
+   */
+  coverageObserved: boolean | null;
+  /**
+   * Count of non-dead-letter `record_batch` rows for the lane. Used to tell
+   * an empty/never-run lane (no coverage to miss) apart from one that has
+   * collected records but no coverage diagnostic.
+   */
+  recordBatchCount: number;
+  summary: LocalDeviceOutboxSummary;
+}
+
+/**
+ * Derive the single mutually-exclusive {@link LocalCollectorLifecycleState}
+ * for a lane from its durable outbox summary plus the coverage observation.
+ * Pure and side-effect free so both the heartbeat path and the CLI doctor
+ * read the same taxonomy.
+ */
+export function deriveLocalCollectorLifecycleState(input: LocalCollectorLifecycleInput): LocalCollectorLifecycleState {
+  const { summary } = input;
+  if (summary.deadLetter > 0) {
+    return "dead_letter";
+  }
+  if (summary.staleLeases > 0) {
+    return "stale_lease";
+  }
+  const claimableNow = Math.max(0, summary.ready - summary.retrying);
+  if (summary.leased > 0 || claimableNow > 0) {
+    return "draining";
+  }
+  if (summary.retrying > 0) {
+    return "retryable_backlog";
+  }
+  // Fully drained from here down. Coverage is only "missing" when the lane
+  // has actually collected records but none of them was a coverage
+  // diagnostic; an empty lane has no coverage to miss, and a null
+  // observation means the caller could not check (do not guess).
+  if (input.coverageObserved === false && input.recordBatchCount > 0) {
+    return "coverage_missing";
+  }
+  return "healthy_idle";
+}
+
 function heartbeatStatusForSummary(
   summary: LocalDeviceOutboxSummary,
   policy?: Pick<CollectorOutboxPolicy, "maxQueueDepth">
@@ -1600,6 +2276,28 @@ export function buildHeartbeatOutboxDiagnostics(
     stale_leases: summary.staleLeases,
     succeeded: summary.succeeded,
     total: summary.total,
+  };
+}
+
+/**
+ * Build the redacted `last_error` carried on a heartbeat when the source
+ * instance has a dead-letter backlog. Returns null when there are no
+ * dead-letter rows so a healthy/draining heartbeat stays quiet. The
+ * `top_dead_letter_classes` are already redaction-safe at the outbox
+ * boundary; the reference server re-sanitizes them before persistence.
+ *
+ * This is what lets the dashboard answer "why did these dead-letter?"
+ * instead of showing `last_error_json: null` — the cause already lives on
+ * each row's `last_error` column but was never propagated up the heartbeat.
+ */
+function buildHeartbeatDeadLetterError(outbox: LocalDeviceOutbox, sourceInstanceId: string): HeartbeatLastError | null {
+  const summary = outbox.deadLetterErrorSummary({ sourceInstanceId });
+  if (summary.dead_letter_count === 0) {
+    return null;
+  }
+  return {
+    kind: "dead_letter_backlog",
+    top_dead_letter_classes: summary.top_classes,
   };
 }
 

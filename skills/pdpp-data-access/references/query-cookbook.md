@@ -2,6 +2,8 @@
 
 This file lists the data-access patterns the PDPP RS supports and shows the smallest correct call for each one. Always check `/v1/schema` first — capabilities are per-grant, not global.
 
+Authoritative query syntax lives in Core spec §8 (Resource Server Interface): the canonical `filter[field]` / `filter[field][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the non-fatal `limit_clamped` warning. This file shows the smallest correct call for each shape; where it is terser than §8, §8 governs.
+
 ## Discovery
 
 Before any data call, get the per-grant capability map:
@@ -102,6 +104,8 @@ curl -fsS "$RS_URL/v1/search/hybrid?q=acme%20launch&streams[]=messages&limit=20"
 ```
 
 Hybrid is the right default when available — it combines lexical and semantic. Pure-semantic search is fragile for code-history queries that depend on exact terms.
+
+Pagination caveat: hybrid search does **not** support `cursor` on this reference. Check the protected-resource metadata's `pdpp_discovery_hints.hybrid_pagination_supported`; when it is `false` or absent, fall back to lexical `GET /v1/search` (which supports `cursor`) for any query that needs more than `limit` results in a single pass.
 
 ## Aggregations
 

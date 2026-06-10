@@ -109,59 +109,63 @@ function makeAbortableSleep() {
   return sleep;
 }
 
-function makeFakeWebSocketCtor(responder = () => ({})) {
-  const sockets = [];
-  class FakeWebSocket {
-    constructor(url) {
-      this.url = url;
-      this.readyState = 0;
-      this.sent = [];
-      this.listeners = new Map();
-      sockets.push(this);
-      queueMicrotask(() => {
-        this.readyState = 1;
-        this.emit('open', {});
-      });
-    }
-
-    addEventListener(type, handler) {
-      const handlers = this.listeners.get(type) || [];
-      handlers.push(handler);
-      this.listeners.set(type, handlers);
-    }
-
-    on(type, handler) {
-      this.addEventListener(type, handler);
-    }
-
-    emit(type, event) {
-      for (const handler of this.listeners.get(type) || []) handler(event);
-    }
-
-    send(data) {
-      const message = JSON.parse(data);
-      this.sent.push(message);
-      const result = responder(message.method, message.params, this) || {};
-      queueMicrotask(() => {
-        this.emit('message', { data: JSON.stringify({ id: message.id, result }) });
-      });
-    }
-
-    close() {
-      if (this.readyState === 3) return;
-      this.readyState = 3;
-      this.emit('close', {});
-    }
-  }
-  return { WebSocketCtor: FakeWebSocket, sockets };
-}
-
 async function waitFor(predicate) {
   for (let i = 0; i < 20; i += 1) {
     if (predicate()) return;
     await Promise.resolve();
   }
   assert.ok(predicate(), 'condition was not met');
+}
+
+function makeFakeBrowserClient({ copyText = 'copied remote text', statuses = [] } = {}) {
+  const calls = [];
+  const bindings = new Map();
+  const client = {
+    calls,
+    async connect() {
+      calls.push({ op: 'connect' });
+      return client;
+    },
+    async setViewportSize(viewport) {
+      calls.push({ op: 'setViewportSize', viewport: { ...viewport } });
+    },
+    async goto(url) {
+      calls.push({ op: 'goto', url });
+    },
+    async addInitScript(source) {
+      calls.push({ op: 'addInitScript', source });
+    },
+    async exposeBinding(name, handler) {
+      calls.push({ op: 'exposeBinding', name });
+      bindings.set(name, handler);
+    },
+    async evaluate(source) {
+      calls.push({ op: 'evaluate', source });
+      const expression = String(source || '');
+      if (expression.includes('selectionStart') && expression.includes('document.getSelection')) {
+        return copyText;
+      }
+      if (expression.includes('__pdppPlaygroundEvents') || expression.includes('screenWidth')) {
+        const next = statuses.length > 0 ? statuses.shift() : {};
+        return JSON.stringify(next);
+      }
+      return undefined;
+    },
+    keyboard: {
+      async insertText(text) {
+        calls.push({ op: 'insertText', text });
+      },
+    },
+    emitBinding(name, payload) {
+      const handler = bindings.get(name);
+      assert.equal(typeof handler, 'function', `missing binding ${name}`);
+      handler({}, JSON.stringify(payload));
+    },
+    async close() {
+      calls.push({ op: 'close' });
+    },
+  };
+  return client;
 }
 
 test('n.eko adapter logs in, applies configured viewport endpoint, and emits base64 JPEG frames', async () => {
@@ -266,6 +270,40 @@ test('n.eko adapter logs in with an empty body for noauth n.eko providers', asyn
   assert.deepEqual(JSON.parse(login.init.body), {});
   assert.equal(fetchImpl.calls.find((call) => call.url.endsWith('/cast.jpg')).init.headers.Authorization, 'Bearer noauth-token');
   assert.equal(frames[0].data, Buffer.from(jpeg).toString('base64'));
+
+  await companion.stop();
+});
+
+test('n.eko adapter prefers control/admin credentials from env over viewer credentials', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ headers: { 'set-cookie': 'NEKO_SESSION=admin-session; Path=/; HttpOnly' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg-admin' }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    env: {
+      NEKO_USERNAME: 'operator',
+      NEKO_PASSWORD: 'viewer-pass',
+      NEKO_CONTROL_USERNAME: 'admin',
+      NEKO_CONTROL_PASSWORD: 'admin-pass',
+    },
+    fetchImpl,
+    sleep: makeAbortableSleep(),
+  });
+
+  await companion.start();
+  await waitFor(() => fetchImpl.calls.length === 2);
+
+  const login = fetchImpl.calls.find((call) => call.url.endsWith('/api/login'));
+  assert.deepEqual(JSON.parse(login.init.body), { username: 'admin', password: 'admin-pass' });
 
   await companion.stop();
 });
@@ -429,7 +467,7 @@ test('n.eko adapter dispatch posts input only when an endpoint is configured and
   });
 });
 
-test('n.eko adapter applies RBS-style viewport, paste, and copy control through CDP when configured', async () => {
+test('n.eko adapter applies RBS-style viewport, paste, and copy control through the browser client', async () => {
   const fetchImpl = makeFetch([
     {
       method: 'GET',
@@ -453,65 +491,26 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
       url: 'https://neko.test/api/room/screen',
       response: makeResponse({ json: { width: 392, height: 844, rate: 30 } }),
     },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json',
-      response: makeResponse({
-        json: [
-          {
-            id: 'extension-help',
-            type: 'page',
-            url: 'chrome-extension://sponsorblock/help.html',
-            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/extension-help',
-          },
-          {
-            id: 'page-1',
-            type: 'page',
-            url: 'data:text/html,<body></body>',
-            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
-          },
-        ],
-      }),
-    },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json/version',
-      response: makeResponse({
-        json: {
-          webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1',
-        },
-      }),
-    },
   ]);
-  const fakeWs = makeFakeWebSocketCtor((method, params) => {
-    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
-    if (method === 'Runtime.evaluate') {
-      if (params?.expression?.includes('getSelection')) {
-        return { result: { value: 'copied remote text' } };
-      }
-      return {
-        result: {
-          value: JSON.stringify({
-            innerWidth: 392,
-            innerHeight: 844,
-            screenWidth: 392,
-            screenHeight: 844,
-            devicePixelRatio: 3,
-            userAgent: 'Mobile Safari test UA',
-            hasTouch: true,
-          }),
-        },
-      };
-    }
-    return {};
+  const browserClient = makeFakeBrowserClient({
+    statuses: [
+      {
+        innerWidth: 392,
+        innerHeight: 844,
+        screenWidth: 392,
+        screenHeight: 844,
+        devicePixelRatio: 3,
+        userAgent: 'Mobile Safari test UA',
+        hasTouch: true,
+      },
+    ],
   });
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     bearerToken: 'token-3',
     fetchImpl,
     sleep: async () => {},
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    browserClient,
     cdpHttpUrl: 'http://127.0.0.1:9222',
     screenConfigurationsEndpoint: '/api/room/screen/configurations',
     screenEndpoint: '/api/room/screen',
@@ -536,46 +535,19 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
   const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
   assert.deepEqual(JSON.parse(screenPost.init.body), { width: 392, height: 844, rate: 30 });
 
-  const sent = fakeWs.sockets.flatMap((socket) => socket.sent);
-  assert.ok(sent.some((message) => message.method === 'Target.attachToTarget' && message.params.targetId === 'page-1'));
+  assert.ok(browserClient.calls.some((call) => call.op === 'connect'));
   assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Browser.setWindowBounds' &&
-        message.params.bounds.width === 392 &&
-        message.params.bounds.height === 844,
+    browserClient.calls.some(
+      (call) => call.op === 'setViewportSize' && call.viewport.width === 392 && call.viewport.height === 844,
     ),
   );
+  assert.ok(browserClient.calls.some((call) => call.op === 'insertText' && call.text === 'one-time code 123456'));
   assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Emulation.setDeviceMetricsOverride' &&
-        message.params.width === 392 &&
-        message.params.height === 844 &&
-        message.params.deviceScaleFactor === 3 &&
-        message.params.mobile === true,
-    ),
-  );
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Emulation.setTouchEmulationEnabled' &&
-        message.params.enabled === true &&
-        message.params.maxTouchPoints === 5,
-    ),
-  );
-  assert.ok(sent.some((message) => message.method === 'Emulation.setUserAgentOverride'));
-  assert.ok(
-    sent.some(
-      (message) => message.method === 'Input.insertText' && message.params.text === 'one-time code 123456',
-    ),
-  );
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Runtime.evaluate' &&
-        message.params.expression.includes('selectionStart') &&
-        message.params.expression.includes('document.getSelection'),
+    browserClient.calls.some(
+      (call) =>
+        call.op === 'evaluate' &&
+        call.source.includes('selectionStart') &&
+        call.source.includes('document.getSelection'),
     ),
   );
   assert.deepEqual(events.filter((event) => event.kind === 'clipboard'), [
@@ -583,8 +555,10 @@ test('n.eko adapter applies RBS-style viewport, paste, and copy control through 
   ]);
   assert.deepEqual(status, {
     screen: { width: 392, height: 844, rate: 30 },
-    target: { id: 'page-1', url: 'data:text/html,<body></body>' },
-    window: { windowId: 7 },
+    window_skipped: {
+      browser_owner_mode: 'neko-owned',
+      stealth_mode: 'assistive',
+    },
     page_cdp_available: true,
     page: {
       innerWidth: 392,
@@ -620,41 +594,14 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
       url: 'https://neko.test/api/room/screen',
       response: makeResponse({ json: { width: 1008, height: 1840, rate: 30 } }),
     },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json',
-      response: makeResponse({
-        json: [
-          {
-            id: 'page-1',
-            type: 'page',
-            url: 'about:blank',
-            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
-          },
-        ],
-      }),
-    },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json/version',
-      response: makeResponse({
-        json: {
-          webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1',
-        },
-      }),
-    },
   ]);
-  const fakeWs = makeFakeWebSocketCtor((method) => {
-    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
-    return {};
-  });
+  const browserClient = makeFakeBrowserClient();
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     bearerToken: 'token-hidpi',
     fetchImpl,
     sleep: async () => {},
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    browserClient,
     cdpHttpUrl: 'http://127.0.0.1:9222',
     screenConfigurationsEndpoint: '/api/room/screen/configurations',
     screenEndpoint: '/api/room/screen',
@@ -675,26 +622,11 @@ test('n.eko adapter keeps CSS viewport separate from high-DPR screen capture dim
   const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
   assert.deepEqual(JSON.parse(screenPost.init.body), { width: 1008, height: 1840, rate: 30 });
 
-  const sent = fakeWs.sockets.flatMap((socket) => socket.sent);
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Browser.setWindowBounds' &&
-        message.params.bounds.width === 1008 &&
-        message.params.bounds.height === 1840,
-    ),
-  );
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Emulation.setDeviceMetricsOverride' &&
-        message.params.width === 448 &&
-        message.params.height === 819 &&
-        message.params.screenWidth === 1008 &&
-        message.params.screenHeight === 1840 &&
-        message.params.deviceScaleFactor === 2.25,
-    ),
-  );
+  assert.ok(browserClient.calls.some((call) => call.op === 'setViewportSize'));
+  assert.deepEqual(browserClient.calls.find((call) => call.op === 'setViewportSize').viewport, {
+    width: 448,
+    height: 819,
+  });
 
   await companion.stop();
 });
@@ -745,58 +677,36 @@ test('n.eko adapter selects exact Android visible-height portrait capture when e
   await companion.stop();
 });
 
-test('n.eko adapter rewrites loopback CDP WebSocket URLs to the configured CDP HTTP host', async () => {
+test('n.eko adapter passes the configured CDP HTTP URL to the browser-client factory', async () => {
   const fetchImpl = makeFetch([
     {
       method: 'POST',
       url: 'https://neko.test/api/login',
       response: makeResponse({ json: { token: 'noauth-token' } }),
     },
-    {
-      method: 'GET',
-      url: 'http://neko:9223/json',
-      response: makeResponse({
-        json: [
-          {
-            id: 'page-1',
-            type: 'page',
-            url: 'data:text/html,<body></body>',
-            webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/page-1',
-          },
-        ],
-      }),
-    },
-    {
-      method: 'GET',
-      url: 'http://neko:9223/json/version',
-      response: makeResponse({
-        json: {
-          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/browser-1',
-        },
-      }),
-    },
   ]);
-  const fakeWs = makeFakeWebSocketCtor((method) => {
-    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
-    return {};
-  });
+  const browserClient = makeFakeBrowserClient();
+  const factoryCalls = [];
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     fetchImpl,
     sleep: async () => {},
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    createBrowserClient(args) {
+      factoryCalls.push(args);
+      return browserClient;
+    },
     cdpHttpUrl: 'http://neko:9223',
     stealthMode: 'assistive',
   });
 
   await companion.dispatch({ type: 'viewport', width: 800, height: 600, deviceScaleFactor: 1 });
 
-  assert.ok(fakeWs.sockets.length >= 2);
-  assert.ok(
-    fakeWs.sockets.every((socket) => socket.url.startsWith('ws://neko:9223/')),
-    `expected all CDP sockets to target neko:9223, got ${fakeWs.sockets.map((socket) => socket.url).join(', ')}`,
-  );
+  assert.equal(factoryCalls.length, 1);
+  assert.equal(factoryCalls[0].cdpHttpUrl, 'http://neko:9223/');
+  assert.deepEqual(browserClient.calls.find((call) => call.op === 'setViewportSize').viewport, {
+    width: 800,
+    height: 600,
+  });
 
   await companion.stop();
 });
@@ -1182,146 +1092,89 @@ test('n.eko adapter still selects 920x412 for low-DPR landscape viewports when n
   assert.equal(applied.width, 920, `expected legacy 920-wide landscape preset, got ${JSON.stringify(applied)}`);
 });
 
-test('n.eko adapter navigates an explicit start URL through CDP in non-strict modes', async () => {
+test('n.eko adapter navigates an explicit start URL through the browser client in assistive mode', async () => {
   const fetchImpl = makeFetch([
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json',
-      response: makeResponse({
-        json: [
-          {
-            id: 'page-1',
-            type: 'page',
-            url: 'data:text/html,<body></body>',
-            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
-          },
-        ],
-      }),
-    },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json/version',
-      response: makeResponse({
-        json: {
-          webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1',
-        },
-      }),
-    },
     {
       method: 'GET',
       url: 'https://neko.test/api/room/screen/cast.jpg',
       response: makeResponse({ body: 'jpeg' }),
     },
   ]);
-  const fakeWs = makeFakeWebSocketCtor((method) => {
-    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
-    if (method === 'Page.navigate') return { frameId: 'frame-1' };
-    return {};
-  });
+  const browserClient = makeFakeBrowserClient();
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     bearerToken: 'token-5',
     fetchImpl,
     sleep: makeAbortableSleep(),
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    browserClient,
     cdpHttpUrl: 'http://127.0.0.1:9222',
     startUrl: 'data:text/html,<h1>playground</h1>',
     stealthMode: 'balanced',
   });
 
   await companion.start({ width: 800, height: 600, deviceScaleFactor: 2 });
-  await waitFor(() =>
-    fakeWs.sockets
-      .flatMap((socket) => socket.sent)
-      .some((message) => message.method === 'Page.navigate'),
-  );
 
-  const sent = fakeWs.sockets.flatMap((socket) => socket.sent);
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Page.navigate' &&
-        message.params.url === 'data:text/html,<h1>playground</h1>',
-    ),
+  assert.equal(companion._internal.stealthMode(), 'assistive');
+  assert.deepEqual(
+    browserClient.calls.map((call) => call.op),
+    ['connect', 'setViewportSize', 'exposeBinding', 'addInitScript', 'evaluate', 'goto'],
   );
-  const pageSessionSockets = fakeWs.sockets.filter((socket) =>
-    socket.sent.some((message) => message.method === 'Target.attachToTarget'),
-  );
+  assert.deepEqual(browserClient.calls.find((call) => call.op === 'setViewportSize').viewport, {
+    width: 800,
+    height: 600,
+  });
   assert.equal(
-    pageSessionSockets.length,
-    2,
-    'navigation should reopen the page CDP session before re-applying device metrics',
-  );
-  assert.ok(
-    pageSessionSockets[0].sent.some((message) => message.method === 'Page.navigate'),
-    'first page CDP session should perform initial navigation',
-  );
-  assert.ok(
-    pageSessionSockets[1].sent.some(
-      (message) =>
-        message.method === 'Emulation.setDeviceMetricsOverride' &&
-        message.params.width === 800 &&
-        message.params.height === 600 &&
-        message.params.deviceScaleFactor === 2,
-    ),
-    'fresh page CDP session should re-apply viewport metrics after navigation',
-  );
-  assert.ok(
-    sent.some(
-      (message) =>
-        message.method === 'Emulation.setTouchEmulationEnabled' &&
-        message.params.enabled === false &&
-        message.params.maxTouchPoints === 0,
-    ),
-    'desktop viewport should explicitly clear touch emulation',
+    browserClient.calls.find((call) => call.op === 'goto').url,
+    'data:text/html,<h1>playground</h1>',
   );
 
   await companion.stop();
 });
 
-test('n.eko adapter emits remote editable focus events through CDP in non-strict modes', async () => {
+test('n.eko adapter treats initial navigation as best-effort when CDP control is unavailable', async () => {
   const fetchImpl = makeFetch([
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json',
-      response: makeResponse({
-        json: [
-          {
-            id: 'page-1',
-            type: 'page',
-            url: 'data:text/html,<body></body>',
-            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
-          },
-        ],
-      }),
-    },
-    {
-      method: 'GET',
-      url: 'http://127.0.0.1:9222/json/version',
-      response: makeResponse({
-        json: {
-          webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1',
-        },
-      }),
-    },
     {
       method: 'GET',
       url: 'https://neko.test/api/room/screen/cast.jpg',
       response: makeResponse({ body: 'jpeg' }),
     },
   ]);
-  const fakeWs = makeFakeWebSocketCtor((method) => {
-    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
-    return {};
+  const logs = [];
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-no-cdp',
+    fetchImpl,
+    logger: { warn: (entry) => logs.push(entry) },
+    sleep: makeAbortableSleep(),
+    startUrl: 'https://www.reddit.com/login/',
   });
+  const frames = [];
+  companion.onFrame((frame) => frames.push(frame));
+
+  await companion.start({ width: 800, height: 600, deviceScaleFactor: 2 });
+  await waitFor(() => frames.length === 1);
+
+  assert.ok(logs.some((entry) => entry.msg === 'neko_initial_navigation_skipped'));
+  assert.equal(fetchImpl.calls.some((call) => String(call.url).includes('/json')), false);
+
+  await companion.stop();
+});
+
+test('n.eko adapter emits remote editable focus events through the browser-client binding', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg' }),
+    },
+  ]);
+  const browserClient = makeFakeBrowserClient();
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     bearerToken: 'token-6',
     fetchImpl,
     sleep: makeAbortableSleep(),
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    browserClient,
     cdpHttpUrl: 'http://127.0.0.1:9222',
     stealthMode: 'balanced',
   });
@@ -1329,44 +1182,18 @@ test('n.eko adapter emits remote editable focus events through CDP in non-strict
   companion.onEvent((event) => events.push(event));
 
   await companion.start({ width: 390, height: 844 });
-  await waitFor(() =>
-    fakeWs.sockets
-      .flatMap((socket) => socket.sent)
-      .some((message) => message.method === 'Runtime.addBinding'),
-  );
+  await waitFor(() => browserClient.calls.some((call) => call.op === 'exposeBinding'));
 
-  const pageSocket = fakeWs.sockets.find((socket) =>
-    socket.sent.some((message) => message.method === 'Target.attachToTarget'),
-  );
-  assert.ok(pageSocket, 'expected page CDP socket');
-  pageSocket.emit('message', {
-    data: JSON.stringify({
-      method: 'Runtime.bindingCalled',
-      sessionId: 'session-page-1',
-      params: {
-        name: '__pdppNekoFocusChanged',
-        payload: JSON.stringify({
-          type: 'focus',
-          tagName: 'INPUT',
-          inputType: 'text',
-          x: 12,
-          y: 34,
-          width: 200,
-          height: 44,
-        }),
-      },
-    }),
+  browserClient.emitBinding('__pdppNekoFocusChanged', {
+    type: 'focus',
+    tagName: 'INPUT',
+    inputType: 'text',
+    x: 12,
+    y: 34,
+    width: 200,
+    height: 44,
   });
-  pageSocket.emit('message', {
-    data: JSON.stringify({
-      method: 'Runtime.bindingCalled',
-      sessionId: 'session-page-1',
-      params: {
-        name: '__pdppNekoFocusChanged',
-        payload: JSON.stringify({ type: 'blur' }),
-      },
-    }),
-  });
+  browserClient.emitBinding('__pdppNekoFocusChanged', { type: 'blur' });
 
   assert.deepEqual(events, [
     {
@@ -1415,14 +1242,17 @@ test('n.eko adapter strict browser-owner mode keeps CDP assistive helpers off', 
       response: makeResponse({ json: { width: 400, height: 844, rate: 30 } }),
     },
   ]);
-  const fakeWs = makeFakeWebSocketCtor();
+  let browserClientFactoryCalls = 0;
   const companion = createNekoCompanion({
     origin: 'https://neko.test',
     bearerToken: 'token-4',
     browserOwnerMode: 'browser-owner',
     fetchImpl,
     sleep: async () => {},
-    WebSocketCtor: fakeWs.WebSocketCtor,
+    createBrowserClient() {
+      browserClientFactoryCalls += 1;
+      return makeFakeBrowserClient();
+    },
     cdpHttpUrl: 'http://127.0.0.1:9222',
     screenConfigurationsEndpoint: '/api/room/screen/configurations',
     screenEndpoint: '/api/room/screen',
@@ -1448,7 +1278,7 @@ test('n.eko adapter strict browser-owner mode keeps CDP assistive helpers off', 
 
   const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
   assert.deepEqual(JSON.parse(screenPost.init.body), { width: 400, height: 844, rate: 30 });
-  assert.equal(fakeWs.sockets.length, 0);
+  assert.equal(browserClientFactoryCalls, 0);
   assert.deepEqual(events, [
     {
       kind: 'screen_configuration',
@@ -1510,6 +1340,84 @@ test('n.eko resolver-backed factory defers target lookup until start', async () 
   assert.equal(resolved, true);
 
   await companion.stop();
+});
+
+test('n.eko resolver-backed factory applies nested n.eko defaults', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'token-nested' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({ json: [{ width: 400, height: 844, rate: 30 }] }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: makeResponse({ json: { width: 400, height: 844, rate: 30 } }),
+    },
+    {
+      method: 'GET',
+      url: 'http://127.0.0.1:9222/json',
+      response: makeResponse({
+        json: [
+          {
+            id: 'page-1',
+            type: 'page',
+            url: 'data:text/html,<body></body>',
+            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
+          },
+        ],
+      }),
+    },
+    {
+      method: 'GET',
+      url: 'http://127.0.0.1:9222/json/version',
+      response: makeResponse({
+        json: { webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1' },
+      }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg' }),
+    },
+  ]);
+  const browserClient = makeFakeBrowserClient();
+  const browserClientFactoryCalls = [];
+  const factory = createDefaultStreamingCompanionFactory({
+    resolveTargetForInteraction() {
+      return { backend: 'neko', base_url: 'https://neko.test' };
+    },
+    fetchImpl,
+    sleep: makeAbortableSleep(),
+    neko: {
+      cdpHttpUrl: 'http://127.0.0.1:9222',
+      createBrowserClient(args) {
+        browserClientFactoryCalls.push(args);
+        return browserClient;
+      },
+      screenConfigurationsEndpoint: '/api/room/screen/configurations',
+      screenEndpoint: '/api/room/screen',
+    },
+  });
+
+  const companion = factory({ run_id: 'run_1', interaction_id: 'int_1', browser_session_id: 'bs' });
+  await companion.start({ width: 390, height: 844, deviceScaleFactor: 3, mobile: true, hasTouch: true });
+  await companion.stop();
+
+  assert.ok(fetchImpl.calls.some((call) => call.url === 'https://neko.test/api/room/screen/configurations'));
+  assert.equal(browserClientFactoryCalls.length, 1);
+  assert.equal(browserClientFactoryCalls[0].cdpHttpUrl, 'http://127.0.0.1:9222/');
+  assert.deepEqual(browserClient.calls.find((call) => call.op === 'setViewportSize').viewport, {
+    width: 400,
+    height: 844,
+  });
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 400, height: 844, rate: 30 });
 });
 
 test('multi-backend streaming factory selects n.eko descriptors and exposes proxy target', async () => {

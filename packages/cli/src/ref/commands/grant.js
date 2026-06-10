@@ -1,12 +1,13 @@
 import { parseArgs, requirePositional } from '../args.js';
 import { PdppUsageError } from '../errors.js';
 import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from '../fetch.js';
-import { resolveFormat, writeData } from '../output.js';
+import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
 
 export async function runRefGrant(argv, io = {}, fetchImpl = globalThis.fetch) {
   const [subcommand, ...rest] = argv;
   const { flags, positionals } = parseArgs(rest);
   const out = io.stdout || process.stdout;
+  const err = io.stderr || process.stderr;
 
   if (subcommand === 'timeline') {
     const grantId = requirePositional(positionals, 0, 'grant-id');
@@ -20,6 +21,7 @@ export async function runRefGrant(argv, io = {}, fetchImpl = globalThis.fetch) {
     );
     const format = resolveFormat(flags, 'table', 'json');
     writeData(format === 'table' ? (body.data || []) : body, format, out);
+    writeEnvelopeWarnings(body, err);
     return 0;
   }
 

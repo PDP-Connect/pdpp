@@ -41,7 +41,7 @@ import {
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
-} from '@pdpp/remote-surface/protocol';
+} from '@opendatalabs/remote-surface/protocol';
 import { emitSpineEvent } from '../../lib/spine.ts';
 import { createInputTelemetry } from './input-telemetry.js';
 import { registerRemoteTelemetrySink } from './remote-telemetry-registry.js';
@@ -208,6 +208,31 @@ function proxyUpgradeRequest(rawReq, socket, head, targetUrl, cookieName) {
 
 function safeRunId(req) {
   return decodeURIComponent(req.params.runId);
+}
+
+// Closed set of stream-reach give-up reasons. Mirrors the client classifier in
+// `apps/console/.../stream/stream-reach-diagnostics.ts`. The package boundary
+// (reference server cannot import from the console app) means this list is
+// duplicated, not shared; the server is the authoritative clamp so a malformed
+// or hostile client cannot widen the spine's reason vocabulary.
+const STREAM_REACH_REASONS = new Set([
+  'invalid_token',
+  'session_consumed',
+  'session_expired',
+  'companion_unavailable',
+  'unreachable_origin',
+  'unknown',
+]);
+
+function sanitizeStreamReachReason(value) {
+  return typeof value === 'string' && STREAM_REACH_REASONS.has(value) ? value : 'unknown';
+}
+
+// HTTP status observed by the client's give-up probe. Kept as a small bounded
+// integer or null; never an arbitrary client-supplied value in the spine.
+function sanitizeStreamReachHttpStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
 }
 
 function pickViewport(input) {
@@ -596,12 +621,11 @@ body>p{display:none!important}
             'interaction_id',
           );
         }
-        // Streaming companion is for `manual_action` — the only kind that needs
-        // browser control rather than a credential/OTP form. The historical
-        // `host_browser_required` kind was retired with the host-browser bridge
-        // in `introduce-local-collector-runner`; surface a clear error if any
-        // legacy connector still emits it.
-        if (pending.kind !== 'manual_action') {
+        // Streaming companion is for browser-backed interactions. `manual_action`
+        // is always browser-backed; `otp` may also need a browser surface when
+        // the source asks for a code inside a live login flow. Credentials stay
+        // form-only and must not receive a browser stream token.
+        if (!['manual_action', 'otp'].includes(pending.kind)) {
           return pdppError(
             res,
             409,
@@ -714,6 +738,71 @@ body>p{display:none!important}
       } catch (err) {
         return pdppError(res, 500, 'api_error', err.message || 'mint failed');
       }
+    },
+  );
+
+  // ── Stream-reach give-up beacon (owner-authenticated) ──────────────────────
+  // After the viewer's pre-attach retry loop gives up, the client classifies
+  // the give-up (via one token-scoped status probe it runs itself, because
+  // EventSource hides the attach HTTP status) and reports the typed reason here
+  // so the failure class is auditable from the run timeline. This route never
+  // receives the stream token, proxy cookie, or raw viewer URL — only the
+  // closed-set reason and the observed HTTP status. The reason is clamped
+  // server-side so a malformed client cannot widen the spine's vocabulary.
+  app.post(
+    '/_ref/runs/:runId/run-interaction-stream/reach-failure',
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      if (!controller || typeof controller.getPendingInteraction !== 'function') {
+        return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+      }
+      const runId = safeRunId(req);
+      const body = req.body || {};
+      const interactionId = String(body.interaction_id || '').trim();
+      if (!interactionId) {
+        return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
+      }
+      // Bind the beacon to the run's interaction scope so a stray POST cannot
+      // attribute a reach failure to the wrong interaction. A give-up often
+      // coincides with the interaction having just resolved or expired (that is
+      // frequently *why* reach failed), so we do NOT require the interaction to
+      // still be pending. When an interaction IS still pending for this run, it
+      // must match the reported id; when none is pending, the beacon is accepted
+      // as a diagnostic for an interaction that has already ended. The mint
+      // route already proved the run/interaction pairing was real when it issued
+      // the token, and this route grants no authority — it only records a
+      // diagnostic spine event behind the owner-session gate.
+      const pending = controller.getPendingInteraction(runId);
+      if (pending && pending.interaction_id !== interactionId) {
+        return pdppError(
+          res,
+          409,
+          'interaction_id_mismatch',
+          `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
+          'interaction_id',
+        );
+      }
+      const reason = sanitizeStreamReachReason(body.reason);
+      const httpStatus = sanitizeStreamReachHttpStatus(body.http_status);
+      // Status is a descriptive sub-resource status, NOT `failed`/`rejected`.
+      // A connector run can succeed even when the operator's stream viewer gave
+      // up reaching the surface, so this diagnostic must not pollute run-summary
+      // status (`summarizeEvents` flags any `failed`/`rejected` event as a
+      // terminal failure). This mirrors `run.browser_surface_probe_failed`,
+      // which uses `surface_failed` for the same reason.
+      await emit('run.stream_reach_failed', {
+        run_id: runId,
+        interaction_id: interactionId,
+        status: 'stream_reach_failed',
+        data: { reason, http_status: httpStatus },
+      });
+      return res.status(202).json({
+        object: 'run_interaction_stream_reach_failure',
+        run_id: runId,
+        interaction_id: interactionId,
+        reason,
+        http_status: httpStatus,
+      });
     },
   );
 

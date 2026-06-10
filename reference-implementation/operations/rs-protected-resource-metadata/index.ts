@@ -66,10 +66,16 @@ export interface RsProtectedResourceMetadataDiscoveryHints {
   readonly owner_polyfill_requires_source_kind_connector?: true;
 }
 
+export interface RsProtectedResourceMetadataClientEventSubscriptionsCapability {
+  readonly supported?: boolean;
+  readonly [extra: string]: unknown;
+}
+
 export interface RsProtectedResourceMetadataCapabilities {
   lexical_retrieval?: RsProtectedResourceMetadataLexicalCapability;
   semantic_retrieval?: RsProtectedResourceMetadataSemanticCapability;
   hybrid_retrieval?: RsProtectedResourceMetadataHybridCapability;
+  client_event_subscriptions?: RsProtectedResourceMetadataClientEventSubscriptionsCapability;
 }
 
 export interface RsProtectedResourceMetadataDependencies {
@@ -86,7 +92,10 @@ export interface RsProtectedResourceMetadataDependencies {
    * `semanticRetrievalSupported`, the embedding backend's
    * `available()` flag, and any caller override.
    */
-  resolveSemanticCapability(): RsProtectedResourceMetadataSemanticCapability | null;
+  resolveSemanticCapability():
+    | RsProtectedResourceMetadataSemanticCapability
+    | null
+    | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
   /**
    * Returns the hybrid capability the host has overridden, or `null`
    * to fall through to the operation's default composition rule
@@ -116,6 +125,20 @@ export interface RsProtectedResourceMetadataDependencies {
    * discovery hint is published.
    */
   isNativeSingleSourceMode(): boolean;
+  /**
+   * Returns the client-event-subscriptions extension capability the host
+   * wants advertised, or `null` to omit the entry. This is a
+   * reference-implementation extension (`stability: "reference_extension"`),
+   * not a Core PDPP capability; other implementations may expose a
+   * different surface until a future Core change promotes one. The host
+   * gates this on whether the routes are mounted and on any caller
+   * override.
+   *
+   * Spec:
+   *   openspec/changes/add-client-event-subscriptions/specs/
+   *   reference-implementation-architecture/spec.md
+   */
+  resolveClientEventSubscriptionsCapability(): RsProtectedResourceMetadataClientEventSubscriptionsCapability | null;
 }
 
 export interface RsProtectedResourceMetadataInput {
@@ -152,17 +175,20 @@ function isSemanticSupported(
  * Returns the composed `(capabilities, discoveryHints)` pair. Hosts add
  * resource/issuer URLs, the agent-discovery block, version metadata,
  * and run the wire-shape builder.
+ *
+ * Async because `resolveSemanticCapability` may consult the active
+ * storage backend to derive the honest `index_state`.
  */
-export function executeRsProtectedResourceMetadata(
+export async function executeRsProtectedResourceMetadata(
   _input: RsProtectedResourceMetadataInput,
   dependencies: RsProtectedResourceMetadataDependencies,
-): RsProtectedResourceMetadataOutput {
+): Promise<RsProtectedResourceMetadataOutput> {
   const capabilities: RsProtectedResourceMetadataCapabilities = {};
 
   const lexical = dependencies.resolveLexicalCapability();
   if (lexical) capabilities.lexical_retrieval = lexical;
 
-  const semantic = dependencies.resolveSemanticCapability();
+  const semantic = await dependencies.resolveSemanticCapability();
   if (semantic) capabilities.semantic_retrieval = semantic;
 
   const lexicalSupported = isLexicalSupported(lexical);
@@ -230,6 +256,9 @@ export function executeRsProtectedResourceMetadata(
   if (!dependencies.isNativeSingleSourceMode()) {
     discoveryHints.owner_polyfill_requires_source_kind_connector = true;
   }
+
+  const ces = dependencies.resolveClientEventSubscriptionsCapability();
+  if (ces) capabilities.client_event_subscriptions = ces;
 
   return {
     composition: {

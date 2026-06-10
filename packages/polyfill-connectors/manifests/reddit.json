@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/reddit",
+  "connector_key": "reddit",
+  "manifest_uri": "https://registry.pdpp.org/connectors/reddit",
   "version": "0.2.0",
   "display_name": "Reddit",
   "runtime_requirements": {
@@ -14,7 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [],
+    "human_interaction": ["credentials"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "maximum_staleness_seconds": 86400,

@@ -11,11 +11,213 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import {
+  assertSafeJsonField,
+  buildEffectiveFilter,
+  normalizeExpandRequest,
+} from './record-expand-helpers.js';
+import {
+  createPostgresConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import {
+  buildLimitClampedWarning,
+  clampRecordsPageLimit,
+  enforceConnectionNarrowing,
+  projectStorageDisplayName,
+  resolveRequestConnectionId,
+} from './connection-id-request.js';
+import { canonicalConnectorKey } from './connector-key.js';
+import {
+  compileRequestFilters,
+  nonNullSchemaTypes,
+  passesRequestFilters,
+  passesTimeRange,
+} from './record-filters.js';
 
-const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
+/**
+ * Resolve `(connection_id, display_name)` identity for a postgres-backed
+ * record read. Returns `null` when the binding is absent and a
+ * `display_name`-less identity when the store row has only a placeholder
+ * label. Mirrors `resolveRecordIdentityForBinding` in records.js so the
+ * Postgres branch decorates records the same shape SQLite emits.
+ */
+async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
+  if (!connectorInstanceId) return null;
+  const identity = { connectionId: connectorInstanceId };
+  try {
+    const store = createPostgresConnectorInstanceStore();
+    const instance = await store.get(connectorInstanceId);
+    if (instance) {
+      const displayName = projectStorageDisplayName(instance.displayName, {
+        connectorId: connectorId || instance.connectorId,
+        connectorInstanceId,
+      });
+      if (displayName) identity.displayName = displayName;
+    }
+  } catch {
+    // Identity lookup failures degrade to connection_id-only decoration.
+  }
+  return identity;
+}
+
+
+// Canonical public-read graded-count vocabulary. Mirrors
+// `SUPPORTED_COUNT_KINDS` in records.js. Kept in sync by duplication so
+// postgres-records.js does not import from records.js (records.js
+// dispatches into postgres-records.js — the dep must run one way only).
+//
+// Spec: openspec/changes/canonicalize-public-read-contract/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"Counts are opt-in and cost-graded").
+const SUPPORTED_COUNT_KINDS_PG = new Set(['none', 'estimated', 'exact']);
+
+function invalidQueryError(message, code = 'invalid_request') {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+/**
+ * Validate the requested count grade against the canonical
+ * `none|estimated|exact` vocabulary. Empty / absent passes through;
+ * the server applies `none` as the default. Mirrors the SQLite path.
+ */
+function validateCountKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_COUNT_KINDS_PG.has(value)) {
+    throw invalidQueryError(`count must be one of: ${[...SUPPORTED_COUNT_KINDS_PG].join(', ')}`);
+  }
+}
+
+// Canonical `window` opt-in vocabulary, mirrored from records.js's
+// `SUPPORTED_WINDOW_KINDS` (see the one-way-dependency note above). The
+// Postgres list path validates the `window` value with the same strict
+// discipline as the SQLite path, but does NOT yet compute `meta.window`:
+// an honest bounded window over the logical `consent_time_field` requires a
+// JSON-extract min/max scan whose timestamp-parse semantics match the SQLite
+// reference's `new Date(...)` parse. Until that parity scan lands, the
+// Postgres path omits `meta.window` rather than substituting ingest time —
+// consumers treat the absence as "not available" per the spec.
+//
+// Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"The record-list read MAY expose bounded window aggregate metadata").
+const SUPPORTED_WINDOW_KINDS_PG = new Set(['none', 'exact']);
+
+/**
+ * Validate the requested window grade against the canonical `none|exact`
+ * vocabulary. Empty / absent / `none` passes through (the server omits
+ * `meta.window`); any other value is a typed invalid-query error. Mirrors the
+ * SQLite path's `validateWindowKind`.
+ */
+function validateWindowKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_WINDOW_KINDS_PG.has(value)) {
+    throw invalidQueryError(`window must be one of: ${[...SUPPORTED_WINDOW_KINDS_PG].join(', ')}`);
+  }
+}
+
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order', 'window']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
+/**
+ * Validate the canonical `sort` parameter against the manifest stream's
+ * declared cursor field, and return the resolved direction the runtime
+ * will apply. Mirrors `validateCanonicalSort` in records.js for the
+ * Postgres-backed path — sign-prefix controls direction, the only
+ * advertised sortable field is the stream's cursor field, and anything
+ * else is rejected with a typed `invalid_sort` error.
+ *
+ * Returns `null` when no `sort` is supplied, or
+ *   `{ field, direction: 'ASC' | 'DESC' }`.
+ */
+function validateCanonicalSort(value, manifestStream) {
+  if (value == null || value === '') return null;
+  const raw = Array.isArray(value) ? value.join(',') : String(value);
+  const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (entries.length === 0) return null;
+  const cursorField = manifestStream?.cursor_field || null;
+  const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  let resolved = null;
+  for (const entry of entries) {
+    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+    const field = direction === 'DESC' ? entry.slice(1) : entry;
+    if (!field) {
+      const err = invalidQueryError('Empty sort field', 'invalid_sort');
+      err.param = 'sort';
+      throw err;
+    }
+    if (sortableFields.size === 0 || !sortableFields.has(field)) {
+      const err = invalidQueryError(
+        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    if (resolved && resolved.direction !== direction) {
+      const err = invalidQueryError(
+        `Conflicting sort directions for field '${field}'`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    resolved = { field, direction };
+  }
+  return resolved;
+}
+
+function parsePageOrder(rawOrder) {
+  if (rawOrder == null || rawOrder === '') return 'DESC';
+  if (rawOrder === 'asc') return 'ASC';
+  if (rawOrder === 'desc') return 'DESC';
+  throw invalidQueryError('order must be asc or desc');
+}
+
+/**
+ * Resolve the effective list order from the canonical `sort` parameter
+ * and the legacy `order` parameter. Mirrors `resolveListOrder` in
+ * records.js: canonical `sort` wins; legacy `order` is honored only when
+ * `sort` is absent; if both are sent and disagree, reject with
+ * `invalid_sort` rather than silently picking one.
+ */
+function resolveListOrder(rawOrder, resolvedSort) {
+  if (resolvedSort) {
+    if (rawOrder != null && rawOrder !== '') {
+      const legacyOrder = parsePageOrder(rawOrder);
+      if (legacyOrder !== resolvedSort.direction) {
+        const err = invalidQueryError(
+          `sort and order disagree: sort resolves to ${resolvedSort.direction}, order=${rawOrder}. Send only canonical \`sort\`.`,
+          'invalid_sort',
+        );
+        err.param = 'sort';
+        throw err;
+      }
+    }
+    return resolvedSort.direction;
+  }
+  return parsePageOrder(rawOrder);
+}
+
+function mergeMetaCount(existingMeta, count) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.count = count;
+  return base;
+}
 const KEY_SEPARATOR = '\u0001';
 
 function nowIso() {
@@ -36,16 +238,21 @@ function decodeKey(keyStr) {
 }
 
 function resolveStorageConnectorId(storageTarget) {
-  if (typeof storageTarget === 'string') return storageTarget;
-  if (storageTarget?.connector_id) return storageTarget.connector_id;
-  if (storageTarget?.connectorId) return storageTarget.connectorId;
+  const normalize = (value) => {
+    const trimmed = typeof value === 'string' ? value.trim() : null;
+    if (!trimmed) return null;
+    return canonicalConnectorKey(trimmed) ?? trimmed;
+  };
+  if (typeof storageTarget === 'string') return normalize(storageTarget);
+  if (storageTarget?.connector_id) return normalize(storageTarget.connector_id);
+  if (storageTarget?.connectorId) return normalize(storageTarget.connectorId);
   throw new Error('storage target must include connector_id');
 }
 
 function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
   if (storageTarget?.connector_instance_id) return storageTarget.connector_instance_id;
   if (storageTarget?.connectorInstanceId) return storageTarget.connectorInstanceId;
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {
@@ -145,18 +352,20 @@ function decodeCursor(token) {
   }
 }
 
-function responseRecord({ stream, row, fields }) {
-  return {
+function responseRecord({ stream, row, fields, identity = null }) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
     data: projectFields(row.record_json, fields),
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
 }
 
-function deletedResponseRecord({ stream, row }) {
-  return {
+function deletedResponseRecord({ stream, row, identity = null }) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
@@ -164,37 +373,137 @@ function deletedResponseRecord({ stream, row }) {
     deleted_at: row.deleted_at || row.emitted_at,
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
 }
 
-function parseLimit(value) {
-  const parsed = Number.parseInt(String(value ?? DEFAULT_LIMIT), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
-  return Math.min(parsed, MAX_LIMIT);
+/**
+ * Attach canonical `connection_id` and the deprecated `connector_instance_id`
+ * alias to a response record when the runtime knows the binding without
+ * guessing. Mirrors `decorateRecordWithConnectionIdentity` in records.js so
+ * Postgres-backed responses match SQLite-backed responses.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+function decorateRecordWithConnectionIdentity(record, identity) {
+  if (!record || !identity) return;
+  const connectionId = typeof identity.connectionId === 'string' ? identity.connectionId.trim() : '';
+  if (connectionId) {
+    record.connection_id = connectionId;
+    record.connector_instance_id = connectionId;
+  }
+  const displayName = typeof identity.displayName === 'string' ? identity.displayName.trim() : '';
+  if (displayName) {
+    record.display_name = displayName;
+  }
 }
 
-function buildFilterClause(filter, params) {
-  if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return '';
+function postgresRangeCastForField(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return 'text';
+  const [only] = [...types];
+  if (only === 'integer' || only === 'number') return 'numeric';
+  if (only === 'string' && fieldSchema?.format === 'date') return 'date';
+  if (only === 'string' && fieldSchema?.format === 'date-time') return 'timestamptz';
+  return 'text';
+}
+
+function buildFilterClause(compiledFilters, rawFilter, params) {
+  if (!Array.isArray(compiledFilters) || compiledFilters.length === 0) return '';
   const clauses = [];
-  for (const [field, raw] of Object.entries(filter)) {
-    if (!/^[A-Za-z0-9_]+$/.test(field)) {
-      const err = new Error(`Invalid filter field: ${field}`);
-      err.code = 'invalid_request';
-      throw err;
-    }
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      clauses.push(`record_json ? '${field}'`);
-      for (const [op, value] of Object.entries(raw)) {
+  for (const filter of compiledFilters) {
+    assertSafeJsonField(filter.field, 'filter');
+    const fieldExpr = jsonStringExpr(filter.field);
+    if (filter.kind === 'range') {
+      const rawOperators = rawFilter?.[filter.field];
+      const rawOperatorMap = rawOperators && typeof rawOperators === 'object' && !Array.isArray(rawOperators)
+        ? rawOperators
+        : {};
+      const cast = postgresRangeCastForField(filter.fieldSchema);
+      const lhs = `${fieldExpr}::${cast}`;
+      clauses.push(`record_json ? '${filter.field}'`);
+      clauses.push(`${fieldExpr} IS NOT NULL`);
+      for (const op of ['gte', 'gt', 'lte', 'lt']) {
+        if (!Object.hasOwn(filter.operators, op)) continue;
         const operator = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
-        if (!operator) continue;
+        const value = Object.hasOwn(rawOperatorMap, op)
+          ? rawOperatorMap[op]
+          : filter.operators[op];
         params.push(value);
-        clauses.push(`record_json->>'${field}' ${operator} $${params.length}`);
+        clauses.push(`${lhs} ${operator} $${params.length}::${cast}`);
       }
-    } else {
-      params.push(String(raw));
-      clauses.push(`record_json->>'${field}' = $${params.length}`);
+      continue;
     }
+    params.push(filter.value);
+    clauses.push(`${fieldExpr} = $${params.length}`);
   }
   return clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : '';
+}
+
+export function __buildPostgresFilterClauseForTest(filter, streamGrant, manifestStream) {
+  const compiledFilters = compileRequestFilters(filter, streamGrant, manifestStream);
+  const params = [];
+  return {
+    clause: buildFilterClause(compiledFilters, filter, params),
+    params,
+  };
+}
+
+function appendGrantVisibilityClauses(whereParts, params, effective, manifestStream) {
+  const consentTimeField = manifestStream?.consent_time_field || null;
+  if (effective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonStringExpr(consentTimeField);
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (effective.timeRange.since != null) {
+      params.push(new Date(effective.timeRange.since).toISOString());
+      whereParts.push(`${ctExpr} >= $${params.length}`);
+    }
+    if (effective.timeRange.until != null) {
+      params.push(new Date(effective.timeRange.until).toISOString());
+      whereParts.push(`${ctExpr} < $${params.length}`);
+    }
+  }
+
+  if (effective.resources && effective.resources.length > 0) {
+    params.push(effective.resources);
+    whereParts.push(`record_key = ANY($${params.length}::text[])`);
+  }
+}
+
+function isVisiblePostgresSnapshot(snapshot, effective, consentTimeField) {
+  if (!snapshot || snapshot.deleted || !snapshot.data) return false;
+  if (effective.resources && !effective.resources.includes(snapshot.record_key)) return false;
+  if (effective.timeRange && consentTimeField && !passesTimeRange(snapshot.data, effective.timeRange, consentTimeField)) return false;
+  return true;
+}
+
+async function getPostgresSnapshotAtVersion(connectorInstanceId, stream, recordKey, version) {
+  if (!Number.isInteger(version) || version < 0) return null;
+  const result = await postgresQuery(
+    `SELECT version, record_json, emitted_at, deleted, deleted_at
+       FROM record_changes
+      WHERE connector_instance_id = $1
+        AND stream = $2
+        AND record_key = $3
+        AND version <= $4
+      ORDER BY version DESC
+      LIMIT 1`,
+    [connectorInstanceId, stream, recordKey, version],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    record_key: recordKey,
+    version: Number(row.version),
+    data: row.record_json && typeof row.record_json === 'string'
+      ? JSON.parse(row.record_json)
+      : row.record_json,
+    emitted_at: row.emitted_at,
+    deleted: row.deleted === true,
+    deleted_at: row.deleted_at,
+  };
 }
 
 function safeJsonField(field) {
@@ -211,12 +520,258 @@ function recordOrderExpressions(manifestStream) {
   };
 }
 
+function rejectExpandWithChangesSince(requestParams) {
+  if (requestParams?.changes_since == null) return;
+  if (requestParams?.expand == null && requestParams?.expand_limit == null) return;
+  const err = new Error('expand is not supported with changes_since');
+  err.code = 'invalid_expand';
+  throw err;
+}
+
+function jsonStringExpr(field) {
+  // record_json is JSONB on Postgres; `->>` returns the field as text.
+  // Field comes from the manifest and is re-validated against SAFE_JSON_FIELD
+  // before reaching this builder, so quoting it as a SQL literal is safe.
+  assertSafeJsonField(field, 'json_string');
+  return `(record_json->>'${field}')`;
+}
+
+function childResponseRecord({ stream, row, fields }) {
+  const rawData = typeof row.record_json === 'string'
+    ? JSON.parse(row.record_json)
+    : row.record_json;
+  return {
+    object: 'record',
+    id: row.record_key,
+    stream,
+    data: projectFields(rawData, fields),
+    emitted_at: row.emitted_at,
+  };
+}
+
+/**
+ * Postgres equivalent of `records.js#hydrateExpandedRelations`.
+ *
+ * For each requested expansion, runs one window-function batched query
+ * to fetch child rows for the entire parent page in a single round
+ * trip. Children are partitioned by foreign key and ranked by the child
+ * stream's manifest-declared (cursor_field, primary_key) basis so the
+ * per-parent slice and per-parent `has_more` signal match the SQLite
+ * engine. Grant projection (`fields`, `time_range`, `resources`) is
+ * enforced in SQL exactly as the SQLite path enforces it.
+ *
+ * Throws `invalid_expand` if the child manifest is missing or declares
+ * a child stream whose foreign-key/primary-key fields fail the
+ * SAFE_JSON_FIELD regex.
+ *
+ * Spec: openspec/changes/add-postgres-expand-hydration/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+async function hydratePostgresExpandedRelations({
+  connectorInstanceId,
+  expansions,
+  parentRows,
+  manifest,
+}) {
+  if (!expansions.length || !parentRows.length) return;
+
+  for (const expansion of expansions) {
+    const childStream = expansion.relationship.stream;
+    const childManifestStream = manifest?.streams?.find((entry) => entry.name === childStream);
+    if (!childManifestStream) {
+      const err = new Error(`Expand relation '${expansion.name}' targets unknown stream '${childStream}'`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+
+    const foreignKeyField = expansion.relationship.foreign_key;
+    assertSafeJsonField(foreignKeyField, 'foreign_key');
+
+    const primaryKeyFields = Array.isArray(childManifestStream.primary_key)
+      ? childManifestStream.primary_key
+      : typeof childManifestStream.primary_key === 'string'
+        ? [childManifestStream.primary_key]
+        : ['id'];
+    if (primaryKeyFields.length === 0) {
+      const err = new Error(`Expand relation '${expansion.name}' child '${childStream}' is missing a primary_key`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+    if (primaryKeyFields.length > 1) {
+      // Mirrors the SQLite path: every first-party stream uses ["id"].
+      const err = new Error(`Expand relation '${expansion.name}' child '${childStream}' uses a multi-part primary_key (not implemented)`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+    assertSafeJsonField(primaryKeyFields[0], 'primary_key');
+
+    const childRequiredFields = Array.isArray(childManifestStream?.schema?.required)
+      ? childManifestStream.schema.required
+      : [];
+    const childEffective = buildEffectiveFilter(expansion.childGrant, {}, childRequiredFields);
+    const childFields = childEffective.fields;
+    const cursorField = childManifestStream.cursor_field || null;
+    const consentTimeField = childManifestStream.consent_time_field || null;
+
+    const fkExpr = jsonStringExpr(foreignKeyField);
+    const pkExpr = jsonStringExpr(primaryKeyFields[0]);
+
+    // Build ORDER BY: cursor first (nulls last), then primary key.
+    const orderByParts = [];
+    if (cursorField) {
+      const cursorExpr = jsonStringExpr(cursorField);
+      orderByParts.push(`${cursorExpr} ASC NULLS LAST`);
+    }
+    orderByParts.push(`${pkExpr} ASC`);
+    const orderBySql = orderByParts.join(', ');
+
+    const params = [connectorInstanceId, childStream];
+    const whereParts = [
+      'connector_instance_id = $1',
+      'stream = $2',
+      'deleted = FALSE',
+    ];
+
+    if (childEffective.timeRange && consentTimeField) {
+      assertSafeJsonField(consentTimeField, 'consent_time_field');
+      const ctExpr = jsonStringExpr(consentTimeField);
+      whereParts.push(`${ctExpr} IS NOT NULL`);
+      if (childEffective.timeRange.since != null) {
+        params.push(new Date(childEffective.timeRange.since).toISOString());
+        whereParts.push(`${ctExpr} >= $${params.length}`);
+      }
+      if (childEffective.timeRange.until != null) {
+        params.push(new Date(childEffective.timeRange.until).toISOString());
+        whereParts.push(`${ctExpr} < $${params.length}`);
+      }
+    }
+
+    if (childEffective.resources && childEffective.resources.length > 0) {
+      params.push(childEffective.resources);
+      whereParts.push(`record_key = ANY($${params.length}::text[])`);
+    }
+
+    // Parent foreign-key narrowing — one batched IN-list per relation.
+    const parentKeys = parentRows.map((row) => row.record_key);
+    params.push(parentKeys);
+    whereParts.push(`${fkExpr} = ANY($${params.length}::text[])`);
+
+    // Per-partition cap.
+    //   has_one  → rn = 1   (take one per parent).
+    //   has_many → rn <= limit + 1   (+1 gives the caller a `has_more` signal).
+    const rankBound = expansion.relationship.cardinality === 'has_one'
+      ? 1
+      : expansion.limit + 1;
+    params.push(rankBound);
+
+    const sql = `
+      WITH ranked AS (
+        SELECT
+          record_key,
+          record_json,
+          emitted_at,
+          ${fkExpr} AS __fk,
+          ROW_NUMBER() OVER (
+            PARTITION BY ${fkExpr}
+            ORDER BY ${orderBySql}
+          ) AS __rn
+        FROM records
+        WHERE ${whereParts.join(' AND ')}
+      )
+      SELECT record_key, record_json, emitted_at, __fk
+      FROM ranked
+      WHERE __rn <= $${params.length}
+    `;
+
+    const result = await postgresQuery(sql, params);
+
+    const buckets = new Map();
+    for (const row of result.rows) {
+      const fk = row.__fk == null ? '' : String(row.__fk);
+      if (!buckets.has(fk)) buckets.set(fk, []);
+      buckets.get(fk).push(row);
+    }
+
+    for (const parentRow of parentRows) {
+      if (!parentRow.responseRecord.expanded) parentRow.responseRecord.expanded = {};
+      const fk = parentRow.record_key;
+      const matches = buckets.get(fk) || [];
+
+      if (expansion.relationship.cardinality === 'has_one') {
+        const first = matches[0];
+        parentRow.responseRecord.expanded[expansion.name] = first
+          ? childResponseRecord({ stream: childStream, row: first, fields: childFields })
+          : null;
+        continue;
+      }
+
+      const sliced = matches.slice(0, expansion.limit);
+      parentRow.responseRecord.expanded[expansion.name] = {
+        object: 'list',
+        has_more: matches.length > expansion.limit,
+        data: sliced.map((row) => childResponseRecord({ stream: childStream, row, fields: childFields })),
+      };
+    }
+  }
+}
+
+/**
+ * Atomically allocate the next stream version for a
+ * `(connector_instance_id, stream)` pair, strictly above every durable
+ * floor: the `version_counter` row, the max retained `record_changes`
+ * version, and the max current `records` version.
+ *
+ * The plain `max_version + 1` counter bump is unsafe whenever the counter
+ * has fallen *behind* the durable history/current state — observed live as
+ * GitHub current-projection drift where `records.version` and
+ * `record_changes.version` were already ahead of `version_counter.max_version`
+ * (counter lagging by one). An unanchored-row self-heal then re-allocated an
+ * already-used stream version, and the subsequent `record_changes` insert
+ * collided on `PRIMARY KEY(connector_instance_id, stream, version)`, rejecting
+ * the row inside an otherwise-"succeeded" batch.
+ *
+ * Construction (single statement, concurrency-safe):
+ *   - `GREATEST(counter, max(record_changes.version), max(records.version))+1`
+ *     is computed in one INSERT…ON CONFLICT…RETURNING. The two `MAX`
+ *     subqueries are correlated to the scoped pair and `COALESCE`d to 0 so an
+ *     empty history/current set degrades to the pure counter behavior.
+ *   - On first allocation (no conflicting row) the floor is taken in the
+ *     `VALUES` subselects; on conflict the `ON CONFLICT DO UPDATE` re-reads
+ *     `version_counter.max_version` (now row-locked) and folds the same two
+ *     floors back in.
+ *   - Two concurrent allocators serialize on the `version_counter` row lock
+ *     the upsert takes, and `version_counter.max_version` is always part of
+ *     the `GREATEST`, so the second allocator observes the first's committed
+ *     increment and cannot return the same version. The history/current
+ *     floors only ever raise the result; they never let it repeat.
+ *
+ * Mirrors the SQLite reference allocator's intent (single durable
+ * statement, no read-then-write window); the floor folding is Postgres-only
+ * because the live drift was Postgres-only.
+ */
 async function allocateNextVersion(client, connectorId, connectorInstanceId, stream) {
   const result = await client.query(
     `INSERT INTO version_counter (connector_id, connector_instance_id, stream, max_version)
-     VALUES ($1, $2, $3, 1)
+     VALUES (
+       $1, $2, $3,
+       GREATEST(
+         1,
+         COALESCE((SELECT MAX(version) FROM record_changes
+                    WHERE connector_instance_id = $2 AND stream = $3), 0) + 1,
+         COALESCE((SELECT MAX(version) FROM records
+                    WHERE connector_instance_id = $2 AND stream = $3), 0) + 1
+       )
+     )
      ON CONFLICT (connector_instance_id, stream) DO UPDATE
-       SET max_version = version_counter.max_version + 1
+       SET max_version = GREATEST(
+             version_counter.max_version,
+             COALESCE((SELECT MAX(version) FROM record_changes
+                        WHERE connector_instance_id = version_counter.connector_instance_id
+                          AND stream = version_counter.stream), 0),
+             COALESCE((SELECT MAX(version) FROM records
+                        WHERE connector_instance_id = version_counter.connector_instance_id
+                          AND stream = version_counter.stream), 0)
+           ) + 1
      RETURNING max_version`,
     [connectorId, connectorInstanceId, stream],
   );
@@ -245,23 +800,64 @@ export async function postgresIngestRecord(storageTarget, record) {
   const changeHistoryLimit = getChangeHistoryLimit();
 
   const outcome = await withPostgresTransaction(async (client) => {
+    // No-op equivalence is computed at the `jsonb` level via a server-side
+    // `record_json = $::jsonb` comparison. The naive `JSON.stringify` of
+    // the JS object node-postgres parses out of jsonb does not round-trip
+    // to the bytes the connector emitted: Postgres' `::text` output adds
+    // whitespace and the parsed object's key order matches Postgres'
+    // internal storage. Either gap silently turns identical re-ingests
+    // into version churn, observed in production as Slack `workspace`
+    // accumulating 31k+ versions of the same payload. `jsonb` equality is
+    // structural and ignores both incidental layout differences.
     const currentResult = await client.query(
-      `SELECT record_json, deleted
+      `SELECT record_json,
+              deleted,
+              version,
+              COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes,
+              ($4::jsonb IS NOT DISTINCT FROM record_json) AS is_identical
        FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
        FOR UPDATE`,
-      [connectorInstanceId, stream, recordKey],
+      [connectorInstanceId, stream, recordKey, recordJson],
     );
     const current = currentResult.rows[0] || null;
 
     if (op === 'delete' && (!current || current.deleted)) {
       return { kind: 'noop' };
     }
-    if (op !== 'delete' && current && !current.deleted && JSON.stringify(current.record_json) === recordJson) {
-      return { kind: 'noop' };
+
+    // Self-heal of an unanchored current row. An unchanged reingest is
+    // normally suppressed (this is what prevented the Slack `workspace`
+    // 31k-version churn). But history pruning by stream-global version cutoff
+    // can remove the only retained `record_changes` anchor for a still-current,
+    // unchanged record (a cold key stranded below the horizon while a hot key
+    // churns the stream forward) — the unresolved_pruned class the offline
+    // repair tool refuses to reconstruct. The source just re-sent a
+    // byte-identical payload, proving the current projection correct, so we
+    // re-anchor it at a NEW stream version rather than the stale existing one
+    // (which would re-prune on the next changed write). Mirrors the SQLite
+    // path in records.js.
+    let selfHeal = false;
+    if (op !== 'delete' && current && !current.deleted && current.is_identical) {
+      const anchorResult = await client.query(
+        `SELECT 1 FROM record_changes
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND version = $4
+          LIMIT 1`,
+        [connectorInstanceId, stream, recordKey, current.version],
+      );
+      if (anchorResult.rows.length > 0) {
+        // Anchor present → genuine no-op.
+        return { kind: 'noop' };
+      }
+      // Anchor missing → fall through to the changed-write path to re-anchor.
+      selfHeal = true;
     }
 
     const nextVersion = await allocateNextVersion(client, connectorId, connectorInstanceId, stream);
+    const currentRecordJsonBytes = current && !current.deleted
+      ? Number(current.record_json_bytes || 0)
+      : 0;
+    let nextRecordJsonBytes = 0;
 
     if (op === 'delete') {
       await client.query(
@@ -277,7 +873,7 @@ export async function postgresIngestRecord(storageTarget, record) {
         [connectorId, connectorInstanceId, stream, recordKey, nextVersion, JSON.stringify(current.record_json), effectiveEmittedAt],
       );
     } else {
-      await client.query(
+      const stored = await client.query(
         `INSERT INTO records
            (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
@@ -289,9 +885,11 @@ export async function postgresIngestRecord(storageTarget, record) {
                deleted = FALSE,
                deleted_at = NULL,
                cursor_value = EXCLUDED.cursor_value,
-               primary_key_text = EXCLUDED.primary_key_text`,
+               primary_key_text = EXCLUDED.primary_key_text
+         RETURNING COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes`,
         [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, null, recordKey],
       );
+      nextRecordJsonBytes = Number(stored.rows[0]?.record_json_bytes || 0);
       await client.query(
         `INSERT INTO record_changes
            (connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
@@ -300,20 +898,72 @@ export async function postgresIngestRecord(storageTarget, record) {
       );
     }
 
+    const insertedChangeJsonBytes = op === 'delete' ? currentRecordJsonBytes : nextRecordJsonBytes;
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
+      // Anchor preservation: never count, sum, or delete the `record_changes`
+      // row that projects a still-current `records` row for the same key. A
+      // pure stream-version cutoff strands the unchanged current row of a cold
+      // key once OTHER keys advance the per-stream version past its retention
+      // horizon — the live Chase / USAA / reddit / github drift. The SELECT and
+      // the DELETE carry the IDENTICAL `NOT EXISTS` clause so the retained-size
+      // delta accounting matches the rows actually removed. Mirrors the SQLite
+      // `PRUNE_ANCHOR_PRESERVE_CLAUSE` in records.js.
+      const pruned = await client.query(
+        `SELECT COUNT(*)::bigint AS count,
+                COALESCE(SUM(octet_length(COALESCE(record_json::text, ''))), 0)::bigint AS bytes
+           FROM record_changes rc
+          WHERE rc.connector_instance_id = $1 AND rc.stream = $2 AND rc.version <= $3
+            AND NOT EXISTS (
+              SELECT 1 FROM records r
+               WHERE r.connector_instance_id = rc.connector_instance_id
+                 AND r.stream = rc.stream
+                 AND r.record_key = rc.record_key
+                 AND r.version = rc.version
+            )`,
+        [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
+      );
+      prunedRowsForDelta = Number(pruned.rows[0]?.count || 0);
+      prunedBytesForDelta = Number(pruned.rows[0]?.bytes || 0);
       await client.query(
-        `DELETE FROM record_changes
-         WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
+        `DELETE FROM record_changes rc
+         WHERE rc.connector_instance_id = $1 AND rc.stream = $2 AND rc.version <= $3
+           AND NOT EXISTS (
+             SELECT 1 FROM records r
+              WHERE r.connector_instance_id = rc.connector_instance_id
+                AND r.stream = rc.stream
+                AND r.record_key = rc.record_key
+                AND r.version = rc.version
+           )`,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
     }
 
-    return { kind: 'changed', op };
+    return {
+      kind: 'changed',
+      op,
+      selfHeal,
+      retainedSizeDelta: {
+        connectorInstanceId,
+        connectorId,
+        stream,
+        currentRecordJsonBytesDelta: op === 'delete'
+          ? -currentRecordJsonBytes
+          : nextRecordJsonBytes - currentRecordJsonBytes,
+        recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
+        recordHistoryCountDelta: 1 - prunedRowsForDelta,
+      },
+    };
   });
 
-  return outcome.kind === 'noop'
-    ? { accepted: true, changed: false }
-    : { accepted: true, changed: true };
+  if (outcome.kind === 'noop') {
+    return { accepted: true, changed: false };
+  }
+  const result = { accepted: true, changed: true, retainedSizeDelta: outcome.retainedSizeDelta };
+  if (outcome.selfHeal) result.self_healed = true;
+  return result;
 }
 
 export async function postgresDeleteRecord(storageTarget, stream, recordId) {
@@ -331,11 +981,53 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
+  effective.fields = fields;
+  const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const { cursorSql, primarySql } = recordOrderExpressions(manifestStream);
-  const order = requestParams.order === 'desc' ? 'desc' : 'asc';
-  const limit = parseLimit(requestParams.limit);
+
+  // Canonical contract enforcement: `count` and `sort` go through the same
+  // validation discipline as the SQLite reference path, regardless of
+  // which branch (changes_since vs. paginated list) we end up taking.
+  // `sort` (sign-prefix over the advertised cursor field) controls
+  // direction; legacy `order=` is honored only when `sort` is absent. If
+  // both disagree we reject with `invalid_sort` rather than silently
+  // picking one — the public-read contract forbids silent no-ops.
+  //
+  // Spec: openspec/changes/canonicalize-public-read-contract/specs/
+  //       reference-implementation-architecture/spec.md
+  //       (#"Sort", #"Counts").
+  validateCountKind(requestParams.count);
+  // Validate the `window` opt-in with the same strict discipline as `count`.
+  // The Postgres path does not yet emit `meta.window` (see
+  // SUPPORTED_WINDOW_KINDS_PG); a valid `window=exact` is accepted and the
+  // window is omitted, never estimated.
+  validateWindowKind(requestParams.window);
+  const resolvedSort = validateCanonicalSort(requestParams.sort, manifestStream);
+  const orderDirection = resolveListOrder(requestParams.order, resolvedSort);
+  const order = orderDirection === 'ASC' ? 'asc' : 'desc';
+  const { limit, clamped: limitClamped, requested: requestedLimit } =
+    clampRecordsPageLimit(requestParams.limit);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  if (limitClamped) {
+    requestWarnings.push(buildLimitClampedWarning(requestedLimit));
+  }
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+
+  rejectExpandWithChangesSince(requestParams);
+  // Resolve and validate expansions up front so misuse rejects before any
+  // SQL runs. SQLite path does the same in records.js#normalizeExpandRequest.
+  const expansions = normalizeExpandRequest(
+    requestParams,
+    stream,
+    grant,
+    manifestStream,
+    order === 'asc' ? 'ASC' : 'DESC',
+  );
 
   if (requestParams.changes_since != null) {
+    rejectListOnlyParamsForChangesFeed(requestParams);
     const decoded = requestParams.changes_since === 'beginning'
       ? { v: 0 }
       : decodeCursor(requestParams.changes_since);
@@ -349,6 +1041,20 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream],
     );
     const sessionMax = maxResult.rows[0] ? Number(maxResult.rows[0].max_version) : 0;
+    const minChangeResult = await postgresQuery(
+      `SELECT MIN(version)::bigint AS min_version
+         FROM record_changes
+        WHERE connector_instance_id = $1 AND stream = $2`,
+      [connectorInstanceId, stream],
+    );
+    const minVersion = minChangeResult.rows[0]?.min_version == null
+      ? null
+      : Number(minChangeResult.rows[0].min_version);
+    if (minVersion !== null && decoded.v < (minVersion - 1)) {
+      const err = new Error('changes_since cursor is too old; full re-sync required');
+      err.code = 'cursor_expired';
+      throw err;
+    }
     const rows = await postgresQuery(
       `SELECT DISTINCT ON (record_key)
               record_key, record_json, deleted, deleted_at, emitted_at, version
@@ -359,14 +1065,44 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
-    return {
+    const consentTimeField = manifestStream?.consent_time_field || null;
+    const visibleChanges = [];
+    for (const row of sorted) {
+      const previous = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, decoded.v);
+      const current = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, Number(row.version));
+
+      const previousVisible = isVisiblePostgresSnapshot(previous, effective, consentTimeField);
+      const currentVisible = isVisiblePostgresSnapshot(current, effective, consentTimeField);
+
+      if (row.deleted) {
+        if (!previousVisible || !passesRequestFilters(previous.data, compiledFilters)) continue;
+        visibleChanges.push(deletedResponseRecord({ stream, row, identity }));
+        continue;
+      }
+
+      if (!currentVisible || !passesRequestFilters(current.data, compiledFilters)) continue;
+      const previousProjection = previousVisible ? projectFields(previous.data, effective.fields) : null;
+      const currentProjection = projectFields(current.data, effective.fields);
+      if (previousProjection && JSON.stringify(previousProjection) === JSON.stringify(currentProjection)) continue;
+
+      visibleChanges.push(responseRecord({
+        stream,
+        row: {
+          ...row,
+          record_json: currentProjection,
+        },
+        fields: null,
+        identity,
+      }));
+    }
+    const changesResponse = {
       object: 'list',
       has_more: false,
-      data: sorted.map((row) => row.deleted
-        ? deletedResponseRecord({ stream, row })
-        : responseRecord({ stream, row, fields })),
+      data: visibleChanges,
       next_changes_since: encodeCursor({ v: sessionMax }),
     };
+    attachRequestWarningsToResponse(changesResponse, requestWarnings);
+    return changesResponse;
   }
 
   let cursorPosition = null;
@@ -380,8 +1116,17 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   }
 
   const params = [connectorInstanceId, stream];
-  let where = 'WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE';
-  where += buildFilterClause(requestParams.filter, params);
+  const whereParts = ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE'];
+  appendGrantVisibilityClauses(whereParts, params, effective, manifestStream);
+  let where = `WHERE ${whereParts.join(' AND ')}`;
+  where += buildFilterClause(compiledFilters, requestParams.filter, params);
+  // Snapshot the filter-only WHERE clause / params for the graded-count
+  // query. The count MUST reflect matching visible rows BEFORE pagination
+  // or the cursor — matching the SQLite semantics in
+  // `countVisibleRecordsForStream` — so the cursor narrowing below is
+  // intentionally excluded.
+  const countWhere = where;
+  const countParams = [...params];
 
   if (cursorPosition) {
     if (order === 'asc') {
@@ -415,10 +1160,20 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
+  const responseRows = pageRows.map((row) => ({
+    record_key: row.record_key,
+    responseRecord: responseRecord({ stream, row, fields, identity }),
+  }));
+  await hydratePostgresExpandedRelations({
+    connectorInstanceId,
+    expansions,
+    parentRows: responseRows,
+    manifest,
+  });
   const response = {
     object: 'list',
     has_more: hasMore,
-    data: pageRows.map((row) => responseRecord({ stream, row, fields })),
+    data: responseRows.map((entry) => entry.responseRecord),
   };
   if (hasMore && pageRows.length > 0) {
     const last = pageRows[pageRows.length - 1];
@@ -429,15 +1184,88 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       primary_key_text: last.primary_key_text,
     });
   }
+  const countOutcome = await computePostgresGradedRecordCount({
+    requestParams,
+    countWhere,
+    countParams,
+  });
+  if (countOutcome) {
+    response.meta = mergeMetaCount(response.meta, countOutcome.count);
+  }
+  attachRequestWarningsToResponse(response, requestWarnings);
   return response;
 }
 
-export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null) {
+/**
+ * Compute the requested graded count for a Postgres-backed records list
+ * response. Mirrors `computeGradedRecordCount` in records.js:
+ *
+ *   - absent or `none`: return `null` (callers omit `meta.count`).
+ *   - `exact`:     `{ count: { kind: 'exact', value } }`.
+ *   - `estimated`: `{ count: { kind: 'exact', value } }` (silent upgrade).
+ *
+ * `count_downgraded` is reserved for the strict case where the server
+ * actually returns a *lower* grade than requested. Returning a
+ * higher-fidelity grade than asked for is not a downgrade, so this
+ * helper does not emit a warning either.
+ *
+ * The count uses the filter-only WHERE clause (no cursor narrowing), so
+ * the value reflects matching visible rows BEFORE pagination — matching
+ * the SQLite semantics of `countVisibleRecordsForStream`.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Counts") and specs/reference-implementation-architecture/
+ *       spec.md (#"Requested count is downgraded").
+ */
+async function computePostgresGradedRecordCount({ requestParams, countWhere, countParams }) {
+  const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
+  if (!requested || requested === 'none') return null;
+
+  const result = await postgresQuery(
+    `SELECT COUNT(*)::bigint AS value FROM records ${countWhere}`,
+    countParams,
+  );
+  const value = Number(result.rows[0]?.value || 0);
+
+  if (requested === 'exact' || requested === 'estimated') {
+    return { count: { kind: 'exact', value } };
+  }
+  return null;
+}
+
+/**
+ * Attach a `meta.warnings[]` envelope to a public-read response only when
+ * the runtime has non-empty structured warnings to surface. Mirrors
+ * `attachRequestWarningsToResponse` in records.js.
+ */
+function attachRequestWarningsToResponse(response, warnings) {
+  if (!response || typeof response !== 'object') return;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  const existingMeta = response.meta && typeof response.meta === 'object' && !Array.isArray(response.meta)
+    ? response.meta
+    : null;
+  const existingWarnings = existingMeta && Array.isArray(existingMeta.warnings)
+    ? existingMeta.warnings
+    : [];
+  response.meta = {
+    ...(existingMeta || {}),
+    warnings: [...existingWarnings, ...warnings],
+  };
+}
+
+export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
+  effective.fields = fields;
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
+  // Single-record fetch does not support changes_since, so only validate
+  // expansion request shape here.
+  const expansions = normalizeExpandRequest(requestParams, stream, grant, manifestStream, 'ASC');
   const result = await postgresQuery(
     `SELECT record_key, record_json, emitted_at
      FROM records
@@ -450,7 +1278,33 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     err.code = 'not_found';
     throw err;
   }
-  return responseRecord({ stream, row, fields });
+  if (effective.resources && !effective.resources.includes(row.record_key)) {
+    const err = new Error('Record not found');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (effective.timeRange && manifestStream?.consent_time_field) {
+    const rawData = typeof row.record_json === 'string'
+      ? JSON.parse(row.record_json)
+      : row.record_json;
+    if (!passesTimeRange(rawData, effective.timeRange, manifestStream.consent_time_field)) {
+      const err = new Error('Record not found');
+      err.code = 'not_found';
+      throw err;
+    }
+  }
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+  const response = responseRecord({ stream, row, fields, identity });
+  if (expansions.length) {
+    await hydratePostgresExpandedRelations({
+      connectorInstanceId,
+      expansions,
+      parentRows: [{ record_key: row.record_key, responseRecord: response }],
+      manifest,
+    });
+  }
+  attachRequestWarningsToResponse(response, requestWarnings);
+  return response;
 }
 
 export async function postgresListAllStreams(storageTarget) {
@@ -485,25 +1339,68 @@ export async function postgresListStreams(storageTarget, grant, manifest = null)
 export async function postgresDeleteAllRecords(storageTarget, stream) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  return withPostgresTransaction(async (client) => {
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM records
+       WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
+      [connectorInstanceId, stream],
+    );
+    const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
+    await deletePostgresRecordTailForPair(client, connectorInstanceId, stream);
+    return deletedRecordCount;
+  });
+}
+
+/**
+ * Delete the durable record-tail rows for a single
+ * `(connector_instance_id, stream)` pair: record_changes, records,
+ * version_counter, and the lexical/semantic search tables scoped to that
+ * stream. Mirrors the SQLite per-stream delete shape, which clears the
+ * core record tables and lets the outer caller decide whether to also drop
+ * blob_bindings (per-stream owner reset does not; per-connector
+ * invalidation does).
+ *
+ * The pg pool's prepared-statement protocol rejects multi-statement
+ * parameterized queries, so each DELETE is its own statement. The caller
+ * shares one transactional client so the set is atomic.
+ *
+ * Stays inside the Postgres records boundary so raw SQL does not scatter
+ * through higher layers (see design.md alternatives considered).
+ */
+async function deletePostgresRecordTailForPair(client, connectorInstanceId, stream) {
   const semanticScopePrefix = `[${JSON.stringify(stream)},`;
-  const countResult = await postgresQuery(
-    `SELECT COUNT(*)::int AS count FROM records
-     WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
+  await client.query(
+    'DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2',
     [connectorInstanceId, stream],
   );
-  const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
-  await postgresQuery(
-    `DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $3;
-     DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2;`,
-    [connectorInstanceId, stream, `${semanticScopePrefix}%`],
+  await client.query(
+    'DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
   );
-  return deletedRecordCount;
+  await client.query(
+    'DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2',
+    [connectorInstanceId, `${semanticScopePrefix}%`],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
 }
 
 export async function postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
@@ -535,13 +1432,14 @@ export async function postgresPersistContentAddressedBlob({ connectorId, connect
     // binding (the blob belongs to the record as a whole). The
     // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
     // extractions. See docs/binary-content-invariant-design-brief.md §4.6.
-    await client.query(
+    const binding = await client.query(
       `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
        VALUES ($1, $2, $3, $4, $5, '@record')
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT DO NOTHING
+       RETURNING blob_id`,
       [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey],
     );
-    return storedRow;
+    return { ...storedRow, binding_inserted: binding.rowCount > 0 };
   });
 
   return {
@@ -549,6 +1447,7 @@ export async function postgresPersistContentAddressedBlob({ connectorId, connect
     sha256,
     size_bytes: Number(row.size_bytes),
     mime_type: row.mime_type || mimeType,
+    binding_inserted: Boolean(row.binding_inserted),
   };
 }
 
@@ -581,8 +1480,8 @@ export async function postgresGetDatasetRecordsAggregate() {
   const result = await postgresQuery(`
     SELECT
       COUNT(*)::int AS record_count,
-      COUNT(DISTINCT connector_id)::int AS connector_count,
-      COUNT(DISTINCT connector_id || ':' || stream)::int AS stream_count,
+      COUNT(DISTINCT connector_instance_id)::int AS connector_count,
+      COUNT(DISTINCT connector_instance_id || ':' || stream)::int AS stream_count,
       COALESCE(SUM(octet_length(record_json::text)), 0)::bigint AS record_json_bytes,
       MIN(emitted_at) AS earliest_ingested_at,
       MAX(emitted_at) AS latest_ingested_at

@@ -82,9 +82,12 @@ test('routes declared with { contract } carry the contract-package schema direct
 
 test('unknown contract operation ids fail fast at registration time', () => {
   const app = createApp();
+  // After wire-route-contract-validation: the error message names the
+  // route's method and path alongside the offending operation id so an
+  // operator can locate the bad annotation without reading the stack.
   assert.throws(
     () => app.post('/bogus', { contract: 'notARealOp' }, async (_req, res) => res.json({})),
-    /Unknown contract operation id: notARealOp/,
+    /Unknown reference-contract operation id for POST \/bogus: notARealOp/,
   );
 });
 

@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = join(
@@ -293,8 +294,13 @@ test('assistant smoke: in-memory fallback activates for stale DB cursor_field dr
     // when the cursor is missing on some records. (Full stale-DB simulation
     // is covered by the reconcile tests.)
     const manifest = {
+      // Custom (non-first-party) manifest: connector_id must be a bare slug
+      // that matches connector_key. The registry URL belongs in manifest_uri,
+      // not connector_id. See canonicalize-connector-keys (connector_id ==
+      // connector_key invariant enforced at registration + ingest).
       protocol_version: '0.1.0',
-      connector_id: 'https://registry.pdpp.test/connectors/fallback-smoke',
+      connector_id: 'fallback-smoke',
+      connector_key: 'fallback-smoke',
       version: '1.0.0',
       display_name: 'Fallback smoke',
       runtime_requirements: { bindings: { network: { required: true } } },
@@ -343,7 +349,7 @@ test('assistant smoke: representative polyfill classes populate canonical spine 
       assert.ok(c, `missing representative case for ${representative.kind}`);
       const manifest = loadManifest(c.manifest);
       await registerManifest(asUrl, manifest);
-      expectedConnectorIds.push(manifest.connector_id);
+      expectedConnectorIds.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
 
       await seedRecords(rsUrl, ownerToken, manifest.connector_id, c.stream, c.records().slice(0, 1));
       const page = await fetchJson(

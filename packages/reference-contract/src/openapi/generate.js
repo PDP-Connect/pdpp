@@ -46,7 +46,7 @@ function operationFromManifest(manifest) {
   }
   if (req.body) {
     op.requestBody = {
-      required: true,
+      required: req.body.required !== false,
       content: {
         [req.body.contentType || 'application/json']: {
           schema: req.body.schema || {},
@@ -72,10 +72,23 @@ function operationFromManifest(manifest) {
   return op;
 }
 
+// Client event-subscription routes are a late-added RI extension that the
+// published artifacts group at the end of the document, after the core public
+// and /_ref surfaces. Partition them out of the natural surface order so the
+// emitted path order keeps that grouping: core public, core /_ref, then the
+// event-subscription routes (public first, then /_ref).
+function isEventSubscriptionManifest(manifest) {
+  return (manifest.tags || []).includes('event-subscriptions');
+}
+
 export function generateOpenApi({ includeReference = false } = {}) {
+  const publicCore = publicManifests.filter((m) => !isEventSubscriptionManifest(m));
+  const publicEventSubs = publicManifests.filter(isEventSubscriptionManifest);
+  const referenceCore = referenceManifests.filter((m) => !isEventSubscriptionManifest(m));
+  const referenceEventSubs = referenceManifests.filter(isEventSubscriptionManifest);
   const manifests = includeReference
-    ? [...publicManifests, ...referenceManifests]
-    : [...publicManifests];
+    ? [...publicCore, ...referenceCore, ...publicEventSubs, ...referenceEventSubs]
+    : [...publicCore, ...publicEventSubs];
   const document = {
     openapi: '3.1.0',
     info: {
@@ -99,6 +112,11 @@ export function generateOpenApi({ includeReference = false } = {}) {
             { name: 'runs', description: 'Run and schedule control' },
           ]
         : []),
+      {
+        name: 'event-subscriptions',
+        description:
+          'Client event-subscription management (RI extension; CloudEvents 1.0 + Standard Webhooks delivery)',
+      },
     ],
     paths: {},
     components: { schemas: {} },

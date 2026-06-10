@@ -43,11 +43,16 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import { manualAction } from "./browser-handoff.ts";
+import { DEADLINE_TIMEOUT, manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.ts";
+import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
+  DetailCoverageMessage,
+  DetailGapMessage,
+  DetailGapNetworkPressure,
   DetailGapStartEntry,
+  DetailGapsPageResponse,
   EmittedMessage,
   InteractionRequest,
   InteractionResponse,
@@ -79,12 +84,14 @@ export type {
   AssistanceSensitivity,
   DetailCoverageMessage,
   DetailGapMessage,
+  DetailGapNetworkPressure,
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
   EmittedMessage,
   InteractionKind,
   InteractionRequest,
   InteractionResponse,
+  ProviderBudgetProgress,
   RecordData,
   StartMessage,
   StreamScope,
@@ -109,6 +116,10 @@ interface BaseCollectContext {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  requestDetailGapPage: (req?: {
+    maxBytes?: number;
+    streams?: readonly string[];
+  }) => Promise<readonly DetailGapStartEntry[]>;
   requested: Map<string, StreamScope>;
   scope: StartMessage["scope"];
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -149,9 +160,25 @@ export type BrowserLaunchSource =
     }
   | { readonly kind: "isolated_local" };
 
+/**
+ * Mark a named session-establishment phase. Calling this updates the run's
+ * last-establishment-progress marker (which the watchdog reads) and, when
+ * capture is active, triggers a best-effort durable diagnostic capture for the
+ * phase. Best-effort and bounded: a checkpoint SHALL NOT be able to hang the
+ * watchdog and a failed capture never fails the run.
+ */
+export type SessionCheckpointFn = (label: string) => Promise<void>;
+
 export interface EnsureSessionArgs {
   assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  /**
+   * Mark a session-establishment phase (e.g. "sign-in-loaded", "email-submit",
+   * "2fa-decision", "final-verify"). Resets the watchdog's no-progress deadline
+   * and captures a phase diagnostic. Optional for connectors that do not adopt
+   * checkpoints; the runtime still frames the window with its own checkpoints.
+   */
+  checkpoint: SessionCheckpointFn;
   completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   page: Page;
@@ -199,6 +226,8 @@ export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorCon
 
 // ─── Primitive helpers (exported for connector convenience) ─────────────
 
+type ClosableBrowserPage = Pick<Page, "close" | "isClosed">;
+
 const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
 
@@ -245,6 +274,202 @@ function makeShapeCheckSkip(
     message,
     diagnostics: { id: data.id, issues, record: data },
   };
+}
+
+/**
+ * Inputs for a per-run detail coverage report. A list+detail connector passes
+ * the keys it considered for detail (`requiredKeys`, the denominator) and the
+ * subset it hydrated (`hydratedKeys`, the numerator), so the console can tell a
+ * partial run from a complete one without inferring it from gaps.
+ */
+export interface DetailCoverageParams {
+  /**
+   * Optional explicit `considered` denominator: how many items the run weighed
+   * for this stream (the source inventory or boundary it enumerated). When
+   * present it is preferred over `requiredKeys.length` so a list stream that has
+   * no detail-hydration phase can still declare partial-vs-complete by passing
+   * empty `requiredKeys`/`hydratedKeys` and a measured `considered` count. It
+   * MUST be measured independently at the enumeration site, never aliased to the
+   * collected/emitted count — the runtime never infers it from collected.
+   */
+  considered?: number;
+  /**
+   * Optional explicit `covered` count: how many of the `considered` in-boundary
+   * items the run accounted for — the items it emitted plus the items it
+   * deliberately suppressed as unchanged (a full-sync stream gated by a per-record
+   * fingerprint). When present, the projection compares `considered` against
+   * `covered` instead of the collected count, so a steady-state run that suppressed
+   * every unchanged record reads `complete` rather than a false `partial`. It MUST
+   * be measured at the enumeration site from objective per-record outcomes
+   * (emitted, or suppressed-because-unchanged) and MUST NOT count a weighed-but-
+   * dropped item — a dropped item is in neither the collected nor the covered
+   * count, so it still reads `partial`. Never aliased to the collected count.
+   */
+  covered?: number;
+  /** Keys for which a DETAIL_GAP was emitted and should be retried next run. */
+  gapKeys?: ReadonlyArray<string | number>;
+  /** Subset of requiredKeys whose detail was fetched and emitted. */
+  hydratedKeys: ReadonlyArray<string | number>;
+  /** Keys skipped by explicit policy, such as selection scope. */
+  optionalSkipKeys?: ReadonlyArray<string | number>;
+  /** Full set of keys considered for detail fetch this run. */
+  requiredKeys: ReadonlyArray<string | number>;
+  /** The list/parent stream whose cursor anchors the detail pass. */
+  stateStream: string;
+  /** The detail stream the coverage report describes. */
+  stream: string;
+}
+
+/**
+ * Build the per-run DETAIL_COVERAGE message a list+detail connector emits once
+ * after its detail lane. Pure: the caller owns when/whether to emit. Empty
+ * optional key sets are omitted so a fully hydrated run carries no gap fields.
+ */
+export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
+  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered, covered } = params;
+  return {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream,
+    state_stream: stateStream,
+    required_keys: [...requiredKeys],
+    hydrated_keys: [...hydratedKeys],
+    // Only emit `considered` when the connector supplied a non-negative integer.
+    // The runtime re-validates and drops anything unsafe to `unknown`; omitting
+    // it here keeps a no-considered run byte-identical to the prior shape.
+    ...(typeof considered === "number" && Number.isInteger(considered) && considered >= 0 ? { considered } : {}),
+    // Same drop-don't-fabricate posture for the optional `covered` count: omitting
+    // it when absent or unsafe keeps a no-covered run byte-identical to the prior
+    // shape, so every existing declarer is unaffected.
+    ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
+    ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
+    ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
+  };
+}
+
+/**
+ * Thin emit wrapper for connectors adopting the detail coverage contract. `ctx`
+ * is structural so both the collect context and connector-local dependency bags
+ * can use it without importing a heavier runtime type.
+ */
+export function emitDetailCoverage(
+  ctx: { emit: (msg: EmittedMessage) => Promise<void> },
+  params: DetailCoverageParams
+): Promise<void> {
+  return ctx.emit(buildDetailCoverageMessage(params));
+}
+
+/**
+ * Bounded error context for a recoverable detail gap. The same fields feed both
+ * the `detail` and `last_error` blocks on the emitted `DETAIL_GAP` — connectors
+ * built one identical copy for each by hand, which this helper centralizes.
+ *
+ * The helper copies these fields onto the wire verbatim; it does NOT redact
+ * them. The connector is responsible for passing only safe, bounded values: a
+ * connector-chosen error class, an optional HTTP status, an optional human
+ * message, and an optional pre-redacted `network_pressure` diagnostic. Do NOT
+ * pass bearer tokens, cookies, secret-bearing URLs, request bodies, or raw
+ * payloads. In particular, the helper does not strip the attempt/max-attempt
+ * budget from `network_pressure` — redact it at the source before passing it
+ * here (see ChatGPT's `omitAttemptBudget`). Downstream the runtime applies the
+ * same redaction policy as `known_gaps` / `SKIP_RESULT.diagnostics`, but the
+ * connector is the only line of redaction inside this helper.
+ */
+export interface DetailGapErrorContext {
+  /** Connector-chosen error class (e.g. `upstream_pressure`, the deferred class). */
+  class: string;
+  /** Optional upstream HTTP status that triggered the gap. */
+  httpStatus?: number;
+  /** Optional human-readable message. Carried on `last_error` only — the protocol's `detail` block has no `message` field. */
+  message?: string;
+  /** Pre-redacted network-pressure diagnostic (endpoint route, method, error class). Copied verbatim — redact at the source. */
+  networkPressure?: DetailGapNetworkPressure;
+}
+
+/**
+ * Inputs for a recoverable `DETAIL_GAP` — a per-record marker that detail for
+ * `recordKey` could not be hydrated this run but is expected to be retried. The
+ * shape mirrors `DetailCoverageParams`: the caller owns when to emit; the helper
+ * owns the fixed reference-only / retryable / pending shape so connectors stop
+ * hand-rolling it.
+ *
+ * `stream`, `recordKey`, `reason`, and `locator` are required. `parentStream`,
+ * `listCursor`, and `error` are optional, first-class `DETAIL_GAP` protocol
+ * fields and are omitted from the message when absent — a gap with no error
+ * context carries neither `detail` nor `last_error` (matching connectors such as
+ * USAA's statement gaps), and a flat detail stream carries no `parent_stream`.
+ *
+ * Only the source-pressure reasons (`rate_limited`, `upstream_pressure`) feed the
+ * cross-run source-pressure cooldown governor; `retry_exhausted` and
+ * `temporary_unavailable` record a resumable gap without arming a cooldown.
+ */
+export interface DetailGapParams {
+  /** Optional bounded error context fanned into `detail` and `last_error`. Omit both blocks when absent. */
+  error?: DetailGapErrorContext;
+  /** Optional opaque cursor the next run uses to resume the parent list at this gap. */
+  listCursor?: DetailGapMessage["list_cursor"];
+  /** Locator the next run uses to re-hydrate this record's detail. */
+  locator: DetailGapMessage["detail_locator"];
+  /** Optional list/parent stream this detail stream hangs off (e.g. `accounts` for `transactions`). */
+  parentStream?: string;
+  /** Why detail could not be hydrated; drives retryability and any cooldown. */
+  reason: DetailGapMessage["reason"];
+  /** Key of the record whose detail is gapped. */
+  recordKey: string | number;
+  /** The detail stream the gap belongs to. */
+  stream: string;
+}
+
+/**
+ * Build a recoverable `DETAIL_GAP` message. Pure: the caller owns when/whether to
+ * emit. The fixed reference-only shape (`status: "pending"`, `retryable: true`,
+ * `reference_only: true`) is centralized here so a connector states only what
+ * varies. Optional protocol fields (`parent_stream`, `list_cursor`, `detail`,
+ * `last_error`) are omitted from the wire message when their input is absent, so
+ * a minimal gap carries no empty blocks. When `error` is supplied, the `detail`
+ * and `last_error` blocks share the same class / http_status / network_pressure;
+ * `error.message` (if any) is added to `last_error` only, since the protocol's
+ * `detail` block has no `message` field.
+ */
+export function buildDetailGap(params: DetailGapParams): DetailGapMessage {
+  const { stream, recordKey, reason, locator, parentStream, listCursor, error } = params;
+  let errorBlocks: Pick<DetailGapMessage, "detail" | "last_error"> = {};
+  if (error) {
+    const sharedBlock = {
+      class: error.class,
+      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+    };
+    errorBlocks = {
+      detail: sharedBlock,
+      last_error: error.message == null ? sharedBlock : { ...sharedBlock, message: error.message },
+    };
+  }
+  return {
+    type: "DETAIL_GAP",
+    stream,
+    ...(parentStream == null ? {} : { parent_stream: parentStream }),
+    record_key: recordKey,
+    status: "pending",
+    reason,
+    detail_locator: locator,
+    ...(listCursor === undefined ? {} : { list_cursor: listCursor }),
+    retryable: true,
+    reference_only: true,
+    ...errorBlocks,
+  };
+}
+
+/**
+ * Thin emit wrapper for connectors adopting the detail-gap contract. `ctx` is
+ * structural so both the collect context and connector-local dependency bags can
+ * use it without importing a heavier runtime type. Mirrors `emitDetailCoverage`.
+ */
+export function emitDetailGap(
+  ctx: { emit: (msg: EmittedMessage) => Promise<void> },
+  params: DetailGapParams
+): Promise<void> {
+  return ctx.emit(buildDetailGap(params));
 }
 
 export const nowIso = (): string => new Date().toISOString();
@@ -310,12 +535,7 @@ export function runConnector(config: RunConnectorConfig): void {
   }
 
   const flushAndExit = (code: number): void => {
-    if (process.stdout.writableLength > 0) {
-      process.stdout.once("drain", () => process.exit(code));
-      setTimeout(() => process.exit(code), 3000).unref();
-    } else {
-      process.exit(code);
-    }
+    flushAndExitAfterRuntimeAck(code);
   };
 
   let observedCounters: { totalEmitted: number; totalSkipped: number } | null = null;
@@ -339,6 +559,8 @@ export function runConnector(config: RunConnectorConfig): void {
 
   let interactionCounter = 0;
   const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
+  let detailGapPageCounter = 0;
+  const nextDetailGapPageRequestId = (): string => `dgp_${Date.now()}_${++detailGapPageCounter}`;
   let assistanceCounter = 0;
   const nextAssistanceId = (): string => `asst_${Date.now()}_${++assistanceCounter}`;
 
@@ -380,6 +602,44 @@ export function runConnector(config: RunConnectorConfig): void {
         }
       });
     });
+
+  const requestDetailGapPage: BaseCollectContext["requestDetailGapPage"] = (req = {}) => {
+    const request_id = nextDetailGapPageRequestId();
+    const streams = Array.isArray(req.streams)
+      ? req.streams.filter((stream) => typeof stream === "string" && stream.length > 0)
+      : undefined;
+    const maxBytes =
+      typeof req.maxBytes === "number" && Number.isFinite(req.maxBytes) && req.maxBytes > 0
+        ? Math.floor(req.maxBytes)
+        : undefined;
+    emit({
+      type: "DETAIL_GAPS_PAGE_REQUEST",
+      reference_only: true,
+      request_id,
+      ...(streams && streams.length > 0 ? { streams } : {}),
+      ...(maxBytes ? { max_bytes: maxBytes } : {}),
+    }).catch((): undefined => undefined);
+    return new Promise((resolve, reject) => {
+      const onLine = (line: string): void => {
+        try {
+          const parsed = JSON.parse(line) as DetailGapsPageResponse;
+          if (parsed.type !== "DETAIL_GAPS_PAGE_RESPONSE" || parsed.request_id !== request_id) {
+            return;
+          }
+          rl.off("line", onLine);
+          if (parsed.reference_only !== true || !Array.isArray(parsed.detail_gaps)) {
+            reject(new Error("Invalid DETAIL_GAPS_PAGE_RESPONSE envelope"));
+            return;
+          }
+          resolve(parsed.detail_gaps);
+        } catch (err) {
+          rl.off("line", onLine);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      rl.on("line", onLine);
+    });
+  };
 
   const progress = (message: string, extra: { stream?: string } = {}): Promise<void> =>
     emit({ type: "PROGRESS", message, ...extra });
@@ -436,6 +696,7 @@ export function runConnector(config: RunConnectorConfig): void {
       sendInteraction,
       emittedAt,
       detailGaps: startMsg.detail_gaps ?? [],
+      requestDetailGapPage,
     };
 
     if (browser) {
@@ -596,12 +857,6 @@ async function runInBrowser(args: {
   } = args;
   const { context: ctx, release } = await acquireBrowser(browser, name);
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
-  const browserSendInteraction = makeBrowserInteractionKeepalive({
-    context: ctx,
-    diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
-    progress,
-    sendInteraction: (req) => sendInteraction(decorateBrowserManualAction(req, visibility)),
-  });
   // Prevention layer (Layer A): register a SIGTERM/SIGINT handler that
   // awaits release() before exit. Without this, Docker stop / controller
   // restart kills this child process before the `finally` block below
@@ -629,20 +884,50 @@ async function runInBrowser(args: {
   let page: Page | null = null;
   try {
     page = await ctx.newPage();
+    const browserSendInteraction = makeBrowserInteractionKeepalive({
+      context: ctx,
+      diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
+      progress,
+      sendInteraction: async (req) => {
+        const decorated = decorateBrowserManualAction(req, visibility);
+        if (decorated.kind !== "otp") {
+          return sendInteraction(decorated);
+        }
+        const { interactionId } = await prepareBrowserInteractionTarget({
+          page: page as Page,
+          reason: "2fa",
+          ...(decorated.request_id ? { interactionId: decorated.request_id } : {}),
+        });
+        return sendInteraction({ ...decorated, request_id: interactionId });
+      },
+    });
     await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
     await closeBrowserContextPagesExcept(ctx, page);
-    await establishSession(
-      { ensureSession, probeSession },
-      {
-        assist,
-        capture: baseCtx.capture,
-        completeAssistance,
-        context: ctx,
-        page,
-        name,
-        progress,
-        sendInteraction: browserSendInteraction,
-      }
+    // Session establishment is the window the watchdog guards. A wedged
+    // renderer can hang a connector's ensureSession indefinitely with no
+    // INTERACTION ever emitted, so the controller's mid-wait detector cannot
+    // help. The watchdog keys on checkpoint progress (paused while an
+    // interaction is open) and fails closed if establishment stalls.
+    const watchdog = makeSessionEstablishWatchdog({
+      capture: baseCtx.capture,
+      name,
+      page,
+    });
+    await watchdog.run(() =>
+      establishSession(
+        { ensureSession, probeSession },
+        {
+          assist,
+          capture: baseCtx.capture,
+          checkpoint: watchdog.checkpoint,
+          completeAssistance,
+          context: ctx,
+          page: page as Page,
+          name,
+          progress,
+          sendInteraction: watchdog.wrapSendInteraction(browserSendInteraction),
+        }
+      )
     );
     await captureBrowserPage(baseCtx.capture, page, "runtime-session-established");
     await captureBrowserPage(baseCtx.capture, page, "runtime-collect-start");
@@ -668,7 +953,19 @@ async function runInBrowser(args: {
   }
 }
 
-export async function captureBrowserPage(capture: CaptureSession | null, page: Page, label: string): Promise<void> {
+// A wedged renderer can hang the CDP-backed reads inside captureDom
+// (`page.content()`, `page.title()`, `page.ariaSnapshot()`) with no per-call
+// timeout. Bound the whole capture so a diagnostic snapshot during teardown of
+// a wedged run cannot itself re-hang the teardown.
+const CAPTURE_DOM_DEADLINE_MS = 10_000;
+const PAGE_CLOSE_DEADLINE_MS = 10_000;
+
+export async function captureBrowserPage(
+  capture: CaptureSession | null,
+  page: Page,
+  label: string,
+  deadlineMs = CAPTURE_DOM_DEADLINE_MS
+): Promise<void> {
   if (!capture) {
     return;
   }
@@ -681,14 +978,24 @@ export async function captureBrowserPage(capture: CaptureSession | null, page: P
     process.stderr.write(`[capture] page already closed at ${label}; skipping dom snapshot\n`);
     return;
   }
-  await capture.captureDom(page, label);
+  // captureDom is best-effort by construction (each internal step swallows its
+  // own errors to stderr), so it never rejects; on timeout the detached promise
+  // simply keeps running harmlessly while teardown proceeds.
+  const captureWork = capture.captureDom(page, label);
+  captureWork.catch((): undefined => undefined);
+  await withDeadline(captureWork, deadlineMs, () => {
+    process.stderr.write(
+      `[capture] dom snapshot for ${label} exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning this capture.\n`
+    );
+  });
 }
 
 export async function closeBrowserContextPagesExcept(
-  context: Pick<BrowserContext, "pages">,
-  keepPage: Page
+  context: { pages: () => ClosableBrowserPage[] },
+  keepPage: ClosableBrowserPage,
+  deadlineMs = PAGE_CLOSE_DEADLINE_MS
 ): Promise<number> {
-  let pages: Page[];
+  let pages: ClosableBrowserPage[];
   try {
     pages = context.pages();
   } catch {
@@ -700,24 +1007,29 @@ export async function closeBrowserContextPagesExcept(
     if (page === keepPage || page.isClosed()) {
       continue;
     }
-    try {
-      await page.close();
+    if (await closeBrowserPage(page, deadlineMs)) {
       closed++;
-    } catch {
-      // Stale remote-CDP pages are best-effort cleanup. Keep the working page
-      // open so n.eko always has a live target while older tabs are pruned.
     }
   }
   return closed;
 }
 
-export async function closeBrowserPage(page: Page | null): Promise<boolean> {
+export async function closeBrowserPage(
+  page: ClosableBrowserPage | null,
+  deadlineMs = PAGE_CLOSE_DEADLINE_MS
+): Promise<boolean> {
   if (!page || page.isClosed()) {
     return false;
   }
   try {
-    await page.close();
-    return true;
+    const closeWork = page.close();
+    closeWork.catch((): undefined => undefined);
+    const result = await withDeadline(closeWork, deadlineMs, () => {
+      process.stderr.write(
+        `[browser-runtime] page.close() exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning close.\n`
+      );
+    });
+    return result !== DEADLINE_TIMEOUT;
   } catch {
     // Remote-CDP targets can disappear underneath us during banking OTP/manual
     // waits. Cleanup must never mask the connector's real terminal reason.
@@ -1146,9 +1458,163 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
   }
 }
 
+// ─── Session-establishment watchdog ─────────────────────────────────────
+//
+// Guards the window between the browser page being created and the connector
+// returning from session establishment. A wedged renderer can hang a
+// connector's ensureSession indefinitely with no INTERACTION ever emitted, so
+// the controller-side mid-wait surface-loss detector (which only arms once an
+// interaction is open) cannot help. The watchdog keys on *checkpoint progress*
+// rather than wall-clock so a legitimately slow-but-progressing auth flow is
+// never killed; a stall (no checkpoint for longer than the deadline, with no
+// interaction open) fails the run closed so it cannot sit active indefinitely.
+
+const DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS = 120_000;
+const SESSION_ESTABLISH_WATCHDOG_ENV = "PDPP_SESSION_ESTABLISH_WATCHDOG_MS";
+
+export interface SessionEstablishWatchdog {
+  checkpoint: SessionCheckpointFn;
+  /** Run the establishment work under the watchdog; rejects with TerminalError on trip. */
+  run: (work: () => Promise<void>) => Promise<void>;
+  /** Wrap a sendInteraction so the watchdog is paused while an interaction is open. */
+  wrapSendInteraction: (send: BaseCollectContext["sendInteraction"]) => BaseCollectContext["sendInteraction"];
+}
+
+export function resolveSessionEstablishWatchdogMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[SESSION_ESTABLISH_WATCHDOG_ENV]?.trim();
+  if (!raw) {
+    return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!(Number.isFinite(parsed) && parsed > 0)) {
+    return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+  }
+  return parsed;
+}
+
+/**
+ * Build a session-establishment watchdog. Exposed (with injectable `deadlineMs`,
+ * `now`, `pollIntervalMs`, and `onTrip`) so tests can drive it deterministically
+ * without real-time sleeps.
+ */
+export function makeSessionEstablishWatchdog(args: {
+  capture: CaptureSession | null;
+  deadlineMs?: number;
+  name: string;
+  now?: () => number;
+  page: Page;
+  pollIntervalMs?: number;
+  /** Hook fired exactly once when the watchdog trips, before the run rejects. */
+  onTrip?: (info: { lastLabel: string | null; sinceMs: number }) => void;
+}): SessionEstablishWatchdog {
+  const now = args.now ?? Date.now;
+  const deadlineMs = args.deadlineMs ?? resolveSessionEstablishWatchdogMs();
+  // Poll often enough to trip near the deadline without busy-waiting; never
+  // longer than the deadline itself so a small test deadline still trips.
+  const pollIntervalMs = args.pollIntervalMs ?? Math.max(1, Math.min(1000, Math.floor(deadlineMs / 4)));
+
+  let lastProgressAt = now();
+  let lastLabel: string | null = null;
+  let openInteractions = 0;
+  let tripped = false;
+
+  const markProgress = (label: string | null): void => {
+    lastProgressAt = now();
+    if (label !== null) {
+      lastLabel = label;
+    }
+  };
+
+  const checkpoint: SessionCheckpointFn = async (label) => {
+    markProgress(label);
+    // Best-effort durable diagnostic so a hang no longer leaves only the
+    // initial blank-page artifact. captureBrowserPage already guards a closed
+    // page; the bounded-title fix keeps the underlying metadata read from
+    // hanging. A failed capture never fails the run.
+    try {
+      await captureBrowserPage(args.capture, args.page, `session-establish-${label}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[session-watchdog] checkpoint capture failed for ${label}: ${message}\n`);
+    }
+  };
+
+  const wrapSendInteraction: SessionEstablishWatchdog["wrapSendInteraction"] = (send) => async (req) => {
+    // An open interaction means the run is legitimately waiting on the owner;
+    // pause the watchdog so a long CAPTCHA/OTP wait is not killed. Reset the
+    // deadline on resolve so post-interaction work gets a fresh window.
+    openInteractions++;
+    markProgress(null);
+    try {
+      return await send(req);
+    } finally {
+      openInteractions--;
+      markProgress(null);
+    }
+  };
+
+  const run: SessionEstablishWatchdog["run"] = async (work) => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let tripInfo: { lastLabel: string | null; sinceMs: number } | null = null;
+    // The trip path *resolves* (rather than rejects) a sentinel and the caller
+    // throws afterward. Rejecting from inside the interval callback opens a
+    // one-microtask window where the rejection has no attached handler yet,
+    // which Node surfaces as PromiseRejectionHandledWarning / an unhandled
+    // rejection. Resolving avoids that window entirely; the TerminalError is
+    // constructed and thrown synchronously in `run` once the race settles.
+    const TRIP = Symbol("session-establish-trip");
+    const tripPromise = new Promise<typeof TRIP>((resolve) => {
+      const onTick = (): void => {
+        if (tripped || openInteractions > 0) {
+          return;
+        }
+        const sinceMs = now() - lastProgressAt;
+        if (sinceMs <= deadlineMs) {
+          return;
+        }
+        tripped = true;
+        if (timer) {
+          clearInterval(timer);
+        }
+        tripInfo = { lastLabel, sinceMs };
+        args.onTrip?.(tripInfo);
+        resolve(TRIP);
+      };
+      timer = setInterval(onTick, pollIntervalMs);
+    });
+
+    const workPromise = work();
+    // If the watchdog wins the race, `workPromise` may still settle later
+    // (e.g. the wedged call finally rejects). Attach a no-op catch so that
+    // late rejection cannot surface as an unhandled rejection after we have
+    // already failed the run closed.
+    workPromise.catch((): undefined => undefined);
+    try {
+      const outcome = await Promise.race([workPromise, tripPromise]);
+      if (outcome === TRIP) {
+        const info = tripInfo as { lastLabel: string | null; sinceMs: number } | null;
+        const sinceMs = info?.sinceMs ?? deadlineMs;
+        const lastCheckpoint = info?.lastLabel ?? "<none>";
+        throw new TerminalError(
+          `${args.name}_session_establish_timeout: no session-establishment progress for ${String(sinceMs)}ms ` +
+            `(last checkpoint: ${lastCheckpoint}); failing run closed`,
+          true
+        );
+      }
+    } finally {
+      if (timer) {
+        clearInterval(timer);
+      }
+    }
+  };
+
+  return { checkpoint, wrapSendInteraction, run };
+}
+
 interface SessionEstablishArgs {
   assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  checkpoint: SessionCheckpointFn;
   completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   name: string;
@@ -1163,6 +1629,10 @@ interface SessionEstablishArgs {
  *
  * Priority: ensureSession (automated re-auth) > probeSession (read-only
  * + manual_action fallback) > nothing (connector assumes session is live).
+ *
+ * The runtime frames the window with a `begin` checkpoint before delegating
+ * and a `probe` checkpoint around the read-only probe path so the watchdog
+ * has progress markers even for connectors that do not checkpoint themselves.
  */
 async function establishSession(
   hooks: {
@@ -1172,11 +1642,22 @@ async function establishSession(
   args: SessionEstablishArgs
 ): Promise<void> {
   const { ensureSession, probeSession } = hooks;
-  const { assist, capture, completeAssistance, context, page, name, sendInteraction, progress } = args;
+  const { assist, capture, checkpoint, completeAssistance, context, page, name, sendInteraction, progress } = args;
+
+  await checkpoint("session-establish:begin");
 
   if (typeof ensureSession === "function") {
     try {
-      await ensureSession({ assist, capture, completeAssistance, context, page, sendInteraction, progress });
+      await ensureSession({
+        assist,
+        capture,
+        checkpoint,
+        completeAssistance,
+        context,
+        page,
+        sendInteraction,
+        progress,
+      });
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1187,6 +1668,7 @@ async function establishSession(
   if (typeof probeSession !== "function") {
     return;
   }
+  await checkpoint("session-establish:probe");
   if (await probeSession({ context, page })) {
     return;
   }
@@ -1200,6 +1682,7 @@ async function establishSession(
     },
     sendInteraction
   );
+  await checkpoint("session-establish:probe-after-manual");
   if (await probeSession({ context, page })) {
     return;
   }

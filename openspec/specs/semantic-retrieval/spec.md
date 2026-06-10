@@ -5,30 +5,13 @@ Define PDPP's experimental optional semantic retrieval extension: a discoverable
 ## Requirements
 ### Requirement: Semantic retrieval is an experimental, optional, advertised, named extension
 
-PDPP SHALL define a named optional extension `semantic-retrieval` that implementations MAY expose. The extension SHALL be explicitly marked as **experimental** and **unstable** in its capability advertisement: clients that depend on it MUST accept that breaking revisions are acceptable while the extension carries experimental status. The extension SHALL NOT be assumed by clients to exist on any server unless the server explicitly advertises it via the resource-server metadata surface defined below. Core PDPP SHALL NOT require this extension. The extension SHALL NOT be exposed silently as ambient reference behavior, and SHALL NOT be delivered through the lexical retrieval surface `GET /v1/search` or through any reference-only surface such as `/_ref/search`.
+`GET /v1/search/semantic` SHALL remain the semantic retrieval endpoint even when a server also advertises hybrid retrieval. Hybrid retrieval SHALL NOT silently alter semantic result ranking, filtering, scoring, model identity, or response shape.
 
-#### Scenario: A client encounters a server that does not advertise the extension
-- **WHEN** a client reads resource-server metadata and `capabilities.semantic_retrieval.supported` is absent or `false`
-- **THEN** the client SHALL NOT assume `GET /v1/search/semantic` is available
-- **AND** the server MAY return `404` or `not_found_error` if the endpoint is requested
+#### Scenario: Hybrid retrieval is also available
 
-#### Scenario: A client encounters a server that advertises the extension
-- **WHEN** resource-server metadata reports `capabilities.semantic_retrieval.supported: true` with `stability: "experimental"`
-- **THEN** the client MAY rely on `GET /v1/search/semantic` being available at the advertised `endpoint` path
-- **AND** the client SHALL treat the contract as unstable and SHALL NOT assume it will remain compatible across revisions
-- **AND** the client MAY rely on the `cross_stream`, `query_input`, `snippets`, `lexical_blending`, `model`, `dimensions`, `distance_metric`, `default_limit`, `max_limit`, and `index_state` fields when shaping requests
-
-#### Scenario: The extension is not silently delivered through another search surface
-- **WHEN** an implementation chooses to expose this extension
-- **THEN** the public surface SHALL be the advertised `/v1/search/semantic` endpoint
-- **AND** the implementation SHALL NOT advertise `/v1/search` (lexical retrieval), `/_ref/search`, or any other surface as the public semantic retrieval endpoint
-- **AND** `/v1/search` SHALL continue to operate as the lexical retrieval surface defined by the `lexical-retrieval` extension, unmodified by this extension
-
-#### Scenario: Lexical retrieval is unaffected by this extension
-- **WHEN** a server advertises both `capabilities.lexical_retrieval` and `capabilities.semantic_retrieval`
-- **THEN** the behavior, shape, and guarantees of `GET /v1/search` SHALL be identical to those defined by the `lexical-retrieval` extension
-- **AND** the presence of semantic retrieval SHALL NOT imply any change to the lexical retrieval contract
-- **AND** clients MAY choose to call either surface, both, or neither
+- **WHEN** a server advertises both semantic retrieval and hybrid retrieval
+- **THEN** `GET /v1/search/semantic` SHALL continue to behave as semantic retrieval
+- **AND** clients that want blended recall SHALL call the advertised hybrid endpoint.
 
 ### Requirement: The extension SHALL expose `GET /v1/search/semantic` with a text-query-only constrained surface
 
@@ -235,6 +218,8 @@ A stream that participates in semantic retrieval SHALL declare its semantic-sear
 
 Implementations that expose this extension SHALL publish the advertisement as a `capabilities.semantic_retrieval` object inside the existing resource-server metadata document (the same document already used by the resource server to publish OAuth-shaped metadata and, when present, the `capabilities.lexical_retrieval` advertisement). The advertisement SHALL describe only global facts about the extension. The advertisement SHALL include, when `supported: true`, the keys `supported`, `stability`, `endpoint`, `cross_stream`, `query_input`, `snippets`, `lexical_blending`, `model`, `dimensions`, `distance_metric`, `default_limit`, `max_limit`, and `index_state`. The advertisement SHALL NOT enumerate per-stream `semantic_fields`. It SHALL NOT grow into a generalized capability-statement document.
 
+The advertised `index_state` SHALL be computed against the active storage backend that holds the operational semantic index. An implementation that supports multiple storage backends SHALL NOT report `index_state` based on inactive-backend metadata or progress rows.
+
 #### Scenario: A server that exposes the extension publishes the advertisement with experimental stability
 - **WHEN** an implementation exposes the extension on a resource server
 - **THEN** that resource server's metadata document SHALL include a `capabilities.semantic_retrieval` object
@@ -257,6 +242,14 @@ Implementations that expose this extension SHALL publish the advertisement as a 
 - **THEN** `index_state` SHALL be exactly one of `"built"`, `"building"`, or `"stale"`
 - **AND** the implementation SHALL report `"stale"` when the configured `model` has changed or when `semantic_fields` have changed in a way that invalidates existing index coverage, until a rebuild restores coverage
 - **AND** the implementation SHALL NOT report `"built"` while the advertised `model` disagrees with the content of the operational index
+
+#### Scenario: `index_state` is computed against the active storage backend
+- **WHEN** an implementation supports more than one semantic-index storage backend (for example a local embedded store and an external database)
+- **AND** the implementation has selected one of those backends as the active operational backend for the current process
+- **THEN** the advertised `index_state` SHALL be derived solely from the active backend's semantic meta and backfill-progress state
+- **AND** the implementation SHALL NOT report `"stale"` solely because inactive-backend storage contains orphaned progress or meta rows left from an earlier configuration
+- **AND** the implementation SHALL still report `"stale"` when the active backend's meta identity disagrees with the live embedding backend identity (`model`, `dimensions`, `distance_metric`)
+- **AND** the implementation SHALL still report `"building"` while an in-process backfill is active, regardless of which storage backend is active
 
 #### Scenario: The semantic surface SHALL NOT silently substitute a non-semantic fallback
 - **WHEN** `index_state` is `"building"` or `"stale"`, or when the server is otherwise unable to produce semantic results honoring the declared `model`

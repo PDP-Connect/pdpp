@@ -31,12 +31,16 @@ import {
   BROWSER_SURFACE_ID_ENV,
   BROWSER_SURFACE_LEASE_ID_ENV,
   BROWSER_SURFACE_PROFILE_KEY_ENV,
+  BROWSER_SURFACE_REMOTE_CDP_URL_ENV,
   BROWSER_SURFACE_REQUIRED_ENV,
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
+  DEADLINE_TIMEOUT,
   manualAction,
+  prepareBrowserInteractionTarget,
   prepareManualAction,
   resolveWsUrlForExactPage,
   type SendInteraction,
+  withDeadline,
 } from "./browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
 import { LOCAL_DEVICE_TOKEN_ENV, STREAMING_REGISTRATION_TOKEN_ENV } from "./streaming-target-registration.ts";
@@ -105,6 +109,14 @@ function makeMockPage(opts: MockPageOptions = {}): Page {
     }),
   };
   return page as Page;
+}
+
+function makeControllableTitle(): { promise: Promise<string>; resolve: (value: string) => void } {
+  let resolve: (value: string) => void = () => undefined;
+  const promise = new Promise<string>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }
 
 // ─── Fake fetch / registration capture ─────────────────────────────────────
@@ -192,7 +204,7 @@ function envWithManagedNekoSurface(): NodeJS.ProcessEnv {
     [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
     [BROWSER_SURFACE_ID_ENV]: "surface_static_1",
     [BROWSER_SURFACE_STREAM_BASE_URL_ENV]: "http://neko:8080/neko",
-    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+    [BROWSER_SURFACE_REMOTE_CDP_URL_ENV]: "http://neko:9223",
   };
 }
 
@@ -338,7 +350,46 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
   );
 });
 
-test("prepareManualAction registers managed n.eko descriptor from lease env without exposing CDP details", async () => {
+test("prepareBrowserInteractionTarget can register an existing otp interaction id", async () => {
+  const env = envWithManagedNekoSurface();
+  const page = makeMockPage({
+    url: "https://www.reddit.com/login/",
+    title: "Welcome to Reddit",
+  });
+
+  let registeredArgs: unknown;
+  const result = await prepareBrowserInteractionTarget({
+    env,
+    interactionId: "int_existing_otp",
+    page,
+    reason: "2fa",
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: (args) => {
+          registeredArgs = args;
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, true);
+  assert.equal(result.interactionId, "int_existing_otp");
+  assert.ok(registeredArgs && typeof registeredArgs === "object");
+  const args = registeredArgs as {
+    backend?: string;
+    descriptor?: Record<string, unknown>;
+    interactionId?: string;
+    reason?: string;
+  };
+  assert.equal(args.backend, "neko");
+  assert.equal(args.interactionId, "int_existing_otp");
+  assert.equal(args.reason, "2fa");
+  assert.equal(args.descriptor?.interaction_id, "int_existing_otp");
+});
+
+test("prepareManualAction registers managed n.eko descriptor with lease-scoped CDP details", async () => {
   const env = envWithManagedNekoSurface();
   const page = makeMockPage({
     url: "https://example.test/login",
@@ -380,6 +431,7 @@ test("prepareManualAction registers managed n.eko descriptor from lease env with
   assert.deepEqual(args.descriptor, {
     backend: "neko",
     base_url: "http://neko:8080/neko",
+    cdp_http_url: "http://neko:9223",
     interaction_id: result.interactionId,
     lease_id: "lease_neko_123",
     profile_key: "chatgpt:owner",
@@ -389,7 +441,6 @@ test("prepareManualAction registers managed n.eko descriptor from lease env with
   assert.equal(args.pageUrl, "https://example.test/login");
   assert.equal(args.pageTitle, "Sign in");
   assert.equal(args.reason, "manual_action");
-  assert.equal(JSON.stringify(args).includes("9223"), false, "raw CDP URL must not be registered");
   assert.equal(JSON.stringify(args).includes("REMOTE_CDP"), false, "CDP env key must not be registered");
 });
 
@@ -425,7 +476,7 @@ test("prepareManualAction does not fall back to CDP registration when managed n.
     [BROWSER_SURFACE_REQUIRED_ENV]: "neko",
     [BROWSER_SURFACE_LEASE_ID_ENV]: "lease_neko_123",
     [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
-    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+    [BROWSER_SURFACE_REMOTE_CDP_URL_ENV]: "http://neko:9223",
   };
   let registerCalled = false;
   let resolveWsUrlCalled = false;
@@ -669,4 +720,118 @@ test("manualAction omits schema/timeout when not provided", async () => {
   );
   assert.equal(received?.schema, undefined);
   assert.equal(received?.timeout_seconds, undefined);
+});
+
+// ─── withDeadline + bounded metadata read ──────────────────────────────────
+//
+// The session-establishment wedge: a wedged renderer can hang `page.title()`
+// (CDP-backed, no per-call timeout) forever. Without a bound, the manual-action
+// handoff never emits its INTERACTION and the owner never sees the prompt.
+
+test("withDeadline resolves with the work value when work wins the race", async () => {
+  const value = await withDeadline(Promise.resolve("done"), 1000);
+  assert.equal(value, "done");
+});
+
+test("withDeadline resolves with DEADLINE_TIMEOUT and runs onTimeout when the deadline wins", async () => {
+  let onTimeoutRan = false;
+  const title = makeControllableTitle();
+  try {
+    const result = await withDeadline(title.promise, 5, () => {
+      onTimeoutRan = true;
+    });
+    assert.equal(result, DEADLINE_TIMEOUT);
+    assert.equal(onTimeoutRan, true);
+  } finally {
+    title.resolve("late title");
+  }
+});
+
+test("withDeadline with non-positive ms returns the work unbounded", async () => {
+  const value = await withDeadline(Promise.resolve("unbounded"), 0);
+  assert.equal(value, "unbounded");
+});
+
+test("manualAction still emits the interaction (with URL) when page.title() hangs forever", async () => {
+  // The named suspect: readManualActionPageMetadata awaiting page.title()
+  // against a wedged renderer. The interaction MUST still emit, carrying the
+  // synchronously-readable URL, even though the title read never resolves.
+  const title = makeControllableTitle();
+  const page = makeMockPage({
+    url: "https://www.amazon.com/ap/signin",
+    // never resolves — simulates a wedged renderer / hung CDP title read
+    title: () => title.promise,
+  });
+
+  const seen: InteractionRequest[] = [];
+  const sendInteraction: SendInteraction = (req) => {
+    seen.push(req);
+    return Promise.resolve({
+      type: "INTERACTION_RESPONSE",
+      request_id: req.request_id ?? "",
+      status: "success",
+    });
+  };
+
+  // No streaming env, so prepareManualAction short-circuits before metadata —
+  // to exercise the metadata read we go through the managed-neko path which
+  // reads metadata before registering. Use the neko env + a register stub.
+  try {
+    const env = envWithManagedNekoSurface();
+    const response = await manualAction(
+      {
+        page,
+        message: "Solve the Amazon challenge.",
+        reason: "captcha",
+        env,
+        resolveStreamingRegistration: () =>
+          Promise.resolve({
+            runId: "run_test_123",
+            register: () => Promise.resolve(true),
+            unregister: () => Promise.resolve(true),
+          }),
+      },
+      sendInteraction
+    );
+
+    assert.equal(seen.length, 1, "interaction must still be emitted despite hung title");
+    assert.equal(seen[0]?.kind, "manual_action");
+    assert.equal(response.status, "success");
+  } finally {
+    title.resolve("late title");
+  }
+});
+
+test("prepareManualAction registers the neko target without a page title when page.title() hangs", async () => {
+  const env = envWithManagedNekoSurface();
+  const title = makeControllableTitle();
+  const page = makeMockPage({
+    url: "https://www.amazon.com/ap/signin",
+    title: () => title.promise,
+  });
+
+  let registeredArgs: { pageTitle?: string; pageUrl?: string } | undefined;
+  try {
+    const result = await prepareManualAction({
+      page,
+      reason: "captcha",
+      env,
+      resolveStreamingRegistration: () =>
+        Promise.resolve({
+          runId: "run_test_123",
+          register: (args) => {
+            registeredArgs = args as { pageTitle?: string; pageUrl?: string };
+            return Promise.resolve(true);
+          },
+          unregister: () => Promise.resolve(true),
+        }),
+    });
+
+    assert.equal(result.registered, true);
+    // URL survives (synchronous); title is absent because the read timed out.
+    assert.equal(registeredArgs?.pageUrl, "https://www.amazon.com/ap/signin");
+    assert.equal(registeredArgs?.pageTitle, undefined);
+  } finally {
+    title.resolve("late title");
+  }
 });

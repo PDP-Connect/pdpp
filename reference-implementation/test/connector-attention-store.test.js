@@ -184,6 +184,87 @@ test('attention store scopes reads by connector_instance_id', withTempDb(async (
   assert.equal(sameInstance[0].id, 'att_a');
 }));
 
+test('attention store recordNotificationOutcomeById updates notification_state without touching lifecycle', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  const record = createAttention({
+    id: 'att_notify_1',
+    dedupe_key: 'codex:cin_x:interaction:manual_action:conversations',
+    connection_id: 'codex',
+    run_id: 'run_n1',
+    reason_code: 'manual_action_required',
+    progress_posture: 'blocked',
+    owner_action: 'operate_attachment',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    auto_detect: false,
+    now: '2026-05-19T12:00:00.000Z',
+    action_target: 'remote_surface',
+  });
+  await store.upsertAttention({ record, connectorId: 'codex', connectorInstanceId: 'cin_x' });
+
+  const sent = await store.recordNotificationOutcomeById({
+    attentionId: 'att_notify_1',
+    outcome: 'sent',
+    reason: null,
+    now: '2026-05-19T12:01:00.000Z',
+  });
+  assert.ok(sent);
+  assert.equal(sent.notification_state, 'sent');
+  assert.equal(sent.lifecycle, 'open');
+  assert.equal(sent.notification_updated_at, '2026-05-19T12:01:00.000Z');
+
+  const failed = await store.recordNotificationOutcomeById({
+    attentionId: 'att_notify_1',
+    outcome: 'failed',
+    reason: 'transport: 410 gone',
+    now: '2026-05-19T12:02:00.000Z',
+  });
+  assert.equal(failed.notification_state, 'failed');
+  assert.equal(failed.notification_reason, 'transport: 410 gone');
+  // The attention SHALL remain visible after delivery failure.
+  const stillOpen = await store.listOpenAttentionForConnection({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_x',
+  });
+  assert.equal(stillOpen.length, 1, 'failed delivery does not retire the attention row');
+  assert.equal(stillOpen[0].notification_state, 'failed');
+}));
+
+test('attention store recordNotificationOutcomeById rejects invalid outcomes', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  const record = createAttention({
+    id: 'att_notify_invalid',
+    dedupe_key: 'codex:cin_x:interaction:manual_action:conversations',
+    connection_id: 'codex',
+    reason_code: 'manual_action_required',
+    progress_posture: 'blocked',
+    owner_action: 'operate_attachment',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    now: '2026-05-19T12:00:00.000Z',
+  });
+  await store.upsertAttention({ record, connectorId: 'codex', connectorInstanceId: 'cin_x' });
+  await assert.rejects(() =>
+    store.recordNotificationOutcomeById({
+      attentionId: 'att_notify_invalid',
+      outcome: 'maybe',
+      reason: null,
+      now: '2026-05-19T12:01:00.000Z',
+    }),
+  );
+}));
+
+test('attention store recordNotificationOutcomeById returns null for unknown id', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  const result = await store.recordNotificationOutcomeById({
+    attentionId: 'att_missing',
+    outcome: 'sent',
+    reason: null,
+    now: '2026-05-19T12:00:00.000Z',
+  });
+  assert.equal(result, null);
+}));
+
 test('attention store upsert preserves redaction of secret-y metadata applied by runtime', withTempDb(async () => {
   // The runtime's `createAttention` already redacts secret-keyed metadata
   // before constructing the record. The store must round-trip whatever

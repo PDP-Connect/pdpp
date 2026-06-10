@@ -37,7 +37,7 @@ test('rs.streams.list operation has no host or storage concretes', () => {
 });
 
 test('sandbox /sandbox/v1/streams route does not import buildLiveStreamsList', () => {
-  const src = read('apps/web/src/app/sandbox/v1/streams/route.ts');
+  const src = read('apps/site/src/app/sandbox/v1/streams/route.ts');
   // Match any static-import statement that pulls buildLiveStreamsList in.
   // Comments referencing the deleted symbol are still allowed; only
   // import-binding usage is forbidden.
@@ -51,10 +51,24 @@ test('sandbox /sandbox/v1/streams route does not import buildLiveStreamsList', (
 });
 
 test('sandbox builders.ts no longer exports buildLiveStreamsList', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveStreamsList\b/.test(src),
     false,
     'buildLiveStreamsList must be removed so the public route cannot import a parallel AS/RS builder',
+  );
+});
+
+test('polyfill owner stream list is manifest-scoped, not raw storage-scoped', () => {
+  const src = read('reference-implementation/server/routes/rs-read.ts');
+  assert.match(
+    src,
+    /async function listExplicitPolyfillOwnerStreams[\s\S]*buildOwnerReadGrantForManifest\(ownerResolved\.manifest\)[\s\S]*ctx\.listStreamsAcrossBindings\(/,
+    'explicit polyfill owner stream lists must use manifest-grant-scoped summaries',
+  );
+  assert.equal(
+    /listSummaries:\s*async\s*\(\)\s*=>\s*ctx\.listAllStreams\(ownerResolved\.storageBinding\)/.test(src),
+    false,
+    'explicit owner connector scope must not expose raw storage streams that manifest/detail/records routes reject',
   );
 });

@@ -11,6 +11,14 @@ For multi-agent work, worker handoffs, or parallel implementation lanes, read
 the local playbook for worktrees, task packets, validation, reporting, and owner
 merge gates.
 
+Before writing or editing prose in any spec, design note, README, site copy,
+operator/dashboard string, or release note, read
+`docs/voice-and-framing.md`. It is the durable voice/framing guide that keeps
+PDPP-as-protocol above OAuth/RAR, separates Core from Collection Profile from
+reference implementation from operator console, and lists phrasings to avoid
+(hosted-service semantics, cybersecurity framing, owner-voice drift, unqualified
+connector claims, Vana/DTI overreach).
+
 ## When OpenSpec applies
 
 Write a change proposal when any of these are true:
@@ -60,6 +68,8 @@ A valid change is the minimum bar. An invalid change is not ready for review.
 ## Archiving
 
 When a change is fully implemented and accepted, the Requirement deltas in `changes/<name>/specs/<cap>/spec.md` get folded into `specs/<cap>/spec.md` and the change folder moves to `openspec/changes/archive/`. Don't archive work yourself unless the user asks.
+
+If the only remaining open task on an otherwise implemented and accepted change is an owner-only live verification (for example a production smoke, physical-device check, or live-credential pilot), the owner may convert that task into a `Residual Risks` entry in `proposal.md` or `design.md` and archive the change. Preserve the verification commitment, but do not keep the change active indefinitely on a step only the owner can perform.
 
 ## Small things
 

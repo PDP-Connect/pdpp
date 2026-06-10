@@ -42,7 +42,7 @@ test("CLI run --connector gmail uses bundled defaults so operators don't need --
   assert.equal(spec.streamsToBackfill, undefined);
 });
 
-test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (START wire only; resumable loop requires future STATE plumbing)", () => {
+test("CLI --backfill-streams reaches the connector as START.streamsToBackfill", () => {
   const options = parseArgs([
     "run",
     "--base-url",
@@ -66,12 +66,87 @@ test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (S
   // in collectConnectorMessages — emitting a START line that the
   // Gmail connector reads and routes into runAllMailPasses, which
   // honors streamsToBackfill to walk a bounded historical UID window.
-  // The subprocess's STATE emit is now persisted/replayed by future
-  // runs through `runCollectorConnector` per OpenSpec
+  // The subprocess's STATE emit is persisted/replayed by future runs through
+  // `runCollectorConnector` per OpenSpec
   // `design-local-collector-state-sync`.
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill);
   assert.deepEqual(start.streamsToBackfill, ["attachments"]);
   assert.equal(start.type, "START");
+});
+
+test("CLI local-agent defaults request safe inventory and coverage streams", () => {
+  const claude = buildConnectorSpec(
+    parseArgs([
+      "run",
+      "--base-url",
+      "http://127.0.0.1:7662",
+      "--connector",
+      "claude_code",
+      "--device-id",
+      "dev",
+      "--device-token",
+      "tok",
+      "--source-instance-id",
+      "src",
+    ])
+  );
+  assert.deepEqual(
+    claude.streams,
+    [
+      "sessions",
+      "messages",
+      "attachments",
+      "memory_notes",
+      "skills",
+      "slash_commands",
+      "file_history",
+      "cache_inventory",
+      "coverage_diagnostics",
+      "debug_artifacts",
+      "downloads",
+      "backup_inventory",
+      "config_inventory",
+    ],
+    "unscoped Claude Code runs should request all safe local completeness streams"
+  );
+
+  const codex = buildConnectorSpec(
+    parseArgs([
+      "run",
+      "--base-url",
+      "http://127.0.0.1:7662",
+      "--connector",
+      "codex",
+      "--device-id",
+      "dev",
+      "--device-token",
+      "tok",
+      "--source-instance-id",
+      "src",
+    ])
+  );
+  assert.deepEqual(
+    codex.streams,
+    [
+      "sessions",
+      "messages",
+      "function_calls",
+      "rules",
+      "prompts",
+      "skills",
+      "history",
+      "session_index",
+      "logs",
+      "shell_snapshots",
+      "config_inventory",
+      "cache_inventory",
+      "coverage_diagnostics",
+    ],
+    "unscoped Codex runs should request all safe local completeness streams"
+  );
+  assert(!claude.streams.includes("context_mode"), "Claude context_mode remains diagnostics-only");
+  assert(!codex.streams.includes("context_mode"), "Codex context_mode remains diagnostics-only");
+  assert(!codex.streams.includes("memories"), "Codex memories remain diagnostics-only");
 });
 
 test("CLI --backfill-streams supports comma-separated lists (forward compatibility for additional historical streams)", () => {

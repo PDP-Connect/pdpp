@@ -32,9 +32,12 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { mock, test } from "node:test";
 import type { FetchMessageObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
+import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  type AttachmentDetailCoverage,
   addAttachmentBackfillRecordToSummary,
+  buildAttachmentDetailGap,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -43,9 +46,12 @@ import {
   type FetchedBodies,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
+  makeAttachmentDetailCoverage,
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  recordAttachmentCoverage,
+  redactEmailForProgress,
   resolveAttachmentBackfillWindowUids,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
@@ -55,7 +61,7 @@ import {
   selectAttachmentBackfillFetchRange,
   validateAttachmentHydrationPreflight,
 } from "./index.ts";
-import type { ProgressMessage, StreamRequest } from "./types.ts";
+import type { AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
 
 interface RecordingHarness {
   deps: PerMessageDeps;
@@ -80,6 +86,7 @@ const defaultFetchBodies: FetchBodiesFn = (): Promise<FetchedBodies> =>
   });
 
 interface HarnessOverrides {
+  attachmentCoverage?: AttachmentDetailCoverage;
   fetchBodies?: FetchBodiesFn;
   hydrateAttachment?: HydrateAttachmentFn;
   nowIso?: () => string;
@@ -97,6 +104,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
   const progress: ProgressMessage[] = [];
   const requested = overrides.requested ?? makeRequested(["messages", "attachments"]);
   const deps: PerMessageDeps = {
+    ...(overrides.attachmentCoverage ? { attachmentCoverage: overrides.attachmentCoverage } : {}),
     emitProgress: (m: ProgressMessage): Promise<void> => {
       progress.push(m);
       return Promise.resolve();
@@ -659,6 +667,28 @@ test("selectAttachmentBackfillFetchRange: historical range is bounded and indepe
   );
 });
 
+test("selectAttachmentBackfillFetchRange: interrupted windows replay until the durable cursor advances", () => {
+  const session = {
+    attachmentBackfill: { backfilled_through_uid: 100, uidvalidity: 123 },
+    maxWindowUids: 50,
+    priorUidnext: 251,
+  };
+  assert.equal(selectAttachmentBackfillFetchRange(session), "101:150");
+
+  // If a run crashes before its STATE is persisted, the durable cursor is
+  // unchanged and the same bounded window is retried. Attachment records are
+  // idempotent/content-addressed, so replay is safer than skipping ahead.
+  assert.equal(selectAttachmentBackfillFetchRange(session), "101:150");
+
+  assert.equal(
+    selectAttachmentBackfillFetchRange({
+      ...session,
+      attachmentBackfill: { backfilled_through_uid: 150, uidvalidity: 123 },
+    }),
+    "151:200"
+  );
+});
+
 test("resolveAttachmentBackfillWindowUids: env override must be a positive integer", () => {
   assert.equal(resolveAttachmentBackfillWindowUids({}), DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS);
   assert.equal(resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "1" }), 1);
@@ -877,10 +907,9 @@ test("emitMessagesPass: progress includes count and total when metadata count is
 // `attachments` record. These tests pin that mode without IMAP: a
 // "historical" UID below priorUidnext is fed through the same code path
 // and we verify hydration, idempotency, and summary accounting.
-// Scope note: this asserts per-UID behavior and summary shape; it does
-// not exercise window selection, cursor advancement, or replay across
-// invocations (those require either an IMAP double or collector-runner
-// STATE plumbing, which is out of scope for this branch).
+// Scope note: this asserts per-UID behavior and summary shape. Window
+// selection is pinned above; cross-invocation replay of the Gmail-shaped
+// cursor is pinned in src/collector-runner.test.ts.
 
 test("backfill mode: historical UID below priorUidnext hydrates attachment bytes in attachment-only mode", async () => {
   const historicalPayload = Buffer.from("ancient invoice bytes");
@@ -1034,4 +1063,307 @@ test("backfill mode: a failed historical attachment fetch is counted as a remain
   assert.equal(summary.failed, 1);
   assert.equal(summary.hydrated, 0);
   assert.equal(summary.remaining_historical_gaps, 1);
+});
+
+// ─── redactEmailForProgress ─────────────────────────────────────────────
+//
+// The "Connected to <address>" PROGRESS message is operator/model-visible.
+// Emitting the owner's full Gmail address leaks a raw PII identifier into
+// every consumer of the run stream. These tests prove the redaction keeps
+// the domain (so the progress line still confirms which account connected)
+// while never echoing the full local-part.
+
+test("redactEmailForProgress: masks the local-part but keeps the domain", () => {
+  assert.equal(redactEmailForProgress("the owner.nunamaker@gmail.com"), "t***@gmail.com");
+  assert.equal(redactEmailForProgress("alice@example.org"), "a***@example.org");
+});
+
+test("redactEmailForProgress: single-character local-part is fully masked", () => {
+  // A 1-char local-part would otherwise be wholly revealed by a "keep first
+  // char" rule, so it is masked entirely.
+  assert.equal(redactEmailForProgress("x@example.com"), "***@example.com");
+});
+
+test("redactEmailForProgress: output never contains the full address or local-part", () => {
+  for (const address of [
+    "the owner.nunamaker@gmail.com",
+    "first.last+tag@corp.example.co.uk",
+    'weird"@"local@host.example', // quoted local-part embedding an @
+  ]) {
+    const redacted = redactEmailForProgress(address);
+    assert.ok(!redacted.includes(address), `redacted output must not contain the full address: ${redacted}`);
+    // Multi-char local-parts (the only ones that carry meaningful identity)
+    // must never appear verbatim in the redacted output. A 1-char local-part
+    // is masked entirely and is excluded here because it can collide with an
+    // unrelated character in the kept domain.
+    const localPart = address.slice(0, address.lastIndexOf("@"));
+    assert.ok(!redacted.includes(localPart), `redacted output must not contain the full local-part: ${redacted}`);
+  }
+});
+
+test("redactEmailForProgress: non-address input falls back to a constant placeholder", () => {
+  // Defensive: if an unexpected non-email value reaches the progress line we
+  // emit a constant rather than risk echoing a raw value.
+  assert.equal(redactEmailForProgress("not-an-email"), "[redacted-account]");
+  assert.equal(redactEmailForProgress("@no-local.example"), "[redacted-account]");
+  assert.equal(redactEmailForProgress("no-domain@"), "[redacted-account]");
+  assert.equal(redactEmailForProgress(""), "[redacted-account]");
+});
+
+// ─── Attachments detail-coverage evidence (progress-evidence contract) ───
+//
+// These pin the honest `considered`/hydrated/gap/skip accounting the Gmail
+// connector emits for the `attachments` detail stream. They are the
+// regression guard for the progress-evidence wiring: if the connector stops
+// recording attempted attachments into the coverage accumulator, or
+// misclassifies a hydration outcome, these fail.
+
+/** A single-attachment message keyed `gmmsgid-<n>:1`, for coverage tests. */
+function makeSingleAttachmentMsg(emailId: string): FetchMessageObject {
+  const bodyStructure: MessageStructureObject = {
+    childNodes: [
+      {
+        type: "application/pdf",
+        disposition: "attachment",
+        dispositionParameters: { filename: "doc.pdf" },
+        encoding: "base64",
+        size: 21,
+      },
+    ],
+    type: "multipart/mixed",
+  };
+  return makeMsg({ bodyStructure, emailId });
+}
+
+/**
+ * A fake hydrator that stamps a chosen terminal `hydration_status` onto every
+ * attachment, keyed by the attachment id, so a test can drive each coverage
+ * bucket deterministically without exercising the real download/upload path.
+ */
+function statusStampingHydrator(statusById: Record<string, AttachmentRecord["hydration_status"]>): HydrateAttachmentFn {
+  return (_msg, attachment) =>
+    Promise.resolve({ ...attachment, hydration_status: statusById[attachment.id] ?? attachment.hydration_status });
+}
+
+test("recordAttachmentCoverage: routes each hydration status into the honest bucket", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const base: Omit<AttachmentRecord, "id" | "hydration_status"> = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "doc.pdf",
+    hydration_error: null,
+    is_inline: false,
+    message_id: "m",
+    message_received_at: FROZEN_NOW,
+    part_index: "1",
+    size_bytes: 10,
+  };
+  recordAttachmentCoverage(coverage, { ...base, id: "a:1", hydration_status: "hydrated" });
+  recordAttachmentCoverage(coverage, { ...base, id: "b:1", hydration_status: "failed" });
+  recordAttachmentCoverage(coverage, { ...base, id: "c:1", hydration_status: "too_large" });
+  recordAttachmentCoverage(coverage, { ...base, id: "d:1", hydration_status: "deferred" });
+
+  // Every attempt counts toward the denominator.
+  assert.deepEqual(coverage.requiredKeys, ["a:1", "b:1", "c:1", "d:1"]);
+  // hydrated → numerator; failed → retryable gap; too_large → permanent skip.
+  assert.deepEqual(coverage.hydratedKeys, ["a:1"]);
+  assert.deepEqual(coverage.gapKeys, ["b:1"]);
+  assert.deepEqual(coverage.optionalSkipKeys, ["c:1"]);
+  // `deferred` is considered-but-not-attempted: denominator only, no outcome.
+  assert.ok(!coverage.hydratedKeys.includes("d:1"));
+  assert.ok(!coverage.gapKeys.includes("d:1"));
+  assert.ok(!coverage.optionalSkipKeys.includes("d:1"));
+  // The failed record is retained so a matching DETAIL_GAP can be emitted; its
+  // id is exactly the gap_keys entry, keeping the gap's record_key and the
+  // coverage key a single source of truth. Only `failed` is retained.
+  assert.deepEqual(
+    coverage.failedRecords.map((r) => r.id),
+    ["b:1"]
+  );
+});
+
+test("buildAttachmentDetailGap: bounded, non-secret gap whose record_key matches the coverage key", () => {
+  // A record shaped like the parser produces: id = `<X-GM-MSGID>:<part_index>`.
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "invoice.pdf",
+    hydration_error: "Error: connect ETIMEDOUT 10.0.0.1:993 (https://secret/token=abc)",
+    hydration_status: "failed",
+    id: "gmmsgid-9999:2",
+    is_inline: false,
+    message_id: "gmmsgid-9999",
+    message_received_at: FROZEN_NOW,
+    part_index: "2",
+    size_bytes: 4096,
+  };
+
+  const gap = buildAttachmentDetailGap(attachment);
+
+  // record_key == the attachment id == the DETAIL_COVERAGE.gap_keys entry, so
+  // the host commit-gate credits the missing required key one-to-one.
+  assert.equal(gap.record_key, "gmmsgid-9999:2");
+  assert.equal(gap.stream, "attachments");
+  assert.equal(gap.parent_stream, "messages");
+  assert.equal(gap.reason, "temporary_unavailable");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+  // Locator carries only bounded identifiers sufficient for a later retry.
+  assert.deepEqual(gap.detail_locator, {
+    kind: "gmail.attachment_detail",
+    message_id: "gmmsgid-9999",
+    part_index: "2",
+    attachment_id: "gmmsgid-9999:2",
+  });
+  // No error block — the raw hydration_error (which here contains a secret-ish
+  // URL/token) is NOT carried anywhere on the gap. Defense against leaking
+  // tokens, cookies, URLs, request bodies, or payload snippets.
+  assert.equal(gap.detail, undefined);
+  assert.equal(gap.last_error, undefined);
+  const serialized = JSON.stringify(gap);
+  assert.ok(!serialized.includes("token=abc"), "no raw error text crosses the wire");
+  assert.ok(!serialized.includes("invoice.pdf"), "no filename crosses the wire");
+  assert.ok(!serialized.includes("ETIMEDOUT"), "no raw error text crosses the wire");
+});
+
+test("processMessage: records an attempted attachment into the coverage accumulator", async () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps } = makeHarness({
+    attachmentCoverage: coverage,
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.deepEqual(coverage.requiredKeys, ["gmmsgid-1111:2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["gmmsgid-1111:2"]);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.deepEqual(coverage.optionalSkipKeys, []);
+});
+
+test("processMessage: leaves no coverage trace and still emits when no accumulator is wired", async () => {
+  // The accumulator is optional: a pass without one (e.g. attachments not in
+  // scope) must not throw and must still emit the attachment record.
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(deps.attachmentCoverage, undefined, "no accumulator wired");
+  assert.ok(
+    emitted.some((r) => r.stream === "attachments"),
+    "attachment record still emits without coverage accounting"
+  );
+});
+
+test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and skip outcomes", async () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps, emitted } = makeHarness({
+    attachmentCoverage: coverage,
+    // ok:1 hydrates, bad:1 fails (retryable gap), big:1 is too_large (policy skip).
+    hydrateAttachment: statusStampingHydrator({
+      "ok:1": "hydrated",
+      "bad:1": "failed",
+      "big:1": "too_large",
+    }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await emitMessagesPass(deps, [
+    makeSingleAttachmentMsg("ok"),
+    makeSingleAttachmentMsg("bad"),
+    makeSingleAttachmentMsg("big"),
+  ]);
+
+  // Three attachments attempted → three keys in the denominator.
+  assert.deepEqual(coverage.requiredKeys, ["ok:1", "bad:1", "big:1"]);
+  assert.deepEqual(coverage.hydratedKeys, ["ok:1"]);
+  // failed is a retryable gap; too_large is a permanent by-policy skip.
+  assert.deepEqual(coverage.gapKeys, ["bad:1"]);
+  assert.deepEqual(coverage.optionalSkipKeys, ["big:1"]);
+
+  // Sanity: every attachment record still emitted (coverage is reference-only,
+  // it does not gate record emission).
+  assert.equal(emitted.filter((r) => r.stream === "attachments").length, 3);
+
+  // The honest DETAIL_COVERAGE wire shape the connector builds from this
+  // accumulator: required = denominator, hydrated = numerator, gaps retryable,
+  // skips by-policy, anchored to the `messages` list cursor. reference_only.
+  assert.deepEqual(
+    buildDetailCoverageMessage({
+      stream: "attachments",
+      stateStream: "messages",
+      requiredKeys: coverage.requiredKeys,
+      hydratedKeys: coverage.hydratedKeys,
+      gapKeys: coverage.gapKeys,
+      optionalSkipKeys: coverage.optionalSkipKeys,
+    }),
+    {
+      type: "DETAIL_COVERAGE",
+      reference_only: true,
+      stream: "attachments",
+      state_stream: "messages",
+      required_keys: ["ok:1", "bad:1", "big:1"],
+      hydrated_keys: ["ok:1"],
+      gap_keys: ["bad:1"],
+      optional_skip_keys: ["big:1"],
+    }
+  );
+
+  // P0 invariant: every gap_keys entry MUST be backed by a matching durable
+  // DETAIL_GAP. `gap_keys` alone do not satisfy the host commit-gate, which
+  // credits a missing required key only when it is hydrated, optional-skipped,
+  // or backed by a pending DETAIL_GAP with the same record_key. Without this,
+  // an otherwise-successful run aborts at commit and re-fetches the same window
+  // forever. The failed record is retained on the accumulator; one gap per key.
+  assert.deepEqual(
+    coverage.failedRecords.map((r) => r.id),
+    coverage.gapKeys,
+    "exactly one retained failed record per gap_keys entry"
+  );
+  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r));
+  // The gate matches DETAIL_GAP.record_key against the DETAIL_COVERAGE key.
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    coverage.gapKeys
+  );
+  // Exact wire shape of the gap for `bad:1`: bounded, non-secret locator
+  // (message + part identifiers only), temporary_unavailable (retryable),
+  // pending, reference_only, and no error block (no raw error text crosses).
+  assert.deepEqual(gaps[0], {
+    type: "DETAIL_GAP",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: "bad:1",
+    status: "pending",
+    reason: "temporary_unavailable",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      message_id: "bad",
+      part_index: "1",
+      attachment_id: "bad:1",
+    },
+    retryable: true,
+    reference_only: true,
+  });
+  // Defense-in-depth: the gap carries no error/last_error block, so no raw
+  // hydration_error string (which could echo upstream URLs/text) ever crosses.
+  assert.equal(gaps[0]?.detail, undefined);
+  assert.equal(gaps[0]?.last_error, undefined);
 });

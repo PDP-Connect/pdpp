@@ -32,15 +32,23 @@
 export { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "../collector-protocol.ts";
 export {
   buildCollectorStartMessage,
+  COLLECTOR_COVERAGE_STATUSES,
   type CollectorChildContext,
+  type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
+  type CollectorCoverageStatus,
   type CollectorEnrollmentConfig,
   type CollectorRunConfig,
   type CollectorRunResult,
   CollectorStateReadError,
+  deriveLocalCollectorLifecycleState,
   drainCollectorQueue,
   enrollCollector,
+  LOCAL_COLLECTOR_LIFECYCLE_STATES,
+  type LocalCollectorLifecycleInput,
+  type LocalCollectorLifecycleState,
   runCollectorConnector,
+  summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
 } from "../collector-runner.ts";
 export type {
@@ -68,6 +76,7 @@ export type {
 } from "../connector-runtime-protocol.ts";
 export { isMainModule } from "../is-main-module.ts";
 export {
+  DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS,
   type EnrollmentExchangeRequest,
   type EnrollmentExchangeResponse,
   type GetSourceInstanceStateRequest,
@@ -77,6 +86,7 @@ export {
   LocalDeviceClient,
   type LocalDeviceClientOptions,
   LocalDeviceHttpError,
+  LocalDeviceRequestTimeoutError,
   type PutSourceInstanceStateRequest,
   type SourceInstanceStateResponse,
 } from "../local-device-client.ts";
@@ -90,8 +100,13 @@ export {
 export {
   type BuildLocalDeviceOutboxIdInput,
   buildLocalDeviceOutboxId,
+  classifyDeadLetterError,
   LocalDeviceOutbox,
   type LocalDeviceOutboxClaimInput,
+  type LocalDeviceOutboxCompactResult,
+  type LocalDeviceOutboxDeadLetterErrorClass,
+  type LocalDeviceOutboxDeadLetterErrorSummary,
+  type LocalDeviceOutboxDeadLetterErrorSummaryInput,
   type LocalDeviceOutboxDeadLetterInput,
   type LocalDeviceOutboxEnqueueInput,
   type LocalDeviceOutboxFailInput,
@@ -99,7 +114,12 @@ export {
   type LocalDeviceOutboxKind,
   type LocalDeviceOutboxLeaseInput,
   type LocalDeviceOutboxOptions,
+  type LocalDeviceOutboxPageStats,
+  type LocalDeviceOutboxPruneSentInput,
+  type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxRenewInput,
+  type LocalDeviceOutboxRequeueDeadLettersInput,
+  type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
 } from "../local-device-outbox.ts";
@@ -139,3 +159,11 @@ export {
   type StreamRequest,
   type TimeRange,
 } from "../scope-filters.ts";
+export {
+  buildConnectionScopedSecretEnv,
+  isStaticSecretConnector,
+  type RecoveredStaticSecret,
+  STATIC_SECRET_CONNECTOR_REGISTRY,
+  type StaticSecretCredentialKind,
+  StaticSecretInjectionError,
+} from "../static-secret-injection.ts";

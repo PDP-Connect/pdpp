@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +94,8 @@ async function withHarness(fn, options = {}) {
       min: ['popularity', 'followers', 'source_updated_at'],
       max: ['popularity', 'followers', 'source_updated_at'],
       group_by: ['name'],
+      group_by_time: ['source_updated_at'],
+      count_distinct: ['name'],
     },
   };
   options.mutateManifest?.(spotifyManifest);
@@ -147,6 +150,18 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Give a cloned manifest a unique canonical connector_key so multiple
+// validation-error cases register under distinct identities without colliding.
+// Post-canonicalization the operational identity is connector_key (a slug);
+// the legacy URL-shaped connector_id and manifest_uri provenance are dropped so
+// the manifest validates and the intended stream-level validation runs.
+function setUniqueConnectorKey(manifest, key) {
+  manifest.connector_key = key;
+  delete manifest.connector_id;
+  delete manifest.manifest_uri;
+  return manifest;
+}
+
 function readGmailManifest() {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'gmail.json'), 'utf8'));
 }
@@ -164,11 +179,18 @@ function addTestRefreshPolicy(manifest, overrides = {}) {
 }
 
 async function emitSyntheticRun({
-  connectorId,
+  connectorId: rawConnectorId,
   runId,
   status,
   occurredAt,
 }) {
+  // The live runtime launches runs under the canonical connector key and emits
+  // run.* spine events with source.id = that canonical key. Freshness and
+  // connector-summary correlation query run history by the canonical key, so a
+  // synthetic run must use it too or it correlates to nothing. Canonicalize the
+  // (possibly URL-shaped) test connectorId here. See canonicalize-connector-keys
+  // Decision 1.
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   // Spine-layer stamping requirement (see docs/run-reconciliation-design-brief.md §3.3):
   // every run.started must carry boot_epoch+seq. Harness ran startServer
   // which initialized the singleton; read it once.
@@ -406,6 +428,10 @@ async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
 
 test('connector discovery lists owner-visible polyfill connectors without connector_id', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // Discovery output uses the canonical operational connector key, not the
+    // manifest's URL-shaped connector_id (canonicalize-connector-keys
+    // Decisions 1 and 2: connector_key is operational, manifest_uri is metadata).
+    const canonicalConnectorId = canonicalConnectorKey(spotifyManifest.connector_id);
     const ownerToken = await issueOwnerToken(asUrl);
     const { status, body } = await fetchJson(`${rsUrl}/v1/connectors`, {
       headers: { 'Authorization': `Bearer ${ownerToken}` },
@@ -417,10 +443,10 @@ test('connector discovery lists owner-visible polyfill connectors without connec
 
     const connector = body.data[0];
     assert.equal(connector.object, 'connector');
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorId);
     assert.deepEqual(connector.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: canonicalConnectorId,
     });
     assert.deepEqual(
       connector.streams.map((stream) => stream.name).sort(),
@@ -434,7 +460,7 @@ test('connector discovery lists owner-visible polyfill connectors without connec
     assert.equal(topArtists.capabilities.stream_metadata, true);
     assert.equal(
       topArtists.capabilities.metadata_url,
-      `/v1/streams/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+      `/v1/streams/top_artists?connector_id=${encodeURIComponent(canonicalConnectorId)}`,
     );
     assert.equal(topArtists.capabilities.range_filters, true);
   });
@@ -461,7 +487,7 @@ test('connector discovery scopes client tokens to the granted source and streams
     assert.equal(body.data.length, 1);
 
     const connector = body.data[0];
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorKey(spotifyManifest.connector_id));
     assert.deepEqual(connector.streams.map((stream) => stream.name), ['top_artists']);
     assert.equal(connector.stream_count, 1);
     assert.equal(connector.streams[0].capabilities.records, true);
@@ -488,16 +514,19 @@ test('schema discovery enumerates owner-visible polyfill connectors with full pe
     assert.deepEqual(body.bearer, { token_kind: 'owner', scope: 'owner' });
     assert.equal(body.connectors.length, 2);
 
+    // Schema discovery emits canonical operational keys, not manifest URLs.
+    const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
+    const canonicalGmailId = canonicalConnectorKey(gmailManifest.connector_id);
     const connectorIds = body.connectors.map((c) => c.connector_id).sort();
     assert.deepEqual(
       connectorIds,
-      [spotifyManifest.connector_id, gmailManifest.connector_id].sort(),
+      [canonicalSpotifyId, canonicalGmailId].sort(),
     );
 
-    const spotify = body.connectors.find((c) => c.connector_id === spotifyManifest.connector_id);
+    const spotify = body.connectors.find((c) => c.connector_id === canonicalSpotifyId);
     assert.deepEqual(spotify.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: canonicalSpotifyId,
     });
     assert.deepEqual(
       spotify.streams.map((s) => s.name).sort(),
@@ -515,7 +544,7 @@ test('schema discovery enumerates owner-visible polyfill connectors with full pe
     assert.equal(topArtists.freshness.status, 'unknown');
     assert.ok(Array.isArray(topArtists.expand_capabilities), 'expand_capabilities is an array');
 
-    const gmail = body.connectors.find((c) => c.connector_id === gmailManifest.connector_id);
+    const gmail = body.connectors.find((c) => c.connector_id === canonicalGmailId);
     const messages = gmail.streams.find((s) => s.name === 'messages');
     assert.equal(messages.field_capabilities.subject.lexical_search.usable, true);
     assert.ok(messages.expand_capabilities.some((entry) => entry.name === 'attachments'));
@@ -547,7 +576,7 @@ test('schema discovery scopes a client token to its grant source and streams', a
     assert.ok(body.bearer.grant_id, 'grant_id surfaces on bearer projection');
     assert.equal(body.connectors.length, 1);
     const connector = body.connectors[0];
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorKey(spotifyManifest.connector_id));
     assert.deepEqual(connector.streams.map((s) => s.name), ['top_artists']);
     assert.equal(connector.stream_count, 1);
 
@@ -781,6 +810,20 @@ test('stream metadata publishes query.aggregations for declared aggregate fields
     assert.equal(body.query.aggregations.count, true);
     assert.deepEqual(body.query.aggregations.sum, ['popularity', 'followers']);
     assert.deepEqual(body.query.aggregations.group_by, ['name']);
+    assert.deepEqual(body.query.aggregations.group_by_time, ['source_updated_at']);
+    assert.deepEqual(body.query.aggregations.count_distinct, ['name']);
+    assert.deepEqual(body.field_capabilities.source_updated_at.aggregation.group_by_time, {
+      declared: true,
+      usable: true,
+    });
+    assert.deepEqual(body.field_capabilities.name.aggregation.count_distinct, {
+      declared: true,
+      usable: true,
+    });
+    assert.deepEqual(body.field_capabilities.popularity.aggregation.group_by_time, {
+      declared: false,
+      usable: false,
+    });
     assert.deepEqual(body.field_capabilities.popularity.aggregation.sum, {
       declared: true,
       usable: true,
@@ -815,15 +858,28 @@ test('stream aggregate computes count, sum, min/max, grouped counts, and declare
 
     const count = await fetchJson(`${base}&metric=count&filter[source_updated_at][gte]=2026-02-01T00:00:00Z`, { headers });
     assert.equal(count.status, 200);
-    assert.deepEqual(count.body, {
+    // Canonical aggregate envelope: `links` and `meta` are added by the
+    // route adapter via `finalizeCanonicalEnvelope`. We assert the payload
+    // semantics here and the envelope shape separately so the assertion
+    // does not couple to changes in the count/warnings vocabulary.
+    const { links, meta, ...countBody } = count.body;
+    assert.deepEqual(countBody, {
       object: 'aggregation',
       stream: 'top_artists',
       metric: 'count',
       field: null,
       group_by: null,
+      // Additive time-bucket/distinct fields (null/false for a scalar count).
+      group_by_time: null,
+      granularity: null,
+      time_zone: null,
+      approximate: false,
       filtered_record_count: 2,
       value: 2,
     });
+    assert.equal(typeof links?.self, 'string');
+    assert.equal(meta?.count?.kind, 'none');
+    assert.deepEqual(meta?.warnings, []);
 
     const sum = await fetchJson(`${base}&metric=sum&field=popularity`, { headers });
     assert.equal(sum.status, 200);
@@ -957,7 +1013,9 @@ test('schema discovery and stream list derive current freshness from connector r
       headers: { 'Authorization': `Bearer ${ownerToken}` },
     });
     assert.equal(schemaResp.status, 200);
-    const schemaConnector = schemaResp.body.connectors.find((row) => row.connector_id === connectorId);
+    // Schema discovery emits the canonical operational key.
+    const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const schemaConnector = schemaResp.body.connectors.find((row) => row.connector_id === canonicalConnectorId);
     const schemaStream = schemaConnector.streams.find((stream) => stream.name === 'top_artists');
     assert.equal(schemaStream.freshness.status, 'current');
     assert.equal(schemaStream.freshness.captured_at, runAt);
@@ -1055,6 +1113,36 @@ test('range filter on declared field filters records', async () => {
   });
 });
 
+test('over-max limit clamps to 100 and surfaces a limit_clamped warning on the HTTP wire', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const records = Array.from({ length: 101 }, (_, i) => ({
+      id: `a${String(i).padStart(3, '0')}`,
+      name: `Artist ${i}`,
+      source_updated_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+    }));
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&limit=200';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.data.length, 100, 'page is clamped to the max of 100');
+    assert.equal(body.has_more, true, 'more records remain to page');
+    const warnings = body?.meta?.warnings;
+    assert.ok(Array.isArray(warnings), 'meta.warnings[] is present on the wire');
+    const clamp = warnings.find((warning) => warning?.code === 'limit_clamped');
+    assert.ok(clamp, 'limit_clamped warning is surfaced in the HTTP body');
+    assert.equal(clamp.param, 'limit');
+    assert.deepEqual(clamp.detail, { requested_limit: 200, max_limit: 100 });
+    assert.match(clamp.message, /200/);
+    assert.match(clamp.message, /100/);
+  });
+});
+
 test('range filter on undeclared field is rejected', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
@@ -1095,6 +1183,168 @@ test('filter on unknown field is rejected with 400', async () => {
       body.error.code === 'unknown_field' || body.error.code === 'invalid_request',
       `expected unknown_field or invalid_request, got ${body.error.code}`,
     );
+  });
+});
+
+// ─── fields-projection conformance (agent-vantage read surface) ───────────
+//
+// The MCP `query_records` / `fetch` `fields` doc promises (verbatim):
+//   "Field paths must be declared by the stream; advertised by `GET /v1/schema`
+//    (`field_capabilities`). Unknown paths are rejected by the RS rather than
+//    silently widened."
+// These guards pin that promise on the canonical HTTP read for BOTH grant
+// shapes — a full-stream grant (no field allowlist) and a restricted grant —
+// so a manifest-nonexistent `fields=` entry is a loud `unknown_field` error,
+// never a silent 200 with the field dropped. The restricted-grant unknown
+// (`field_not_granted`) sibling is pinned in event-spine.test.js; here we pin
+// the manifest-unknown path, which is independent of grant field scope.
+test('fields projection on an unknown field is rejected under a full-stream grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // An owner token reads with an owner read-grant that carries no field
+    // allowlist — the full-stream case the static audit flagged as the one
+    // where the grant-only `field_not_granted` guard would be skipped.
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400, 'unknown projection field must fail loudly, not silently narrow');
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
+test('record-detail fields projection on an unknown field is rejected under a full-stream grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records/a1`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400, 'unknown fetch projection field must fail loudly, not return {}');
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
+test('fields projection on a manifest-unknown field is rejected under a restricted grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    const ownerToken = await issueOwnerToken(asUrl, 'restricted_fields_owner');
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    // Restricted grant: only id/name/source_updated_at granted.
+    const approved = await approveGrant(asUrl, 'restricted_fields_owner', {
+      client_id: 'longview',
+      source: { kind: 'connector', id: connectorId },
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'projection conformance under a narrowed field grant',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, `expected grant token, got ${JSON.stringify(approved)}`);
+
+    // `not_a_real_field` is not declared by the manifest at all — this must be
+    // `unknown_field` (manifest validation), distinct from the grant-scope
+    // `field_not_granted` signal for a real-but-ungranted field.
+    const url = `${rsUrl}/v1/streams/top_artists/records?fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
+test('query-time view applies a real projection (not a silent no-op)', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // top_artists declares view `basic` -> fields [id, name, genres]. Reading
+    // with `?view=basic` must project the page to exactly those fields; a
+    // record's ungranted-by-view `popularity`/`followers` must be absent. This
+    // pins that query-time `view` is honest — advertised, forwarded, AND
+    // applied — disproving the static audit's "inert at read time" claim.
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      {
+        id: 'v1',
+        name: 'View Artist',
+        genres: ['rock'],
+        popularity: 77,
+        followers: 1234,
+        source_updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=basic`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.data.length, 1);
+    // Record payload fields live under `record.data`; the view projects that
+    // object down to exactly the declared field set.
+    const data = body.data[0].data;
+    assert.equal(data.id, 'v1');
+    assert.equal(data.name, 'View Artist');
+    assert.deepEqual(data.genres, ['rock']);
+    // Fields outside the `basic` view projection must not leak through.
+    assert.equal('popularity' in data, false, 'view=basic must project popularity out');
+    assert.equal('followers' in data, false, 'view=basic must project followers out');
+    assert.equal('source_updated_at' in data, false, 'view=basic must project source_updated_at out');
+  });
+});
+
+test('query-time view and fields together are rejected as mutually exclusive', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=basic&fields=id`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message || '', /view and fields are mutually exclusive/);
+  });
+});
+
+test('query-time view with an unknown view id is rejected', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=not_a_real_view`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message || '', /Unknown view/);
   });
 });
 
@@ -1218,6 +1468,39 @@ test('unknown query parameter is rejected (not silently ignored)', async () => {
   });
 });
 
+test('noncanonical range query parameters are rejected loudly', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'a2', name: 'B', source_updated_at: '2026-02-01T00:00:00Z' },
+    ]);
+    const baseUrl = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`;
+    const badParams = [
+      'source_updated_at.gte=2026-01-01T00%3A00%3A00Z',
+      'source_updated_at_gte=2026-01-01T00%3A00%3A00Z',
+      'source_updated_at=gte%3A2026-01-01T00%3A00%3A00Z',
+      'min_source_updated_at=2026-01-01T00%3A00%3A00Z',
+    ];
+
+    for (const param of badParams) {
+      const { status, body } = await fetchJson(`${baseUrl}&${param}`, {
+        headers: { 'Authorization': `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 400, `${param} must fail instead of widening the read`);
+      assert.equal(body.error.code, 'invalid_request');
+    }
+    const { status, body } = await fetchJson(
+      `${baseUrl}&filter[source_updated_at][gte]=2026-02-01T00:00:00Z`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.deepEqual(body.data.map((record) => record.id).sort(), ['a2']);
+  });
+});
+
 test('records are sorted by (cursor_field, primary_key) and cursor tokens are logical', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
@@ -1255,6 +1538,26 @@ test('records are sorted by (cursor_field, primary_key) and cursor tokens are lo
     assert.equal(pageTwo.status, 200);
     assert.deepEqual(pageTwo.body.data.map((r) => r.id), ['art_c']);
     assert.equal(pageTwo.body.has_more, false);
+  });
+});
+
+test('records list invalid_sort returns a request-error envelope', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'sort_a', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&sort=name';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.type, 'invalid_request_error');
+    assert.equal(body.error.code, 'invalid_sort');
+    assert.equal(body.error.param, 'sort');
   });
 });
 
@@ -1381,6 +1684,7 @@ test('single-record fetch honors declared expand and expand_limit', async () => 
       { headers: { Authorization: `Bearer ${approved.token}` } },
     );
     assert.equal(status, 200);
+    assert.equal(body.connector_key, 'spotify', 'record detail carries canonical source connector identity');
     assert.ok(body.expanded?.recently_played, 'expanded relation should be present on record detail');
     assert.equal(body.expanded.recently_played.object, 'list');
     assert.equal(body.expanded.recently_played.has_more, true);
@@ -1849,6 +2153,338 @@ test('first-party manifests declare only parent-to-child query.expand entries wi
   }
 });
 
+// ─── GitHub user → user_stats first-party relationship ──────────────────────
+//
+// The GitHub manifest declares one safe parent-to-child join in this tranche:
+// `user → user_stats` (has_many, foreign_key=user_id). `user_id` is a required
+// top-level property of the `user_stats` child schema, so it satisfies the
+// existing "fk must be required on child" rule (proven by the first-party
+// manifest test above). See
+//   openspec/changes/add-record-relationship-navigation/.
+
+function readGithubManifest() {
+  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'github.json'), 'utf8'));
+}
+
+async function seedGithubStream(rsUrl, ownerToken, connectorId, stream, records) {
+  const lines = records.map((record) => JSON.stringify({
+    key: record.id,
+    data: record,
+    emitted_at: record.emitted_at || record.observed_on || record.updated_at || '2026-04-01T00:00:00Z',
+  })).join('\n');
+  const resp = await fetch(`${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      'Content-Type': 'application/x-ndjson',
+    },
+    body: lines,
+  });
+  assert.equal(resp.status, 200, `ingest github ${stream} ok`);
+}
+
+// Two users, each with daily user_stats samples keyed by `{user_id}:{date}`.
+// `user_stats.user_id` holds the parent user's record key (`id`), not the
+// child's own key — the child key is `id` ("{user_id}:{YYYY-MM-DD}").
+async function seedGithubExpansionFixture(rsUrl, ownerToken, connectorId) {
+  await seedGithubStream(rsUrl, ownerToken, connectorId, 'user', [
+    { id: '101', login: 'octocat', name: 'The Octocat', updated_at: '2026-04-01T10:00:00Z' },
+    { id: '202', login: 'hubot', name: 'Hubot', updated_at: '2026-04-02T10:00:00Z' },
+  ]);
+  await seedGithubStream(rsUrl, ownerToken, connectorId, 'user_stats', [
+    { id: '101:2026-04-01', user_id: '101', observed_on: '2026-04-01', followers: 10, following: 5, public_repos: 3, public_gists: 1 },
+    { id: '101:2026-04-02', user_id: '101', observed_on: '2026-04-02', followers: 12, following: 5, public_repos: 3, public_gists: 1 },
+    { id: '101:2026-04-03', user_id: '101', observed_on: '2026-04-03', followers: 14, following: 6, public_repos: 4, public_gists: 1 },
+    { id: '202:2026-04-02', user_id: '202', observed_on: '2026-04-02', followers: 99, following: 0, public_repos: 8, public_gists: 0 },
+  ]);
+}
+
+test('github manifest declares no relationship pointing at a commits stream', () => {
+  const manifest = readGithubManifest();
+  for (const stream of manifest.streams) {
+    for (const relationship of stream.relationships || []) {
+      assert.notEqual(
+        relationship.stream,
+        'commits',
+        `github.${stream.name} must not declare a relationship pointing at commits`,
+      );
+    }
+  }
+  // commits is not even a declared stream, so nothing can point at it.
+  assert.ok(
+    !manifest.streams.some((stream) => stream.name === 'commits'),
+    'github manifest must not declare a commits stream',
+  );
+});
+
+test('github manifest declares no reverse expansion from user_stats/issues/pull_requests', () => {
+  const manifest = readGithubManifest();
+  const byName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
+  for (const childName of ['user_stats', 'issues', 'pull_requests']) {
+    const child = byName.get(childName);
+    assert.ok(child, `github manifest must declare ${childName}`);
+    assert.deepEqual(
+      (child.query?.expand || []).map((entry) => entry.name),
+      [],
+      `github.${childName} must not declare reverse query.expand entries`,
+    );
+  }
+});
+
+// The first-party manifest gate (the "FK on child must be required" test above)
+// is what keeps `repositories → issues` / `repositories → pull_requests`
+// deferred: their foreign_key (`repository_id`) is present on the child schema
+// but NOT in the child's `required[]`. The runtime registration validator only
+// enforces that the FK is a top-level child property, so this requiredness rule
+// is enforced at the manifest-test layer. This regression pins both halves:
+// (a) the deferred shape would pass the runtime validator's top-level check, and
+// (b) it fails the first-party manifest gate's requiredness predicate — which is
+// exactly why declaring it now would break that gate.
+test('repositories → issues shape fails the first-party manifest requiredness gate (deferral pin)', () => {
+  const manifest = readGithubManifest();
+  const issues = manifest.streams.find((stream) => stream.name === 'issues');
+  assert.ok(issues, 'github manifest must declare issues');
+
+  const childProperties = issues.schema?.properties || {};
+  const childRequired = issues.schema?.required || [];
+
+  // (a) `repository_id` is a top-level property — the runtime validator's
+  // `hasOwnProperty` check would accept it.
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(childProperties, 'repository_id'),
+    'repository_id must be a top-level property on issues',
+  );
+  // (b) but it is NOT required — the first-party manifest gate's
+  // `required.includes(foreign_key)` predicate rejects it, which is the
+  // concrete reason `repositories → issues` is deferred to a follow-up slice
+  // that first makes the child key required (or adds a null-keyed-child policy).
+  assert.ok(
+    !childRequired.includes('repository_id'),
+    'repository_id must remain non-required on issues until the deferred slice makes it required',
+  );
+
+  // And the manifest does NOT declare the deferred join today.
+  const repositories = manifest.streams.find((stream) => stream.name === 'repositories');
+  assert.deepEqual(
+    (repositories.query?.expand || []).map((entry) => entry.name),
+    [],
+    'repositories must not declare any query.expand entries in this change',
+  );
+});
+
+test('github user expands user_stats filtered by user_id under a both-granted token', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'github_expand_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile with daily stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login', 'name', 'updated_at'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on', 'followers'] },
+      ],
+    });
+
+    const list = await fetchJson(
+      `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=user_stats`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(list.status, 200);
+
+    const octocat = list.body.data.find((record) => record.id === '101');
+    assert.ok(octocat?.expanded?.user_stats, 'octocat carries hydrated user_stats');
+    assert.equal(octocat.expanded.user_stats.object, 'list');
+    // Every hydrated child carries user_id === the parent user's record key,
+    // and its own record key is its `id` (NOT user_id).
+    for (const child of octocat.expanded.user_stats.data) {
+      assert.equal(child.data.user_id, '101', 'child user_id equals parent user key');
+      assert.notEqual(child.id, '101', 'child record key is its own id, not the parent key');
+      assert.equal(child.id, `101:${child.data.observed_on}`, 'child id is the user_stats primary key');
+    }
+
+    // The other user's children are not mixed in.
+    const hubot = list.body.data.find((record) => record.id === '202');
+    assert.equal(hubot.expanded.user_stats.data.length, 1);
+    assert.equal(hubot.expanded.user_stats.data[0].data.user_id, '202');
+  });
+});
+
+test('github user_stats expand_limit caps the child fan-out and reports has_more', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_limit_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'github_expand_limit_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile with capped daily stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+
+    const detail = await fetchJson(
+      `${rsUrl}/v1/streams/user/records/101?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats&expand_limit[user_stats]=2`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.expanded.user_stats.data.length, 2);
+    assert.equal(detail.body.expanded.user_stats.has_more, true, 'octocat has 3 stats rows, capped at 2');
+  });
+});
+
+test('github user expansion rejects requests missing the user_stats grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_reject_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    // user-only grant: expanding the ungranted child fails with insufficient_scope.
+    const userOnly = await approveGrant(asUrl, 'github_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile only',
+      access_mode: 'continuous',
+      streams: [{ name: 'user', fields: ['id', 'login'] }],
+    });
+
+    const missingStats = await fetchJson(
+      `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats`,
+      { headers: { Authorization: `Bearer ${userOnly.token}` } },
+    );
+    assert.equal(missingStats.status, 403);
+    assert.equal(missingStats.body.error.code, 'insufficient_scope');
+
+    // Reverse expansion is not declared on the manifest. Grant user_stats so the
+    // request reaches expand-validation (not the grant gate) and the rejection is
+    // genuinely about the undeclared reverse relation, not a missing scope.
+    const bothGranted = await approveGrant(asUrl, 'github_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile + stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+    const reverse = await fetchJson(
+      `${rsUrl}/v1/streams/user_stats/records?connector_id=${encodeURIComponent(connectorId)}&expand=user`,
+      { headers: { Authorization: `Bearer ${bothGranted.token}` } },
+    );
+    assert.equal(reverse.status, 400);
+    assert.equal(reverse.body.error.code, 'invalid_expand');
+  });
+});
+
+test('github repositories → issues expansion is not declared in this change', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_repo_issues_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubStream(rsUrl, ownerToken, connectorId, 'repositories', [
+      { id: 'r1', full_name: 'octocat/hello-world', updated_at: '2026-04-01T10:00:00Z' },
+    ]);
+
+    const approved = await approveGrant(asUrl, 'github_repo_issues_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub repositories only',
+      access_mode: 'continuous',
+      streams: [{ name: 'repositories', fields: ['id', 'full_name'] }],
+    });
+
+    const resp = await fetchJson(
+      `${rsUrl}/v1/streams/repositories/records?connector_id=${encodeURIComponent(connectorId)}&expand=issues`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(resp.status, 400);
+    assert.equal(resp.body.error.code, 'invalid_expand');
+  });
+});
+
+test('github user stream metadata surfaces the user_stats expand capability with target naming', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_metadata_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    // Both streams granted → usable: true with full target naming.
+    const both = await approveGrant(asUrl, 'github_metadata_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile + stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+    const bothMeta = await fetchJson(
+      `${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${both.token}` } },
+    );
+    assert.equal(bothMeta.status, 200);
+    const usableEntry = bothMeta.body.expand_capabilities.find((entry) => entry.name === 'user_stats');
+    assert.ok(usableEntry, 'user_stats expand capability is present');
+    assert.equal(usableEntry.target_stream, 'user_stats');
+    assert.equal(usableEntry.child_parent_key_field, 'user_id');
+    assert.equal(usableEntry.foreign_key, 'user_id');
+    assert.equal(usableEntry.cardinality, 'has_many');
+    assert.equal(usableEntry.usable, true);
+    assert.equal(usableEntry.granted, true);
+
+    // user-only grant → entry still present, inert, with the not-granted reason.
+    const userOnly = await approveGrant(asUrl, 'github_metadata_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile only',
+      access_mode: 'continuous',
+      streams: [{ name: 'user', fields: ['id', 'login'] }],
+    });
+    const userOnlyMeta = await fetchJson(
+      `${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${userOnly.token}` } },
+    );
+    assert.equal(userOnlyMeta.status, 200);
+    const inertEntry = userOnlyMeta.body.expand_capabilities.find((entry) => entry.name === 'user_stats');
+    assert.ok(inertEntry, 'declared relation stays visible even when not readable');
+    assert.equal(inertEntry.target_stream, 'user_stats');
+    assert.equal(inertEntry.child_parent_key_field, 'user_id');
+    assert.equal(inertEntry.usable, false);
+    assert.equal(inertEntry.granted, false);
+    assert.equal(inertEntry.reason, 'related_stream_not_granted');
+  });
+});
+
 test('slack messages expand message_attachments and reactions on list and detail reads', async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_owner');
@@ -2005,7 +2641,10 @@ test('slack message expansion rejects requests missing the child grant', async (
 test('connector manifest validation rejects unsafe query.expand declarations', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const missingRelationship = cloneJson(spotifyManifest);
-    missingRelationship.connector_id = `${spotifyManifest.connector_id}#missing-expand-relation`;
+    // Give each case a unique canonical connector_key (not a URL#suffix) so the
+    // manifest is uniquely identified AND passes connector-key validation,
+    // letting the intended query.expand validation run. See canonicalize-connector-keys.
+    setUniqueConnectorKey(missingRelationship, 'spotify-missing-expand-relation');
     missingRelationship.streams.find((stream) => stream.name === 'saved_tracks').query.expand = [
       { name: 'missing_relation', default_limit: 1, max_limit: 2 },
     ];
@@ -2015,7 +2654,7 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     assert.match(missingRelationshipResp.body.error.message, /query\.expand entry 'missing_relation' must match/);
 
     const missingForeignKey = cloneJson(spotifyManifest);
-    missingForeignKey.connector_id = `${spotifyManifest.connector_id}#missing-child-foreign-key`;
+    setUniqueConnectorKey(missingForeignKey, 'spotify-missing-child-foreign-key');
     missingForeignKey.streams.find((stream) => stream.name === 'saved_tracks').relationships[0].foreign_key = 'missing_track_id';
 
     const missingForeignKeyResp = await registerConnectorManifest(asUrl, missingForeignKey);
@@ -2023,7 +2662,7 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     assert.match(missingForeignKeyResp.body.error.message, /foreign_key 'missing_track_id' must be a top-level property/);
 
     const invalidLimits = cloneJson(spotifyManifest);
-    invalidLimits.connector_id = `${spotifyManifest.connector_id}#invalid-expand-limit`;
+    setUniqueConnectorKey(invalidLimits, 'spotify-invalid-expand-limit');
     invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].default_limit = 5;
     invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].max_limit = 2;
 
@@ -2036,12 +2675,12 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
 test('connector manifest validation accepts gmail attachment blob_ref and rejects malformed declarations', async () => {
   await withHarness(async ({ asUrl }) => {
     const gmailManifest = readGmailManifest();
-    gmailManifest.connector_id = `${gmailManifest.connector_id}#blob-ref-valid`;
+    setUniqueConnectorKey(gmailManifest, 'gmail-blob-ref-valid');
     const valid = await registerConnectorManifest(asUrl, gmailManifest);
     assert.equal(valid.status, 201);
 
     const missingBlobId = cloneJson(gmailManifest);
-    missingBlobId.connector_id = `${gmailManifest.connector_id}#missing-blob-id`;
+    setUniqueConnectorKey(missingBlobId, 'gmail-missing-blob-id');
     const attachmentStream = missingBlobId.streams.find((stream) => stream.name === 'attachments');
     delete attachmentStream.schema.properties.blob_ref.properties.blob_id;
 
@@ -2050,7 +2689,7 @@ test('connector manifest validation accepts gmail attachment blob_ref and reject
     assert.match(missingBlobIdResp.body.error.message, /blob_ref\.blob_id must be type string/);
 
     const notObject = cloneJson(gmailManifest);
-    notObject.connector_id = `${gmailManifest.connector_id}#blob-ref-not-object`;
+    setUniqueConnectorKey(notObject, 'gmail-blob-ref-not-object');
     const notObjectAttachmentStream = notObject.streams.find((stream) => stream.name === 'attachments');
     notObjectAttachmentStream.schema.properties.blob_ref = { type: 'string' };
 
@@ -2210,13 +2849,20 @@ test('blob fetch injects fetch_url and requires blob_ref visibility under the gr
         },
       },
     ]);
+    // Records and blobs are stored under the canonical connector key (the
+    // ingest path canonicalizes the URL-shaped manifest connector_id). Seed
+    // this raw-SQL blob row — and resolve its connector_instance_id subquery —
+    // under that same canonical key, or the records subquery returns no row
+    // and connector_instance_id is NULL. See canonicalize-connector-keys
+    // Decision 1: blob bindings key by connector_key.
+    const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
     getDb().prepare(`
       INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
       VALUES(?, ?, (SELECT connector_instance_id FROM records WHERE connector_id = ? AND stream = ? AND record_key = ?), ?, ?, ?, ?, ?, ?)
     `).run(
       'blob_track_art',
-      connectorId,
-      connectorId,
+      canonicalId,
+      canonicalId,
       'saved_tracks',
       'track_blob',
       'saved_tracks',

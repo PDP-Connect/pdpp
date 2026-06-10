@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/linkedin",
+  "connector_key": "linkedin",
+  "manifest_uri": "https://registry.pdpp.org/connectors/linkedin",
   "version": "0.1.0",
   "display_name": "LinkedIn",
   "runtime_requirements": {

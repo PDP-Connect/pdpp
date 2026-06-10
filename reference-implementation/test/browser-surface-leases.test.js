@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   BrowserSurfaceLeaseManager,
-  DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   DEFAULT_NEKO_PRIORITY_RANKS,
+  projectBrowserSurfaceLease,
+} from "@opendatalabs/remote-surface/leases";
+import {
+  DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   browserSurfaceLeaseEnv,
   parseNekoBrowserSurfaceLeaseConfig,
   parseNekoBrowserSurfaceRuntimeConfig,
-  projectBrowserSurfaceLease,
 } from "../runtime/browser-surface-leases.ts";
 
 function config(overrides = {}) {
@@ -61,7 +63,7 @@ function manager(options = {}) {
 test("compatible idle surface is leased and projected for connector launch", () => {
   const initialSurfaces = [
     {
-      surface_id: "surface_idle",
+      surface_id: "neko-static",
       backend: "neko",
       profile_key: "chatgpt",
       connector_id: "chatgpt",
@@ -77,7 +79,7 @@ test("compatible idle surface is leased and projected for connector launch", () 
   const result = leases.acquire({ connectorId: "chatgpt", runId: "run_1", profileKey: "chatgpt" });
 
   assert.equal(result.lease.status, "leased");
-  assert.equal(result.lease.surface_id, "surface_idle");
+  assert.equal(result.lease.surface_id, "neko-static");
   assert.equal(result.surface?.active_lease_id, "lease_1");
   assert.deepEqual(projectBrowserSurfaceLease(result.lease), {
     pending_run_id: "run_1",
@@ -89,7 +91,7 @@ test("compatible idle surface is leased and projected for connector launch", () 
     PDPP_BROWSER_SURFACE_REQUIRED: "neko",
     PDPP_BROWSER_SURFACE_LEASE_ID: "lease_1",
     PDPP_BROWSER_SURFACE_PROFILE_KEY: "chatgpt",
-    PDPP_BROWSER_SURFACE_ID: "surface_idle",
+    PDPP_BROWSER_SURFACE_ID: "neko-static",
     PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9222",
     PDPP_BROWSER_SURFACE_STREAM_BASE_URL: "http://neko:8080",
   });
@@ -255,7 +257,7 @@ test("restart reconciliation keeps active leased run intact", () => {
   const { manager: leases } = manager({
     initialSurfaces: [
       {
-        surface_id: "surface_active",
+        surface_id: "neko-static",
         backend: "neko",
         profile_key: "chatgpt",
         connector_id: "chatgpt",
@@ -270,7 +272,7 @@ test("restart reconciliation keeps active leased run intact", () => {
     initialLeases: [
       {
         lease_id: "lease_active",
-        surface_id: "surface_active",
+        surface_id: "neko-static",
         connector_id: "chatgpt",
         profile_key: "chatgpt",
         run_id: "run_active",
@@ -288,14 +290,14 @@ test("restart reconciliation keeps active leased run intact", () => {
 
   assert.equal(reconciled.activeLeased.length, 1);
   assert.equal(leases.getLease("lease_active").status, "leased");
-  assert.equal(leases.getSurface("surface_active").active_lease_id, "lease_active");
+  assert.equal(leases.getSurface("neko-static").active_lease_id, "lease_active");
 });
 
 test("restart reconciliation releases stale healthy lease and preserves surface", () => {
   const { manager: leases } = manager({
     initialSurfaces: [
       {
-        surface_id: "surface_stale",
+        surface_id: "neko-static",
         backend: "neko",
         profile_key: "chatgpt",
         connector_id: "chatgpt",
@@ -310,7 +312,7 @@ test("restart reconciliation releases stale healthy lease and preserves surface"
     initialLeases: [
       {
         lease_id: "lease_stale",
-        surface_id: "surface_stale",
+        surface_id: "neko-static",
         connector_id: "chatgpt",
         profile_key: "chatgpt",
         run_id: "run_stale",
@@ -328,7 +330,7 @@ test("restart reconciliation releases stale healthy lease and preserves surface"
 
   assert.equal(reconciled.released.length, 1);
   assert.equal(leases.getLease("lease_stale").status, "released");
-  assert.equal(leases.getSurface("surface_stale").active_lease_id, undefined);
+  assert.equal(leases.getSurface("neko-static").active_lease_id, undefined);
 });
 
 test("restart reconciliation expires leased run when surface is missing", () => {
@@ -360,7 +362,7 @@ test("restart reconciliation marks unhealthy leased surface failed without delet
   const { manager: leases } = manager({
     initialSurfaces: [
       {
-        surface_id: "surface_unhealthy",
+        surface_id: "neko-static",
         backend: "neko",
         profile_key: "chatgpt",
         connector_id: "chatgpt",
@@ -375,7 +377,7 @@ test("restart reconciliation marks unhealthy leased surface failed without delet
     initialLeases: [
       {
         lease_id: "lease_unhealthy",
-        surface_id: "surface_unhealthy",
+        surface_id: "neko-static",
         connector_id: "chatgpt",
         profile_key: "chatgpt",
         run_id: "run_unhealthy",
@@ -394,8 +396,8 @@ test("restart reconciliation marks unhealthy leased surface failed without delet
   assert.equal(reconciled.surfaceFailed.length, 1);
   assert.equal(leases.getLease("lease_unhealthy").status, "surface_failed");
   assert.equal(leases.getLease("lease_unhealthy").wait_reason, "surface_unhealthy");
-  assert.equal(leases.getSurface("surface_unhealthy").health, "unhealthy");
-  assert.equal(leases.getSurface("surface_unhealthy").active_lease_id, undefined);
+  assert.equal(leases.getSurface("neko-static").health, "unhealthy");
+  assert.equal(leases.getSurface("neko-static").active_lease_id, undefined);
 });
 
 test("restart reconciliation preserves queued run within wait policy", () => {
@@ -477,7 +479,7 @@ test("restart reconciliation promotes queued-but-not-started run after stale rel
   const { manager: leases } = manager({
     initialSurfaces: [
       {
-        surface_id: "surface_restart",
+        surface_id: "neko-static",
         backend: "neko",
         profile_key: "chatgpt",
         connector_id: "chatgpt",
@@ -492,7 +494,7 @@ test("restart reconciliation promotes queued-but-not-started run after stale rel
     initialLeases: [
       {
         lease_id: "lease_stale",
-        surface_id: "surface_restart",
+        surface_id: "neko-static",
         connector_id: "chatgpt",
         profile_key: "chatgpt",
         run_id: "run_stale",
@@ -524,14 +526,14 @@ test("restart reconciliation promotes queued-but-not-started run after stale rel
   assert.equal(reconciled.promoted.length, 1);
   assert.equal(reconciled.promoted[0].lease_id, "lease_waiting");
   assert.equal(leases.getLease("lease_waiting").status, "leased");
-  assert.equal(leases.getSurface("surface_restart").active_lease_id, "lease_waiting");
+  assert.equal(leases.getSurface("neko-static").active_lease_id, "lease_waiting");
 });
 
 test("restart reconciliation can defer queue promotion until runtime URLs are ready", () => {
   const { manager: leases } = manager({
     initialSurfaces: [
       {
-        surface_id: "surface_restart",
+        surface_id: "neko-static",
         backend: "neko",
         profile_key: "chatgpt",
         connector_id: "chatgpt",
@@ -546,7 +548,7 @@ test("restart reconciliation can defer queue promotion until runtime URLs are re
     initialLeases: [
       {
         lease_id: "lease_stale",
-        surface_id: "surface_restart",
+        surface_id: "neko-static",
         connector_id: "chatgpt",
         profile_key: "chatgpt",
         run_id: "run_stale",
@@ -582,7 +584,7 @@ test("restart reconciliation can defer queue promotion until runtime URLs are re
   assert.equal(promoted.length, 1);
   assert.equal(promoted[0].lease_id, "lease_waiting");
   assert.equal(leases.getLease("lease_waiting").status, "leased");
-  assert.equal(leases.getSurface("surface_restart").active_lease_id, "lease_waiting");
+  assert.equal(leases.getSurface("neko-static").active_lease_id, "lease_waiting");
 });
 
 test("config parser validates managed policy and defaults static single connector profile", () => {
@@ -634,6 +636,40 @@ test("config parser validates managed policy and defaults static single connecto
       }),
     /PDPP_NEKO_STATIC_PROFILE_KEY/,
   );
+});
+
+test("config parser matches canonical connector URLs and short runtime ids", () => {
+  const parsed = parseNekoBrowserSurfaceLeaseConfig({
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/chatgpt/",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
+    PDPP_NEKO_BASE_URL: "http://neko:8080",
+  });
+
+  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.org/connectors/chatgpt/"), true);
+  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.org/connectors/chatgpt"), true);
+  assert.equal(parsed.managedConnectors.has("chatgpt"), true);
+  assert.equal(parsed.staticProfileKey, "chatgpt");
+
+  const unrelatedUrl = parseNekoBrowserSurfaceLeaseConfig({
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/not-connectors/chatgpt/",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
+    PDPP_NEKO_BASE_URL: "http://neko:8080",
+  });
+
+  assert.equal(unrelatedUrl.managedConnectors.has("chatgpt"), false);
+  assert.equal(unrelatedUrl.staticProfileKey, "https://registry.pdpp.org/not-connectors/chatgpt/");
+
+  const unknownFirstPartyUrl = parseNekoBrowserSurfaceLeaseConfig({
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/not-real",
+    PDPP_NEKO_SURFACE_CAP: "1",
+    PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
+    PDPP_NEKO_BASE_URL: "http://neko:8080",
+  });
+
+  assert.equal(unknownFirstPartyUrl.managedConnectors.has("not-real"), false);
+  assert.equal(unknownFirstPartyUrl.staticProfileKey, "https://registry.pdpp.org/connectors/not-real");
 });
 
 test("runtime config parser preserves static default and exposes lease config", () => {

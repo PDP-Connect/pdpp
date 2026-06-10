@@ -35,6 +35,13 @@
  *     enriched records with domain, *_len, is_top_level, is_post,
  *     over_18, gilded, fetched_at.
  *   v0.1.0 — initial browser-session implementation.
+ *
+ * FIXTURES
+ *   A committed records-stream pilot lives at
+ *   fixtures/reddit/scrubbed/pilot-real-shape/records/<stream>.jsonl
+ *   (synthetic-but-shape-real, PII-free). pilot-fixture.test.ts replays it
+ *   through validateRecord to lock the emitted-record shape against drift.
+ *   See docs/connector-authoring-guide.md §9.1.
  */
 
 import type { Page } from "playwright";
@@ -66,6 +73,16 @@ import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
 const USER_AGENT = "pdpp-reddit-connector/0.2 (polyfill; +https://pdpp.org)";
 const PAGE_DELAY_MS = 500;
+
+interface ProgressExtra {
+  cursor_present?: boolean;
+  item_count?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total_seen?: number;
+}
 
 // ─── Fetch through the page (preserves session cookie + anti-bot) ───────
 
@@ -123,14 +140,34 @@ export async function paginate(
   endpoint: string,
   sinceEpochUtc: number | null,
   capture: CaptureSession | null,
-  delay: (ms: number) => Promise<void> = politeDelay
+  delay: (ms: number) => Promise<void> = politeDelay,
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  streamName?: string
 ): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
+  const streamExtra = streamName ? { stream: streamName } : {};
 
   for (let guard = 0; guard < MAX_PAGES; guard++) {
+    await progress?.("Fetching Reddit listing page", {
+      ...streamExtra,
+      phase: "fetch",
+      page_index: guard,
+      total_seen: all.length,
+      cursor_present: Boolean(after),
+    });
     const path = pagePath(endpoint, after);
     const { status, json } = await fetchPath(path);
+    if (status === 429) {
+      await progress?.("Reddit listing page rate limited", {
+        ...streamExtra,
+        phase: "rate_limit",
+        page_index: guard,
+        total_seen: all.length,
+        cursor_present: Boolean(after),
+        rate_limit_pressure: 1,
+      });
+    }
     assertListingOk(status, json, endpoint);
 
     capture?.captureHttp(`page-${String(guard).padStart(3, "0")}-${endpoint.replaceAll("/", "_")}`, json, {
@@ -140,6 +177,14 @@ export async function paginate(
     });
 
     const children = json.data?.children ?? [];
+    await progress?.("Fetched Reddit listing page", {
+      ...streamExtra,
+      phase: "page",
+      page_index: guard,
+      item_count: children.length,
+      total_seen: all.length + children.length,
+      cursor_present: Boolean(nextAfter(json)),
+    });
     if (children.length === 0) {
       break;
     }
@@ -177,7 +222,7 @@ export interface CollectStreamArgs {
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fetchPath: RedditListingFetch;
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   state: Record<string, unknown>;
   stream: RedditStreamConfig;
 }
@@ -187,12 +232,19 @@ export async function collectStream(args: CollectStreamArgs): Promise<void> {
   await progress(stream.progressMessage, { stream: stream.name });
 
   const sinceEpoch = sinceFromState(state, stream.name);
-  const items = await paginate(fetchPath, stream.endpoint, sinceEpoch, capture, delay);
+  const items = await paginate(fetchPath, stream.endpoint, sinceEpoch, capture, delay, progress, stream.name);
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
   for (const c of items) {
     await emitRecord(stream.name, stream.toRecord(c));
   }
+  await progress("Emitted Reddit stream records", {
+    stream: stream.name,
+    phase: "emit",
+    item_count: items.length,
+    total_seen: items.length,
+    cursor_present: latestEpoch > 0,
+  });
 
   await emit({
     type: "STATE",
@@ -260,8 +312,8 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["REDDIT_USERNAME", "REDDIT_PASSWORD"] },
     browser: { profileName: "reddit" },
     timeRangeField: "created_utc",
-    async ensureSession({ context, page, sendInteraction }) {
-      await ensureRedditSession({ context, page, sendInteraction });
+    async ensureSession({ capture, context, page, sendInteraction }) {
+      await ensureRedditSession({ capture, context, page, sendInteraction });
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { capture, credentials, emit, emitRecord, emittedAt, page, progress, requested, state } = ctx;

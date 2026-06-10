@@ -2,6 +2,50 @@ export function resolveFormat(flags, defaultWhenTty = 'json', defaultWhenPipe = 
   return flags.format || (process.stdout.isTTY ? defaultWhenTty : defaultWhenPipe);
 }
 
+/**
+ * Extract the canonical `meta.warnings` array from a public read response
+ * body. Returns `[]` when the field is missing or malformed. The canonical
+ * envelope (canonicalize-public-read-contract) puts non-fatal lossiness,
+ * deprecated alias use, and count downgrades here; the CLI must surface
+ * them so operators are not silently misled by a lossy read. Pre-canonical
+ * responses have no `meta.warnings`, so this returns an empty array and
+ * the renderer prints nothing.
+ */
+export function extractEnvelopeWarnings(body) {
+  if (!body || typeof body !== 'object') {
+    return [];
+  }
+  const meta = body.meta;
+  if (!meta || typeof meta !== 'object') {
+    return [];
+  }
+  const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
+  return warnings.filter((w) => w && typeof w === 'object' && typeof w.code === 'string');
+}
+
+/**
+ * Write canonical `meta.warnings` to stderr in a human-readable form.
+ * Stays on stderr so machine-readable stdout (JSON, JSONL, table) is not
+ * polluted; operators piping to jq/grep keep their parseable output and
+ * still see the warning.
+ */
+export function writeEnvelopeWarnings(body, err = process.stderr) {
+  const warnings = extractEnvelopeWarnings(body);
+  if (warnings.length === 0) {
+    return;
+  }
+  for (const warning of warnings) {
+    const parts = [`warning: ${warning.code}`];
+    if (warning.message) {
+      parts.push(warning.message);
+    }
+    if (warning.dropped_parameter) {
+      parts.push(`(dropped: ${warning.dropped_parameter})`);
+    }
+    err.write(`${parts.join(' — ')}\n`);
+  }
+}
+
 export function writeData(data, format = 'json', out = process.stdout) {
   if (format === 'json') {
     out.write(`${JSON.stringify(data, null, 2)}\n`);

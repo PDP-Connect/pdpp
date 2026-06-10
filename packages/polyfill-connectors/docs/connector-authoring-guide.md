@@ -55,7 +55,7 @@ What the runtime provides to `collect()`:
 
 Use these libraries by default. They are chosen because they are actively maintained and are the community defaults in 2026:
 
-- **`patchright`** — Playwright drop-in with stealth patches (Runtime.Enable, Console.Enable, command-flag leaks, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. Per the patchright README "Best Practice" config, `launchPersistentContext` is called with `channel: "chrome"`, `viewport: null`, and `headless: false`; do **not** set custom `userAgent` or extra browser headers; do **not** re-add the Chromium flags patchright manages (`--disable-blink-features=AutomationControlled` (added by patchright), `--enable-automation`/`--disable-popup-blocking`/`--disable-component-update`/`--disable-default-apps`/`--disable-extensions` (removed by patchright)). The reference auto-detects: if real Chrome (system or `pnpm --dir packages/polyfill-connectors exec patchright install chrome`) is available it uses `channel: "chrome"`; if not, it falls back once to bundled Patchright Chromium (installed by `pnpm install` postinstall) and logs the fallback. The reference Docker image installs real Chrome explicitly so the recommended channel is the default in-container. `PDPP_BROWSER_CHANNEL=<value>` is a strict override (no fallback). For best stealth on a host checkout, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome` once. Override `args` only for specific workarounds (e.g. the DownloadBubble bug).
+- **`patchright`** — Playwright drop-in with stealth patches (Runtime.Enable, Console.Enable, command-flag leaks, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. The default local connector posture leaves `channel` unset so Patchright launches its pinned bundled Chromium, matching the n.eko image's preferred binary family. Use a persistent context with `viewport: null` and `headless: false`; do **not** set custom `userAgent` or extra browser headers; do **not** re-add the Chromium flags patchright manages (`--disable-blink-features=AutomationControlled` (added by patchright), `--enable-automation`/`--disable-popup-blocking`/`--disable-component-update`/`--disable-default-apps`/`--disable-extensions` (removed by patchright)). `PDPP_BROWSER_CHANNEL=<value>` is a strict compatibility override, for example `PDPP_BROWSER_CHANNEL=chrome` when an operator intentionally wants branded Chrome. Override `args` only for specific workarounds (e.g. the DownloadBubble bug).
 - **`zod`** — schema validation. Each connector exports schemas for its streams in `schemas.js`; the connector validates records before emit and sends `SKIP_RESULT` on validation failure. See §3.
 - **`p-retry`** (v8+) — retry with exponential backoff + jitter for transient network/5xx/429 errors. Use `AbortError` to signal non-retryable failures.
 - **Native Playwright tracing** (`context.tracing.start()` / `.stop()`) — gate behind `PDPP_TRACE=1` env, write to `/tmp/<connector>-trace-<ts>.zip`. Replayable in Playwright Inspector.
@@ -74,7 +74,7 @@ Browser-backed connectors declare `browser: { profileName, headless }`; the runt
 
 Native isolated launches use `acquireIsolatedBrowser({ profileName: '<connector>' })`. This:
 
-- Launches patchright-patched Chrome per connector run (full stealth: launch-side AND client-side).
+- Launches Patchright's bundled Chromium per connector run by default (full stealth: launch-side AND client-side).
 - Uses a persistent profile directory at `~/.pdpp/profiles/<connector>/`, so cookies, localStorage, and trusted-device state persist across runs of that connector.
 - Is isolated from other connectors (different profile dir = different fingerprint, different cookies, no cross-contamination).
 - Supports concurrent runs across connectors (each connector has its own browser process; no lockfile).
@@ -190,6 +190,14 @@ emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: nowIso() });
 ### Why this matters more than it looks
 
 You can't run a new connector against a new user's account ahead of time. Shape assertions replace that test. If the connector works on your account AND its shape assertions are tight, you have high confidence it will either work correctly on another account or fail visibly — not produce garbage.
+
+### This is a build-time invariant, not a suggestion
+
+`validateRecord` is _optional in the `runConnector` type signature_ — the runtime stays zod-free so the framework can execute a zero-dependency connector. But authoring policy is stricter than the type: **a connector whose manifest declares any stream must wire `validateRecord`, or be listed on the schemaless allowlist with a justification.**
+
+This is enforced by `src/connector-schema-validation-honesty.test.ts` (the same test family as the browser/external-tool manifest-honesty checks), which runs in `pnpm test` / CI. A connector that declares manifest streams, omits `validateRecord`, and is not allowlisted fails the build by name.
+
+The allowlist lives in `src/connector-schema-allowlist.ts` as connector → justification, and may only shrink: if you add a `schemas.ts` to an allowlisted connector, the gate forces you to delete its entry. Adding an allowlist entry is a deliberate, reviewed escape hatch — the default for a new connector is to validate. (See OpenSpec `polyfill-runtime` and `tmp/workstreams/ri-connector-schema-green-prep-audit-report.md`.)
 
 ---
 
@@ -326,6 +334,48 @@ Rules:
 - Use the platform's native cursor when one exists (timestamps, opaque next-page tokens, highest message ID). Don't invent cursors where the platform has none.
 - Persist cursor as part of the STATE message. Runtime handles durability.
 - Never persist secrets, session tokens, or PII in STATE.
+
+### Per-record fingerprint cursors (no-op gate)
+
+Use this pattern when your stream re-derives full records each run from a source with no usable change feed: archive rebuilds (Slack/slackdump), full-collection refetches (YNAB `/payee_locations`), IMAP `1:*` re-aggregations (Gmail threads), file-mtime triggers (Codex `state_5.sqlite`). Without an emit-side gate, every run produces a fresh RECORD per (record, run) pair even when the source state has not moved. Live history has seen 31,160 versions accumulate on a single Slack `workspace` record from this class of churn alone.
+
+Reach for `openFingerprintCursor` from `@pdpp/polyfill-connectors/src/fingerprint-cursor.ts` rather than rolling your own. The primitive owns the four pieces every existing hand-rolled implementation paid for independently:
+
+```ts
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+
+const cursor = openFingerprintCursor(state.workspace, {
+  excludeFromFingerprint: ["fetched_at"], // run-clock field — see below
+});
+
+for (const row of workspaceRows) {
+  const record = buildWorkspaceRecord(row);
+  if (cursor.shouldEmit(record)) {
+    await emitRecord("workspace", record);
+  }
+}
+
+// Full-scan stream — drop fingerprints for ids the source no longer returns.
+cursor.pruneStale();
+
+emit({
+  type: "STATE",
+  stream: "workspace",
+  cursor: { synced_at: nowIso(), fingerprints: cursor.toState() },
+});
+```
+
+Rules of the road:
+
+- **Source-local ids.** The record's `id` field must be stable from the source's perspective across runs (`r.TEAM_ID`, `r.id`, the platform's row pk). A locally-derived synthetic id that includes a timestamp will defeat the gate.
+- **Semantic fingerprints, not byte-equivalent ones.** The fingerprint is computed over the emitted record (deterministic key ordering, recursive). Keep your record builder deterministic — sorted participant arrays, sorted label sets, stable field projections — or the gate will silently re-emit for incidental shape jitter.
+- **Run-clock exclusions.** Any field that advances on every run by design (a `fetched_at` written from `emittedAt`, a `synced_at` from `nowIso()`, a derived view-state timestamp) must go in `excludeFromFingerprint`. Without exclusion, the fingerprint will never match across runs.
+- **Full-scan prune at run boundary.** If your stream re-fetches the complete source set each run, call `cursor.pruneStale()` after the loop and before emitting STATE. Without this, deleted records keep their fingerprint forever and a later re-add silently skips. Streams whose run is *not* a full scan (a partial paginated tail) must NOT call `pruneStale`; the carry-forward is the right behavior.
+- **Opt-in, not mandatory.** A connector whose source provides a strong cursor (Reddit `since`, ChatGPT incremental ids, Gmail IMAP `UIDNEXT` past the high-water mark) should not pay for fingerprinting on that stream. The pattern is for re-derive-everything sources, not for everything.
+- **Backstop, not substitute.** The reference runtime byte-equivalence check at the storage layer still catches duplicate writes a connector overlooked. Treat it as a safety net for the cases this gate cannot see (a connector emits the wrong key, or the source returns truly byte-identical data); do not skip the emit-side gate just because the backstop exists. The work the gate prevents is in scrape/parse, not just storage.
+- **Connector-specific derived-field preservation stays at the call site.** The primitive exposes `cursor.priorFingerprint(id)` so a connector with a derived-field carry-forward policy (for example, Codex session counts recovered from prior parsed evidence) can read the prior value without breaking the encapsulation. The primitive does not encode policy.
+
+Adoption status (2026-05-27): Slack uses `openFingerprintCursor` for `workspace`, `users`, and `files`; Gmail uses it for `threads`; YNAB uses it for `payee_locations`. Codex (`sessions` / `rules` / `prompts` / `skills`) still carries hand-rolled equivalents; new fingerprinted streams should reach for the shared primitive rather than extending local helpers.
 
 ### Year-freezing (and similar immutability tricks)
 
@@ -476,6 +526,28 @@ Confirm the scrubbed fixture preserves parser-relevant structure before commit: 
 
 When committing a pilot fixture, commit only `fixtures/<connector>/scrubbed/<runId>/...` and tests that consume it. Do not commit `fixtures/<connector>/raw/...` or local redaction-plan directories; keep those local unless a plan itself is synthetic and intentionally useful as test data.
 
+**The `pilot-real-shape` fixture (schema-drift lock)**
+
+Each schema-bearing connector ships one canonical fixture under `fixtures/<connector>/scrubbed/pilot-real-shape/`. Its job is to lock the connector's emitted-record shape against schema drift: any later change to `schemas.ts` that would reject a row surfaces as a test failure instead of reaching production silently. Wire it in one line with the shared helper:
+
+```ts
+// connectors/<name>/pilot-fixture.test.ts
+import { registerPilotFixtureTests } from "../../src/pilot-fixture-test-helper.ts";
+import { validateRecord } from "./schemas.ts";
+
+registerPilotFixtureTests({ connector: "<name>", validateRecord });
+```
+
+The helper registers one `node:test` case per `records/<stream>.jsonl`, parses every non-blank line, and asserts `validateRecord(stream, row).ok === true`. A missing fixture directory or an empty stream file fails the test — a `schemas.ts`-bearing connector is expected to ship this fixture (opt out only with `expectMissing: true`, and only with justification).
+
+A `pilot-real-shape` fixture is a hand-authored **synthetic-but-shape-real** record set: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders wherever a real capture would carry owner identity. A reviewed real owner capture can calibrate the synthetic rows, but real owner rows must not be committed under `pilot-real-shape/`. If retaining a scrubbed real run as separate evidence, keep it under a run-specific `fixtures/<connector>/scrubbed/<runId>/` path and use the LLM-assisted redaction review above.
+
+The three committed pilots double as the per-shape reference for new connectors:
+
+- **Amazon — DOM shape.** `fixtures/amazon/scrubbed/pilot-real-shape/dom/` holds scrubbed `page.content()` HTML for a browser-scraped connector.
+- **GitHub — API-JSON shape.** `fixtures/github/scrubbed/pilot-real-shape/api/` holds scrubbed HTTP response bodies, and `records/*.jsonl` holds the emitted records derived from them.
+- **Reddit — records-stream shape.** `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden}.jsonl` holds the records the connector emits directly from `old.reddit.com/*.json`, with no intermediate DOM or stored HTTP-JSON layer. This is the reference for any connector whose only durable output is a JSONL record stream.
+
 **Smoke-test the capture pipeline**
 
 `pnpm exec tsx bin/test-fixture-capture.ts` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.ts`, `scrub-defaults.ts`, or `scrub-fixtures.ts`.
@@ -484,7 +556,7 @@ When committing a pilot fixture, commit only `fixtures/<connector>/scrubbed/<run
 
 Before a new connector is considered usable by another user:
 - [ ] Runs end-to-end on at least one owner account (the author's).
-- [ ] Emits shape-check assertions for every field that can go wrong.
+- [ ] Wires `validateRecord` (shape-check assertions for every field that can go wrong) — **enforced at build time** by `connector-schema-validation-honesty.test.ts`. A stream-declaring connector that omits this must be on the `connector-schema-allowlist.ts` allowlist with a justification.
 - [ ] Declares all streams in manifest, even nullable ones.
 - [ ] Has a SKIP_RESULT path for selector drift (list page returning zero records is a drift signal, not a "no data" signal).
 - [ ] Documents locale / account-type assumptions in the connector's header comment.

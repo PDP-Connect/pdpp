@@ -5,16 +5,16 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/spec-check.yml"
-      - "apps/web/content/docs/spec-*.md"
-      - "apps/web/content/docs/README.md"
+      - "apps/site/content/docs/spec-*.md"
+      - "apps/site/content/docs/README.md"
       - "package.json"
       - "scripts/spec-check.mjs"
       - "spec-*.md"
   pull_request:
     paths:
       - ".github/workflows/spec-check.yml"
-      - "apps/web/content/docs/spec-*.md"
-      - "apps/web/content/docs/README.md"
+      - "apps/site/content/docs/spec-*.md"
+      - "apps/site/content/docs/README.md"
       - "package.json"
       - "scripts/spec-check.mjs"
       - "spec-*.md"
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   spec-check:
-    name: root/web spec drift
+    name: root/site spec drift
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

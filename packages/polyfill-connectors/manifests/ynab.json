@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/ynab",
+  "connector_key": "ynab",
+  "manifest_uri": "https://registry.pdpp.org/connectors/ynab",
   "version": "0.3.0",
   "display_name": "YNAB",
   "runtime_requirements": {
@@ -203,15 +205,6 @@
           "closed": {
             "type": "boolean"
           },
-          "balance": {
-            "type": "integer"
-          },
-          "cleared_balance": {
-            "type": "integer"
-          },
-          "uncleared_balance": {
-            "type": "integer"
-          },
           "transfer_payee_id": {
             "type": [
               "string",
@@ -308,21 +301,6 @@
           ]
         },
         {
-          "id": "balances",
-          "label": "Balances included",
-          "fields": [
-            "id",
-            "budget_id",
-            "name",
-            "type",
-            "on_budget",
-            "closed",
-            "balance",
-            "cleared_balance",
-            "uncleared_balance"
-          ]
-        },
-        {
           "id": "full",
           "label": "All account fields including loan details",
           "fields": [
@@ -332,9 +310,6 @@
             "type",
             "on_budget",
             "closed",
-            "balance",
-            "cleared_balance",
-            "uncleared_balance",
             "transfer_payee_id",
             "direct_import_linked",
             "direct_import_in_error",
@@ -359,6 +334,89 @@
           ]
         },
         "range_filters": {
+          "last_reconciled_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "account_stats",
+      "description": "Daily balance snapshot for each account, keyed by {account_id}:{YYYY-MM-DD} (UTC). One record per account per calendar day; re-running on the same day with the same balances is idempotent. Preserves a balance time series without creating false entity-version churn on the accounts stream.",
+      "display": {
+        "label": "Account balances (daily)",
+        "detail": "Daily snapshot of balance, cleared_balance, and uncleared_balance (YNAB milliunits). Each record covers one calendar day for one account."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "budget_id": {
+            "type": "string"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "balance": {
+            "type": "integer"
+          },
+          "cleared_balance": {
+            "type": "integer"
+          },
+          "uncleared_balance": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "budget_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "budget",
+          "stream": "budgets",
+          "foreign_key": "budget_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {},
+        "range_filters": {
+          "observed_on": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
           "balance": [
             "gte",
             "gt",
@@ -372,12 +430,6 @@
             "lt"
           ],
           "uncleared_balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "last_reconciled_at": [
             "gte",
             "gt",
             "lte",
@@ -1372,7 +1424,7 @@
     },
     {
       "name": "month_categories",
-      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
+      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix \u2014 historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
       "display": {
         "label": "Monthly category history",
         "detail": "For each (budget, month, category): how much was assigned (budgeted), how much was spent (activity), leftover balance, and goal progress (type, target, percent complete, underfunding) as it stood in that month. Useful for budget trend analysis and answering 'what did I budget for groceries last March?'."
@@ -1674,6 +1726,9 @@
           "view": "basic"
         },
         {
+          "name": "account_stats"
+        },
+        {
           "name": "categories"
         },
         {
@@ -1699,6 +1754,9 @@
         {
           "name": "accounts",
           "view": "full"
+        },
+        {
+          "name": "account_stats"
         },
         {
           "name": "category_groups"

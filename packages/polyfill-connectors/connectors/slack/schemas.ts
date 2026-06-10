@@ -23,6 +23,7 @@ import { makeValidateRecord } from "../../src/schema-registry.ts";
 const SLACK_ID_RE = /^[A-Z][A-Z0-9]+$/;
 const SLACK_TS_RE = /^\d{10}\.\d{1,6}$/; // "seconds.micros" format, not ISO
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Shared field schemas (permissive).
 const slackIdSchema = z.string().regex(SLACK_ID_RE).nullable();
@@ -33,7 +34,8 @@ const nullableBoolSchema = z.boolean().nullable();
 const nonNegativeIntSchema = z.number().int().min(0);
 const nullableNonNegativeIntSchema = z.number().int().min(0).nullable();
 
-// channels stream: 5 records in sample
+// channels stream: structural and identity fields only.
+// num_members (sampled metric) moved to channel_stats stream.
 export const channelsSchema = z.object({
   id: z.string().regex(SLACK_ID_RE),
   name: pdppSafeText.nullable(),
@@ -59,7 +61,6 @@ export const channelsSchema = z.object({
   purpose: z.string().nullable(),
   purpose_creator: z.string().nullable(),
   purpose_last_set: z.number().int().min(0).nullable(),
-  num_members: nullableNonNegativeIntSchema,
   user: z.string().nullable(),
   shared_team_ids: z.array(z.string()).nullable(),
   context_team_id: z.string().nullable(),
@@ -68,6 +69,15 @@ export const channelsSchema = z.object({
   canvas_file_id: slackIdSchema,
   posting_restricted: nullableBoolSchema,
   threads_restricted: nullableBoolSchema,
+});
+
+// channel_stats stream: sampled metrics keyed by {channel_id}:{YYYY-MM-DD}.
+// One record per channel per calendar day (UTC). Cursor: observed_on.
+export const channelStatsSchema = z.object({
+  id: z.string().min(3).max(300), // "{channel_id}:{YYYY-MM-DD}"
+  channel_id: z.string().regex(SLACK_ID_RE),
+  observed_on: z.string().regex(ISO_DATE_ONLY_RE),
+  num_members: nullableNonNegativeIntSchema,
 });
 
 // users stream: 5 records in sample
@@ -298,6 +308,7 @@ export const dmReadStatesSchema = z.object({
  */
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   channels: channelsSchema,
+  channel_stats: channelStatsSchema,
   users: usersSchema,
   messages: messagesSchema,
   reactions: reactionsSchema,

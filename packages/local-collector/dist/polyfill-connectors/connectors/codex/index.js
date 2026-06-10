@@ -1,18 +1,22 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface as createFileReader, createInterface } from "node:readline";
+import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.js";
+import { openCarryForwardCursor } from "../../src/fingerprint-cursor.js";
 import { isMainModule } from "../../src/is-main-module.js";
-import { buildLocalSourceInventory, listDirectoryInventory, } from "../../src/local-source-inventory.js";
+import { buildLocalSourceInventory, listDirectoryInventory, openInventoryFingerprintCursor, } from "../../src/local-source-inventory.js";
 import { stringifyForJsonl } from "../../src/safe-emit.js";
 import { resourceSet } from "../../src/scope-filters.js";
 import { buildPromptRecord, buildRolloutOnlySessionRecord, buildRuleRecord, buildSkillRecord, buildThreadSessionRecord, extendTimestampRange, extractMessageText, isRolloutFile, isSkippableRulesLine, parseFrontmatter, payloadOutputPreview, RULES_SUFFIX_RE, splitRulesLines, TWO_DIGIT_DIR_RE, textPreview, YEAR_DIR_RE, } from "./parsers.js";
 import { validateRecord } from "./schemas.js";
 const DEFAULT_ACTIVE_ROLLOUT_QUIET_MS = 120_000;
 const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
+const GUARD_PREFIX_BYTES = 64 * 1024;
 let stdoutDrainPromise = null;
 const emit = (m) => {
     const ok = process.stdout.write(stringifyForJsonl(m));
@@ -31,13 +35,7 @@ async function waitForEmitDrain() {
     }
 }
 const flushAndExit = (code) => {
-    if (process.stdout.writableLength > 0) {
-        process.stdout.once("drain", () => process.exit(code));
-        setTimeout(() => process.exit(code), 3000).unref();
-    }
-    else {
-        process.exit(code);
-    }
+    flushAndExitAfterRuntimeAck(code);
 };
 const fail = (m, r = false) => {
     emit({
@@ -148,21 +146,54 @@ export const CODEX_KNOWN_LOCAL_STORES = [
         reason: "auth-adjacent credential material is never emitted",
     },
 ];
-async function* iterJsonlLines(path) {
-    const r = createFileReader({
-        input: createReadStream(path, { encoding: "utf8" }),
-        terminal: false,
-    });
-    for await (const line of r) {
-        if (!line.trim()) {
-            continue;
-        }
-        try {
-            yield JSON.parse(line);
-        }
-        catch {
+export async function* iterJsonlLinesFromOffset(path, startOffset) {
+    const stream = createReadStream(path, { start: startOffset });
+    let pending = Buffer.alloc(0);
+    let committed = startOffset;
+    for await (const chunk of stream) {
+        const buf = chunk;
+        pending = pending.length === 0 ? buf : Buffer.concat([pending, buf]);
+        let nl = pending.indexOf(0x0a);
+        while (nl !== -1) {
+            const lineBuf = pending.subarray(0, nl);
+            committed += nl + 1;
+            const line = lineBuf.toString("utf8");
+            const trimmed = line.trim();
+            if (trimmed) {
+                let parsed = null;
+                try {
+                    parsed = JSON.parse(line);
+                }
+                catch {
+                    parsed = null;
+                }
+                if (parsed) {
+                    yield { obj: parsed, committedOffset: committed };
+                }
+            }
+            pending = pending.subarray(nl + 1);
+            nl = pending.indexOf(0x0a);
         }
     }
+}
+async function hashFilePrefix(path, guardBytes) {
+    if (guardBytes <= 0) {
+        return createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+    }
+    return await new Promise((resolve) => {
+        const hash = createHash("sha256");
+        let read = 0;
+        const stream = createReadStream(path, { start: 0, end: guardBytes - 1 });
+        stream.on("data", (chunk) => {
+            const buf = chunk;
+            read += buf.length;
+            hash.update(buf);
+        });
+        stream.on("error", () => resolve(null));
+        stream.on("end", () => {
+            resolve(read >= guardBytes ? hash.digest("hex") : null);
+        });
+    });
 }
 async function listIfExists(dir) {
     try {
@@ -231,11 +262,10 @@ function openThreadsDb(dbPath) {
     try {
         return new DatabaseSync(dbPath, { readOnly: true });
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    catch {
         emit({
             type: "PROGRESS",
-            message: `state_5.sqlite unreadable (${msg}); falling back to rollouts only`,
+            message: "Codex phase=index pass=index state_db_readable=false fallback=rollouts_only",
         });
         return null;
     }
@@ -245,11 +275,10 @@ function queryThreadsRows(db) {
         const rawRows = db.prepare(THREADS_QUERY).all();
         return rawRows;
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    catch {
         emit({
             type: "PROGRESS",
-            message: `threads query failed (${msg}); falling back to rollouts only`,
+            message: "Codex phase=index pass=index state_db_query_failed=true fallback=rollouts_only",
         });
         return [];
     }
@@ -372,16 +401,16 @@ async function emitSkillsStream(skillsDir, emitRecord) {
         await waitForEmitDrain();
     }
 }
-export function makeRolloutParseState() {
+export function makeRolloutParseState(seed) {
     return {
-        sessionId: null,
+        sessionId: seed?.sessionId ?? null,
         sessionMeta: null,
-        firstTimestamp: null,
-        lastTimestamp: null,
-        messageCount: 0,
-        functionCallCount: 0,
+        firstTimestamp: seed?.firstTimestamp ?? null,
+        lastTimestamp: seed?.lastTimestamp ?? null,
+        messageCount: seed?.messageCount ?? 0,
+        functionCallCount: seed?.functionCallCount ?? 0,
         pendingCalls: new Map(),
-        lineCount: 0,
+        lineCount: seed?.lineCount ?? 0,
     };
 }
 function emitMessageRecord(state, payload, ts, emitRecord) {
@@ -428,6 +457,10 @@ function applyFunctionCallOutput(state, payload, ts, emitRecord) {
         if (previewResult.binaryReason) {
             existing.output_binary_reason = previewResult.binaryReason;
         }
+        if (callId) {
+            state.pendingCalls.delete(callId);
+        }
+        emitRecord("function_calls", { ...existing });
         return;
     }
     emitRecord("function_calls", {
@@ -464,10 +497,10 @@ const PROGRESS_EVERY = 2000;
 export function shouldDeferActiveRolloutFile(input) {
     return input.quietMs > 0 && input.mtimeMs > input.nowMs - input.quietMs;
 }
-export function processRolloutLine({ deps, file, obj, state }) {
+export function processRolloutLine({ deps, obj, state }) {
     state.lineCount++;
     if (state.lineCount % PROGRESS_EVERY === 0) {
-        deps.progress(`  ${file}: ${state.lineCount} lines parsed`);
+        deps.progress(`Codex phase=emit pass=emit lines_parsed=${state.lineCount}`);
     }
     const ts = obj.timestamp || null;
     const range = { firstTs: state.firstTimestamp, lastTs: state.lastTimestamp };
@@ -475,8 +508,10 @@ export function processRolloutLine({ deps, file, obj, state }) {
     state.firstTimestamp = range.firstTs;
     state.lastTimestamp = range.lastTs;
     if (obj.type === "session_meta") {
-        state.sessionMeta = obj.payload || {};
-        state.sessionId = state.sessionMeta.id || null;
+        if (state.sessionId === null) {
+            state.sessionMeta = obj.payload || {};
+            state.sessionId = state.sessionMeta.id || null;
+        }
         return;
     }
     if (!state.sessionId) {
@@ -496,12 +531,42 @@ export function flushPendingCalls(state, deps) {
     for (const call of state.pendingCalls.values()) {
         deps.emitRecord("function_calls", { ...call });
     }
+    state.pendingCalls.clear();
 }
-export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord }) {
+export function shouldReemitThreadSession(thread, agg, priorFingerprint) {
+    if (!priorFingerprint) {
+        return true;
+    }
+    if (agg) {
+        return true;
+    }
+    const priorUpdatedAt = priorFingerprint.updated_at ?? null;
+    const currentUpdatedAt = thread.updated_at ?? null;
+    if (currentUpdatedAt == null) {
+        return priorUpdatedAt != null;
+    }
+    if (priorUpdatedAt == null) {
+        return true;
+    }
+    return currentUpdatedAt > priorUpdatedAt;
+}
+function makeThreadFingerprint(thread, agg, priorFingerprint) {
+    return {
+        updated_at: thread.updated_at ?? null,
+        message_count: agg?.messageCount ?? priorFingerprint?.message_count ?? null,
+        function_call_count: agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null,
+    };
+}
+export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord, cursor, }) {
     const emittedSessionIds = new Set();
     for (const [id, t] of threadsMap) {
-        emitRecord("sessions", buildThreadSessionRecord(id, t, rolloutAggregates.get(id)));
         emittedSessionIds.add(id);
+        const agg = rolloutAggregates.get(id);
+        const prior = cursor?.prior(id);
+        if (shouldReemitThreadSession(t, agg, prior)) {
+            emitRecord("sessions", buildThreadSessionRecord(id, t, agg, prior));
+        }
+        cursor?.note(id, makeThreadFingerprint(t, agg, prior));
     }
     for (const [id, agg] of rolloutAggregates) {
         if (emittedSessionIds.has(id)) {
@@ -511,7 +576,7 @@ export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord
     }
 }
 async function parseRolloutFile(args) {
-    const state = makeRolloutParseState();
+    const state = makeRolloutParseState(args.seed);
     const deps = {
         emitRecord: args.emitRecord,
         progress: (message) => {
@@ -519,8 +584,10 @@ async function parseRolloutFile(args) {
         },
         requested: args.requested,
     };
-    for await (const obj of iterJsonlLines(args.path)) {
+    let committedOffset = args.startOffset;
+    for await (const { obj, committedOffset: lineEnd } of iterJsonlLinesFromOffset(args.path, args.startOffset)) {
         processRolloutLine({ obj, state, deps, file: args.file });
+        committedOffset = lineEnd;
         await waitForEmitDrain();
     }
     flushPendingCalls(state, deps);
@@ -535,8 +602,84 @@ async function parseRolloutFile(args) {
             rolloutPath: args.path,
         });
     }
+    return {
+        committedOffset,
+        sessionId: state.sessionId,
+        lineCount: state.lineCount,
+        messageCount: state.messageCount,
+        functionCallCount: state.functionCallCount,
+        firstTimestamp: state.firstTimestamp,
+        lastTimestamp: state.lastTimestamp,
+    };
 }
-async function processRolloutEntry(entry, args) {
+export function decideRolloutAction(input) {
+    const { cursor, sizeBytes, mtimeMs } = input;
+    if (!cursor) {
+        return { kind: "full" };
+    }
+    if (sizeBytes === cursor.size_bytes && mtimeMs === cursor.mtime_ms) {
+        return { kind: "skip" };
+    }
+    if (sizeBytes < cursor.size_bytes || cursor.offset_bytes > sizeBytes || !input.guardMatches) {
+        return { kind: "unsafe_full" };
+    }
+    if (sizeBytes > cursor.size_bytes) {
+        return {
+            kind: "append",
+            startOffset: cursor.offset_bytes,
+            seed: {
+                sessionId: cursor.session_id,
+                lineCount: cursor.line_count,
+                messageCount: cursor.message_count,
+                functionCallCount: cursor.function_call_count,
+                firstTimestamp: cursor.first_ts,
+                lastTimestamp: cursor.last_ts,
+            },
+        };
+    }
+    return { kind: "skip" };
+}
+function carryFileCursorForward(args, path, mtime) {
+    const prior = args.fileCursors[path];
+    if (prior) {
+        args.newFileCursors[path] = prior;
+    }
+    args.newMtimes[path] = mtime;
+}
+async function buildFileCursorAfterParse(path, result) {
+    const guardBytes = Math.min(result.committedOffset, GUARD_PREFIX_BYTES);
+    const head = (await hashFilePrefix(path, guardBytes)) ?? "";
+    let mtimeMs = 0;
+    try {
+        mtimeMs = statSync(path).mtimeMs;
+    }
+    catch {
+        mtimeMs = 0;
+    }
+    return {
+        mtime_ms: mtimeMs,
+        size_bytes: result.committedOffset,
+        offset_bytes: result.committedOffset,
+        line_count: result.lineCount,
+        head_sha256: head,
+        guard_bytes: guardBytes,
+        session_id: result.sessionId,
+        message_count: result.messageCount,
+        function_call_count: result.functionCallCount,
+        first_ts: result.firstTimestamp,
+        last_ts: result.lastTimestamp,
+    };
+}
+async function resolveRolloutAction(path, st, cursor) {
+    const sizeBytes = Number(st.size);
+    let guardMatches = false;
+    if (cursor && sizeBytes > cursor.size_bytes && cursor.offset_bytes <= sizeBytes) {
+        const head = await hashFilePrefix(path, cursor.guard_bytes);
+        guardMatches = head !== null && head === cursor.head_sha256;
+    }
+    return decideRolloutAction({ cursor, sizeBytes, mtimeMs: st.mtimeMs, guardMatches });
+}
+async function processRolloutEntry(entry, args, rolloutOrdinal) {
     let st;
     try {
         st = statSync(entry.path);
@@ -545,30 +688,43 @@ async function processRolloutEntry(entry, args) {
         return "missing";
     }
     const mtime = st.mtimeMs;
-    if (args.fileMtimes[entry.path] === mtime) {
+    const cursor = args.fileCursors[entry.path];
+    if (!cursor && args.fileMtimes[entry.path] === mtime) {
         args.newMtimes[entry.path] = mtime;
+        return "skipped";
+    }
+    const action = await resolveRolloutAction(entry.path, st, cursor);
+    if (action.kind === "skip") {
+        carryFileCursorForward(args, entry.path, mtime);
         return "skipped";
     }
     if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
         emit({
             type: "PROGRESS",
-            message: `Deferring active rollout ${entry.year}/${entry.month}/${entry.day}/${entry.file}`,
+            message: `Codex phase=index pass=index item=${rolloutOrdinal} backpressure=active_rollout_deferred`,
         });
         await waitForEmitDrain();
+        if (cursor) {
+            args.newFileCursors[entry.path] = cursor;
+        }
         return "skipped";
     }
+    const isAppend = action.kind === "append";
     emit({
         type: "PROGRESS",
-        message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+        message: `Codex phase=emit pass=emit item=${rolloutOrdinal} mode=${isAppend ? "append" : "full"} file_size_mb=${(st.size / 1024 / 1024).toFixed(1)}`,
     });
     await waitForEmitDrain();
-    await parseRolloutFile({
+    const result = await parseRolloutFile({
         path: entry.path,
         file: entry.file,
         requested: args.requested,
         emitRecord: args.emitRecord,
         rolloutAggregates: args.rolloutAggregates,
+        startOffset: isAppend ? action.startOffset : 0,
+        seed: isAppend ? action.seed : undefined,
     });
+    args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, result);
     args.newMtimes[entry.path] = mtime;
     return "parsed";
 }
@@ -577,29 +733,34 @@ async function scanRollouts(args) {
     if (!baseExists) {
         emit({
             type: "PROGRESS",
-            message: `${args.baseDir} not readable`,
+            message: "Codex phase=index pass=index sessions_dir_readable=false",
         });
         await waitForEmitDrain();
         return { parsedFiles: 0 };
     }
-    let fileCount = 0;
-    let parsedFiles = 0;
+    let totalRollouts = 0;
+    let parsedRollouts = 0;
     for await (const entry of walkRollouts(args.baseDir)) {
-        fileCount++;
-        if ((await processRolloutEntry(entry, args)) === "parsed") {
-            parsedFiles++;
+        totalRollouts++;
+        if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
+            parsedRollouts++;
         }
     }
     emit({
         type: "PROGRESS",
-        message: `Scanned ${fileCount} rollout files`,
+        message: `Codex phase=index pass=index total_items=${totalRollouts} parsed_items=${parsedRollouts}`,
     });
     await waitForEmitDrain();
-    return { parsedFiles };
+    return { parsedFiles: parsedRollouts };
 }
-function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }) {
+function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }) {
     const { map: threadsById } = loadThreadsMap(stateDbPath);
-    emitSessionsFromMaps({ threadsMap: threadsById, rolloutAggregates, emitRecord });
+    emitSessionsFromMaps({
+        threadsMap: threadsById,
+        rolloutAggregates,
+        emitRecord,
+        cursor,
+    });
 }
 async function readStartMessage() {
     const rl = createInterface({ input: process.stdin, terminal: false });
@@ -630,6 +791,50 @@ function readFileMtimes(startMsg) {
         state.sessions?.file_mtimes ||
         state.file_mtimes ||
         {});
+}
+function coerceRolloutFileCursor(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    const v = value;
+    const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+    const offset = num(v.offset_bytes);
+    const size = num(v.size_bytes);
+    const mtime = num(v.mtime_ms);
+    const line = num(v.line_count);
+    const guardBytes = num(v.guard_bytes);
+    const head = typeof v.head_sha256 === "string" ? v.head_sha256 : null;
+    if (offset === null || size === null || mtime === null || line === null || guardBytes === null || head === null) {
+        return null;
+    }
+    return {
+        mtime_ms: mtime,
+        size_bytes: size,
+        offset_bytes: offset,
+        line_count: line,
+        head_sha256: head,
+        guard_bytes: guardBytes,
+        session_id: typeof v.session_id === "string" ? v.session_id : null,
+        message_count: num(v.message_count) ?? 0,
+        function_call_count: num(v.function_call_count) ?? 0,
+        first_ts: typeof v.first_ts === "string" ? v.first_ts : null,
+        last_ts: typeof v.last_ts === "string" ? v.last_ts : null,
+    };
+}
+export function readPriorFileCursors(startMsg) {
+    const state = startMsg.state || {};
+    const raw = state.messages?.file_cursors || state.function_calls?.file_cursors || state.sessions?.file_cursors || null;
+    const out = {};
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return out;
+    }
+    for (const [path, value] of Object.entries(raw)) {
+        const cursor = coerceRolloutFileCursor(value);
+        if (cursor) {
+            out[path] = cursor;
+        }
+    }
+    return out;
 }
 function resolveActiveRolloutQuietMs(env = process.env) {
     const raw = env[ACTIVE_ROLLOUT_QUIET_MS_ENV];
@@ -693,12 +898,16 @@ async function assertRequestedCodexSources(dirs, requested) {
         throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
     }
 }
-function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs }) {
+function emitStateCursors({ requested, newFileCursors, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints, }) {
     if (requested.has("sessions")) {
         emit({
             type: "STATE",
             stream: "sessions",
-            cursor: { fetched_at: nowIso(), source_mtime_ms: sessionsSourceMtimeMs },
+            cursor: {
+                fetched_at: nowIso(),
+                source_mtime_ms: sessionsSourceMtimeMs,
+                thread_fingerprints: threadFingerprints.toState(),
+            },
         });
     }
     if (requested.has("messages") || requested.has("function_calls")) {
@@ -706,7 +915,7 @@ function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs 
         emit({
             type: "STATE",
             stream: cursorStream,
-            cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+            cursor: { file_mtimes: newMtimes, file_cursors: newFileCursors, fetched_at: nowIso() },
         });
     }
     for (const s of ["rules", "prompts", "skills"]) {
@@ -714,18 +923,8 @@ function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs 
             emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
         }
     }
-    for (const s of [
-        "history",
-        "session_index",
-        "logs",
-        "shell_snapshots",
-        "config_inventory",
-        "cache_inventory",
-        "coverage_diagnostics",
-    ]) {
-        if (requested.has(s)) {
-            emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
-        }
+    if (requested.has("coverage_diagnostics")) {
+        emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
     }
 }
 function readPriorSessionsSourceMtimeMs(startMsg) {
@@ -736,6 +935,52 @@ function readPriorSessionsSourceMtimeMs(startMsg) {
         : null;
     return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+function nullableFiniteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function coerceFingerprintEntry(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    const v = value;
+    return {
+        updated_at: nullableFiniteNumber(v.updated_at),
+        message_count: nullableFiniteNumber(v.message_count),
+        function_call_count: nullableFiniteNumber(v.function_call_count),
+    };
+}
+function rawFingerprintMap(startMsg) {
+    if (!startMsg || typeof startMsg !== "object") {
+        return null;
+    }
+    const state = startMsg.state;
+    if (!state || typeof state !== "object") {
+        return null;
+    }
+    const sessions = state.sessions;
+    if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
+        return null;
+    }
+    const raw = sessions.thread_fingerprints;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return null;
+    }
+    return raw;
+}
+export function readPriorThreadFingerprints(startMsg) {
+    const out = new Map();
+    const raw = rawFingerprintMap(startMsg);
+    if (!raw) {
+        return out;
+    }
+    for (const [id, value] of Object.entries(raw)) {
+        const entry = coerceFingerprintEntry(value);
+        if (entry) {
+            out.set(id, entry);
+        }
+    }
+    return out;
+}
 function fileMtimeMs(path) {
     try {
         return statSync(path).mtimeMs;
@@ -744,43 +989,61 @@ function fileMtimeMs(path) {
         return 0;
     }
 }
+async function emitCoverageDiagnostics(input) {
+    if (!input.requested.has("coverage_diagnostics")) {
+        return;
+    }
+    for (const record of input.inventory.coverage) {
+        input.emitRecord("coverage_diagnostics", record);
+        await waitForEmitDrain();
+    }
+}
+async function emitGatedInventoryStream(input) {
+    const cursor = openInventoryFingerprintCursor(input.priorState);
+    for (const record of input.records) {
+        if (cursor.shouldEmit(record)) {
+            input.emitRecord(input.stream, record);
+            await waitForEmitDrain();
+        }
+    }
+    cursor.pruneStale();
+    const inventoryCursor = { fetched_at: input.nowIso() };
+    if (cursor.size() > 0) {
+        inventoryCursor.fingerprints = cursor.toState();
+    }
+    emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+    await waitForEmitDrain();
+}
+export const CODEX_GATED_INVENTORY_STREAMS = [
+    "history",
+    "session_index",
+    "shell_snapshots",
+    "config_inventory",
+    "cache_inventory",
+    "logs",
+];
 async function emitLocalInventoryStreams(input) {
-    const inventory = await buildLocalSourceInventory("codex", input.codexHome, CODEX_KNOWN_LOCAL_STORES);
-    for (const [stream, records] of inventory.recordsByStream) {
+    for (const stream of CODEX_GATED_INVENTORY_STREAMS) {
         if (!input.requested.has(stream)) {
             continue;
         }
-        for (const record of records) {
-            input.emitRecord(stream, record);
-            await waitForEmitDrain();
-        }
-    }
-    for (const directoryStream of [
-        {
-            relativeRoot: "shell-snapshots",
-            store: "shell_snapshots",
-            stream: "shell_snapshots",
-            reason: "shell content requires redaction review before payload collection",
-        },
-    ]) {
-        if (!input.requested.has(directoryStream.stream)) {
-            continue;
-        }
-        const records = await listDirectoryInventory({
-            tool: "codex",
-            sourceHome: input.codexHome,
-            ...directoryStream,
+        const records = stream === "shell_snapshots"
+            ? await listDirectoryInventory({
+                tool: "codex",
+                sourceHome: input.codexHome,
+                relativeRoot: "shell-snapshots",
+                store: "shell_snapshots",
+                stream: "shell_snapshots",
+                reason: "shell content requires redaction review before payload collection",
+            })
+            : (input.inventory.recordsByStream.get(stream) ?? []);
+        await emitGatedInventoryStream({
+            emitRecord: input.emitRecord,
+            nowIso: input.nowIso,
+            priorState: input.state[stream],
+            records,
+            stream,
         });
-        for (const record of records) {
-            input.emitRecord(directoryStream.stream, record);
-            await waitForEmitDrain();
-        }
-    }
-    if (input.requested.has("coverage_diagnostics")) {
-        for (const record of inventory.coverage) {
-            input.emitRecord("coverage_diagnostics", record);
-            await waitForEmitDrain();
-        }
     }
 }
 async function main() {
@@ -794,8 +1057,8 @@ async function main() {
     }
     const resFilters = buildResourceFilters(requested);
     const dirs = resolveCodexDirs();
-    await assertRequestedCodexSources(dirs, requested);
     const fileMtimes = readFileMtimes(startMsg);
+    const fileCursors = readPriorFileCursors(startMsg);
     let total = 0;
     const nowIso = () => new Date().toISOString();
     const emittedAt = nowIso();
@@ -830,15 +1093,29 @@ async function main() {
     const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");
     const rolloutAggregates = new Map();
     const newMtimes = { ...fileMtimes };
+    const newFileCursors = {};
     const scanStartedAtMs = Date.now();
     const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
     let parsedRolloutFiles = 0;
-    await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
+    const threadFingerprints = openCarryForwardCursor(readPriorThreadFingerprints(startMsg));
+    const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
+    await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+    await assertRequestedCodexSources(dirs, requested);
+    await emitLocalInventoryStreams({
+        codexHome: dirs.codexHome,
+        emitRecord,
+        inventory,
+        nowIso,
+        requested,
+        state: startMsg.state || {},
+    });
     if (needRollouts) {
         const rolloutScan = await scanRollouts({
             activeQuietMs: resolveActiveRolloutQuietMs(),
             baseDir: dirs.baseDir,
+            fileCursors,
             fileMtimes,
+            newFileCursors,
             newMtimes,
             requested,
             emitRecord,
@@ -849,7 +1126,12 @@ async function main() {
     }
     if (requested.has("sessions") &&
         (parsedRolloutFiles > 0 || readPriorSessionsSourceMtimeMs(startMsg) !== sessionsSourceMtimeMs)) {
-        emitSessions({ stateDbPath: dirs.stateDbPath, rolloutAggregates, emitRecord });
+        emitSessions({
+            stateDbPath: dirs.stateDbPath,
+            rolloutAggregates,
+            emitRecord,
+            cursor: threadFingerprints,
+        });
         await waitForEmitDrain();
     }
     if (requested.has("rules")) {
@@ -861,7 +1143,7 @@ async function main() {
     if (requested.has("skills")) {
         await emitSkillsStream(dirs.skillsDir, emitRecord);
     }
-    emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs });
+    emitStateCursors({ requested, newFileCursors, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints });
     await waitForEmitDrain();
     emit({ type: "DONE", status: "succeeded", records_emitted: total });
     flushAndExit(0);

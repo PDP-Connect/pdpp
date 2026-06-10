@@ -26,6 +26,7 @@ import {
   locationTimestampMs,
   readJsonIf,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   GoogleTakeoutState,
   LocationFile,
@@ -60,7 +61,7 @@ async function collectLocationHistory(
       type: "SKIP_RESULT",
       stream,
       reason: "records_not_found",
-      message: `no Records.json in ${importDir}/Location*/`,
+      message: "Google Takeout location records were not found in the configured import directory",
     });
     return;
   }
@@ -69,9 +70,11 @@ async function collectLocationHistory(
   await emit({
     type: "PROGRESS",
     stream,
-    message: `Importing ${json.locations.length} location points`,
+    message: `Google Takeout phase=emit pass=emit stream=location_history total_items=${json.locations.length}`,
   });
+  let itemOrdinal = 0;
   for (const loc of json.locations) {
+    itemOrdinal++;
     const tsUnixMs = locationTimestampMs(loc);
     if (!tsUnixMs) {
       continue;
@@ -81,6 +84,13 @@ async function collectLocationHistory(
       continue;
     }
     await emitRecord(stream, { ...buildLocationRecord(loc, ts) });
+    if (itemOrdinal % 10_000 === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream,
+        message: `Google Takeout phase=emit pass=emit stream=location_history item=${itemOrdinal}/${json.locations.length}`,
+      });
+    }
     if (!latest || ts > latest) {
       latest = ts;
     }
@@ -102,7 +112,7 @@ async function collectYoutubeWatchHistory(
       type: "SKIP_RESULT",
       stream,
       reason: "history_not_found",
-      message: `no watch-history.json at ${path}`,
+      message: "Google Takeout watch history was not found in the configured import directory",
     });
     return;
   }
@@ -111,9 +121,11 @@ async function collectYoutubeWatchHistory(
   await emit({
     type: "PROGRESS",
     stream,
-    message: `Importing ${json.length} watch-history entries`,
+    message: `Google Takeout phase=emit pass=emit stream=youtube_watch_history total_items=${json.length}`,
   });
+  let itemOrdinal = 0;
   for (const e of json) {
+    itemOrdinal++;
     const record = buildWatchHistoryRecord(e);
     if (!record) {
       continue;
@@ -122,6 +134,13 @@ async function collectYoutubeWatchHistory(
       continue;
     }
     await emitRecord(stream, { ...record });
+    if (itemOrdinal % 10_000 === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream,
+        message: `Google Takeout phase=emit pass=emit stream=youtube_watch_history item=${itemOrdinal}/${json.length}`,
+      });
+    }
     if (!latest || record.watched_at > latest) {
       latest = record.watched_at;
     }
@@ -143,7 +162,7 @@ async function collectSearchHistory(
       type: "SKIP_RESULT",
       stream,
       reason: "history_not_found",
-      message: `no Search MyActivity.json at ${path}`,
+      message: "Google Takeout search history was not found in the configured import directory",
     });
     return;
   }
@@ -152,9 +171,11 @@ async function collectSearchHistory(
   await emit({
     type: "PROGRESS",
     stream,
-    message: `Importing ${json.length} search-activity entries`,
+    message: `Google Takeout phase=emit pass=emit stream=search_history total_items=${json.length}`,
   });
+  let itemOrdinal = 0;
   for (const e of json) {
+    itemOrdinal++;
     const record = buildSearchRecord(e);
     if (!record) {
       continue;
@@ -163,6 +184,13 @@ async function collectSearchHistory(
       continue;
     }
     await emitRecord(stream, { ...record });
+    if (itemOrdinal % 10_000 === 0) {
+      await emit({
+        type: "PROGRESS",
+        stream,
+        message: `Google Takeout phase=emit pass=emit stream=search_history item=${itemOrdinal}/${json.length}`,
+      });
+    }
     if (!latest || record.timestamp > latest) {
       latest = record.timestamp;
     }
@@ -172,6 +200,7 @@ async function collectSearchHistory(
 
 runConnector({
   name: "google_takeout",
+  validateRecord,
   async collect(ctx) {
     const importDir = process.env.GOOGLE_TAKEOUT_DIR || join(homedir(), ".pdpp/imports/google_takeout");
     const typedState = ctx.state as GoogleTakeoutState;

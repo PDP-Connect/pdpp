@@ -2,12 +2,18 @@
 
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { enrollLocalDevice, runCodexLocalDeviceExporter } from "../src/local-device-runtime.ts";
+import {
+  CODEX_CONNECTOR_ID,
+  enrollLocalDevice,
+  resolveLocalDeviceConnectorProfile,
+  runLocalDeviceExporter,
+} from "../src/local-device-runtime.ts";
 
 interface CliOptions {
   baseUrl: string;
   code?: string;
   command: "enroll" | "run";
+  connectorId: string;
   deviceId?: string;
   deviceLabel?: string;
   deviceToken?: string;
@@ -40,8 +46,12 @@ async function main(): Promise<void> {
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new Error("run requires --device-id <id>, --device-token <token>, and --connection-id <id>");
   }
-  const result = await runCodexLocalDeviceExporter({
+  // Validate the connector up front so an unknown --connector fails before we
+  // touch the queue or heartbeat the server.
+  resolveLocalDeviceConnectorProfile(options.connectorId);
+  const result = await runLocalDeviceExporter({
     baseUrl: options.baseUrl,
+    connectorId: options.connectorId,
     deviceId: options.deviceId,
     deviceToken: options.deviceToken,
     queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
@@ -58,6 +68,7 @@ function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:3000",
     command,
+    connectorId: process.env.PDPP_CONNECTOR_ID ?? CODEX_CONNECTOR_ID,
     queuePath: process.env.PDPP_LOCAL_DEVICE_QUEUE ?? DEFAULT_QUEUE_PATH,
     sourceInstanceId: process.env.PDPP_CONNECTION_ID ?? process.env.PDPP_SOURCE_INSTANCE_ID,
   };
@@ -91,6 +102,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--code": (next) => {
       options.code = next;
+    },
+    "--connector": (next) => {
+      options.connectorId = next;
     },
     "--device-id": (next) => {
       options.deviceId = next;

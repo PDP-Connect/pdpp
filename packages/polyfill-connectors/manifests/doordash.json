@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/doordash",
+  "connector_key": "doordash",
+  "manifest_uri": "https://registry.pdpp.org/connectors/doordash",
   "version": "0.1.0",
   "display_name": "DoorDash",
   "runtime_requirements": {

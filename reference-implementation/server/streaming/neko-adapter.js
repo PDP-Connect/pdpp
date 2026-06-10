@@ -7,26 +7,28 @@
  * treat both backends the same.
  */
 
+import { createNekoBrowserClient } from './neko-browser-client.js';
+
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_SCREENCAST_PATH = 'api/room/screen/cast.jpg';
 const DEFAULT_SCREENSHOT_PATH = 'api/room/screen/shot.jpg';
 const DEFAULT_LOGIN_PATH = 'api/login';
 const DEFAULT_SCREEN_CONFIGURATIONS_PATH = 'api/room/screen/configurations';
-const DEFAULT_CDP_COMMAND_TIMEOUT_MS = 5_000;
-const DEFAULT_CDP_OPEN_TIMEOUT_MS = 5_000;
 const FOCUS_BINDING_NAME = '__pdppNekoFocusChanged';
 const BROWSER_OWNER_MODES = new Set(['neko-owned', 'browser-owner']);
-const STEALTH_MODES = new Set(['strict', 'balanced', 'assistive']);
-const BROWSER_CHROME_TARGET_RE = /^(chrome|chrome-extension|devtools|edge|chrome-error):/;
-const PRIMARY_PAGE_TARGET_RE = /^(https?|data|file):/;
+const STEALTH_MODES = new Set(['strict', 'assistive']);
 const MAX_COVER_CROP_RATIO = 0.02;
 const VERTICAL_CROP_WEIGHT = 2;
 
 function readEnv(env = process.env || {}) {
   return {
     origin: env.NEKO_ORIGIN,
-    username: env.NEKO_USERNAME || env.NEKO_USER,
-    password: env.NEKO_PASSWORD,
+    username: env.NEKO_CONTROL_USERNAME || env.NEKO_ADMIN_USERNAME || env.NEKO_USERNAME || env.NEKO_USER,
+    password:
+      env.NEKO_CONTROL_PASSWORD ||
+      env.NEKO_ADMIN_PASSWORD ||
+      env.NEKO_PASSWORD_ADMIN ||
+      env.NEKO_PASSWORD,
     bearerToken: env.NEKO_BEARER_TOKEN || env.NEKO_BEARER || env.NEKO_API_TOKEN,
     browserOwnerMode: env.PDPP_NEKO_BROWSER_OWNER_MODE || env.NEKO_BROWSER_OWNER_MODE,
     screenshotPath: env.NEKO_SCREENSHOT_PATH,
@@ -53,8 +55,9 @@ function normalizeBrowserOwnerMode(value) {
 
 function normalizeStealthMode(value, browserOwnerMode) {
   const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'balanced') return 'assistive';
   if (STEALTH_MODES.has(normalized)) return normalized;
-  return browserOwnerMode === 'browser-owner' ? 'strict' : 'balanced';
+  return browserOwnerMode === 'browser-owner' ? 'strict' : 'assistive';
 }
 
 function normalizeOrigin(origin) {
@@ -95,44 +98,6 @@ function normalizeNavigationUrl(value) {
     const err = new Error('n.eko navigation URL is invalid');
     err.code = 'neko_navigation_url_invalid';
     throw err;
-  }
-}
-
-function resolveCdpUrl(origin, path) {
-  return new URL(path, origin).toString();
-}
-
-function normalizeCdpWebSocketUrl(wsUrl, cdpHttpUrl) {
-  const parsed = new URL(wsUrl);
-  const cdp = new URL(cdpHttpUrl);
-  if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '0.0.0.0') {
-    parsed.hostname = cdp.hostname;
-    parsed.port = cdp.port || (cdp.protocol === 'https:' ? '443' : '80');
-  }
-  if (cdp.protocol === 'https:') parsed.protocol = 'wss:';
-  if (!parsed.port && cdp.port) parsed.port = cdp.port;
-  return parsed.toString();
-}
-
-function isBrowserChromeTargetUrl(url) {
-  const value = String(url || '').trim().toLowerCase();
-  return BROWSER_CHROME_TARGET_RE.test(value);
-}
-
-function pageTargetRank(target) {
-  const url = String(target?.url || '').trim().toLowerCase();
-  if (PRIMARY_PAGE_TARGET_RE.test(url)) return 0;
-  if (url === '' || url === 'about:blank') return 1;
-  return 2;
-}
-
-function addSocketListener(socket, event, handler) {
-  if (typeof socket?.addEventListener === 'function') {
-    socket.addEventListener(event, handler);
-    return;
-  }
-  if (typeof socket?.on === 'function') {
-    socket.on(event, handler);
   }
 }
 
@@ -364,38 +329,6 @@ function viewportHasSeparateScreenDimensions(viewport) {
   return !!(dimensions && screen && (dimensions.width !== screen.width || dimensions.height !== screen.height));
 }
 
-function viewportVisibleAreaOverride(viewport) {
-  if (!viewportHasSeparateScreenDimensions(viewport)) return null;
-  const screen = viewportScreenDimensions(viewport);
-  if (!screen) return null;
-  return {
-    x: 0,
-    y: 0,
-    width: screen.width,
-    height: screen.height,
-    scale: 1,
-  };
-}
-
-function viewportDeviceScaleFactor(viewport) {
-  const dpr = Number(viewport?.deviceScaleFactor);
-  return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
-}
-
-function viewportIsMobile(viewport) {
-  return viewport?.mobile === true;
-}
-
-function viewportHasTouch(viewport) {
-  return viewport?.hasTouch === true || viewport?.mobile === true;
-}
-
-function viewportUserAgent(viewport) {
-  return typeof viewport?.userAgent === 'string' && viewport.userAgent.length > 0
-    ? viewport.userAgent.slice(0, 512)
-    : null;
-}
-
 function metricNearlyEqual(actual, expected, tolerance = 1) {
   return Number.isFinite(Number(actual)) && Math.abs(Number(actual) - expected) <= tolerance;
 }
@@ -404,33 +337,15 @@ function pageMetricsMismatch(page, viewport) {
   if (!page || typeof page !== 'object') return null;
   const dimensions = viewportDimensions(viewport);
   if (!dimensions) return null;
-  const screenDimensions = viewportScreenDimensions(viewport) || dimensions;
   const expected = {
     innerWidth: dimensions.width,
     innerHeight: dimensions.height,
-    screenWidth: screenDimensions.width,
-    screenHeight: screenDimensions.height,
-    devicePixelRatio: viewportDeviceScaleFactor(viewport),
-    hasTouch: viewportHasTouch(viewport),
-    userAgent: viewportUserAgent(viewport),
   };
   const mismatches = {};
-  for (const key of ['innerWidth', 'innerHeight', 'screenWidth', 'screenHeight']) {
+  for (const key of ['innerWidth', 'innerHeight']) {
     if (!metricNearlyEqual(page[key], expected[key])) {
       mismatches[key] = { actual: page[key] ?? null, expected: expected[key] };
     }
-  }
-  if (!metricNearlyEqual(page.devicePixelRatio, expected.devicePixelRatio, 0.01)) {
-    mismatches.devicePixelRatio = {
-      actual: page.devicePixelRatio ?? null,
-      expected: expected.devicePixelRatio,
-    };
-  }
-  if (expected.hasTouch && typeof page.hasTouch === 'boolean' && page.hasTouch !== expected.hasTouch) {
-    mismatches.hasTouch = { actual: page.hasTouch, expected: expected.hasTouch };
-  }
-  if (expected.userAgent && typeof page.userAgent === 'string' && page.userAgent !== expected.userAgent) {
-    mismatches.userAgent = { actual: page.userAgent, expected: expected.userAgent };
   }
   return Object.keys(mismatches).length > 0 ? mismatches : null;
 }
@@ -561,23 +476,27 @@ export function createNekoCompanion(options = {}) {
   const password = choose(options.password, target.password, env.password);
   const cdpHttpUrl = normalizeCdpHttpUrl(
     choose(
-      options.cdpHttpUrl,
       target.cdpHttpUrl,
       target.cdp_http_url,
       target.cdp?.httpUrl,
       target.cdp?.http_url,
+      options.cdpHttpUrl,
       env.cdpHttpUrl,
     ),
   );
-  const WebSocketCtor = choose(options.WebSocketCtor, target.WebSocketCtor, globalThis.WebSocket);
-  const cdpControlAvailable = Boolean(cdpHttpUrl && typeof WebSocketCtor === 'function');
   const browserOwnerMode = normalizeBrowserOwnerMode(
     choose(options.browserOwnerMode, target.browserOwnerMode, target.browser_owner_mode, env.browserOwnerMode),
   );
+  const requestedStealthMode = choose(options.stealthMode, target.stealthMode, target.stealth_mode, env.stealthMode);
   const stealthMode = normalizeStealthMode(
-    choose(options.stealthMode, target.stealthMode, target.stealth_mode, env.stealthMode),
+    requestedStealthMode,
     browserOwnerMode,
   );
+  if (String(requestedStealthMode || '').trim().toLowerCase() === 'balanced') {
+    safeLog(logger, 'warn', 'neko_stealth_balanced_normalized', {
+      normalized_stealth_mode: stealthMode,
+    });
+  }
   const navigationUrl = normalizeNavigationUrl(
     choose(
       options.startUrl,
@@ -594,32 +513,29 @@ export function createNekoCompanion(options = {}) {
       target.navigate_url,
     ),
   );
-  const browserWindowCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
-  const pageEmulationCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
-  // Page.navigate is the one CDP command that is functionally identical to
-  // a real user typing a URL into the omnibox — it does not enable any
-  // event domain, does not inject any script, and leaves no trace beyond
-  // a normal Network.* sequence that every page load already produces.
-  // Without this, strict mode leaves the n.eko browser sitting on its
-  // bootup data: URL, so the user never reaches the manual_action target.
-  const pageNavigationCdpAllowed = cdpControlAvailable;
-  const pageFocusCdpAllowed = cdpControlAvailable && stealthMode !== 'strict';
-  const assistivePageCdpAllowed = cdpControlAvailable && stealthMode === 'assistive';
-  const cdpCommandTimeoutMs = Number(
-    choose(options.commandTimeoutMs, target.commandTimeoutMs, DEFAULT_CDP_COMMAND_TIMEOUT_MS),
+  const browserClientOption = choose(options.browserClient, target.browserClient);
+  const browserClientFactory = choose(
+    options.createBrowserClient,
+    options.browserClientFactory,
+    target.createBrowserClient,
+    target.browserClientFactory,
+    createNekoBrowserClient,
   );
-  const cdpOpenTimeoutMs = Number(choose(options.openTimeoutMs, target.openTimeoutMs, DEFAULT_CDP_OPEN_TIMEOUT_MS));
+  const browserControlAvailable = Boolean(
+    cdpHttpUrl && stealthMode !== 'strict' && (browserClientOption || typeof browserClientFactory === 'function'),
+  );
+  const assistiveBrowserControlAllowed = browserControlAvailable && stealthMode === 'assistive';
   let bearer = normalizeBearer(choose(options.bearerToken, target.bearerToken, options.bearer, target.bearer, env.bearerToken));
   let cookie = choose(options.cookie, target.cookie, null);
 
   const frameHandlers = new Set();
   const eventHandlers = new Set();
-  let pageCdpConnection = null;
-  let pageCdpConnectionPromise = null;
-  let pageCdpSessionId = null;
+  let browserClient = null;
+  let browserClientPromise = null;
+  let browserClientConnected = false;
   let pageFocusSetupPromise = null;
   let pageFocusSetupComplete = false;
-  let lastCdpViewport = null;
+  let lastBrowserViewport = null;
   let started = false;
   let closed = false;
   let authReady = false;
@@ -688,239 +604,55 @@ export function createNekoCompanion(options = {}) {
     return ensureOk(response, 'neko_post_failed');
   }
 
-  function createCdpError(message, code) {
+  function createBrowserControlError(message, code) {
     const err = new Error(message);
     err.code = code;
     return err;
   }
 
-  function rejectCdpPending(connection, reason) {
-    for (const [, entry] of connection.pending) {
-      clearTimeout(entry.timer);
-      entry.reject(reason);
+  async function getBrowserClient(signal) {
+    if (!browserControlAvailable) {
+      throw createBrowserControlError('n.eko assistive browser control is not configured', 'neko_browser_control_unavailable');
     }
-    connection.pending.clear();
-  }
+    if (signal?.aborted) {
+      throw createBrowserControlError('n.eko browser control aborted', 'neko_browser_control_aborted');
+    }
+    if (browserClientConnected && browserClient) return browserClient;
+    if (browserClientPromise) return browserClientPromise;
 
-  function parseCdpMessage(raw) {
-    const value = raw && typeof raw === 'object' && 'data' in raw ? raw.data : raw;
-    const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
-    return JSON.parse(text);
-  }
-
-  function createCdpConnection(wsUrl, label, signal) {
-    return new Promise((resolve, reject) => {
-      if (!cdpControlAvailable) {
-        reject(createCdpError('n.eko CDP control is not configured', 'neko_cdp_unavailable'));
-        return;
+    browserClientPromise = (async () => {
+      const client =
+        browserClientOption ||
+        (await browserClientFactory({
+          cdpHttpUrl,
+          logger,
+        }));
+      if (!client || typeof client !== 'object') {
+        throw createBrowserControlError('n.eko browser client is invalid', 'neko_browser_control_invalid');
       }
-      if (signal?.aborted) {
-        reject(createCdpError('n.eko CDP connection aborted', 'neko_cdp_aborted'));
-        return;
+      browserClient = client;
+      if (!browserClientConnected && typeof client.connect === 'function') {
+        await client.connect({ signal });
       }
-
-      let socket;
-      try {
-        socket = new WebSocketCtor(wsUrl);
-      } catch (err) {
-        reject(createCdpError(`Failed to open n.eko CDP socket: ${err?.message || err}`, 'neko_cdp_connect_failed'));
-        return;
-      }
-
-      let opened = false;
-      let settled = false;
-      const connection = {
-        socket,
-        pending: new Map(),
-        nextId: 1,
-        isOpen() {
-          return socket.readyState === 1;
-        },
-        close() {
-          try {
-            socket.close();
-          } catch {
-            /* ignore */
-          }
-        },
-        send(method, params = {}, sessionId = null) {
-          if (signal?.aborted) {
-            return Promise.reject(createCdpError('n.eko CDP command aborted', 'neko_cdp_aborted'));
-          }
-          if (socket.readyState !== 1) {
-            return Promise.reject(createCdpError('n.eko CDP socket is not open', 'neko_cdp_not_open'));
-          }
-          return new Promise((commandResolve, commandReject) => {
-            const id = connection.nextId++;
-            const timer = setTimeout(() => {
-              if (connection.pending.delete(id)) {
-                commandReject(createCdpError(`n.eko CDP command timed out: ${method}`, 'neko_cdp_timeout'));
-              }
-            }, cdpCommandTimeoutMs);
-            connection.pending.set(id, { resolve: commandResolve, reject: commandReject, timer });
-            try {
-              const message = { id, method, params };
-              if (sessionId) message.sessionId = sessionId;
-              socket.send(JSON.stringify(message));
-            } catch (err) {
-              connection.pending.delete(id);
-              clearTimeout(timer);
-              commandReject(createCdpError(`Failed to send n.eko CDP command: ${method}`, 'neko_cdp_send_failed'));
-            }
-          });
-        },
-      };
-
-      const openTimer = setTimeout(() => {
-        if (opened) return;
-        settled = true;
-        connection.close();
-        reject(createCdpError(`n.eko CDP ${label} connection timed out`, 'neko_cdp_connect_timeout'));
-      }, cdpOpenTimeoutMs);
-      const onAbort = () => {
-        connection.close();
-        rejectCdpPending(connection, createCdpError('n.eko CDP connection aborted', 'neko_cdp_aborted'));
-      };
-      signal?.addEventListener('abort', onAbort, { once: true });
-
-      addSocketListener(socket, 'open', () => {
-        opened = true;
-        settled = true;
-        clearTimeout(openTimer);
-        resolve(connection);
-      });
-      addSocketListener(socket, 'message', (event) => {
-        let msg;
-        try {
-          msg = parseCdpMessage(event);
-        } catch (err) {
-          safeLog(logger, 'warn', 'neko_cdp_message_parse_failed', { label, error: err?.message });
-          return;
-        }
-        handlePageCdpEvent(msg);
-        if (!msg || typeof msg !== 'object' || !('id' in msg)) return;
-        const entry = connection.pending.get(msg.id);
-        if (!entry) return;
-        connection.pending.delete(msg.id);
-        clearTimeout(entry.timer);
-        if (msg.error) {
-          const err = createCdpError(msg.error.message || 'n.eko CDP command failed', 'neko_cdp_command_failed');
-          err.cdp = msg.error;
-          entry.reject(err);
-        } else {
-          entry.resolve(msg.result || {});
-        }
-      });
-      addSocketListener(socket, 'error', (event) => {
-        const message = event?.message || event?.error?.message || 'n.eko CDP socket error';
-        const err = createCdpError(message, 'neko_cdp_socket_error');
-        rejectCdpPending(connection, err);
-        if (!settled) {
-          settled = true;
-          clearTimeout(openTimer);
-          reject(err);
-        }
-      });
-      addSocketListener(socket, 'close', () => {
-        const err = createCdpError('n.eko CDP socket closed', 'neko_cdp_closed');
-        rejectCdpPending(connection, err);
-        if (!settled) {
-          settled = true;
-          clearTimeout(openTimer);
-          reject(err);
-        }
-        signal?.removeEventListener?.('abort', onAbort);
-      });
-    });
-  }
-
-  async function fetchCdpJson(path, signal) {
-    const response = await fetchImpl(resolveCdpUrl(cdpHttpUrl, path), { method: 'GET', signal });
-    await ensureOk(response, 'neko_cdp_http_failed');
-    return responseJsonOrNull(response);
-  }
-
-  async function getNekoPageTarget(signal) {
-    const targets = await fetchCdpJson('json', signal);
-    if (!Array.isArray(targets)) {
-      throw createCdpError('n.eko CDP target list is invalid', 'neko_cdp_target_invalid');
-    }
-    const pages = targets
-      .filter((item) => item?.type === 'page' && item.webSocketDebuggerUrl && !isBrowserChromeTargetUrl(item.url))
-      .sort((a, b) => pageTargetRank(a) - pageTargetRank(b));
-    const page = pages[0];
-    if (!page?.webSocketDebuggerUrl) {
-      throw createCdpError('n.eko CDP page target not found', 'neko_cdp_target_missing');
-    }
-    return {
-      ...page,
-      webSocketDebuggerUrl: normalizeCdpWebSocketUrl(page.webSocketDebuggerUrl, cdpHttpUrl),
-    };
-  }
-
-  async function getNekoBrowserWebSocketUrl(signal) {
-    const version = await fetchCdpJson('json/version', signal);
-    if (!version?.webSocketDebuggerUrl) {
-      throw createCdpError('n.eko CDP browser target not found', 'neko_cdp_browser_missing');
-    }
-    return normalizeCdpWebSocketUrl(version.webSocketDebuggerUrl, cdpHttpUrl);
-  }
-
-  async function sendBrowserCdp(method, params, signal) {
-    const wsUrl = await getNekoBrowserWebSocketUrl(signal);
-    const connection = await createCdpConnection(wsUrl, 'browser', signal);
-    try {
-      return await connection.send(method, params);
-    } finally {
-      connection.close();
-    }
-  }
-
-  async function getPageCdpConnection(signal) {
-    if (pageCdpConnection?.isOpen() && pageCdpSessionId) return pageCdpConnection;
-    if (pageCdpConnectionPromise) return pageCdpConnectionPromise;
-
-    pageCdpConnectionPromise = (async () => {
-      const page = await getNekoPageTarget(signal);
-      const wsUrl = await getNekoBrowserWebSocketUrl(signal);
-      const connection = await createCdpConnection(wsUrl, 'page', signal);
-      const attached = await connection.send('Target.attachToTarget', {
-        targetId: page.id,
-        flatten: true,
-      });
-      if (typeof attached?.sessionId !== 'string' || attached.sessionId.length === 0) {
-        connection.close();
-        throw createCdpError('n.eko CDP target attach failed', 'neko_cdp_attach_failed');
-      }
-      pageCdpSessionId = attached.sessionId;
-      pageCdpConnection = connection;
-      return connection;
+      browserClientConnected = true;
+      return client;
     })();
 
     try {
-      return await pageCdpConnectionPromise;
+      return await browserClientPromise;
     } catch (err) {
-      pageCdpConnection = null;
-      pageCdpSessionId = null;
+      browserClient = null;
+      browserClientConnected = false;
       throw err;
     } finally {
-      pageCdpConnectionPromise = null;
+      browserClientPromise = null;
     }
   }
 
-  async function sendPageCdp(method, params, signal) {
-    const connection = await getPageCdpConnection(signal);
-    return connection.send(method, params, pageCdpSessionId);
-  }
-
-  function handlePageCdpEvent(message) {
-    if (!message || typeof message !== 'object') return;
-    if (message.sessionId && pageCdpSessionId && message.sessionId !== pageCdpSessionId) return;
-    if (message.method !== 'Runtime.bindingCalled') return;
-    const params = message.params || {};
-    if (params.name !== FOCUS_BINDING_NAME || typeof params.payload !== 'string') return;
+  function handleFocusPayload(payloadJson) {
+    if (typeof payloadJson !== 'string') return;
     try {
-      const payload = JSON.parse(params.payload);
+      const payload = JSON.parse(payloadJson);
       emitEvent({
         kind: 'keyboard_focus',
         focused: payload?.type === 'focus',
@@ -932,22 +664,22 @@ export function createNekoCompanion(options = {}) {
   }
 
   async function setupFocusDetectionBestEffort(signal) {
-    if (!pageFocusCdpAllowed || pageFocusSetupComplete) return;
+    if (!assistiveBrowserControlAllowed || pageFocusSetupComplete) return;
     if (pageFocusSetupPromise) return pageFocusSetupPromise;
     pageFocusSetupPromise = (async () => {
-      await sendPageCdp('Runtime.enable', {}, signal);
-      await sendPageCdp('Page.enable', {}, signal);
-      await sendPageCdp('Runtime.addBinding', { name: FOCUS_BINDING_NAME }, signal);
+      const client = await getBrowserClient(signal);
       const source = buildFocusDetectionScript();
-      await sendPageCdp('Page.addScriptToEvaluateOnNewDocument', { source }, signal);
-      await sendPageCdp('Runtime.evaluate', { expression: source }, signal);
+      await client.exposeBinding(FOCUS_BINDING_NAME, (_source, payloadJson) => {
+        handleFocusPayload(payloadJson);
+      });
+      await client.addInitScript(source);
+      await client.evaluate(source);
       pageFocusSetupComplete = true;
     })();
     try {
       await pageFocusSetupPromise;
     } catch (err) {
       pageFocusSetupPromise = null;
-      closePageCdpConnection();
       safeLog(logger, 'warn', 'neko_focus_detection_failed', {
         browser_owner_mode: browserOwnerMode,
         stealth_mode: stealthMode,
@@ -956,17 +688,19 @@ export function createNekoCompanion(options = {}) {
     }
   }
 
-  function closePageCdpConnection() {
-    if (!pageCdpConnection) return;
+  async function closeBrowserClient() {
+    if (!browserClient) return;
+    const client = browserClient;
+    browserClient = null;
+    browserClientConnected = false;
+    browserClientPromise = null;
+    pageFocusSetupPromise = null;
+    pageFocusSetupComplete = false;
     try {
-      pageCdpConnection.close();
+      if (typeof client.close === 'function') await client.close();
     } catch {
       /* ignore */
     }
-    pageCdpConnection = null;
-    pageCdpSessionId = null;
-    pageFocusSetupPromise = null;
-    pageFocusSetupComplete = false;
   }
 
   async function applyScreenConfigurationBestEffort(viewport, signal) {
@@ -987,7 +721,7 @@ export function createNekoCompanion(options = {}) {
       ?.map((item) => normalizeScreenConfig(item))
       .filter(Boolean);
     if (!configs?.length) {
-      throw createCdpError('n.eko screen configuration list is empty', 'neko_screen_configurations_empty');
+      throw createBrowserControlError('n.eko screen configuration list is empty', 'neko_screen_configurations_empty');
     }
 
     const [candidate] = rankNekoScreenConfigurations(configs, dimensions.width, dimensions.height);
@@ -1015,111 +749,31 @@ export function createNekoCompanion(options = {}) {
     };
   }
 
-  async function applyCdpViewportBestEffort(viewport, signal) {
-    if (!cdpControlAvailable) return;
+  async function applyBrowserViewportBestEffort(viewport, signal) {
+    if (!assistiveBrowserControlAllowed) return;
     const dimensions = viewportDimensions(viewport);
     if (!dimensions) return;
-    const screenDimensions = viewportScreenDimensions(viewport) || dimensions;
-    const visibleAreaOverride = viewportVisibleAreaOverride(viewport);
-    const deviceScaleFactor = viewportDeviceScaleFactor(viewport);
-    const mobile = viewportIsMobile(viewport);
-    const hasTouch = viewportHasTouch(viewport);
-    const screenOrientation =
-      dimensions.height >= dimensions.width
-        ? { type: 'portraitPrimary', angle: 0 }
-        : { type: 'landscapePrimary', angle: 90 };
-
-    if (browserWindowCdpAllowed) {
-      try {
-        const page = await getNekoPageTarget(signal);
-        const targetInfo = await sendBrowserCdp('Browser.getWindowForTarget', { targetId: page.id }, signal);
-        if (Number.isFinite(Number(targetInfo?.windowId))) {
-          await sendBrowserCdp(
-            'Browser.setWindowBounds',
-            {
-              windowId: targetInfo.windowId,
-              bounds: {
-                left: 0,
-                top: 0,
-                width: screenDimensions.width,
-                height: screenDimensions.height,
-                windowState: 'normal',
-              },
-            },
-            signal,
-          );
-        }
-      } catch (err) {
-        safeLog(logger, 'warn', 'neko_cdp_window_bounds_failed', { error: err?.message });
-      }
-    }
-
-    if (pageEmulationCdpAllowed) {
-      try {
-        await sendPageCdp(
-          'Emulation.setDeviceMetricsOverride',
-          {
-            width: dimensions.width,
-            height: dimensions.height,
-            deviceScaleFactor,
-            mobile,
-            screenWidth: screenDimensions.width,
-            screenHeight: screenDimensions.height,
-            positionX: 0,
-            positionY: 0,
-            screenOrientation,
-            ...(visibleAreaOverride ? { viewport: visibleAreaOverride } : {}),
-          },
-          signal,
-        );
-      } catch (err) {
-        safeLog(logger, 'warn', 'neko_cdp_device_metrics_failed', { error: err?.message });
-      }
-    }
-
-    if (pageEmulationCdpAllowed) {
-      try {
-        await sendPageCdp(
-          'Emulation.setTouchEmulationEnabled',
-          hasTouch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false, maxTouchPoints: 0 },
-          signal,
-        );
-        await sendPageCdp(
-          'Emulation.setEmitTouchEventsForMouse',
-          { enabled: false, configuration: mobile ? 'mobile' : 'desktop' },
-          signal,
-        );
-      } catch (err) {
-        safeLog(logger, 'warn', 'neko_cdp_touch_emulation_failed', { error: err?.message });
-      }
-    }
-
-    const userAgent = viewportUserAgent(viewport);
-    if (userAgent && assistivePageCdpAllowed) {
-      try {
-        await sendPageCdp('Emulation.setUserAgentOverride', { userAgent }, signal);
-      } catch (err) {
-        safeLog(logger, 'warn', 'neko_cdp_user_agent_failed', { error: err?.message });
-      }
+    try {
+      const client = await getBrowserClient(signal);
+      await client.setViewportSize(dimensions);
+    } catch (err) {
+      safeLog(logger, 'warn', 'neko_browser_viewport_failed', { error: err?.message });
     }
   }
 
   async function applyInitialNavigation(signal) {
     if (!navigationUrl || navigationApplied) return false;
-    if (!pageNavigationCdpAllowed) {
-      const err = createCdpError(
-        'n.eko CDP navigation control is not configured',
-        'neko_cdp_navigation_unavailable',
-      );
+    if (!assistiveBrowserControlAllowed) {
       safeLog(logger, 'warn', 'neko_initial_navigation_skipped', {
         browser_owner_mode: browserOwnerMode,
         stealth_mode: stealthMode,
       });
-      throw err;
+      return false;
     }
 
     try {
-      await sendPageCdp('Page.navigate', { url: navigationUrl }, signal);
+      const client = await getBrowserClient(signal);
+      await client.goto(navigationUrl);
       navigationApplied = true;
       return true;
     } catch (err) {
@@ -1128,11 +782,12 @@ export function createNekoCompanion(options = {}) {
     }
   }
 
-  async function insertTextViaCdp(text, signal) {
-    if (!assistivePageCdpAllowed) {
-      throw createCdpError('n.eko CDP paste control is not configured', 'neko_cdp_unavailable');
+  async function insertTextViaBrowserClient(text, signal) {
+    if (!assistiveBrowserControlAllowed) {
+      throw createBrowserControlError('n.eko browser paste control is not configured', 'neko_browser_control_unavailable');
     }
-    await sendPageCdp('Input.insertText', { text }, signal);
+    const client = await getBrowserClient(signal);
+    await client.keyboard.insertText(text);
   }
 
   function emitEvent(event) {
@@ -1145,35 +800,21 @@ export function createNekoCompanion(options = {}) {
     }
   }
 
-  async function copySelectionViaCdp(signal) {
-    if (!assistivePageCdpAllowed) {
-      throw createCdpError('n.eko CDP copy control is not configured', 'neko_cdp_unavailable');
+  async function copySelectionViaBrowserClient(signal) {
+    if (!assistiveBrowserControlAllowed) {
+      throw createBrowserControlError('n.eko browser copy control is not configured', 'neko_browser_control_unavailable');
     }
     await sleep(50, signal);
-    const result = await sendPageCdp(
-      'Runtime.evaluate',
-      {
-        expression: buildCopySelectionExpression(),
-        returnByValue: true,
-      },
-      signal,
-    );
-    const text = result?.result?.value;
+    const client = await getBrowserClient(signal);
+    const text = await client.evaluate(buildCopySelectionExpression());
     if (typeof text === 'string' && text.length > 0) {
       emitEvent({ kind: 'clipboard', text });
     }
   }
 
   async function readPageViewportStatus(signal) {
-    const result = await sendPageCdp(
-      'Runtime.evaluate',
-      {
-        expression: buildViewportStatusExpression(),
-        returnByValue: true,
-      },
-      signal,
-    );
-    const value = result?.result?.value;
+    const client = await getBrowserClient(signal);
+    const value = await client.evaluate(buildViewportStatusExpression());
     if (typeof value !== 'string') return null;
     try {
       return JSON.parse(value);
@@ -1201,44 +842,21 @@ export function createNekoCompanion(options = {}) {
       };
     }
 
-    let page = null;
-    if (browserWindowCdpAllowed) {
-      try {
-        page = await getNekoPageTarget(abortController?.signal);
-        status.target = {
-          id: page.id || null,
-          url: page.url || null,
-        };
-        const targetInfo = await sendBrowserCdp(
-          'Browser.getWindowForTarget',
-          { targetId: page.id },
-          abortController?.signal,
-        );
-        if (targetInfo && typeof targetInfo === 'object') status.window = targetInfo;
-      } catch (err) {
-        status.window_error = {
-          code: err?.code || 'neko_window_status_failed',
-          message: err?.message || 'n.eko window status failed',
-        };
-      }
-    } else {
-      status.window_skipped = {
-        browser_owner_mode: browserOwnerMode,
-        stealth_mode: stealthMode,
-      };
-    }
+    status.window_skipped = {
+      browser_owner_mode: browserOwnerMode,
+      stealth_mode: stealthMode,
+    };
 
-    if (assistivePageCdpAllowed) {
+    if (assistiveBrowserControlAllowed) {
       try {
         status.page_cdp_available = true;
         status.page = await readPageViewportStatus(abortController?.signal);
-        const expectedViewport = lastCdpViewport || currentViewport;
+        const expectedViewport = lastBrowserViewport || currentViewport;
         const mismatch = pageMetricsMismatch(status.page, expectedViewport);
         if (mismatch) {
           status.page_metrics_mismatch = mismatch;
-          closePageCdpConnection();
           try {
-            await applyCdpViewportBestEffort(expectedViewport, abortController?.signal);
+            await applyBrowserViewportBestEffort(expectedViewport, abortController?.signal);
             status.page_metrics_reapplied = true;
             status.page = await readPageViewportStatus(abortController?.signal);
             const remainingMismatch = pageMetricsMismatch(status.page, expectedViewport);
@@ -1246,7 +864,6 @@ export function createNekoCompanion(options = {}) {
               status.page_metrics_mismatch_after_reapply = remainingMismatch;
             }
           } catch (err) {
-            closePageCdpConnection();
             status.page_metrics_reapply_error = {
               code: err?.code || 'neko_page_metrics_reapply_failed',
               message: err?.message || 'n.eko page metrics reapply failed',
@@ -1254,7 +871,6 @@ export function createNekoCompanion(options = {}) {
           }
         }
       } catch (err) {
-        closePageCdpConnection();
         status.page_cdp_available = false;
         status.page_cdp_error = {
           code: err?.code || 'neko_page_status_failed',
@@ -1305,7 +921,7 @@ export function createNekoCompanion(options = {}) {
       }
     }
 
-    const cdpViewport = appliedScreen
+    const browserViewport = appliedScreen
       ? viewportHasSeparateScreenDimensions(viewport)
         ? {
             ...viewport,
@@ -1318,9 +934,9 @@ export function createNekoCompanion(options = {}) {
             width: appliedScreen.width,
           }
       : viewport;
-    lastCdpViewport = cdpViewport;
-    await applyCdpViewportBestEffort(cdpViewport, signal);
-    return cdpViewport;
+    lastBrowserViewport = browserViewport;
+    await applyBrowserViewportBestEffort(browserViewport, signal);
+    return browserViewport;
   }
 
   function emitFrame(data) {
@@ -1379,15 +995,8 @@ export function createNekoCompanion(options = {}) {
     currentViewport = viewport || null;
     await authenticate(abortController.signal);
     currentViewport = (await applyViewportBestEffort(currentViewport, abortController.signal)) || currentViewport;
-    const navigated = await applyInitialNavigation(abortController.signal);
-    if (navigated && lastCdpViewport) {
-      // Page navigation can clear target-scoped emulation in Chromium. Reopen
-      // the page session and re-apply metrics so the rendered page matches the
-      // already-selected n.eko screen size from the first viewport pass.
-      closePageCdpConnection();
-      await applyCdpViewportBestEffort(lastCdpViewport, abortController.signal);
-    }
     await setupFocusDetectionBestEffort(abortController.signal);
+    await applyInitialNavigation(abortController.signal);
     started = true;
     pollLoopPromise = pollLoop(abortController.signal).catch((err) => {
       safeLog(logger, 'warn', 'neko_poll_loop_failed', { error: err?.message });
@@ -1400,7 +1009,7 @@ export function createNekoCompanion(options = {}) {
     started = false;
     abortController?.abort();
     await pollLoopPromise;
-    closePageCdpConnection();
+    await closeBrowserClient();
     frameHandlers.clear();
     eventHandlers.clear();
   }
@@ -1414,17 +1023,17 @@ export function createNekoCompanion(options = {}) {
     }
 
     if (event?.type === 'paste' && typeof event.text === 'string') {
-      if (assistivePageCdpAllowed) {
+      if (assistiveBrowserControlAllowed) {
         await authenticate(abortController?.signal);
-        await insertTextViaCdp(event.text, abortController?.signal);
+        await insertTextViaBrowserClient(event.text, abortController?.signal);
         return;
       }
     }
 
     if (event?.type === 'copy') {
-      if (assistivePageCdpAllowed) {
+      if (assistiveBrowserControlAllowed) {
         await authenticate(abortController?.signal);
-        await copySelectionViaCdp(abortController?.signal);
+        await copySelectionViaBrowserClient(abortController?.signal);
         return;
       }
     }
@@ -1470,9 +1079,7 @@ export function createNekoCompanion(options = {}) {
       stealthMode: () => stealthMode,
     },
   };
-  if (cdpControlAvailable) {
-    companion.queryNekoStatus = queryNekoStatus;
-  }
+  companion.queryNekoStatus = queryNekoStatus;
   return companion;
 }
 
@@ -1554,6 +1161,11 @@ function createResolvedNekoCompanion({
 
 export function createDefaultStreamingCompanionFactory(options = {}) {
   const envTarget = readEnv(options.env);
+  const nekoDefaults =
+    options.neko && typeof options.neko === 'object' && !Array.isArray(options.neko)
+      ? options.neko
+      : {};
+  const defaults = { ...options, ...nekoDefaults };
   const resolveTargetForInteraction =
     typeof options.resolveTargetForInteraction === 'function'
       ? options.resolveTargetForInteraction
@@ -1571,7 +1183,7 @@ export function createDefaultStreamingCompanionFactory(options = {}) {
       interaction_id,
       browser_session_id,
       resolveTargetForInteraction,
-      defaults: options,
+      defaults,
     });
   };
 }

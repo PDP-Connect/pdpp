@@ -7,18 +7,23 @@ export const LOCAL_DEVICE_ENDPOINTS = {
     localCollectorGapRecovered: (deviceId, sourceInstanceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps/recovered`,
     sourceInstanceState: (deviceId, sourceInstanceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
 };
+export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;
 export class LocalDeviceHttpError extends Error {
     body;
+    envelopeMessage;
+    param;
     status;
     code;
     constructor(status, body) {
         const parsed = parseLocalDeviceErrorEnvelope(body);
-        const detail = parsed?.code ? ` ${parsed.code}` : "";
+        const detail = formatLocalDeviceErrorDetail(parsed);
         super(`local device request failed: ${status}${detail}`);
         this.name = "LocalDeviceHttpError";
         this.status = status;
         this.body = body;
         this.code = parsed?.code ?? null;
+        this.param = parsed?.param ?? null;
+        this.envelopeMessage = parsed?.message ?? null;
     }
 }
 function parseLocalDeviceErrorEnvelope(body) {
@@ -28,23 +33,55 @@ function parseLocalDeviceErrorEnvelope(body) {
     try {
         const parsed = JSON.parse(body);
         if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
-            return { code: parsed.error.code };
+            return {
+                code: parsed.error.code,
+                message: typeof parsed.error.message === "string" ? sanitizeErrorDetail(parsed.error.message) : null,
+                param: typeof parsed.error.param === "string" ? sanitizeErrorDetail(parsed.error.param) : null,
+            };
         }
     }
     catch {
     }
     return null;
 }
+function formatLocalDeviceErrorDetail(parsed) {
+    if (!parsed) {
+        return "";
+    }
+    const parts = [parsed.code];
+    if (parsed.param) {
+        parts.push(`param=${parsed.param}`);
+    }
+    if (parsed.message) {
+        parts.push(`message=${parsed.message}`);
+    }
+    return ` ${parts.join(" ")}`;
+}
+const ERROR_DETAIL_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
+function sanitizeErrorDetail(value) {
+    const compact = value.replace(ERROR_DETAIL_SECRET_RE, "$1=[REDACTED]").replace(/\s+/g, " ").trim();
+    return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
+}
+export class LocalDeviceRequestTimeoutError extends Error {
+    timeoutMs;
+    constructor(timeoutMs) {
+        super(`local device request timed out after ${timeoutMs}ms`);
+        this.name = "LocalDeviceRequestTimeoutError";
+        this.timeoutMs = timeoutMs;
+    }
+}
 export class LocalDeviceClient {
     #baseUrl;
     #deviceId;
     #deviceToken;
     #fetch;
+    #requestTimeoutMs;
     constructor(options) {
         this.#baseUrl = new URL(options.baseUrl);
         this.#deviceId = options.deviceId;
         this.#deviceToken = options.deviceToken;
         this.#fetch = options.fetchImpl ?? fetch;
+        this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS;
     }
     exchangeEnrollment(request) {
         return this.#request(LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment, {
@@ -119,14 +156,37 @@ export class LocalDeviceClient {
         if (options.body !== undefined) {
             init.body = JSON.stringify(options.body);
         }
-        const response = await this.#fetch(new URL(path, this.#baseUrl), init);
-        const text = await response.text();
-        if (!response.ok) {
-            throw new LocalDeviceHttpError(response.status, text);
+        const controller = this.#requestTimeoutMs > 0 ? new AbortController() : null;
+        const timer = controller
+            ? setTimeout(() => controller.abort(new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs)), this.#requestTimeoutMs)
+            : null;
+        if (controller) {
+            init.signal = controller.signal;
         }
-        if (!text) {
-            return { ok: true };
+        try {
+            const response = await this.#fetch(new URL(path, this.#baseUrl), init);
+            const text = await response.text();
+            if (!response.ok) {
+                throw new LocalDeviceHttpError(response.status, text);
+            }
+            if (!text) {
+                return { ok: true };
+            }
+            return JSON.parse(text);
         }
-        return JSON.parse(text);
+        catch (error) {
+            if (controller?.signal.aborted) {
+                const reason = controller.signal.reason;
+                throw reason instanceof LocalDeviceRequestTimeoutError
+                    ? reason
+                    : new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs);
+            }
+            throw error;
+        }
+        finally {
+            if (timer) {
+                clearTimeout(timer);
+            }
+        }
     }
 }

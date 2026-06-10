@@ -18,6 +18,8 @@
  *       reference-implementation-architecture/spec.md
  */
 
+import { statfs } from "node:fs/promises";
+
 // Shape of a connector manifest as far as diagnostics care. We do not depend
 // on the validator-strict types here — diagnostics must survive partially-
 // malformed manifests without crashing the page.
@@ -91,6 +93,73 @@ export interface DiagnosticsDb {
   readonly vectorIndexKind: VectorIndexKind;
 }
 
+// Physical on-disk database footprint (Postgres-only, read-only). Surfaced so
+// the operator can reconcile the database's on-disk size against the logical
+// retained payload without a `psql` session. Honest about absence: both fields
+// are `null` on a SQLite backend or when the size read fails — never a
+// fabricated `0`. The relation sizes are an approximate composition; they do
+// not sum to `physical_bytes` (shared catalogs, free space, and WAL are not
+// attributed per relation).
+//
+// Spec: openspec/changes/surface-database-physical-footprint/specs/
+//       reference-implementation-architecture/spec.md
+export interface PhysicalRelationSize {
+  readonly bytes: number;
+  readonly name: string;
+}
+
+export interface PhysicalFootprint {
+  // pg_database_size(current_database()); null on SQLite / read failure.
+  readonly physical_bytes: number | null;
+  // Largest relations by pg_total_relation_size(relid), ordered largest-first
+  // and bounded to a small top-N. null/empty on SQLite / read failure.
+  readonly top_relations: readonly PhysicalRelationSize[] | null;
+}
+
+// Disk headroom for the filesystem that holds the reference data directory.
+//
+// Measured at startup and on each /_ref/deployment poll. Both fields are
+// `null` when the probe fails (e.g. process lacks stat permission, exotic FS)
+// — never fabricated. `free_bytes` is the number of bytes available to the
+// running process (statvfs f_bavail * f_frsize, not the privileged f_bfree).
+//
+// Thresholds:
+//   < DISK_WARN_BYTES  → warning  (low but probably survivable short-term)
+//   < DISK_ERROR_BYTES → error    (restart / build will very likely fail OOD)
+//
+// Neither threshold triggers automatic data deletion. The operator must act.
+export interface DiskHeadroom {
+  // Absolute path probed (the filesystem containing the reference data dir).
+  readonly path: string;
+  // Bytes available to the process on the filesystem hosting `path`.
+  readonly free_bytes: number | null;
+  // Total bytes on the filesystem (f_blocks * f_frsize). Operator context only.
+  readonly total_bytes: number | null;
+  // Filesystem identifier from statfs(). Used to deduplicate multi-mount
+  // probes that land on the same device. null when statfs() did not expose
+  // it (exotic FS, older Node) — falls back to total_bytes heuristic.
+  readonly fsid?: number | null;
+}
+
+// A single filesystem entry in the disk-headroom report. The shape mirrors
+// DiskHeadroom but omits the internal fsid (not meaningful to consumers).
+export interface DiskHeadroomEntry {
+  readonly path: string;
+  readonly free_bytes: number | null;
+  readonly total_bytes: number | null;
+  // Human-readable label for multi-mount display (e.g. "data", "postgres").
+  // Absent when only one filesystem is reported.
+  readonly mount_label?: string;
+}
+
+// 2 GiB — enough for a full Docker image layer set plus a small WAL burst.
+// Below this the reference build/restart will very likely fail OOD.
+export const DISK_ERROR_BYTES = 2 * 1024 * 1024 * 1024;
+
+// 5 GiB — comfortable working margin. Warn so the operator can act before
+// the error threshold is reached.
+export const DISK_WARN_BYTES = 5 * 1024 * 1024 * 1024;
+
 export interface DiagnosticsEnv {
   readonly [key: string]: string | undefined;
 }
@@ -104,7 +173,22 @@ export interface DeploymentDiagnosticsInput {
   readonly indexState: SemanticIndexState | null;
   readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
+  // Physical on-disk database footprint. Optional and pre-computed by the
+  // runtime adapter (the pure builder does no I/O). Absent/undefined and an
+  // explicit SQLite/failure `{ physical_bytes: null, top_relations: null }`
+  // both surface as unmeasured.
+  readonly physicalFootprint?: PhysicalFootprint | null;
   readonly runtimeCapabilities?: RuntimeCapabilityPosture | null;
+  // Disk headroom for the filesystem hosting the reference data directory.
+  // Pre-probed by the runtime adapter. Absent/null = unmeasured.
+  readonly diskHeadroom?: DiskHeadroom | null;
+  // Disk headroom for the Postgres data mount. Only relevant when the backend
+  // is Postgres and the data volume is a different mount from the data dir.
+  // Absent/null = unmeasured or not applicable (SQLite, same FS as data dir).
+  // The builder deduplicates: if pgDiskHeadroom is on the same filesystem as
+  // diskHeadroom (matched by fsid or, as fallback, total_bytes equality), it
+  // is silently suppressed.
+  readonly pgDiskHeadroom?: DiskHeadroom | null;
 }
 
 // Runtime capability posture of the provider/control-plane runtime.
@@ -120,24 +204,27 @@ export interface DeploymentDiagnosticsInput {
 // Updated: openspec/changes/publish-pdpp-local-collector — collector
 // protocol-version surface for `@pdpp/local-collector` compatibility.
 export interface CollectorPairing {
-  // null when no collector has enrolled. "legacy_unknown" when a paired
-  // device has no stored protocol version (predates the header). Otherwise
-  // the most-recent paired device's protocol version.
-  readonly protocol_version: string | "legacy_unknown" | null;
-  // True when ANY paired device's protocol version is not in the server's
-  // accepted set. Drives the `collector_protocol_outdated` dashboard
-  // warning. False when no collector is paired.
-  readonly protocol_outdated: boolean;
-  // The agent/runner version advertised by paired collectors at heartbeat
-  // time. Surfaced for visible drift; not enforced by the server.
-  readonly runner_version: string | null;
   // Bundled connector entrypoint versions advertised by the runner. Today
   // the runner does not yet advertise these per-connector, so this is
   // typically empty. Keyed by connector_id.
   readonly connector_versions: Readonly<Record<string, string>>;
+  // True when ANY paired device's protocol version is not in the server's
+  // accepted set. Drives the `collector_protocol_outdated` dashboard
+  // warning. False when no collector is paired.
+  readonly protocol_outdated: boolean;
+  // null when no collector has enrolled. "legacy_unknown" when a paired
+  // device has no stored protocol version (predates the header). Otherwise
+  // the most-recent paired device's protocol version.
+  readonly protocol_version: string | "legacy_unknown" | null;
+  // The agent/runner version advertised by paired collectors at heartbeat
+  // time. Surfaced for visible drift; not enforced by the server.
+  readonly runner_version: string | null;
 }
 
 export interface RuntimeCapabilityPosture {
+  // The server's accepted set of collector protocol versions. Dashboard
+  // compares paired-device versions against this list.
+  readonly accepted_collector_protocol_versions: readonly string[];
   readonly bindings: {
     readonly browser: boolean;
     readonly filesystem: boolean;
@@ -148,9 +235,6 @@ export interface RuntimeCapabilityPosture {
   // runtime adapter resolves this from the device-exporter store; the
   // pure builder treats it as a single boolean.
   readonly collector_paired: boolean;
-  // The server's accepted set of collector protocol versions. Dashboard
-  // compares paired-device versions against this list.
-  readonly accepted_collector_protocol_versions: readonly string[];
   // Per-pairing detail. Null when collector_paired is false.
   readonly collector_pairing: CollectorPairing | null;
   // True iff the provider/control-plane runtime is running inside a
@@ -182,7 +266,8 @@ export type DiagnosticsWarningCode =
   | "download_disabled"
   | "vector_index_fallback"
   | "browser_connectors_need_collector"
-  | "collector_protocol_outdated";
+  | "collector_protocol_outdated"
+  | "low_disk_headroom";
 
 export interface DiagnosticsWarning {
   readonly code: DiagnosticsWarningCode;
@@ -201,7 +286,19 @@ export interface EnvValueReport {
 export interface DeploymentDiagnosticsReport {
   readonly database: {
     readonly path: string;
+    // Read-only physical footprint (Postgres-only). `null` on SQLite or read
+    // failure — never a fabricated `0`. Distinct from the logical retained
+    // payload (`total_retained_bytes`); never aliased to or summed with it.
+    readonly physical_bytes: number | null;
+    readonly top_relations: readonly PhysicalRelationSize[] | null;
   };
+  // Disk headroom for the filesystems hosting reference data. Ordered:
+  // data directory first; Postgres data mount second (when distinct). Empty
+  // array when all probes failed. Each entry uses the DiskHeadroomEntry shape
+  // (no internal fsid). mount_label is set when more than one distinct FS was
+  // measured ("data", "postgres"). free_bytes/total_bytes are null on probe
+  // failure for that entry.
+  readonly disk_headroom: readonly DiskHeadroomEntry[];
   readonly environment: readonly EnvValueReport[];
   readonly lexical: {
     readonly index: {
@@ -450,6 +547,58 @@ function buildWarnings(
   // browser-backed connectors will fail closed at spawn time.
   warnings.push(...buildRuntimeCapabilityWarnings(input.runtimeCapabilities ?? null));
 
+  // Disk headroom: warn when free space is low enough that a restart or
+  // Docker build is likely to fail with "No space left on device". Checked
+  // for each distinct filesystem entry. Neither threshold triggers automatic
+  // deletion — the operator must act.
+  //
+  // Workload-aware dimension: when free_bytes < largest single relation's
+  // on-disk size, a VACUUM FULL or index rebuild of that table would also
+  // fail. This is an advisory note appended to the existing threshold copy —
+  // not a new standalone threshold — per the heuristics rule (warning-only).
+  // Rationale: VACUUM FULL rewrites the entire table to a new heap file before
+  // dropping the old one; it needs ~1× the table size as scratch space on the
+  // same filesystem. SQLite / absent footprint → silently skip this check.
+  const largestRelation =
+    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint!.top_relations!.length > 0
+      ? input.physicalFootprint!.top_relations![0]
+      : null;
+
+  const diskEntries = normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom);
+  for (const entry of diskEntries) {
+    const freeBytes = entry.free_bytes;
+    if (typeof freeBytes !== "number") {
+      continue; // probe failed for this mount — no warning
+    }
+    const pathLabel = entry.path ?? "the data filesystem";
+    // Workload-aware suffix: appended when free < largest relation size.
+    // Rationale: VACUUM FULL needs ~1× the largest table as scratch space.
+    // Degrade silently when footprint is unavailable (SQLite / absent).
+    const workloadSuffix =
+      largestRelation != null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
+        ? ` Free space is below the size of your largest table (${largestRelation.name}, ${formatBytes(largestRelation.bytes)}) — maintenance operations like VACUUM FULL may fail.`
+        : "";
+    if (freeBytes < DISK_ERROR_BYTES) {
+      warnings.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${pathLabel} is critically low ` +
+          `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
+          `with "No space left on device".${workloadSuffix} ` +
+          "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. " +
+          "Inspect Docker volumes manually before removing any volume data.",
+      });
+    } else if (freeBytes < DISK_WARN_BYTES) {
+      warnings.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${pathLabel} is low ` +
+          `(${formatBytes(freeBytes)} free).${workloadSuffix} Consider running \`docker system prune\` ` +
+          "to reclaim build cache before the next restart.",
+      });
+    }
+  }
+
   // Backend-specific cache/download warnings. Only surfaced when the
   // backend reports these fields — the stub backend does not.
   if (input.backend?.modelCachePresent && input.backend.modelCachePresent() === false) {
@@ -562,6 +711,101 @@ function summarizeManifests(manifests: readonly DiagnosticsManifestEntry[]): Dep
     });
 }
 
+// ─── Physical footprint normalization ──────────────────────────────────────
+//
+// The runtime adapter pre-computes the footprint (the pure builder does no
+// I/O). This collapses the three "unmeasured" inputs — absent/undefined, an
+// explicit `{ physical_bytes: null, ... }`, or a non-numeric total — into the
+// same honest shape: `physical_bytes: null` with `top_relations: null`. It
+// never fabricates a `0`, and it never reports relations against an unknown
+// total. When a real total is present, it carries through the bounded
+// relation list (defaulting a missing list to `[]`, distinct from the
+// unmeasured `null`).
+
+function normalizePhysicalFootprint(footprint: PhysicalFootprint | null | undefined): {
+  physical_bytes: number | null;
+  top_relations: readonly PhysicalRelationSize[] | null;
+} {
+  const total = footprint?.physical_bytes;
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
+    return { physical_bytes: null, top_relations: null };
+  }
+  const relations = footprint?.top_relations;
+  return {
+    physical_bytes: total,
+    top_relations: Array.isArray(relations) ? relations : [],
+  };
+}
+
+// ─── Disk headroom normalization (multi-mount) ─────────────────────────────
+//
+// Converts one or two raw DiskHeadroom probes into the report's ordered entry
+// array. Deduplication: if the data-dir probe and the PG-data probe land on
+// the same filesystem (determined by fsid match, or — when fsid is absent —
+// by total_bytes equality heuristic), only the data-dir entry is emitted.
+// mount_label is added only when two distinct entries are reported ("data"
+// for the data dir, "postgres" for the PG volume), so single-FS deployments
+// keep the existing terse copy.
+
+function normalizeSingleEntry(h: DiskHeadroom): DiskHeadroomEntry {
+  const free = h.free_bytes;
+  const total = h.total_bytes;
+  return {
+    path: h.path,
+    free_bytes: typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : null,
+    total_bytes: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null,
+  };
+}
+
+function sameFilesystem(a: DiskHeadroom, b: DiskHeadroom): boolean {
+  // Prefer fsid comparison (exact). Fall back to total_bytes equality as a
+  // heuristic — two probes returning identical total byte counts are almost
+  // certainly on the same device. Both falsy = treat as different (report both
+  // rather than silently drop one when we cannot confirm they are the same).
+  const aFsid = a.fsid;
+  const bFsid = b.fsid;
+  if (typeof aFsid === "number" && typeof bFsid === "number") {
+    return aFsid === bFsid;
+  }
+  const aTotal = a.total_bytes;
+  const bTotal = b.total_bytes;
+  if (typeof aTotal === "number" && aTotal > 0 && typeof bTotal === "number" && bTotal > 0) {
+    return aTotal === bTotal;
+  }
+  return false;
+}
+
+function normalizeDiskHeadroomEntries(
+  dataDir: DiskHeadroom | null | undefined,
+  pgDir: DiskHeadroom | null | undefined
+): readonly DiskHeadroomEntry[] {
+  const entries: DiskHeadroomEntry[] = [];
+
+  if (!dataDir) {
+    // No data-dir probe at all — skip; PG-only is odd but handle it.
+    if (pgDir) {
+      entries.push({ ...normalizeSingleEntry(pgDir), mount_label: "postgres" });
+    }
+    return entries;
+  }
+
+  const dataNorm = normalizeSingleEntry(dataDir);
+
+  // Decide whether PG is a distinct filesystem.
+  const pgDistinct = pgDir != null && !sameFilesystem(dataDir, pgDir);
+
+  if (pgDistinct) {
+    // Two distinct filesystems — label both for the UI.
+    entries.push({ ...dataNorm, mount_label: "data" });
+    entries.push({ ...normalizeSingleEntry(pgDir!), mount_label: "postgres" });
+  } else {
+    // Single filesystem (or no PG probe) — no label; keeps existing copy terse.
+    entries.push(dataNorm);
+  }
+
+  return entries;
+}
+
 // ─── Blended-search gating decision ────────────────────────────────────────
 //
 // The dashboard's blended search attempts a semantic uplift only when
@@ -582,6 +826,51 @@ export function shouldAttemptSemanticUplift(gate: SemanticUpliftGate): boolean {
   return gate.advertised && gate.participationFieldCount > 0;
 }
 
+// ─── Disk headroom probe ────────────────────────────────────────────────────
+//
+// Probes the filesystem hosting `path` using Node's `fs.statfs`. Returns
+// `{ free_bytes: null, total_bytes: null }` on any failure rather than
+// throwing — the operator page must not fail because of a stat error.
+//
+// This function does I/O and lives outside the pure builder. The runtime
+// adapter calls it and passes the result into `buildDeploymentDiagnostics`
+// via `input.diskHeadroom`.
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
+  }
+  return `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+export async function probeDiskHeadroom(dataPath: string): Promise<DiskHeadroom> {
+  try {
+    const stats = await statfs(dataPath);
+    // f_bavail: blocks available to unprivileged processes. More conservative
+    // than f_bfree (which includes reserved root blocks) — this is what a
+    // running process will actually see when writing.
+    const free_bytes = stats.bavail * stats.bsize;
+    const total_bytes = stats.blocks * stats.bsize;
+    // Node's StatFs object exposes `ffree`/`files` but not `f_fsid` as a
+    // single integer (the raw struct has two 32-bit halves). Synthesize a
+    // numeric fsid from `stats.type` (OS-assigned FS type magic number) and
+    // `total_bytes` — same FS always yields the same pair, which is good
+    // enough for deduplication in practice. If `stats.type` is absent
+    // (older Node), fall back to null so the heuristic in sameFilesystem()
+    // kicks in instead.
+    const fsid: number | null =
+      typeof (stats as { type?: number }).type === "number"
+        ? ((stats as { type: number }).type * 1_000_000_007 + total_bytes) >>> 0
+        : null;
+    return { path: dataPath, free_bytes, total_bytes, fsid };
+  } catch {
+    return { path: dataPath, free_bytes: null, total_bytes: null, fsid: null };
+  }
+}
+
 // ─── Runtime adapter ───────────────────────────────────────────────────────
 //
 // Collects live inputs from the server's module globals (semantic backend,
@@ -595,14 +884,30 @@ export interface CollectDeploymentDiagnosticsOptions {
 }
 
 export interface DeploymentDiagnosticsRuntimeDeps {
-  readonly computeIndexState: () => SemanticIndexState;
+  readonly computeIndexState: () => SemanticIndexState | Promise<SemanticIndexState>;
   readonly getBackend: () => DiagnosticsBackend | null;
   readonly getBackfillProgress?: () => SemanticBackfillProgress | null;
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
   readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
+  // Optional: read-only physical footprint of the database. The adapter calls
+  // it and degrades cleanly to unmeasured on absence or rejection — the page
+  // never fails because the footprint could not be read.
+  readonly getPhysicalFootprint?: () => PhysicalFootprint | Promise<PhysicalFootprint> | null;
   readonly getRuntimeCapabilityPosture?: () => RuntimeCapabilityPosture | Promise<RuntimeCapabilityPosture> | null;
+  // Optional: probe disk headroom on the filesystem hosting the data dir. If
+  // absent, disk_headroom is null in the report. Typically set to
+  // () => probeDiskHeadroom(dbPath) by the server's route handler.
+  readonly getDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
+  // Optional: probe the Postgres data volume's filesystem. Only set when the
+  // backend is Postgres and the data volume may be a distinct mount from the
+  // data dir (e.g. a dedicated Docker volume). If absent or if it turns out to
+  // be the same FS as the data dir, it is silently suppressed in the report.
+  // IMPORTANT: inside the reference container the Postgres volume may not be
+  // mounted. If the path does not exist, probeDiskHeadroom returns
+  // { free_bytes: null, total_bytes: null } — never a false green.
+  readonly getPgDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
 
@@ -635,11 +940,41 @@ export async function collectDeploymentDiagnostics(
   }
 
   // Index state is only meaningful when a backend is configured.
-  const indexState: SemanticIndexState | null = backend === null ? null : deps.computeIndexState();
+  const indexState: SemanticIndexState | null = backend === null ? null : await deps.computeIndexState();
 
   const runtimeCapabilities = deps.getRuntimeCapabilityPosture
     ? await Promise.resolve(deps.getRuntimeCapabilityPosture())
     : null;
+
+  // Physical footprint is best-effort and read-only. A rejected promise (or a
+  // missing dep) degrades to unmeasured rather than failing the whole page;
+  // the builder collapses null/undefined to `physical_bytes: null`.
+  let physicalFootprint: PhysicalFootprint | null = null;
+  if (deps.getPhysicalFootprint) {
+    try {
+      physicalFootprint = await Promise.resolve(deps.getPhysicalFootprint());
+    } catch {
+      physicalFootprint = null;
+    }
+  }
+
+  let diskHeadroom: DiskHeadroom | null = null;
+  if (deps.getDiskHeadroom) {
+    try {
+      diskHeadroom = await Promise.resolve(deps.getDiskHeadroom());
+    } catch {
+      diskHeadroom = null;
+    }
+  }
+
+  let pgDiskHeadroom: DiskHeadroom | null = null;
+  if (deps.getPgDiskHeadroom) {
+    try {
+      pgDiskHeadroom = await Promise.resolve(deps.getPgDiskHeadroom());
+    } catch {
+      pgDiskHeadroom = null;
+    }
+  }
 
   return buildDeploymentDiagnostics({
     backend,
@@ -649,7 +984,10 @@ export async function collectDeploymentDiagnostics(
     lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
     indexState,
+    physicalFootprint,
     runtimeCapabilities,
+    diskHeadroom,
+    pgDiskHeadroom,
     env,
   });
 }
@@ -693,7 +1031,9 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
     },
     database: {
       path: input.dbPath,
+      ...normalizePhysicalFootprint(input.physicalFootprint),
     },
+    disk_headroom: normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom),
     manifests: summarizeManifests(input.manifests),
     environment: buildEnvironmentReport(input.env),
     warnings,

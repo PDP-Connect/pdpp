@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 
 import { startServer } from '../server/index.js';
+import { createCimdDocument } from '../server/auth.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
 import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
 import { createPdppCliCommand, getPdppCliPackageInfo } from '../../packages/cli/src/package-info.js';
@@ -59,6 +60,11 @@ function assertPublicClientAdvertised(metadata, clientId, clientName) {
     client_name: clientName,
     token_endpoint_auth_method: 'none',
   });
+}
+
+function assertCimdRegistrationModes(metadata, baseModes = ['dynamic', 'pre_registered_public']) {
+  assert.deepEqual(metadata.pdpp_registration_modes_supported, [...baseModes, 'client_id_metadata_document']);
+  assert.equal(metadata.client_id_metadata_document_supported, true);
 }
 
 async function fetchJsonResponse(url, opts = {}) {
@@ -193,6 +199,13 @@ test('composed mode env drives browser-facing metadata when explicit public urls
       },
       skill_catalog: 'http://localhost:3200/.well-known/skills/index.json',
       skill: 'http://localhost:3200/.well-known/skills/pdpp-data-access/SKILL.md',
+      mcp: {
+        transport: 'streamable_http',
+        endpoint: 'http://localhost:3200/mcp',
+        setup_intent: 'grant_scoped_read',
+        tool_surface: 'profile_free_normal_read',
+        no_owner_token: true,
+      },
       llms_txt: 'http://localhost:3200/llms.txt',
       llms_full_txt: 'http://localhost:3200/llms-full.txt',
     });
@@ -217,6 +230,323 @@ test('composed mode env drives browser-facing metadata when explicit public urls
         process.env[key] = value;
       }
     }
+  }
+});
+
+// ─── Discovery round-trip: advertised agent URLs must not 404 ───────────────
+// Regression for the Simon/agent discoverability defect: the RS metadata can
+// advertise agent-facing docs/skill pointers (`skill`, `skill_catalog`,
+// `llms_txt`, `llms_full_txt`, `mcp.endpoint`). Those routes are served by the
+// console/site Next.js origin, NOT the RS origin. In direct/ephemeral topology
+// the `/mcp` protected-resource metadata used to rebase those pointers onto the
+// RS origin itself, so an agent that followed them hit a 404 at the very origin
+// where `/v1/streams` lives. This gate asserts that whatever URL the RS
+// metadata advertises, if it names the RS's own origin a GET returns < 400 —
+// i.e. the RS never advertises an RS-origin URL it does not serve.
+
+// The docs/skill pointers the RS origin does NOT serve. Only the
+// console/site Next.js origin serves these routes; the RS serves none of
+// them, so advertising any of them rebased onto the RS origin produces a 404.
+const RS_UNSERVED_DOCS_KEYS = ['skill', 'skill_catalog', 'llms_txt', 'llms_full_txt'];
+
+// Assert that every docs/skill pointer in a `pdpp_agent_discovery` block names
+// some origin OTHER than the RS, and that any pointer which does name the RS
+// origin actually round-trips (GET < 400). This is the discovery round-trip
+// gate: whatever the RS advertises to agents, an RS-origin URL it does not
+// serve must never appear.
+async function assertAgentDiscoveryHonest(agentDiscovery, { rsOrigin, label }) {
+  if (!agentDiscovery) {
+    return;
+  }
+  for (const key of RS_UNSERVED_DOCS_KEYS) {
+    const url = agentDiscovery[key];
+    if (typeof url !== 'string') {
+      continue;
+    }
+    // The RS does not serve these docs routes, so it must never advertise them
+    // under its own origin — that is exactly the 404 seam agents hit.
+    assert.notEqual(
+      new URL(url).origin,
+      rsOrigin,
+      `${label}: pdpp_agent_discovery.${key} = ${url} names the RS origin, which does not serve it (would 404)`,
+    );
+  }
+  // The MCP endpoint IS an RS-origin route. If advertised under the RS origin,
+  // prove it resolves rather than 404s (a bare GET to the streamable-HTTP MCP
+  // endpoint must not be Not Found).
+  const mcpEndpoint = agentDiscovery.mcp && agentDiscovery.mcp.endpoint;
+  if (typeof mcpEndpoint === 'string' && new URL(mcpEndpoint).origin === rsOrigin) {
+    const resp = await fetch(mcpEndpoint);
+    assert.notEqual(
+      resp.status,
+      404,
+      `${label}: advertised RS-origin mcp.endpoint ${mcpEndpoint} returned 404`,
+    );
+  }
+}
+
+test('RS never advertises RS-origin docs/skill URLs it does not serve (direct/ephemeral)', async () => {
+  // Direct/ephemeral topology (no PDPP_REFERENCE_ORIGIN) — the case where the
+  // `/mcp` metadata previously rebased docs/skill pointers onto the RS origin
+  // (root-and-discovery.ts), so an agent following them hit a 404 at the RS.
+  const previous = {
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+  };
+  delete process.env.PDPP_REFERENCE_MODE;
+  delete process.env.PDPP_REFERENCE_ORIGIN;
+  delete process.env.AS_PUBLIC_URL;
+  delete process.env.RS_PUBLIC_URL;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const rsOrigin = new URL(rsUrl).origin;
+
+  try {
+    for (const metadataPath of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]) {
+      const metadata = await fetchJson(`${rsUrl}${metadataPath}`);
+      assert.equal(metadata.status, 200, `${metadataPath} must return 200`);
+      await assertAgentDiscoveryHonest(metadata.body.pdpp_agent_discovery, {
+        rsOrigin,
+        label: metadataPath,
+      });
+    }
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('composed mode advertises docs/skill URLs on the docs origin, never the RS origin', async () => {
+  // Composed topology: the configured browser origin (console/site) serves the
+  // docs/skill routes. The RS must point agents at THAT origin — and must not
+  // point them at itself — on both the plain and `/mcp` protected-resource
+  // metadata documents.
+  const previous = {
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+  };
+  process.env.PDPP_REFERENCE_MODE = 'composed';
+  process.env.PDPP_REFERENCE_ORIGIN = 'http://localhost:3200';
+  delete process.env.AS_PUBLIC_URL;
+  delete process.env.RS_PUBLIC_URL;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ignoreAmbientPublicUrls: false,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const rsOrigin = new URL(rsUrl).origin;
+  const docsOrigin = 'http://localhost:3200';
+
+  try {
+    for (const metadataPath of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]) {
+      const metadata = await fetchJson(`${rsUrl}${metadataPath}`);
+      assert.equal(metadata.status, 200, `${metadataPath} must return 200`);
+      const agentDiscovery = metadata.body.pdpp_agent_discovery;
+      assert.ok(agentDiscovery, `${metadataPath} must advertise pdpp_agent_discovery in composed mode`);
+      // Every docs/skill pointer must name the configured docs origin.
+      for (const key of RS_UNSERVED_DOCS_KEYS) {
+        assert.equal(
+          new URL(agentDiscovery[key]).origin,
+          docsOrigin,
+          `${metadataPath}: ${key} must point at the docs origin, got ${agentDiscovery[key]}`,
+        );
+      }
+      // And none of them may name the RS origin (the 404 seam).
+      await assertAgentDiscoveryHonest(agentDiscovery, { rsOrigin, label: metadataPath });
+    }
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+// ─── Trusted owner-agent onboarding advisory block ──────────────────────────
+// openspec/changes/add-trusted-owner-agent-onboarding (tasks 2.1–2.4): the
+// advisory `pdpp_owner_agent_onboarding` block is emitted on `GET /` and
+// `GET /.well-known/oauth-protected-resource` ONLY when owner-agent onboarding
+// is safely configured (a resolved composed-mode public/browser origin), uses
+// the caller-visible trusted public origin for every URL, and is omitted (not
+// pointed at an untrusted host) otherwise.
+
+function assertOwnerAgentOnboardingBlock(block, { origin }) {
+  assert.ok(block, 'expected pdpp_owner_agent_onboarding block');
+  assert.equal(block.advisory, true);
+  assert.equal(block.profile, 'trusted_owner_agent');
+  assert.equal(typeof block.warning, 'string');
+  assert.ok(block.warning.length > 0, 'warning must be non-empty');
+  assert.equal(block.authorization_server, origin);
+  assert.equal(block.resource, origin);
+  assert.equal(block.owner_approval_url, `${origin}/dashboard`);
+  assert.equal(block.device_authorization_endpoint, `${origin}/oauth/device_authorization`);
+  assert.equal(block.token_endpoint, `${origin}/oauth/token`);
+  assert.equal(block.introspection_endpoint, `${origin}/introspect`);
+  assert.equal(block.registration_endpoint, `${origin}/oauth/register`);
+  assert.equal(block.revocation_path_template, `${origin}/oauth/register/{client_id}`);
+  assert.equal(block.schema_endpoint, `${origin}/v1/schema`);
+  assert.equal(block.schema_compact_endpoint, `${origin}/v1/schema?view=compact`);
+  assert.equal(block.streams_endpoint, `${origin}/v1/streams`);
+  assert.equal(block.query_base, `${origin}/v1`);
+  assert.equal(block.event_subscriptions_endpoint, `${origin}/v1/event-subscriptions`);
+  assert.equal(block.mcp_owner_bearer_rejected, true);
+  assert.equal(block.pdpp_token_kind, 'owner');
+}
+
+test('composed mode advertises the trusted owner-agent onboarding block on metadata and root', async () => {
+  const publicOrigin = 'http://localhost:3200';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: publicOrigin,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assertOwnerAgentOnboardingBlock(protectedResource.body.pdpp_owner_agent_onboarding, { origin: publicOrigin });
+
+    const root = await fetchJson(`${rsUrl}/`);
+    assert.equal(root.status, 200);
+    assert.equal(root.body.object, 'pdpp_discovery_index');
+    assertOwnerAgentOnboardingBlock(root.body.pdpp_owner_agent_onboarding, { origin: publicOrigin });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('direct ephemeral servers omit owner-agent onboarding even when public-url env leaks in', async () => {
+  const previous = {
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    AS_ISSUER: process.env.AS_ISSUER,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+  };
+  // Leak hostile/public env exactly as a CI host might. The ephemeral
+  // (asPort:0/rsPort:0, no explicit public urls) server resolves to DIRECT
+  // mode and must NOT advertise owner-agent onboarding.
+  process.env.AS_PUBLIC_URL = 'https://wrong-as.example';
+  process.env.AS_ISSUER = 'https://wrong-issuer.example';
+  process.env.RS_PUBLIC_URL = 'https://wrong-rs.example';
+  process.env.PDPP_REFERENCE_ORIGIN = 'https://wrong-web.example';
+  delete process.env.PDPP_REFERENCE_MODE;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(protectedResource.body, 'pdpp_owner_agent_onboarding'),
+      false,
+      'direct ephemeral RS must not advertise owner-agent onboarding',
+    );
+
+    const root = await fetchJson(`${rsUrl}/`);
+    assert.equal(root.status, 200);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(root.body, 'pdpp_owner_agent_onboarding'),
+      false,
+      'direct ephemeral RS root must not advertise owner-agent onboarding',
+    );
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('owner-agent onboarding rebases to the forwarded public origin and never names an untrusted host', async () => {
+  const trustedOrigin = 'https://peregrine-dev.example';
+  const localOrigin = 'http://localhost:3000';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: localOrigin,
+    asPublicUrl: localOrigin,
+    rsPublicUrl: localOrigin,
+    trustedMetadataHosts: ['peregrine-dev.example'],
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    // Trusted forwarded host: block is present and scoped to the trusted host.
+    const trusted = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(trusted.status, 200);
+    assertOwnerAgentOnboardingBlock(trusted.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
+
+    const trustedRoot = await fetchJson(`${rsUrl}/`, {
+      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(trustedRoot.status, 200);
+    assertOwnerAgentOnboardingBlock(trustedRoot.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
+
+    // Hostile forwarded host: the metadata route rejects rather than emitting a
+    // block that advertises the untrusted host.
+    const hostile = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(hostile.status, 421);
+    assert.equal(hostile.body.error.code, 'misdirected_request');
+
+    const hostileRoot = await fetchJson(`${rsUrl}/`, {
+      headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(hostileRoot.status, 421);
+    assert.equal(hostileRoot.body.error.code, 'misdirected_request');
+  } finally {
+    await closeServer(server);
   }
 });
 
@@ -260,7 +590,7 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, publicOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
   } finally {
@@ -294,7 +624,7 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, asOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${asOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
@@ -304,6 +634,112 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(protectedResource.body.resource, rsOrigin);
     assert.deepEqual(protectedResource.body.authorization_servers, [asOrigin]);
     assert.equal(protectedResource.body.pdpp_core_query_base, `${rsOrigin}/v1`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('operator-created CIMD documents are served as stable client metadata documents', async () => {
+  const publicOrigin = 'https://pdpp.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const documentId = await createCimdDocument({
+      clientName: 'Claude Code',
+      redirectUris: ['http://localhost:1455/callback'],
+      logoUri: null,
+    });
+
+    const resp = await fetch(`${asUrl}/oauth/client-metadata/${encodeURIComponent(documentId)}`);
+    assert.equal(resp.status, 200);
+    assert.match(resp.headers.get('content-type') || '', /application\/json/);
+    assert.equal(resp.headers.get('cache-control'), 'max-age=3600');
+    const body = await resp.json();
+    assert.deepEqual(body, {
+      client_id: `${publicOrigin}/oauth/client-metadata/${documentId}`,
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost:1455/callback'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    });
+    assert.equal(Object.values(body).some((value) => value === null), false);
+
+    const missing = await fetchJson(`${asUrl}/oauth/client-metadata/cimd_missing`);
+    assert.equal(missing.status, 404);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('_ref CIMD document management creates, lists, rejects secrets, and deletes stable identities', async () => {
+  const publicOrigin = 'https://pdpp.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const create = await fetchJson(`${asUrl}/_ref/cimd-client-documents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Codex',
+        redirect_uris: ['http://localhost:1455/callback'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(create.status, 201);
+    assert.equal(create.body.object, 'cimd_client_metadata_document');
+    assert.equal(create.body.client_name, 'Codex');
+    assert.equal(create.body.client_id, `${publicOrigin}/oauth/client-metadata/${create.body.document_id}`);
+    assert.deepEqual(create.body.redirect_uris, ['http://localhost:1455/callback']);
+    assert.equal(create.body.token_endpoint_auth_method, 'none');
+
+    const list = await fetchJson(`${asUrl}/_ref/cimd-client-documents`);
+    assert.equal(list.status, 200);
+    assert.equal(list.body.object, 'list');
+    assert.equal(list.body.has_more, false);
+    assert.ok(list.body.data.some((doc) => doc.document_id === create.body.document_id));
+
+    const publicDoc = await fetchJson(`${asUrl}/oauth/client-metadata/${encodeURIComponent(create.body.document_id)}`);
+    assert.equal(publicDoc.status, 200);
+    assert.equal(publicDoc.body.client_id, create.body.client_id);
+    assert.equal(Object.values(publicDoc.body).some((value) => value === null), false);
+
+    const secret = await fetchJson(`${asUrl}/_ref/cimd-client-documents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Secret client',
+        redirect_uris: ['https://client.example/callback'],
+        token_endpoint_auth_method: 'client_secret_basic',
+        client_secret: 'not-allowed',
+      }),
+    });
+    assert.equal(secret.status, 400);
+    assert.equal(secret.body.error.code, 'invalid_client_metadata');
+
+    const deleted = await fetchJson(`${asUrl}/_ref/cimd-client-documents/${encodeURIComponent(create.body.document_id)}`, {
+      method: 'DELETE',
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(deleted.body.client_id, create.body.client_id);
+
+    const missing = await fetchJson(`${asUrl}/oauth/client-metadata/${encodeURIComponent(create.body.document_id)}`);
+    assert.equal(missing.status, 404);
   } finally {
     await closeServer(server);
   }
@@ -333,7 +769,7 @@ test('operator-supplied DCR token remains advertised for public metadata', async
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, publicOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     const registerPublic = await fetch(`${asUrl}/oauth/register`, {
@@ -499,18 +935,22 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.equal(authorizationServer.body.introspection_endpoint, `${asUrl}/introspect`);
     assert.equal(authorizationServer.body.pushed_authorization_request_endpoint, `${asUrl}/oauth/par`);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.equal('authorization_endpoint' in authorizationServer.body, false);
-    assert.equal('response_types_supported' in authorizationServer.body, false);
-    assert.equal('code_challenge_methods_supported' in authorizationServer.body, false);
+    assert.equal(authorizationServer.body.authorization_endpoint, `${asUrl}/oauth/authorize`);
+    assert.deepEqual(authorizationServer.body.response_types_supported, ['code']);
+    assert.deepEqual(authorizationServer.body.code_challenge_methods_supported, ['S256']);
     assert.deepEqual(authorizationServer.body.pdpp_provider_connect_capabilities, ['owner_self_export', 'cli_device_connect', 'third_party_client_connect']);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.deepEqual(authorizationServer.body.pdpp_authorization_details_types_supported, ['https://pdpp.org/data-access']);
     assert.equal(authorizationServer.body.token_endpoint, `${asUrl}/oauth/token`);
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
     assert.equal(authorizationServer.body.agent_connect_endpoint, `${asUrl}/agent-connect`);
-    assert.deepEqual(authorizationServer.body.grant_types_supported, ['urn:ietf:params:oauth:grant-type:device_code']);
+    assert.deepEqual(authorizationServer.body.grant_types_supported, [
+      'urn:ietf:params:oauth:grant-type:device_code',
+      'authorization_code',
+      'refresh_token',
+    ]);
   } finally {
     await closeServer(server);
   }
@@ -524,6 +964,7 @@ test('reference revision header is distinct reference metadata across AS, RS, an
     rsPort: 0,
     dbPath: ':memory:',
     referenceRevision,
+    ownerAuthPassword: '',
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -652,7 +1093,7 @@ test('provider metadata advertises public registration when initial access token
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
   } finally {
     await closeServer(server);
@@ -682,7 +1123,7 @@ test('pre-registered public metadata publishes configured client identifiers', a
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assert.deepEqual(authorizationServer.body.pdpp_pre_registered_public_clients, [
       {
         client_id: 'agent_demo',
@@ -703,7 +1144,7 @@ test('default local reference startup advertises public self-registration', asyn
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     // No bearer token is required for public-client identity registration; a
@@ -757,7 +1198,7 @@ test('public forwarded host advertises self-registration and rejects bogus beare
     });
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `https://${publicHost}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
 
     const registerPublic = await fetch(`${asUrl}/oauth/register`, {
       method: 'POST',
@@ -852,7 +1293,7 @@ test('explicit PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0 env still disables regi
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal('registration_endpoint' in authorizationServer.body, false);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body, ['pre_registered_public']);
   } finally {
     await closeServer(server);
     if (previous === undefined) {
@@ -896,7 +1337,7 @@ test('provider metadata omits registration endpoint when dynamic registration is
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal('registration_endpoint' in authorizationServer.body, false);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body, ['pre_registered_public']);
   } finally {
     await closeServer(server);
   }

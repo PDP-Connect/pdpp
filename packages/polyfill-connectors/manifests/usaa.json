@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/usaa",
+  "connector_key": "usaa",
+  "manifest_uri": "https://registry.pdpp.org/connectors/usaa",
   "version": "0.1.0",
   "display_name": "USAA",
   "runtime_requirements": {
@@ -20,6 +22,7 @@
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
       "interaction_posture": "manual_action_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
@@ -34,10 +37,10 @@
   "streams": [
     {
       "name": "accounts",
-      "description": "USAA retail accounts (checking, savings, credit cards, loans).",
+      "description": "USAA retail accounts (checking, savings, credit cards, loans). Identity and settings only; point-in-time balances are in the `account_stats` observation stream.",
       "display": {
         "label": "Your USAA accounts",
-        "detail": "Account names, types, last-four, balances, and open/closed status."
+        "detail": "Account names, types, last-four, and open/closed status. Current and historical balances are in the daily `account_stats` stream."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -61,18 +64,6 @@
           "last_four": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "available_balance_cents": {
-            "type": [
-              "integer",
               "null"
             ]
           },
@@ -107,7 +98,76 @@
             "status"
           ]
         },
+        "range_filters": {}
+      }
+    },
+    {
+      "name": "account_stats",
+      "description": "Daily balance snapshot for each USAA account, keyed by {account_id}:{YYYY-MM-DD} (UTC). One record per account per calendar day; re-running on the same day with the same balances is idempotent. Preserves a balance time series without creating false entity-version churn on the accounts stream.",
+      "display": {
+        "label": "Your USAA account balances (daily)",
+        "detail": "Daily snapshot of balance and available balance (cents). Each record covers one calendar day for one account."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "available_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {},
         "range_filters": {
+          "observed_on": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
           "balance_cents": [
             "gte",
             "gt",
@@ -350,7 +410,21 @@
               "string",
               "null"
             ],
-            "description": "SHA-256 of the downloaded PDF bytes. Populated only after blob hydration; null on index-only scrapes."
+            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — re-encrypted per download, so it churns on no-op re-fetches). Populated only after blob hydration; null on index-only scrapes."
+          },
+          "pdf_text_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Positive content fingerprint: SHA-256 of the statement's extracted PDF text after deterministic normalization (NFC, whitespace collapse, trim). Stable across raw-byte churn so a re-download with unchanged content is provably a no-op. Null when text extraction failed or returned empty text."
+          },
+          "pdf_page_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Integer page count from the PDF structure. A structural content invariant alongside pdf_text_sha256. Null when extraction failed."
           },
           "fetched_at": {
             "type": "string",
@@ -479,10 +553,10 @@
     },
     {
       "name": "credit_card_billing",
-      "description": "Per-credit-card billing state: balance, credit limit, APR, rewards, minimum-payment status.",
+      "description": "Per-credit-card identity and settings: nickname, credit limit, APRs, card holders. Point-in-time balances, available credit, rewards, and cycle billing status are in the `credit_card_billing_stats` observation stream.",
       "display": {
         "label": "Your credit card billing details",
-        "detail": "For each USAA-issued credit card: current balance, available credit, credit limit, APRs, cash-rewards balance, minimum-payment-met flag, card holder names."
+        "detail": "For each USAA-issued credit card: nickname, credit limit, APRs, and card holder names. Current and historical balances, available credit, rewards, and minimum-payment status are in the daily `credit_card_billing_stats` stream."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -503,18 +577,6 @@
               "null"
             ]
           },
-          "current_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "available_credit_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "credit_limit_cents": {
             "type": [
               "integer",
@@ -530,24 +592,6 @@
           "cash_advance_apr": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "cash_rewards_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "billing_status": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "minimum_payment_met": {
-            "type": [
-              "boolean",
               "null"
             ]
           },
@@ -585,24 +629,127 @@
       "query": {
         "search": {
           "lexical_fields": [
-            "account_nickname",
-            "billing_status"
+            "account_nickname"
           ]
         },
         "range_filters": {
-          "available_credit_cents": [
+          "credit_limit_cents": [
             "gte",
             "gt",
             "lte",
             "lt"
-          ],
-          "credit_limit_cents": [
+          ]
+        }
+      }
+    },
+    {
+      "name": "credit_card_billing_stats",
+      "description": "Daily per-cycle billing snapshot for each credit card, keyed by {card_id}:{YYYY-MM-DD} (UTC). One record per card per calendar day; re-running on the same day with the same values is idempotent. Preserves a balance/rewards/billing-status time series without creating false entity-version churn on the credit_card_billing stream.",
+      "display": {
+        "label": "Your credit card balances (daily)",
+        "detail": "Daily snapshot of current balance, available credit, cash rewards (cents), and the cycle billing status / minimum-payment-met flag. Each record covers one calendar day for one card."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "current_balance_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "available_credit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cash_rewards_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "billing_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minimum_payment_met": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "card_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "card",
+          "stream": "credit_card_billing",
+          "foreign_key": "card_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "billing_status"
+          ]
+        },
+        "range_filters": {
+          "observed_on": [
             "gte",
             "gt",
             "lte",
             "lt"
           ],
           "current_balance_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "available_credit_cents": [
             "gte",
             "gt",
             "lte",

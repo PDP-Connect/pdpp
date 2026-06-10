@@ -56,7 +56,7 @@ test('rs.search.lexical operation does not import server/search.js', () => {
 });
 
 test('sandbox /sandbox/v1/search route does not import buildLiveSearchResponse', () => {
-  const src = read('apps/web/src/app/sandbox/v1/search/route.ts');
+  const src = read('apps/site/src/app/sandbox/v1/search/route.ts');
   // Match any static-import statement that pulls buildLiveSearchResponse
   // in. Comments referencing the deleted symbol are still allowed; only
   // import-binding usage is forbidden.
@@ -70,7 +70,7 @@ test('sandbox /sandbox/v1/search route does not import buildLiveSearchResponse',
 });
 
 test('sandbox builders.ts no longer exports buildLiveSearchResponse', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveSearchResponse\b/.test(src),
     false,

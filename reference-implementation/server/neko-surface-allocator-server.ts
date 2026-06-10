@@ -10,7 +10,7 @@ import {
   type BrowserSurfaceHealth,
   type EnsureBrowserSurfaceRequest,
   type StopBrowserSurfaceRequest,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 
 const DEFAULT_DOCKER_SOCKET_PATH = "/var/run/docker.sock";
 const DEFAULT_LABEL_NAMESPACE = "org.pdpp.reference.neko";
@@ -56,6 +56,10 @@ interface DockerContainerInspect {
   readonly State?: {
     readonly Running?: boolean;
     readonly Status?: string;
+    readonly Health?: {
+      readonly Status?: string;
+      readonly FailingStreak?: number;
+    };
   };
 }
 
@@ -264,10 +268,40 @@ export class NekoSurfaceAllocatorService {
     const existing = await this.#findOwnedContainer(request.surfaceId);
     if (existing !== null) {
       this.#assertContainerMatchesRequest(existing, request);
-      if (!isInspectRunning(existing)) {
+      if (isInspectRunning(existing)) {
+        // A running container is not automatically trustworthy. Docker's own
+        // healthcheck (neko HTTP + CDP /json/version + supervisorctl chromium)
+        // is debounced past the StartPeriod, so `State.Health.Status` of
+        // "unhealthy" means the browser surface has been wedged long enough to
+        // fail its retries — not merely cold-starting. Returning that carcass
+        // would hand the next acquire a dead CDP socket and, because the
+        // surface never exits, no later boot reconcile or idle sweep would ever
+        // recycle it. Replace it now, exactly as we replace an exited carcass.
+        // The host profile bind mount survives container removal, so this is
+        // non-destructive for owner-visible state.
+        //
+        // We intentionally key on Docker's healthcheck verdict, NOT the
+        // allocator's own single-shot #readiness() probe: a freshly launched
+        // container legitimately reports cdp_unready ("starting") while
+        // Chromium boots, and replacing on that signal would cause a boot loop.
+        // "unhealthy" only appears after StartPeriod + failing retries.
+        if (isInspectUnhealthy(existing)) {
+          await this.#removeContainer(existing.Id);
+        } else {
+          return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
+        }
+      } else if (this.#isReplaceableExitedContainer(existing)) {
+        // An exited container is not safe to "start again" — its previous run
+        // may have lost its network attachment, left the profile in a half-
+        // initialized state, or hit a crash loop. Replacing it is cheaper
+        // than re-binding clients to a dead CDP socket and is the only way
+        // an allocator-aware boot reconcile can make progress when prior
+        // surfaces were OOM/network-evicted across restarts.
+        await this.#removeContainer(existing.Id);
+      } else {
         await this.#startContainer(existing.Id);
+        return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
       }
-      return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
     }
 
     const port = await this.#allocateHostPort();
@@ -318,8 +352,27 @@ export class NekoSurfaceAllocatorService {
     }
     await this.#docker.requestJson(`/containers/${encodeURIComponent(inspect.Id)}/stop`, {
       method: "POST",
-      okStatuses: [204, 304],
+      okStatuses: [204, 304, 404],
     });
+    // `surface_failed` carries explicit evidence from the controller that the
+    // container's CDP socket was dead. The next acquire MUST get a brand new
+    // container, not the same exited carcass. Remove it now; profile storage
+    // lives on the host bind mount and survives. Other stop reasons (idle TTL,
+    // capacity pressure, operator) leave the container in place so it can be
+    // restarted cheaply.
+    if (request.reason === "surface_failed") {
+      try {
+        await this.#removeContainer(inspect.Id);
+      } catch (cause) {
+        if (!isDockerNotFoundError(cause)) {
+          throw cause;
+        }
+      }
+      return this.#surfaceFromInspect(inspect, {
+        allowLabelHostPort: true,
+        readiness: { health: "stopping", reason: "container_removed" },
+      });
+    }
     try {
       return this.#surfaceFromInspect(await this.#inspectContainer(inspect.Id), {
         allowLabelHostPort: true,
@@ -397,7 +450,11 @@ export class NekoSurfaceAllocatorService {
       },
     };
     if (surfaceSubjectId !== undefined) {
-      return { ...surface, ...(accountKey !== undefined ? { account_key: accountKey } : {}), surface_subject_id: surfaceSubjectId };
+      return {
+        ...surface,
+        ...(accountKey === undefined ? {} : { account_key: accountKey }),
+        surface_subject_id: surfaceSubjectId,
+      };
     }
     if (accountKey !== undefined) {
       return { ...surface, account_key: accountKey };
@@ -411,7 +468,7 @@ export class NekoSurfaceAllocatorService {
     streamBaseUrl: string;
   }): Promise<{ health: BrowserSurfaceHealth; reason: string }> {
     if (!isInspectRunning(input.inspect)) {
-      return { health: "starting", reason: "container_not_running" };
+      return { health: "stopping", reason: "container_not_running" };
     }
     if (!hasNetwork(input.inspect, this.#options.network)) {
       return { health: "unhealthy", reason: "missing_expected_network" };
@@ -470,6 +527,24 @@ export class NekoSurfaceAllocatorService {
       method: "POST",
       okStatuses: [204, 304],
     });
+  }
+
+  async #removeContainer(containerId: string): Promise<void> {
+    await this.#docker.requestJson(`/containers/${encodeURIComponent(containerId)}`, {
+      method: "DELETE",
+      query: { force: "true", v: "false" },
+      okStatuses: [204, 404, 409],
+    });
+  }
+
+  #isReplaceableExitedContainer(inspect: DockerContainerInspect): boolean {
+    // Any non-running owned container is treated as a replaceable carcass.
+    // We intentionally do not try to discriminate "clean shutdown" from
+    // "crashed" because the only safe operation against a stale container
+    // whose CDP/network state we cannot verify is to remove and recreate.
+    // Profile storage lives on the host bind mount and survives container
+    // removal, so this is non-destructive for owner-visible state.
+    return inspect.State?.Running !== true && inspect.State?.Status !== "running";
   }
 
   async #prepareProfileDirectory(profilePath: string): Promise<void> {
@@ -903,6 +978,24 @@ function isInspectRunning(inspect: DockerContainerInspect): boolean {
   return inspect.State?.Running === true || inspect.State?.Status === "running";
 }
 
+/**
+ * A running container that Docker's own healthcheck has marked `unhealthy`.
+ * The healthcheck (see #containerHealthcheck) probes neko HTTP, CDP
+ * /json/version, and the supervised Chromium process, with a StartPeriod that
+ * suppresses failures during legitimate cold-start and Retries that debounce
+ * transient blips. By the time `State.Health.Status === "unhealthy"`, the
+ * surface has failed those probes past its retry budget: the CDP socket /
+ * Chromium is wedged, not merely booting. Such a container is as unrecoverable
+ * as an exited one, so ensureSurface replaces rather than reuses it.
+ *
+ * Containers with no healthcheck (Health undefined) or still inside the
+ * StartPeriod (Health.Status === "starting") are NOT treated as unhealthy, so
+ * a freshly launched surface is never destroyed mid-boot.
+ */
+function isInspectUnhealthy(inspect: DockerContainerInspect): boolean {
+  return isInspectRunning(inspect) && inspect.State?.Health?.Status === "unhealthy";
+}
+
 function hasNetwork(inspect: DockerContainerInspect, network: string): boolean {
   return inspect.NetworkSettings?.Networks?.[network] !== undefined;
 }
@@ -973,6 +1066,10 @@ export function readNekoSurfaceAllocatorOptionsFromEnv(
     profileOwnerGid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_GID", DEFAULT_NEKO_PROFILE_GID),
     extraEnv: compactEnv({
       NEKO_DESKTOP_SCREEN: env.NEKO_DESKTOP_SCREEN,
+      NEKO_MEMBER_PROVIDER: env.NEKO_MEMBER_PROVIDER,
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: env.NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD,
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: env.NEKO_MEMBER_MULTIUSER_USER_PASSWORD,
+      NEKO_PASSWORD_ADMIN: env.NEKO_PASSWORD_ADMIN,
       NEKO_WEBRTC_NAT1TO1: env.NEKO_WEBRTC_NAT1TO1,
       NEKO_WEBRTC_ICESERVERS: env.NEKO_WEBRTC_ICESERVERS,
       NEKO_PASSWORD: env.NEKO_PASSWORD,

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { isManagedNekoSurfaceApproved, startServer } from '../server/index.js';
 import { createMockCompanion } from '../server/streaming/cdp-companion.js';
-import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '../runtime/browser-surface-leases.ts';
+import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '@opendatalabs/remote-surface/leases';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -99,7 +99,7 @@ function assertNoRawBackendAuthority(value) {
   assert.equal(/ws:\/\/|wss:\/\//i.test(serialized), false);
   assert.equal(/https?:\/\/(?:127\.0\.0\.1|localhost|neko)(?::\d+)?/i.test(serialized), false);
   assert.equal(/\/json\/version|\/devtools\/browser/i.test(serialized), false);
-  assert.equal(/base_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
+  assert.equal(/base_url|cdp_http_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
   assert.equal(/docker\.sock|allocatorCredentials/i.test(serialized), false);
 }
 
@@ -271,6 +271,7 @@ test('managed n.eko approval is lease, surface, profile, run, interaction, readi
 
   const target = {
     origin: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
+    cdp_http_url: 'http://neko:9222',
     surface_id: 'surface_dynamic_1',
     lease_id: 'lease_dynamic_1',
     profile_key: 'profile_dynamic_1',
@@ -290,6 +291,7 @@ test('managed n.eko approval is lease, surface, profile, run, interaction, readi
   assert.equal(isManagedNekoSurfaceApproved({ ...target, surface_id: 'surface_other' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, lease_id: 'lease_other' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, profile_key: 'profile_other' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, cdp_http_url: 'http://neko:9333' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, origin: 'http://10.88.0.4:6080/neko' }, context), false);
   assert.equal(
     isManagedNekoSurfaceApproved(target, { ...context, runId: 'run_other' }),
@@ -322,7 +324,7 @@ test('managed n.eko approval rejects a non-ready real lease-manager surface', ()
   );
 });
 
-test('mint requires a pending manual_action interaction', async () => {
+test('mint accepts a pending manual_action interaction', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
     const pending = await waitForPendingInteraction(asUrl, started.run_id);
@@ -357,6 +359,25 @@ test('mint requires a pending manual_action interaction', async () => {
     assert.ok(assistanceCancelled, 'manual_action cancellation should project to run.assistance_cancelled');
     assert.equal(assistanceCancelled.interaction_id, pending.interaction_id);
     assert.equal(assistanceCancelled.data.status, 'cancelled');
+  });
+});
+
+test('mint accepts a pending otp interaction for browser-backed verification flows', async () => {
+  await withHarness({ kind: 'otp' }, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        viewport: { width: 800, height: 600 },
+      }),
+    });
+    assert.equal(mint.status, 201);
+    assert.equal(mint.body.object, 'run_interaction_stream_session');
+    assert.equal(mint.body.interaction_id, pending.interaction_id);
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
 });
 
@@ -1686,6 +1707,118 @@ test('SSE handler emits keepalive comment pings while idle to prevent timeout', 
     } catch {
       /* aborted */
     }
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+// ── Stream-reach give-up beacon ──────────────────────────────────────────────
+
+function reachFailureUrl(asUrl, runId) {
+  return `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream/reach-failure`;
+}
+
+async function postReachFailure(asUrl, runId, payload) {
+  return fetchJson(reachFailureUrl(asUrl, runId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+function findReachFailedEvent(timelineBody) {
+  return (timelineBody?.data || []).find((event) => event.event_type === 'run.stream_reach_failed') || null;
+}
+
+test('reach-failure beacon emits run.stream_reach_failed with the typed reason and http status', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: pending.interaction_id,
+      reason: 'companion_unavailable',
+      http_status: 410,
+    });
+    assert.equal(beacon.status, 202);
+    assert.equal(beacon.body.object, 'run_interaction_stream_reach_failure');
+    assert.equal(beacon.body.reason, 'companion_unavailable');
+    assert.equal(beacon.body.http_status, 410);
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const event = findReachFailedEvent(timeline.body);
+    assert.ok(event, 'run.stream_reach_failed should appear on the run timeline');
+    assert.equal(event.interaction_id, pending.interaction_id);
+    assert.equal(event.data.reason, 'companion_unavailable');
+    assert.equal(event.data.http_status, 410);
+    // A connector run can succeed even when the operator gave up reaching the
+    // stream, so the diagnostic must not use a run-terminal failure status.
+    assert.notEqual(event.status, 'failed');
+    assert.notEqual(event.status, 'rejected');
+    assert.equal(event.status, 'stream_reach_failed');
+    // No raw backend authority (token, cookie, ws/cdp URL) in the spine data.
+    assertNoRawBackendAuthority(event.data);
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon clamps an out-of-set reason to unknown', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: pending.interaction_id,
+      reason: 'DROP TABLE runs',
+      http_status: 999_999,
+    });
+    assert.equal(beacon.status, 202);
+    assert.equal(beacon.body.reason, 'unknown');
+    // http_status outside 100-599 is dropped to null rather than recorded.
+    assert.equal(beacon.body.http_status, null);
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const event = findReachFailedEvent(timeline.body);
+    assert.ok(event, 'run.stream_reach_failed should still be emitted');
+    assert.equal(event.data.reason, 'unknown');
+    assert.equal(event.data.http_status, null);
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon is rejected when a different interaction is pending', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: 'int_not_the_pending_one',
+      reason: 'invalid_token',
+      http_status: 401,
+    });
+    assert.equal(beacon.status, 409);
+    assert.equal(beacon.body.error.code, 'interaction_id_mismatch');
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    assert.equal(findReachFailedEvent(timeline.body), null, 'no event for a mismatched interaction');
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon requires an interaction_id', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      reason: 'session_expired',
+      http_status: 410,
+    });
+    assert.equal(beacon.status, 400);
+    assert.equal(beacon.body.error.code, 'invalid_request');
 
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });

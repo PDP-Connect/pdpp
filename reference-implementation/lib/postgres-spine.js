@@ -139,6 +139,26 @@ function hydrate(row) {
   };
 }
 
+function sourceFromEvent(event) {
+  const sourceKind = isSourceKind(event.source_kind) ? event.source_kind : null;
+  if (sourceKind && event.source_id) {
+    return { kind: sourceKind, id: event.source_id };
+  }
+
+  const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  const source = normalizeSourceObject(data.source) || normalizeSourceObject(data.source_binding);
+  if (source) {
+    return source;
+  }
+
+  const connectorId = nonEmptyString(data.connector_id);
+  const providerId = nonEmptyString(data.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  if (event.actor_type === 'runtime' && event.actor_id) return { kind: 'connector', id: event.actor_id };
+  return null;
+}
+
 function encodeEventCursor(eventSeq) {
   return eventSeq == null ? null : Buffer.from(JSON.stringify({ event_seq: Number(eventSeq) })).toString('base64url');
 }
@@ -165,15 +185,60 @@ const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.cancelled',
   'run.abandoned',
 ]);
+const RUN_TERMINAL_EVENT_TYPE_LIST = [...RUN_TERMINAL_EVENT_TYPES];
+const SUMMARY_EVENT_HEAD_LIMIT = 5000;
+const SUMMARY_EVENT_TAIL_LIMIT = 200;
 
-function summarizeRows(id, rows) {
+async function hasPostgresActiveRunLease(runId) {
+  if (!runId) return false;
+  const result = await postgresQuery('SELECT 1 AS active FROM controller_active_runs WHERE run_id = $1 LIMIT 1', [runId]);
+  return result.rows.length > 0;
+}
+
+// Postgres mirror of `queries/spine/get-run-terminal-event.sql`: the run's
+// most-recent terminal event (`ORDER BY event_seq DESC LIMIT 1`) over the
+// terminal event types, or `null` when the run has no terminal event. The
+// `LIMIT 1` keeps this independent of the run's event count — it never
+// scans the full event list and never depends on a timeline page window.
+export async function postgresGetRunTerminalEvent(runId) {
+  if (!runId) return null;
+  const result = await postgresQuery(
+    `SELECT event_type, status, data_json::text AS data_json, occurred_at, trace_id, actor_id
+     FROM spine_events
+     WHERE run_id = $1 AND event_type = ANY($2::text[])
+     ORDER BY event_seq DESC
+     LIMIT 1`,
+    [runId, RUN_TERMINAL_EVENT_TYPE_LIST],
+  );
+  return result.rows[0] ?? null;
+}
+
+// Postgres mirror of `queries/spine/get-run-started-event.sql`: the run's
+// `run.started` event (`ORDER BY event_seq ASC LIMIT 1`), or `null` when
+// the run never reached the runtime's start emit (e.g. a launch failure
+// before spawn). Bounded by `LIMIT 1` like the terminal lookup above.
+export async function postgresGetRunStartedEvent(runId) {
+  if (!runId) return null;
+  const result = await postgresQuery(
+    `SELECT event_type, status, data_json::text AS data_json, occurred_at, trace_id, actor_id
+     FROM spine_events
+     WHERE run_id = $1 AND event_type = 'run.started'
+     ORDER BY event_seq ASC
+     LIMIT 1`,
+    [runId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function summarizeRows(id, rows, aggregate = {}) {
   const events = rows.map(hydrate).filter(Boolean);
   const first = events[0] || {};
   const last = events[events.length - 1] || first;
   const kinds = [...new Set(events.map((event) => event.event_type).filter(Boolean))];
   const failureEvent = events.find((event) => event.status === 'failed' || event.status === 'rejected');
-  const source = events.find((event) => event.source_kind && event.source_id);
-  const connector = events.find((event) => event.source_kind === 'connector' && event.source_id);
+  const sources = events.map(sourceFromEvent).filter(Boolean);
+  const source = sources[0] || null;
+  const connector = sources.find((candidate) => candidate.kind === 'connector') || null;
 
   // Status projection — mirror lib/spine.ts summarizeEvents logic.
   //
@@ -193,15 +258,14 @@ function summarizeRows(id, rows) {
     }
   }
   if (status === 'unknown') {
-    // Pass 2 (fallback): no run-terminal event yet (run in flight or a
-    // non-run correlation). Use the most recent non-"unknown" status as
-    // before. For an in-flight run with only `run.batch_ingested` events,
-    // this lands on the *batch's* status which still misrepresents the
-    // run — so we also detect that case explicitly.
+    // Pass 2 (fallback): no run-terminal event yet. A started run is only
+    // in progress while controller_active_runs still carries its lease;
+    // otherwise it is an orphan and must not keep owner surfaces live.
+    // Non-run correlations still use the most recent non-"unknown" status.
     const hasRunStarted = events.some((ev) => ev.event_type === 'run.started');
     if (hasRunStarted) {
-      // Run started, no terminal: it's still in progress.
-      status = 'in_progress';
+      const runId = events.find((ev) => ev.run_id)?.run_id || id || null;
+      status = await hasPostgresActiveRunLease(runId) ? 'in_progress' : 'failed';
     } else {
       for (let i = events.length - 1; i >= 0; i -= 1) {
         const ev = events[i];
@@ -218,27 +282,67 @@ function summarizeRows(id, rows) {
     actor_id: last.actor_id || null,
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
-    connector_id: connector?.source_id || null,
-    event_count: events.length,
+    connector_id: connector?.id || null,
+    event_count: Number(aggregate.event_count) || events.length,
     failure: failureEvent
       ? {
           event_type: failureEvent.event_type,
           reason: typeof failureEvent.data?.reason === 'string' ? failureEvent.data.reason : null,
         }
+      : status === 'failed' && events.some((event) => event.event_type === 'run.started')
+        ? {
+            event_type: 'run.started',
+            reason: 'orphaned_started_run',
+          }
       : null,
-    first_at: first.occurred_at || null,
+    first_at: aggregate.first_at || first.occurred_at || null,
     grant_id: last.grant_id || null,
     kinds,
-    last_at: last.occurred_at || null,
+    last_at: aggregate.last_at || last.occurred_at || null,
     needs_input: events.some((event) => event.status === 'needs_input'),
     request_id: last.request_id || null,
     run_id: last.run_id || null,
-    source: source ? { kind: source.source_kind, id: source.source_id } : null,
-    source_id: source?.source_id || null,
-    source_kind: source?.source_kind || null,
+    source,
+    source_id: source?.id || null,
+    source_kind: source?.kind || null,
     status,
     trace_id: last.trace_id || null,
   };
+}
+
+function mergeEventRows(rows) {
+  const bySeq = new Map();
+  for (const row of rows) {
+    if (!row) continue;
+    const key = Number(row.event_seq);
+    bySeq.set(Number.isFinite(key) ? key : row.event_id, row);
+  }
+  return [...bySeq.values()].sort((a, b) => Number(a.event_seq || 0) - Number(b.event_seq || 0));
+}
+
+async function fetchRowsForSummary(kind, column, id) {
+  const head = await postgresQuery(
+    `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT $2`,
+    [id, SUMMARY_EVENT_HEAD_LIMIT],
+  );
+  if (kind !== 'run') {
+    return head.rows;
+  }
+
+  const [tail, terminal] = await Promise.all([
+    postgresQuery(
+      `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq DESC LIMIT $2`,
+      [id, SUMMARY_EVENT_TAIL_LIMIT],
+    ),
+    postgresQuery(
+      `SELECT * FROM spine_events
+       WHERE ${column} = $1 AND event_type = ANY($2::text[])
+       ORDER BY event_seq DESC
+       LIMIT 10`,
+      [id, RUN_TERMINAL_EVENT_TYPE_LIST],
+    ),
+  ]);
+  return mergeEventRows([...head.rows, ...tail.rows, ...terminal.rows]);
 }
 
 export async function postgresEmitSpineEvent(input = {}) {
@@ -307,6 +411,33 @@ export async function postgresListSpineEventsPage(kind, id, opts = {}) {
     next_cursor: truncated ? encodeEventCursor(last.event_seq) : null,
     limit,
   };
+}
+
+/**
+ * Look up the parent grant-package id for each grant id. The binding
+ * fact lives on `grant_package_members`; the package's MCP refresh
+ * token carries `tokens.package_id` but has a NULL `grant_id`, so a
+ * tokens-side lookup misses every child grant. Returns a `Map<grantId,
+ * packageId>` containing only grants that are package-bound. Used by
+ * `listSpineCorrelations` to decorate grant rows on the operator
+ * surface; called once per page so the join cost stays bounded.
+ */
+export async function postgresGrantPackageIdsForGrants(grantIds) {
+  if (!Array.isArray(grantIds) || grantIds.length === 0) return new Map();
+  const placeholders = grantIds.map((_, i) => `$${i + 1}`).join(', ');
+  const result = await postgresQuery(
+    `SELECT grant_id, package_id
+       FROM grant_package_members
+       WHERE grant_id IN (${placeholders})`,
+    grantIds,
+  );
+  const out = new Map();
+  for (const row of result.rows) {
+    if (row.grant_id && row.package_id && !out.has(row.grant_id)) {
+      out.set(row.grant_id, row.package_id);
+    }
+  }
+  return out;
 }
 
 export async function postgresListSpineCorrelations(kind, filters = {}) {
@@ -380,16 +511,28 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   const pageRows = result.rows.slice(0, limit);
   let summaries = [];
   for (const row of pageRows) {
-    const events = await postgresQuery(
-      `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT 5000`,
-      [row.id],
-    );
-    summaries.push(summarizeRows(row.id, events.rows));
+    const events = await fetchRowsForSummary(kind, column, row.id);
+    summaries.push(await summarizeRows(row.id, events, row));
   }
 
   if (filters.status) {
     const wanted = String(filters.status);
     summaries = summaries.filter((s) => s && s.status === wanted);
+  }
+
+  if (kind === 'grant' && summaries.length > 0) {
+    const ids = summaries
+      .map((s) => s?.grant_id || s?.id)
+      .filter((v) => typeof v === 'string' && v.length > 0);
+    const packageByGrant = await postgresGrantPackageIdsForGrants(ids);
+    if (packageByGrant.size > 0) {
+      summaries = summaries.map((s) => {
+        if (!s) return s;
+        const gid = s.grant_id || s.id;
+        const packageId = gid ? packageByGrant.get(gid) : null;
+        return packageId ? { ...s, grant_package_id: packageId } : s;
+      });
+    }
   }
 
   const hasMore = result.rows.length > limit;
@@ -422,21 +565,19 @@ export async function postgresSearchSpine(query) {
   const like = `%${q}%`;
   async function summaries(kind) {
     const column = COLUMN_BY_KIND[kind];
-    const ids = await postgresQuery(
-      `SELECT DISTINCT ${column} AS id
+    const correlations = await postgresQuery(
+      `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
        FROM spine_events
        WHERE ${column} ILIKE $1
+       GROUP BY ${column}
        ORDER BY id ASC
        LIMIT 25`,
       [like],
     );
     const out = [];
-    for (const row of ids.rows) {
-      const events = await postgresQuery(
-        `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT 5000`,
-        [row.id],
-      );
-      out.push(summarizeRows(row.id, events.rows));
+    for (const row of correlations.rows) {
+      const events = await fetchRowsForSummary(kind, column, row.id);
+      out.push(await summarizeRows(row.id, events, row));
     }
     return out;
   }

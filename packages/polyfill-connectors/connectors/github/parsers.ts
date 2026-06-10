@@ -85,6 +85,12 @@ export function truncateBody(body: string | null | undefined): string | null {
 
 // ─── Record builders ────────────────────────────────────────────────────
 
+/**
+ * User entity record: stable identity and profile fields only.
+ * Sampled metrics (followers, following, public_repos, public_gists) are
+ * projected into `user_stats` to avoid creating false entity versions when
+ * only counts change. See design: split-point-in-time-observation-streams.
+ */
 export function userRecord(u: GitHubUser): Record<string, unknown> {
   return {
     id: String(u.id),
@@ -96,13 +102,26 @@ export function userRecord(u: GitHubUser): Record<string, unknown> {
     location: u.location ?? null,
     blog: u.blog ?? null,
     twitter_username: u.twitter_username ?? null,
+    created_at: u.created_at ?? null,
+    updated_at: u.updated_at ?? null,
+    avatar_url: u.avatar_url ?? null,
+  };
+}
+
+/**
+ * User stats observation record: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
+ * `observedOn` is the UTC calendar date at the time of the connector run.
+ * One record per user per day; same-day re-runs produce the same key (idempotent).
+ */
+export function userStatsRecord(u: GitHubUser, observedOn: string): Record<string, unknown> {
+  return {
+    id: `${String(u.id)}:${observedOn}`,
+    user_id: String(u.id),
+    observed_on: observedOn,
     public_repos: u.public_repos ?? null,
     public_gists: u.public_gists ?? null,
     followers: u.followers ?? null,
     following: u.following ?? null,
-    created_at: u.created_at ?? null,
-    updated_at: u.updated_at ?? null,
-    avatar_url: u.avatar_url ?? null,
   };
 }
 

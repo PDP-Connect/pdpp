@@ -47,7 +47,7 @@ async function closeServer(server) {
 // exercise lexical-only and semantic-only provenance paths.
 const MANIFEST_A = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/hybrid-a',
+  connector_id: 'hybrid-a',
   version: '1.0.0',
   display_name: 'Hybrid A',
   capabilities: { human_interaction: ['credentials'] },

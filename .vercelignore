@@ -1,4 +1,5 @@
 .vercel
 .next
-apps/web/.next
+apps/site/.next
+apps/console/.next
 demo/app/.next
