@@ -136,6 +136,8 @@ This is a discipline rule, not a pause in ownership. Worker completion is not ow
 
 ## Research Corpus Discipline
 
+HARD RULE (owner, 2026-06-10): any web research findings MUST be added to the corpus on disk — `docs/research/` for cross-cutting work, `openspec/changes/<change>/research/` for change-local work. A chat summary or worker report alone is a rule violation, not a judgment call.
+
 Prior-art research that informs OpenSpec or implementation work should leave a durable source artifact, not just a chat summary or worker report. Design notes are not that corpus: they are the intake queue for significant design observations and unresolved questions to revisit when the project shifts from execution mode into slower architecture review.
 
 For non-trivial research, preserve a small, curated research artifact under `docs/research/` for cross-cutting work or `openspec/changes/<change>/research/` for change-local work. Record sources, dates, provenance, and the conclusion we are carrying forward. Link from a design note only when the research creates a significant observation or open question that belongs in the architecture-review queue.
