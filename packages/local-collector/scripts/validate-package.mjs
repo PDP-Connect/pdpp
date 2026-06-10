@@ -60,7 +60,10 @@ try {
     /(?:from\s+|import\s*\(|require\s*\()\s*["']pdf-parse["']/,
     /(?:from\s+|import\s*\(|require\s*\()\s*["']better-sqlite3["']/,
     /(?:from\s+|import\s*\(|require\s*\()\s*["']linkedom["']/,
-    /workspace:/,
+    // The pnpm workspace protocol only ever appears as a quoted dependency
+    // specifier ("workspace:*"); a bare /workspace:/ also matches legitimate
+    // identifiers like the slack_workspace credential field.
+    /["']workspace:/,
   ];
   for (const file of packedFiles) {
     if (!(file.endsWith(".js") || file.endsWith(".d.ts") || file === "package.json")) {
