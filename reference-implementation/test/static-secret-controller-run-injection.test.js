@@ -10,6 +10,7 @@ import {
   createController,
 } from "../runtime/controller.ts";
 import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.js";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.js";
 import { resolveStaticSecretRunEnv } from "../server/stores/static-secret-run-credentials.js";
 
 // This suite proves the LAST connective leg of the static-secret primitive that
@@ -46,7 +47,7 @@ const NON_SECRET_MANIFEST = {
   streams: [],
 };
 
-function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorId }) {
+function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorId, sourceBinding = {} }) {
   const db = getDb();
   db.prepare(`INSERT OR IGNORE INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)`).run(
     connectorId,
@@ -57,13 +58,14 @@ function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorI
     `INSERT INTO connector_instances(
        connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-     ) VALUES (?, ?, ?, ?, 'active', 'account', ?, '{}', ?, ?, NULL)`,
+     ) VALUES (?, ?, ?, ?, 'active', 'account', ?, ?, ?, ?, NULL)`,
   ).run(
     connectorInstanceId,
     ownerSubjectId,
     connectorId,
     connectorInstanceId,
     connectorInstanceId,
+    JSON.stringify(sourceBinding),
     "2026-06-01T00:00:00.000Z",
     "2026-06-01T00:00:00.000Z",
   );
@@ -92,6 +94,7 @@ function buildRealResolver() {
       connectorId,
       connectorInstanceId,
       ownerSubjectId,
+      sourceBinding: createSqliteConnectorInstanceStore().get(connectorInstanceId)?.sourceBinding,
       credentialStore,
       isStaticSecretConnector,
       buildConnectionScopedSecretEnv,
@@ -153,6 +156,46 @@ test("a captured credential is injected into the connector run scoped to one con
   assert.deepEqual(calls[0].staticSecretEnv, {
     GOOGLE_APP_PASSWORD_PDPP: "personal one here",
     GMAIL_APP_PASSWORD: "personal one here",
+  });
+});
+
+test("non-secret static setup fields are injected with the captured credential", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({
+    connectorInstanceId: "cin_personal",
+    ownerSubjectId: "owner_1",
+    connectorId: GMAIL_CONNECTOR,
+    sourceBinding: {
+      kind: "static_secret_draft",
+      setup_fields: {
+        account_email: "owner@example.com",
+      },
+    },
+  });
+  await captureStore().capture({
+    connectorInstanceId: "cin_personal",
+    ownerSubjectId: "owner_1",
+    credentialKind: "app_password",
+    secret: "personal one here",
+    now: "2026-06-01T12:00:00.000Z",
+  });
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow(GMAIL_CONNECTOR, {
+    connectorInstanceId: "cin_personal",
+    manifest: GMAIL_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_personal",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].staticSecretEnv, {
+    GMAIL_ADDRESS: "owner@example.com",
+    GMAIL_APP_PASSWORD: "personal one here",
+    GMAIL_USER: "owner@example.com",
+    GOOGLE_APP_PASSWORD_PDPP: "personal one here",
   });
 });
 

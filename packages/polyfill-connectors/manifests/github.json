@@ -12,6 +12,31 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "GitHub personal access token",
+      "description": "Use a GitHub personal access token for the account this connection should collect.",
+      "submit_label": "Create GitHub connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "GitHub personal access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://github.com/settings/tokens",
+          "help_text": "Create a token in GitHub developer settings, then paste it here.",
+          "env": [
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "GITHUB_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {

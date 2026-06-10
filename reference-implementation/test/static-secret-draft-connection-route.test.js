@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { listSpineEventsPage } from '../lib/spine.ts';
+import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
 import { createSqliteConnectorInstanceCredentialStore } from '../server/stores/connector-instance-credential-store.js';
@@ -201,9 +202,16 @@ async function ingest(rsUrl, ownerToken, connectorId, connectionId, stream, reco
   });
 }
 
-async function createDraft(asUrl, cookie, connectorId) {
+async function createDraft(asUrl, cookie, connectorId, setupFields = { account_email: 'owner@example.com' }) {
   return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, {
     method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ setup_fields: setupFields }),
+  });
+}
+
+async function getSetup(asUrl, cookie, connectorId) {
+  return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/static-secret-setup`, {
     headers: { Accept: 'application/json', Cookie: cookie },
   });
 }
@@ -238,6 +246,7 @@ test('owner creates an invisible draft, captures onto it, and it stays hidden un
       assert.equal(created.body.connector_id, 'gmail');
       assert.equal(created.body.status, 'draft');
       assert.equal(created.body.credential_kind, 'app_password');
+      assert.equal(created.body.display_name, 'Gmail - owner@example.com');
       assert.equal(created.body.next_step.kind, 'capture_static_secret_credential');
       const connectionId = created.body.connection_id;
       assert.ok(connectionId, 'draft has a connection_id');
@@ -285,6 +294,79 @@ test('owner creates an invisible draft, captures onto it, and it stays hidden un
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
       assert.equal(recovered.secret, SECRET);
+    });
+  });
+});
+
+test('static-secret setup descriptor is manifest-authored and readiness-gated', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+      const { status, body, text } = await getSetup(asUrl, cookie, 'gmail');
+      assert.equal(status, 200, text);
+      assert.equal(body.object, 'static_secret_setup');
+      assert.equal(body.connector_id, 'gmail');
+      assert.equal(body.credential_kind, 'app_password');
+      assert.equal(body.deployment_readiness.state, 'ready');
+      assert.ok(
+        body.credential_capture.fields.some(
+          (field) => field.name === 'account_email' && field.type === 'email' && field.secret === false,
+        ),
+        'Gmail manifest must declare the account email field',
+      );
+      assert.ok(
+        body.credential_capture.fields.some(
+          (field) =>
+            field.name === 'secret' &&
+            field.secret === true &&
+            field.help_url === 'https://myaccount.google.com/apppasswords',
+        ),
+        'Gmail manifest must declare the app-password help URL',
+      );
+    });
+  });
+});
+
+test('draft create blocks before row creation when credential key provider is missing', async () => {
+  await withCredentialKey(null, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+      const { status, body, text, resp } = await createDraft(asUrl, cookie, 'gmail');
+      assert.equal(status, 503, text);
+      assert.equal(body?.error?.code, 'credential_encryption_key_missing');
+      const audit = findDraftAudit(resp, 'failed');
+      assert.equal(audit.data?.error?.code, 'credential_encryption_key_missing');
+
+      const list = await listConnections(asUrl, cookie);
+      assert.equal(list.status, 200);
+      assert.equal(list.body.data.length, 0, 'missing key provider must not create a draft');
+      const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+      assert.equal(rowCount, 0, 'missing key provider must not write a connector_instances row');
+    });
+  });
+});
+
+test('draft create validates manifest-declared non-secret setup fields', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+
+      const missing = await createDraft(asUrl, cookie, 'gmail', {});
+      assert.equal(missing.status, 400);
+      assert.equal(missing.body?.error?.code, 'missing_setup_field');
+
+      const unknown = await createDraft(asUrl, cookie, 'gmail', {
+        account_email: 'owner@example.com',
+        unexpected: 'value',
+      });
+      assert.equal(unknown.status, 400);
+      assert.equal(unknown.body?.error?.code, 'unknown_setup_field');
+
+      const list = await listConnections(asUrl, cookie);
+      assert.equal(list.body.data.length, 0, 'invalid setup fields must not create a draft');
     });
   });
 });

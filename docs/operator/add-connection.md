@@ -82,8 +82,9 @@ header and never prints it.
 
 Deployment environment variables configure instance-level runtime facts —
 database URL, public origin, owner auth/session, AS/RS ports, and the credential
-encryption key (`PDPP_CREDENTIAL_ENCRYPTION_KEY`). They are not the path for
-adding one mailbox or one account.
+key provider (`PDPP_CREDENTIAL_ENCRYPTION_KEY` or
+`PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`). They are not the path for adding one
+mailbox or one account.
 
 If a connector needs platform-level provider app material (for example, an OAuth
 client id/secret owned by your deployment), the setup plan reports that the
@@ -95,7 +96,7 @@ So there are two distinct kinds of blocker, and the setup surfaces keep them
 apart:
 
 - **Deployment-readiness blockers** — instance-level configuration the operator
-  sets once (origin, encryption key, future provider app material).
+  sets once (origin, credential key provider, future provider app material).
 - **Per-connection owner actions** — the next owner step for one specific
   connection (enroll a collector, run a browser proof, capture a static secret).
 
@@ -115,10 +116,20 @@ accounts of the same connector — two Gmail mailboxes are two owner-mediated
 connections with separate stored credentials, not two env vars. Prefer the
 console or owner-agent flow above.
 
-The one variable that is genuinely instance-level is
-`PDPP_CREDENTIAL_ENCRYPTION_KEY`: it seals owner-captured static-secret
-credentials at rest and is set once per deployment, not per connection. Without
-it, a static-secret capture fails closed and no plaintext is stored.
+The one static-secret variable that is genuinely instance-level is the
+credential key provider: either `PDPP_CREDENTIAL_ENCRYPTION_KEY` or a mounted
+secret file referenced by `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Railway
+templates generate `PDPP_CREDENTIAL_ENCRYPTION_KEY` automatically. Docker users
+can let `scripts/generate-secrets.sh --write` fill it into `.env.docker`, or
+mount a secret file and set `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Without one
+of these providers, the static-secret setup page blocks before accepting a
+provider credential and the capture route fails closed without writing a draft
+or storing plaintext.
+
+Static-secret forms are generated from connector manifests. If a connector needs
+a non-secret account identifier, such as a mailbox address, the manifest declares
+that field and the console renders it; the RI console does not carry
+connector-specific form knowledge.
 
 ## Related
 

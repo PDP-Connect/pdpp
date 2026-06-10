@@ -1133,8 +1133,50 @@ export async function createDeviceEnrollmentCode(
   })) as DeviceEnrollmentCode;
 }
 
-export async function createStaticSecretDraftConnection(connectorId: string): Promise<StaticSecretDraftConnection> {
+export interface StaticSecretSetupField {
+  autocomplete: string | null;
+  description: string | null;
+  help_text: string | null;
+  help_url: string | null;
+  identity: boolean;
+  label: string;
+  name: string;
+  placeholder: string | null;
+  required: boolean;
+  secret: boolean;
+  type: "email" | "password" | "text";
+}
+
+export interface StaticSecretSetup {
+  connector_id: string;
+  credential_capture: {
+    description: string | null;
+    fields: StaticSecretSetupField[];
+    kind: string;
+    label: string;
+    submit_label: string | null;
+  };
+  credential_kind: string;
+  deployment_readiness: {
+    blockers: Array<{ key: string; label: string; secret: boolean }>;
+    guidance: string | null;
+    state: "needs_config" | "ready";
+  };
+  display_name: string;
+  object: "static_secret_setup";
+}
+
+export async function getStaticSecretSetup(connectorId: string): Promise<StaticSecretSetup> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/static-secret-setup`)) as StaticSecretSetup;
+}
+
+export async function createStaticSecretDraftConnection(
+  connectorId: string,
+  setupFields: Record<string, string>
+): Promise<StaticSecretDraftConnection> {
   return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, undefined, {
+    body: JSON.stringify({ setup_fields: setupFields }),
+    headers: { "content-type": "application/json" },
     method: "POST",
   })) as StaticSecretDraftConnection;
 }

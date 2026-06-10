@@ -65,10 +65,12 @@ test('Railway runbook and template handoff use the one-service core button shape
   assert.match(handoff, /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/);
   assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{core\.RAILWAY_PUBLIC_DOMAIN\}\}/);
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
+  assert.match(handoff, /PDPP_CREDENTIAL_ENCRYPTION_KEY=\$\{\{\s*secret\(64\)\s*\}\}/);
   assert.match(handoff, /PGDATA=\$\{\{RAILWAY_VOLUME_MOUNT_PATH\}\}\/pgdata/);
   assert.match(handoff, /DATABASE_URL=postgresql:\/\/postgres:\$\{\{POSTGRES_PASSWORD\}\}@\$\{\{RAILWAY_PRIVATE_DOMAIN\}\}:5432\/postgres/);
   assert.match(handoff, /Source accessibility gate/);
   assert.match(handoff, /core\.PDPP_OWNER_PASSWORD/);
+  assert.match(handoff, /core\.PDPP_CREDENTIAL_ENCRYPTION_KEY/);
   assert.doesNotMatch(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}/);
   assert.doesNotMatch(handoff, /reference\.PORT/);
   assert.doesNotMatch(handoff, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);

@@ -1285,10 +1285,12 @@ function buildControllerStaticSecretRunEnvResolver() {
     if ((await credentialStore.getMetadata(connectorInstanceId)) === null) {
       return null;
     }
+    const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
     return await resolveStaticSecretRunEnv({
       connectorId,
       connectorInstanceId,
       ownerSubjectId,
+      sourceBinding: connectorInstance?.sourceBinding ?? null,
       credentialStore,
       isStaticSecretConnector,
       buildConnectionScopedSecretEnv,
@@ -3339,6 +3341,7 @@ function buildAsApp(opts = {}) {
     handleError,
     pdppError,
     createRequestConnectorInstanceCredentialStore,
+    resolveRegisteredConnectorManifest,
     resolveOwnerConnectorNamespace,
     getOwnerSubjectId,
     createTraceContext,

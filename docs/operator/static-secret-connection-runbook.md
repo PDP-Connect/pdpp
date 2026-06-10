@@ -1,16 +1,15 @@
-# Static-Secret Connection Runbook (Gmail, GitHub)
+# Static-Secret Connection Runbook
 
 Status: reference-experimental operator surface. Not PDPP Core or Collection
 Profile protocol.
 
 This is the owner-run proof/debug runbook for creating a **first** static-secret
-connection (Gmail or GitHub) on your own reference instance. The normal happy
-path is the console form at `/dashboard/connect/static-secret/:connectorId`,
-which performs the same draft → capture → first-sync sequence from an owner
-session. This runbook remains the operator reference for the underlying route
-sequence and for producing live proof that a real provider secret (a Gmail app
-password or a GitHub personal access token) drives a live API ingest that flips
-a `draft` connection to `active`.
+connection on your own reference instance. The normal happy path is the console
+form at `/dashboard/connect/static-secret/:connectorId`, which is generated from
+the connector manifest and performs the same draft → capture → first-sync
+sequence from an owner session. This runbook remains the operator reference for
+the underlying route sequence and for producing live proof that a real provider
+secret drives a live API ingest that flips a `draft` connection to `active`.
 
 It documents the owner-session sequence the add-connection picker automates, and
 it doubles as the live-proof packet for provider-backed verification evidence.
@@ -34,19 +33,21 @@ real provider session) would violate the design's "no faked success" bar.
 
 ## Prerequisites
 
-- A reference instance you control, running with credential encryption
-  configured: the `PDPP_CREDENTIAL_ENCRYPTION_KEY` environment variable must be
-  set, or the capture route returns `503 credential_encryption_key_missing` and
-  no secret is ever stored.
+- A reference instance you control, running with a credential key provider
+  configured: either `PDPP_CREDENTIAL_ENCRYPTION_KEY` or a mounted secret file
+  referenced by `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Without one, the setup
+  descriptor reports `deployment_readiness.state: "needs_config"`, the console
+  blocks before rendering secret inputs, and the draft-create/capture routes
+  fail closed without writing a draft or storing plaintext.
 - An owner **session** (cookie auth). The static-secret draft-create and capture
   routes are `requireOwnerSession` — they are not owner-agent bearer routes. A
   browser owner session or an owner-session cookie jar reaches them; an owner
   bearer token does not.
-- A provider secret you generate yourself and never paste into a shared surface:
-  - Gmail: a Google **app password** (requires 2-Step Verification on the
-    account). Not your account password.
-  - GitHub: a **personal access token** (classic or fine-grained) with the
-    read scopes the GitHub connector needs.
+- Provider setup inputs declared by the connector manifest. The console renders
+  those fields dynamically. For example, the Gmail manifest currently asks for a
+  mailbox address plus a Google app password and links directly to
+  `https://myaccount.google.com/apppasswords`; the GitHub manifest asks for a
+  personal access token and links to GitHub token settings.
 
 The reference never asks for, prints, or logs the secret. You paste it once, into
 the capture request body, from your own session.
@@ -56,16 +57,33 @@ the capture request body, from your own session.
 Each step's response carries a typed `next_step` pointing at the following step,
 so the sequence is self-describing. `:connectorId` is `gmail` or `github`.
 
+### Step 0 — Read the manifest-authored setup descriptor
+
+```
+GET /_ref/connectors/:connectorId/static-secret-setup
+```
+
+Owner-session only. Returns the connector-authored setup form descriptor,
+credential kind, and deployment readiness. The response omits connector runtime
+env-var names. If the credential key provider is missing, stop here: configure
+the instance-level provider first instead of asking the owner to paste a
+provider secret.
+
 ### Step 1 — Create the draft connection
 
 ```
 POST /_ref/connectors/:connectorId/draft-connection
+Content-Type: application/json
+
+{ "setup_fields": { "<manifest non-secret field>": "<value>" } }
 ```
 
 Owner-session only. Creates one invisible `draft` connector instance with a fresh
-random source-binding key and returns its `connection_id`. No secret is involved.
-Two calls for the same connector create two distinct connections (two mailboxes
-→ two `connection_id`s). A non-static-secret connector is refused with
+random source-binding key and returns its `connection_id`. Non-secret setup
+fields, such as an account email, are stored as source binding metadata for that
+one connection. No provider secret is involved. Two calls for the same connector
+create two distinct connections (two mailboxes → two `connection_id`s). A
+non-static-secret connector is refused with
 `409 static_secret_credential_unsupported`.
 
 The draft is **invisible** to every connection read surface (`/_ref/connections`,
@@ -88,9 +106,9 @@ Content-Type: application/json
   "secret": "<your GitHub token>" }
 ```
 
-Owner-session only. Seals the secret into the encrypted per-connection credential
-store. The plaintext appears **only** in this request body and the store's
-sealing call. The response and the audit event
+Owner-session only. Seals the connector-declared secret into the encrypted
+per-connection credential store. The plaintext appears **only** in this request
+body and the store's sealing call. The response and the audit event
 (`owner.connection.static_secret_credential.capture`) carry non-secret metadata
 only (presence, kind, fingerprint, timestamps). A wrong `credential_kind` for the
 connector is rejected (`400 credential_kind_mismatch`) before any sealing.
@@ -142,10 +160,10 @@ committed):
 - **The draft create audit carries no secret.** The
   `owner.connection.static_secret_draft.create` event carries only
   `connection_id`, `connector_id`, `credential_kind`, and outcome.
-- **Encryption was actually required.** With `PDPP_CREDENTIAL_ENCRYPTION_KEY`
-  unset, capture must fail closed with `503 credential_encryption_key_missing`
-  and store nothing — confirm the instance has no credential after such an
-  attempt.
+- **Encryption was actually required.** With both credential key providers unset,
+  setup must report `needs_config`, draft create/capture must fail closed with
+  `503 credential_encryption_key_missing`, and no draft row or credential may be
+  written.
 - **Logs are clean.** Grep the run logs for the secret value; it must not appear.
 
 ## What result justifies claiming live provider proof
@@ -174,8 +192,10 @@ active only after ingest proof" — which is exactly what this runbook documents
 - `reference-implementation/server/routes/ref-static-secret-draft-connection.ts`
   — the owner-session draft-create route (Step 1).
 - `reference-implementation/server/routes/ref-static-secret-credentials.ts`
-  — the owner-session capture route and the static-secret connector source of
-  truth (`STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR`).
+  — the owner-session capture route.
+- `reference-implementation/server/connection-setup-plan.ts` and the connector
+  manifests — the manifest-authored setup descriptor consumed by Console,
+  owner-agent REST, and CLI helpers.
 - `docs/operator/browser-collector-proof-runbook.md` — the sibling owner-run
   proof runbook for the browser-collector (Amazon) path.
 - `docs/voice-and-framing.md` — connector maturity vocabulary; a connector is not

@@ -21,6 +21,7 @@ function validPostgresEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: 'credential-key-provider-secret',
     PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
@@ -32,6 +33,7 @@ function validSqliteEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: 'credential-key-provider-secret',
     PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://reference.railway.internal:7663',
     PDPP_STORAGE_BACKEND: 'sqlite',
@@ -44,6 +46,7 @@ function validConsoleServiceEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: '${{reference.PDPP_CREDENTIAL_ENCRYPTION_KEY}}',
     PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     ...overrides,
@@ -54,6 +57,7 @@ function validReferenceServiceEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: '${{ secret(64) }}',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
   };
@@ -63,6 +67,7 @@ function validCoreServiceEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://${{core.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: '${{ secret(64) }}',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
   };
@@ -123,6 +128,20 @@ test('non-HTTPS public origin is a violation', () => {
 test('empty owner password is a violation', () => {
   const violations = evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_OWNER_PASSWORD: '' }));
   assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is empty')), true);
+});
+
+test('missing credential key provider is a violation', () => {
+  const violations = evaluateRailwayDeployEnv(
+    validPostgresEnv({ PDPP_CREDENTIAL_ENCRYPTION_KEY: '', PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: '' }),
+  );
+  assert.equal(violations.some((v) => v.includes('PDPP_CREDENTIAL_ENCRYPTION_KEY')), true);
+});
+
+test('credential key file provider satisfies the key-provider contract', () => {
+  const violations = evaluateRailwayDeployEnv(
+    validPostgresEnv({ PDPP_CREDENTIAL_ENCRYPTION_KEY: '', PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: '/run/secrets/key' }),
+  );
+  assert.deepEqual(violations, []);
 });
 
 test('missing private AS/RS targets are violations', () => {

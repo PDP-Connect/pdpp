@@ -11,6 +11,9 @@
 //
 //   - public origin not set, or not HTTPS;
 //   - owner data left ungated (empty PDPP_OWNER_PASSWORD on a public origin);
+//   - credential key provider missing, which would block owner-captured
+//     static-secret connector setup after the user has already gathered a
+//     provider credential;
 //   - storage left on the non-durable default;
 //   - SQLite chosen but PDPP_DB_PATH left at a default that is not a mount;
 //   - Postgres chosen, or inferred from PDPP_DATABASE_URL, but the database URL is missing;
@@ -148,6 +151,10 @@ function hasDurableDatabaseUrl(env) {
   return !isPlaceholder(databaseUrl) || isRailwayReference(databaseUrl);
 }
 
+function hasCredentialKeyProvider(env) {
+  return !isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY) || !isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE);
+}
+
 function requireExpectedIfSet(violations, env, key, expected, message) {
   if (isPlaceholder(env[key])) {
     return;
@@ -183,7 +190,17 @@ export function evaluateRailwayDeployEnv(env) {
     );
   }
 
-  // 3. Console private AS/RS targets.
+  // 3. Instance-level credential key provider. Railway templates should
+  // generate PDPP_CREDENTIAL_ENCRYPTION_KEY automatically; Docker/Kubernetes
+  // style deployments may use PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE.
+  if (!hasCredentialKeyProvider(env)) {
+    violations.push(
+      'PDPP_CREDENTIAL_ENCRYPTION_KEY or PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE is not set. ' +
+        'Static-secret connector setup will be blocked until an instance-level credential key provider exists.',
+    );
+  }
+
+  // 4. Console private AS/RS targets.
   if (isPlaceholder(env.PDPP_AS_URL)) {
     violations.push(
       'PDPP_AS_URL is not set. The console must reach the private reference Authorization Server ' +
@@ -197,7 +214,7 @@ export function evaluateRailwayDeployEnv(env) {
     );
   }
 
-  // 4. Storage chosen explicitly and durably.
+  // 5. Storage chosen explicitly and durably.
   const configuredBackend = (env.PDPP_STORAGE_BACKEND ?? '').trim().toLowerCase();
   const backend = configuredBackend || (hasDurableDatabaseUrl(env) ? 'postgres' : '');
   if (backend === 'postgres') {

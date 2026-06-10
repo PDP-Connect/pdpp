@@ -19,16 +19,11 @@ import {
   BROWSER_BOUND_RUNBOOK_PATH,
   browserCollectorConnectorLabel,
   isBrowserBoundConnector,
-  isStaticSecretConnector,
   isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
   localCollectorConnectorLabel,
-  STATIC_SECRET_ADD_MODALITY,
-  STATIC_SECRET_CONNECTORS,
-  STATIC_SECRET_RUNBOOK_PATH,
   SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
   SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
-  staticSecretConnectorLabel,
   UNSUPPORTED_ADD_MODALITIES,
 } from "./connection-modality.ts";
 
@@ -39,19 +34,6 @@ const API_NETWORK_PRIMITIVE_RE = /implicitly on first ingest|API-connect/;
 const AMAZON_RUNNER_PROFILE_RE = /Amazon is the current manual proof-run path/;
 const GENERATED_SETUP_RE = /generate setup|generated setup/i;
 const RUNBOOK_DOC_HEADING_RE = /Browser-Collector Proof Runbook/;
-const STATIC_SECRET_RUNBOOK_DOC_HEADING_RE = /Static-Secret Connection Runbook/;
-// The backend's single source of truth for "which connectors are static secret".
-// The console set MUST equal the keys of this frozen map so the picker can never
-// advertise a static-secret path the draft route would refuse (or miss one it
-// supports). Pinned by reading the reference source directly, mirroring how the
-// local-collector set is pinned against the enrollment form's literal above.
-const STATIC_SECRET_KIND_MAP_LITERAL_RE =
-  /STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[\s\S]*?Object\.freeze\(\{([\s\S]*?)\}\)/;
-const KIND_MAP_KEY_RE = /^\s*([A-Za-z0-9_]+)\s*:/;
-// The static-secret copy must tie proof to the end-to-end ingest result so the
-// console never over-promises a working connection before a real provider secret
-// has produced accepted records.
-const STATIC_SECRET_LIVE_PROOF_GATE_RE = /end-to-end result/;
 
 test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
@@ -180,114 +162,13 @@ test("api/network modality names the implicit-on-ingest gap", () => {
 });
 
 test("api/network unsupported examples exclude the static-secret connectors", () => {
-  // Gmail/GitHub now have an owner-session static-secret path, so they must NOT
-  // be listed as examples of the flatly-unsupported API/network bucket — that
-  // would contradict the static-secret group and over-state the gap. The bucket
-  // is scoped to the network connectors that still have no owner connect route.
+  // Static-secret connectors now have an owner-session setup path generated
+  // from their manifests, so this bucket is scoped to network connectors that
+  // still have no owner connect route.
   const apiNetwork = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "api_network");
   assert.ok(apiNetwork);
   assert.equal(apiNetwork.examples.includes("Gmail"), false, "Gmail is a static-secret connector, not unsupported");
   assert.equal(apiNetwork.examples.includes("GitHub"), false, "GitHub is a static-secret connector, not unsupported");
-  for (const example of apiNetwork.examples) {
-    assert.equal(
-      STATIC_SECRET_ADD_MODALITY.examples.includes(example),
-      false,
-      `${example} must not be both a static-secret example and an unsupported example`
-    );
-  }
-});
-
-// ─── static-secret connect modality ───────────────────────────────────────
-//
-// Gmail/GitHub gained an owner-session static-secret draft-create path
-// (add-static-secret-owner-session-connect-path). The console must surface that
-// path honestly — a real owner-session form, runbook-pointed,
-// first-ingest-gated, never deep-linked into the device-collector enrollment
-// form (which they don't use) and never claimed active before ingest accepts.
-
-test("static-secret connector set is exactly gmail and github", () => {
-  assert.deepEqual([...STATIC_SECRET_CONNECTORS], ["gmail", "github"]);
-});
-
-test("console static-secret set equals the reference backend's source of truth", async () => {
-  // The shared setup planner's STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR is the
-  // single source of truth for which connectors the draft route accepts. The
-  // console set must equal its keys so the picker never offers a static-secret
-  // path the draft route would 409.
-  // Repo root is six segments up from apps/console/src/app/dashboard/lib/.
-  const repoRoot = new URL("../../../../../../", import.meta.url);
-  const refSrcUrl = new URL("reference-implementation/server/connection-setup-plan.ts", repoRoot);
-  const refSrc = await readFile(fileURLToPath(refSrcUrl), "utf8");
-  const block = refSrc.match(STATIC_SECRET_KIND_MAP_LITERAL_RE);
-  assert.ok(block, "reference must declare STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR as a frozen object");
-  const backendKeys = (block[1] ?? "")
-    .split("\n")
-    .map((line) => line.match(KIND_MAP_KEY_RE)?.[1])
-    .filter((key): key is string => Boolean(key));
-  assert.deepEqual(backendKeys.sort(), [...STATIC_SECRET_CONNECTORS].sort());
-});
-
-test("isStaticSecretConnector narrows only gmail/github, accepting the registry-URL form", () => {
-  assert.equal(isStaticSecretConnector("gmail"), true);
-  assert.equal(isStaticSecretConnector("github"), true);
-  assert.equal(isStaticSecretConnector("https://registry.pdpp.org/connectors/gmail"), true);
-  assert.equal(isStaticSecretConnector("https://registry.pdpp.org/connectors/github/"), true);
-  // Other network-class connectors are NOT static-secret.
-  assert.equal(isStaticSecretConnector("notion"), false);
-  assert.equal(isStaticSecretConnector("spotify"), false);
-  assert.equal(isStaticSecretConnector("amazon"), false);
-  assert.equal(isStaticSecretConnector("claude_code"), false);
-  assert.equal(isStaticSecretConnector(""), false);
-  assert.equal(isStaticSecretConnector(null), false);
-  assert.equal(isStaticSecretConnector(undefined), false);
-});
-
-test("static-secret connectors have owner-meaningful labels", () => {
-  assert.equal(staticSecretConnectorLabel("gmail"), "Gmail");
-  assert.equal(staticSecretConnectorLabel("github"), "GitHub");
-});
-
-test("static-secret connectors are never in the supported one-click sets", () => {
-  for (const connectorId of STATIC_SECRET_CONNECTORS) {
-    assert.equal(isSupportedLocalCollectorConnector(connectorId), false);
-    assert.equal(isSupportedBrowserCollectorConnector(connectorId), false);
-    assert.equal(isBrowserBoundConnector(connectorId), false);
-  }
-});
-
-test("static-secret add modality is an honest creation path, not an unsupported notice", () => {
-  // It is deliberately NOT in UNSUPPORTED_ADD_MODALITIES — the path is real.
-  for (const entry of UNSUPPORTED_ADD_MODALITIES) {
-    assert.notEqual(
-      entry.label,
-      STATIC_SECRET_ADD_MODALITY.label,
-      "static-secret must not be listed among the unsupported modalities"
-    );
-  }
-  assert.ok(STATIC_SECRET_ADD_MODALITY.ownerFacingReason.trim().length > 0);
-  assert.ok(STATIC_SECRET_ADD_MODALITY.examples.includes("Gmail"));
-  assert.ok(STATIC_SECRET_ADD_MODALITY.examples.includes("GitHub"));
-  // The copy must name the live-proof gate so the console never over-promises.
-  assert.match(STATIC_SECRET_ADD_MODALITY.ownerFacingReason, STATIC_SECRET_LIVE_PROOF_GATE_RE);
-  // Every static-secret connector has a named secret kind for owner precision.
-  for (const connectorId of STATIC_SECRET_CONNECTORS) {
-    assert.ok(
-      STATIC_SECRET_ADD_MODALITY.secretKindByConnector[connectorId]?.trim().length > 0,
-      `${connectorId} must name its secret kind`
-    );
-  }
-});
-
-test("static-secret runbook path is the committed runbook the modality surfaces", () => {
-  assert.equal(STATIC_SECRET_RUNBOOK_PATH, "docs/operator/static-secret-connection-runbook.md");
-  assert.equal(STATIC_SECRET_ADD_MODALITY.runbookPath, STATIC_SECRET_RUNBOOK_PATH);
-});
-
-test("the static-secret runbook path resolves to a committed doc", async () => {
-  const repoRoot = new URL("../../../../../../", import.meta.url);
-  const runbookUrl = new URL(STATIC_SECRET_RUNBOOK_PATH, repoRoot);
-  const contents = await readFile(fileURLToPath(runbookUrl), "utf8");
-  assert.match(contents, STATIC_SECRET_RUNBOOK_DOC_HEADING_RE);
 });
 
 // ─── browser-bound connector classification ───────────────────────────────

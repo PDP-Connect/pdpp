@@ -62,3 +62,39 @@ SHALL NOT be required as normal setup for a supported source connection.
 - **THEN** the reference SHALL document them as fallback or compatibility paths
 - **AND** the supported normal setup plan SHALL NOT require those variables for
   each source connection
+
+### Requirement: Static-secret setup SHALL be manifest-authored and key-provider gated
+
+The reference implementation SHALL render static-secret setup from connector
+manifest metadata rather than Console-specific connector branches. The setup
+descriptor SHALL carry non-secret field labels, field types, help links, required
+status, identity markers, and credential kind. Runtime env-var names MAY remain
+connector-owned implementation details, but SHALL NOT be exposed as the normal
+setup UI contract.
+
+#### Scenario: Console renders a static-secret setup form
+
+- **WHEN** an owner opens the Console setup page for a static-secret connector
+- **THEN** the Console SHALL fetch and render the connector-authored setup
+  descriptor
+- **AND** it SHALL NOT use connector-specific UI branches to decide which
+  account fields, secret fields, labels, or help URLs to show
+
+#### Scenario: Credential key provider is missing
+
+- **WHEN** no instance-level credential key provider is configured
+- **THEN** the setup descriptor SHALL report a deployment-readiness blocker
+- **AND** the Console SHALL block before accepting provider-secret input
+- **AND** the draft-create and capture routes SHALL fail closed before storing
+  plaintext or writing a draft connection row
+
+#### Scenario: Docker and Railway deployments prepare credential storage
+
+- **WHEN** a Railway operator deploys the reference from the template
+- **THEN** the template SHALL generate an instance-level credential key without
+  prompting for connector-specific source credentials
+- **WHEN** a Docker operator runs the reference secret generator
+- **THEN** the generator SHALL fill an instance-level credential key unless one
+  is already configured
+- **AND** Docker/Kubernetes-style deployments MAY instead mount a secret file and
+  point `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` at it

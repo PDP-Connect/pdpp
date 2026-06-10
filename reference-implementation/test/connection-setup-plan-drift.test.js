@@ -16,7 +16,7 @@ function read(url) {
 test('setup surfaces consume the shared setup planner instead of defining connector matrices', () => {
   const planner = read(FILES.setupPlanner);
   assert.match(planner, /SUPPORTED_LOCAL_COLLECTOR_CONNECTORS/);
-  assert.match(planner, /STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR/);
+  assert.match(planner, /staticSecretCredentialCaptureFromManifest/);
   assert.match(planner, /SUPPORTED_BROWSER_COLLECTOR_CONNECTORS/);
 
   const consoleCatalog = read(FILES.consoleCatalog);

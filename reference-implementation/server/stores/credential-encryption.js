@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 /**
- * Reversible encryption-at-rest for per-connection static-secret credentials
- * (Google app passwords, GitHub personal access tokens, …).
+ * Reversible encryption-at-rest for per-connection static-secret credentials.
  *
  * Unlike the device-exporter store, which one-way *hashes* device tokens it only
  * ever needs to verify, a provider static secret must be *recovered* so the
@@ -11,10 +11,13 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEq
  * `add-static-secret-owner-connect-primitive` design Decision 1.
  *
  * The encryption key is owner/operator-held (an instance/server secret), never
- * agent-held or client-held. It is provided out-of-band via the
- * `PDPP_CREDENTIAL_ENCRYPTION_KEY` environment variable. When credential
- * encryption is required but no key is configured, callers MUST fail closed with
- * a clear operator error rather than storing plaintext.
+ * agent-held or client-held. It is provided out-of-band through a small
+ * key-provider adapter: `PDPP_CREDENTIAL_ENCRYPTION_KEY` for platforms whose
+ * secret manager exposes env vars (Railway), or
+ * `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` for Docker/Kubernetes-style secret
+ * mounts. When credential encryption is required but no provider is configured,
+ * callers MUST fail closed with a clear operator error rather than storing
+ * plaintext.
  *
  * Wire format of a sealed credential (a single opaque string, versioned so the
  * key-derivation / cipher can evolve without ambiguity):
@@ -27,6 +30,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEq
  */
 
 export const CREDENTIAL_ENCRYPTION_KEY_ENV = 'PDPP_CREDENTIAL_ENCRYPTION_KEY';
+export const CREDENTIAL_ENCRYPTION_KEY_FILE_ENV = 'PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE';
 const SEALED_VERSION = 'v1';
 const CIPHER = 'aes-256-gcm';
 const KEY_BYTES = 32;
@@ -54,9 +58,36 @@ export class CredentialEncryptionError extends Error {
  */
 export function resolveCredentialEncryptionKey(env = process.env) {
   const raw = env[CREDENTIAL_ENCRYPTION_KEY_ENV];
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  const keyFile = env[CREDENTIAL_ENCRYPTION_KEY_FILE_ENV];
+  if (typeof keyFile !== 'string' || keyFile.trim().length === 0) {
+    return null;
+  }
+  const path = keyFile.trim();
+  let fileValue;
+  try {
+    fileValue = readFileSync(path, 'utf8');
+  } catch (err) {
+    throw new CredentialEncryptionError(
+      'credential_encryption_key_file_unreadable',
+      `Credential encryption key file '${path}' could not be read. ` +
+        `Set ${CREDENTIAL_ENCRYPTION_KEY_ENV} or mount a readable file via ${CREDENTIAL_ENCRYPTION_KEY_FILE_ENV}.`,
+    );
+  }
+  const trimmed = fileValue.trim();
+  if (!trimmed) {
+    throw new CredentialEncryptionError(
+      'credential_encryption_key_invalid',
+      `Credential encryption key file '${path}' is empty.`,
+    );
+  }
+  return trimmed;
 }
 
 /**
@@ -177,8 +208,9 @@ export function createCredentialCipherFromEnv(env = process.env) {
   if (!key) {
     throw new CredentialEncryptionError(
       'credential_encryption_key_missing',
-      `Credential encryption is required but ${CREDENTIAL_ENCRYPTION_KEY_ENV} is not configured. ` +
-        'Set an owner/operator-held key before capturing static-secret credentials. ' +
+      `Credential encryption is required but neither ${CREDENTIAL_ENCRYPTION_KEY_ENV} nor ` +
+        `${CREDENTIAL_ENCRYPTION_KEY_FILE_ENV} is configured. ` +
+        'Set an owner/operator-held key provider before capturing static-secret credentials. ' +
         'No plaintext credential is ever stored without it.',
     );
   }
@@ -187,7 +219,11 @@ export function createCredentialCipherFromEnv(env = process.env) {
 
 /** True when an operator key is configured and credential capture can proceed. */
 export function isCredentialEncryptionConfigured(env = process.env) {
-  return resolveCredentialEncryptionKey(env) !== null;
+  try {
+    return resolveCredentialEncryptionKey(env) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**

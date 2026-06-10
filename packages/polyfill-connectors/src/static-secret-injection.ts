@@ -1,9 +1,8 @@
 /**
  * Connection-scoped static-secret injection.
  *
- * Static-secret connectors (Gmail over IMAP with a Google app password, GitHub
- * with a personal access token) read their provider secret from named
- * environment variables. Historically that secret could only live in the
+ * Static-secret connectors read their connector-declared provider secret from
+ * named environment variables. Historically that secret could only live in the
  * process-global environment, which structurally limits the reference to ONE
  * account per connector type — two Gmail mailboxes would collide on one
  * `GOOGLE_APP_PASSWORD_PDPP`.
@@ -32,6 +31,8 @@ export interface RecoveredStaticSecret {
   readonly secret: string;
 }
 
+type StaticSecretSetupFields = Readonly<Record<string, string>>;
+
 interface StaticSecretConnectorDescriptor {
   /** Credential kind this connector authenticates with. */
   readonly credentialKind: StaticSecretCredentialKind;
@@ -41,10 +42,18 @@ interface StaticSecretConnectorDescriptor {
    * value so the connector finds it regardless of which alias it prefers.
    */
   readonly secretEnvVars: readonly string[];
+  /** Non-secret setup fields to inject for connector runtime configuration. */
+  readonly setupFieldEnvVars?: Readonly<Record<string, readonly string[]>>;
 }
 
 function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescriptor): StaticSecretConnectorDescriptor {
   Object.freeze(descriptor.secretEnvVars);
+  if (descriptor.setupFieldEnvVars) {
+    for (const value of Object.values(descriptor.setupFieldEnvVars)) {
+      Object.freeze(value);
+    }
+    Object.freeze(descriptor.setupFieldEnvVars);
+  }
   return Object.freeze(descriptor);
 }
 
@@ -62,6 +71,9 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
     gmail: freezeStaticSecretDescriptor({
       credentialKind: "app_password",
       secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],
+      setupFieldEnvVars: {
+        account_email: ["GMAIL_ADDRESS", "GMAIL_USER"],
+      },
     }),
     github: freezeStaticSecretDescriptor({
       credentialKind: "personal_access_token",
@@ -83,6 +95,23 @@ export function isStaticSecretConnector(connectorId: string): boolean {
   return Object.hasOwn(STATIC_SECRET_CONNECTOR_REGISTRY, connectorId);
 }
 
+function setupFieldsFromSourceBinding(sourceBinding: unknown): StaticSecretSetupFields {
+  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
+    return {};
+  }
+  const raw = (sourceBinding as { setup_fields?: unknown }).setup_fields;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const fields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      fields[key] = value.trim();
+    }
+  }
+  return fields;
+}
+
 /**
  * Build the connection-scoped env fragment for one connector run.
  *
@@ -96,11 +125,13 @@ export function isStaticSecretConnector(connectorId: string): boolean {
  *
  * Throws when the connector is not a known static-secret connector, or when the
  * recovered credential's kind does not match the connector's expectation (a
- * guard against injecting a PAT where an app password is expected).
+ * guard against injecting one connector's credential kind into another
+ * connector's runtime.
  */
 export function buildConnectionScopedSecretEnv(
   connectorId: string,
-  recovered: RecoveredStaticSecret
+  recovered: RecoveredStaticSecret,
+  sourceBinding?: unknown
 ): Record<string, string> {
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY[connectorId];
   if (!descriptor) {
@@ -125,6 +156,16 @@ export function buildConnectionScopedSecretEnv(
   const fragment: Record<string, string> = {};
   for (const envVar of descriptor.secretEnvVars) {
     fragment[envVar] = recovered.secret;
+  }
+  const setupFields = setupFieldsFromSourceBinding(sourceBinding);
+  for (const [fieldName, envVars] of Object.entries(descriptor.setupFieldEnvVars ?? {})) {
+    const value = setupFields[fieldName];
+    if (!value) {
+      continue;
+    }
+    for (const envVar of envVars) {
+      fragment[envVar] = value;
+    }
   }
   return fragment;
 }

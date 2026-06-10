@@ -1,12 +1,11 @@
 // Reference-only owner-session static-secret credential capture.
 //
-// This is the owner-trusted surface for sealing a provider static secret
-// (Gmail app password, GitHub PAT) onto one existing connection. It is NOT an
-// owner-agent bearer route and it never returns the submitted secret. Owner-agent
-// intent may point at the owner-session capture page, but it never carries the
-// credential itself.
+// This is the owner-trusted surface for sealing one connector-declared provider
+// static secret onto one existing connection. It is NOT an owner-agent bearer
+// route and it never returns the submitted secret. Owner-agent intent may point
+// at the owner-session capture page, but it never carries the credential itself.
 
-import { expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
+import { expectedStaticSecretCredentialKind, type ConnectorManifestLike } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
 
@@ -82,6 +81,7 @@ export interface MountRefStaticSecretCredentialsContext {
       readonly ownerSubjectId?: string;
     }
   ): Promise<ConnectorNamespace>;
+  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
@@ -91,8 +91,12 @@ function errWithCode(code: string): { code: string } {
   return { code };
 }
 
-function expectedCredentialKindForConnector(connectorId: string): string | null {
-  return expectedStaticSecretCredentialKind(connectorId);
+async function expectedCredentialKindForConnector(
+  ctx: MountRefStaticSecretCredentialsContext,
+  connectorId: string
+): Promise<string | null> {
+  const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
+  return expectedStaticSecretCredentialKind(connectorId, manifest);
 }
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
@@ -109,7 +113,11 @@ function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unk
 
 function credentialCaptureErrorStatus(err: unknown): number {
   const code = (err as { code?: unknown })?.code;
-  if (code === "credential_encryption_key_missing" || code === "credential_encryption_key_invalid") {
+  if (
+    code === "credential_encryption_key_missing" ||
+    code === "credential_encryption_key_invalid" ||
+    code === "credential_encryption_key_file_unreadable"
+  ) {
     return 503;
   }
   return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
@@ -234,7 +242,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           allowStatuses: ["active", "draft"],
           connectorInstanceId,
         });
-        const expectedKind = expectedCredentialKindForConnector(namespace.connectorId);
+        const expectedKind = await expectedCredentialKindForConnector(ctx, namespace.connectorId);
         if (!expectedKind) {
           await emitCaptureAudit(ctx, req, res, {
             connectionId: namespace.connectorInstanceId,

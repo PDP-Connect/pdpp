@@ -27,6 +27,8 @@ Progress note: implementation centralizes the setup-plan model and points consol
 - [ ] 4.2 After proof, flip static-secret setup plans from proof-gated/runbook to supported owner-mediated credential capture.
 - [ ] 4.3 Prove two accounts for one static-secret connector create two active connection ids with separate credentials.
 - [x] 4.4 Update docs so connector-specific source credential env vars are fallback/dev paths, not the normal setup path.
+- [x] 4.5 Move static-secret setup form metadata into connector manifests, expose a setup descriptor with credential-key-provider readiness, and block before draft creation when no provider is configured.
+- [x] 4.6 Generate the Docker credential encryption key from `scripts/generate-secrets.sh` and keep Railway on an auto-generated template secret.
 
 Progress note: normal static-secret setup no longer requires per-account env vars or runbook archaeology. The console now creates a draft, captures the provider secret from the owner session, and starts first sync. The support-state flip remains proof-gated until live Gmail/GitHub credentials produce no-secret-leak evidence and accepted records.
 
@@ -54,6 +56,7 @@ connector-specific exchanger/inventory adapters are implemented and proven.
 - [x] 7.1 Update self-host and Railway docs to list only instance-level deployment variables as required normal setup.
 - [x] 7.2 Document connector-specific source credential env vars as compatibility fallbacks and local development escape hatches.
 - [x] 7.3 Add an operator-facing "add a connection" flow document that points to the console and CLI/owner-agent setup plan rather than connector-specific runbook archaeology.
+- [x] 7.4 Document the credential key provider abstraction: Railway generated env-var provider, Docker generated env-var provider, and Docker/Kubernetes file-provider escape hatch.
 
 ## 8. Acceptance Checks
 

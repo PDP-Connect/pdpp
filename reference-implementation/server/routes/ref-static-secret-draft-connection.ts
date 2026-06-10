@@ -1,8 +1,8 @@
 // Reference-only owner-session static-secret DRAFT-connection creation.
 //
 // This is the owner-trusted surface that creates the FIRST connection for a
-// static-secret connector (Gmail, GitHub) without writing a phantom active
-// zero-record row. It creates a `draft` connector instance — a real row that is
+// static-secret connector without writing a phantom active zero-record row. It
+// creates a `draft` connector instance — a real row that is
 // invisible to every connection read surface — and points the owner at the
 // existing capture route to seal the credential. The draft flips to `active`
 // only on its first successful ingest (handled at the RS ingest boundary).
@@ -15,10 +15,22 @@
 
 import { randomBytes } from "node:crypto";
 
-import { expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
+import {
+  displayNameForConnector,
+  expectedStaticSecretCredentialKind,
+  staticSecretCredentialCaptureFromManifest,
+  type ConnectorManifestLike,
+  type StaticSecretSetupField,
+} from "../connection-setup-plan.ts";
+import {
+  CREDENTIAL_ENCRYPTION_KEY_ENV,
+  CREDENTIAL_ENCRYPTION_KEY_FILE_ENV,
+  isCredentialEncryptionConfigured,
+} from "../stores/credential-encryption.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
+  readonly body?: unknown;
   ownerSession?: { readonly sub?: string | null } | null;
   readonly params: Readonly<Record<string, string>>;
 }
@@ -33,6 +45,7 @@ interface RouteResponse {
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
+  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
@@ -77,7 +90,7 @@ export interface MountRefStaticSecretDraftConnectionContext {
   // Resolves a registered connector manifest, throwing a typed not_found when
   // the connector is unknown. Used only to reject an unknown connector id with
   // 404 before creating a draft.
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown>;
+  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
@@ -94,6 +107,118 @@ function buildAuditTrace(ctx: MountRefStaticSecretDraftConnectionContext, res: R
     scenario_id: trace.scenario_id,
     trace_id: trace.trace_id,
   };
+}
+
+function staticSecretDeploymentReadiness(): Record<string, unknown> {
+  if (isCredentialEncryptionConfigured()) {
+    return {
+      blockers: [],
+      guidance: null,
+      state: "ready",
+    };
+  }
+  return {
+    blockers: [
+      {
+        key: CREDENTIAL_ENCRYPTION_KEY_ENV,
+        label: "Credential encryption key",
+        secret: true,
+      },
+      {
+        key: CREDENTIAL_ENCRYPTION_KEY_FILE_ENV,
+        label: "Credential encryption key file",
+        secret: true,
+      },
+    ],
+    guidance:
+      "Configure the instance-level credential key provider before entering a provider credential. Railway templates should generate PDPP_CREDENTIAL_ENCRYPTION_KEY automatically; Docker operators can mount a secret file and set PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE.",
+    state: "needs_config",
+  };
+}
+
+function staticSecretSetupErrorMessage(): string {
+  return (
+    `Credential encryption is required but neither ${CREDENTIAL_ENCRYPTION_KEY_ENV} nor ` +
+    `${CREDENTIAL_ENCRYPTION_KEY_FILE_ENV} is configured. Configure the instance-level key provider before capturing static-secret credentials. No draft connection or plaintext credential was stored.`
+  );
+}
+
+function projectField(field: StaticSecretSetupField): Record<string, unknown> {
+  return {
+    autocomplete: field.autocomplete,
+    description: field.description,
+    help_text: field.helpText,
+    help_url: field.helpUrl,
+    identity: field.identity,
+    label: field.label,
+    name: field.name,
+    placeholder: field.placeholder,
+    required: field.required,
+    secret: field.secret,
+    type: field.type,
+  };
+}
+
+function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Record<string, unknown> | null {
+  const capture = staticSecretCredentialCaptureFromManifest(manifest);
+  const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
+  if (!capture || !credentialKind) {
+    return null;
+  }
+  const displayName = displayNameForConnector(connectorId, manifest);
+  return {
+    object: "static_secret_setup",
+    connector_id: connectorId,
+    display_name: displayName,
+    credential_kind: credentialKind,
+    credential_capture: {
+      description: capture.description,
+      fields: capture.fields.map(projectField),
+      kind: capture.kind,
+      label: capture.label,
+      submit_label: capture.submitLabel,
+    },
+    deployment_readiness: staticSecretDeploymentReadiness(),
+  };
+}
+
+function parseSetupFields(
+  ctx: MountRefStaticSecretDraftConnectionContext,
+  res: RouteResponse,
+  body: unknown,
+  fields: readonly StaticSecretSetupField[]
+): Record<string, string> | null {
+  const objectBody = (body as Record<string, unknown> | null) || {};
+  const raw = objectBody.setup_fields;
+  const provided = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const allowed = new Set(fields.filter((field) => !field.secret).map((field) => field.name));
+  const output: Record<string, string> = {};
+  for (const key of Object.keys(provided)) {
+    if (!allowed.has(key)) {
+      ctx.pdppError(res, 400, "unknown_setup_field", `Unknown setup field: ${key}`, `setup_fields.${key}`);
+      return null;
+    }
+  }
+  for (const field of fields) {
+    if (field.secret) {
+      continue;
+    }
+    const value = provided[field.name];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (field.required && !text) {
+      ctx.pdppError(res, 400, "missing_setup_field", `${field.label} is required.`, `setup_fields.${field.name}`);
+      return null;
+    }
+    if (text) {
+      output[field.name] = text;
+    }
+  }
+  return output;
+}
+
+function identityValue(fields: readonly StaticSecretSetupField[], setupFields: Record<string, string>): string | null {
+  const field = fields.find((candidate) => candidate.identity && !candidate.secret);
+  return field ? setupFields[field.name] ?? null : null;
 }
 
 async function emitDraftAudit(
@@ -150,6 +275,31 @@ export function mountRefStaticSecretDraftConnection(
   app: AppLike,
   ctx: MountRefStaticSecretDraftConnectionContext
 ): void {
+  app.get(
+    "/_ref/connectors/:connectorId/static-secret-setup",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
+      const connectorId = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+      try {
+        const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
+        const setup = projectSetup(connectorId, manifest);
+        if (!setup) {
+          ctx.pdppError(
+            res,
+            409,
+            "static_secret_credential_unsupported",
+            `Connector '${connectorId}' is not a static-secret connector.`
+          );
+          return;
+        }
+        res.status(200).json(setup);
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+
   app.post(
     "/_ref/connectors/:connectorId/draft-connection",
     ctx.requireOwnerSession,
@@ -161,9 +311,10 @@ export function mountRefStaticSecretDraftConnection(
         ownerSubjectId = ctx.getOwnerSubjectId(req);
 
         // Reject an unknown connector before doing anything else (404).
-        await ctx.resolveRegisteredConnectorManifest(connectorId);
+        const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
 
-        const credentialKind = expectedStaticSecretCredentialKind(connectorId);
+        const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
+        const captureSetup = staticSecretCredentialCaptureFromManifest(manifest);
         if (!credentialKind) {
           await emitDraftAudit(ctx, req, res, {
             connectorId,
@@ -179,6 +330,43 @@ export function mountRefStaticSecretDraftConnection(
           );
           return;
         }
+        if (!captureSetup) {
+          await emitDraftAudit(ctx, req, res, {
+            connectorId,
+            error: errWithCode("static_secret_setup_missing"),
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          ctx.pdppError(
+            res,
+            409,
+            "static_secret_setup_missing",
+            `Connector '${connectorId}' is missing manifest setup.credential_capture metadata.`
+          );
+          return;
+        }
+        if (!isCredentialEncryptionConfigured()) {
+          await emitDraftAudit(ctx, req, res, {
+            connectorId,
+            credentialKind,
+            error: errWithCode("credential_encryption_key_missing"),
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          ctx.pdppError(res, 503, "credential_encryption_key_missing", staticSecretSetupErrorMessage());
+          return;
+        }
+        const setupFields = parseSetupFields(ctx, res, req.body, captureSetup.fields);
+        if (setupFields === null) {
+          await emitDraftAudit(ctx, req, res, {
+            connectorId,
+            credentialKind,
+            error: errWithCode("invalid_request"),
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          return;
+        }
 
         // A fresh random binding key makes every draft a distinct connection
         // identity (two mailboxes → two connection_ids) and deliberately avoids
@@ -188,14 +376,16 @@ export function mountRefStaticSecretDraftConnection(
         const sourceBindingKey = `draft_${randomBytes(24).toString("hex")}`;
         const now = ctx.now ? ctx.now() : new Date().toISOString();
         const store = ctx.createRequestConnectorInstanceStore();
+        const idValue = identityValue(captureSetup.fields, setupFields);
+        const displayName = idValue ? `${displayNameForConnector(connectorId, manifest)} - ${idValue}` : displayNameForConnector(connectorId, manifest);
         const instance = await store.upsert({
           ownerSubjectId,
           connectorId,
-          displayName: connectorId,
+          displayName,
           status: "draft",
           sourceKind: "account",
           sourceBindingKey,
-          sourceBinding: { kind: "static_secret_draft" },
+          sourceBinding: { kind: "static_secret_draft", setup_fields: setupFields },
           createdAt: now,
           updatedAt: now,
         });
@@ -213,6 +403,7 @@ export function mountRefStaticSecretDraftConnection(
           connection_id: instance.connectorInstanceId,
           connector_instance_id: instance.connectorInstanceId,
           connector_id: connectorId,
+          display_name: displayName,
           status: instance.status,
           credential_kind: credentialKind,
           next_step: {

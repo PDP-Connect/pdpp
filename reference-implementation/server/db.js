@@ -186,9 +186,9 @@ CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
   ON connector_instances(owner_subject_id, connector_id, status);
 
 -- Per-connection encrypted static-secret credential store. A peer of the
--- instance-scoped storage / schedule state: a single static provider secret
--- (Google app password, GitHub PAT, …) sealed at rest under the owner/operator
--- key and keyed to exactly one connector instance. The plaintext is NEVER
+-- instance-scoped storage / schedule state: a single connector-declared static
+-- provider secret sealed at rest under the owner/operator key and keyed to
+-- exactly one connector instance. The plaintext is NEVER
 -- stored; sealed_secret is the AES-256-GCM token from credential-encryption.js
 -- and is never returned by any read surface. See
 -- add-static-secret-owner-connect-primitive design Decisions 1 & 7.

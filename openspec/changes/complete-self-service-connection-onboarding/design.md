@@ -162,6 +162,24 @@ engine route/contract. If an agent uses a skill plus CLI, or a human uses CLI,
 they should see the same setup answer that the console and owner-agent REST
 surface would produce.
 
+### 8. Static-secret forms are manifest-authored and credential-key-provider gated
+
+Static-secret setup UI is generated from connector manifest metadata, not from
+Console-specific connector branches. A connector that needs a provider secret or
+non-secret account identifier declares the setup fields, help URL, labels, and
+credential kind in its manifest. Console, owner-agent REST, and CLI helpers
+consume that descriptor; the RI UI does not carry connector-specific form
+knowledge.
+
+Static-secret credential storage depends on an instance-level credential key
+provider. The provider abstraction has at least two RI implementations:
+`PDPP_CREDENTIAL_ENCRYPTION_KEY` for platforms whose secret manager exposes env
+vars (Railway), and `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` for Docker/Kubernetes
+secret-file mounts. Railway templates generate the env-var key automatically;
+Docker's `generate-secrets.sh --write` fills the env-var provider by default.
+When no provider is configured, setup SHALL block before provider-secret entry
+and draft creation SHALL fail closed before writing a row.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as
@@ -188,7 +206,9 @@ surface would produce.
 4. Add CLI/SDK helper commands against the same endpoint.
 5. Update self-host/Railway docs to distinguish deployment readiness variables
    from source connection setup.
-6. Flip proof-gated connectors only in the same unit as their live proof and
+6. Move static-secret setup form fields and help links into connector manifests,
+   and expose a setup descriptor that reports credential-key-provider readiness.
+7. Flip proof-gated connectors only in the same unit as their live proof and
    corresponding planner tests.
 
 ## Open Questions

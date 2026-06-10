@@ -49,9 +49,57 @@ export interface ConnectorManifestLike {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
   readonly setup?: {
+    readonly credential_capture?: {
+      readonly description?: string | null;
+      readonly fields?: readonly StaticSecretSetupFieldLike[] | null;
+      readonly kind?: string | null;
+      readonly credential_kind?: string | null;
+      readonly label?: string | null;
+      readonly submit_label?: string | null;
+    } | null;
     readonly modality?: string | null;
     readonly deployment_config?: readonly string[] | null;
   } | null;
+}
+
+export type StaticSecretSetupFieldType = "email" | "password" | "text";
+
+export interface StaticSecretSetupFieldLike {
+  readonly autocomplete?: string | null;
+  readonly description?: string | null;
+  readonly env?: readonly string[] | null;
+  readonly help_text?: string | null;
+  readonly help_url?: string | null;
+  readonly identity?: boolean | null;
+  readonly label?: string | null;
+  readonly name?: string | null;
+  readonly placeholder?: string | null;
+  readonly required?: boolean | null;
+  readonly secret?: boolean | null;
+  readonly type?: string | null;
+}
+
+export interface StaticSecretSetupField {
+  readonly autocomplete: string | null;
+  readonly description: string | null;
+  readonly env: readonly string[];
+  readonly helpText: string | null;
+  readonly helpUrl: string | null;
+  readonly identity: boolean;
+  readonly label: string;
+  readonly name: string;
+  readonly placeholder: string | null;
+  readonly required: boolean;
+  readonly secret: boolean;
+  readonly type: StaticSecretSetupFieldType;
+}
+
+export interface StaticSecretCredentialCaptureSetup {
+  readonly description: string | null;
+  readonly fields: readonly StaticSecretSetupField[];
+  readonly kind: string;
+  readonly label: string;
+  readonly submitLabel: string | null;
 }
 
 export interface ConnectorSetupDeploymentBlocker {
@@ -93,17 +141,6 @@ export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR
 export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = ["amazon"] as const;
 
 export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLECTOR_CONNECTORS)[number];
-
-export const STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR: Readonly<Record<string, string>> = Object.freeze({
-  gmail: "app_password",
-  github: "personal_access_token",
-});
-
-export const STATIC_SECRET_CONNECTORS = Object.freeze(
-  Object.keys(STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR)
-) as readonly StaticSecretConnector[];
-
-export type StaticSecretConnector = "gmail" | "github";
 
 export const BROWSER_BOUND_CONNECTORS = [
   "amazon",
@@ -188,8 +225,72 @@ export function displayNameForConnector(connectorKey: string, manifest?: Connect
   return manifest?.display_name?.trim() || manifest?.name?.trim() || connectorKey;
 }
 
-export function expectedStaticSecretCredentialKind(connectorId: string): string | null {
-  return STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[canonicalConnectorKey(connectorId)] ?? null;
+function cleanString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeStaticSecretField(raw: StaticSecretSetupFieldLike): StaticSecretSetupField | null {
+  const name = cleanString(raw?.name);
+  const label = cleanString(raw?.label);
+  if (!name || !label) {
+    return null;
+  }
+  const rawType = cleanString(raw.type)?.toLowerCase();
+  const type: StaticSecretSetupFieldType =
+    rawType === "email" || rawType === "password" || rawType === "text"
+      ? rawType
+      : raw.secret === true
+        ? "password"
+        : "text";
+  return {
+    autocomplete: cleanString(raw.autocomplete),
+    description: cleanString(raw.description),
+    env: Array.isArray(raw.env) ? raw.env.filter((value): value is string => cleanString(value) !== null) : [],
+    helpText: cleanString(raw.help_text),
+    helpUrl: cleanString(raw.help_url),
+    identity: raw.identity === true,
+    label,
+    name,
+    placeholder: cleanString(raw.placeholder),
+    required: raw.required !== false,
+    secret: raw.secret === true || type === "password",
+    type,
+  };
+}
+
+export function staticSecretCredentialCaptureFromManifest(
+  manifest: ConnectorManifestLike | null | undefined
+): StaticSecretCredentialCaptureSetup | null {
+  const capture = manifest?.setup?.credential_capture;
+  if (!capture || typeof capture !== "object") {
+    return null;
+  }
+  const kind = cleanString(capture.credential_kind) ?? cleanString(capture.kind);
+  if (!kind) {
+    return null;
+  }
+  const fields = Array.isArray(capture.fields)
+    ? capture.fields
+        .map((field) => normalizeStaticSecretField(field))
+        .filter((field): field is StaticSecretSetupField => field !== null)
+    : [];
+  if (!fields.some((field) => field.secret)) {
+    return null;
+  }
+  return {
+    description: cleanString(capture.description),
+    fields,
+    kind,
+    label: cleanString(capture.label) ?? kind,
+    submitLabel: cleanString(capture.submit_label),
+  };
+}
+
+export function expectedStaticSecretCredentialKind(
+  _connectorId: string,
+  manifest?: ConnectorManifestLike | null
+): string | null {
+  return staticSecretCredentialCaptureFromManifest(manifest)?.kind ?? null;
 }
 
 export function isSupportedLocalCollectorConnector(
@@ -210,10 +311,13 @@ export function isSupportedBrowserCollectorConnector(
   );
 }
 
-export function isStaticSecretConnector(connectorId: string | null | undefined): connectorId is StaticSecretConnector {
+export function isStaticSecretConnector(
+  connectorId: string | null | undefined,
+  manifest?: ConnectorManifestLike | null
+): boolean {
   return (
     typeof connectorId === "string" &&
-    Object.hasOwn(STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR, canonicalConnectorKey(connectorId))
+    expectedStaticSecretCredentialKind(connectorId, manifest) !== null
   );
 }
 
@@ -255,7 +359,7 @@ function authKindFromManifest(manifest: ConnectorManifestLike | null): string | 
 }
 
 export function classifyConnectorSetupModality(
-  connectorKey: string,
+  _connectorKey: string,
   manifest: ConnectorManifestLike | null
 ): ConnectorSetupModality {
   const connectorModality = classifyConnectorIntentModality(manifest);
@@ -266,10 +370,10 @@ export function classifyConnectorSetupModality(
     return "browser_bound";
   }
   if (connectorModality === "api_network") {
-    if (isStaticSecretConnector(connectorKey)) {
+    const authKind = authKindFromManifest(manifest);
+    if (staticSecretCredentialCaptureFromManifest(manifest)) {
       return "static_secret";
     }
-    const authKind = authKindFromManifest(manifest);
     if (
       authKind === "oauth" ||
       authKind === "oauth2" ||
@@ -330,7 +434,7 @@ export function unsupportedReason(modality: ConnectorIntentModality | ConnectorS
     return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships, but end-to-end proof that a real owner-logged-in browser session ingests through that path is still gated. Follow `docs/operator/browser-collector-proof-runbook.md`; the setup plan stays proof-gated until that live proof lands.";
   }
   if (modality === "static_secret" || modality === "api_network") {
-    return "This API/network connector authenticates with a static provider secret the owner supplies locally (gmail uses a Google app password over IMAP; github uses a personal access token); there is no OAuth authorization URL. Use the owner-session static-secret setup page to create a draft, capture the provider secret, and start first sync. The connection stays hidden until first ingest accepts records.";
+    return "This API/network connector authenticates with a static provider secret declared by its connector manifest; there is no OAuth authorization URL. Use the owner-session static-secret setup page to create a draft, capture the provider secret, and start first sync. The connection stays hidden until first ingest accepts records.";
   }
   if (modality === "provider_authorization") {
     return "This connector needs provider authorization. The reference distinguishes deployment-level provider app readiness from per-owner authorization, but this build does not yet ship the callback/token-exchange lifecycle that proves an active connection only after authorization and account inventory or a connection test succeeds.";

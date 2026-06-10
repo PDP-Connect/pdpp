@@ -39,6 +39,7 @@ export class StaticSecretRunCredentialError extends Error {
  * @param {string} args.connectorId - the connector type (e.g. 'gmail').
  * @param {string} args.connectorInstanceId - the connection being run.
  * @param {string} [args.ownerSubjectId] - owner scoping for recovery.
+ * @param {unknown} [args.sourceBinding] - non-secret connection setup binding.
  * @param {object} args.credentialStore - a connector-instance credential store.
  * @param {(connectorId: string) => boolean} args.isStaticSecretConnector -
  *   injected from the runner barrel.
@@ -54,6 +55,7 @@ export async function resolveStaticSecretRunEnv({
   connectorId,
   connectorInstanceId,
   ownerSubjectId,
+  sourceBinding,
   credentialStore,
   isStaticSecretConnector,
   buildConnectionScopedSecretEnv,
@@ -81,7 +83,7 @@ export async function resolveStaticSecretRunEnv({
   // let it propagate so the run is refused rather than started with no/stale
   // credential.
   const recovered = await credentialStore.recoverSecret({ connectorInstanceId, ownerSubjectId });
-  return buildConnectionScopedSecretEnv(connectorId, recovered);
+  return buildConnectionScopedSecretEnv(connectorId, recovered, sourceBinding);
 }
 
 export { ConnectorInstanceCredentialError };

@@ -9,12 +9,34 @@ import {
   classifyConnectorSetupModality,
 } from '../server/connection-setup-plan.ts';
 
-function manifest(connectorId, bindings) {
+function manifest(connectorId, bindings, extra = {}) {
   return {
     connector_id: `https://registry.pdpp.org/connectors/${connectorId}`,
     display_name: connectorId,
     runtime_requirements: { bindings },
+    ...extra,
   };
+}
+
+function staticSecretManifest(connectorId, credentialKind = 'api_key') {
+  return manifest(connectorId, { network: { required: true } }, {
+    setup: {
+      modality: 'static_secret',
+      credential_capture: {
+        kind: credentialKind,
+        label: `${connectorId} secret`,
+        fields: [
+          {
+            name: 'secret',
+            label: 'Provider secret',
+            required: true,
+            secret: true,
+            type: 'password',
+          },
+        ],
+      },
+    },
+  });
 }
 
 test('setup planner supports proven local collectors without creating active connections', () => {
@@ -83,8 +105,8 @@ test('setup planner keeps browser-bound connectors proof-gated before live proof
 
 test('setup planner keeps static-secret connectors proof-gated before live proof', () => {
   const plan = buildConnectionSetupPlan({
-    connectorKey: 'gmail',
-    manifest: manifest('gmail', { network: { required: true } }),
+    connectorKey: 'mailbox',
+    manifest: staticSecretManifest('mailbox', 'app_password'),
   });
   assert.equal(plan.connectorModality, 'api_network');
   assert.equal(plan.setupModality, 'static_secret');
@@ -95,6 +117,16 @@ test('setup planner keeps static-secret connectors proof-gated before live proof
   assert.equal(plan.ownerAgentIntent.nextStepKind, 'capture_static_secret');
   assert.equal(plan.proofGate, 'static_secret_live_proof_missing');
   assert.equal(plan.runbookPath, STATIC_SECRET_RUNBOOK_PATH);
+});
+
+test('setup planner does not infer static-secret setup from connector id alone', () => {
+  const plan = buildConnectionSetupPlan({
+    connectorKey: 'gmail',
+    manifest: manifest('gmail', { network: { required: true } }),
+  });
+  assert.equal(plan.connectorModality, 'api_network');
+  assert.equal(plan.setupModality, 'unsupported');
+  assert.equal(plan.supportState, 'unsupported');
 });
 
 test('setup planner distinguishes unsupported network connectors from static-secret connectors', () => {
@@ -153,7 +185,8 @@ test('setup planner distinguishes provider app readiness from owner authorizatio
 });
 
 test('classifyConnectorSetupModality separates binding class from setup class', () => {
-  assert.equal(classifyConnectorSetupModality('gmail', manifest('gmail', { network: {} })), 'static_secret');
+  assert.equal(classifyConnectorSetupModality('gmail', staticSecretManifest('gmail', 'app_password')), 'static_secret');
+  assert.equal(classifyConnectorSetupModality('gmail', manifest('gmail', { network: {} })), 'unsupported');
   assert.equal(
     classifyConnectorSetupModality('oauth-source', {
       ...manifest('oauth-source', { network: {} }),

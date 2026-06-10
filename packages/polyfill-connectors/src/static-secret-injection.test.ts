@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -34,6 +35,36 @@ test("gmail injection sets both app-password aliases to the recovered secret", (
   assert.equal(env.GMAIL_APP_PASSWORD, "abcd efgh ijkl mnop");
   // Only the secret env vars are present — no mailbox address, no global leakage.
   assert.deepEqual(Object.keys(env).sort(), ["GMAIL_APP_PASSWORD", "GOOGLE_APP_PASSWORD_PDPP"]);
+});
+
+test("gmail injection maps connector-owned non-secret setup fields to runtime env", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "gmail",
+    {
+      secret: "abcd efgh ijkl mnop",
+      credentialKind: "app_password",
+    },
+    {
+      kind: "static_secret_draft",
+      setup_fields: {
+        account_email: "owner@example.com",
+      },
+    }
+  );
+  assert.equal(env.GOOGLE_APP_PASSWORD_PDPP, "abcd efgh ijkl mnop");
+  assert.equal(env.GMAIL_APP_PASSWORD, "abcd efgh ijkl mnop");
+  assert.equal(env.GMAIL_ADDRESS, "owner@example.com");
+  assert.equal(env.GMAIL_USER, "owner@example.com");
+});
+
+test("gmail runtime setup-field env mapping matches the connector manifest", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifests/gmail.json", import.meta.url), "utf8"));
+  const accountEmailField = manifest.setup.credential_capture.fields.find(
+    (field: { name?: unknown }) => field.name === "account_email"
+  );
+  const gmailDescriptor = STATIC_SECRET_CONNECTOR_REGISTRY.gmail;
+  assert.ok(gmailDescriptor);
+  assert.deepEqual(gmailDescriptor.setupFieldEnvVars?.account_email, accountEmailField.env);
 });
 
 test("github injection sets both token aliases to the recovered secret", () => {

@@ -503,11 +503,11 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
     assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/gmail');
     assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.match(body.next_step.reason, /API|network/i);
-    // Honesty: gmail/github authenticate with a STATIC provider secret the owner
-    // supplies locally (app password / personal access token), NOT an OAuth
-    // authorization-code flow. The route may point at the owner-session capture
-    // page and runbook, but it must not emit the provider secret, an owner
-    // cookie, or an OAuth authorization URL.
+    // Honesty: static-secret connectors authenticate with a connector-declared
+    // provider secret the owner supplies through an owner-session surface, NOT
+    // an OAuth authorization-code flow. The route may point at the
+    // owner-session capture page and runbook, but it must not emit the provider
+    // secret, an owner cookie, or an OAuth authorization URL.
     assert.doesNotMatch(
       body.next_step.reason,
       /add this connection from the dashboard/i,
@@ -518,12 +518,12 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
       /static provider secret/i,
       'reason must name the static-secret credential model, not imply OAuth',
     );
-    assert.match(body.next_step.reason, /app password|personal access token|token/i);
+    assert.match(body.next_step.reason, /connector manifest/i);
     // The reason must affirm these connectors are NOT OAuth-backed, so a future
     // reader cannot wire them to a provider authorization URL.
     assert.match(
       body.next_step.reason,
-      /none of the current ones are|no OAuth authorization URL/i,
+      /no OAuth authorization URL/i,
       'reason must explicitly state no current connector is OAuth-backed',
     );
     assert.equal(body.next_step.authorization_url, undefined);

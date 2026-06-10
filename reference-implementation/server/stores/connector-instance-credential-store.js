@@ -11,9 +11,9 @@ import {
  *
  * A credential is instance-scoped to exactly one connector instance
  * (`connector_instance_id`, equivalently the owner-facing `connection_id`). It
- * holds a static provider secret — a Google app password or a GitHub personal
- * access token — sealed at rest under the owner/operator-held key
- * (`credential-encryption.js`). The plaintext is recoverable ONLY through
+ * holds a connector-declared static provider secret sealed at rest under the
+ * owner/operator-held key (`credential-encryption.js`). The plaintext is
+ * recoverable ONLY through
  * {@link recoverSecret}, which the orchestrator calls to inject the secret into a
  * single connection-scoped connector run. No read projection, audit record, or
  * error message ever carries the plaintext.

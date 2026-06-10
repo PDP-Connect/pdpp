@@ -12,6 +12,45 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "app_password",
+      "label": "Google app password",
+      "description": "Use a Gmail address and a Google app password for the mailbox this connection should collect.",
+      "submit_label": "Create Gmail connection and start first sync",
+      "fields": [
+        {
+          "name": "account_email",
+          "label": "Gmail address",
+          "type": "email",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "email",
+          "placeholder": "you@example.com",
+          "env": [
+            "GMAIL_ADDRESS",
+            "GMAIL_USER"
+          ]
+        },
+        {
+          "name": "secret",
+          "label": "Google app password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "one-time-code",
+          "help_url": "https://myaccount.google.com/apppasswords",
+          "help_text": "Create an app password in your Google Account, then paste it here.",
+          "env": [
+            "GOOGLE_APP_PASSWORD_PDPP",
+            "GMAIL_APP_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "credentials"
