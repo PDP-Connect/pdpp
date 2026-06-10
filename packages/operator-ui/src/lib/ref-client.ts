@@ -431,14 +431,15 @@ export interface DeploymentDiagnostics {
     physical_bytes?: number | null;
     top_relations?: ReadonlyArray<{ name: string; bytes: number }> | null;
   };
-  // Optional so older reference deployments still parse. null means unmeasured;
-  // null byte fields mean the server attempted the probe but could not measure
-  // the filesystem.
-  disk_headroom?: {
+  // Optional so older reference deployments still parse. Array shape since
+  // multi-mount support was added; each entry represents one measured filesystem.
+  // null byte fields mean the server attempted the probe but could not measure.
+  disk_headroom?: ReadonlyArray<{
     path: string;
     free_bytes: number | null;
     total_bytes: number | null;
-  } | null;
+    mount_label?: string;
+  }>;
   environment: ReadonlyArray<{
     name: string;
     value: string | null;

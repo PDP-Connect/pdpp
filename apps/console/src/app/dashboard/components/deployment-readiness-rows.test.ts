@@ -10,9 +10,11 @@ import { test } from "node:test";
 
 import {
   diskHeadroomRow,
+  diskHeadroomRows,
   embeddingCacheRow,
   overallVerdict,
   ownerPasswordRow,
+  type DiskHeadroomInputs,
   type ReadinessRow,
   referenceOriginRow,
   refreshTokenRow,
@@ -20,10 +22,13 @@ import {
   storageBackendRow,
 } from "./deployment-readiness-rows.ts";
 
-const HEALTHY_DISK_HEADROOM = {
+const HEALTHY_DISK_HEADROOM: DiskHeadroomInputs = {
   path: "/data",
   freeBytesOnDataFs: 20 * 1024 * 1024 * 1024, // 20 GiB
   totalBytesOnDataFs: 100 * 1024 * 1024 * 1024,
+  largestRelationBytes: null,
+  largestRelationName: null,
+  mountLabel: null,
 };
 
 const baseInputs: ServerInputs = {
@@ -36,7 +41,7 @@ const baseInputs: ServerInputs = {
   vectorIndexKind: "sqlite-vec",
   vectorIndexState: "built",
   databasePath: "/data/pdpp.db",
-  diskHeadroom: HEALTHY_DISK_HEADROOM,
+  diskHeadroom: [HEALTHY_DISK_HEADROOM],
 };
 
 const OWNER_PASSWORD_ENV_RE = /PDPP_OWNER_PASSWORD/;
@@ -200,6 +205,10 @@ test("overallVerdict unknown when probes still loading and nothing worse", () =>
 
 const GiB = 1024 * 1024 * 1024;
 
+function makeEntry(overrides: Partial<DiskHeadroomInputs>): DiskHeadroomInputs {
+  return { ...HEALTHY_DISK_HEADROOM, ...overrides };
+}
+
 test("diskHeadroomRow is ok when free space is above the warn threshold", () => {
   const row = diskHeadroomRow(baseInputs);
   assert.equal(row.status, "ok");
@@ -209,7 +218,7 @@ test("diskHeadroomRow is ok when free space is above the warn threshold", () => 
 test("diskHeadroomRow is warn when free space is below 5 GiB but above 2 GiB", () => {
   const row = diskHeadroomRow({
     ...baseInputs,
-    diskHeadroom: { path: "/data", freeBytesOnDataFs: 3 * GiB, totalBytesOnDataFs: 100 * GiB },
+    diskHeadroom: [makeEntry({ freeBytesOnDataFs: 3 * GiB, totalBytesOnDataFs: 100 * GiB })],
   });
   assert.equal(row.status, "warn");
   assert.match(row.hint ?? "", /docker system prune/);
@@ -218,22 +227,22 @@ test("diskHeadroomRow is warn when free space is below 5 GiB but above 2 GiB", (
 test("diskHeadroomRow is error when free space is below 2 GiB", () => {
   const row = diskHeadroomRow({
     ...baseInputs,
-    diskHeadroom: { path: "/data", freeBytesOnDataFs: 1 * GiB, totalBytesOnDataFs: 50 * GiB },
+    diskHeadroom: [makeEntry({ freeBytesOnDataFs: 1 * GiB, totalBytesOnDataFs: 50 * GiB })],
   });
   assert.equal(row.status, "error");
   assert.match(row.detail, /No space left on device/);
   assert.match(row.hint ?? "", /docker system prune/);
 });
 
-test("diskHeadroomRow is info when probe returned null (unmeasured)", () => {
-  const row = diskHeadroomRow({ ...baseInputs, diskHeadroom: null });
+test("diskHeadroomRow is info when no entries (probe not run)", () => {
+  const row = diskHeadroomRow({ ...baseInputs, diskHeadroom: [] });
   assert.equal(row.status, "info");
 });
 
 test("diskHeadroomRow is info when free_bytes is null (probe failed)", () => {
   const row = diskHeadroomRow({
     ...baseInputs,
-    diskHeadroom: { path: "/data", freeBytesOnDataFs: null, totalBytesOnDataFs: null },
+    diskHeadroom: [makeEntry({ freeBytesOnDataFs: null, totalBytesOnDataFs: null })],
   });
   assert.equal(row.status, "info");
 });
@@ -241,7 +250,7 @@ test("diskHeadroomRow is info when free_bytes is null (probe failed)", () => {
 test("diskHeadroomRow hint does not suggest deleting data automatically", () => {
   const errorRow = diskHeadroomRow({
     ...baseInputs,
-    diskHeadroom: { path: "/data", freeBytesOnDataFs: 500 * 1024 * 1024, totalBytesOnDataFs: 50 * GiB },
+    diskHeadroom: [makeEntry({ freeBytesOnDataFs: 500 * 1024 * 1024, totalBytesOnDataFs: 50 * GiB })],
   });
   // The hint must never suggest automatic data deletion.
   assert.ok(
@@ -250,4 +259,99 @@ test("diskHeadroomRow hint does not suggest deleting data automatically", () => 
     "hint must not suggest automatic data deletion"
   );
   assert.ok(!(errorRow.hint ?? "").includes("--volumes"), "hint must not recommend deleting Docker volumes");
+});
+
+// ─── workload-aware warning ──────────────────────────────────────────────────
+
+test("diskHeadroomRow includes workload hint when free < largestRelationBytes", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: [
+      makeEntry({
+        // 4 GiB free — below warn (5 GiB) and below largest relation (6 GiB).
+        freeBytesOnDataFs: 4 * GiB,
+        totalBytesOnDataFs: 100 * GiB,
+        largestRelationBytes: 6 * GiB,
+        largestRelationName: "records",
+      }),
+    ],
+  });
+  assert.equal(row.status, "warn");
+  assert.match(row.detail, /VACUUM FULL/, "workload hint must mention VACUUM FULL");
+  assert.match(row.detail, /records/, "hint names the largest relation");
+});
+
+test("diskHeadroomRow omits workload hint when free >= largestRelationBytes", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: [
+      makeEntry({
+        // 4 GiB free — below warn but ABOVE largest relation (3 GiB).
+        freeBytesOnDataFs: 4 * GiB,
+        totalBytesOnDataFs: 100 * GiB,
+        largestRelationBytes: 3 * GiB,
+        largestRelationName: "records",
+      }),
+    ],
+  });
+  assert.equal(row.status, "warn");
+  assert.ok(!row.detail.includes("VACUUM FULL"), "no workload hint when free >= largest relation");
+});
+
+test("diskHeadroomRow omits workload hint when largestRelationBytes is null (SQLite)", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: [
+      makeEntry({
+        freeBytesOnDataFs: 4 * GiB,
+        totalBytesOnDataFs: 100 * GiB,
+        largestRelationBytes: null,
+        largestRelationName: null,
+      }),
+    ],
+  });
+  assert.equal(row.status, "warn");
+  assert.ok(!row.detail.includes("VACUUM FULL"), "no hint when footprint unavailable");
+});
+
+// ─── multi-mount: diskHeadroomRows ───────────────────────────────────────────
+
+test("diskHeadroomRows returns one row per entry", () => {
+  const rows = diskHeadroomRows({
+    ...baseInputs,
+    diskHeadroom: [
+      makeEntry({ freeBytesOnDataFs: 20 * GiB, mountLabel: "data" }),
+      makeEntry({ path: "/var/lib/postgresql/data", freeBytesOnDataFs: 8 * GiB, mountLabel: "postgres" }),
+    ],
+  });
+  assert.equal(rows.length, 2);
+  assert.match(rows[0]!.check, /data/);
+  assert.equal(rows[0]!.status, "ok");
+  assert.match(rows[1]!.check, /postgres/);
+  assert.equal(rows[1]!.status, "ok");
+});
+
+test("diskHeadroomRows returns info row when empty array (no probes ran)", () => {
+  const rows = diskHeadroomRows({ ...baseInputs, diskHeadroom: [] });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.status, "info");
+});
+
+test("diskHeadroomRows: unmeasured postgres entry shows info, not a false green", () => {
+  const rows = diskHeadroomRows({
+    ...baseInputs,
+    diskHeadroom: [
+      makeEntry({ freeBytesOnDataFs: 20 * GiB, mountLabel: "data" }),
+      makeEntry({
+        path: "/var/lib/postgresql/data",
+        freeBytesOnDataFs: null,
+        totalBytesOnDataFs: null,
+        mountLabel: "postgres",
+      }),
+    ],
+  });
+  assert.equal(rows.length, 2);
+  const pgRow = rows.find((r) => r.check.includes("postgres"));
+  assert.ok(pgRow, "postgres row must be present");
+  assert.equal(pgRow!.status, "info", "unmeasured entry must show info, not green");
 });

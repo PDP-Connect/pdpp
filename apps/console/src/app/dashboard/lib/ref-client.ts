@@ -998,13 +998,17 @@ export interface DeploymentDiagnostics {
       | "low_disk_headroom";
     message: string;
   }>;
-  // Optional: absent on older servers. null when the probe failed or is not
-  // available (exotic FS, missing stat permission).
-  disk_headroom?: {
+  // Ordered filesystem entries: data dir first, Postgres data mount second
+  // (when a distinct volume). Empty array when all probes failed or no probes
+  // ran. mount_label is set when more than one distinct FS is reported
+  // ("data", "postgres"). Optional for backward compat with older servers
+  // that returned a singular object — callers should use `disk_headroom ?? []`.
+  disk_headroom?: ReadonlyArray<{
     path: string;
     free_bytes: number | null;
     total_bytes: number | null;
-  } | null;
+    mount_label?: string;
+  }>;
 }
 
 export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {
