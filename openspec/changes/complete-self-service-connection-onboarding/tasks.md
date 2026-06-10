@@ -24,8 +24,17 @@ Progress note: implementation centralizes the setup-plan model and points consol
 
 ## 4. Static-Secret Normal Path
 
-- [ ] 4.1 Complete the static-secret proof gate for Gmail and GitHub using the existing draft-capture-first-ingest runbook, without committing secrets.
-- [ ] 4.2 After proof, flip static-secret setup plans from proof-gated/runbook to supported owner-mediated credential capture.
+- [x] 4.1 Complete the static-secret proof gate for Gmail and GitHub using the existing draft-capture-first-ingest runbook, without committing secrets.
+      Evidence (2026-06-10T22:55Z, ri-owner-current-state.md "STORE-ONLY CREDENTIAL POSTURE LIVE AND PROVEN"):
+      gmail run_1781131328336 succeeded (env-free container, store-backed);
+      github run_1781131195649 succeeded + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records);
+      slack run_1781131204868 succeeded (also registry-backed, meets the same gate criteria);
+      ynab store path proven (token provider-side dead — not a capture-path failure).
+      Proof recorded in openspec/changes/fix-scheduled-run-store-credential-injection/tasks.md §4 (task 4.1 checked).
+- [x] 4.2 After proof, flip static-secret setup plans from proof-gated/runbook to supported owner-mediated credential capture.
+      Done: STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] added to connection-setup-plan.ts;
+      isStaticSecretLiveProven() gates the flip; proven connectors return supportState "supported", proofGate null,
+      ownerAgentIntent.method "POST". Unproven static-secret connectors (e.g. mailbox) remain proof_gated.
 - [ ] 4.3 Prove two accounts for one static-secret connector create two active connection ids with separate credentials.
 - [x] 4.4 Update docs so connector-specific source credential env vars are fallback/dev paths, not the normal setup path.
 - [x] 4.5 Move static-secret setup form metadata into connector manifests, expose a setup descriptor with credential-key-provider readiness, and block before draft creation when no provider is configured.

@@ -196,6 +196,26 @@ export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
   );
 }
 
+// Connector keys for which the static-secret credential flow (draft → capture →
+// first ingest) has been proven end-to-end via a live env-free container run.
+// Live proof recorded 2026-06-10T22:55Z (ri-owner-current-state.md window
+// "STORE-ONLY CREDENTIAL POSTURE LIVE AND PROVEN"):
+//   gmail  — run_1781131328336 completed/succeeded, env-free container
+//   github — run_1781131195649 completed/succeeded, env-free container
+//           + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)
+//   slack  — run_1781131204868 completed/succeeded, env-free container
+// (ynab store path also proven; token is provider-side dead — not a capture-path failure)
+export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] as const;
+
+export type StaticSecretLiveProvenConnector =
+  (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
+
+export function isStaticSecretLiveProven(connectorKey: string): boolean {
+  return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
+    canonicalConnectorKey(connectorKey)
+  );
+}
+
 const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
   blockers: [],
   guidance: null,
@@ -561,6 +581,7 @@ export function buildConnectionSetupPlan(args: {
 
   if (connectorModality === "api_network") {
     if (setupModality === "static_secret") {
+      const liveProven = isStaticSecretLiveProven(connectorKey);
       return {
         catalogDisposition: "static_secret_connect",
         connectorKey,
@@ -569,16 +590,18 @@ export function buildConnectionSetupPlan(args: {
         displayName,
         nextStepKind: "capture_static_secret",
         ownerAgentIntent: {
-          method: null,
+          method: liveProven ? "POST" : null,
           nextStepKind: "capture_static_secret",
-          reason: unsupportedReason(setupModality),
-          status: "proof_gated",
+          reason: liveProven
+            ? "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds."
+            : unsupportedReason(setupModality),
+          status: liveProven ? "supported" : "proof_gated",
         },
-        proofGate: "static_secret_live_proof_missing",
-        runbookPath: STATIC_SECRET_RUNBOOK_PATH,
+        proofGate: liveProven ? null : "static_secret_live_proof_missing",
+        runbookPath: liveProven ? null : STATIC_SECRET_RUNBOOK_PATH,
         setupModality,
         validationMode,
-        supportState: "proof_gated",
+        supportState: liveProven ? "supported" : "proof_gated",
       };
     }
     if (setupModality === "provider_authorization") {
