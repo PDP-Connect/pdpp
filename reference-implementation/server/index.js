@@ -34,7 +34,7 @@ import {
   stripTrailingSlash,
 } from './metadata.ts';
 import { deriveReferenceFreshness } from './freshness.ts';
-import { createTraceContext, emitSpineEvent, generateSpineId, getRunTerminalStatus, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
+import { createTraceContext, emitSpineEvent, generateSpineId, getRunStartedEvent, getRunTerminalEvent, getRunTerminalStatus, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
 import { exec, getOne, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
@@ -338,6 +338,7 @@ import {
   mountRefRunInteraction,
 } from './routes/run-interaction.ts';
 import { mountRefRunCancel } from './routes/run-cancel.ts';
+import { mountRefRunStatus } from './routes/ref-run-status.ts';
 import {
   mountRefApprovals,
   mountRefCimdClientDocuments,
@@ -3093,6 +3094,22 @@ function buildAsApp(opts = {}) {
   mountRefTraceTimeline(app, refSpineTimelinesContext);
   mountRefGrantTimeline(app, refSpineTimelinesContext);
   mountRefRunTimeline(app, refSpineTimelinesContext);
+
+  // Run-handle status route (`GET /_ref/runs/:runId`). Resolves any run id
+  // returned by a 202 run-now ack — active runs via the controller's
+  // in-process bookkeeping, finished runs via the run's terminal spine
+  // event — so a run handle never dangles into Express's default 404 once
+  // the run leaves `controller_active_runs` flight state. Unknown ids get
+  // a typed `not_found` envelope.
+  // See openspec/changes/surface-run-handle-resolvability.
+  mountRefRunStatus(app, {
+    controller,
+    getRunStartedEvent: (runId) => getRunStartedEvent(runId),
+    getRunTerminalEvent: (runId) => getRunTerminalEvent(runId),
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  });
 
   // Run-interaction streaming companion (reference-only). The store and
   // companion factory live in this AS app so the mint route, the SSE viewer

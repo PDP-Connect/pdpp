@@ -442,6 +442,15 @@ export interface Controller {
    */
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
+  /**
+   * Run-id-keyed lookup over the in-process active-run bookkeeping.
+   * Returns the active-run projection while the run is in flight
+   * (registered before the run-now 202 handle is returned, cleared by
+   * `finalizeRunCleanup` when the run settles), or `null` when no active
+   * run carries that id. Used by the `GET /_ref/runs/:runId` run-handle
+   * status route; terminal runs resolve via the spine instead.
+   */
+  findActiveRunByRunId(runId: string): ActiveRun | null;
   getActiveRun(connectorId: string, options?: ConnectorInstanceOptions): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<ScheduleApi | null>;
@@ -569,6 +578,23 @@ let referenceFixtureFingerprints: Map<string, ManifestFingerprint> | null = null
 let polyfillManifestFingerprints: Map<string, ManifestFingerprint> | null = null;
 let polyfillConnectorPaths: Map<string, string> | null = null;
 const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
+
+// Typed terminal reason for a run whose launch path threw before the
+// runtime recorded any terminal event (e.g. env/spawn prep failed before
+// the `run.started` emit). Closes the "phantom 202" window: a 202-returned
+// run handle always resolves to a terminal spine event even when the
+// connector child never started. See surface-run-handle-resolvability.
+const LAUNCH_FAILED_RUN_REASON = "launch_failed";
+
+// Bound the failure message persisted on a launch-failure terminal event.
+// Launch-path errors are runtime/setup messages (binding validation, spawn
+// prep), not connector output, but bound them anyway so a pathological
+// error can't bloat the spine row.
+const LAUNCH_FAILURE_MESSAGE_MAX = 500;
+
+function boundedLaunchFailureMessage(message: string): string {
+  return message.length > LAUNCH_FAILURE_MESSAGE_MAX ? `${message.slice(0, LAUNCH_FAILURE_MESSAGE_MAX)}…` : message;
+}
 
 function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
   return { kind: "connector", id: connectorId };
@@ -2717,6 +2743,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
   function getActiveRun(connectorId: string, options: ConnectorInstanceOptions = {}): ActiveRun | null {
     return activeRuns.get(runtimeKey(connectorId, options.connectorInstanceId)) || null;
   }
+
+  function findActiveRunByRunId(runId: string): ActiveRun | null {
+    if (!runId) {
+      return null;
+    }
+    // The active-run map is keyed by runtime key (connector/instance), not
+    // run id; it holds at most one entry per connection, so this linear
+    // scan is bounded by the number of concurrently active connections.
+    for (const run of activeRuns.values()) {
+      if (run.run_id === runId) {
+        return run;
+      }
+    }
+    return null;
+  }
   interface ManagedSurfaceContext {
     readonly automationMetadata: ReturnType<typeof runAutomationMetadata>;
     readonly connectorId: string;
@@ -3506,9 +3547,43 @@ export function createController(opts: ControllerOptions = {}): Controller {
           cancelSignal: cancellation.signal,
         })
       )
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        log.error?.(`[controller] manual run failed for ${connectorId}: ${message}`);
+        log.error?.(
+          `[controller] run failed for ${connectorId} (run_id=${runId}, trace_id=${traceContext.trace_id}): ${message}`
+        );
+        // Close the phantom-202 window: a throw before the runtime's
+        // `run.started` emit (env/spawn prep) used to leave a 202-returned
+        // run id with ZERO spine events — log-and-forget. Emit a typed
+        // terminal `run.failed` (reason: launch_failed) so the handle stays
+        // resolvable. Guarded by the same terminal-existence probe the boot
+        // reconciler uses, because post-spawn rejections reach this catch
+        // AFTER the runtime already recorded its own terminal event.
+        try {
+          if (!(await runAlreadyTerminal(runId))) {
+            await emitSpineEvent({
+              event_type: "run.failed",
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: "runtime",
+              actor_id: connectorId,
+              object_type: "run",
+              object_id: runId,
+              status: "failed",
+              run_id: runId,
+              data: {
+                source: buildRunSource(connectorId),
+                reason: LAUNCH_FAILED_RUN_REASON,
+                failure_reason: LAUNCH_FAILED_RUN_REASON,
+                records_emitted: 0,
+                message: boundedLaunchFailureMessage(message),
+              },
+            });
+          }
+        } catch (emitErr) {
+          const emitMessage = emitErr instanceof Error ? emitErr.message : String(emitErr);
+          log.warn?.(`[controller] failed to emit launch-failure terminal event for ${runId}: ${emitMessage}`);
+        }
       })
       .finally(() =>
         finalizeRunCleanup({
@@ -3636,6 +3711,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     deleteSchedule,
     drainActiveRuns,
     expireBrowserSurfaceWaits,
+    findActiveRunByRunId,
     getActiveRun,
     listBrowserSurfaceRunProjections,
     promoteBrowserSurfaceLeasesAfterBoot,

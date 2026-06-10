@@ -203,12 +203,29 @@ async function hasPostgresActiveRunLease(runId) {
 export async function postgresGetRunTerminalEvent(runId) {
   if (!runId) return null;
   const result = await postgresQuery(
-    `SELECT event_type, status, data_json::text AS data_json, occurred_at
+    `SELECT event_type, status, data_json::text AS data_json, occurred_at, trace_id, actor_id
      FROM spine_events
      WHERE run_id = $1 AND event_type = ANY($2::text[])
      ORDER BY event_seq DESC
      LIMIT 1`,
     [runId, RUN_TERMINAL_EVENT_TYPE_LIST],
+  );
+  return result.rows[0] ?? null;
+}
+
+// Postgres mirror of `queries/spine/get-run-started-event.sql`: the run's
+// `run.started` event (`ORDER BY event_seq ASC LIMIT 1`), or `null` when
+// the run never reached the runtime's start emit (e.g. a launch failure
+// before spawn). Bounded by `LIMIT 1` like the terminal lookup above.
+export async function postgresGetRunStartedEvent(runId) {
+  if (!runId) return null;
+  const result = await postgresQuery(
+    `SELECT event_type, status, data_json::text AS data_json, occurred_at, trace_id, actor_id
+     FROM spine_events
+     WHERE run_id = $1 AND event_type = 'run.started'
+     ORDER BY event_seq ASC
+     LIMIT 1`,
+    [runId],
   );
   return result.rows[0] ?? null;
 }
