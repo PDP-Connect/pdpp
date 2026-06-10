@@ -3,7 +3,25 @@
 Status: captured
 Owner: reference implementation owner
 Created: 2026-05-19
-Updated: 2026-06-02
+Updated: 2026-06-10
+
+## How To Use This Document
+
+This is the canonical steering context for anyone — human or agent — working
+on the reference implementation. Its purpose is to let a session make
+owner-aligned decisions without re-deriving context or asking the owner.
+
+Integrity rules, learned the hard way:
+
+- Definitions and rules in this document are canon only if owner-traceable.
+  If you cannot tell whether a phrasing came from the owner or from an earlier
+  agent session, treat it as suspect and confirm before building on it. (A
+  plausible agent-invented definition of "SLVP" propagated here for weeks.)
+- Do not rewrite history: update body sections to current truth, and record
+  every correction or decision as a dated Decision Log entry.
+- This document describes intent and principles. For system state (database
+  backend, what is deployed, what is archived), verify against the live
+  system — point-in-time claims here go stale.
 Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors, design-notes/local-collector-durable-work-substrate-2026-05-19.md
 
 ## Question
@@ -38,6 +56,14 @@ The project has several audiences at once:
 - Personal-server operators and users, who need safe ownership, scheduling, consent, revocation, interaction, and diagnostic UX.
 
 Optimizing for only one audience creates wrong architecture. A connector hack may unblock one run but weaken the standards story. A standards abstraction may be elegant but useless if the reference implementation cannot prove it against real sources.
+
+One audience needs naming explicitly because it shapes the codebase more than
+the docs admit: the owner runs the live instance as real production personal
+data infrastructure (live runs, schedules, a multi-gigabyte store, daily agent
+queries). This is a strength — the reference is proven against a real life —
+but it creates operational machinery and constraints (live-run windows,
+deploy timing, data hygiene) that are reference-implementation concerns and
+must never silently shape protocol semantics.
 
 ## Current Leaning
 
@@ -97,7 +123,7 @@ These boundaries matter because current work is easy to over-promote. For exampl
 
 ## Technical Values
 
-The reference implementation should meet the SLVP bar. SLVP literally means Stripe, Linear, Vercel, Plaid — the work should resemble theirs. (Owner clarification 2026-06-10: it is not an acronym for qualities. The working gloss "simple, lossless, verifiable, polished" — a backronym an earlier agent session invented — remains a useful checklist, but the companies are the definition.)
+The reference implementation should meet the SLVP bar. SLVP means Stripe, Linear, Vercel, Plaid — the test is "would this work look at home in their products." (The gloss "simple, lossless, verifiable, polished" is a useful checklist but is not the definition; see Decision Log 2026-06-10.)
 
 In practice:
 
@@ -110,6 +136,18 @@ In practice:
 - Verify real user journeys and inspect stored records/timelines before claiming success.
 - Keep protocol facts, manifest-authored descriptions, structured policy declarations, and client-authored claims visually and semantically distinct.
 - Do not conflate revocation, deletion, retention, access validity, data freshness, and collection state.
+- PDPP is not in the business of re-solving commodity infrastructure (OAuth
+  plumbing, migrations, job scheduling). The protocol's essence — grant
+  semantics, consent surface, enforcement — stays first-party; commodity
+  machinery is an outsourcing candidate once a clean seam exists. Custom
+  implementations of commodity concerns must be justified, not inherited.
+- Multiple storage backends are a product requirement (SQLite local, Postgres
+  remote/managed), but they must implement one shared interface with minimal,
+  bounded divergence — never two parallel engines that drift independently.
+- Internal-construction criteria (shared planner, fewer branches, validation
+  passes, deploys) are necessary but are never the acceptance target. The
+  acceptance target is the user journey on shipped surfaces; judge completion
+  by green journey-level evidence, not by checked-off task lists.
 
 ## Standing Principle: Good Construction Before Feature Lists
 
@@ -136,11 +174,19 @@ This is a discipline rule, not a pause in ownership. Worker completion is not ow
 
 ## Research Corpus Discipline
 
-HARD RULE (owner, 2026-06-10): any web research findings MUST be added to the corpus on disk — `docs/research/` for cross-cutting work, `openspec/changes/<change>/research/` for change-local work. A chat summary or worker report alone is a rule violation, not a judgment call.
+HARD RULE (owner, 2026-06-10): any web research findings MUST be added to the
+corpus on disk — `docs/research/` for cross-cutting work,
+`openspec/changes/<change>/research/` for change-local work — with sources,
+URLs, dates, and the conclusion carried forward. A chat summary or worker
+report alone is a rule violation, not a judgment call. Lane prompts that
+involve web research must include the corpus output path; a lane that returns
+findings without the artifact has not delivered.
 
-Prior-art research that informs OpenSpec or implementation work should leave a durable source artifact, not just a chat summary or worker report. Design notes are not that corpus: they are the intake queue for significant design observations and unresolved questions to revisit when the project shifts from execution mode into slower architecture review.
-
-For non-trivial research, preserve a small, curated research artifact under `docs/research/` for cross-cutting work or `openspec/changes/<change>/research/` for change-local work. Record sources, dates, provenance, and the conclusion we are carrying forward. Link from a design note only when the research creates a significant observation or open question that belongs in the architecture-review queue.
+Design notes are not that corpus: they are the intake queue for significant
+design observations and unresolved questions to revisit when the project
+shifts from execution mode into slower architecture review. Link from a
+design note only when the research creates a significant observation or open
+question that belongs in the architecture-review queue.
 
 Hand-written synthesis is usually enough when the source material is stable and linkable. Direct downloads or copied artifacts are appropriate when the original is likely to move, when exact wording matters, or when reviewers need to inspect the source offline. Keep these artifacts scoped and citeable; do not dump large logs, private records, or source material whose reuse is unclear.
 
@@ -203,3 +249,9 @@ Promote this note into OpenSpec before implementing any tranche that changes:
 - 2026-06-01: Durable outbox leases must be sized and renewed for the whole drain shape, not just the average request. Batch claiming plus slow ingest responses can expire later rows before acknowledgment; the correct construction is a lease budget that exceeds worst-case per-row RTT, renewal before send, non-fatal stale-lease handling, and a throughput setting that stays efficient under recovery load.
 - 2026-06-02: Long RI-owner runs should enter low-burn polling mode after dispatching durable Claude worker lanes. The owner should launch bounded workstreams with report paths, update `tmp/workstreams/ri-owner-current-state.md`, then sleep/poll wrapper status, protected live runs, and `pnpm workstreams:status` instead of continuously reasoning in the foreground. Resume active review only when a worker reports, a live run changes state, or a repository-integrity risk appears.
 - 2026-06-03: Connector freshness and gap visibility need a universal evidence contract, not connector-by-connector dashboard heuristics. Every Collection Profile connector should emit enough source-coverage and progress evidence for the reference to answer: what source range or inventory was considered, what was collected, what was skipped, what remains retryable, what is terminal or intentionally unsupported, what checkpoint was durably committed, and whether the next run is expected to fill the gap. Local collectors already have `coverage_diagnostics`; browser/API connectors have scattered `PROGRESS`, gap, and run-timeline signals. Promote this into OpenSpec before claiming all connectors can quantify missing data or before implementing a cross-connector "how much is missing?" dashboard surface.
+- 2026-06-09: Velocity diagnosis: with agent throughput effectively unlimited, the bottleneck is owner attention per accepted change plus the cost of knowing what is true. Investments that make truth cheap (universal evidence contracts, honest dashboards, inventory hygiene, standing acceptance checks) outrank code-mass refactors. Judge OpenSpec changes by green journey-level tests, never by tasks.md checkboxes — checkbox state badly understates reality here.
+- 2026-06-09: Data operations that snapshot live tables need a retirement contract at creation (ledger, verify-then-retire, TTL, owner-gated sweeper). 243 orphaned backup tables (18GB, 35% of the live database) accreted because every compaction/migration snapshotted and nothing retired. Captured in `design-notes/data-ops-backup-retirement-contract-2026-06-09.md`; promote to OpenSpec before the next snapshotting tool ships. Same pass: live store is Postgres database `pdpp` (renamed from `pdpp_proof`), 52GB→22GB after residue drop + vacuum.
+- 2026-06-09: OAuth commodity machinery (device flow, DCR, token endpoint plumbing, introspection — roughly 40% of auth.js) is an outsourcing candidate (e.g. node-oidc-provider supports RFC 9396), but the swap is DEFERRED while the auth surface churns. Triggers to revisit: auth churn settles, standards-review preparation, or hosting other people's data. The essential grant/consent semantics stay first-party regardless of the swap decision.
+- 2026-06-10: SLVP means Stripe, Linear, Vercel, Plaid — the owner's literal definition. The "simple, lossless, verifiable, polished" expansion was an agent-invented backronym that propagated as canon; corrected. Standing lesson: agent-authored definitions in steering docs are suspect until owner-traced, and corrections must update both the doc and session memory in the same pass.
+- 2026-06-10: Web-research corpus discipline upgraded from should to HARD RULE by the owner (see Research Corpus Discipline).
+- 2026-06-10: Owner decision on browser-bound add-new setup: productize, do not demote — interim honesty copy is "Packaged path pending", never "not self-service". Same tranche reframed acceptance to the owner journey (see Technical Values) and captured the add-account flow design plus Plaid/Stripe/Zapier prior-art corpus under `openspec/changes/complete-self-service-connection-onboarding/`.
