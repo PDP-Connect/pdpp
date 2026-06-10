@@ -16,6 +16,7 @@ import {
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
 import { derivePrimaryRowAction, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
+import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,
@@ -46,6 +47,10 @@ import { SyncNowButton } from "./sync-now-button.tsx";
 export const dynamic = "force-dynamic";
 
 const RECENT_RUNS_LIMIT = 10;
+
+function addSourceHrefForConnector(connectorId: string): string {
+  return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
+}
 
 interface ConnectorPageModel {
   /**
@@ -102,6 +107,7 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     collectionReport: summary.collection_report ?? null,
     connectionHealth: summary.connection_health,
     connectionId: summary.connection_id,
+    connectionStatus: summary.status ?? null,
     connector: {
       connector_id: summary.connector_id,
       display_name: summary.display_name,
@@ -113,6 +119,7 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     streams,
     streamCount: summary.stream_count,
     retainedBytes: summary.retained_bytes ?? null,
+    revokedAt: summary.revoked_at ?? null,
     totalRetainedBytes: summary.total_retained_bytes,
     totalRecords: summary.total_records,
     localDeviceProgress: summary.local_device_progress ?? null,
@@ -300,6 +307,7 @@ function ConnectorPageView({
     streams,
   } = model;
   const running = overview.isRunning;
+  const revoked = isRevokedConnection(overview);
   // Stable rename selector: prefer the explicit instance id, fall back to the
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
@@ -333,7 +341,15 @@ function ConnectorPageView({
             >
               All runs →
             </Link>
-            {primaryAction.kind === "sync" ? (
+            {revoked ? (
+              <Link
+                className={buttonVariants({ variant: "default", size: "sm" })}
+                href={addSourceHrefForConnector(connectorId)}
+                title="This connection is revoked. Reconnect starts the supported setup path for this source."
+              >
+                Reconnect
+              </Link>
+            ) : primaryAction.kind === "sync" ? (
               <SyncNowButton
                 connectionId={connectorInstanceId}
                 connectorId={connectorId}
@@ -362,6 +378,25 @@ function ConnectorPageView({
         }
         title={displayName}
       />
+
+      {revoked ? (
+        <Section
+          description="Future collection is stopped for this connection. Retained records, grants, runs, and audit evidence stay visible; reconnect starts a fresh setup path for this source."
+          title="Revoked connection"
+        >
+          <Link
+            className={buttonVariants({ variant: "default", size: "sm" })}
+            href={addSourceHrefForConnector(connectorId)}
+          >
+            Reconnect source
+          </Link>
+          {overview.revokedAt ? (
+            <p className="pdpp-caption mt-3 text-muted-foreground">
+              Revoked <Timestamp value={overview.revokedAt} />.
+            </p>
+          ) : null}
+        </Section>
+      ) : null}
 
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}

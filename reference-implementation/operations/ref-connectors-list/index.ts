@@ -53,7 +53,9 @@ export interface RefConnectorsListItem {
   readonly total_retained_bytes?: number | null;
   readonly freshness: RefConnectorsListFreshness;
   readonly refresh_policy: unknown;
+  readonly revoked_at?: string | null;
   readonly schedule: unknown;
+  readonly status?: string | null;
   readonly last_run: RefConnectorsListRunSummary | null;
   readonly last_successful_run: RefConnectorsListRunSummary | null;
 }

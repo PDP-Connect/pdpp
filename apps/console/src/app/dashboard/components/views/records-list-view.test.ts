@@ -223,11 +223,21 @@ const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, 
 const NO_DATA_SECTION_LOCAL_ONLY =
   /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
 const NO_DATA_SECTION_MIXED_POPULATION = /local-collector sources fill in when their device pushes/;
+const RECORDS_ACTION_BANNER_RE = /function RecordsActionBanner\(\{ error, message \}/;
+const RECORDS_PAGE_READS_SEARCH_PARAMS_RE = /searchParams\?: Promise<\{ error\?: string; message\?: string \}>/;
+const RECORDS_PAGE_RENDERS_ACTION_BANNER_RE = /<RecordsActionBanner error=\{actionParams\.error\} message=\{actionParams\.message\} \/>/;
 
 test("records list exposes a persistent Add-source header action", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, ADD_CONNECTION_HEADER_ACTION);
   assert.match(src, ADD_SOURCE_LABEL);
+});
+
+test("records page renders action result banners from list redirects", async () => {
+  const src = await readFile(`${HERE}../../records/page.tsx`, "utf8");
+  assert.match(src, RECORDS_PAGE_READS_SEARCH_PARAMS_RE);
+  assert.match(src, RECORDS_ACTION_BANNER_RE);
+  assert.match(src, RECORDS_PAGE_RENDERS_ACTION_BANNER_RE);
 });
 
 test("persistent Add-source action is gated on interactive (no dead button in sandbox)", async () => {

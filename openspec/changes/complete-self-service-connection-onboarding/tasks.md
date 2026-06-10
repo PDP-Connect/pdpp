@@ -30,6 +30,7 @@ Progress note: implementation centralizes the setup-plan model and points consol
 - [x] 4.4 Update docs so connector-specific source credential env vars are fallback/dev paths, not the normal setup path.
 - [x] 4.5 Move static-secret setup form metadata into connector manifests, expose a setup descriptor with credential-key-provider readiness, and block before draft creation when no provider is configured.
 - [x] 4.6 Generate the Docker credential encryption key from `scripts/generate-secrets.sh` and keep Railway on an auto-generated template secret.
+- [x] 4.7 Widen static-secret credential kinds for sealed multi-field bundles and username/password pairs, and add connection-scoped env injection registry entries for YNAB, Slack, and Reddit.
 
 Progress note: normal static-secret setup no longer requires per-account env vars or runbook archaeology. The console now creates a draft, captures the provider secret from the owner session, and starts first sync. The support-state flip remains proof-gated until live Gmail/GitHub credentials produce no-secret-leak evidence and accepted records.
 

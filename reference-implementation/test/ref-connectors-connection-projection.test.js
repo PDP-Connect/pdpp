@@ -13,7 +13,9 @@ import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-de
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-records';
 const WORK_INSTANCE_ID = 'cin_test_connection_first_work';
 const PERSONAL_INSTANCE_ID = 'cin_test_connection_first_personal';
+const REVOKED_INSTANCE_ID = 'cin_test_connection_first_revoked';
 const NOW = '2026-05-20T12:00:00.000Z';
+const REVOKED_AT = '2026-06-10T19:10:28.476Z';
 
 function withTmpDb(fn) {
   return async () => {
@@ -206,6 +208,36 @@ test('reference connector summaries project local-device storage records under p
 
   assert.equal(personal.total_records, 0);
   assert.equal(personal.stream_count, 0);
+}));
+
+test('reference connector summaries keep revoked connections visible for owner manageability', withTmpDb(async () => {
+  seedConnector();
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorInstanceId: REVOKED_INSTANCE_ID,
+    ownerSubjectId: 'owner_local',
+    connectorId: CONNECTOR_ID,
+    displayName: 'Revoked account',
+    status: 'revoked',
+    revokedAt: REVOKED_AT,
+    sourceKind: 'manual',
+    sourceBindingKey: 'revoked',
+    sourceBinding: { kind: 'manual', account: 'revoked' },
+    createdAt: NOW,
+    updatedAt: REVOKED_AT,
+  });
+
+  const summaries = await listConnectorSummaries();
+  const revoked = summaries.find((row) => row.connector_instance_id === REVOKED_INSTANCE_ID);
+  assert.ok(revoked, 'revoked connection remains in the owner connector summary list');
+  assert.equal(revoked.status, 'revoked');
+  assert.equal(revoked.revoked_at, REVOKED_AT);
+  assert.equal(revoked.connection_id, REVOKED_INSTANCE_ID);
+
+  const scoped = await getConnectorSummaryForRoute(REVOKED_INSTANCE_ID);
+  assert.ok(scoped, 'revoked connection remains resolvable by its detail/list route id');
+  assert.equal(scoped.status, 'revoked');
+  assert.equal(scoped.revoked_at, REVOKED_AT);
 }));
 
 // `observed_at` on connection-health condition rows is stamped at projection

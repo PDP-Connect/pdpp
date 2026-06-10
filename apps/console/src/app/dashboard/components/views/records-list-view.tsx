@@ -84,6 +84,11 @@ function overviewRouteId(o: ConnectorOverview): string {
   return o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
 }
 
+function addSourceSearchHref(addSourceHref: string, connectorId: string): string {
+  const joiner = addSourceHref.includes("?") ? "&" : "?";
+  return `${addSourceHref}${joiner}source_q=${encodeURIComponent(connectorId)}`;
+}
+
 /**
  * Copy for the zero-primary empty state. When no-data registrations exist they
  * are listed in their own section below; otherwise the instance has no
@@ -422,11 +427,12 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
  * just because adding a new account is not self-service:
  *
  *   1. existing data/health — "N connections · M with data", plus a needs-
- *      attention count when any connection of the source is unhealthy;
+ *      attention count when any connection of the source is unhealthy, and a
+ *      revoked count when future collection has been stopped;
  *   2. add-new-account support — a chip projected from the shared setup planner
  *      (self-service / packaged-path-pending / deployment / not-self-service);
- *   3. one primary next action — "Add another account" when self-service,
- *      "Reconnect" when a connection needs attention, else nothing.
+ *   3. one primary next action — "Reconnect" for attention/revoked sources,
+ *      "Add another account" when self-service, else a light Add-source link.
  *
  * It is NOT the Sources "Add source" catalog, which lists every connector. It
  * rolls up only sources the owner ALREADY has, joining each to its add-account
@@ -502,6 +508,14 @@ function SourceAccountCard({
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground" data-testid="source-existing-state">
           {connectionsLabel} · {withDataLabel}
+          {group.revokedCount > 0 ? (
+            <>
+              {" · "}
+              <span className="text-muted-foreground">
+                {group.revokedCount} revoked
+              </span>
+            </>
+          ) : null}
           {group.needsAttentionCount > 0 ? (
             <>
               {" · "}
@@ -523,8 +537,9 @@ function SourceAccountCard({
  * One primary owner action per source, in priority order: repair first
  * (a needs-attention connection's reconnect lands on the detail repair surface,
  * the Plaid update-mode shape — never the start of the add flow), then
- * "Add another account" when self-service. When neither applies, the support
- * chip already told the honest story, so no dead button is rendered.
+ * revoked reconnect (starts the setup path for this source), then "Add another
+ * account" when self-service. When neither applies, the support chip already
+ * told the honest story, so only a light Add-source link is rendered.
  */
 function SourceAccountActions({
   addSourceHref,
@@ -545,8 +560,17 @@ function SourceAccountActions({
         >
           Reconnect
         </Link>
+      ) : group.revokedCount > 0 ? (
+        <Link
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+          data-testid="source-reconnect-action"
+          href={support?.action?.href ?? addSourceSearchHref(addSourceHref, group.connectorId)}
+          title="This source has a revoked connection. Reconnect starts the supported setup path for another connection."
+        >
+          Reconnect
+        </Link>
       ) : null}
-      {support?.action ? (
+      {group.revokedCount === 0 && support?.action ? (
         <Link
           className={buttonVariants({ variant: "default", size: "sm" })}
           data-testid="source-add-account-action"

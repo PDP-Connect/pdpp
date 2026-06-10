@@ -22,7 +22,11 @@
  */
 
 /** Credential kinds the per-connection store can hold. Mirrors the store. */
-export type StaticSecretCredentialKind = "app_password" | "personal_access_token";
+export type StaticSecretCredentialKind =
+  | "app_password"
+  | "personal_access_token"
+  | "secret_bundle"
+  | "username_password";
 
 export interface RecoveredStaticSecret {
   /** The kind of secret, used to validate it matches the connector's expectation. */
@@ -41,13 +45,27 @@ interface StaticSecretConnectorDescriptor {
    * the first non-empty; the injection sets all of them to the same recovered
    * value so the connector finds it regardless of which alias it prefers.
    */
-  readonly secretEnvVars: readonly string[];
+  readonly secretEnvVars?: readonly string[];
+  /**
+   * Secret fields inside an opaque sealed JSON credential bundle. Used when a
+   * connector needs more than one bearer-equivalent value for one connection
+   * (for example a token plus cookie, or OAuth password-flow credentials).
+   */
+  readonly secretFieldEnvVars?: Readonly<Record<string, readonly string[]>>;
   /** Non-secret setup fields to inject for connector runtime configuration. */
   readonly setupFieldEnvVars?: Readonly<Record<string, readonly string[]>>;
 }
 
 function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescriptor): StaticSecretConnectorDescriptor {
-  Object.freeze(descriptor.secretEnvVars);
+  if (descriptor.secretEnvVars) {
+    Object.freeze(descriptor.secretEnvVars);
+  }
+  if (descriptor.secretFieldEnvVars) {
+    for (const value of Object.values(descriptor.secretFieldEnvVars)) {
+      Object.freeze(value);
+    }
+    Object.freeze(descriptor.secretFieldEnvVars);
+  }
   if (descriptor.setupFieldEnvVars) {
     for (const value of Object.values(descriptor.setupFieldEnvVars)) {
       Object.freeze(value);
@@ -62,6 +80,9 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  * from. The env var names are the ground truth in each connector's code:
  *   - gmail/index.ts `resolveGmailPasswordFromEnv`: GOOGLE_APP_PASSWORD_PDPP / GMAIL_APP_PASSWORD
  *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
+ *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
+ *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
+ *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
  *
  * A connector absent from this registry is NOT a static-secret connector for
  * the purposes of injection; callers must not invent env var names for it.
@@ -78,6 +99,31 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
     github: freezeStaticSecretDescriptor({
       credentialKind: "personal_access_token",
       secretEnvVars: ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"],
+    }),
+    ynab: freezeStaticSecretDescriptor({
+      credentialKind: "personal_access_token",
+      secretEnvVars: ["YNAB_PERSONAL_ACCESS_TOKEN", "YNAB_PAT"],
+    }),
+    slack: freezeStaticSecretDescriptor({
+      credentialKind: "secret_bundle",
+      secretFieldEnvVars: {
+        slack_token: ["SLACK_TOKEN"],
+        slack_cookie: ["SLACK_COOKIE"],
+      },
+      setupFieldEnvVars: {
+        slack_workspace: ["SLACK_WORKSPACE"],
+      },
+    }),
+    reddit: freezeStaticSecretDescriptor({
+      credentialKind: "secret_bundle",
+      secretFieldEnvVars: {
+        reddit_password: ["REDDIT_PASSWORD"],
+        reddit_client_secret: ["REDDIT_CLIENT_SECRET"],
+      },
+      setupFieldEnvVars: {
+        reddit_username: ["REDDIT_USERNAME"],
+        reddit_client_id: ["REDDIT_CLIENT_ID"],
+      },
     }),
   });
 
@@ -112,6 +158,98 @@ function setupFieldsFromSourceBinding(sourceBinding: unknown): StaticSecretSetup
   return fields;
 }
 
+function secretBundleFields(connectorId: string, secret: string): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(secret);
+  } catch {
+    throw new StaticSecretInjectionError(
+      "recovered_secret_bundle_invalid",
+      `Connector '${connectorId}' expects a sealed JSON credential bundle; recovered secret was not valid JSON.`
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new StaticSecretInjectionError(
+      "recovered_secret_bundle_invalid",
+      `Connector '${connectorId}' expects a sealed JSON credential bundle object.`
+    );
+  }
+  const fields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      fields[key] = value.trim();
+    }
+  }
+  return fields;
+}
+
+function assertRecoveredSecretMatches(
+  connectorId: string,
+  descriptor: StaticSecretConnectorDescriptor,
+  recovered: RecoveredStaticSecret
+): void {
+  if (!recovered || typeof recovered.secret !== "string" || recovered.secret.length === 0) {
+    throw new StaticSecretInjectionError(
+      "recovered_secret_invalid",
+      `Cannot inject an empty credential for connector '${connectorId}'.`
+    );
+  }
+  if (recovered.credentialKind !== descriptor.credentialKind) {
+    throw new StaticSecretInjectionError(
+      "credential_kind_mismatch",
+      `Connector '${connectorId}' expects credential kind '${descriptor.credentialKind}', ` +
+        `but the recovered credential is '${recovered.credentialKind}'.`
+    );
+  }
+}
+
+function injectSingleSecret(fragment: Record<string, string>, envVars: readonly string[] | undefined, secret: string) {
+  for (const envVar of envVars ?? []) {
+    fragment[envVar] = secret;
+  }
+}
+
+function injectSecretBundle(
+  fragment: Record<string, string>,
+  connectorId: string,
+  secret: string,
+  secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"]
+) {
+  if (!secretFieldEnvVars) {
+    return;
+  }
+  const bundle = secretBundleFields(connectorId, secret);
+  for (const [fieldName, envVars] of Object.entries(secretFieldEnvVars)) {
+    const value = bundle[fieldName];
+    if (!value) {
+      throw new StaticSecretInjectionError(
+        "recovered_secret_bundle_field_missing",
+        `Connector '${connectorId}' credential bundle is missing required field '${fieldName}'.`
+      );
+    }
+    for (const envVar of envVars) {
+      fragment[envVar] = value;
+    }
+  }
+}
+
+function injectSetupFields(
+  fragment: Record<string, string>,
+  setupFieldEnvVars: StaticSecretConnectorDescriptor["setupFieldEnvVars"],
+  sourceBinding: unknown
+) {
+  const setupFields = setupFieldsFromSourceBinding(sourceBinding);
+  for (const [fieldName, envVars] of Object.entries(setupFieldEnvVars ?? {})) {
+    const value = setupFields[fieldName];
+    if (!value) {
+      continue;
+    }
+    for (const envVar of envVars) {
+      fragment[envVar] = value;
+    }
+  }
+}
+
 /**
  * Build the connection-scoped env fragment for one connector run.
  *
@@ -140,32 +278,10 @@ export function buildConnectionScopedSecretEnv(
       `Connector '${connectorId}' is not a known static-secret connector; refusing to invent secret env vars for it.`
     );
   }
-  if (!recovered || typeof recovered.secret !== "string" || recovered.secret.length === 0) {
-    throw new StaticSecretInjectionError(
-      "recovered_secret_invalid",
-      `Cannot inject an empty credential for connector '${connectorId}'.`
-    );
-  }
-  if (recovered.credentialKind !== descriptor.credentialKind) {
-    throw new StaticSecretInjectionError(
-      "credential_kind_mismatch",
-      `Connector '${connectorId}' expects credential kind '${descriptor.credentialKind}', ` +
-        `but the recovered credential is '${recovered.credentialKind}'.`
-    );
-  }
+  assertRecoveredSecretMatches(connectorId, descriptor, recovered);
   const fragment: Record<string, string> = {};
-  for (const envVar of descriptor.secretEnvVars) {
-    fragment[envVar] = recovered.secret;
-  }
-  const setupFields = setupFieldsFromSourceBinding(sourceBinding);
-  for (const [fieldName, envVars] of Object.entries(descriptor.setupFieldEnvVars ?? {})) {
-    const value = setupFields[fieldName];
-    if (!value) {
-      continue;
-    }
-    for (const envVar of envVars) {
-      fragment[envVar] = value;
-    }
-  }
+  injectSingleSecret(fragment, descriptor.secretEnvVars, recovered.secret);
+  injectSecretBundle(fragment, connectorId, recovered.secret, descriptor.secretFieldEnvVars);
+  injectSetupFields(fragment, descriptor.setupFieldEnvVars, sourceBinding);
   return fragment;
 }

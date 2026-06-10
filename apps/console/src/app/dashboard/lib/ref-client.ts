@@ -433,8 +433,11 @@ export interface RefConnectorSummary {
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
+  /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
+  revoked_at?: string | null;
   retained_bytes?: RefRetainedBytesBreakdown | null;
   schedule: RefSchedule | null;
+  status?: string | null;
   stream_count?: number;
   streams: string[];
   total_records: number;

@@ -19,9 +19,12 @@ import {
 // Pure construction: the env fragment is connection-scoped and guarded.
 // ---------------------------------------------------------------------------
 
-test("static-secret registry knows gmail and github and rejects others", () => {
+test("static-secret registry knows static-secret connectors and rejects non-static-secret connectors", () => {
   assert.equal(isStaticSecretConnector("gmail"), true);
   assert.equal(isStaticSecretConnector("github"), true);
+  assert.equal(isStaticSecretConnector("ynab"), true);
+  assert.equal(isStaticSecretConnector("slack"), true);
+  assert.equal(isStaticSecretConnector("reddit"), true);
   assert.equal(isStaticSecretConnector("amazon"), false);
   assert.equal(isStaticSecretConnector("claude-code"), false);
 });
@@ -76,6 +79,82 @@ test("github injection sets both token aliases to the recovered secret", () => {
   assert.equal(env.GITHUB_TOKEN, "ghp_synthetic_token_value");
 });
 
+test("ynab injection sets both PAT aliases to the recovered secret", () => {
+  const env = buildConnectionScopedSecretEnv("ynab", {
+    secret: "ynab_synthetic_pat",
+    credentialKind: "personal_access_token",
+  });
+  assert.deepEqual(env, {
+    YNAB_PAT: "ynab_synthetic_pat",
+    YNAB_PERSONAL_ACCESS_TOKEN: "ynab_synthetic_pat",
+  });
+});
+
+test("slack injection maps a sealed bundle plus workspace setup fields", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "slack",
+    {
+      credentialKind: "secret_bundle",
+      secret: JSON.stringify({
+        slack_token: "xoxc-synthetic-token",
+        slack_cookie: "d=synthetic-cookie",
+      }),
+    },
+    {
+      kind: "static_secret_draft",
+      setup_fields: {
+        slack_workspace: "T12345",
+      },
+    }
+  );
+  assert.deepEqual(env, {
+    SLACK_COOKIE: "d=synthetic-cookie",
+    SLACK_TOKEN: "xoxc-synthetic-token",
+    SLACK_WORKSPACE: "T12345",
+  });
+});
+
+test("reddit injection maps OAuth bundle secrets and non-secret setup identity", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "reddit",
+    {
+      credentialKind: "secret_bundle",
+      secret: JSON.stringify({
+        reddit_password: "synthetic-password",
+        reddit_client_secret: "synthetic-client-secret",
+      }),
+    },
+    {
+      kind: "static_secret_draft",
+      setup_fields: {
+        reddit_username: "dondochaka",
+        reddit_client_id: "synthetic-client-id",
+      },
+    }
+  );
+  assert.deepEqual(env, {
+    REDDIT_CLIENT_ID: "synthetic-client-id",
+    REDDIT_CLIENT_SECRET: "synthetic-client-secret",
+    REDDIT_PASSWORD: "synthetic-password",
+    REDDIT_USERNAME: "dondochaka",
+  });
+});
+
+test("sealed bundle injection refuses invalid and incomplete recovered bundles", () => {
+  assert.throws(
+    () => buildConnectionScopedSecretEnv("slack", { credentialKind: "secret_bundle", secret: "not json" }),
+    (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_invalid"
+  );
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("slack", {
+        credentialKind: "secret_bundle",
+        secret: JSON.stringify({ slack_token: "xoxc-synthetic-token" }),
+      }),
+    (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
+});
+
 test("two connections for one connector build two distinct, non-colliding fragments", () => {
   const personal = buildConnectionScopedSecretEnv("gmail", {
     secret: "personal-secret",
@@ -120,12 +199,24 @@ test("registry is frozen so the env var ground truth cannot be mutated at runtim
   assert.ok(Object.isFrozen(STATIC_SECRET_CONNECTOR_REGISTRY));
   const gmail = STATIC_SECRET_CONNECTOR_REGISTRY.gmail;
   const github = STATIC_SECRET_CONNECTOR_REGISTRY.github;
+  const slack = STATIC_SECRET_CONNECTOR_REGISTRY.slack;
+  const reddit = STATIC_SECRET_CONNECTOR_REGISTRY.reddit;
   assert.ok(gmail);
   assert.ok(github);
+  assert.ok(slack);
+  assert.ok(reddit);
   assert.ok(Object.isFrozen(gmail));
   assert.ok(Object.isFrozen(gmail.secretEnvVars));
   assert.ok(Object.isFrozen(github));
   assert.ok(Object.isFrozen(github.secretEnvVars));
+  assert.ok(Object.isFrozen(slack));
+  assert.ok(Object.isFrozen(slack.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(slack.secretFieldEnvVars?.slack_token));
+  assert.ok(Object.isFrozen(slack.setupFieldEnvVars));
+  assert.ok(Object.isFrozen(slack.setupFieldEnvVars?.slack_workspace));
+  assert.ok(Object.isFrozen(reddit));
+  assert.ok(Object.isFrozen(reddit.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(reddit.setupFieldEnvVars));
 });
 
 // ---------------------------------------------------------------------------

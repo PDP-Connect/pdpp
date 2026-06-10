@@ -195,7 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
 CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   connector_instance_id TEXT PRIMARY KEY,
   owner_subject_id      TEXT NOT NULL,
-  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token')),
+  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
   sealed_secret         TEXT NOT NULL,
   fingerprint           TEXT,
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
@@ -2725,6 +2725,73 @@ function migrateConnectorInstancesStatusDraft(raw, opts = {}) {
   return result;
 }
 
+// Widen the connector_instance_credentials.credential_kind CHECK to admit the
+// sealed multi-field bundle and username/password pair shapes needed to migrate
+// every static-secret connector off deployment-wide env vars. Existing rows are
+// copied byte-for-byte; only the CHECK vocabulary changes.
+function migrateConnectorCredentialKindCheck(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instance_credentials'`
+  ).get();
+  if (!table?.sql || (table.sql.includes("'secret_bundle'") && table.sql.includes("'username_password'"))) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_old_kind;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      FROM connector_instance_credentials_old_kind;
+
+      DROP TABLE connector_instance_credentials_old_kind;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_credential_kind_check', ...result });
+  }
+  return result;
+}
+
 function isSourceKind(value) {
   return value === 'connector' || value === 'provider_native';
 }
@@ -3168,6 +3235,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(

@@ -40,6 +40,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
     collectionReport: summary.collection_report ?? null,
     connectionHealth: summary.connection_health,
     connectionId: summary.connection_id,
+    connectionStatus: summary.status ?? null,
     connector: {
       connector_id: summary.connector_id,
       display_name: summary.display_name,
@@ -50,6 +51,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
     localDeviceProgress: summary.local_device_progress ?? null,
     retainedBytes: summary.retained_bytes ?? null,
+    revokedAt: summary.revoked_at ?? null,
     streams: summary.streams.map((name) => ({
       object: "stream",
       name,
@@ -65,7 +67,12 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
   };
 }
 
-export default async function RecordsIndexPage() {
+export default async function RecordsIndexPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ error?: string; message?: string }>;
+}) {
+  const actionParams = searchParams ? await searchParams : {};
   let overviews: ConnectorOverview[];
   // Aggregate `records_pending` across all enrolled local device source
   // instances. The records list otherwise only shows retained-on-server
@@ -121,6 +128,7 @@ export default async function RecordsIndexPage() {
 
   return (
     <DashboardShell active="records">
+      <RecordsActionBanner error={actionParams.error} message={actionParams.message} />
       <RecordsListView
         addSupportByConnectorId={addSupportByConnectorId}
         interactive={true}
@@ -135,6 +143,26 @@ export default async function RecordsIndexPage() {
         }
       />
     </DashboardShell>
+  );
+}
+
+function RecordsActionBanner({ error, message }: { error?: string; message?: string }) {
+  if (!error && !message) {
+    return null;
+  }
+  return (
+    <div
+      className={
+        error
+          ? "pdpp-caption mb-5 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5"
+          : "pdpp-caption mb-5 rounded-md border border-emerald-500/30 border-l-4 border-l-emerald-500/60 bg-emerald-500/5 px-4 py-2.5"
+      }
+      role="status"
+    >
+      <span className={error ? "font-medium text-destructive" : "font-medium text-emerald-700 dark:text-emerald-400"}>
+        {error ?? message}
+      </span>
+    </div>
   );
 }
 

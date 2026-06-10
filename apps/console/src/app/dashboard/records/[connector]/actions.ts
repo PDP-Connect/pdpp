@@ -183,6 +183,18 @@ function dangerZoneHref(routeId: string, message?: string, error?: string): stri
   return `${base}${query ? `?${query}` : ""}#danger-zone`;
 }
 
+function recordsListHref(message?: string, error?: string): string {
+  const params = new URLSearchParams();
+  if (message) {
+    params.set("message", message);
+  }
+  if (error) {
+    params.set("error", error);
+  }
+  const query = params.toString();
+  return `/dashboard/records${query ? `?${query}` : ""}`;
+}
+
 /**
  * Owner-revoke a connection from the console. Re-verifies the owner session
  * (every Server Action must re-check its own gate), enforces the confirm
@@ -218,7 +230,7 @@ export async function revokeConnectionAction(formData: FormData) {
   }
   revalidatePath("/dashboard/records");
   revalidatePath(`/dashboard/records/${encodeURIComponent(routeId)}`);
-  redirect(dangerZoneHref(routeId, message, error));
+  redirect(error ? dangerZoneHref(routeId, message, error) : recordsListHref(message));
 }
 
 /**
@@ -281,7 +293,7 @@ export async function deleteConnectionAction(formData: FormData) {
   // connections list, where the deleted row is now absent. A refusal stays on
   // the detail page with the typed banner.
   if (deleted) {
-    redirect(`/dashboard/records?message=${encodeURIComponent(message ?? "Connection deleted.")}`);
+    redirect(recordsListHref(message ?? "Connection deleted."));
   }
   redirect(dangerZoneHref(routeId, message, error));
 }

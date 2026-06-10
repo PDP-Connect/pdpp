@@ -4,7 +4,7 @@ import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-d
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
   type AxisChip,
@@ -22,6 +22,7 @@ import {
   summarizeAxisChips,
   syncStartFailureLead,
 } from "../lib/connection-evidence.ts";
+import { isRevokedConnection } from "../lib/records-list-classification.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { normalizeKnownGaps, resolvePartialCoverageCue } from "../lib/run-gaps.ts";
@@ -50,6 +51,19 @@ type ToastState =
   | { kind: "none" }
   | { kind: "already_running" }
   | { kind: "error"; message: string; phase: "before_server" | "after_server" };
+
+type RowPrimaryAction =
+  | PrimaryRowAction
+  | {
+      detail: string;
+      href: string;
+      kind: "reconnect";
+      label: string;
+    };
+
+function addSourceHrefForConnector(connectorId: string): string {
+  return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
+}
 
 function useConnectorSyncState({
   connectionId,
@@ -138,6 +152,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     totalRecords,
     totalRetainedBytes,
   } = overview;
+  const revoked = isRevokedConnection(overview);
   const { handleSync, isPending, optimisticStart, running, toast } = useConnectorSyncState({
     connectionId,
     connectorId: connector.connector_id,
@@ -210,10 +225,19 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
   // manual browser assistance after start. Push-mode local-collector connections
   // still render non-clickable guidance because the dashboard cannot remotely
   // pull from the operator's device.
-  const primaryAction = derivePrimaryRowAction({
+  const primaryAction: PrimaryRowAction = derivePrimaryRowAction({
     connectorId: connector.connector_id,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
+  const rowAction: RowPrimaryAction = revoked
+    ? {
+        kind: "reconnect",
+        href: addSourceHrefForConnector(connector.connector_id),
+        label: "Reconnect",
+        detail:
+          "This connection is revoked: future collection is stopped while retained records stay visible. Reconnect starts the supported setup path for this source.",
+      }
+    : primaryAction;
   const durableProgress = formatLastDurableProgress({
     hasError: Boolean(overview.error),
     lastRun,
@@ -269,12 +293,14 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
             localDeviceProgress={overview.localDeviceProgress ?? null}
+            revokedAt={overview.revokedAt ?? null}
+            revoked={revoked}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
             runsHref={runsHref}
           />
           <PrimaryRowActionControl
-            action={primaryAction}
+            action={rowAction}
             displayName={displayName}
             isPending={isPending}
             onSync={handleSync}
@@ -291,6 +317,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
         nextAction={nextAction}
         nextStep={nextStep}
         projectionFreshness={projectionFreshness}
+        revoked={revoked}
         toast={toast}
       />
     </li>
@@ -312,12 +339,24 @@ function PrimaryRowActionControl({
   onSync,
   running,
 }: {
-  action: PrimaryRowAction;
+  action: RowPrimaryAction;
   displayName: string;
   isPending: boolean;
   onSync: () => void;
   running: boolean;
 }) {
+  if (action.kind === "reconnect") {
+    return (
+      <Link
+        aria-label={`Reconnect ${displayName}`}
+        className={buttonVariants({ variant: "default", size: "sm" })}
+        href={action.href}
+        title={action.detail}
+      >
+        {action.label}
+      </Link>
+    );
+  }
   if (action.kind === "sync") {
     return (
       <Button
@@ -408,6 +447,7 @@ function ConnectorRowEvidence({
   nextAction,
   nextStep,
   projectionFreshness,
+  revoked,
   toast,
 }: {
   axisChips: AxisChip[];
@@ -417,11 +457,22 @@ function ConnectorRowEvidence({
   nextAction: ReturnType<typeof formatNextAction>;
   nextStep: NextStepGuidance | null;
   projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
+  revoked: boolean;
   toast: ToastState;
 }) {
   return (
     <>
-      {axisChips.length > 0 ? (
+      {revoked ? (
+        <div
+          className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-muted-foreground"
+          data-testid="connection-revoked-notice"
+        >
+          Future collection is stopped. Retained records stay visible; use Reconnect to start a fresh setup path for
+          this source.
+        </div>
+      ) : null}
+
+      {!revoked && axisChips.length > 0 ? (
         <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
           {axisChips.map((chip) => (
             <AxisChipBadge chip={chip} key={chip.label} />
@@ -438,7 +489,7 @@ function ConnectorRowEvidence({
         </div>
       ) : null}
 
-      {projectionFreshness.unreliable ? (
+      {!revoked && projectionFreshness.unreliable ? (
         <div
           className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
           data-testid="projection-unreliable"
@@ -448,9 +499,9 @@ function ConnectorRowEvidence({
         </div>
       ) : null}
 
-      {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
-      {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
-      {nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
+      {!revoked && dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
+      {!revoked && nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
+      {!revoked && nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
       <ConnectorRowToast toast={toast} />
     </>
   );
@@ -501,6 +552,8 @@ function RunStatus({
   runStart,
   lastRun,
   localDeviceProgress,
+  revoked,
+  revokedAt,
   runsHref,
 }: {
   collectionReport: ConnectorOverview["collectionReport"];
@@ -510,6 +563,8 @@ function RunStatus({
   runStart: string | undefined;
   lastRun: ConnectorRunRef | null;
   localDeviceProgress: ConnectorOverview["localDeviceProgress"];
+  revoked: boolean;
+  revokedAt: string | null;
   runsHref: string;
 }) {
   // Durable progress = any evidence that this connection has produced data
@@ -517,6 +572,24 @@ function RunStatus({
   // (lastRun/lastSuccessfulRun) or a push-mode local-device exporter that
   // bypasses the scheduler entirely (hasRecords).
   const hasDurableProgress = hasRecords;
+  if (revoked) {
+    return (
+      <span
+        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+        data-testid="connection-status-revoked"
+        title="Future collection is stopped. Already-collected records stay retained."
+      >
+        <StatusDot tone="neutral" />
+        Revoked
+        {revokedAt ? (
+          <>
+            <span aria-hidden>·</span>
+            <Timestamp value={revokedAt} />
+          </>
+        ) : null}
+      </span>
+    );
+  }
   if (connectionHealth) {
     return (
       <ConnectionHealthStatus

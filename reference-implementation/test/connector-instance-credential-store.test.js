@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
@@ -12,6 +15,7 @@ import {
   CREDENTIAL_ENCRYPTION_KEY_ENV,
 } from '../server/stores/credential-encryption.js';
 import {
+  CREDENTIAL_KINDS,
   ConnectorInstanceCredentialError,
   createSqliteConnectorInstanceCredentialStore,
 } from '../server/stores/connector-instance-credential-store.js';
@@ -196,6 +200,137 @@ test(
     assert.notEqual(personal.secret, work.secret, 'mailboxes must not collide on one secret');
   }),
 );
+
+test(
+  'store accepts every supported credential kind',
+  withDb(async () => {
+    assert.deepEqual(CREDENTIAL_KINDS, [
+      'app_password',
+      'personal_access_token',
+      'secret_bundle',
+      'username_password',
+    ]);
+    const store = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    const cases = [
+      { id: 'cin_app_password', connectorId: 'gmail', kind: 'app_password', secret: APP_PASSWORD },
+      { id: 'cin_pat', connectorId: 'ynab', kind: 'personal_access_token', secret: 'ynab_pat_value' },
+      {
+        id: 'cin_bundle',
+        connectorId: 'slack',
+        kind: 'secret_bundle',
+        secret: JSON.stringify({ slack_token: 'xoxc-token', slack_cookie: 'd=cookie' }),
+      },
+      {
+        id: 'cin_userpass',
+        connectorId: 'amazon',
+        kind: 'username_password',
+        secret: JSON.stringify({ username: 'owner@example.com', password: 'provider-password' }),
+      },
+    ];
+    for (const item of cases) {
+      seedConnectorInstance({
+        connectorInstanceId: item.id,
+        ownerSubjectId: 'owner_1',
+        connectorId: item.connectorId,
+      });
+      const meta = await store.capture({
+        connectorInstanceId: item.id,
+        ownerSubjectId: 'owner_1',
+        credentialKind: item.kind,
+        secret: item.secret,
+        now: NOW,
+      });
+      assert.equal(meta.credentialKind, item.kind);
+      const recovered = await store.recoverSecret({ connectorInstanceId: item.id, ownerSubjectId: 'owner_1' });
+      assert.equal(recovered.credentialKind, item.kind);
+      assert.equal(recovered.secret, item.secret);
+    }
+  }),
+);
+
+test('initDb widens legacy credential_kind CHECK without dropping stored credentials', async () => {
+  const dbPath = join(mkdtempSync(join(tmpdir(), 'pdpp-credential-kind-migration-')), 'ref.sqlite');
+  initDb(dbPath);
+  try {
+    seedConnectorInstance({ connectorInstanceId: 'cin_existing', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
+    const firstStore = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    await firstStore.capture({
+      connectorInstanceId: 'cin_existing',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: APP_PASSWORD,
+      now: NOW,
+    });
+    getDb().exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_new_kind;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      FROM connector_instance_credentials_new_kind;
+
+      DROP TABLE connector_instance_credentials_new_kind;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+  } finally {
+    closeDb();
+  }
+
+  const migrations = [];
+  initDb(dbPath, { onSchemaMigration: (event) => migrations.push(event) });
+  try {
+    assert.ok(
+      migrations.some((event) => event.name === 'connector_credential_kind_check' && event.rebuilt === true),
+      'legacy CHECK should be widened on boot',
+    );
+    const store = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    assert.equal((await store.recoverSecret({ connectorInstanceId: 'cin_existing' })).secret, APP_PASSWORD);
+    seedConnectorInstance({ connectorInstanceId: 'cin_bundle', ownerSubjectId: 'owner_1', connectorId: 'slack' });
+    const captured = await store.capture({
+      connectorInstanceId: 'cin_bundle',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'secret_bundle',
+      secret: JSON.stringify({ slack_token: 'xoxc-token', slack_cookie: 'd=cookie' }),
+      now: NOW,
+    });
+    assert.equal(captured.credentialKind, 'secret_bundle');
+  } finally {
+    closeDb();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Lifecycle: rotate / revoke / delete — no resurrection

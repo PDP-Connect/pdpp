@@ -411,7 +411,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         connector_instance_id TEXT PRIMARY KEY
           REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
         owner_subject_id TEXT NOT NULL,
-        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token')),
+        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret TEXT NOT NULL,
         fingerprint TEXT,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
@@ -421,6 +421,44 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
+
+      -- Existing Postgres deployments may carry the original two-kind CHECK.
+      -- Widen it in place for sealed multi-field static-secret bundles and
+      -- future username/password pairs, without touching stored ciphertext.
+      DO $$
+      DECLARE
+        credential_kind_constraint_name TEXT;
+        credential_kind_constraint_def TEXT;
+      BEGIN
+        FOR credential_kind_constraint_name, credential_kind_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%app_password%'
+             AND pg_get_constraintdef(oid) LIKE '%personal_access_token%'
+        LOOP
+          IF credential_kind_constraint_def NOT LIKE '%secret_bundle%'
+             OR credential_kind_constraint_def NOT LIKE '%username_password%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_kind_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%secret_bundle%'
+             AND pg_get_constraintdef(oid) LIKE '%username_password%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_credential_kind_check
+            CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS oauth_clients (
         client_id TEXT PRIMARY KEY,

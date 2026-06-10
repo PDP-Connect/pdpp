@@ -15,6 +15,7 @@
  */
 
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { isRevokedConnection } from "./records-list-classification.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
 
 export interface SourceGroup {
@@ -28,6 +29,8 @@ export interface SourceGroup {
   displayName: string;
   /** Connections of this source with a needs_attention or blocked health state. */
   needsAttentionCount: number;
+  /** Connections of this source whose future collection is stopped by owner revoke. */
+  revokedCount: number;
   /** Connections of this source with at least one durable record. */
   withDataCount: number;
 }
@@ -55,6 +58,7 @@ function seedGroup(overview: ConnectorOverview): SourceGroup {
     }),
     connectionCount: 1,
     needsAttentionCount: attention ? 1 : 0,
+    revokedCount: isRevokedConnection(overview) ? 1 : 0,
     withDataCount: overview.totalRecords > 0 ? 1 : 0,
     attentionRouteId: attention ? routeId(overview) : null,
   };
@@ -65,6 +69,7 @@ function foldGroup(group: SourceGroup, overview: ConnectorOverview): void {
   const attention = needsAttention(overview);
   group.connectionCount += 1;
   group.needsAttentionCount += attention ? 1 : 0;
+  group.revokedCount += isRevokedConnection(overview) ? 1 : 0;
   group.withDataCount += overview.totalRecords > 0 ? 1 : 0;
   if (attention && !group.attentionRouteId) {
     group.attentionRouteId = routeId(overview);

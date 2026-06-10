@@ -26,18 +26,32 @@ const ROW_FILE = `${HERE}connector-row.tsx`;
 
 const FORMAT_NEXT_ACTION_CALL = /formatNextAction\(connectionHealth\?\.next_action \?\? null\)/;
 const PILL_USAGE = /<NextActionPill /;
-const PILL_CONDITIONAL = /\{nextAction \? <NextActionPill /;
+const PILL_CONDITIONAL = /\{!revoked && nextAction \? <NextActionPill /;
 const LINK_GUARD = /formatted\.actionTarget !== null && formatted\.variant === "structured"/;
 const PILL_USES_DETAIL_HREF = /href=\{detailHref\}/;
 const PILL_LINKS_RAW_TARGET = /href=\{formatted\.actionTarget\}/;
 const DETAILS_UNAVAILABLE = /Details unavailable/;
 const FRESHNESS_DEVICE_NO_PUSH_TESTID = /data-testid="freshness-device-no-push"/;
 const NO_PUSH_RECEIVED_YET = /no push received yet/;
+const REVOKED_STATUS_TESTID = /data-testid="connection-status-revoked"/;
+const REVOKED_NOTICE_TESTID = /data-testid="connection-revoked-notice"/;
+const REVOKED_RECONNECT_ACTION = /action\.kind === "reconnect"/;
+const REVOKED_ADD_SOURCE_SEARCH = /\/dashboard\/records\/add\?source_q=/;
+const REVOKED_SUPPRESSES_ACTIVE_HEALTH = /!\s*revoked && axisChips\.length > 0/;
 
 test("connector-row reads next_action from connection_health and renders a pill", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, FORMAT_NEXT_ACTION_CALL);
   assert.match(src, PILL_USAGE);
+});
+
+test("connector-row surfaces revoked connections as visible reconnectable rows", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, REVOKED_STATUS_TESTID);
+  assert.match(src, REVOKED_NOTICE_TESTID);
+  assert.match(src, REVOKED_RECONNECT_ACTION);
+  assert.match(src, REVOKED_ADD_SOURCE_SEARCH);
+  assert.match(src, REVOKED_SUPPRESSES_ACTIVE_HEALTH);
 });
 
 test("connector-row only renders the pill when formatNextAction returns a value", async () => {
@@ -143,7 +157,7 @@ const DERIVES_NEXT_STEP = /deriveConnectionNextStep\(\{/;
 const NEXT_STEP_SUPPRESSED_BY_STRUCTURED = /hasStructuredNextAction: nextAction !== null/;
 const NEXT_STEP_SUPPRESSED_BY_DOMINANT = /hasDominantCondition: dominantCondition !== null/;
 const NEXT_STEP_SYNC_GATED_ON_PUSH_MODE = /supportsOwnerSync: !overview\.localDeviceProgress/;
-const NEXT_STEP_RENDERED = /\{nextStep \? <NextStepGuidanceRow /;
+const NEXT_STEP_RENDERED = /\{!revoked && nextStep \? <NextStepGuidanceRow /;
 const NEXT_STEP_ROW_LINKS_DETAIL = /href=\{detailHref\}/;
 const NEXT_STEP_TESTID = /data-testid="next-step-guidance"/;
 

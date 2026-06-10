@@ -28,7 +28,12 @@ import {
  * an explicit owner re-capture.
  */
 
-export const CREDENTIAL_KINDS = Object.freeze(['app_password', 'personal_access_token']);
+export const CREDENTIAL_KINDS = Object.freeze([
+  'app_password',
+  'personal_access_token',
+  'secret_bundle',
+  'username_password',
+]);
 const VALID_KINDS = new Set(CREDENTIAL_KINDS);
 
 export class ConnectorInstanceCredentialError extends Error {

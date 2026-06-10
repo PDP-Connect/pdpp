@@ -58,6 +58,7 @@ test("two connections of one source roll up to a single group with the right cou
   assert.equal(gmail.connectorId, "gmail");
   assert.equal(gmail.connectionCount, 2);
   assert.equal(gmail.withDataCount, 1, "only one of the two gmail connections has records");
+  assert.equal(gmail.revokedCount, 0);
 });
 
 test("existing-data count is distinct from connection count", () => {
@@ -81,6 +82,21 @@ test("needs_attention and blocked connections drive the attention count and a re
   );
   assert.equal(group.needsAttentionCount, 1);
   assert.equal(group.attentionRouteId, "chase-broken", "the repair route points at the unhealthy connection");
+});
+
+test("revoked connections stay counted as existing source connections", () => {
+  const group = only(
+    groupSourcesByConnector([
+      connection("reddit", {
+        connectionId: "reddit-revoked",
+        connectionStatus: "revoked",
+        revokedAt: "2026-06-10T19:10:28.476Z",
+      }),
+    ])
+  );
+  assert.equal(group.connectionCount, 1);
+  assert.equal(group.revokedCount, 1);
+  assert.equal(group.withDataCount, 0);
 });
 
 test("sources needing attention sort ahead of healthy sources", () => {

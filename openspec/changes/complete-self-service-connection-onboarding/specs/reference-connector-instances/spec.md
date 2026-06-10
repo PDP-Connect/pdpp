@@ -89,6 +89,20 @@ connection row unless the modality's proof boundary has been satisfied.
   token exchange completes and any required account inventory or connection test
   succeeds
 
+#### Scenario: Revoked connections remain owner-manageable
+
+- **WHEN** an owner revokes a connection to stop future collection while
+  retaining already-collected records
+- **THEN** owner read surfaces SHALL keep the revoked connection visible with
+  its connection id, connector identity, retained record evidence, lifecycle
+  state, and revocation timestamp when known
+- **AND** owner UI surfaces SHALL NOT redirect the owner to an excluded detail
+  route after revoke
+- **AND** owner UI surfaces SHALL provide a clear re-connect action that starts
+  the supported setup path for that source
+- **AND** owner UI surfaces SHALL NOT present a revoked connection as runnable
+  or healthy active collection
+
 ### Requirement: Setup credentials SHALL be connection-scoped and secret-safe
 
 Provider credentials collected during setup SHALL be scoped to exactly one
@@ -96,7 +110,10 @@ connection or draft connection, stored according to that modality's credential
 storage rules, and never returned by owner-agent, MCP, grant-scoped REST, console
 read, or CLI read surfaces. Reads MAY expose non-secret metadata such as
 credential kind, presence, validity, capture timestamp, rotation timestamp, and
-fingerprint.
+fingerprint. The credential-kind vocabulary SHALL support single-secret app
+passwords, single-secret personal access tokens, sealed multi-field secret
+bundles, and username/password pairs without requiring deployment-wide
+per-account environment variables.
 
 #### Scenario: Two accounts use the same connector type
 
@@ -106,6 +123,18 @@ fingerprint.
 - **AND** each connection SHALL use its own credential or provider authorization
   material without reading, overwriting, or sharing the sibling connection's
   credential
+
+#### Scenario: A connector requires multiple bearer-equivalent values
+
+- **WHEN** a static-secret connector requires multiple bearer-equivalent values
+  for one source account, such as a token plus cookie or OAuth client secret plus
+  account password
+- **THEN** the reference SHALL store those values as one connection-scoped sealed
+  credential bundle
+- **AND** it SHALL inject only the connector-declared fields into the subprocess
+  for that connection's run
+- **AND** non-secret setup identity or configuration fields MAY be stored as
+  source-binding metadata rather than inside the sealed secret
 
 #### Scenario: Agent reads setup status
 

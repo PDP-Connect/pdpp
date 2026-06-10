@@ -536,6 +536,8 @@ export interface ConnectorOverview {
   collectionReport?: readonly RefCollectionReportEntry[] | null;
   connectionHealth?: RefConnectionHealthSnapshot;
   connectionId?: string;
+  /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
+  connectionStatus?: string | null;
   connector: ConnectorManifest;
   connectorDisplayName?: string;
   connectorInstanceId?: string;
@@ -555,6 +557,7 @@ export interface ConnectorOverview {
    */
   localDeviceProgress?: RefLocalDeviceProgress | null;
   retainedBytes?: RefRetainedBytesBreakdown | null;
+  revokedAt?: string | null;
   streamCount?: number;
   streams: StreamSummary[];
   totalRecords: number;

@@ -3,6 +3,10 @@ import type { ConnectorOverview } from "./rs-client.ts";
 const PRIMARY_NO_DATA_HEALTH_STATES = new Set(["blocked", "cooling_off", "degraded", "needs_attention"]);
 const PRIMARY_NO_DATA_RUN_STATUSES = new Set(["abandoned", "failed"]);
 
+export function isRevokedConnection(overview: ConnectorOverview): boolean {
+  return overview.connectionStatus === "revoked" || Boolean(overview.revokedAt);
+}
+
 export function hasLocalDeviceProgressEvidence(overview: ConnectorOverview): boolean {
   const progress = overview.localDeviceProgress;
   if (!progress) {
@@ -21,6 +25,9 @@ export function hasRecordsListProgress(overview: ConnectorOverview): boolean {
 }
 
 export function shouldShowInPrimaryConnections(overview: ConnectorOverview): boolean {
+  if (isRevokedConnection(overview)) {
+    return true;
+  }
   if (hasRecordsListProgress(overview)) {
     return true;
   }

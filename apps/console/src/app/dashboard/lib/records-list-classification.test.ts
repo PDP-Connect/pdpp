@@ -33,6 +33,11 @@ test("successful zero-record scheduler rows are not primary record connections",
   assert.equal(shouldShowInPrimaryConnections(row), false);
 });
 
+test("revoked rows stay primary even with no records so the owner can reconnect or delete", () => {
+  assert.equal(shouldShowInPrimaryConnections(overview({ connectionStatus: "revoked" })), true);
+  assert.equal(shouldShowInPrimaryConnections(overview({ revokedAt: "2026-06-10T19:10:28.476Z" })), true);
+});
+
 test("failed zero-record rows stay primary because they need operator attention", () => {
   assert.equal(shouldShowInPrimaryConnections(overview({ lastRun: run("failed") })), true);
 });

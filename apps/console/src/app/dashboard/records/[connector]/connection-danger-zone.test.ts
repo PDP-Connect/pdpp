@@ -71,7 +71,8 @@ const ACT_CALLS_DELETE_WRAPPER_RE = /await deleteConnection\(connectionId\)/;
 const ACT_REVALIDATE_RE = /revalidatePath\("\/dashboard\/records"\)/;
 const ACT_RUN_ACTIVE_RE = /result\.status === "run_active"/;
 const ACT_DEFAULT_ACCOUNT_RE = /result\.status === "default_account"/;
-const ACT_DELETE_REDIRECT_LIST_RE = /redirect\(`\/dashboard\/records\?message=/;
+const ACT_DELETE_REDIRECT_LIST_RE = /redirect\(recordsListHref\(message \?\? "Connection deleted\."\)\)/;
+const ACT_REVOKE_REDIRECT_LIST_RE = /redirect\(error \? dangerZoneHref\(routeId, message, error\) : recordsListHref\(message\)\)/;
 const ACT_DANGER_ANCHOR_RE = /#danger-zone/;
 
 async function read(file: string): Promise<string> {
@@ -147,4 +148,9 @@ test("the delete action surfaces each typed refusal in place rather than a gener
   assert.match(actions, ACT_DEFAULT_ACCOUNT_RE);
   assert.match(actions, ACT_DELETE_REDIRECT_LIST_RE);
   assert.match(actions, ACT_DANGER_ANCHOR_RE);
+});
+
+test("successful revoke redirects to the visible connections list instead of a now-revoked detail URL", async () => {
+  const actions = await read(ACTIONS_FILE);
+  assert.match(actions, ACT_REVOKE_REDIRECT_LIST_RE);
 });

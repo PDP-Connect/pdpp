@@ -409,6 +409,8 @@ export interface ConnectorSummary {
    */
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
+  /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
+  readonly revoked_at: string | null;
   /**
    * Storage bytes by retention class. `total_retained_bytes` is kept for
    * compatibility; this breakdown lets the operator distinguish current live
@@ -416,6 +418,7 @@ export interface ConnectorSummary {
    */
   readonly retained_bytes?: RetainedBytesBreakdown | null;
   readonly schedule: unknown;
+  readonly status: string | null;
   readonly stream_count?: number;
   readonly streams: string[];
   readonly total_records: number;
@@ -998,7 +1001,7 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
   // `openspec/changes/separate-connector-catalog-from-connections/`.
   const store = getConnectorInstanceStore();
   const instances = await store.listByOwner(REFERENCE_OWNER_SUBJECT_ID);
-  return instances.filter((instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt);
+  return instances;
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
@@ -2978,8 +2981,10 @@ async function projectConnectorSummaryForInstance(
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
     retained_bytes: live.retainedBytes,
+    revoked_at: instance.revokedAt ?? null,
     streams: (manifest.streams || []).map((stream) => stream.name),
     stream_count: live.byStream.size,
+    status: instance.status ?? null,
     total_records: live.totalRecords,
     total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
     freshness,
