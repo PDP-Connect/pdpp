@@ -329,6 +329,94 @@ test('DELETE /_ref/connections/:connectorInstanceId/schedule returns 404 when no
   });
 });
 
+// ─── Owner-session connection revoke / delete (shared-cascade siblings) ──────
+//
+// These pin that the cookie-authed `/_ref/connections/:id/revoke` and
+// `DELETE /_ref/connections/:id` routes delegate to the SAME connector-instance
+// store primitives the owner-agent bearer routes use (no Console-only cascade),
+// and that the shared typed refusals flow through unchanged. The server runs in
+// open mode, so the owner-session gate does not mask routing here; a dedicated
+// auth-gate boundary test would cover the non-owner-session rejection.
+
+test('POST /_ref/connections/:id/revoke flips one instance to revoked via the shared store primitive', async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = await registerSpotifyManifest(asUrl);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
+    const { status, body } = await fetchJson(
+      `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/revoke`,
+      { method: 'POST' },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.object, 'ref_connection_revoke');
+    assert.equal(body.connection_id, SPOTIFY_INSTANCE_ID);
+    assert.equal(body.status, 'revoked');
+    assert.ok(body.revoked_at, 'revoke response carries revoked_at');
+    // The flip is durable in the shared store: the instance now reads revoked.
+    const store = createSqliteConnectorInstanceStore();
+    const after = await store.get(SPOTIFY_INSTANCE_ID);
+    assert.equal(after.status, 'revoked', 'instance must be revoked in the store after the route');
+  });
+});
+
+test('POST /_ref/connections/:id/revoke is a zero-cascade soft flip: the row is preserved (not deleted), repeat returns connector_instance_inactive', async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = await registerSpotifyManifest(asUrl);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
+    const first = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/revoke`, {
+      method: 'POST',
+    });
+    assert.equal(first.status, 200);
+    // Revoke is NOT delete: the connector_instances row is preserved in the
+    // shared store (soft flip to `revoked`), so already-collected records,
+    // grants, and audit are retained. The active-status resolver gates the
+    // detail/revoke routes for a revoked instance, which is exactly why a second
+    // revoke surfaces the shared store's typed already-inactive error rather
+    // than re-revoking or 404'ing.
+    const store = createSqliteConnectorInstanceStore();
+    const preserved = await store.get(SPOTIFY_INSTANCE_ID);
+    assert.ok(preserved, 'revoke preserves the connector_instances row (soft flip, not delete)');
+    assert.equal(preserved.status, 'revoked');
+    const second = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/revoke`, {
+      method: 'POST',
+    });
+    assert.equal(second.status, 400);
+    assert.equal(second.body?.error?.code, 'connector_instance_inactive');
+  });
+});
+
+test('DELETE /_ref/connections/:id delegates to the shared deleteConnection cascade and removes the row', async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = await registerSpotifyManifest(asUrl);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}`, {
+      method: 'DELETE',
+    });
+    assert.equal(status, 200);
+    assert.equal(body.object, 'ref_connection_delete');
+    assert.equal(body.connection_id, SPOTIFY_INSTANCE_ID);
+    assert.equal(body.deleted, true);
+    assert.equal(typeof body.deleted_record_count, 'number');
+    // The connector_instances row is gone: detail no longer resolves to a stored row,
+    // and a repeat delete is a clean typed not-found (no existence leak).
+    const repeat = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}`, {
+      method: 'DELETE',
+    });
+    assert.equal(repeat.status, 404);
+    assert.equal(repeat.body?.error?.code, 'connector_instance_not_found');
+  });
+});
+
+test('DELETE /_ref/connections/:id returns connector_instance_not_found for an unknown connection', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerSpotifyManifest(asUrl);
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connections/cin_does_not_exist`, {
+      method: 'DELETE',
+    });
+    assert.equal(status, 404);
+    assert.equal(body?.error?.code, 'connector_instance_not_found');
+  });
+});
+
 // ─── Source-identity boundary: canonical key on the wire ─────────────────
 //
 // These tests pin the invariant that `/_ref/connections` and

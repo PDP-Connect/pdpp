@@ -42,7 +42,9 @@ interface RouteRequest {
 
 interface RouteResponse {
   end(): unknown;
+  getHeader(name: string): string | number | string[] | undefined;
   json(body: unknown): unknown;
+  setHeader(name: string, value: string): void;
   status(code: number): RouteResponse;
 }
 
@@ -96,6 +98,35 @@ interface ScheduleUpsertResult {
   readonly schedule: unknown;
 }
 
+interface TraceContext {
+  readonly request_id: string;
+  readonly scenario_id: string;
+  readonly trace_id: string;
+}
+
+// Connection-scoped soft-flip result returned by the shared store
+// `updateStatus` primitive. The owner-session revoke route reuses the same
+// primitive the owner-agent bearer revoke route uses — no new destructive
+// semantic is introduced here.
+interface RevokedInstance {
+  readonly connectorInstanceId?: string | null;
+  readonly revokedAt?: string | null;
+  readonly status?: string | null;
+}
+
+// Non-secret deletion summary returned by the shared store `deleteConnection`
+// cascade (counts + stable ids only). Identical to the shape the owner-agent
+// bearer delete route surfaces.
+interface ConnectionDeleteSummary {
+  readonly connection_id: string;
+  readonly connector_id: string;
+  readonly deleted_record_count: number;
+  readonly deleted_stream_count: number;
+  readonly device_refs_cleared: number;
+  readonly schedule_deleted: boolean;
+  readonly source_kind: string;
+}
+
 interface OwnerNamespaceOptions {
   readonly allowDefaultAccount?: boolean;
   readonly connectorInstanceId?: string | null;
@@ -105,7 +136,21 @@ interface OwnerNamespaceOptions {
 export interface MountRefConnectorsContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
+  createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  // Connection-scoped destructive delete primitive — the SAME cascade the
+  // owner-agent bearer delete route delegates to. Resolves + verifies owner
+  // ownership BEFORE any mutation, refuses active-run / default-account with the
+  // existing typed errors, purges exactly one connection's source-of-truth
+  // records + state, and returns the non-secret deletion summary. Wired with the
+  // same injected `purge` phases the bearer route receives so the console path
+  // cannot diverge from the agent path.
+  deleteConnection(
+    connectorInstanceId: string,
+    options: { ownerSubjectId: string; now?: string | undefined }
+  ): Promise<ConnectionDeleteSummary>;
   deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
+  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
+  ensureRequestId(res: RouteResponse): string;
   getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
   getConnectorSummaryForRoute(routeId: string): Promise<unknown | null> | unknown | null;
   getOwnerSubjectId(req: unknown): string;
@@ -113,6 +158,7 @@ export interface MountRefConnectorsContext {
   handleError(res: unknown, err: unknown): void;
   listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
+  now?(): string;
   onScheduleMutation?(): Promise<unknown> | unknown;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -124,11 +170,20 @@ export interface MountRefConnectorsContext {
   resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown>;
   resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
   runNow(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown>;
+  setReferenceTraceId(res: RouteResponse, traceId: string): void;
   setScheduleEnabled(
     connectorId: string,
     enabled: boolean,
     options: { connectorInstanceId?: string | null }
   ): Promise<unknown>;
+  // Connection-scoped soft-flip revoke primitive — the SAME store `updateStatus`
+  // method the owner-agent bearer revoke route uses. Flips exactly one connector
+  // instance to status `revoked`, zero cascade; the namespace is owner-verified
+  // before this is called.
+  updateConnectorInstanceStatus(
+    connectorInstanceId: string,
+    options: { status: "revoked"; updatedAt: string; revokedAt: string }
+  ): Promise<RevokedInstance> | RevokedInstance;
   upsertSchedule(
     connectorId: string,
     input: unknown,
@@ -728,6 +783,210 @@ export function mountRefConnectionScheduleDelete(app: AppLike, ctx: MountRefConn
         await ctx.onScheduleMutation?.();
         res.status(204).end();
       } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// ─── Connection revoke / delete (owner-session siblings of the bearer routes) ──
+//
+// These two routes give the operator console a way to revoke and delete one
+// configured connection over its existing owner-session auth, without an
+// owner-agent bearer. They are deliberately thin: each delegates to the SAME
+// connector-instance store primitive the owner-agent bearer route uses
+// (`updateStatus` for revoke, `deleteConnection` for delete, wired with the same
+// injected `purge` phases in `server/index.js`) and emits the SAME non-secret
+// audit event type, differing only in the auth adapter (`requireOwnerSession`
+// cookie vs `requireToken` + `requireOwner` bearer) and the owner-subject source
+// (`getOwnerSubjectId` session vs token). No deletion/revoke cascade is
+// re-implemented here; the console path cannot diverge from the agent path
+// because both bottom out in one store method per action.
+//
+// Spec: openspec/changes/add-console-connection-revoke-delete-controls/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"Owner-session connection revoke and delete SHALL reuse the
+//         owner-agent cascade implementation")
+
+function buildConnectionControlAuditTrace(ctx: MountRefConnectorsContext, res: RouteResponse): TraceContext {
+  const trace = ctx.createTraceContext();
+  const requestId = ctx.ensureRequestId(res);
+  ctx.setReferenceTraceId(res, trace.trace_id);
+  return {
+    request_id: requestId,
+    scenario_id: trace.scenario_id,
+    trace_id: trace.trace_id,
+  };
+}
+
+// Emits one non-secret audit event for an owner-session connection control
+// action. The `event_type` matches the owner-agent bearer route's so the
+// console path and the agent path appear under one audit stream per action;
+// `actor_type` is `owner_session` to distinguish the surface. Never logs
+// session credentials, provider secrets, or record contents.
+async function emitConnectionControlAudit(
+  ctx: MountRefConnectorsContext,
+  res: RouteResponse,
+  args: {
+    connectionId?: string | null;
+    connectorKey?: string | null;
+    deletionSummary?: ConnectionDeleteSummary | null;
+    error?: unknown;
+    eventType: "owner_agent.connection.revoke" | "owner_agent.connection.delete";
+    operation: "revoke" | "delete";
+    outcome: "succeeded" | "failed";
+    ownerSubjectId?: string | null;
+  }
+): Promise<void> {
+  const trace = buildConnectionControlAuditTrace(ctx, res);
+  const code = (args.error as { code?: unknown } | null)?.code;
+  await ctx.emitSpineEvent({
+    event_type: args.eventType,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    request_id: trace.request_id,
+    actor_type: "owner_session",
+    actor_id: args.ownerSubjectId ?? "owner_session",
+    subject_type: "subject",
+    subject_id: args.ownerSubjectId ?? null,
+    object_type: "connection",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    status: args.outcome,
+    data: {
+      actor_kind: "owner_session",
+      connection_id: args.connectionId ?? null,
+      connector_key: args.connectorKey ?? null,
+      selector: "connection_id",
+      operation: args.operation,
+      outcome: args.outcome,
+      target_resource: "connection",
+      ...(args.deletionSummary
+        ? {
+            deletion_summary: {
+              deleted_record_count: args.deletionSummary.deleted_record_count,
+              deleted_stream_count: args.deletionSummary.deleted_stream_count,
+              schedule_deleted: args.deletionSummary.schedule_deleted,
+              device_refs_cleared: args.deletionSummary.device_refs_cleared,
+            },
+          }
+        : {}),
+      ...(args.error ? { error: { code: typeof code === "string" ? code : "api_error" } } : {}),
+    },
+  });
+}
+
+// POST /_ref/connections/:connectorInstanceId/revoke — owner-session revoke of
+// one configured connection. Resolves + owner-verifies the connection through
+// the shared namespace resolver, flips exactly that instance to `revoked` via
+// the shared store primitive, and emits a non-secret revoke audit. Zero cascade:
+// already-collected records, grants, and audit are preserved; a repeat revoke
+// surfaces the store's typed `connector_instance_inactive` through `handleError`.
+export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsContext): void {
+  app.post(
+    "/_ref/connections/:connectorInstanceId/revoke",
+    { contract: "refRevokeConnection" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const ownerSubjectId = ctx.getOwnerSubjectId(req);
+      let connectionId: string | null = null;
+      let connectorKey: string | null = null;
+      try {
+        const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+        connectionId = connectorInstanceId;
+        const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
+        connectionId = namespace.connectorInstanceId;
+        connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+        const stamp = ctx.now ? ctx.now() : new Date().toISOString();
+        const revoked = await Promise.resolve(
+          ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+            status: "revoked",
+            updatedAt: stamp,
+            revokedAt: stamp,
+          })
+        );
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          eventType: "owner_agent.connection.revoke",
+          operation: "revoke",
+          outcome: "succeeded",
+          ownerSubjectId,
+        });
+        res.status(200).json({
+          object: "ref_connection_revoke",
+          connection_id: connectionId,
+          connector_id: connectorKey,
+          connector_key: connectorKey,
+          status: revoked.status ?? "revoked",
+          revoked_at: revoked.revokedAt ?? stamp,
+        });
+      } catch (err) {
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          error: err,
+          eventType: "owner_agent.connection.revoke",
+          operation: "revoke",
+          outcome: "failed",
+          ownerSubjectId,
+        });
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// DELETE /_ref/connections/:connectorInstanceId — owner-session delete of one
+// configured connection. Delegates to the shared `deleteConnection` cascade
+// (ownership + active-run + default-account guards live in the store), emits a
+// non-secret delete audit with the deletion summary, and returns the summary so
+// the console can confirm what was erased. The store's typed
+// `connection_run_active` / `default_account_delete_unsupported` /
+// `connector_instance_not_found` errors flow through `handleError` unchanged.
+export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsContext): void {
+  app.delete(
+    "/_ref/connections/:connectorInstanceId",
+    { contract: "refDeleteConnection" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const ownerSubjectId = ctx.getOwnerSubjectId(req);
+      let connectionId: string | null = decodeURIComponent(req.params.connectorInstanceId as string);
+      let connectorKey: string | null = null;
+      try {
+        const now = ctx.now ? ctx.now() : undefined;
+        const summary = await ctx.deleteConnection(connectionId as string, { ownerSubjectId, now });
+        connectionId = summary.connection_id;
+        connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          deletionSummary: summary,
+          eventType: "owner_agent.connection.delete",
+          operation: "delete",
+          outcome: "succeeded",
+          ownerSubjectId,
+        });
+        res.status(200).json({
+          object: "ref_connection_delete",
+          connection_id: summary.connection_id,
+          connector_id: connectorKey,
+          connector_key: connectorKey,
+          deleted: true,
+          deleted_record_count: summary.deleted_record_count,
+          deleted_stream_count: summary.deleted_stream_count,
+          schedule_deleted: summary.schedule_deleted,
+          device_refs_cleared: summary.device_refs_cleared,
+        });
+      } catch (err) {
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          error: err,
+          eventType: "owner_agent.connection.delete",
+          operation: "delete",
+          outcome: "failed",
+          ownerSubjectId,
+        });
         ctx.handleError(res, err);
       }
     }
