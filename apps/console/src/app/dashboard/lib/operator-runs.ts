@@ -1,8 +1,21 @@
 import { type CancelRunResult, cancelRunErrorCode, classifyCancelRunResponse } from "./cancel-run-result.ts";
+import {
+  classifyDeleteConnectionResponse,
+  classifyRevokeConnectionResponse,
+  connectionControlErrorCode,
+  type DeleteConnectionResult,
+  type RevokeConnectionResult,
+} from "./connection-control-result.ts";
 import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
 export type { CancelRunOutcome, CancelRunResult } from "./cancel-run-result.ts";
+export type {
+  DeleteConnectionOutcome,
+  DeleteConnectionResult,
+  RevokeConnectionOutcome,
+  RevokeConnectionResult,
+} from "./connection-control-result.ts";
 
 const DURATION_RE = /^(\d+)(s|m|h|d)?$/i;
 
@@ -378,4 +391,38 @@ export async function deleteConnectionSchedule(connectionId: string) {
     const body = await readBody(response);
     throw new Error(describeError(body, `schedule delete failed (${response.status})`));
   }
+}
+
+/**
+ * Owner-revoke one configured connection via the owner-session
+ * `POST /_ref/connections/:id/revoke` route. Stops future collection while
+ * retaining records, grants, and audit (zero cascade). Shares the connector-
+ * instance store soft-flip primitive with the owner-agent bearer revoke route;
+ * the route is gated by `requireOwnerSession`, so grant-scoped clients cannot
+ * reach it. Returns a typed outcome (a repeat revoke surfaces `already_revoked`
+ * rather than throwing) so the console can message in place.
+ */
+export async function revokeConnection(connectionId: string): Promise<RevokeConnectionResult> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/revoke"), {
+    method: "POST",
+  });
+  const body = await readBody(response);
+  return classifyRevokeConnectionResponse(response.status, body, connectionControlErrorCode(body));
+}
+
+/**
+ * Owner-delete one configured connection via the owner-session
+ * `DELETE /_ref/connections/:id` route. Erases exactly that connection's
+ * source-of-truth records/state per the shipped delete contract; refuses an
+ * active run (`run_active`) and a default-account binding (`default_account`).
+ * Shares the `deleteConnection` cascade with the owner-agent bearer delete
+ * route. Returns a typed outcome so the console can message each refusal in
+ * place rather than via a generic error boundary.
+ */
+export async function deleteConnection(connectionId: string): Promise<DeleteConnectionResult> {
+  const response = await fetchAs(connectionControlPath(connectionId, ""), {
+    method: "DELETE",
+  });
+  const body = await readBody(response);
+  return classifyDeleteConnectionResponse(response.status, body, connectionControlErrorCode(body));
 }
