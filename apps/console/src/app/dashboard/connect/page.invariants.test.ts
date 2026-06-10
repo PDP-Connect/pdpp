@@ -17,6 +17,11 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
+// The disposition→owner-copy mapping was extracted to a shared presentation
+// module so the Connect catalog and the Sources page's add-account projection
+// render the same vocabulary. The no-provider-specific-copy invariant now
+// guards that shared module, which is the single source of truth.
+const SOURCE_SETUP_PRESENTATION_FILE = `${HERE}../lib/source-setup-presentation.ts`;
 
 const PLACEHOLDER_ORIGIN_RE = /<PDPP_REFERENCE_ORIGIN>/;
 const RESOLVE_PUBLIC_ORIGIN_RE = /getReferencePublicOrigin\(\)/;
@@ -41,9 +46,13 @@ const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
 const SOURCE_SETUP_SECTION_RE = /title="Add data sources"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
-const SOURCE_REPEATS_ACCOUNT_RE = /repeat the same setup to add another account|Repeat setup to add another device or account|Submit again to add another mailbox or account/i;
-const AGENT_SECTION_AFTER_SOURCE_RE = /<SourceSetupSection catalog=\{catalog\} query=\{sourceQuery\} \/>[\s\S]*title="Connect AI apps"/;
-const SOURCE_SETUP_BLOCK_RE = /function sourceSetupRank[\s\S]*?function ClientIdentityForm/;
+const SOURCE_REPEATS_ACCOUNT_RE =
+  /repeat the same setup to add another account|Repeat setup to add another device or account|Submit again to add another mailbox or account/i;
+const AGENT_SECTION_AFTER_SOURCE_RE =
+  /<SourceSetupSection catalog=\{catalog\} query=\{sourceQuery\} \/>[\s\S]*title="Connect AI apps"/;
+// The page consumes the shared presentation helpers rather than defining the
+// disposition→copy mapping inline; the drift check below reads the helper file.
+const SOURCE_SETUP_PRESENTATION_IMPORT_RE = /from "\.\.\/lib\/source-setup-presentation\.ts"/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const SOURCE_FORBIDDEN_NORMAL_COPY_RE =
@@ -83,14 +92,18 @@ test("connect page leads with the shared data-source setup catalog", async () =>
   assert.match(src, SOURCE_CARD_RE);
   assert.match(src, SOURCE_REPEATS_ACCOUNT_RE);
   assert.match(src, AGENT_SECTION_AFTER_SOURCE_RE);
+  // The page renders source cards from the shared presentation helpers rather
+  // than inlining the disposition→copy mapping.
+  assert.match(src, SOURCE_SETUP_PRESENTATION_IMPORT_RE);
 });
 
 test("data-source setup UI has no connector-specific copy or examples", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  const match = src.match(SOURCE_SETUP_BLOCK_RE);
-  assert.ok(match, "source setup block must be discoverable for drift checks");
-  assert.doesNotMatch(match[0], SOURCE_PROVIDER_SPECIFIC_COPY_RE);
-  assert.doesNotMatch(match[0], SOURCE_FORBIDDEN_NORMAL_COPY_RE);
+  // The disposition→owner-copy mapping lives in the shared presentation module
+  // now; the no-provider-specific-copy invariant guards that single source of
+  // truth so neither Connect nor the Sources add-account projection can drift.
+  const src = await readFile(SOURCE_SETUP_PRESENTATION_FILE, "utf8");
+  assert.doesNotMatch(src, SOURCE_PROVIDER_SPECIFIC_COPY_RE);
+  assert.doesNotMatch(src, SOURCE_FORBIDDEN_NORMAL_COPY_RE);
 });
 
 test("connect page also exposes CLI and agent-readable entrypoints", async () => {

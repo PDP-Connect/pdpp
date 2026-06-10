@@ -8,6 +8,12 @@ import { buildConnectorCatalog, type ConnectorCatalogEntry } from "../lib/connec
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
 import { listConnectorManifests } from "../lib/rs-client.ts";
+import {
+  sourceSetupAction,
+  sourceSetupGuidance,
+  sourceSetupRank,
+  sourceSetupStatus,
+} from "../lib/source-setup-presentation.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -51,32 +57,10 @@ function buildCimdCommands(mcpUrl: string, clientId: string) {
   };
 }
 
-function sourceSetupRank(entry: ConnectorCatalogEntry): number {
-  switch (entry.disposition) {
-    case "local_collector_enroll":
-      return 0;
-    case "static_secret_connect":
-      return 1;
-    case "browser_collector_manual":
-      return 2;
-    case "provider_auth_deployment_blocked":
-      return 3;
-    case "browser_bound_runbook":
-    case "local_collector_unproven":
-    case "provider_auth_proof_gated":
-      return 4;
-    case "api_network_unsupported":
-    case "unknown_unsupported":
-      return 5;
-    default:
-      return 6;
-  }
-}
-
 function sortSourceCatalog(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return [...catalog].sort((a, b) => {
     const rank = sourceSetupRank(a) - sourceSetupRank(b);
-    return rank !== 0 ? rank : a.displayName.localeCompare(b.displayName);
+    return rank === 0 ? a.displayName.localeCompare(b.displayName) : rank;
   });
 }
 
@@ -92,72 +76,6 @@ function filterSourceCatalog(catalog: readonly ConnectorCatalogEntry[], query: s
       .toLowerCase()
       .includes(needle)
   );
-}
-
-function sourceSetupStatus(entry: ConnectorCatalogEntry): { label: string; tone: string } {
-  switch (entry.disposition) {
-    case "local_collector_enroll":
-      return { label: "Add now", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
-    case "browser_collector_manual":
-      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
-    case "static_secret_connect":
-      return { label: "Add account", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
-    case "provider_auth_deployment_blocked":
-      return { label: "Deployment needed", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
-    case "browser_bound_runbook":
-      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
-    case "local_collector_unproven":
-    case "provider_auth_proof_gated":
-      return { label: "Not self-service yet", tone: "border-border bg-muted/30 text-muted-foreground" };
-    default:
-      return { label: "Not supported yet", tone: "border-border bg-muted/30 text-muted-foreground" };
-  }
-}
-
-function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
-  switch (entry.disposition) {
-    case "local_collector_enroll":
-      return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
-    case "browser_collector_manual":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
-    case "static_secret_connect":
-      return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
-    case "provider_auth_deployment_blocked":
-      return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
-        .map((blocker) => blocker.label || blocker.key)
-        .join(", ")}.`;
-    case "browser_bound_runbook":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
-    case "local_collector_unproven":
-      return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
-    case "provider_auth_proof_gated":
-      return entry.runbookPath
-        ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
-        : "Provider authorization is not fully wired yet.";
-    case "api_network_unsupported":
-      return "This source has no owner-mediated setup path in this build. It is visible so unsupported does not look like omission.";
-    default:
-      return "This connector is registered without a setup path the reference can classify.";
-  }
-}
-
-function sourceSetupAction(entry: ConnectorCatalogEntry): { href: string; label: string } | null {
-  switch (entry.disposition) {
-    case "local_collector_enroll":
-      return {
-        href: `/dashboard/device-exporters?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
-        label: "Set up collector",
-      };
-    case "static_secret_connect":
-      return {
-        href: `/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
-        label: "Add account",
-      };
-    case "provider_auth_deployment_blocked":
-      return { href: "/dashboard/deployment", label: "Open deployment" };
-    default:
-      return null;
-  }
 }
 
 function CopyRow({ body, label, title, value }: SetupEntry) {
@@ -207,13 +125,7 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
   );
 }
 
-function SourceSetupSection({
-  catalog,
-  query,
-}: {
-  catalog: readonly ConnectorCatalogEntry[];
-  query: string;
-}) {
+function SourceSetupSection({ catalog, query }: { catalog: readonly ConnectorCatalogEntry[]; query: string }) {
   const filtered = filterSourceCatalog(catalog, query);
   return (
     <Section
@@ -224,12 +136,7 @@ function SourceSetupSection({
         <label className="sr-only" htmlFor="source_q">
           Search data sources
         </label>
-        <Input
-          defaultValue={query}
-          id="source_q"
-          name="source_q"
-          placeholder="Search source name or connector key"
-        />
+        <Input defaultValue={query} id="source_q" name="source_q" placeholder="Search source name or connector key" />
         <Button size="sm" type="submit" variant="outline">
           Search
         </Button>
@@ -475,9 +382,9 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Deployment readiness
           </Link>
         }
-        breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Connect" }]}
-        description="Add data sources to populate this instance, then connect AI apps and local agents to the grant-scoped read surface."
-        title="Connect"
+        breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Connect AI apps" }]}
+        description="Give AI apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
+        title="Connect AI apps"
       />
 
       <div className="mb-5 grid gap-2">

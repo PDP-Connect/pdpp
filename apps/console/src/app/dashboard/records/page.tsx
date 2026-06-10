@@ -12,6 +12,8 @@ import {
   type RefConnectorSummary,
 } from "../lib/ref-client.ts";
 import type { ConnectorOverview } from "../lib/rs-client.ts";
+import { listConnectorManifests } from "../lib/rs-client.ts";
+import { buildSourceAddSupport, type SourceAddSupport } from "../lib/source-add-support.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 
 export const dynamic = "force-dynamic";
@@ -84,6 +86,17 @@ export default async function RecordsIndexPage() {
       sources.data.reduce((sum, s) => sum + (typeof s.records_pending === "number" ? s.records_pending : 0), 0)
     )
     .catch(() => 0);
+  // The connector manifests drive the per-source "add another account" support
+  // projection. This is advisory: it tells the owner whether they can add
+  // another account to a source they already have, but the connection list and
+  // its health are load-bearing and must render even if the manifest read
+  // fails. An empty map degrades to "no add-account affordance shown" rather
+  // than a broken page, so resolve a failure to an empty map. Raced with the
+  // connector summaries so it never adds page latency.
+  let addSupportByConnectorId = new Map<string, SourceAddSupport>();
+  const addSupportPromise = listConnectorManifests()
+    .then((manifests) => buildSourceAddSupport(manifests))
+    .catch(() => new Map<string, SourceAddSupport>());
   try {
     const response = await liveDashboardDataSource.listConnectorSummaries();
     overviews = response.data.map(toConnectorOverview);
@@ -91,6 +104,7 @@ export default async function RecordsIndexPage() {
     // the connector list. Per-connection diagnostics surface the underlying
     // error. The request already raced the connector summaries above.
     pendingOnDevices = await pendingOnDevicesPromise;
+    addSupportByConnectorId = await addSupportPromise;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -108,6 +122,7 @@ export default async function RecordsIndexPage() {
   return (
     <DashboardShell active="records">
       <RecordsListView
+        addSupportByConnectorId={addSupportByConnectorId}
         interactive={true}
         overviews={overviews}
         pendingOnDevices={pendingOnDevices}

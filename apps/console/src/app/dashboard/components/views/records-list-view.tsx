@@ -25,6 +25,8 @@ import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionRemediation, RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
+import type { SourceAddSupport } from "../../lib/source-add-support.ts";
+import { groupSourcesByConnector, type SourceGroup } from "../../lib/source-groups.ts";
 import {
   buildChurnDrilldownRows,
   type ChurnRemediation,
@@ -195,6 +197,7 @@ export function RecordsListView({
   overviews,
   routes,
   interactive,
+  addSupportByConnectorId,
   pendingOnDevices,
   pollerSlot,
   versionChurnRows,
@@ -204,6 +207,15 @@ export function RecordsListView({
   routes: Routes;
   /** True for live /dashboard, false for sandbox (no Sync now action). */
   interactive: boolean;
+  /**
+   * Per-source add-account support, keyed by canonical `connector_id`. Drives
+   * the "Your sources" summary so the owner can see — for a source they already
+   * have — whether adding another account is self-service today and what the
+   * one next action is. Optional: the sandbox omits it (no live setup), and a
+   * failed manifest read degrades to no add-account affordance rather than a
+   * broken page.
+   */
+  addSupportByConnectorId?: Map<string, SourceAddSupport>;
   /**
    * Aggregate `records_pending` across all device source instances. The
    * top-line `totalRecords` only reflects records the server has
@@ -269,8 +281,8 @@ export function RecordsListView({
   // many connections are currently surfaced in the primary list.
   const connectionsCountLabel =
     summary.noData > 0
-            ? `${summary.registeredTotal} registered sources · ${summary.primaryList} listed`
-            : `${summary.registeredTotal} sources`;
+      ? `${summary.registeredTotal} registered sources · ${summary.primaryList} listed`
+      : `${summary.registeredTotal} sources`;
 
   const primaryEmptyHint = resolvePrimaryEmptyHint(interactive, empty.length > 0);
 
@@ -323,6 +335,14 @@ export function RecordsListView({
         />
         <HealthStat label="Stale" tone={staleCount > 0 ? "warning" : "neutral"} value={staleCount.toLocaleString()} />
       </section>
+
+      {interactive ? (
+        <SourceAccountsSummary
+          addSupportByConnectorId={addSupportByConnectorId}
+          connectHref={routes.section.connect}
+          overviews={labeled}
+        />
+      ) : null}
 
       <Section title={`Sources (${primaryConnections.length})`}>
         {primaryConnections.length === 0 ? (
@@ -393,6 +413,159 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
         Open in Explore →
       </Link>
     </>
+  );
+}
+
+/**
+ * "Your sources" summary — one card per connector type the owner already has.
+ *
+ * This is the screen change task 9.6 asks for: it keeps three facts about each
+ * existing source DISTINCT, so a source with working data never reads as inert
+ * just because adding a new account is not self-service:
+ *
+ *   1. existing data/health — "N connections · M with data", plus a needs-
+ *      attention count when any connection of the source is unhealthy;
+ *   2. add-new-account support — a chip projected from the shared setup planner
+ *      (self-service / packaged-path-pending / deployment / not-self-service);
+ *   3. one primary next action — "Add another account" when self-service,
+ *      "Reconnect" when a connection needs attention, else nothing.
+ *
+ * It is NOT the Connect "Add data sources" picker (which lists every catalog
+ * connector and lives on Connect). It rolls up only sources the owner ALREADY
+ * has, joining each to its add-account support. The full add-a-new-source
+ * catalog stays one click away via the header "Add source" action.
+ *
+ * Renders nothing when the owner has no sources yet (the empty-state hint and
+ * the header "Add source" action carry the blank-instance on-ramp) or when the
+ * support projection is unavailable.
+ */
+function SourceAccountsSummary({
+  addSupportByConnectorId,
+  connectHref,
+  overviews,
+}: {
+  addSupportByConnectorId?: Map<string, SourceAddSupport>;
+  connectHref: string;
+  overviews: ConnectorOverview[];
+}) {
+  const groups = groupSourcesByConnector(overviews);
+  if (groups.length === 0) {
+    return null;
+  }
+  return (
+    <Section
+      description="Each source you already have shows its existing connections and health, and — separately — whether you can add another account today. Adding a brand-new source lives under Add source."
+      title="Your sources"
+    >
+      <ul className="grid gap-3" data-testid="source-accounts-summary">
+        {groups.map((group) => (
+          <SourceAccountCard
+            connectHref={connectHref}
+            group={group}
+            key={group.connectorId}
+            support={addSupportByConnectorId?.get(group.connectorId) ?? null}
+          />
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+function SourceAccountCard({
+  connectHref,
+  group,
+  support,
+}: {
+  connectHref: string;
+  group: SourceGroup;
+  support: SourceAddSupport | null;
+}) {
+  const connectionsLabel = `${group.connectionCount} connection${group.connectionCount === 1 ? "" : "s"}`;
+  const withDataLabel = group.withDataCount > 0 ? `${group.withDataCount} with data` : "no records yet";
+  // The add-account support chip is a fact about adding ANOTHER account; it is
+  // visually and semantically separate from the existing-data line so a working
+  // source never reads as unsupported.
+  const supportLabel = support?.supportLabel ?? "Add-account support unknown";
+  const supportTone = support?.supportTone ?? "border-border bg-muted/30 text-muted-foreground";
+  return (
+    <li
+      className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
+      data-testid={`source-account-${group.connectorId}`}
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="pdpp-title text-foreground">{group.displayName}</h3>
+          <span
+            className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${supportTone}`}
+            data-testid="add-account-support"
+          >
+            {supportLabel}
+          </span>
+        </div>
+        <p className="pdpp-caption mt-1 text-muted-foreground" data-testid="source-existing-state">
+          {connectionsLabel} · {withDataLabel}
+          {group.needsAttentionCount > 0 ? (
+            <>
+              {" · "}
+              <span className="text-[color:var(--warning)]">
+                {group.needsAttentionCount} need{group.needsAttentionCount === 1 ? "s" : ""} attention
+              </span>
+            </>
+          ) : null}
+        </p>
+      </div>
+      <div className="flex items-start justify-end gap-2">
+        <SourceAccountActions connectHref={connectHref} group={group} support={support} />
+      </div>
+    </li>
+  );
+}
+
+/**
+ * One primary owner action per source, in priority order: repair first
+ * (a needs-attention connection's reconnect lands on the detail repair surface,
+ * the Plaid update-mode shape — never the start of the add flow), then
+ * "Add another account" when self-service. When neither applies, the support
+ * chip already told the honest story, so no dead button is rendered.
+ */
+function SourceAccountActions({
+  connectHref,
+  group,
+  support,
+}: {
+  connectHref: string;
+  group: SourceGroup;
+  support: SourceAddSupport | null;
+}) {
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      {group.attentionRouteId ? (
+        <Link
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+          data-testid="source-reconnect-action"
+          href={`/dashboard/records/${encodeURIComponent(group.attentionRouteId)}`}
+        >
+          Reconnect
+        </Link>
+      ) : null}
+      {support?.action ? (
+        <Link
+          className={buttonVariants({ variant: "default", size: "sm" })}
+          data-testid="source-add-account-action"
+          href={support.action.href}
+        >
+          {support.action.label}
+        </Link>
+      ) : (
+        <Link
+          className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          data-testid="source-add-via-connect"
+          href={connectHref}
+        >
+          Add source →
+        </Link>
+      )}
+    </div>
   );
 }
 
@@ -698,10 +871,7 @@ function ChurnDispositionBadge({ remediation }: { remediation: ChurnRemediation 
  * recurring snapshot) an owner retention-policy decision. `none` shows no chip,
  * so this component is only rendered for the three actionable remediations.
  */
-const CHURN_REMEDIATION_META: Record<
-  Exclude<RefRecordVersionRemediation, "none">,
-  { title: string; tone: string }
-> = {
+const CHURN_REMEDIATION_META: Record<Exclude<RefRecordVersionRemediation, "none">, { title: string; tone: string }> = {
   content_fingerprint_pending: {
     tone: "border border-current/30 bg-current/5 text-muted-foreground",
     title:

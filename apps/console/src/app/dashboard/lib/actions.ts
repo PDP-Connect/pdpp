@@ -100,10 +100,11 @@ function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
   return [
     {
       id: "nav-connect",
-      title: "Connect",
-      description: "Add data sources and copy setup commands for ChatGPT, Claude, Claude Code, Codex, and local agents.",
+      title: "Connect AI apps",
+      description:
+        "Give AI apps and local agents grant-scoped read access to data already in this instance: copy MCP/CLI setup for ChatGPT, Claude, Claude Code, Codex. To add data sources, use Sources.",
       href: `${basePath}/connect`,
-      keywords: ["connect", "source", "sources", "mcp", "claude", "codex", "chatgpt", "agent", "setup"],
+      keywords: ["connect", "ai apps", "read access", "mcp", "claude", "codex", "chatgpt", "agent", "client", "setup"],
       kind: "jump",
       section: "Navigate",
     },

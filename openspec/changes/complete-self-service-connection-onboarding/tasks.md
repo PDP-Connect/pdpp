@@ -76,7 +76,7 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.3 Make static-secret credential help preserve task continuity by opening provider help in a new tab and keeping the form context.
 - [ ] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
 - [ ] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
-- [ ] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
+- [x] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
 - [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
 - [ ] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [ ] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.

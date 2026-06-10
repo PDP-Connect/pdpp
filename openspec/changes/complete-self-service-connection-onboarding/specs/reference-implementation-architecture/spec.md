@@ -165,3 +165,16 @@ owner-usable.
 - **THEN** owner UI SHALL continue to present the existing data as usable
 - **AND** the add-source surface SHALL say that adding another account is not
   self-service yet rather than implying the connector itself is unsupported
+
+#### Scenario: Sources first screen keeps existing data, add-new support, and repair distinct
+
+- **WHEN** an owner opens the Sources / Connections surface for a connector that
+  has at least one connection
+- **THEN** the first screen SHALL present, as separate facts for that source,
+  the existing connection/data state, whether adding another account is
+  self-service today, and a repair action when a connection needs attention
+- **AND** a source whose add-new account setup is self-service SHALL offer one
+  add-another-account action, while a source with no self-service add path SHALL
+  still show its existing data without a dead add action
+- **AND** a needs-attention connection's repair action SHALL land on that
+  connection's detail surface, not at the start of the add-source flow
