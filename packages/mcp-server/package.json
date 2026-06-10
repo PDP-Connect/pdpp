@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "description": "Local stdio MCP adapter for grant-scoped PDPP reads and event-subscription management.",
   "type": "module",
-  "private": true,
   "bin": {
     "pdpp-mcp-server": "bin/pdpp-mcp-server.js"
   },
@@ -18,7 +17,8 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
-    "verify": "pnpm test"
+    "verify": "pnpm test && node bin/pdpp-mcp-server.js --help",
+    "pack:dry-run": "pnpm pack --dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -43,5 +43,11 @@
   "homepage": "https://github.com/vana-com/pdpp#readme",
   "engines": {
     "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "beta"
   }
 }

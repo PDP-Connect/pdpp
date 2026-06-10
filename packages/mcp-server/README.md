@@ -21,12 +21,10 @@ read surface; event-subscription management is not part of the recommended MCP t
 
 ## Publication status
 
-This package is a private workspace package (`"private": true`). It is consumed
-in-repo by the agent skill and integration tests. Promoting it to a published
-`@pdpp/mcp-server@beta` on npm requires a follow-up OpenSpec change under the
-[package release policy](../../docs/package-release-policy.md) (manifest opt-in,
-release-train wiring, and npm trusted-publisher bootstrap), matching the
-precedent established for `@pdpp/cli` and `@pdpp/local-collector`.
+Published to npm as [`@pdpp/mcp-server@beta`](https://www.npmjs.com/package/@pdpp/mcp-server).
+Follow the [package release policy](../../docs/package-release-policy.md) — use the `@beta`
+dist-tag until a stable release is cut. Matches the posture of `@pdpp/cli` and
+`@pdpp/local-collector`.
 
 ## Install (local agent harness)
 
