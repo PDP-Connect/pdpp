@@ -74,6 +74,17 @@ PDPP_POSTGRES_PASSWORD=...                      # change if you ever publish Pos
 PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0               # opt out of semantic search model download
 ```
 
+**Browser-backed connectors (ChatGPT, USAA, ...):** the default `reference`
+image is browser-free. If you run these connectors inside the reference
+container rather than via the local collector, add this to `.env`:
+
+```sh
+PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference-browser:main
+```
+
+That image includes Patchright and a bundled Chromium so the connector can
+launch a headless browser inside the container.
+
 Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
 owner-session cookies and OAuth metadata are correct.

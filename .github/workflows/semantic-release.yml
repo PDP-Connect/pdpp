@@ -129,6 +129,10 @@ jobs:
             target: reference
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
           - image: web
             target: console
             title: PDPP reference operator console
@@ -168,7 +172,9 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha,scope=${{ matrix.target }}-release
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}-release
+            type=gha,scope=reference-release
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile
@@ -242,6 +248,10 @@ jobs:
             target: reference
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
           - image: web
             target: console
             title: PDPP reference operator console
@@ -288,7 +298,9 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha,scope=${{ matrix.target }}-release
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}-release
+            type=gha,scope=reference-release
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile

@@ -43,6 +43,7 @@ on:
         options:
           - all
           - reference
+          - reference-browser
           - web
           - railway-core
       platforms:
@@ -76,6 +77,10 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
           - image: railway-core
             target: railway-core
             title: PDPP Railway Core node
@@ -119,7 +124,13 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha,scope=${{ matrix.target }}
+          # Pull from both the target's own scope and the reference scope.
+          # reference-browser extends the browsers stage (large ~300 MB layer)
+          # and shares the base layers with reference; pulling from both scopes
+          # lets BuildKit reuse those layers without rebuilding them.
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}
+            type=gha,scope=reference
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
           context: .
           file: ./Dockerfile
@@ -150,6 +161,10 @@ jobs:
             target: reference
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
           - image: web
             target: console
             title: PDPP reference operator console
@@ -208,7 +223,13 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha,scope=${{ matrix.target }}
+          # Pull from both the target's own scope and the reference scope.
+          # reference-browser extends the browsers stage (large ~300 MB layer)
+          # and shares the base layers with reference; pulling from both scopes
+          # lets BuildKit reuse those layers without rebuilding them.
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}
+            type=gha,scope=reference
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
           context: .
           file: ./Dockerfile
