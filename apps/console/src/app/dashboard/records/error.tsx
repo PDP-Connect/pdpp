@@ -12,7 +12,7 @@ import { buttonVariants } from "@/components/ui/button.tsx";
  * dashboard boundary; the run-start *action* now returns its failures as a
  * row-local toast, but a subsequent `router.refresh()` re-render can still
  * throw if a data read fails. When it does, this boundary keeps the owner in
- * the Connections context with a retry and a link back to the list, rather
+ * the Sources context with a retry and a link back to the list, rather
  * than ejecting them to a contextless page.
  *
  * Self-contained on purpose (mirrors `dashboard/error.tsx`): it must not import
@@ -29,7 +29,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
     <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
       <h1 className="font-semibold text-2xl tracking-tight">Couldn't load your connections</h1>
       <p className="max-w-prose text-muted-foreground">
-        The Connections view ran into an error while reading from your reference deployment. Your data and connections
+        The Sources view ran into an error while reading from your reference deployment. Your data and connections
         are unaffected — this is a read failure, not a change. Try again, or check your reference deployment status.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">

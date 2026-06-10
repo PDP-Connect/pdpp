@@ -140,7 +140,7 @@ export default async function ConnectorPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
-          <PageHeader title="Connections" />
+          <PageHeader title="Sources" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -350,7 +350,7 @@ function ConnectorPageView({
             />
           </>
         }
-        breadcrumbs={[{ label: "Connections", href: "/dashboard/records" }, { label: displayName }]}
+        breadcrumbs={[{ label: "Sources", href: "/dashboard/records" }, { label: displayName }]}
         count={headerCount}
         description={
           <ConnectionIdentityLine

@@ -202,250 +202,48 @@ test("churn dry-run command offers a one-gesture copy affordance", async () => {
   assert.match(src, CHURN_COMMAND_HAS_COPY_BUTTON);
 });
 
-// ─── Persistent Add-connection discoverability ────────────────────────────
+// ─── Persistent Add-source discoverability ────────────────────────────────
 //
-// The detailed add-connection guidance only renders in the empty / no-data
-// sections, so an owner who already has connections had no visible path to add
-// another (the "add a second Amazon" complaint). A persistent header action
-// must always be present in the interactive list, pointing at the proven
-// device-enrollment entry point. It is gated on `interactive` so the sandbox
-// (which cannot create connections) does not show a dead button.
+// Records/Sources is a monitoring and browsing view. Source setup belongs in
+// the unified Connect cockpit, where every connector can be searched and routed
+// through the shared setup planner. The header action must therefore route to
+// Connect, not directly to the device-exporter form that only covers one setup
+// class. Records must not duplicate the setup catalog.
 
 const ADD_CONNECTION_HEADER_ACTION = /data-testid="add-connection-action"/;
 const ADD_CONNECTION_HEADER_GATED_INTERACTIVE =
   /\{interactive \? \(\s*<Link[\s\S]*?data-testid="add-connection-action"/;
-const ADD_CONNECTION_HEADER_TARGETS_ENROLLMENT =
-  /data-testid="add-connection-action"\s+href=\{routes\.section\.deviceExporters\}/;
+const ADD_CONNECTION_HEADER_TARGETS_CONNECT =
+  /data-testid="add-connection-action"\s+href=\{routes\.section\.connect\}/;
+const ADD_SOURCE_LABEL = /Add source/;
+const NO_RECORDS_SETUP_CATALOG_IMPORT = /connection-catalog/;
+const NO_RECORDS_ADD_CONNECTION_GUIDANCE = /AddConnectionGuidance|source-setup-\$\{entry\.connectorKey\}/;
+const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
+const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
+const NO_DATA_SECTION_LOCAL_ONLY =
+  /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
+const NO_DATA_SECTION_MIXED_POPULATION = /local-collector sources fill in when their device pushes/;
 
-test("records list exposes a persistent Add-connection header action", async () => {
+test("records list exposes a persistent Add-source header action", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, ADD_CONNECTION_HEADER_ACTION);
+  assert.match(src, ADD_SOURCE_LABEL);
 });
 
-test("persistent Add-connection action is gated on interactive (no dead button in sandbox)", async () => {
+test("persistent Add-source action is gated on interactive (no dead button in sandbox)", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, ADD_CONNECTION_HEADER_GATED_INTERACTIVE);
 });
 
-test("persistent Add-connection action targets the device-enrollment entry point", async () => {
+test("persistent Add-source action targets the unified Connect cockpit", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_CONNECTION_HEADER_TARGETS_ENROLLMENT);
+  assert.match(src, ADD_CONNECTION_HEADER_TARGETS_CONNECT);
 });
 
-// ─── Honest add-connection entry point + copy ─────────────────────────────
-//
-// The owner-agent typed connection-intent route now exists, but it is
-// owner-BEARER REST — the browser owner session has no owner bearer, so the
-// console must not call it. The proven console creation primitive is the
-// cookie-authed device-exporter enrollment at /dashboard/device-exporters.
-// The records-list entry point must therefore be a REAL path: the supported
-// connectors (claude_code, codex) deep-link into the enrollment form
-// pre-selected, Amazon deep-links into a manual browser_collector proof-run path,
-// and unsupported modalities are named honestly with a plain-language reason plus
-// a technical primitive for reviewers — never an implied "Add connection"/"Sync
-// now" that would silently fail. The supported set + unsupported reasons come
-// from the shared connection-modality module. The two audit copy soft spots are
-// also fixed: the
-// blanket "Click Sync now to pull fresh data" promise and the
-// local-collector-only "No data yet" wording.
-
-const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
-// The guidance is rendered (live only), receives the live catalog, and points at
-// device enrollment.
-const ADD_CONNECTION_GUIDANCE_RENDERED = /<AddConnectionGuidance\s+catalog=\{connectorCatalog \?\? \[\]\}/;
-// The honest guidance must render UNCONDITIONALLY on the live list — gated only
-// on `interactive`, immediately before the Connections section — not buried
-// inside an empty-state branch. A fully-populated console (no empty-state
-// callout) would otherwise show only the header "Add connection" button, which
-// deep-links straight to the local-collector-only enrollment form and silently
-// dead-ends an owner who wants a browser-bound source (the reported "no obvious
-// way to add a second Amazon"). This invariant fails if the guidance regresses
-// to rendering only when `primaryConnections.length === 0` / `empty.length > 0`.
-const ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE =
-  /\{interactive \? \(\s*<AddConnectionGuidance[\s\S]*?\/>\s*\) : null\}\s*\n\s*<Section title=\{`Connections/;
-// The modality taxonomy + gated reasons must still come from the shared module,
-// and the per-connector list must come from the shared catalog model — not be
-// re-hardcoded in the view (single source of truth with the backend).
-const ADD_CONNECTION_USES_SHARED_MODALITY = /from "\.\.\/\.\.\/lib\/connection-modality\.ts"/;
-const ADD_CONNECTION_USES_SHARED_CATALOG = /from "\.\.\/\.\.\/lib\/connection-catalog\.ts"/;
-// The picker renders the FULL catalog grouped by disposition, not three
-// hardcoded literals. Each group comes from a catalog partition helper.
-const ADD_CONNECTION_RENDERS_LOCAL_CATALOG = /localCollectorEntries\(catalog\)/;
-const ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG = /browserCollectorEntries\(catalog\)/;
-const ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG = /browserBoundRunbookEntries\(catalog\)/;
-const ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG = /localCollectorUnprovenEntries\(catalog\)/;
-const ADD_CONNECTION_RENDERS_DEPLOYMENT_BLOCKED_CATALOG = /deploymentBlockedEntries\(catalog\)/;
-const ADD_CONNECTION_RENDERS_NETWORK_CATALOG = /unsupportedNetworkEntries\(catalog\)/;
-// Supported entries (and only those) deep-link into the enrollment form
-// pre-selected, using the entry's enrollment key.
-const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
-  /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(entry\.enrollmentKey \?\? entry\.connectorKey\)\}/;
-const ADD_CONNECTION_BROWSER_MANUAL_SECTION = /Manual browser-collector setup/;
-const ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK = /not a one-click\s+browser flow/;
-const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
-const ADD_CONNECTION_NAMES_DEPLOYMENT_SETUP = /Deployment setup needed/;
-const ADD_CONNECTION_SEPARATES_DEPLOYMENT_BLOCKERS =
-  /instance-level provider app settings[\s\S]*?not per-account source credentials/;
-// The browser-bound owner-run group must surface the documented runbook path
-// inline, so the owner is pointed at the real manual flow instead of a dead end.
-const ADD_CONNECTION_SURFACES_RUNBOOK_PATH =
-  /data-testid="runbook-path-browser_bound"[\s\S]*?BROWSER_BOUND_RUNBOOK_PATH/;
-// A gated group (browser-bound runbook, API/network) must NEVER render an
-// enrollment deep-link: only the two creatable groups build a `?connector=` href.
-// There must be exactly two deep-link sites in the picker.
-const ADD_CONNECTION_DEEP_LINK_COUNT_RE = /\$\{deviceExportersHref\}\?connector=/g;
-// The PageHeader must not promise that every connection supports Sync now.
-const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
-const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
-// The "No data yet" section copy must not present local-collector push as the
-// universal next step for every registered-but-empty connection.
-const NO_DATA_SECTION_LOCAL_ONLY =
-  /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
-const NO_DATA_SECTION_MIXED_POPULATION = /local-collector connections fill in when their device pushes/;
-
-test("view exposes a real add-connection entry point, not a dead Add button", async () => {
+test("records list no longer owns connector setup catalog rendering", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_CONNECTION_GUIDANCE_DEF);
-  assert.match(src, ADD_CONNECTION_GUIDANCE_RENDERED);
-  // Supported connectors deep-link into the enrollment form pre-selected — a
-  // real path, not just prose.
-  assert.match(src, ADD_CONNECTION_DEEP_LINKS_PRESELECTED);
-});
-
-test("honest add-connection guidance is always visible on the live list (no populated-console dead-end)", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // Rendered once, unconditionally for interactive, directly above the
-  // Connections section — so an owner whose console is fully populated still
-  // sees the supported-vs-runbook-gated breakdown instead of being silently
-  // dropped past it by the header "Add connection" button.
-  assert.match(src, ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE);
-  // And it is not duplicated: the hoisted render is the only occurrence.
-  const renders = src.match(/<AddConnectionGuidance[\s/]/g) ?? [];
-  assert.equal(renders.length, 1, "AddConnectionGuidance must render exactly once (hoisted, not per-branch)");
-});
-
-test("add-connection picker sources its taxonomy + per-connector list from the shared modules", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // Single source of truth: the view must consume the shared modality module for
-  // the gated reasons/runbook path AND the shared catalog model for the full
-  // per-connector list, rather than re-hardcoding either.
-  assert.match(src, ADD_CONNECTION_USES_SHARED_MODALITY);
-  assert.match(src, ADD_CONNECTION_USES_SHARED_CATALOG);
-  // Every disposition group is rendered from a catalog partition helper, so the
-  // picker shows the full catalog grouped by modality, not three literals.
-  assert.match(src, ADD_CONNECTION_RENDERS_LOCAL_CATALOG);
-  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG);
-  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG);
-  assert.match(src, ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG);
-  assert.match(src, ADD_CONNECTION_RENDERS_DEPLOYMENT_BLOCKED_CATALOG);
-  assert.match(src, ADD_CONNECTION_RENDERS_NETWORK_CATALOG);
-  assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_SECTION);
-  assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK);
-  // Unsupported modalities are named honestly, not hidden behind a generic
-  // "not supported" line.
-  assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);
-  assert.match(src, ADD_CONNECTION_NAMES_DEPLOYMENT_SETUP);
-  assert.match(src, ADD_CONNECTION_SEPARATES_DEPLOYMENT_BLOCKERS);
-  // Where a documented owner-run path exists today (browser-bound), the group
-  // surfaces it instead of dead-ending the owner.
-  assert.match(src, ADD_CONNECTION_SURFACES_RUNBOOK_PATH);
-});
-
-test("only the two creatable catalog groups render an enrollment deep-link (no phantom connections)", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // The browser-bound-runbook and API/network groups must be display-only; only
-  // local-collector + manual-browser-collector build a `?connector=` href. So the
-  // picker must contain exactly two deep-link sites.
-  const deepLinks = src.match(ADD_CONNECTION_DEEP_LINK_COUNT_RE) ?? [];
-  assert.equal(deepLinks.length, 2, "exactly the two creatable groups may deep-link into enrollment");
-});
-
-// ─── Easy path leads; honest caveats recede into progressive disclosure ───
-//
-// Owner feedback: the picker felt "too Amazon-specific, too verbose, confusing".
-// The fix is presentation, not honesty: the one-click local-collector group
-// leads and stays open, while the secondary groups (manual
-// browser-collector / Amazon, browser-bound runbook, local-collector unproven,
-// api_network unsupported) collapse into a native <details> disclosure that
-// names its count. Collapsing is NOT omission — every group still renders inside
-// the disclosure, keyboard-reachable, with its honest reason and deep-link. This
-// pins the new layout so it cannot silently regress back to five always-open
-// jargon sections, AND guards that the secondary groups did not get dropped.
-const ADD_OTHER_DISCLOSURE = /<details[\s\S]*?data-testid="add-connection-other"/;
-const ADD_OTHER_SUMMARY = /<summary[\s\S]*?data-testid="add-connection-other-toggle"/;
-const ADD_OTHER_SUMMARY_NAMES_COUNT = /Other connectors[\s\S]*?\(\{otherCount\}\)/;
-// The secondary groups must be RENDERED INSIDE the disclosure, i.e. their
-// per-group entry markup follows the <details> open tag — never hoisted back out
-// as always-open sections. Anchoring each per-group testid to the text following
-// `add-connection-other` proves the group's rendered rows live within the
-// collapsed region. (The partition helpers themselves are computed once at the
-// top of the function; what matters for "not omission" is that each group's rows
-// still render, and that they render inside the disclosure.)
-const ADD_OTHER_CONTAINS_SECONDARY_GROUPS =
-  /data-testid="add-connection-other"[\s\S]*?catalog-browser-manual-[\s\S]*?catalog-browser-runbook-[\s\S]*?catalog-local-unproven-[\s\S]*?catalog-deployment-blocked-[\s\S]*?catalog-network-/;
-// The one-click local-collector group's rendered rows must appear BEFORE the
-// disclosure — it is the lead, not a peer buried inside "Other connectors".
-const ADD_LOCAL_LEADS_BEFORE_DISCLOSURE = /catalog-local-\$\{[\s\S]*?data-testid="add-connection-other"/;
-// The disclosure must not render when there are no secondary entries (otherwise
-// an empty "Other connectors (0)" toggle would show); it is gated on a count.
-const ADD_OTHER_GATED_ON_COUNT = /\{otherCount > 0 \? \(\s*<details/;
-
-test("add-connection picker collapses the non-one-click groups into a counted disclosure", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_OTHER_DISCLOSURE);
-  assert.match(src, ADD_OTHER_SUMMARY);
-  assert.match(src, ADD_OTHER_SUMMARY_NAMES_COUNT);
-  assert.match(src, ADD_OTHER_GATED_ON_COUNT);
-});
-
-test("the one-click local-collector group leads, above the 'Other connectors' disclosure", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_LOCAL_LEADS_BEFORE_DISCLOSURE);
-});
-
-test("collapsing is not omission: secondary setup groups still render inside the disclosure", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // Every secondary partition helper appears after the disclosure open tag, in
-  // order — so none of the honest groups was dropped when they moved behind the
-  // <details> toggle.
-  assert.match(src, ADD_OTHER_CONTAINS_SECONDARY_GROUPS);
-});
-
-// ─── Static-secret connect group is surfaced honestly (not "unsupported") ──
-//
-// Gmail/GitHub gained an owner-session static-secret draft-create path. The
-// picker must surface them as a real creation path inside the "Other connectors"
-// disclosure — named, linked to the owner-session capture form, runbook-pointed,
-// live-proof-caveated — NOT as a dead "appears only after first ingest" notice
-// and NOT deep-linked into the device-collector enrollment form (which they
-// don't use). The group and its copy come from the shared catalog/modality
-// modules (single source of truth with the backend's static-secret connector set).
-const ADD_STATIC_SECRET_GROUP = /staticSecretConnectEntries\(catalog\)/;
-const ADD_STATIC_SECRET_SECTION = /Static-secret — owner-session setup/;
-const ADD_STATIC_SECRET_USES_SHARED_COPY = /STATIC_SECRET_ADD_MODALITY\.ownerFacingReason/;
-const ADD_STATIC_SECRET_USES_OWNER_SESSION_LINK =
-  /href=\{`\/dashboard\/connect\/static-secret\/\$\{encodeURIComponent\(entry\.connectorKey\)\}`\}/;
-const ADD_STATIC_SECRET_SURFACES_RUNBOOK =
-  /data-testid="runbook-path-static_secret"[\s\S]*?STATIC_SECRET_ADD_MODALITY\.runbookPath/;
-const ADD_STATIC_SECRET_NO_DEEP_LINK = /catalog-static-secret-[\s\S]{0,400}deviceExportersHref/;
-
-test("static-secret connectors are surfaced as a real owner-session path, not an unsupported notice", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_STATIC_SECRET_GROUP);
-  assert.match(src, ADD_STATIC_SECRET_SECTION);
-  // Copy + runbook come from the shared modality descriptor, not re-hardcoded.
-  assert.match(src, ADD_STATIC_SECRET_USES_SHARED_COPY);
-  assert.match(src, ADD_STATIC_SECRET_USES_OWNER_SESSION_LINK);
-  assert.match(src, ADD_STATIC_SECRET_SURFACES_RUNBOOK);
-});
-
-test("static-secret group never deep-links into the device-collector enrollment form", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // The static-secret rows must use their owner-session form, not a
-  // `?connector=` enrollment href near them — Gmail/GitHub are not
-  // device-collectors. The two-deep-link invariant above already pins the global
-  // count; this guards the specific group.
-  assert.doesNotMatch(src, ADD_STATIC_SECRET_NO_DEEP_LINK);
+  assert.doesNotMatch(src, NO_RECORDS_SETUP_CATALOG_IMPORT);
+  assert.doesNotMatch(src, NO_RECORDS_ADD_CONNECTION_GUIDANCE);
 });
 
 test("page header no longer promises every connection supports Sync now", async () => {
@@ -474,9 +272,9 @@ test("no-data section copy no longer treats local-collector push as the universa
 // than an inline ternary, so the lifecycle copy can be asserted directly.
 const NO_DATA_SECTION_USES_HELPER = /description=\{resolveNoDataSectionDescription\(interactive\)\}/;
 const NO_DATA_SECTION_HELPER_DEF = /function resolveNoDataSectionDescription\(interactive: boolean\): string/;
-// A connector you have not connected stays under Add connection — so a no-data
+// A source you have not connected stays under Add source — so a no-data
 // row is never read as "a connector I can choose".
-const NO_DATA_SECTION_NAMES_CATALOG = /not connected stays under Add connection/;
+const NO_DATA_SECTION_NAMES_CATALOG = /not connected stays under Add source/;
 // The removal path names honest revoke-vs-delete semantics directed at the
 // owner agent: revoke stops future collection, delete also erases records.
 const NO_DATA_SECTION_NAMES_OWNER_AGENT = /owner agent/;

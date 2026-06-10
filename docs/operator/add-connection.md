@@ -1,12 +1,13 @@
-# Add a connection
+# Add a data source
 
 Status: reference-experimental operator surface. Not PDPP Core or Collection
 Profile protocol.
 
-This is the operator's entry point for adding a connection to your own reference
-instance. A *connection* is one configured source — "Gmail personal", "Codex on
-this laptop", "Chase card account" — not a protocol object. You add connections
-through owner-mediated setup, not by editing deployment environment variables.
+This is the operator's entry point for adding a data source to your own
+reference instance. A *connection* is one configured source — "Gmail personal",
+"Codex on this laptop", "Chase card account" — not a protocol object. You add
+connections through owner-mediated setup, not by editing deployment environment
+variables.
 
 Normal setup does **not** require connector-specific per-account environment
 variables. A self-hosted operator — Docker host, RunPod, Railway, Fly, or VPS —
@@ -16,7 +17,7 @@ needed, sealed in encrypted instance-scoped storage. The env-var paths still
 exist as compatibility fallbacks and local development escape hatches; they are
 documented as such below, not as the normal path.
 
-## Three ways to add a connection
+## Three ways to add a source
 
 All three surfaces read the same shared setup planner, so they give you the same
 honest answer for any connector: what you can do now, which owner step is
@@ -25,37 +26,19 @@ required, what prerequisite is missing, and when the connection becomes active.
 ### Console (browser, owner session)
 
 1. Open `/dashboard` on your instance and sign in as owner.
-2. Use **Add a connection**. The picker lists every shipped connector.
-3. Pick a source. The picker leads with the connectors that set up here in one
-   step; everything else lives under **Other connectors**, grouped by the next
-   step it still needs.
+2. Open **Connect** or click **Add source** from the Sources page.
+3. Search for the provider or scan the source cards. Each card shows one source
+   name, one support status, and one next action.
 
-What each group means:
+The Connect page is intentionally not a runbook dump. A ready source links to
+the protected setup form or collector enrollment. A deployment-blocked source
+links to deployment readiness. A proof-gated or unsupported source stays visible
+with the reason and, where useful, a runbook path. Repeat the same setup with a
+new display name to add another account.
 
-- **One-step (local collector).** Filesystem-class collectors (Claude Code,
-  Codex) enroll in one step. The link opens the device-enrollment form
-  pre-selected; you then run the collector on the host that holds the data. The
-  connection activates when the enrolled collector ingests.
-- **Manual browser-collector setup.** A connector (Amazon today) for which the
-  console can mint a `browser_collector` enrollment code, but the run is finished
-  by you against a real local browser session. This is an owner-run proof path,
-  not a one-click browser flow. See
-  [`docs/operator/browser-collector-proof-runbook.md`](browser-collector-proof-runbook.md).
-- **Browser-bound — owner-run setup.** A browser-bound connector with no
-  generated console path yet. It is visible and honest; it points at the runbook
-  rather than offering a button the reference cannot complete.
-- **Static-secret — owner-session setup.** Network sources whose first connection
-  is created from the owner session: create a draft, paste a provider secret (a
-  Gmail app password or a GitHub token) once, and the connection activates on its
-  first successful ingest. The console opens a one-page owner-session form for
-  this path and starts the first sync after capture. The runbook remains the
-  proof/debug reference:
-  [`docs/operator/static-secret-connection-runbook.md`](static-secret-connection-runbook.md).
-- **Not supported from the console yet.** Network sources with no owner connect
-  route at all. They are listed honestly with the reason, not hidden.
-
-The console never deep-links a setup the reference cannot complete, and never
-shows a working connection before a real source binding has been proven.
+The console never deep-links a setup the reference cannot complete, never hides
+a shipped connector just because setup is not ready, and never shows a working
+connection before a real source binding has been proven.
 
 ### Owner agent / REST
 
@@ -79,16 +62,21 @@ continues to reject owner bearers.
 ### CLI
 
 After owner-agent onboarding, a human or trusted local owner agent can ask for
-the same plan from the CLI:
+the same catalog and plan from the CLI:
 
 ```sh
+pdpp owner-agent connectors list --entrypoint https://your-instance.example
+pdpp owner-agent connectors search gmail --entrypoint https://your-instance.example
+pdpp owner-agent connectors explain gmail --entrypoint https://your-instance.example
 pdpp owner-agent setup <connector-id> --entrypoint https://your-instance.example
 ```
 
-Use `--display-name` to carry the owner-facing label for the connection being
-set up. The CLI prints support state, setup modality, deployment blockers, and
-the next owner step; it sends the owner bearer only as an `Authorization` header
-and never prints it.
+Use `connectors list/search/explain` to discover connector IDs and preview the
+next step without minting setup material. Use `setup --display-name` to start
+the owner-mediated flow and carry the owner-facing label for the connection
+being set up. The CLI prints support state, setup modality, deployment blockers,
+and the next owner step; it sends the owner bearer only as an `Authorization`
+header and never prints it.
 
 ## Deployment readiness vs. connection setup
 

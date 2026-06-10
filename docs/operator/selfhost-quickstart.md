@@ -339,17 +339,20 @@ environment variables. See
 [`docs/operator/add-connection.md`](add-connection.md) for the full flow; in
 short:
 
-- **Console.** Open `/dashboard`, sign in as owner, and use **Add a connection**.
-  Local-collector sources (Claude Code, Codex) enroll in one step; other sources
-  show their honest next step (owner-run browser proof, owner-session
-  static-secret capture, or a not-yet-supported note) under **Other connectors**.
+- **Console.** Open `/dashboard`, sign in as owner, and use **Add a data source**
+  on the Connect page. Local sources (Claude Code, Codex), browser-backed
+  sources, static-secret sources, deployment-blocked sources, and unsupported
+  sources each show one status and one next step.
 - **Owner agent / REST.** A trusted owner agent calls
   `POST /v1/owner/connections/intents` and receives the same setup plan and
   next-step contract the console renders. The agent never receives provider
   secrets, owner cookies, or grant-scoped MCP bearers.
 - **CLI.** After owner-agent onboarding, run
-  `pdpp owner-agent setup <connector-id> --entrypoint <instance-url>` to print
-  the same non-secret setup plan from a terminal.
+  `pdpp owner-agent connectors list --entrypoint <instance-url>` or
+  `pdpp owner-agent connectors search <provider> --entrypoint <instance-url>` to
+  discover source setup options, `pdpp owner-agent connectors explain
+  <connector-id>` to preview without minting setup material, and `pdpp
+  owner-agent setup <connector-id> --display-name <name>` to start setup.
 
 Connector-specific source credential variables in `.env.docker` (Lane A) or on
 the Pod's template env-var form (Lane B) are a **compatibility fallback and local

@@ -46,9 +46,9 @@ export default async function DeviceExportersPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  // The records-list "Add a connection" entry point deep-links here with
+  // The unified Connect "Add source" entry point deep-links here with
   // `?connector=claude_code` / `codex` for one-click local collectors, or
-  // `?connector=amazon` for the supported manual browser_collector proof path.
+  // `?connector=amazon` for the supported manual browser setup proof path.
   // Validate against those supported sets before prefilling so arbitrary values
   // never land in the form; an absent/invalid value leaves the field empty.
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
@@ -67,15 +67,15 @@ export default async function DeviceExportersPage({
   const browserBoundRequest =
     !defaultConnectorId && isBrowserBoundConnector(requestedConnector) ? (requestedConnector as string) : undefined;
 
-  // When the owner arrives here from the "Add connection" picker (a validated
+  // When the owner arrives here from the "Add source" picker (a validated
   // `?connector=` deep-link), frame the page as finishing the connector they
-  // chose — a "Connections / Add <Connector>" breadcrumb — instead of the bare
+  // chose — a "Sources / Add <Connector>" breadcrumb — instead of the bare
   // diagnostics-console header. The breadcrumb is only shown for a connector key
   // already validated against the supported sets, so it never names an arbitrary
   // value. The bare page (no deep-link) keeps its existing diagnostics framing.
   const addConnectionBreadcrumbs = defaultConnectorId
     ? [
-        { label: "Connections", href: "/dashboard/records" },
+        { label: "Sources", href: "/dashboard/records" },
         { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` },
       ]
     : undefined;
@@ -142,7 +142,7 @@ export default async function DeviceExportersPage({
 }
 
 /**
- * Honest notice for a supported manual browser-collector connector deep-link.
+ * Honest notice for a supported manual browser setup connector deep-link.
  *
  * Amazon can mint a `browser_collector` enrollment code through the same
  * device-exporter route the runbook documents. This is still not a one-click
@@ -154,9 +154,9 @@ function BrowserCollectorEnrollmentNotice({ connectorId }: { connectorId: string
   return (
     <Callout
       className="mb-4"
-      description={`${formatConnectorKeyForDisplay(connectorId)} can mint a browser_collector enrollment code here. Complete the run from a local PDPP monorepo checkout with a real, owner-logged-in browser session.`}
+      description={`${formatConnectorKeyForDisplay(connectorId)} can mint a browser setup enrollment code here. Complete the run from a local PDPP monorepo checkout with a real, owner-logged-in browser session.`}
       surface="human"
-      title="Manual browser-collector setup"
+      title="Manual browser setup"
     >
       <p className="pdpp-caption text-muted-foreground">
         The connector id is prefilled below. After creating the code, use the generated monorepo commands and follow{" "}
@@ -189,7 +189,7 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
         . The console does not yet offer a generated setup flow for this connector; see the full add-connection guidance
         on the{" "}
         <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/records">
-          Connections
+          Sources
         </Link>{" "}
         page.
       </p>

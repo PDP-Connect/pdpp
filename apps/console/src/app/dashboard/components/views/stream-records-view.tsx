@@ -94,7 +94,7 @@ export function StreamRecordsView({
           </>
         }
         breadcrumbs={[
-          { label: "Connections", href: routes.section.records },
+          { label: "Sources", href: routes.section.records },
           { label: connectorLabel, href: routes.connector(connectorId) },
           { label: streamName },
         ]}

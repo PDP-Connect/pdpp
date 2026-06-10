@@ -736,7 +736,7 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists', view: 'basic' }],
       });
       assert.equal(failed.status, 400);
-      assert.equal(failed.body.error, 'invalid_client');
+      assert.equal(failed.body.error?.code, 'invalid_client');
       const missingClientGrantCount = getDb()
         .prepare('SELECT COUNT(*) AS count FROM grants WHERE client_id = ?')
         .get(badClientId).count;

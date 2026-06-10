@@ -288,6 +288,48 @@ const OwnerConnectionSummarySchema = {
   ],
 };
 
+const OwnerConnectorTemplateSetupPlanSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    setup_modality: {
+      type: "string",
+      enum: [
+        "local_collector",
+        "browser_bound",
+        "static_secret",
+        "provider_authorization",
+        "manual_or_upload",
+        "unsupported",
+        "unknown",
+      ],
+    },
+    support_state: {
+      type: "string",
+      enum: ["supported", "proof_gated", "unsupported", "needs_deployment_config"],
+    },
+    next_step_kind: {
+      type: "string",
+      enum: [
+        "enroll_local_collector",
+        "enroll_browser_collector",
+        "capture_static_secret",
+        "open_provider_auth",
+        "needs_deployment_config",
+        "manual_runbook",
+        "unsupported",
+      ],
+    },
+    proof_gate: { type: ["string", "null"] },
+    runbook_path: { type: ["string", "null"] },
+    deployment_readiness: {
+      type: "object",
+      additionalProperties: true,
+    },
+  },
+  required: ["setup_modality", "support_state", "next_step_kind", "proof_gate", "runbook_path"],
+};
+
 const OwnerConnectorTemplateSchema = {
   type: "object",
   additionalProperties: false,
@@ -301,6 +343,7 @@ const OwnerConnectorTemplateSchema = {
       type: "string",
       enum: ["local_collector", "browser_bound", "api_network", "unknown"],
     },
+    setup_plan: OwnerConnectorTemplateSetupPlanSchema,
     stream_count: { type: "integer", minimum: 0 },
     connection_count: { type: "integer", minimum: 0 },
     connections: { type: "array", items: OwnerConnectionSummarySchema },
@@ -313,6 +356,7 @@ const OwnerConnectorTemplateSchema = {
     "display_name",
     "version",
     "connector_modality",
+    "setup_plan",
     "stream_count",
     "connection_count",
     "connections",

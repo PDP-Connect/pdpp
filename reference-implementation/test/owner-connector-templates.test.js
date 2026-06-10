@@ -174,6 +174,11 @@ test('owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.connector_id, 'amazon');
     assert.equal(amazon.display_name, 'Amazon');
     assert.equal(amazon.connector_modality, 'browser_bound');
+    assert.equal(amazon.setup_plan.setup_modality, 'browser_bound');
+    assert.equal(amazon.setup_plan.support_state, 'proof_gated');
+    assert.equal(amazon.setup_plan.next_step_kind, 'enroll_browser_collector');
+    assert.equal(amazon.setup_plan.proof_gate, 'browser_collector_live_proof_missing');
+    assert.equal(amazon.setup_plan.runbook_path, 'docs/operator/browser-collector-proof-runbook.md');
     assert.equal(amazon.connection_count, 1);
     assert.equal(amazon.connections[0].object, 'owner_connection_summary');
     assert.equal(amazon.connections[0].connection_id, 'cin_amazon_personal');
@@ -191,6 +196,8 @@ test('owner-agent bearer lists connector templates with related connection summa
     // registered, because they live in the reference local-collector catalog.
     const codex = byConnector(body, 'codex');
     assert.equal(codex.connector_modality, 'local_collector');
+    assert.equal(codex.setup_plan.support_state, 'supported');
+    assert.equal(codex.setup_plan.next_step_kind, 'enroll_local_collector');
     assert.equal(codex.connection_count, 0);
     const codexInitiate = actionByFamily(codex, 'initiate_connection');
     assert.equal(codexInitiate.status, 'supported');

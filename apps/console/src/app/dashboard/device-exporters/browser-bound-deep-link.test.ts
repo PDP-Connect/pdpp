@@ -2,7 +2,7 @@
  * Pins the honest handling of browser-bound connector deep-links on the
  * device-exporters enrollment page.
  *
- * The records-list "Add a connection" guidance deep-links the supported
+ * The unified Connect "Add source" guidance deep-links the supported
  * local-collector set (`?connector=claude_code`/`codex`) into this form. Amazon
  * is the supported manual browser_collector proof-run path, so
  * `?connector=amazon` must prefill the form and render browser-specific runbook
@@ -14,7 +14,7 @@
  * page regresses to swallowing a browser-bound deep-link or stops routing through
  * the shared source of truth.
  *
- * See connection-modality.ts and the records-list AddConnectionGuidance callout.
+ * See connection-modality.ts and the unified Connect source setup cockpit.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -41,7 +41,7 @@ const RENDERS_BROWSER_COLLECTOR_NOTICE = /browserCollectorRequest\s*\?\s*<Browse
 const RENDERS_NOTICE = /browserBoundRequest\s*\?\s*<BrowserBoundEnrollmentNotice/;
 const RUNBOOK_TESTID = /data-testid="browser-bound-runbook-path"/;
 const RENDERS_RUNBOOK_CONST = /{BROWSER_BOUND_RUNBOOK_PATH}/;
-const MANUAL_BROWSER_TITLE = /Manual browser-collector setup/;
+const MANUAL_BROWSER_TITLE = /Manual browser setup/;
 const HONEST_NO_ONE_CLICK = /does not advertise a one-click browser flow/;
 
 test("page classifies a browser-bound deep-link via the shared modality classifier (no scattered key checks)", async () => {
@@ -99,25 +99,25 @@ test("unsupported browser-bound deep-link still renders an honest notice pointin
 
 // ─── Add-connection landing framing ───────────────────────────────────────
 //
-// When the owner reaches this page from the records-list "Add connection"
+// When the owner reaches this page from the Connect "Add source" flow
 // picker (a validated `?connector=` deep-link), the page must frame itself as
-// finishing the connector they chose — a "Connections / Add <Connector>"
+// finishing the connector they chose — a "Sources / Add <Connector>"
 // breadcrumb gated on the already-validated `defaultConnectorId` — rather than
 // reading purely as a "Local device exporters" diagnostics console. The bare
 // page (no deep-link) keeps its existing header, so the breadcrumb must be
 // derived from `defaultConnectorId`, not rendered unconditionally.
 
 const BREADCRUMB_GATED_ON_DEFAULT_CONNECTOR = /const addConnectionBreadcrumbs = defaultConnectorId/;
-const BREADCRUMB_LINKS_BACK_TO_CONNECTIONS = /label: "Connections", href: "\/dashboard\/records"/;
+const BREADCRUMB_LINKS_BACK_TO_SOURCES = /label: "Sources", href: "\/dashboard\/records"/;
 const BREADCRUMB_NAMES_THE_CHOSEN_CONNECTOR = /label: `Add \$\{formatConnectorKeyForDisplay\(defaultConnectorId\)\}`/;
 const PAGE_HEADER_RENDERS_BREADCRUMB = /breadcrumbs=\{addConnectionBreadcrumbs\}/;
 
-test("a validated add-connection deep-link frames the page as 'Connections / Add <Connector>'", async () => {
+test("a validated add-connection deep-link frames the page as 'Sources / Add <Connector>'", async () => {
   const src = await read(PAGE_PATH);
   // The breadcrumb is derived from the already-validated connector key (never an
   // arbitrary `?connector=` value) and is only present on a deep-link landing.
   assert.match(src, BREADCRUMB_GATED_ON_DEFAULT_CONNECTOR);
-  assert.match(src, BREADCRUMB_LINKS_BACK_TO_CONNECTIONS);
+  assert.match(src, BREADCRUMB_LINKS_BACK_TO_SOURCES);
   assert.match(src, BREADCRUMB_NAMES_THE_CHOSEN_CONNECTOR);
   // And the header actually renders it.
   assert.match(src, PAGE_HEADER_RENDERS_BREADCRUMB);

@@ -65,6 +65,14 @@ const OWNER_CONNECTOR_TEMPLATE_ROW = {
   display_name: 'Amazon',
   version: '0.1.0',
   connector_modality: 'browser_bound',
+  setup_plan: {
+    setup_modality: 'browser_bound',
+    support_state: 'proof_gated',
+    next_step_kind: 'enroll_browser_collector',
+    proof_gate: 'browser_collector_live_proof_missing',
+    runbook_path: 'docs/operator/browser-collector-proof-runbook.md',
+    deployment_readiness: {},
+  },
   stream_count: 2,
   connection_count: 1,
   connections: [

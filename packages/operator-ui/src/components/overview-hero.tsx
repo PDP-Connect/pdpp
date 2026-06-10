@@ -30,9 +30,11 @@ export function OverviewHero({
   summary,
   recordsHref,
   exploreHref,
+  addSourceHref,
 }: {
   summary: DatasetSummary;
   recordsHref: string;
+  addSourceHref?: string;
   exploreHref?: string;
 }) {
   const projection = getProjectionMetadata(summary);
@@ -44,7 +46,7 @@ export function OverviewHero({
     return <OverviewHeroPlaceholder />;
   }
   if (summary.record_count === 0) {
-    return <EmptyHero projection={projection} status={status} />;
+    return <EmptyHero addSourceHref={addSourceHref} projection={projection} status={status} />;
   }
 
   return (
@@ -84,7 +86,15 @@ export function OverviewHero({
         >
           individual connections
         </Link>{" "}
-        or <code className="pdpp-caption font-mono">/v1/streams</code>.
+        or <code className="pdpp-caption font-mono">/v1/streams</code>.{" "}
+        {addSourceHref ? (
+          <Link
+            className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
+            href={addSourceHref}
+          >
+            Add another source →
+          </Link>
+        ) : null}
       </p>
     </section>
   );
@@ -305,9 +315,11 @@ export function OverviewHeroError({ message }: { message?: string }) {
 function EmptyHero({
   projection,
   status,
+  addSourceHref,
 }: {
   projection: DatasetSummary["projection"];
   status: ProjectionStatus | null;
+  addSourceHref?: string;
 }) {
   return (
     <section aria-label="Dataset overview" className="mb-8">
@@ -317,9 +329,19 @@ function EmptyHero({
       </p>
       {status ? <ProjectionStatusLine projection={projection} status={status} /> : null}
       <p className="pdpp-body mt-3 text-muted-foreground">
-        Start a grant to begin ingesting. Every record lands inspectable through{" "}
+        Add a data source to begin collecting records. Every retained record lands inspectable through{" "}
         <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
+      {addSourceHref ? (
+        <p className="mt-4">
+          <Link
+            className="pdpp-caption inline-flex rounded-md border border-border/80 bg-foreground px-3 py-1.5 font-medium text-background transition-colors hover:bg-foreground/90"
+            href={addSourceHref}
+          >
+            Add a data source →
+          </Link>
+        </p>
+      ) : null}
     </section>
   );
 }

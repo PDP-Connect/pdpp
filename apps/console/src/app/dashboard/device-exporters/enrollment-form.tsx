@@ -22,8 +22,8 @@ export function EnrollmentForm({
 }: {
   referenceBaseUrl: string;
   /**
-   * Optional connector key to prefill the `connector_id` field. The records-list
-   * "Add a connection" entry point deep-links here with `?connector=claude_code`
+   * Optional connector key to prefill the `connector_id` field. The Connect
+   * "Add source" entry point deep-links here with `?connector=claude_code`
    * (or `codex`) so the supported-connector path is a real, ready-to-submit flow
    * rather than landing the owner on an empty form. The page validates the value
    * against the supported set before passing it; an unsupported/absent value

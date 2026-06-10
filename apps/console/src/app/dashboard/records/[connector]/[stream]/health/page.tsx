@@ -89,7 +89,7 @@ function StreamHealthReport({
     <DashboardShell active="records">
       <PageHeader
         breadcrumbs={[
-          { label: "Connections", href: "/dashboard/records" },
+          { label: "Sources", href: "/dashboard/records" },
           { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName, href: streamPath },
           { label: "health" },
@@ -237,7 +237,7 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
     <DashboardShell active="records">
       <PageHeader
         breadcrumbs={[
-          { label: "Connections", href: "/dashboard/records" },
+          { label: "Sources", href: "/dashboard/records" },
           { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName },
           { label: "health" },

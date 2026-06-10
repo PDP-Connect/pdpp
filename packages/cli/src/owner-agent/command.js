@@ -26,7 +26,14 @@ import { ownerSessionHeaders } from '../ref/fetch.js';
 
 import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from './credential-store.js';
 import { discoverOwnerAgentControl, formatOwnerAgentControl } from './control.js';
-import { requestConnectionSetupPlan, formatConnectionSetupPlan } from './setup.js';
+import {
+  findConnectorTemplates,
+  formatConnectionSetupPlan,
+  formatConnectorTemplateExplain,
+  formatConnectorTemplates,
+  requestConnectionSetupPlan,
+  requestConnectorTemplates,
+} from './setup.js';
 import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from './discovery.js';
 import { initiateDeviceAuthorization, pollForOwnerAgentToken } from './device-flow.js';
 import { OwnerAgentError } from './errors.js';
@@ -36,6 +43,7 @@ const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
   pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
   pdpp owner-agent status  [--credential-file <path>] [--entrypoint <url>]
   pdpp owner-agent control [--credential-file <path>] [--entrypoint <url>]
+  pdpp owner-agent connectors list|search <query>|explain <connector-id> [--credential-file <path>] [--entrypoint <url>]
   pdpp owner-agent setup   <connector-id> [--display-name <name>] [--credential-file <path>] [--entrypoint <url>]
   pdpp owner-agent revoke  [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
 
@@ -45,6 +53,9 @@ Notes:
   written to a local file with 0600 permissions and is never printed.
   "control" lists non-secret control capabilities and configured connections
   (connection_id, connector, label/label-needed); it never prints the bearer.
+  "connectors" lists/searches/explains available source setup options from the
+  non-secret connector-template catalog. It is read-only and does not mint
+  enrollment codes or provider credentials.
   "setup" requests the same non-secret connection setup plan and next-step
   contract the console and owner-agent REST surface, from the shared server
   planner (POST /v1/owner/connections/intents); it never prints the bearer and
@@ -73,6 +84,9 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
     if (subcommand === 'control') {
       return await runControl(rest, { out }, deps);
     }
+    if (subcommand === 'connectors') {
+      return await runConnectors(rest, { out }, deps);
+    }
     if (subcommand === 'setup') {
       return await runSetup(rest, { out }, deps);
     }
@@ -88,6 +102,53 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
     }
     throw error;
   }
+}
+
+async function runConnectors(argv, { out }, deps) {
+  const { record, positionals } = await loadRecord(argv, deps);
+  const fetchFn = deps.fetch ?? globalThis.fetch;
+  const action = positionals[0] ?? 'list';
+  const templates = await requestConnectorTemplates({ fetchFn, record });
+
+  if (action === 'list') {
+    out.write(formatConnectorTemplates(templates));
+    return 0;
+  }
+  if (action === 'search') {
+    const query = positionals.slice(1).join(' ').trim();
+    if (!query) {
+      throw new OwnerAgentError(
+        'invalid_request',
+        'Usage: pdpp owner-agent connectors search <query> [--credential-file <path>] [--entrypoint <url>]',
+        64
+      );
+    }
+    out.write(formatConnectorTemplates(templates, { query }));
+    return 0;
+  }
+  if (action === 'explain') {
+    const connectorId = positionals[1];
+    if (typeof connectorId !== 'string' || !connectorId.trim()) {
+      throw new OwnerAgentError(
+        'invalid_request',
+        'Usage: pdpp owner-agent connectors explain <connector-id> [--credential-file <path>] [--entrypoint <url>]',
+        64
+      );
+    }
+    const matches = findConnectorTemplates(templates, connectorId);
+    const exact = matches.find((template) => {
+      const key = template?.connector_key ?? template?.connector_id;
+      return typeof key === 'string' && key.toLowerCase() === connectorId.trim().toLowerCase();
+    });
+    out.write(formatConnectorTemplateExplain(exact ?? matches[0] ?? null));
+    return 0;
+  }
+
+  throw new OwnerAgentError(
+    'invalid_request',
+    `Unknown owner-agent connectors command: ${action}\n\n${USAGE}`,
+    64
+  );
 }
 
 async function runOnboard(argv, { out }, deps) {

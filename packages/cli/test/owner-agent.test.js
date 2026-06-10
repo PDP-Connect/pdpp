@@ -658,6 +658,166 @@ function setupFetch({ status = 201, body, capture: cap } = {}) {
   ]);
 }
 
+function connectorTemplatesFetch({ body, capture: cap } = {}) {
+  return makeFetch([
+    {
+      method: 'GET',
+      match: '/v1/owner/connector-templates',
+      handler: ({ opts }) => {
+        if (cap) {
+          cap.auth = opts.headers?.Authorization ?? null;
+          cap.cookie = opts.headers?.Cookie ?? null;
+          cap.templateCalls = (cap.templateCalls ?? 0) + 1;
+        }
+        return jsonResponse(200, body ?? { object: 'list', data: [] });
+      },
+    },
+    {
+      method: 'POST',
+      match: '/v1/owner/connections/intents',
+      handler: () => {
+        throw new Error('connectors list/search/explain must not call the mutating setup intent route');
+      },
+    },
+  ]);
+}
+
+const TEMPLATE_CATALOG = {
+  object: 'list',
+  data: [
+    {
+      object: 'owner_connector_template',
+      connector_id: 'amazon',
+      connector_key: 'amazon',
+      display_name: 'Amazon',
+      version: '1.0.0',
+      connector_modality: 'browser_bound',
+      setup_plan: {
+        setup_modality: 'browser_bound',
+        support_state: 'proof_gated',
+        next_step_kind: 'manual_runbook',
+        proof_gate: 'browser_collector_live_proof_missing',
+        runbook_path: 'docs/operator/browser-collector-proof-runbook.md',
+        deployment_readiness: { state: 'not_applicable', blockers: [], guidance: null },
+      },
+      stream_count: 3,
+      connection_count: 1,
+      connections: [
+        {
+          object: 'owner_connection_summary',
+          connection_id: 'cin_amazon_personal',
+          connector_instance_id: 'cin_amazon_personal',
+          connector_id: 'amazon',
+          connector_key: 'amazon',
+          display_name: 'Amazon personal',
+          label_status: 'owner_set',
+          status: 'active',
+          source_kind: 'account',
+          created_at: null,
+          updated_at: null,
+          revoked_at: null,
+        },
+      ],
+      supported_actions: [{ family: 'initiate_connection', status: 'unsupported', method: null, url: null, reason: 'manual runbook' }],
+    },
+    {
+      object: 'owner_connector_template',
+      connector_id: 'gmail',
+      connector_key: 'gmail',
+      display_name: 'Gmail',
+      version: '1.0.0',
+      connector_modality: 'api_network',
+      setup_plan: {
+        setup_modality: 'static_secret',
+        support_state: 'proof_gated',
+        next_step_kind: 'capture_static_secret',
+        proof_gate: 'static_secret_live_proof_missing',
+        runbook_path: 'docs/operator/static-secret-connection-runbook.md',
+        deployment_readiness: { state: 'not_applicable', blockers: [], guidance: null },
+      },
+      stream_count: 2,
+      connection_count: 0,
+      connections: [],
+      supported_actions: [{ family: 'initiate_connection', status: 'unsupported', method: null, url: null, reason: 'capture secret' }],
+    },
+    {
+      object: 'owner_connector_template',
+      connector_id: 'codex',
+      connector_key: 'codex',
+      display_name: 'Codex',
+      version: '1.0.0',
+      connector_modality: 'local_collector',
+      setup_plan: {
+        setup_modality: 'local_collector',
+        support_state: 'supported',
+        next_step_kind: 'enroll_local_collector',
+        proof_gate: null,
+        runbook_path: null,
+        deployment_readiness: { state: 'not_applicable', blockers: [], guidance: null },
+      },
+      stream_count: 1,
+      connection_count: 0,
+      connections: [],
+      supported_actions: [{ family: 'initiate_connection', status: 'supported', method: 'POST', url: 'https://ref.test/v1/owner/connections/intents', reason: 'mint code' }],
+    },
+  ],
+};
+
+test('connectors list discovers available setup options without mutating', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const cap = {};
+    const fetch = connectorTemplatesFetch({ body: TEMPLATE_CATALOG, capture: cap });
+    const code = await runOwnerAgent(['connectors', 'list', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.equal(cap.auth, `Bearer ${SECRET}`);
+    assert.equal(cap.cookie, null);
+    assert.equal(cap.templateCalls, 1);
+    assert.match(captured.stdout, /Connector setup catalog/);
+    assert.match(captured.stdout, /Amazon\s+connector=amazon\s+status=proof_gated\s+connections=1/);
+    assert.match(captured.stdout, /Codex\s+connector=codex\s+status=supported\s+connections=0/);
+    assert.match(captured.stdout, /explain: pdpp owner-agent connectors explain gmail/);
+    assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
+  });
+});
+
+test('connectors search filters the shared setup catalog by provider name', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = connectorTemplatesFetch({ body: TEMPLATE_CATALOG });
+    const code = await runOwnerAgent(['connectors', 'search', 'gmail', '--entrypoint', 'https://ref.test'], captured.io, {
+      fetch,
+      home,
+    });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /matching "gmail"/);
+    assert.match(captured.stdout, /Gmail\s+connector=gmail/);
+    assert.doesNotMatch(captured.stdout, /Amazon\s+connector=amazon/);
+  });
+});
+
+test('connectors explain previews one connector without minting setup material', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = connectorTemplatesFetch({ body: TEMPLATE_CATALOG });
+    const code = await runOwnerAgent(['connectors', 'explain', 'codex', '--entrypoint', 'https://ref.test'], captured.io, {
+      fetch,
+      home,
+    });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /Connector setup preview for Codex \(codex\)/);
+    assert.match(captured.stdout, /status: supported/);
+    assert.match(captured.stdout, /next step: enroll_local_collector/);
+    assert.match(captured.stdout, /Start setup: pdpp owner-agent setup codex --display-name "<name>"/);
+    assert.match(captured.stdout, /did not mint enrollment codes/);
+    assert.doesNotMatch(captured.stdout, /lde_setup_code_value/);
+    assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
+  });
+});
+
 const SUPPORTED_LOCAL_PLAN = {
   object: 'owner_connection_intent',
   connector_id: 'claude-code',
@@ -887,6 +1047,7 @@ test('runCli routes owner-agent and help advertises the profile', async () => {
   assert.equal(code, 0);
   assert.match(captured.stdout, /owner-agent onboard/);
   assert.match(captured.stdout, /owner-agent control/);
+  assert.match(captured.stdout, /owner-agent connectors/);
   assert.match(captured.stdout, /owner-agent setup\s+<connector-id>/);
   assert.match(captured.stdout, /not the default/i);
 });

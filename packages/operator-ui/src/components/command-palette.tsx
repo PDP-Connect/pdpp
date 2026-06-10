@@ -56,7 +56,8 @@ function buildShortcuts({ basePath, overviewHref }: { basePath: string; overview
     { label: "Runs", href: `${basePath}/runs` },
   ];
   if (basePath === "/dashboard") {
-    shortcuts.push({ label: "Connections", href: `${basePath}/records` });
+    shortcuts.push({ label: "Sources", href: `${basePath}/records` });
+    shortcuts.push({ label: "Connect", href: `${basePath}/connect` });
     shortcuts.push({ label: "Device exporters", href: `${basePath}/device-exporters` });
   }
   return shortcuts;

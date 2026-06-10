@@ -49,7 +49,12 @@ export function OverviewView({
   return (
     <>
       <PageHeader description={description} title="Overview" />
-      <OverviewHero exploreHref={routes.section.explore} recordsHref={routes.section.records} summary={data.summary} />
+      <OverviewHero
+        addSourceHref={routes.section.connect}
+        exploreHref={routes.section.explore}
+        recordsHref={routes.section.records}
+        summary={data.summary}
+      />
       <AttentionOverview
         data={{ actionNeeded: data.actionNeeded, failedRuns: data.failedRuns, failedTraces: data.failedTraces }}
         routes={routes}

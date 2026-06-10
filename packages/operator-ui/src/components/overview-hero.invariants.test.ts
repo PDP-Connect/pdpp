@@ -31,3 +31,11 @@ test("overview-hero does not contain local-device prefix stripping", async () =>
     "connector_id is always canonical; local-device prefix must not appear in display code"
   );
 });
+
+test("empty overview points operators to source setup, not grant setup", async () => {
+  const src = await readFile(SRC, "utf8");
+  assert.ok(src.includes("addSourceHref"), "empty overview must accept an add-source target");
+  assert.ok(src.includes("Add a data source"), "empty overview must name source setup");
+  assert.ok(src.includes("Add a data source →"), "empty overview must render an add-source CTA");
+  assert.ok(!src.includes("Start a grant to begin ingesting"), "grant setup must not be the ingestion CTA");
+});

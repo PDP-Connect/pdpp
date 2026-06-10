@@ -4,8 +4,10 @@ import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { buildConnectorCatalog, type ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
+import { listConnectorManifests } from "../lib/rs-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +18,7 @@ interface PageParams {
   client_identity?: string;
   error?: string;
   notice?: string;
+  source_q?: string;
 }
 
 interface SetupEntry {
@@ -48,6 +51,126 @@ function buildCimdCommands(mcpUrl: string, clientId: string) {
   };
 }
 
+function sourceSetupRank(entry: ConnectorCatalogEntry): number {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+      return 0;
+    case "browser_collector_manual":
+      return 1;
+    case "static_secret_connect":
+      return 2;
+    case "provider_auth_deployment_blocked":
+      return 3;
+    case "browser_bound_runbook":
+    case "local_collector_unproven":
+    case "provider_auth_proof_gated":
+      return 4;
+    case "api_network_unsupported":
+    case "unknown_unsupported":
+      return 5;
+    default:
+      return 6;
+  }
+}
+
+function sortSourceCatalog(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return [...catalog].sort((a, b) => {
+    const rank = sourceSetupRank(a) - sourceSetupRank(b);
+    return rank !== 0 ? rank : a.displayName.localeCompare(b.displayName);
+  });
+}
+
+function filterSourceCatalog(catalog: readonly ConnectorCatalogEntry[], query: string): ConnectorCatalogEntry[] {
+  const needle = query.trim().toLowerCase();
+  const sorted = sortSourceCatalog(catalog);
+  if (!needle) {
+    return sorted;
+  }
+  return sorted.filter((entry) =>
+    [entry.displayName, entry.connectorKey, entry.disposition, entry.setupModality, entry.supportState]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle)
+  );
+}
+
+function sourceSetupStatus(entry: ConnectorCatalogEntry): { label: string; tone: string } {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+      return { label: "Ready", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+    case "browser_collector_manual":
+      return { label: "Manual setup", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+    case "static_secret_connect":
+      return { label: "Ready with provider secret", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+    case "provider_auth_deployment_blocked":
+      return { label: "Deployment needed", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+    case "browser_bound_runbook":
+      return { label: "Needs browser proof", tone: "border-border bg-muted/30 text-muted-foreground" };
+    case "local_collector_unproven":
+    case "provider_auth_proof_gated":
+      return { label: "Not ready yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+    default:
+      return { label: "No setup path yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+  }
+}
+
+function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+      return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
+    case "browser_collector_manual":
+      return "Start browser setup, then finish from an owner-logged-in browser. Repeat setup for another account.";
+    case "static_secret_connect":
+      return "Enter the provider secret in the protected setup form. Submit again to add another mailbox or account.";
+    case "provider_auth_deployment_blocked":
+      return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
+        .map((blocker) => blocker.label || blocker.key)
+        .join(", ")}.`;
+    case "browser_bound_runbook":
+      return entry.runbookPath
+        ? `This source needs a completed browser setup proof before one-click setup is advertised. Manual path: ${entry.runbookPath}.`
+        : "This source needs a completed browser setup proof before one-click setup is advertised.";
+    case "local_collector_unproven":
+      return "This local-source connector needs a committed collector setup proof before it can be started here.";
+    case "provider_auth_proof_gated":
+      return entry.runbookPath
+        ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
+        : "Provider authorization is not fully wired yet.";
+    case "api_network_unsupported":
+      return "This source has no owner-mediated setup path in this build. It is visible so unsupported does not look like omission.";
+    default:
+      return "This connector is registered without a setup path the reference can classify.";
+  }
+}
+
+function sourceSetupAction(entry: ConnectorCatalogEntry): { href: string; label: string } | null {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+      return {
+        href: `/dashboard/device-exporters?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
+        label: "Set up collector",
+      };
+    case "browser_collector_manual":
+      return {
+        href: `/dashboard/device-exporters?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
+        label: "Start browser setup",
+      };
+    case "static_secret_connect":
+      return {
+        href: `/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Add account",
+      };
+    case "provider_auth_deployment_blocked":
+      return { href: "/dashboard/deployment", label: "Open deployment" };
+    default:
+      return null;
+  }
+}
+
+function connectorExplainCommand(entry: ConnectorCatalogEntry): string {
+  return `pdpp owner-agent connectors explain ${entry.connectorKey}`;
+}
+
 function CopyRow({ body, label, title, value }: SetupEntry) {
   return (
     <li className="grid gap-2 py-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-5">
@@ -62,6 +185,87 @@ function CopyRow({ body, label, title, value }: SetupEntry) {
         <CopyButton ariaLabel={`Copy ${label}`} value={value} />
       </div>
     </li>
+  );
+}
+
+function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
+  const status = sourceSetupStatus(entry);
+  const action = sourceSetupAction(entry);
+  const cliCommand = connectorExplainCommand(entry);
+  return (
+    <li
+      className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
+      data-testid={`source-setup-${entry.connectorKey}`}
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="pdpp-title text-foreground">{entry.displayName}</h3>
+          <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
+        </div>
+        <p className="pdpp-caption mt-1 text-muted-foreground">{sourceSetupGuidance(entry)}</p>
+        <div className="pdpp-caption mt-3 flex min-w-0 flex-wrap items-center gap-2 text-muted-foreground">
+          <span>CLI preview</span>
+          <code className="max-w-full overflow-x-auto rounded border border-border/70 bg-muted/30 px-2 py-1 font-mono text-foreground">
+            {cliCommand}
+          </code>
+          <CopyButton ariaLabel={`Copy CLI preview for ${entry.displayName}`} value={cliCommand} />
+        </div>
+      </div>
+      <div className="flex items-start justify-end gap-2">
+        {action ? (
+          <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
+            {action.label}
+          </Link>
+        ) : (
+          <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
+            Track only
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function SourceSetupSection({
+  catalog,
+  query,
+}: {
+  catalog: readonly ConnectorCatalogEntry[];
+  query: string;
+}) {
+  const filtered = filterSourceCatalog(catalog, query);
+  return (
+    <Section
+      description="Search every connector this build knows about. Each source shows one status and one next action; repeat the same setup to add another account."
+      title="Add data sources"
+    >
+      <form action="/dashboard/connect" className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <label className="sr-only" htmlFor="source_q">
+          Search data sources
+        </label>
+        <Input
+          defaultValue={query}
+          id="source_q"
+          name="source_q"
+          placeholder="Search Amazon, Gmail, Slack, ChatGPT..."
+        />
+        <Button size="sm" type="submit" variant="outline">
+          Search
+        </Button>
+      </form>
+      {filtered.length > 0 ? (
+        <ul className="grid gap-3">
+          {filtered.map((entry) => (
+            <SourceSetupCard entry={entry} key={entry.connectorKey} />
+          ))}
+        </ul>
+      ) : (
+        <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
+          No connector matched <span className="font-medium text-foreground">{query}</span>. Try the provider name or
+          connector key.
+        </p>
+      )}
+    </Section>
   );
 }
 
@@ -222,9 +426,16 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const params = await searchParams;
   let origin: string;
   let identities: CimdClientDocument[] = [];
+  let catalog: ConnectorCatalogEntry[] = [];
   try {
-    origin = await getReferencePublicOrigin();
-    identities = (await listCimdClientDocuments()).data;
+    const [resolvedOrigin, resolvedIdentities, manifests] = await Promise.all([
+      getReferencePublicOrigin(),
+      listCimdClientDocuments(),
+      listConnectorManifests(),
+    ]);
+    origin = resolvedOrigin;
+    identities = resolvedIdentities.data;
+    catalog = buildConnectorCatalog(manifests);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -235,6 +446,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
     }
     throw err;
   }
+  const sourceQuery = typeof params.source_q === "string" ? params.source_q.trim() : "";
   const targets = buildConnectTargets(origin);
   const selected =
     identities.find((identity) => identity.document_id === params.client_identity) ?? identities[0] ?? null;
@@ -283,8 +495,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
           </Link>
         }
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Connect" }]}
-        description="One place to copy the grant-scoped entrypoints for AI apps and local agents. No owner bearer is needed for ordinary MCP setup."
-        title="Connect an AI app"
+        description="Add data sources to populate this instance, then connect AI apps and local agents to the grant-scoped read surface."
+        title="Connect"
       />
 
       <div className="mb-5 grid gap-2">
@@ -292,7 +504,12 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
         {notice ? <InlineNotice kind="notice" message={notice} /> : null}
       </div>
 
-      <Section title="Start here">
+      <SourceSetupSection catalog={catalog} query={sourceQuery} />
+
+      <Section
+        description="Use these when an AI app or local agent needs read access to records already collected in this PDPP instance."
+        title="Connect AI apps"
+      >
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {primaryEntries.map((entry) => (
             <CopyRow key={entry.title} {...entry} />

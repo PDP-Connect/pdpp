@@ -146,6 +146,17 @@ function buildTemplateSupportedActions(args: {
   ];
 }
 
+function projectSetupPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): Record<string, unknown> {
+  return {
+    setup_modality: plan.setupModality,
+    support_state: plan.supportState,
+    next_step_kind: plan.nextStepKind,
+    proof_gate: plan.proofGate,
+    runbook_path: plan.runbookPath,
+    deployment_readiness: plan.deploymentReadiness,
+  };
+}
+
 function projectTemplate(
   ctx: MountOwnerConnectorTemplatesContext,
   manifest: ConnectorManifestLike,
@@ -168,6 +179,7 @@ function projectTemplate(
     display_name: displayNameForTemplate(connectorKey, manifest),
     version: manifest.version ?? null,
     connector_modality: modality,
+    setup_plan: projectSetupPlan(plan),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     connection_count: connections.length,
     connections,

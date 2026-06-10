@@ -13,29 +13,14 @@
 
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
-import { Callout, DataList, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
+import { DataList, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import type { Routes } from "@pdpp/operator-ui/components/views/routes";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import {
-  browserBoundRunbookEntries,
-  browserCollectorEntries,
-  type ConnectorCatalogEntry,
-  deploymentBlockedEntries,
-  localCollectorEntries,
-  localCollectorUnprovenEntries,
-  staticSecretConnectEntries,
-  unsupportedNetworkEntries,
-} from "../../lib/connection-catalog.ts";
 import { ambiguousFallbackLabelKeys } from "../../lib/connection-label-ambiguity.ts";
-import {
-  BROWSER_BOUND_RUNBOOK_PATH,
-  STATIC_SECRET_ADD_MODALITY,
-  UNSUPPORTED_ADD_MODALITIES,
-} from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionRemediation, RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -110,13 +95,13 @@ function resolvePrimaryEmptyHint(interactive: boolean, hasNoDataRegistrations: b
   if (hasNoDataRegistrations) {
     return "Registered connections with no durable progress yet are listed below. Use Sync now to trigger a scheduled connector's first pull, or wait for a local-collector device to push.";
   }
-  return "No connections are registered on this instance yet.";
+  return "No data sources are registered on this instance yet.";
 }
 
 /**
  * Copy for the "No data yet" section that lists registered-but-empty
  * connections. It must (1) say what the rows are — real connections, not catalog
- * connectors you could add (those stay under Add connection) — and (2) name the
+ * connectors you could add (those stay under Add source) — and (2) name the
  * real removal path: owner-agent connection controls, where revoke stops future
  * collection and delete also erases records. Removal is owner-bearer only, so
  * pointing at the owner agent (not a console action) is the honest framing.
@@ -128,7 +113,7 @@ function resolveNoDataSectionDescription(interactive: boolean): string {
   if (!interactive) {
     return "These mock connections are registered but have no seeded records.";
   }
-  return "These connections are registered but have no durable records yet; scheduled connectors add records on their next pull, and local-collector connections fill in when their device pushes. A connector you have not connected stays under Add connection; to drop one you do not want, ask your owner agent to revoke it (stops future collection) or delete it (also erases its records).";
+  return "These sources are registered but have no durable records yet; scheduled connectors add records on their next pull, and local-collector sources fill in when their device pushes. A source you have not connected stays under Add source; to drop one you do not want, ask your owner agent to revoke it (stops future collection) or delete it (also erases its records).";
 }
 
 /**
@@ -210,7 +195,6 @@ export function RecordsListView({
   overviews,
   routes,
   interactive,
-  connectorCatalog,
   pendingOnDevices,
   pollerSlot,
   versionChurnRows,
@@ -220,13 +204,6 @@ export function RecordsListView({
   routes: Routes;
   /** True for live /dashboard, false for sandbox (no Sync now action). */
   interactive: boolean;
-  /**
-   * The connector catalog (every shipped manifest, classified by modality and
-   * routed to its honest next step) the add-connection picker renders. Built by
-   * the live page from `listConnectorManifests()`; the sandbox omits it (no
-   * add-connection surface), so it defaults to an empty list.
-   */
-  connectorCatalog?: ConnectorCatalogEntry[];
   /**
    * Aggregate `records_pending` across all device source instances. The
    * top-line `totalRecords` only reflects records the server has
@@ -292,8 +269,8 @@ export function RecordsListView({
   // many connections are currently surfaced in the primary list.
   const connectionsCountLabel =
     summary.noData > 0
-      ? `${summary.registeredTotal} registered connections · ${summary.primaryList} listed`
-      : `${summary.registeredTotal} connections`;
+            ? `${summary.registeredTotal} registered sources · ${summary.primaryList} listed`
+            : `${summary.registeredTotal} sources`;
 
   const primaryEmptyHint = resolvePrimaryEmptyHint(interactive, empty.length > 0);
 
@@ -309,10 +286,10 @@ export function RecordsListView({
         }
         description={
           interactive
-            ? "Manage your connections and monitor sync health. Retained record counts appear here; local-collector backlogs show as 'pending on devices'. Where a connector supports an owner-triggered pull, Sync now refetches it; otherwise open a connection to browse its streams and records."
-            : "Sandbox demo: deterministic mock connections. Click into a connection to browse its streams and records."
+            ? "Manage connected data sources and monitor sync health. Retained record counts appear here; local-collector backlogs show as 'pending on devices'. Where a connector supports an owner-triggered pull, Sync now refetches it; otherwise open a source to browse its streams and records."
+            : "Sandbox demo: deterministic mock sources. Click into a source to browse its streams and records."
         }
-        title="Connections"
+        title="Sources"
       />
 
       {versionChurnSlot ??
@@ -325,7 +302,7 @@ export function RecordsListView({
               ? `${summary.primaryList.toLocaleString()} listed · ${summary.noData.toLocaleString()} no data yet`
               : undefined
           }
-          label="Connections"
+          label="Sources"
           tone="neutral"
           value={summary.registeredTotal.toLocaleString()}
         />
@@ -347,22 +324,7 @@ export function RecordsListView({
         <HealthStat label="Stale" tone={staleCount > 0 ? "warning" : "neutral"} value={staleCount.toLocaleString()} />
       </section>
 
-      {/*
-       * Always-visible on the live list: the honest add-connection guidance is
-       * the only surface that names what can be added today (claude_code/codex,
-       * one-click) versus what is owner-run-gated (browser-bound like Amazon →
-       * runbook path). Rendering it once here — not only inside the empty-state
-       * branches — means an owner whose console is already fully populated (no
-       * empty-state callout shows) is no longer silently dropped past it by the
-       * persistent "Add connection" header button, which deep-links straight to
-       * the device-exporters form that only offers the local-collector set. That
-       * dead-end was the owner-reported "no obvious way to add a second Amazon".
-       */}
-      {interactive ? (
-        <AddConnectionGuidance catalog={connectorCatalog ?? []} deviceExportersHref={routes.section.deviceExporters} />
-      ) : null}
-
-      <Section title={`Connections (${primaryConnections.length})`}>
+      <Section title={`Sources (${primaryConnections.length})`}>
         {primaryConnections.length === 0 ? (
           <EmptyState hint={primaryEmptyHint} title="No data ingested yet" />
         ) : (
@@ -408,14 +370,12 @@ export function RecordsListView({
 /**
  * Records-index header actions.
  *
- * The persistent "Add connection" action is the always-visible header entry: it
- * deep-links to the proven device-enrollment form, which can only complete the
- * local-collector set (claude_code/codex). On its own that silently dead-ends an
- * owner who wants a browser-bound source (Amazon), so the live list also renders
- * the detailed `AddConnectionGuidance` callout unconditionally (above the
- * Connections section) — it names the supported one-click set and points
- * browser-bound sources at their runbook. The button is gated on `interactive`
- * so the sandbox — which cannot create connections — never shows a dead button.
+ * The persistent "Add source" action is the always-visible header entry.
+ * It routes to the unified Connect cockpit, not directly to device enrollment:
+ * the cockpit is the single owner-facing place that can search every connector
+ * and choose the correct next setup action. The button is gated on
+ * `interactive` so the sandbox — which cannot create connections — never shows
+ * a dead button.
  */
 function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; routes: Routes }) {
   return (
@@ -424,274 +384,15 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
         <Link
           className={buttonVariants({ variant: "default", size: "sm" })}
           data-testid="add-connection-action"
-          href={routes.section.deviceExporters}
+          href={routes.section.connect}
         >
-          Add connection
+          Add source
         </Link>
       ) : null}
       <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={routes.section.explore}>
         Open in Explore →
       </Link>
     </>
-  );
-}
-
-/** Owner-facing reason copy for a gated modality, sourced from the shared module. */
-function unsupportedModalityCopy(modality: "browser_bound" | "api_network") {
-  return UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === modality);
-}
-
-/**
- * Honest add-connection picker. The catalog is read server-side from shipped
- * manifests, then rendered as: startable now, manual browser proof, or visible
- * but gated. Gated entries never render enrollment links.
- *
- * Presentation contract (owner feedback: the picker felt "too Amazon-specific,
- * too verbose, confusing"): the ONE easy path — one-click local-collector
- * enrollment — leads and stays open. Every other group (manual browser-collector
- * / Amazon, browser-bound runbook, local-collector unproven, static-secret
- * connect / Gmail+GitHub, api_network unsupported) is honest but secondary, so it
- * lives inside a native `<details>` disclosure that names its count. Collapsing is
- * not omission: each connector is still in the DOM, grouped by modality,
- * keyboard-reachable, with its honest reason and (where it exists) its deep-link —
- * the same standard the version-churn disclosure in this file already meets.
- * Amazon is one entry inside the disclosure, no longer the headline. The
- * static-secret group is a real owner-session creation path (draft → capture →
- * first ingest), surfaced runbook-pointed and live-proof-caveated, NOT deep-linked
- * (Gmail/GitHub are not device-collectors) and NOT flipped to one-click-supported
- * until the live end-to-end proof lands. The honesty model — six dispositions,
- * gated reasons, runbook pointers, exactly-two deep-links — is unchanged.
- */
-function AddConnectionGuidance({
-  catalog,
-  deviceExportersHref,
-}: {
-  catalog: ConnectorCatalogEntry[];
-  deviceExportersHref: string;
-}) {
-  const localEntries = localCollectorEntries(catalog);
-  const localUnproven = localCollectorUnprovenEntries(catalog);
-  const browserManualEntries = browserCollectorEntries(catalog);
-  const browserRunbook = browserBoundRunbookEntries(catalog);
-  const staticSecretEntries = staticSecretConnectEntries(catalog);
-  const deploymentBlocked = deploymentBlockedEntries(catalog);
-  const networkUnsupported = unsupportedNetworkEntries(catalog);
-  const browserCopy = unsupportedModalityCopy("browser_bound");
-  const networkCopy = unsupportedModalityCopy("api_network");
-  const otherCount =
-    browserManualEntries.length +
-    browserRunbook.length +
-    localUnproven.length +
-    staticSecretEntries.length +
-    deploymentBlocked.length +
-    networkUnsupported.length;
-  return (
-    <Callout
-      className="mb-4"
-      description="Pick a connector to add. The ones below set up here in one step; everything else lives under “Other connectors”, with the manual or not-yet-supported path each one still needs."
-      surface="human"
-      title="Add a connection"
-    >
-      <div className="space-y-3">
-        {localEntries.length > 0 ? (
-          <div>
-            <ul className="flex flex-wrap gap-2">
-              {localEntries.map((entry) => (
-                <li key={entry.connectorKey}>
-                  <Link
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-background px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
-                    data-testid={`catalog-local-${entry.connectorKey}`}
-                    href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
-                  >
-                    <span className="pdpp-caption font-medium">{entry.displayName}</span>
-                    <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                    <span aria-hidden className="text-muted-foreground">
-                      →
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-            <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              Opens the enrollment form pre-selected. Run the collector on the host that has the data.
-            </p>
-          </div>
-        ) : null}
-
-        {otherCount > 0 ? (
-          <details className="rounded-md border border-border/60 bg-muted/10" data-testid="add-connection-other">
-            <summary
-              className="pdpp-caption flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-medium text-foreground marker:hidden [&::-webkit-details-marker]:hidden"
-              data-testid="add-connection-other-toggle"
-            >
-              <span aria-hidden className="text-muted-foreground transition-transform [details[open]_&]:rotate-90">
-                ›
-              </span>
-              Other connectors — owner-run or not yet supported ({otherCount})
-            </summary>
-            <div className="space-y-3 px-3 pt-1 pb-3">
-              {browserManualEntries.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {browserManualEntries.map((entry) => (
-                      <li key={entry.connectorKey}>
-                        <Link
-                          className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
-                          data-testid={`catalog-browser-manual-${entry.connectorKey}`}
-                          href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
-                        >
-                          <span className="pdpp-caption font-medium">{entry.displayName}</span>
-                          <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                          <span aria-hidden className="text-muted-foreground">
-                            →
-                          </span>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
-                    Mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
-                    browser flow; finish the owner-run browser proof with{" "}
-                    <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
-                  </p>
-                </div>
-              ) : null}
-
-              {browserRunbook.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Browser-bound — owner-run setup</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {browserRunbook.map((entry) => (
-                      <li
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                        data-testid={`catalog-browser-runbook-${entry.connectorKey}`}
-                        key={entry.connectorKey}
-                      >
-                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
-                    {browserCopy?.ownerFacingReason ??
-                      "needs a supported browser-collector run profile before the console can generate setup commands"}
-                    . Manual path:{" "}
-                    <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-browser_bound">
-                      {BROWSER_BOUND_RUNBOOK_PATH}
-                    </code>
-                    {"."}
-                  </p>
-                </div>
-              ) : null}
-
-              {localUnproven.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">
-                    Local-collector — not proven here yet
-                  </p>
-                  <ul className="flex flex-wrap gap-2">
-                    {localUnproven.map((entry) => (
-                      <li
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                        data-testid={`catalog-local-unproven-${entry.connectorKey}`}
-                        key={entry.connectorKey}
-                      >
-                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
-                    Filesystem-class connectors without a committed console enrollment proof yet.
-                  </p>
-                </div>
-              ) : null}
-
-              {staticSecretEntries.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Static-secret — owner-session setup</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {staticSecretEntries.map((entry) => (
-                      <li key={entry.connectorKey}>
-                        <Link
-                          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
-                          data-testid={`catalog-static-secret-${entry.connectorKey}`}
-                          href={`/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`}
-                        >
-                          <span className="pdpp-caption font-medium">{entry.displayName}</span>
-                          <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                          <span aria-hidden className="text-muted-foreground">
-                            →
-                          </span>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
-                    {STATIC_SECRET_ADD_MODALITY.ownerFacingReason}. Owner runbook:{" "}
-                    <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-static_secret">
-                      {STATIC_SECRET_ADD_MODALITY.runbookPath}
-                    </code>
-                    {"."}
-                  </p>
-                </div>
-              ) : null}
-
-              {deploymentBlocked.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Deployment setup needed</p>
-                  <ul className="space-y-1.5">
-                    {deploymentBlocked.map((entry) => (
-                      <li
-                        className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                        data-testid={`catalog-deployment-blocked-${entry.connectorKey}`}
-                        key={entry.connectorKey}
-                      >
-                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>{" "}
-                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                        <span className="pdpp-caption ml-1 text-muted-foreground">
-                          needs{" "}
-                          {entry.deploymentReadiness.blockers.map((blocker) => blocker.label || blocker.key).join(", ")}
-                          .
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
-                    These are instance-level provider app settings, not per-account source credentials. After deployment
-                    readiness is fixed, the owner authorizes each account through setup.
-                  </p>
-                </div>
-              ) : null}
-
-              {networkUnsupported.length > 0 ? (
-                <div>
-                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {networkUnsupported.map((entry) => (
-                      <li
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                        data-testid={`catalog-network-${entry.connectorKey}`}
-                        key={entry.connectorKey}
-                      >
-                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pdpp-caption mt-1.5 text-muted-foreground" title={networkCopy?.missingPrimitive}>
-                    {networkCopy?.ownerFacingReason ??
-                      "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data"}
-                    {"."}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          </details>
-        ) : null}
-      </div>
-    </Callout>
   );
 }
 

@@ -76,7 +76,7 @@ export default async function StaticSecretConnectPage({
             Back to connections
           </Link>
         }
-        breadcrumbs={[{ href: "/dashboard/records", label: "Connections" }, { label: `Add ${label}` }]}
+        breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: `Add ${label}` }]}
         description="Create one draft connection, seal the provider secret from this owner session, and start the first sync. The connection is hidden until ingest accepts records."
         title={`Add ${label}`}
       />

@@ -40,7 +40,7 @@ export interface ConnectionHealthSummaryStats {
   readonly needsAttention: number;
   /** Registered connections with no durable progress yet. */
   readonly noData: number;
-  /** Connections surfaced in the primary list. May include zero-record actionable rows. */
+  /** Sources surfaced in the primary list. May include zero-record actionable rows. */
   readonly primaryList: number;
   /** All registered connections, including no-data registrations. */
   readonly registeredTotal: number;

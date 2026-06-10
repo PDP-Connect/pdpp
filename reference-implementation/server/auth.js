@@ -3917,6 +3917,7 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     subject: { id: subjectId },
     client: {
       client_id: registeredClient.client_id,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
       ...(client.client_display ? { client_display: client.client_display } : {}),
     },
     source: persistedSource,
@@ -4300,6 +4301,7 @@ async function persistChildGrantForPackage({
     subject: { id: subjectId },
     client: {
       client_id: registeredClient.client_id,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
       ...(client.client_display ? { client_display: client.client_display } : {}),
     },
     source: persistedSource,

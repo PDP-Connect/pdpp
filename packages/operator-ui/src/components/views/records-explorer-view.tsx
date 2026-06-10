@@ -440,12 +440,12 @@ function ExplorerEmptyFeed({
         hint={
           <span>
             No connectors are configured yet.{" "}
-            <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.records}>
-              Add a connection →
+            <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.connect}>
+              Add a source →
             </Link>
           </span>
         }
-        title="No connections"
+        title="No sources"
       />
     );
   }
@@ -567,7 +567,7 @@ function ConnectionFacets({
   }
   return (
     <div className="pdpp-caption mb-4 flex flex-wrap items-baseline gap-x-2 gap-y-1.5">
-      <span className="pdpp-eyebrow text-muted-foreground">Connections</span>
+      <span className="pdpp-eyebrow text-muted-foreground">Sources</span>
       {connections.map((c) => {
         const isOn = selectedConnectionIds.includes(c.connectionId);
         const displayName = formatConnectorNameForDisplay({
