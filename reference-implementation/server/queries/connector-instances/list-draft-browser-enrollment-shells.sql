@@ -4,8 +4,8 @@
 -- @max_rows: 256
 -- Draft browser-enrollment shells (source_binding_json.kind =
 -- 'browser_enrollment_shell'). Bounded because shells are short-lived
--- (2-hour TTL) and abandoned shells are swept to revoked at creation time
--- or by the retirement sweep; no owner accumulates more than a handful.
+-- (2-hour TTL) and abandoned shells are swept explicitly or by the retirement
+-- sweep; no owner accumulates more than a handful.
 -- Used exclusively by the TTL retirement sweep; not a dashboard read surface.
 SELECT
   connector_instance_id,
@@ -23,3 +23,4 @@ FROM connector_instances
 WHERE status = 'draft'
   AND json_extract(source_binding_json, '$.kind') = 'browser_enrollment_shell'
 ORDER BY created_at ASC, connector_instance_id ASC
+LIMIT 256

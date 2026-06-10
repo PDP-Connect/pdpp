@@ -807,14 +807,18 @@ export function createPostgresConnectorInstanceStore() {
              FROM connector_instances
              WHERE status = 'draft'
                AND source_binding_json->>'kind' = 'browser_enrollment_shell'
-               AND owner_subject_id = $1`,
+               AND owner_subject_id = $1
+             ORDER BY created_at ASC, connector_instance_id ASC
+             LIMIT 256`,
             [ownerSubjectId],
           )
         : await postgresQuery(
             `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
              FROM connector_instances
              WHERE status = 'draft'
-               AND source_binding_json->>'kind' = 'browser_enrollment_shell'`,
+               AND source_binding_json->>'kind' = 'browser_enrollment_shell'
+             ORDER BY created_at ASC, connector_instance_id ASC
+             LIMIT 256`,
           );
       return result.rows.map(mapInstance);
     },

@@ -3369,8 +3369,8 @@ function buildAsApp(opts = {}) {
 
   // Browser-enrollment shell: pre-credential draft for in-dashboard browser-bound
   // setup. Creates an invisible shell with TTL; owner can also abandon explicitly.
-  // Shell transitions to active only after enrollment run captures identity and
-  // first ingest succeeds (same activation path as static-secret drafts).
+  // Shell transitions to active when an enrollment run captures source identity;
+  // first sync then runs as normal collection on that active connection.
   mountRefBrowserEnrollmentShell(app, {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,

@@ -26,7 +26,7 @@
 //   - Only browser-bound connectors accepted; static-secret/local-collector
 //     connectors are refused with a typed 409.
 //   - Shells are invisible to every list/count/dashboard surface until enrollment
-//     completes and first ingest flips status to `active`.
+//     captures source identity and flips the shell to `active`.
 
 import { randomBytes } from "node:crypto";
 

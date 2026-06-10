@@ -3,8 +3,8 @@
 // Every browser-enrollment shell is created with an `enrollment_expires_at`
 // field inside its sourceBinding. This module provides a pure retirement sweep
 // that can be called at startup or from a periodic handler to flip expired
-// `draft` shells to `revoked`. Active shells (enrollment completed → ingest
-// flipped them to `active`) are never touched.
+// `draft` shells to `revoked`. Active shells (enrollment captured source
+// identity and flipped them to `active`) are never touched.
 //
 // The sweep is intentionally side-effect-free in its pure form: it accepts a
 // list of shells and returns the IDs that should be retired, so it is directly

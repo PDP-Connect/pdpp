@@ -278,13 +278,13 @@ first.
   browser enrollment shells system-wide and retires expired ones.
 - SQLite store: `listDraftBrowserEnrollmentShells()` uses a bounded
   `@bounded_by: small_enumeration_table` query (max 256 rows).
-- Postgres store: parametrized queries; no dynamic SQL or injection risk.
+- Postgres store: parametrized bounded queries; no dynamic SQL or injection risk.
 
 **Data-ops retirement contract:** every shell has a declared TTL at creation
 time. The `sourceBinding.kind = "browser_enrollment_shell"` field distinguishes
 shells from static-secret drafts so the retirement sweep never touches unrelated
-drafts. Active connections (enrollment completed, first ingest flipped status)
-are never touched by retirement.
+drafts. Active connections (enrollment captured source identity and flipped
+status) are never touched by retirement.
 
 ## Risks / Trade-offs
 
