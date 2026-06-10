@@ -189,16 +189,20 @@ accounts for them, so the commit gate passes with a bounded row count
 record.
 
 Convergence is the recovery engine. A run served a backlog gap re-lists the
-parent list, filters to conversations strictly **older** than the watermark, and
-runs that older window through the same bounded writer — which hydrates what the
-shared run budget allows and folds *its* remainder into a fresh backlog gap with a
-strictly-older watermark (the old gap resolves; exactly one pending backlog gap
-persists, because the gap-store natural key includes `detail_locator_json` and the
-watermark changes each run). Per-key gaps on the page recover first; the backlog
-is expanded only once they are drained and never re-expanded within the same run,
-so the rewritten backlog is attacked on the next run before forward work. A
-history larger than the chunk drains oldest-ward over several bounded runs, each
-writing ≤ chunk + 1 durable rows, with no record lost and no offset arithmetic.
+parent list, filters to conversations at-or-older than the inclusive watermark
+(`update_time <= before_update_time`), and runs that window through the same
+bounded writer — which hydrates what the shared run budget allows and folds *its*
+remainder into a fresh backlog gap with a later boundary (the old gap resolves;
+exactly one pending backlog gap persists, because the gap-store natural key
+includes `detail_locator_json` and the watermark changes each run). The inclusive
+bound is deliberate: if two conversations share the boundary timestamp, recovery
+may re-see an already-accounted tie, but it cannot strand the un-materialized
+record on the other side of the tie. Per-key gaps on the page recover first; the
+backlog is expanded only once they are drained and never re-expanded within the
+same run, so the rewritten backlog is attacked on the next run before forward
+work. A history larger than the chunk drains oldest-ward over several bounded
+runs, each writing ≤ chunk + 1 durable rows, with no record lost and no offset
+arithmetic.
 
 All of this lives inside the ChatGPT connector and its tests — no Core, grant, or
 read-surface change. The latent protocol field consumed here

@@ -2233,7 +2233,7 @@ function makeRunCapBacklogConversationDetailGap(
   });
 }
 
-/** The watermark a backlog-gap recovery re-lists older-than, or null if absent/invalid. */
+/** The inclusive watermark a backlog-gap recovery re-lists from, or null if absent/invalid. */
 function backlogGapBeforeUpdateTime(gap: CollectContext["detailGaps"][number]): string | null {
   const locator = gap.detail_locator;
   if (!locator || locator.kind !== CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND) {
@@ -2411,8 +2411,8 @@ export async function runMessagesAndConversationsWithDetail(
   // per-key `run_cap_deferred` gaps (newest of the tail — these recover first
   // next run via their `list_item` hint), then folds every OLDER conversation
   // into ONE durable backlog gap carrying a content-derived `before_update_time`
-  // watermark (the oldest accounted update_time). A later run's recovery
-  // re-lists older-than that watermark and drains the next bounded chunk, so a
+  // watermark (the newest un-materialized update_time). A later run's recovery
+  // re-lists at-or-older than that inclusive watermark and drains the next bounded chunk, so a
   // huge history converges oldest-ward over several bounded runs while each run
   // writes ≤ bound + 1 durable rows. NOT source pressure — same resumable
   // `retry_exhausted` / `run_cap_deferred` contract, no cooldown armed.
@@ -2644,13 +2644,14 @@ async function recoverPendingConversationDetailGaps(
 
 /**
  * Expand a single cap-tail backlog gap: re-list the parent conversation list and
- * materialize the next bounded chunk of conversations OLDER than the backlog's
- * `before_update_time` watermark, then resolve the backlog gap. The same bounded
- * `runMessagesAndConversationsWithDetail` writer runs over the older window, so
- * it hydrates what the shared run budget allows and folds ITS remainder into a
- * fresh backlog gap carrying a strictly-older watermark — draining the history
- * oldest-ward over runs, ≤ bound + 1 durable rows per run. No offset arithmetic:
- * the boundary is a content-derived `update_time` watermark, re-listed each run.
+ * materialize the next bounded chunk of conversations at-or-older than the
+ * backlog's inclusive `before_update_time` watermark, then resolve the backlog
+ * gap. The same bounded `runMessagesAndConversationsWithDetail` writer runs over
+ * that window, so it hydrates what the shared run budget allows and folds ITS
+ * remainder into a fresh backlog gap carrying a new content-derived watermark —
+ * draining the history oldest-ward over runs, ≤ bound + 1 durable rows per run.
+ * No offset arithmetic: the boundary is a content-derived `update_time`
+ * watermark, re-listed each run.
  *
  * Returns `expanded: true` so the caller STOPS this run's recovery before any
  * forward walk — the freshly-rewritten backlog gap is attacked on the NEXT run,

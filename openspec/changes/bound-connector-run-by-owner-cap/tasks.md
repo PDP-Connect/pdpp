@@ -87,10 +87,11 @@ landed implementation; §4 is owner closeout.
   a content-derived `before_update_time` watermark (never an offset); forward
   `DETAIL_COVERAGE.required_keys` is scoped to the accounted set so the monotone
   cursor never advances past an unaccounted record. Recovery
-  (`expandBacklogConversationDetailGap`) re-lists older-than the watermark and
-  drains the next bounded chunk before forward work, resolving/rewriting the
-  backlog gap with a strictly-older watermark — converging oldest-ward over
-  bounded runs (≤ chunk + 1 rows/run), no record lost, no offset reconstruction.
+  (`expandBacklogConversationDetailGap`) re-lists at-or-older than the inclusive
+  watermark and drains the next bounded chunk before forward work,
+  resolving/rewriting the backlog gap with a new content-derived watermark —
+  converging oldest-ward over bounded runs (≤ chunk + 1 rows/run), no record lost,
+  no offset reconstruction.
   Source-pressure decomplection preserved (D4). ChatGPT-only; no Core/grant/
   read-surface change. Tests: bounded write count, default-off byte-identity,
   not-source-pressure / no cooldown, multi-run convergence (all in

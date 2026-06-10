@@ -143,13 +143,17 @@ source-pressure set and the run-cap error class — so it never arms the
 source-pressure cooldown and is excluded from the source-pressure backlog rollup.
 
 The deferral SHALL remain **resumable and convergent**: a later run's recovery
-SHALL expand the backlog gap by re-listing the parent list from the stored
-watermark and materializing the next bounded chunk of the older window, resolving
-or rewriting the backlog gap with a strictly-older watermark, and this expansion
-SHALL run before forward-walk work so the deferred tail recovers first. A history
-larger than the chunk SHALL drain over several bounded runs with no record lost
-and no offset reconstruction; the monotone forward cursor SHALL NOT advance past
-an unaccounted record (the backlog gap accounts for the older remainder).
+SHALL expand the backlog gap by re-listing the parent list at-or-older than the
+stored inclusive watermark and materializing the next bounded chunk of that
+window, resolving or rewriting the backlog gap with a new content-derived
+watermark when remainder exists, and this expansion SHALL run before forward-walk
+work so the deferred tail recovers first. The inclusive bound SHALL be
+tie-safe: recovery MAY re-see an already-accounted record sharing the boundary
+timestamp, but SHALL NOT strand an un-materialized record with that timestamp. A
+history larger than the chunk SHALL drain over several bounded runs with no
+record lost and no offset reconstruction; the monotone forward cursor SHALL NOT
+advance past an unaccounted record (the backlog gap accounts for the older
+remainder).
 
 #### Scenario: A cap trip over a large remaining tail writes a bounded number of gap rows
 
@@ -170,11 +174,12 @@ an unaccounted record (the backlog gap accounts for the older remainder).
 #### Scenario: A later run expands the backlog gap before forward work and converges
 
 - **WHEN** a later run is served a backlog `DETAIL_GAP`
-- **THEN** recovery SHALL re-list the parent list from the backlog watermark and
-  materialize the next bounded chunk of the older window before any forward-walk
-  work
-- **AND** it SHALL resolve or rewrite the backlog gap with a strictly-older
-  watermark
+- **THEN** recovery SHALL re-list the parent list at-or-older than the backlog's
+  inclusive watermark and materialize the next bounded chunk of that window
+  before any forward-walk work
+- **AND** it SHALL resolve the old backlog gap or rewrite it with a new
+  content-derived watermark when remainder exists
+- **AND** it SHALL NOT strand records that share the backlog watermark timestamp
 - **AND** over several bounded runs the older history SHALL fully drain with no
   record lost and no positional-offset reconstruction
 
