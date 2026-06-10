@@ -97,7 +97,7 @@ These boundaries matter because current work is easy to over-promote. For exampl
 
 ## Technical Values
 
-The reference implementation should meet the SLVP bar: simple, lossless, verifiable, and polished enough to resemble work from Stripe, Linear, Vercel, or Plaid.
+The reference implementation should meet the SLVP bar. SLVP literally means Stripe, Linear, Vercel, Plaid — the work should resemble theirs. (Owner clarification 2026-06-10: it is not an acronym for qualities. The working gloss "simple, lossless, verifiable, polished" — a backronym an earlier agent session invented — remains a useful checklist, but the companies are the definition.)
 
 In practice:
 
