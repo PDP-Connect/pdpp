@@ -1,5 +1,15 @@
 services:
   reference:
+    # NOTE (2026-06-10): the default GHCR image (and the `reference` build
+    # target below) is deliberately browser-free (Dockerfile f45ba058,
+    # 2026-06-06). Deployments that run browser-backed connectors (ChatGPT,
+    # USAA, ...) INSIDE this container must pin a browser-capable image:
+    # build the `reference-browser` Dockerfile target and select it via
+    # PDPP_REFERENCE_IMAGE (plus a deploy-local, gitignored
+    # docker-compose.override.yml overriding image/build.target). Otherwise
+    # the next `compose pull && up -d` reverts to a browser-free image and
+    # every browser run fails at Patchright launch ("Executable doesn't
+    # exist at /opt/patchright-browsers/...").
     image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
     build:
       context: .
