@@ -20,6 +20,7 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { buildDetailCoverageMessage, type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -53,6 +54,11 @@ import type {
 
 const USER_AGENT = "pdpp-connector-github/0.1";
 
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 403-quota/`github_rate_limited` throw byte-identical (cross-run cooldown via
+// `retryablePattern`); raising it activates the wired Retry-After honor.
+const httpGovernor = createConnectorHttpGovernor({ name: "github", maxAttempts: 1 });
+
 interface ProgressExtra {
   count?: number;
   cursor_present?: boolean;
@@ -65,6 +71,14 @@ interface ProgressExtra {
   total_seen?: number;
 }
 
+interface GhRawResponse {
+  body: string;
+  link: string | null;
+  rateLimited: boolean;
+  retryAfter?: string;
+  status: number;
+}
+
 async function gh<T>(
   path: string,
   token: string,
@@ -72,32 +86,52 @@ async function gh<T>(
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   extra?: ProgressExtra
 ): Promise<GhResult<T>> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: accept,
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": USER_AGENT,
-    },
-  });
-  if (res.status === 401) {
+  let raw: GhRawResponse;
+  try {
+    const r = await httpGovernor.request<GhRawResponse, GhRawResponse>(
+      async (): Promise<GhRawResponse> => {
+        const res = await fetch(`${BASE}${path}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: accept,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": USER_AGENT,
+          },
+        });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          link: res.headers.get("link"),
+          // GitHub signals quota exhaustion as 403 + x-ratelimit-remaining: 0
+          // (not 429). Surface it to the governor as the rate-limit terminal.
+          rateLimited: res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0",
+          ...(retryAfter == null ? {} : { retryAfter }),
+          status: res.status,
+        };
+      },
+      (resp) => ({
+        // Map GitHub's 403-quota-exhausted onto 429 so the governor's
+        // Retry-After honor and `github_rate_limited` terminal apply uniformly.
+        status: resp.rateLimited ? 429 : resp.status,
+        ...(resp.retryAfter == null ? {} : { headers: { "retry-after": resp.retryAfter } }),
+        value: resp,
+      })
+    );
+    raw = r.value;
+  } catch (error) {
+    if (error instanceof Error && error.message === "github_rate_limited") {
+      await progress?.("GitHub request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (raw.status === 401) {
     throw new Error("github_auth_failed");
   }
-  if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
-    await progress?.("GitHub request rate limited", {
-      ...extra,
-      phase: "rate_limit",
-      rate_limit_pressure: 1,
-    });
-    throw new Error("github_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`github_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    const body = await res.text().catch((): string => "");
-    throw new Error(`github_http_${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  const link = res.headers.get("link");
-  const data = (await res.json()) as T;
-  const nextUrl = parseNextLink(link);
+  const data = JSON.parse(raw.body) as T;
+  const nextUrl = parseNextLink(raw.link);
   return { data, nextUrl };
 }
 

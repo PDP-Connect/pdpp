@@ -1,5 +1,20 @@
 # Proposal: add-provider-budget-run-control
 
+> **SUPERSEDED (2026-06-10) by `converge-provider-rate-governance`.** This
+> change's rate-governance axes (per-provider pacing, ratio-based retry budget,
+> circuit breaker, run-budget envelope, detail-gap drain loop) landed and are
+> absorbed by the convergence change, which corrects the layer-ownership model:
+> a provider request path has exactly ONE pre-flight send governor (the AIMD
+> concurrency lane), and GCRA pacing is a signal folded into it, not a second
+> independent pre-flight gate. To avoid two active changes both adding the same
+> `polyfill-runtime` requirements, only `converge-provider-rate-governance`
+> carries the rate-governance deltas to archive; this change is parked. Its
+> still-independent work — commit-gated/opaque-cursor checkpoint durability
+> (§2.5) and catch-up vs. steady-state bookmark separation (§2.6) — is NOT
+> absorbed and should move to a dedicated cursor-durability change if pursued.
+> See `converge-provider-rate-governance/design.md` ("Disposition of
+> add-provider-budget-run-control").
+
 ## Why
 
 Collection Profile runtimes call opaque third-party providers whose rate-limit

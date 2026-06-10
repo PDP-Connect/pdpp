@@ -16,10 +16,15 @@
  * Rate limit: 180 req/min per token typical.
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.spotify.com/v1";
+
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
+const httpGovernor = createConnectorHttpGovernor({ name: "spotify", maxAttempts: 1 });
 const MAX_PAGES = 200;
 
 interface ProgressExtra {
@@ -84,24 +89,34 @@ async function sp<T>(
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   extra?: ProgressExtra
 ): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
+  let raw: { body: string; status: number };
+  try {
+    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+      async () => {
+        const res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          status: res.status,
+        } as { body: string; status: number };
+      },
+      (resp) => ({ status: resp.status, value: resp })
+    );
+    raw = r.value;
+  } catch (error) {
+    if (error instanceof Error && error.message === "spotify_rate_limited") {
+      await progress?.("Spotify request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (raw.status === 401) {
     throw new Error("spotify_auth_failed");
   }
-  if (res.status === 429) {
-    await progress?.("Spotify request rate limited", {
-      ...extra,
-      phase: "rate_limit",
-      rate_limit_pressure: 1,
-    });
-    throw new Error("spotify_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`spotify_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    throw new Error(`spotify_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
-  }
-  return (await res.json()) as T;
+  return JSON.parse(raw.body) as T;
 }
 
 async function paginate<T>(

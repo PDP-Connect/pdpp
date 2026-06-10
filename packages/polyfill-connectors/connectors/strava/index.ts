@@ -10,8 +10,13 @@
  * Rate limits: 100 req / 15 min, 1000 req / day.
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { validateRecord } from "./schemas.ts";
+
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
+const httpGovernor = createConnectorHttpGovernor({ name: "strava", maxAttempts: 1 });
 
 interface StravaActivity {
   achievement_count?: number | null;
@@ -64,24 +69,34 @@ async function fetchActivitiesPage(
   if (afterEpoch) {
     url.searchParams.set("after", String(afterEpoch));
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
+  let raw: { body: string; status: number };
+  try {
+    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+      async () => {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          status: res.status,
+        } as { body: string; status: number };
+      },
+      (resp) => ({ status: resp.status, value: resp })
+    );
+    raw = r.value;
+  } catch (error) {
+    if (error instanceof Error && error.message === "strava_rate_limited") {
+      await progress?.("Strava request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (raw.status === 401) {
     throw new Error("strava_auth_failed");
   }
-  if (res.status === 429) {
-    await progress?.("Strava request rate limited", {
-      ...extra,
-      phase: "rate_limit",
-      rate_limit_pressure: 1,
-    });
-    throw new Error("strava_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`strava_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    throw new Error(`strava_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
-  }
-  return (await res.json()) as StravaActivity[];
+  return JSON.parse(raw.body) as StravaActivity[];
 }
 
 function toActivityRecord(a: StravaActivity): RecordData {
