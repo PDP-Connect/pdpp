@@ -4,7 +4,7 @@ Command-line tools for PDPP providers.
 
 ## Status
 
-This package is the public npm home for the `pdpp` command. The beta CLI
+This package is the public npm home for the `pdpp` command. The CLI
 supports four command namespaces:
 
 - **`pdpp connect <provider-url>`** — delegated access: discovers provider
@@ -61,9 +61,9 @@ supports four command namespaces:
   cannot run on its own. The runner ships separately as
   `@pdpp/local-collector` and owns the `pdpp-local-collector` binary; `pdpp
   collector ...` is a slim `@pdpp/cli` shim that resolves that package lazily.
-  Public onboarding should use `npx -y @pdpp/local-collector@beta ...` or
-  `npm i -g @pdpp/local-collector@beta` until the package is promoted from beta
-  to latest, unless the operator intentionally wants the `@pdpp/cli` shim.
+  Public onboarding should use `npx -y @pdpp/local-collector ...` or
+  `npm i -g @pdpp/local-collector`, unless the operator intentionally wants
+  the `@pdpp/cli` shim.
 
 - **`pdpp ref ...`** — reference operator diagnostics over `_ref` routes on a
   running reference deployment. Current subcommands: `pdpp ref run timeline
@@ -75,11 +75,8 @@ supports four command namespaces:
 
 ```bash
 # @pdpp/cli package, npx-launched pdpp binary
-npx -y @pdpp/cli@beta --help
+npx -y @pdpp/cli --help
 ```
-
-Use the `beta` dist-tag until PDPP intentionally enables stable `latest`
-publication.
 
 When working from this monorepo without installing or linking the binary, use
 the workspace executable:
@@ -95,11 +92,11 @@ local workspace launcher.
 The local collector runtime is a separate public package:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector@beta advertise
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector advertise
 
-# @pdpp/local-collector@beta package, installs the pdpp-local-collector binary
-npm i -g @pdpp/local-collector@beta
+# @pdpp/local-collector package, installs the pdpp-local-collector binary
+npm i -g @pdpp/local-collector
 pdpp-local-collector advertise
 ```
 

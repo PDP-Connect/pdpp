@@ -6,11 +6,15 @@ export const pdppCliConnectCommand = createPdppCliCommand(PDPP_CLI_PROVIDER_PLAC
 export const pdppCliInstallCommand = `npx -y ${pdppCliPackageInfo.packageSpecifier} --help`;
 export const pdppCliTokenCompletionUnavailable = pdppCliPackageInfo.noOwnerToken !== true;
 export const localCollectorPackageName = "@pdpp/local-collector";
-export const localCollectorPackageSpecifier = `${localCollectorPackageName}@beta`;
+// Single release channel: the published package rides npm's default `latest`
+// dist-tag, so the advertised specifier is the plain package name. Kept as a
+// direct string literal (not an alias) so the owner-journey harness scanner
+// can resolve it in rendered-command extraction.
+export const localCollectorPackageSpecifier = "@pdpp/local-collector";
 
 /**
  * Rewrite a canonical `pdpp ...` invocation (as advertised in dashboard/docs
- * copy) into a zero-install one-shot form using `npx -y @pdpp/cli@beta ...`.
+ * copy) into a zero-install one-shot form using `npx -y @pdpp/cli ...`.
  * Operators who have not globally installed or workspace-linked the binary
  * still get a copy-pasteable command. Returns null when `cliCommand` does not
  * start with the `pdpp ` prefix.
@@ -29,12 +33,11 @@ export function pdppCliConnectCommandFor(providerUrl: string): string {
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta` enrollment command for a freshly
+ * Render the public `@pdpp/local-collector` enrollment command for a freshly
  * minted enrollment code. Operators paste this on the host that has Claude
  * Code / Codex data to exchange the one-time code for a device-scoped
  * credential. `@pdpp/cli` owns the `pdpp` binary; the runner package owns the
- * `pdpp-local-collector` binary and npx package invocation. Keep the beta tag
- * until the package's npm latest tag is intentionally promoted.
+ * `pdpp-local-collector` binary and npx package invocation.
  */
 export function pdppLocalCollectorEnrollCommand(args: {
   baseUrl: string;
@@ -59,7 +62,7 @@ export function pdppLocalCollectorEnrollCommand(args: {
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta` run command. The device id, device
+ * Render the public `@pdpp/local-collector` run command. The device id, device
  * token, and source instance id come from a prior enrollment response and are
  * passed as env vars so the dashboard never embeds secrets in generated
  * commands.

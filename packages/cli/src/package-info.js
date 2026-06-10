@@ -1,7 +1,9 @@
 export const PDPP_CLI_PACKAGE_NAME = '@pdpp/cli';
 export const PDPP_CLI_BIN_NAME = 'pdpp';
-export const PDPP_CLI_VERSION_POLICY = 'beta';
-export const PDPP_CLI_PACKAGE_SPECIFIER = `${PDPP_CLI_PACKAGE_NAME}@${PDPP_CLI_VERSION_POLICY}`;
+// Single release channel: the published package rides npm's default `latest`
+// dist-tag, so the advertised specifier is the plain package name.
+export const PDPP_CLI_VERSION_POLICY = 'latest';
+export const PDPP_CLI_PACKAGE_SPECIFIER = PDPP_CLI_PACKAGE_NAME;
 export const PDPP_CLI_DEFAULT_CLIENT_ID = 'pdpp_cli';
 export const PDPP_CLI_NO_OWNER_TOKEN_POLICY = 'owner_browser_approval_required';
 

@@ -42,10 +42,10 @@ The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR 
 ### 1. Prefer the reference CLI
 
 Use `pdpp connect` when provider metadata advertises token completion as available. It is the intended CLI-first path for discovery, owner approval, project-local cache layout, `.gitignore` hygiene, token storage, and `/v1/schema` verification. Raw HTTP is a fallback, not the happy path.
-The current beta command is published in metadata as:
+The current command is published in metadata as:
 
 ```bash
-npx -y @pdpp/cli@beta connect <provider-url>
+npx -y @pdpp/cli connect <provider-url>
 ```
 
 If `pdpp` is already installed, this is equivalent:
@@ -116,7 +116,7 @@ This returns the connectors, streams, fields, and capabilities **this specific g
 If the CLI is unavailable locally, prefer the generated npm command before raw HTTP:
 
 ```bash
-npx -y @pdpp/cli@beta connect <provider-url>
+npx -y @pdpp/cli connect <provider-url>
 ```
 
 If npm is unavailable and the task still requires manual debugging, follow the same workflow manually from discovered metadata: fetch protected-resource metadata, fetch authorization-server metadata, use `agent_connect_endpoint` when advertised, relay the returned `approval_url`, poll only the returned `token_url` with the returned polling code, verify `/v1/schema`, then store the scoped client credential under `.pdpp/` with mode `0600`. If the provider only supports PAR/consent fallback, redeem a consent exchange code only via `POST /consent/exchange` with JSON `{ "code": "<code>" }` when the consent UI explicitly gives such a code. Do not scrape owner pages for bearer tokens, widen scope, skip approval, or cache owner tokens. See `references/troubleshooting.md` before attempting this path.
@@ -157,7 +157,7 @@ credentials, scopes, or wire contracts.
   "mcpServers": {
     "pdpp": {
       "command": "npx",
-      "args": ["-y", "@pdpp/mcp-server@beta", "--provider-url", "https://pdpp.example.com"]
+      "args": ["-y", "@pdpp/mcp-server", "--provider-url", "https://pdpp.example.com"]
     }
   }
 }

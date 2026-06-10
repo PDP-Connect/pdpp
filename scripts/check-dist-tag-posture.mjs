@@ -6,9 +6,9 @@
 // be run by the release owner (or a non-blocking lane), because:
 //
 //   - the always-on policy check must stay offline and deterministic; and
-//   - the placeholder `latest` it detects is a known consequence of the
-//     beta-only posture (see docs/package-release-policy.md) that only an owner
-//     promotion can clear.
+//   - the placeholder `latest` it detects is a leftover of the npm bootstrap
+//     (see docs/package-release-policy.md) that only a real stable release plus
+//     owner cleanup of the placeholder can clear.
 //
 // What it catches: a publishable package whose default `latest` dist-tag
 // resolves to the placeholder 0.0.0 (or otherwise lags the published `beta`
@@ -18,8 +18,9 @@
 // Usage:
 //   node scripts/check-dist-tag-posture.mjs [--require-reachable] [--json]
 //
-// Waiver: set PDPP_RELEASE_DIST_TAG_WAIVER="<reason>" to acknowledge the known
-// beta-only posture. The reason is printed and the check exits 0, but the
+// Waiver: set PDPP_RELEASE_DIST_TAG_WAIVER="<reason>" to acknowledge a known,
+// temporary posture (e.g. the window before the first stable release lands).
+// The reason is printed and the check exits 0, but the
 // finding is still reported so the waiver stays honest and visible.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -171,11 +172,11 @@ async function main() {
   process.stderr.write(
     '\nPDPP dist-tag posture check failed:\n' +
       hazards.map((hazard) => `- ${hazard.detail}`).join('\n') +
-      '\n\nThis is the documented beta-only posture. Either:\n' +
+      '\n\nThe default install target is broken for operators. Either:\n' +
       '  1. promote the package to a real stable `latest` (owner release-readiness step in\n' +
       '     docs/package-release-policy.md), or\n' +
       '  2. set PDPP_RELEASE_DIST_TAG_WAIVER="<reason>" to acknowledge it explicitly.\n' +
-      'Until then, install docs must pin `@beta` so operators never resolve the placeholder.\n',
+      'Until then, a bare `npm install` of the package hands operators the empty placeholder.\n',
   );
   process.exit(1);
 }

@@ -102,7 +102,7 @@ services:
       # workspace collector on a host that can render a visible Chromium:
       #   pnpm exec pdpp collector enroll --base-url <url> --code <code>
       #   pnpm exec pdpp collector run    --base-url <url> --connector <id> ...
-      # The public @pdpp/local-collector@beta package currently ships the
+      # The public @pdpp/local-collector package currently ships the
       # filesystem-class Claude Code / Codex collectors, not browser-backed
       # Patchright connectors.
     ports:

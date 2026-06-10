@@ -52,7 +52,7 @@ test('collector help advertises the published @pdpp/local-collector path', async
   assert.equal(code, 0);
   // The supported public path is the npm-installable runner, not a monorepo clone.
   assert.match(io.stdout, /@pdpp\/local-collector/);
-  assert.match(io.stdout, /npm i -g @pdpp\/local-collector@beta|npx -y @pdpp\/local-collector@beta/);
+  assert.match(io.stdout, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
   assert.doesNotMatch(io.stdout, /monorepo only/i);
   assert.doesNotMatch(io.stdout, /git clone/);
 });
@@ -126,7 +126,7 @@ test('spawnCollectorRunner throws actionable install hint when nothing resolves'
     (err) => {
       assert.ok(err instanceof CollectorUsageError);
       assert.match(err.message, /@pdpp\/local-collector/);
-      assert.match(err.message, /npm i -g @pdpp\/local-collector@beta|npx -y @pdpp\/local-collector@beta/);
+      assert.match(err.message, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
       return true;
     },
   );

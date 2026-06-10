@@ -1545,7 +1545,7 @@ test('RS 401 responses advertise protected-resource metadata in header and body'
     assert.equal(missingBody.error.code, 'authentication_error');
     assert.equal(missingBody.error.resource_metadata, metadataUrl);
     assert.match(missingBody.error.next_step, /pdpp_agent_discovery\.cli/);
-    assert.doesNotMatch(missingBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+    assert.doesNotMatch(missingBody.error.next_step, /npx -y @pdpp\/cli connect/);
 
     const invalidResp = await fetch(`${rsUrl}/v1/schema`, {
       headers: { authorization: 'Bearer not-a-real-token' },
@@ -1555,7 +1555,7 @@ test('RS 401 responses advertise protected-resource metadata in header and body'
     assert.equal(invalidResp.headers.get('www-authenticate'), expectedChallenge);
     assert.equal(invalidBody.error.resource_metadata, metadataUrl);
     assert.match(invalidBody.error.next_step, /pdpp_agent_discovery\.cli/);
-    assert.doesNotMatch(invalidBody.error.next_step, /npx -y @pdpp\/cli@beta connect/);
+    assert.doesNotMatch(invalidBody.error.next_step, /npx -y @pdpp\/cli connect/);
   } finally {
     await closeServer(server);
   }

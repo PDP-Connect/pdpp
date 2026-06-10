@@ -26,32 +26,31 @@ accounts do not share cursor state, outbox rows, or dashboard diagnostics.
 
 The public runner package is `@pdpp/local-collector`. The `@pdpp/cli` package
 owns the `pdpp` binary and keeps a compatibility shim at `pdpp collector ...`,
-but new operator docs should lead with `npx -y @pdpp/local-collector@beta ...`
-or an installed `pdpp-local-collector` binary until the package is promoted
-from beta to latest.
+but new operator docs should lead with `npx -y @pdpp/local-collector ...`
+or an installed `pdpp-local-collector` binary.
 
 ## Install
 
 Run without installing:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector@beta --help
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector --help
 ```
 
 Or install the runner once:
 
 ```bash
-# @pdpp/local-collector@beta package, installs the pdpp-local-collector binary
-npm i -g @pdpp/local-collector@beta
+# @pdpp/local-collector package, installs the pdpp-local-collector binary
+npm i -g @pdpp/local-collector
 pdpp-local-collector --help
 ```
 
 `@pdpp/cli` is separate:
 
 ```bash
-# @pdpp/cli@beta package, installs the pdpp binary
-npm i -g @pdpp/cli@beta
+# @pdpp/cli package, installs the pdpp binary
+npm i -g @pdpp/cli
 pdpp --help
 ```
 
@@ -69,15 +68,15 @@ resolves the binary into a repo `packages/local-collector/dist/...` tree, so a
 `status`/`doctor`/`run` you believe reflects the published package is really
 exercising your working copy.
 
-**Production / operator host — pin an explicit published version or dist-tag.**
+**Production / operator host — install the published release.**
 
 ```bash
-# Pin the dist-tag (tracks the latest beta build):
-npm i -g @pdpp/local-collector@beta
+# Install the current published release (npm's default `latest` dist-tag):
+npm i -g @pdpp/local-collector
 
 # Or pin an exact version for reproducible operator evidence (preferred when
 # capturing host evidence that must be attributable to a known build):
-npm i -g @pdpp/local-collector@0.1.0-beta.7
+npm i -g @pdpp/local-collector@0.1.0
 ```
 
 Confirm what actually resolves before trusting any host evidence. The collector
@@ -101,14 +100,15 @@ false` is the only posture that should back operator-host evidence. A
 re-pin before treating any output as operator-host evidence.
 
 Re-pinning means moving to a published build that is *at least as current as the
-repo build you are leaving*. The published `@beta` is cut from the `beta`
-release branch, which can lag `main`, so a `repo_dist_override` built from a
-newer `main` can be **ahead** of `@beta` — re-pinning it onto a stale `@beta`
-would regress the host. Before re-pinning, confirm `@beta` carries the fixes you
-need: the release owner runs `pnpm release:dist-tag-check` to verify the live
-dist-tag posture, and cuts a fresh `@beta` from `main` if the published build
-lags. Until then, a repo override that is ahead of `@beta` is dev evidence to
-keep, not a build to downgrade.
+repo build you are leaving*. Releases are cut from `main` only when a
+release-worthy Conventional Commit lands, so a `repo_dist_override` built from a
+newer `main` can be **ahead** of the published release — re-pinning it onto a
+stale published build would regress the host. Before re-pinning, confirm the
+published release carries the fixes you need: the release owner runs
+`pnpm release:dist-tag-check` to verify the live dist-tag posture, and cuts a
+release from `main` if the published build lags. Until then, a repo override
+that is ahead of the published release is dev evidence to keep, not a build to
+downgrade.
 
 The manual path check still works as an out-of-band cross-check:
 
@@ -122,13 +122,13 @@ If `readlink -f` lands inside a repo `packages/local-collector/dist/`, the host
 is running a **dev override**, not the published package — and
 `deployment_posture.kind` reports `repo_dist_override` for the same reason.
 
-> **`latest` is a placeholder — do not use it.** The published `latest`
-> dist-tag is currently `0.0.0`, a placeholder that is older than every real
-> build. A bare global install with no tag, or an explicit `@latest`, therefore
-> installs the placeholder, not a working collector. Always pin `@beta` or an
-> explicit `@0.1.0-beta.<n>` until `latest` is promoted to a real version. The
+> **Watch for the `0.0.0` bootstrap placeholder.** Before the first stable
+> release from `main`, npm's `latest` dist-tag resolved a `0.0.0` bootstrap
+> placeholder that is older than every real build. An install that reports
+> version `0.0.0` is that placeholder, not a working collector — upgrade to the
+> current published release (or pin an exact version). The
 > in-repo `package.json` version is also `0.0.0`, by design — the published
-> beta version is set at publish time, and the CLI's own
+> version is set at publish time, and the CLI's own
 > `package.version` echoes whatever build is installed, which is exactly why
 > the `deployment_posture` block flags `is_placeholder_version` and the manual
 > cross-check above still matters.
@@ -150,7 +150,7 @@ operator-host evidence again:
 
 ```bash
 npm rm -g @pdpp/local-collector
-npm i -g @pdpp/local-collector@0.1.0-beta.7   # re-pin a published version
+npm i -g @pdpp/local-collector@0.1.0   # re-pin a published version
 ```
 
 ## Advertise
@@ -158,8 +158,8 @@ npm i -g @pdpp/local-collector@0.1.0-beta.7   # re-pin a published version
 Advertise the runner capabilities before enrolling a device:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector@beta advertise
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector advertise
 ```
 
 The output includes the collector protocol version, runner version, connector
@@ -175,8 +175,8 @@ binding you want to run, then exchange that short-lived code on the host that
 has the local data:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector@beta enroll \
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector enroll \
   --base-url https://<reference-host> \
   --code <one-time-code> \
   --device-label "<host label>"
@@ -196,11 +196,11 @@ Run the connector with the enrollment response values supplied through
 environment variables:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
 PDPP_CONNECTION_ID=<source_instance_id> \
-npx -y @pdpp/local-collector@beta run \
+npx -y @pdpp/local-collector run \
   --base-url https://<reference-host> \
   --connector claude_code
 ```
@@ -208,11 +208,11 @@ npx -y @pdpp/local-collector@beta run \
 Codex uses the same shape:
 
 ```bash
-# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
 PDPP_CONNECTION_ID=<source_instance_id> \
-npx -y @pdpp/local-collector@beta run \
+npx -y @pdpp/local-collector run \
   --base-url https://<reference-host> \
   --connector codex
 ```
@@ -221,11 +221,11 @@ npx -y @pdpp/local-collector@beta run \
 `PDPP_CONNECTION_ID`, but new docs and scripts should use
 `PDPP_CONNECTION_ID`.
 
-If you installed globally with `npm i -g @pdpp/local-collector@beta`, replace
-the `npx -y @pdpp/local-collector@beta` prefix with `pdpp-local-collector`:
+If you installed globally with `npm i -g @pdpp/local-collector`, replace
+the `npx -y @pdpp/local-collector` prefix with `pdpp-local-collector`:
 
 ```bash
-# @pdpp/local-collector@beta package, globally installed pdpp-local-collector binary
+# @pdpp/local-collector package, globally installed pdpp-local-collector binary
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
 PDPP_CONNECTION_ID=<source_instance_id> \
@@ -242,7 +242,7 @@ installed:
 pdpp collector run --base-url https://<reference-host> --connector claude_code
 ```
 
-Prefer the direct `@pdpp/local-collector@beta` command in onboarding because it
+Prefer the direct `@pdpp/local-collector` command in onboarding because it
 makes the runtime package and dist-tag explicit.
 
 ## Durable Services And Timers
@@ -415,7 +415,7 @@ WantedBy=timers.target
 Commands for the installed service:
 
 ```bash
-# systemd, running the globally installed @pdpp/local-collector@beta binary
+# systemd, running the globally installed @pdpp/local-collector binary
 systemctl enable --now pdpp-local-collector@claude_code.timer
 systemctl status pdpp-local-collector@claude_code.service
 ```
@@ -515,7 +515,7 @@ If the collector receives HTTP 403 after moving a source or reference
 deployment, first verify that `PDPP_REFERENCE_BASE_URL` points at the deployment
 that issued the current device token. A token from one reference DB is not valid
 against a fresh DB. If the DB was replaced, create a new enrollment code and run
-`npx -y @pdpp/local-collector@beta enroll ...` again.
+`npx -y @pdpp/local-collector enroll ...` again.
 
 Also confirm you are passing the correct connection id:
 
@@ -531,12 +531,12 @@ If the reference deployment returns `409 collector_protocol_mismatch`, update
 the older side so the collector protocol versions match:
 
 ```bash
-# @pdpp/local-collector@beta package, inspect local runner version/capabilities
-npx -y @pdpp/local-collector@beta advertise
+# @pdpp/local-collector package, inspect local runner version/capabilities
+npx -y @pdpp/local-collector advertise
 ```
 
 For Docker deployments, pull and restart the reference image or install the
-matching `@pdpp/local-collector@beta` version on the host. The reference server
+matching `@pdpp/local-collector` version on the host. The reference server
 rejects incompatible records before persisting them, so retrying after the
 version fix is safe.
 
@@ -546,9 +546,9 @@ If `pdpp collector ...` from `@pdpp/cli` says the runner is missing, install the
 runner package or use npx directly:
 
 ```bash
-# @pdpp/local-collector@beta package, direct public runner path
-npm i -g @pdpp/local-collector@beta
-npx -y @pdpp/local-collector@beta advertise
+# @pdpp/local-collector package, direct public runner path
+npm i -g @pdpp/local-collector
+npx -y @pdpp/local-collector advertise
 ```
 
 ### Secret Handling

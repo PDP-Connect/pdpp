@@ -23,19 +23,19 @@ const binPath = fileURLToPath(new URL('../bin/pdpp.js', import.meta.url));
 test('package info is the CLI source of truth', () => {
   assert.equal(PDPP_CLI_PACKAGE_NAME, '@pdpp/cli');
   assert.equal(PDPP_CLI_BIN_NAME, 'pdpp');
-  assert.equal(PDPP_CLI_PACKAGE_SPECIFIER, '@pdpp/cli@beta');
+  assert.equal(PDPP_CLI_PACKAGE_SPECIFIER, '@pdpp/cli');
   assert.deepEqual(getPdppCliPackageInfo('https://example.test'), {
     packageName: '@pdpp/cli',
-    packageSpecifier: '@pdpp/cli@beta',
+    packageSpecifier: '@pdpp/cli',
     binName: 'pdpp',
     defaultClientId: 'pdpp_cli',
-    versionPolicy: 'beta',
-    runCommand: 'npx -y @pdpp/cli@beta connect https://example.test',
+    versionPolicy: 'latest',
+    runCommand: 'npx -y @pdpp/cli connect https://example.test',
     noOwnerToken: true,
     noOwnerTokenPolicy: 'owner_browser_approval_required',
   });
   assert.equal(PDPP_CLI_NO_OWNER_TOKEN_POLICY, 'owner_browser_approval_required');
-  assert.equal(createPdppCliCommand(), 'npx -y @pdpp/cli@beta connect <provider-url>');
+  assert.equal(createPdppCliCommand(), 'npx -y @pdpp/cli connect <provider-url>');
 });
 
 test('package info mirrors package manifest name and bin', async () => {
@@ -52,7 +52,7 @@ test('help starts from an installed-style bin invocation', () => {
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /PDPP CLI/);
-  assert.match(result.stdout, /npx -y @pdpp\/cli@beta connect <provider-url>/);
+  assert.match(result.stdout, /npx -y @pdpp\/cli connect <provider-url>/);
 });
 
 test('package-info command prints machine-readable install metadata', async () => {
@@ -66,7 +66,7 @@ test('package-info command prints machine-readable install metadata', async () =
 
   assert.equal(code, 0);
   assert.equal(stderr, '');
-  assert.equal(JSON.parse(stdout).runCommand, 'npx -y @pdpp/cli@beta connect https://pdpp.example');
+  assert.equal(JSON.parse(stdout).runCommand, 'npx -y @pdpp/cli connect https://pdpp.example');
 });
 
 test('connect validates provider URLs before any network flow', async () => {

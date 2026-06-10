@@ -117,8 +117,8 @@ Default public images:
 - `ghcr.io/vana-com/pdpp/web:main`
 
 `main` is a moving development tag refreshed by maintainers, not an every-commit
-publish guarantee. While the project is in beta-only release posture, release
-images are published as beta/version tags and `sha-*` tags. For durable
+publish guarantee. Release images are published as `latest`/version tags and
+`sha-*` tags. For durable
 self-hosting, prefer a pinned version, `sha-*` tag, or digest pin over a moving
 tag. To build from local source instead of pulling public images, run:
 
@@ -232,15 +232,15 @@ the provider via device-scoped enrollment. See
 `openspec/changes/introduce-local-collector-runner/design.md` for the full
 design.
 
-The public `@pdpp/local-collector@beta` package currently ships only the
+The public `@pdpp/local-collector` package currently ships only the
 filesystem-class Claude Code and Codex collectors. Browser/Patchright-backed
 connectors remain in the monorepo runner until each has its own publishability
 review.
 
 ```bash
 # Claude Code / Codex from any host with Node 22.14+:
-npx -y @pdpp/local-collector@beta advertise
-npx -y @pdpp/local-collector@beta enroll \
+npx -y @pdpp/local-collector advertise
+npx -y @pdpp/local-collector enroll \
   --base-url http://localhost:7662 \
   --code <enrollment-code-from-provider>
 
@@ -264,7 +264,7 @@ prefers `packages/polyfill-connectors/bin/collector-runner.ts` so development
 and browser-backed connector work can use workspace-only dependencies. Outside
 the repo it resolves an installed `@pdpp/local-collector` package; until npm
 `latest` is intentionally promoted, install that package as
-`@pdpp/local-collector@beta`.
+`@pdpp/local-collector`.
 
 When a HEADED browser-backed connector is attempted inside the
 provider/control-plane container, headed acquisitions fail closed before
@@ -284,14 +284,13 @@ Current Docker connector-support posture:
 | OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Point `PDPP_DOCKER_CLAUDE_CODE_HOME` and `PDPP_DOCKER_CODEX_HOME` at `${HOME}/.claude` and `${HOME}/.codex` (or any host directory holding those layouts). The compose file already mounts them read-only to `/imports/claude` and `/imports/codex` and sets `CLAUDE_CODE_HOME` / `CLAUDE_CODE_PROJECTS_DIR` / `CODEX_HOME` accordingly. | Default Compose seeds those host overrides to `./packages/polyfill-connectors/.pdpp-imports/{claude,codex}` (empty on a fresh checkout); the source-preflight will fail until the host paths are set. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
 | WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
 | iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
-| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the workspace local collector runner on a visible-browser host. | Pair the workspace collector with `pnpm exec pdpp collector enroll`, then run connectors via `pnpm exec pdpp collector run`. | These connectors are not in `@pdpp/local-collector@beta` yet. Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
+| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the workspace local collector runner on a visible-browser host. | Pair the workspace collector with `pnpm exec pdpp collector enroll`, then run connectors via `pnpm exec pdpp collector run`. | These connectors are not in `@pdpp/local-collector` yet. Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
 | Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
 CI builds Docker targets on pull requests and Docker-relevant `main` pushes
-without pushing images. In the current beta-only posture, semantic-release
-publishes from the `beta` branch after an owner advances it to include `main`;
-that release workflow publishes npm beta packages plus GHCR beta/version tags
-for both Docker targets. Maintainers can manually refresh moving development
+without pushing images. semantic-release publishes from `main` whenever a
+release-worthy Conventional Commit lands; that release workflow publishes the
+npm packages plus GHCR `latest`/version tags for both Docker targets. Maintainers can manually refresh moving development
 image tags when needed and should make the first published GHCR packages public
 in GitHub's package settings if the registry creates them private.
 
@@ -315,11 +314,12 @@ pnpm reference-implementation:test
 
 ## Releases
 
-The current release train is beta-only. Publishable work lands on `main`; an
-owner advances `beta` to include `main`, and semantic-release publishes from
-`beta`. Commit messages follow Conventional Commits: `fix:` creates a patch
-prerelease, `feat:` creates a minor prerelease, and breaking changes create a
-major prerelease.
+The release train is a single channel: 0.x versions released from `main` to
+npm's default `latest` dist-tag (see `docs/package-release-policy.md`). Commit
+messages follow Conventional Commits: `fix:` creates a patch release and
+`feat:` creates a minor release. Breaking-change markers are reserved for the
+intentional 1.0 milestone; commits that do not follow the Conventional format
+do not release.
 
 Preview the next release locally:
 
@@ -329,14 +329,15 @@ GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
 
 The release workflow validates generated reference-contract artifacts, verifies
 the reference implementation, typechecks the operator console app, publishes the
-npm beta package release train, builds both Docker image targets, creates the
+npm package release train, builds both Docker image targets, creates the
 GitHub release and `v${version}` tag, then publishes:
 
-- `@pdpp/cli@beta`
-- `@pdpp/local-collector@beta`
+- `@pdpp/cli`
+- `@pdpp/local-collector`
+- `@pdpp/mcp-server`
 
 - `ghcr.io/vana-com/pdpp/reference:${version}`
-- `ghcr.io/vana-com/pdpp/reference:beta`
+- `ghcr.io/vana-com/pdpp/reference:latest`
 - `ghcr.io/vana-com/pdpp/reference:sha-*`
 - matching `web` tags
 

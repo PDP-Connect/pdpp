@@ -547,12 +547,12 @@ test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata
   assert.equal(agentDiscovery.llms_full_txt, "https://example.invalid/llms-full.txt");
   assert.deepEqual(agentDiscovery.cli, {
     package: "@pdpp/cli",
-    package_specifier: "@pdpp/cli@beta",
+    package_specifier: "@pdpp/cli",
     bin_name: "pdpp",
-    install_command: "npx -y @pdpp/cli@beta --help",
-    run_command: "npx -y @pdpp/cli@beta connect https://example.invalid/sandbox",
-    connect_command: "npx -y @pdpp/cli@beta connect <provider-url>",
-    version_policy: "beta",
+    install_command: "npx -y @pdpp/cli --help",
+    run_command: "npx -y @pdpp/cli connect https://example.invalid/sandbox",
+    connect_command: "npx -y @pdpp/cli connect <provider-url>",
+    version_policy: "latest",
     no_owner_token: true,
     no_owner_token_policy: "owner_browser_approval_required",
   });

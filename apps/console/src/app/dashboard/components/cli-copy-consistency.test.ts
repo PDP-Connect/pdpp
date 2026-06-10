@@ -91,10 +91,10 @@ test("cli README advertises pdpp ref namespace", async () => {
   assert.match(src, PDPP_CONNECT_COMMAND);
 });
 
-// The dashboard previously told users to "Install with `npx -y @pdpp/cli@beta
+// The dashboard previously told users to "Install with `npx -y @pdpp/cli
 // --help`" next to a bare `pdpp ref ...` command. Users who copied that bare
 // command got `command not found: pdpp`. The peek + detail surfaces must now
-// also render a zero-install one-shot form (`npx -y @pdpp/cli@beta ref ...`).
+// also render a zero-install one-shot form (`npx -y @pdpp/cli ref ...`).
 test("peek pane surfaces a zero-install npx invocation", async () => {
   const src = await read("packages/operator-ui/src/components/peek.tsx");
   assert.match(src, NO_INSTALL_HELPER, "peek pane must derive the no-install form via the shared helper");

@@ -124,23 +124,23 @@ The reference deployment-diagnostics dashboard surface SHALL render the bound co
 
 - **WHEN** a collector whose protocol version is not in the server's accepted set is paired
 - **THEN** the dashboard SHALL raise a `collector_protocol_outdated` warning distinct from `browser_connectors_need_collector`
-- **AND** the warning SHALL link to the operator action (`npm i -g @pdpp/local-collector@beta` while the package is beta-tagged, then the promoted stable package after release) without exposing device tokens or local paths
+- **AND** the warning SHALL link to the operator action (`npm i -g @pdpp/local-collector` while the package is beta-tagged, then the promoted stable package after release) without exposing device tokens or local paths
 
 ### Requirement: Public operator copy SHALL advertise the npm-installable collector path as the supported public flow
 
-The public dashboard, `pdpp connect` copy, and operator-facing docs SHALL advertise `npx -y @pdpp/local-collector@beta ...` (or a global install of the same beta-tagged package until stable promotion) as the supported public path for filesystem-class connector collection on a fresh host. Monorepo-clone instructions SHALL remain available only as a development path, not as the primary public flow.
+The public dashboard, `pdpp connect` copy, and operator-facing docs SHALL advertise `npx -y @pdpp/local-collector ...` (or a global install of the same beta-tagged package until stable promotion) as the supported public path for filesystem-class connector collection on a fresh host. Monorepo-clone instructions SHALL remain available only as a development path, not as the primary public flow.
 
 #### Scenario: Operator reads `pdpp connect` or dashboard onboarding copy
 
 - **WHEN** an operator reads the public onboarding copy for Claude Code / Codex collection
-- **THEN** the copy SHALL show `npx -y @pdpp/local-collector@beta ...` (or `npm i -g @pdpp/local-collector@beta`) as the primary instruction while the package is beta-tagged
+- **THEN** the copy SHALL show `npx -y @pdpp/local-collector ...` (or `npm i -g @pdpp/local-collector`) as the primary instruction while the package is beta-tagged
 - **AND** the copy SHALL NOT lead with `git clone` of the monorepo for filesystem-class connectors
 
 #### Scenario: A browser-bound connector is documented
 
 - **WHEN** the dashboard surfaces a connector whose runtime bindings include `browser`
 - **THEN** the surface SHALL clearly indicate that the public `@pdpp/local-collector` does not yet ship browser-class collection
-- **AND** the surface SHALL NOT imply that `npx -y @pdpp/local-collector@beta` covers browser-bound connectors
+- **AND** the surface SHALL NOT imply that `npx -y @pdpp/local-collector` covers browser-bound connectors
 
 ### Requirement: Reference web surfaces SHALL support light and dark themes
 

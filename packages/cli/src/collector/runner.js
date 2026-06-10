@@ -10,7 +10,7 @@ import { CollectorUsageError } from './errors.js';
  * Resolve the published `@pdpp/local-collector` package, if installed.
  *
  * The shim prefers an installed `@pdpp/local-collector` so an operator who
- * `npm i -g @pdpp/cli@beta && npm i -g @pdpp/local-collector@beta` can run
+ * `npm i -g @pdpp/cli && npm i -g @pdpp/local-collector` can run
  * `pdpp collector ...` without a monorepo checkout. Resolution is lazy —
  * the CLI does NOT declare a runtime dependency on `@pdpp/local-collector`
  * (per `publish-pdpp-local-collector` task 4.4); a missing package is
@@ -108,12 +108,12 @@ export function resolveTsxBinary(startDir = dirname(fileURLToPath(import.meta.ur
  */
 const RUNNER_MISSING_MESSAGE =
   'pdpp collector requires @pdpp/local-collector. Install once with ' +
-  '"npm i -g @pdpp/local-collector@beta" or run "npx -y @pdpp/local-collector@beta ...". ' +
+  '"npm i -g @pdpp/local-collector" or run "npx -y @pdpp/local-collector ...". ' +
   'See openspec/changes/publish-pdpp-local-collector/design.md.';
 
 const TSX_MISSING_MESSAGE =
   'Could not locate tsx alongside the collector runner. Install ' +
-  '@pdpp/local-collector with "npm i -g @pdpp/local-collector@beta" or run ' +
+  '@pdpp/local-collector with "npm i -g @pdpp/local-collector" or run ' +
   '"pnpm install" at the monorepo root.';
 
 /**

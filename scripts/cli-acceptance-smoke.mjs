@@ -8,11 +8,11 @@ const [, , mode] = process.argv;
 const repoRoot = new URL('..', import.meta.url).pathname;
 const cliBin = join(repoRoot, 'packages/cli/bin/pdpp.js');
 
-if (mode === 'published-beta-help') {
-  const result = run('npx', ['-y', '@pdpp/cli@beta', '--help'], { cwd: repoRoot });
-  requireSuccess(result, 'published @pdpp/cli@beta --help');
+if (mode === 'published-help') {
+  const result = run('npx', ['-y', '@pdpp/cli@latest', '--help'], { cwd: repoRoot });
+  requireSuccess(result, 'published @pdpp/cli --help');
   requireMatch(result.stdout, /PDPP CLI/, 'published help output should identify the PDPP CLI');
-  process.stdout.write('PASS published @pdpp/cli@beta --help\n');
+  process.stdout.write('PASS published @pdpp/cli --help\n');
   process.exit(0);
 }
 
@@ -31,8 +31,8 @@ process.stderr.write(
     'Usage: node scripts/cli-acceptance-smoke.mjs <mode>',
     '',
     'Modes:',
-    '  published-beta-help  Run npx -y @pdpp/cli@beta --help.',
-    '  local-connect        Run local pdpp connect smoke.',
+    '  published-help   Run npx -y @pdpp/cli@latest --help.',
+    '  local-connect    Run local pdpp connect smoke.',
     '',
   ].join('\n')
 );

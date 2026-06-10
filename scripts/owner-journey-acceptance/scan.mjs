@@ -211,7 +211,7 @@ export function extractRenderedCommands(src, options = {}) {
   const cleaned = stripComments(src);
   const commands = [];
 
-  // (1) Quoted/templated literal commands: `npx -y @pdpp/cli@beta connect ...`,
+  // (1) Quoted/templated literal commands: `npx -y @pdpp/cli connect ...`,
   //     ``npx -y ${specifierVar} run`` (specifier var resolved), `claude mcp ...`.
   const literalRe = /(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
   let m;
@@ -286,7 +286,7 @@ function parseArrayTokens(arraySrc, specifierVars) {
 
 /**
  * Derive `{ varName -> "@scope/pkg@tag" }` from `const X = "@.../..."` and
- * `const X = \`${Y}@beta\`` declarations in the source. Two passes so a
+ * `const X = \`${Y}@latest\`` declarations in the source. Two passes so a
  * specifier built from a package-name var (the common shape) resolves.
  *
  * @param {string} src
@@ -299,7 +299,7 @@ export function deriveSpecifierVars(src) {
   for (const mm of cleaned.matchAll(/\b(?:const|let|var)\s+([\w]+)\s*=\s*"(@[\w/-]+(?:@[\w.-]+)?)"/g)) {
     vars[mm[1]] = mm[2];
   }
-  // Pass 2: template specifiers like `${packageNameVar}@beta`.
+  // Pass 2: template specifiers like `${packageNameVar}@latest`.
   for (const mm of cleaned.matchAll(/\b(?:const|let|var)\s+([\w]+)\s*=\s*`\$\{\s*([\w]+)\s*\}@([\w.-]+)`/g)) {
     const base = vars[mm[2]];
     if (base) {

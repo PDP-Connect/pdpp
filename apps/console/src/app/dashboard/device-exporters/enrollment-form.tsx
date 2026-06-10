@@ -75,7 +75,7 @@ export function EnrollmentForm({
           <div>
             <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the host that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector@beta</code> command on the host with Claude Code
+              Run this <code className="font-mono">@pdpp/local-collector</code> command on the host with Claude Code
               or Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
               PDPP source checkout is required. The JSON response returns <code className="font-mono">device_id</code>,{" "}
               <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code>{" "}

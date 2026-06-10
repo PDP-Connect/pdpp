@@ -9,19 +9,19 @@ const expectedPublishConfig = {
   access: 'public',
   provenance: false,
   registry: 'https://registry.npmjs.org/',
-  tag: 'beta',
+  tag: 'latest',
 };
 const expectedRepositoryUrl = 'git+https://github.com/vana-com/pdpp.git';
 const expectedNodeEngine = '>=22.14.0';
 
-// While the release train is in its beta-only posture (see
-// docs/package-release-policy.md), npm's default `latest` dist-tag still points
-// at the placeholder 0.0.0 that was published during owner bootstrap. Any
-// operator-facing install/exec instruction that omits an explicit dist-tag
-// therefore resolves to that empty placeholder. We require the `@beta` tag (or
-// a pinned version) on every publishable-package install command in the active
-// docs below, so the docs cannot silently regress operators onto `latest`.
-const betaPostureDistTag = 'beta';
+// The release train publishes a single channel: 0.x versions on npm's default
+// `latest` dist-tag, released from `main` (see docs/package-release-policy.md).
+// The `beta` dist-tag is retired; operator-facing install/exec instructions
+// reference publishable packages by plain name (or a pinned version). We forbid
+// the retired `@beta` tag on every publishable-package install command in the
+// active docs below, so the docs cannot silently regress operators onto the
+// dead prerelease channel.
+const retiredDistTag = 'beta';
 const installDocRoots = [
   'README.md',
   'docs',
@@ -66,9 +66,9 @@ function listMarkdownFiles(relativeRoot) {
 }
 
 // Returns one error string per active-doc install command that references a
-// publishable package without an explicit `@beta`/pinned tag. Pure over its
-// inputs so it can be unit tested without touching the registry.
-export function findUntaggedInstallDocReferences({ packageNames, docFiles, readFile }) {
+// publishable package with the retired `@beta` dist-tag. Pure over its inputs
+// so it can be unit tested without touching the registry.
+export function findRetiredTagInstallDocReferences({ packageNames, docFiles, readFile }) {
   const problems = [];
   // Match `npm i`, `npm install`, `npm add`, `pnpm add`, `pnpm install`,
   // `pnpm dlx`, `pnpm exec`, and `npx` invocations only — prose mentions of a
@@ -87,13 +87,12 @@ export function findUntaggedInstallDocReferences({ packageNames, docFiles, readF
         continue;
       }
       for (const packageName of packageNames) {
-        // The package reference is acceptable when it carries an explicit tag
-        // (`@beta`) or a pinned version (`@1.2.3`, `@^1`, `@0.1.0-beta.7`).
-        const taggedReference = new RegExp(`${escapeRegExp(packageName)}@[^\\s'"\`]+`);
-        const bareReference = new RegExp(`${escapeRegExp(packageName)}(?![@\\w./-])`);
-        if (bareReference.test(line) && !taggedReference.test(line)) {
+        // Plain references and pinned versions (`@1.2.3`, `@0.1.0`) are fine;
+        // only the retired `beta` dist-tag is forbidden.
+        const retiredReference = new RegExp(`${escapeRegExp(packageName)}@${retiredDistTag}(?![\\w.-])`);
+        if (retiredReference.test(line)) {
           problems.push(
-            `${docFile} installs ${packageName} without an explicit @${betaPostureDistTag} tag (resolves to placeholder latest while in beta-only posture): ${line.trim()}`,
+            `${docFile} installs ${packageName} with the retired @${retiredDistTag} dist-tag (the release train publishes only to latest): ${line.trim()}`,
           );
         }
       }
@@ -220,6 +219,16 @@ if (!/pnpm release:policy-check/.test(releaseWorkflow)) {
   fail(errors, 'semantic-release quality job must run pnpm release:policy-check');
 }
 
+// Single release channel: releases are cut from `main` onto npm's default
+// `latest` dist-tag. A prerelease branch (the old `beta` lane) is a second
+// moving part that goes stale; the policy forbids reintroducing one.
+if (/^\s*prerelease\s*:/m.test(releaseConfig) || /^\s*-\s*name:\s*beta\s*$/m.test(releaseConfig)) {
+  fail(errors, '.releaserc.yaml must declare a single release channel from main (no prerelease/beta branch)');
+}
+if (!/branches:\s*\[main\]/.test(releaseWorkflow)) {
+  fail(errors, 'semantic-release workflow must trigger on push to main (single release channel)');
+}
+
 const packageScopes = publishablePackages.map(({ manifest }) => manifest.name.replace(/^@pdpp\//, ''));
 for (const scope of packageScopes) {
   if (!new RegExp(`scope:\\s*${scope}\\b`).test(releaseConfig)) {
@@ -229,12 +238,12 @@ for (const scope of packageScopes) {
 
 const publishablePackageNames = publishablePackages.map(({ manifest }) => manifest.name);
 const installDocFiles = installDocRoots.flatMap((root) => listMarkdownFiles(root));
-const untaggedInstallDocReferences = findUntaggedInstallDocReferences({
+const retiredTagInstallDocReferences = findRetiredTagInstallDocReferences({
   packageNames: publishablePackageNames,
   docFiles: installDocFiles,
   readFile: (relativePath) => readFileSync(path.join(repoRoot, relativePath), 'utf8'),
 });
-for (const problem of untaggedInstallDocReferences) {
+for (const problem of retiredTagInstallDocReferences) {
   fail(errors, problem);
 }
 

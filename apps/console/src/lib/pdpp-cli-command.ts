@@ -6,11 +6,15 @@ export const pdppCliConnectCommand = createPdppCliCommand(PDPP_CLI_PROVIDER_PLAC
 export const pdppCliInstallCommand = `npx -y ${pdppCliPackageInfo.packageSpecifier} --help`;
 export const pdppCliTokenCompletionUnavailable = pdppCliPackageInfo.noOwnerToken !== true;
 export const localCollectorPackageName = "@pdpp/local-collector";
-export const localCollectorPackageSpecifier = `${localCollectorPackageName}@beta`;
+// Single release channel: the published package rides npm's default `latest`
+// dist-tag, so the advertised specifier is the plain package name. Kept as a
+// direct string literal (not an alias) so the owner-journey harness scanner
+// can resolve it in rendered-command extraction.
+export const localCollectorPackageSpecifier = "@pdpp/local-collector";
 
 /**
  * Rewrite a canonical `pdpp ...` invocation (as advertised in dashboard/docs
- * copy) into a zero-install one-shot form using `npx -y @pdpp/cli@beta ...`.
+ * copy) into a zero-install one-shot form using `npx -y @pdpp/cli ...`.
  * Operators who have not globally installed or workspace-linked the binary
  * still get a copy-pasteable command. Returns null when `cliCommand` does not
  * start with the `pdpp ` prefix.
@@ -35,12 +39,11 @@ export function pdppCliConnectCommandFor(providerUrl: string): string {
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta` enrollment command for a freshly
+ * Render the public `@pdpp/local-collector` enrollment command for a freshly
  * minted enrollment code. Operators paste this on the host that has Claude
  * Code / Codex data to exchange the one-time code for a device-scoped
  * credential. `@pdpp/cli` owns the `pdpp` binary; the runner package owns the
- * `pdpp-local-collector` binary and npx package invocation. Keep the beta tag
- * until the package's npm latest tag is intentionally promoted.
+ * `pdpp-local-collector` binary and npx package invocation.
  */
 export function pdppLocalCollectorEnrollCommand(args: {
   baseUrl: string;
@@ -65,7 +68,7 @@ export function pdppLocalCollectorEnrollCommand(args: {
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta` run command. The device id, device
+ * Render the public `@pdpp/local-collector` run command. The device id, device
  * token, and source instance id come from a prior enrollment response and are
  * passed as env vars so the dashboard never embeds secrets in generated
  * commands.
@@ -85,7 +88,7 @@ export function pdppLocalCollectorRunCommand(args: { baseUrl: string; connectorI
 
 /**
  * Render the monorepo-only browser-collector enrollment command. Browser-bound
- * connectors are not bundled in `@pdpp/local-collector@beta`; the owner runs
+ * connectors are not bundled in `@pdpp/local-collector`; the owner runs
  * this from a PDPP checkout that has `packages/polyfill-connectors`.
  */
 export function pdppBrowserCollectorEnrollCommand(args: {
@@ -145,7 +148,7 @@ export function pdppCliMonorepoCommand(cliCommand: string): string | null {
 }
 
 /**
- * Render a local-only `@pdpp/local-collector@beta` diagnostic command
+ * Render a local-only `@pdpp/local-collector` diagnostic command
  * (`doctor` or `status`). These subcommands inspect the device-local durable
  * outbox; they take no `--base-url`, exchange no credentials, and the operator
  * runs them on the host that owns the data — so the generated string is safe
@@ -168,7 +171,7 @@ function pdppLocalCollectorDiagnosticCommand(
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta doctor` command. `doctor`
+ * Render the public `@pdpp/local-collector doctor` command. `doctor`
  * prints operator-facing durable-outbox diagnostics (expired leases, dead
  * letters, missing DB) as JSON. This is the command an owner runs on the
  * local collector host when the dashboard shows the outbox as stalled.
@@ -178,7 +181,7 @@ export function pdppLocalCollectorDoctorCommand(args?: { connectionId?: string |
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta status` command. `status`
+ * Render the public `@pdpp/local-collector status` command. `status`
  * prints the raw durable-outbox health snapshot (queue counts, oldest pending,
  * expired leases) as JSON.
  */
@@ -187,7 +190,7 @@ export function pdppLocalCollectorStatusCommand(args?: { connectionId?: string |
 }
 
 /**
- * Render the public `@pdpp/local-collector@beta retry-dead-letters` command.
+ * Render the public `@pdpp/local-collector retry-dead-letters` command.
  * This is the *recovery* primitive (shipped in `94afba46` / `63a4eec5`): it
  * requeues dead-letter outbox rows so a stalled local collector can drain. The
  * doctor command only diagnoses; this is the command that actually fixes a
