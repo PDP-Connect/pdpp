@@ -3,11 +3,11 @@
  *
  * This is the single source of truth for how a setup-plan disposition becomes
  * owner-facing copy: one status label + tone, one short guidance line, one
- * primary next action, and the picker sort rank. Both the Connect "Add data
- * sources" catalog (first-account setup) and the Sources page's per-source
- * add-account projection (adding ANOTHER account to a source that already has
- * data) consume it, so the two surfaces can never drift into two different
- * vocabularies for the same disposition.
+ * primary next action, and the picker sort rank. Both the Sources "Add source"
+ * catalog (first-account setup) and the Sources page's per-source add-account
+ * projection (adding ANOTHER account to a source that already has data) consume
+ * it, so the two surfaces can never drift into two different vocabularies for
+ * the same disposition.
  *
  * It introduces NO new classification truth — `disposition` already comes from
  * the shared reference setup planner via `buildConnectorCatalog`. This module

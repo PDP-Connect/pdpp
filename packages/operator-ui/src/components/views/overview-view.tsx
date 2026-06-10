@@ -50,7 +50,7 @@ export function OverviewView({
     <>
       <PageHeader description={description} title="Overview" />
       <OverviewHero
-        addSourceHref={routes.section.connect}
+        addSourceHref={routes.section.addSource}
         exploreHref={routes.section.explore}
         recordsHref={routes.section.records}
         summary={data.summary}

@@ -339,7 +339,7 @@ export function RecordsListView({
       {interactive ? (
         <SourceAccountsSummary
           addSupportByConnectorId={addSupportByConnectorId}
-          connectHref={routes.section.connect}
+          addSourceHref={routes.section.addSource}
           overviews={labeled}
         />
       ) : null}
@@ -391,11 +391,9 @@ export function RecordsListView({
  * Records-index header actions.
  *
  * The persistent "Add source" action is the always-visible header entry.
- * It routes to the unified Connect cockpit, not directly to device enrollment:
- * the cockpit is the single owner-facing place that can search every connector
- * and choose the correct next setup action. The button is gated on
- * `interactive` so the sandbox — which cannot create connections — never shows
- * a dead button.
+ * It routes to the Sources-owned add-source surface, not the AI app connection
+ * page. The button is gated on `interactive` so the sandbox — which cannot
+ * create connections — never shows a dead button.
  */
 function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; routes: Routes }) {
   return (
@@ -404,7 +402,7 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
         <Link
           className={buttonVariants({ variant: "default", size: "sm" })}
           data-testid="add-connection-action"
-          href={routes.section.connect}
+          href={routes.section.addSource}
         >
           Add source
         </Link>
@@ -430,10 +428,10 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
  *   3. one primary next action — "Add another account" when self-service,
  *      "Reconnect" when a connection needs attention, else nothing.
  *
- * It is NOT the Connect "Add data sources" picker (which lists every catalog
- * connector and lives on Connect). It rolls up only sources the owner ALREADY
- * has, joining each to its add-account support. The full add-a-new-source
- * catalog stays one click away via the header "Add source" action.
+ * It is NOT the Sources "Add source" catalog, which lists every connector. It
+ * rolls up only sources the owner ALREADY has, joining each to its add-account
+ * support. The full add-a-new-source catalog stays one click away via the
+ * header "Add source" action.
  *
  * Renders nothing when the owner has no sources yet (the empty-state hint and
  * the header "Add source" action carry the blank-instance on-ramp) or when the
@@ -441,11 +439,11 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
  */
 function SourceAccountsSummary({
   addSupportByConnectorId,
-  connectHref,
+  addSourceHref,
   overviews,
 }: {
   addSupportByConnectorId?: Map<string, SourceAddSupport>;
-  connectHref: string;
+  addSourceHref: string;
   overviews: ConnectorOverview[];
 }) {
   const groups = groupSourcesByConnector(overviews);
@@ -460,7 +458,7 @@ function SourceAccountsSummary({
       <ul className="grid gap-3" data-testid="source-accounts-summary">
         {groups.map((group) => (
           <SourceAccountCard
-            connectHref={connectHref}
+            addSourceHref={addSourceHref}
             group={group}
             key={group.connectorId}
             support={addSupportByConnectorId?.get(group.connectorId) ?? null}
@@ -472,11 +470,11 @@ function SourceAccountsSummary({
 }
 
 function SourceAccountCard({
-  connectHref,
+  addSourceHref,
   group,
   support,
 }: {
-  connectHref: string;
+  addSourceHref: string;
   group: SourceGroup;
   support: SourceAddSupport | null;
 }) {
@@ -515,7 +513,7 @@ function SourceAccountCard({
         </p>
       </div>
       <div className="flex items-start justify-end gap-2">
-        <SourceAccountActions connectHref={connectHref} group={group} support={support} />
+        <SourceAccountActions addSourceHref={addSourceHref} group={group} support={support} />
       </div>
     </li>
   );
@@ -529,11 +527,11 @@ function SourceAccountCard({
  * chip already told the honest story, so no dead button is rendered.
  */
 function SourceAccountActions({
-  connectHref,
+  addSourceHref,
   group,
   support,
 }: {
-  connectHref: string;
+  addSourceHref: string;
   group: SourceGroup;
   support: SourceAddSupport | null;
 }) {
@@ -559,8 +557,8 @@ function SourceAccountActions({
       ) : (
         <Link
           className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          data-testid="source-add-via-connect"
-          href={connectHref}
+          data-testid="source-add-via-sources"
+          href={addSourceHref}
         >
           Add source →
         </Link>

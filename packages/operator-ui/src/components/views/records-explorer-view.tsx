@@ -440,7 +440,7 @@ function ExplorerEmptyFeed({
         hint={
           <span>
             No connectors are configured yet.{" "}
-            <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.connect}>
+            <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.addSource}>
               Add a source →
             </Link>
           </span>

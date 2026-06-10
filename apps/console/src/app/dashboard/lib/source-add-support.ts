@@ -14,11 +14,10 @@
  * Sources page can answer, per source it already shows: can the owner add
  * another account, and what is the one next action.
  *
- * Construction note: this is deliberately NOT the Connect "Add data sources"
- * picker. The Sources page never imports the catalog picker (a regression test
- * enforces that — the picker lives on Connect). It imports this small per-source
- * projection instead, so existing-data monitoring and add-new-account support
- * stay one screen but two clearly separate facts.
+ * Construction note: this is deliberately NOT the full Sources "Add source"
+ * catalog. The Sources first screen imports this small per-source projection
+ * instead, so existing-data monitoring and add-new-account support stay one
+ * screen but two clearly separate facts.
  */
 
 import { canonicalConnectorKey } from "pdpp-reference-implementation/connection-setup-plan";

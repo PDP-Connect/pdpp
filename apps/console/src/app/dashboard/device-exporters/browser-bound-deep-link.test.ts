@@ -2,8 +2,8 @@
  * Pins the honest handling of browser-bound connector deep-links on the
  * device-exporters enrollment page.
  *
- * The unified Connect "Add source" guidance deep-links the supported
- * local-collector set (`?connector=claude_code`/`codex`) into this form.
+ * The Sources "Add source" catalog deep-links the supported local-collector set
+ * (`?connector=claude_code`/`codex`) into this form.
  * Browser-bound sources must not be prefilled here: the old proof path required
  * a PDPP source checkout and is not an owner-usable setup flow. They render an
  * honest packaged-path-pending notice until the dashboard browser flow ships.
@@ -13,7 +13,7 @@
  * page regresses to swallowing a browser-bound deep-link or stops routing through
  * the shared source of truth.
  *
- * See connection-modality.ts and the unified Connect source setup cockpit.
+ * See connection-modality.ts and the Sources add-source catalog.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -87,8 +87,8 @@ test("unsupported browser-bound deep-link still renders an honest notice pointin
 
 // ─── Add-connection landing framing ───────────────────────────────────────
 //
-// When the owner reaches this page from the Connect "Add source" flow
-// picker (a validated `?connector=` deep-link), the page must frame itself as
+// When the owner reaches this page from the Sources "Add source" catalog
+// (a validated `?connector=` deep-link), the page must frame itself as
 // finishing the connector they chose — a "Sources / Add <Connector>"
 // breadcrumb gated on the already-validated `defaultConnectorId` — rather than
 // reading purely as a "Local device exporters" diagnostics console. The bare

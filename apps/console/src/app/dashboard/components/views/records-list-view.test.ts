@@ -204,17 +204,17 @@ test("churn dry-run command offers a one-gesture copy affordance", async () => {
 
 // ─── Persistent Add-source discoverability ────────────────────────────────
 //
-// Records/Sources is a monitoring and browsing view. Source setup belongs in
-// the unified Connect cockpit, where every connector can be searched and routed
-// through the shared setup planner. The header action must therefore route to
-// Connect, not directly to the device-exporter form that only covers one setup
-// class. Records must not duplicate the setup catalog.
+// Records/Sources is the owner home for data-source setup and monitoring. The
+// first screen must stay light, but its persistent Add-source action routes to
+// the Sources-owned add-source catalog where every connector can be searched and
+// routed through the shared setup planner. It must not point at the AI-app
+// connection page or directly at the device-exporter form.
 
 const ADD_CONNECTION_HEADER_ACTION = /data-testid="add-connection-action"/;
 const ADD_CONNECTION_HEADER_GATED_INTERACTIVE =
   /\{interactive \? \(\s*<Link[\s\S]*?data-testid="add-connection-action"/;
-const ADD_CONNECTION_HEADER_TARGETS_CONNECT =
-  /data-testid="add-connection-action"\s+href=\{routes\.section\.connect\}/;
+const ADD_CONNECTION_HEADER_TARGETS_ADD_SOURCE =
+  /data-testid="add-connection-action"\s+href=\{routes\.section\.addSource\}/;
 const ADD_SOURCE_LABEL = /Add source/;
 const NO_RECORDS_SETUP_CATALOG_IMPORT = /connection-catalog/;
 const NO_RECORDS_ADD_CONNECTION_GUIDANCE = /AddConnectionGuidance|source-setup-\$\{entry\.connectorKey\}/;
@@ -235,9 +235,9 @@ test("persistent Add-source action is gated on interactive (no dead button in sa
   assert.match(src, ADD_CONNECTION_HEADER_GATED_INTERACTIVE);
 });
 
-test("persistent Add-source action targets the unified Connect cockpit", async () => {
+test("persistent Add-source action targets the Sources add-source catalog", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_CONNECTION_HEADER_TARGETS_CONNECT);
+  assert.match(src, ADD_CONNECTION_HEADER_TARGETS_ADD_SOURCE);
 });
 
 test("records list no longer owns connector setup catalog rendering", async () => {

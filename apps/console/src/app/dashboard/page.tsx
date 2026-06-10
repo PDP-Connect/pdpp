@@ -68,7 +68,7 @@ async function DatasetSummarySection() {
     const summary = await loadDashboardSummary();
     return (
       <OverviewHero
-        addSourceHref={dashboardRoutes.section.connect}
+        addSourceHref={dashboardRoutes.section.addSource}
         exploreHref={dashboardRoutes.section.explore}
         recordsHref={dashboardRoutes.section.records}
         summary={summary}

@@ -28,6 +28,7 @@ export interface Routes {
      * entry at this same destination.
      */
     explore: string;
+    addSource: string;
     records: string;
     schedules: string;
     search: string;
@@ -52,6 +53,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
     section: {
       overview: opts.overview ?? basePath,
       explore: `${basePath}/explore`,
+      addSource: `${basePath}/records/add`,
       records: `${basePath}/records`,
       schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,

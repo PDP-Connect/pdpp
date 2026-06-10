@@ -45,8 +45,8 @@ export default async function DeviceExportersPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  // The unified Connect "Add source" entry point deep-links here only for
-  // packaged local collectors (`?connector=claude_code` / `codex`). Browser-bound
+  // The Sources "Add source" catalog deep-links here only for packaged local
+  // collectors (`?connector=claude_code` / `codex`). Browser-bound
   // connectors are deliberately not prefilled here: their old monorepo proof
   // command is not an owner-usable setup path.
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
