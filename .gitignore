@@ -26,6 +26,8 @@ __pycache__/
 !docker-compose.dev.yml
 !docker-compose.neko.yml
 core.*
+# `core.*` is for core dumps; committed deploy env examples are exempt.
+!deploy/*/core.env.example
 tmp/
 docs/inbox/
 docs/outbox/
