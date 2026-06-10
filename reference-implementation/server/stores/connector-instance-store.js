@@ -499,6 +499,21 @@ export function createSqliteConnectorInstanceStore() {
       return this.get(connectorInstanceId);
     },
 
+    // Returns all draft browser-enrollment shells (any owner). Used by the TTL
+    // retirement sweep to find shells whose enrollment_expires_at has passed.
+    // The optional ownerSubjectId filter is applied client-side after the
+    // bounded read to avoid dynamic SQL.
+    listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
+      const rows = allowUnboundedReadAcknowledged(
+        referenceQueries.connectorInstancesListDraftBrowserEnrollmentShells,
+      );
+      const instances = rows.map(mapInstance);
+      if (ownerSubjectId) {
+        return instances.filter((i) => i.ownerSubjectId === ownerSubjectId);
+      }
+      return instances;
+    },
+
     // Connection-scoped destructive delete of ONE connection, keyed strictly on
     // connector_instance_id. Erases the connection's records/history/blobs/
     // attention/search, its schedule, clears its device source-instance
@@ -781,6 +796,27 @@ export function createPostgresConnectorInstanceStore() {
         );
       }
       return await this.get(connectorInstanceId);
+    },
+
+    // Returns all draft browser-enrollment shells (any owner, or filtered by
+    // ownerSubjectId). Used by the TTL retirement sweep.
+    async listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
+      const result = ownerSubjectId
+        ? await postgresQuery(
+            `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+             FROM connector_instances
+             WHERE status = 'draft'
+               AND source_binding_json->>'kind' = 'browser_enrollment_shell'
+               AND owner_subject_id = $1`,
+            [ownerSubjectId],
+          )
+        : await postgresQuery(
+            `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+             FROM connector_instances
+             WHERE status = 'draft'
+               AND source_binding_json->>'kind' = 'browser_enrollment_shell'`,
+          );
+      return result.rows.map(mapInstance);
     },
 
     // Postgres connection-scoped delete. Mirrors the SQLite arm exactly: resolve

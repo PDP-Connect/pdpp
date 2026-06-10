@@ -252,6 +252,40 @@ from the repo. Until that ships, browser-bound source cards use packaged-path
 pending copy and no normal owner action. Maintainer runbooks may still exist in
 advanced documentation, but they do not make the normal setup path supported.
 
+### 14. Browser enrollment shell + TTL retirement (Slice 2)
+
+Every browser-bound add-account attempt creates a **browser enrollment shell**: a
+`draft` connector instance with a `browser_enrollment_shell` sourceBinding. The
+shell is invisible to all list/read surfaces (same as static-secret drafts) and
+carries an `enrollment_expires_at` ISO timestamp in its sourceBinding. Retirement
+rule at creation time: 2-hour TTL or explicit owner dismissal — whichever comes
+first.
+
+**Routes (owner-session / AS, no bearer):**
+- `POST /_ref/connectors/:connectorId/browser-enrollment-shell` — creates the
+  shell; refuses non-browser-bound connectors (409) and unknown connectors (404).
+  Returns `connection_id`, `enrollment_expires_at`, and `next_step.kind =
+  "browser_enrollment_run"`.
+- `POST /_ref/connections/:connectorInstanceId/abandon-enrollment` — explicit
+  owner dismissal; retires the shell (draft → revoked). Idempotent when already
+  revoked; 409 when enrollment completed and shell is already active; 404 when
+  not found or wrong owner.
+
+**TTL retirement:**
+- `expiredEnrollmentShellIds(shells, now)` (pure) — identifies expired shells
+  without I/O; directly testable.
+- `retireExpiredBrowserEnrollmentShells(store, { now })` — sweeps all draft
+  browser enrollment shells system-wide and retires expired ones.
+- SQLite store: `listDraftBrowserEnrollmentShells()` uses a bounded
+  `@bounded_by: small_enumeration_table` query (max 256 rows).
+- Postgres store: parametrized queries; no dynamic SQL or injection risk.
+
+**Data-ops retirement contract:** every shell has a declared TTL at creation
+time. The `sourceBinding.kind = "browser_enrollment_shell"` field distinguishes
+shells from static-secret drafts so the retirement sweep never touches unrelated
+drafts. Active connections (enrollment completed, first ingest flipped status)
+are never touched by retirement.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

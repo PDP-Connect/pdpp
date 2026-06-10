@@ -392,6 +392,7 @@ import {
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
 import { mountRefStaticSecretSetupStatus } from './routes/ref-static-secret-setup-status.ts';
+import { mountRefBrowserEnrollmentShell } from './routes/ref-browser-enrollment-shell.ts';
 import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
@@ -3353,6 +3354,24 @@ function buildAsApp(opts = {}) {
   });
 
   mountRefStaticSecretDraftConnection(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
+  });
+
+  // Browser-enrollment shell: pre-credential draft for in-dashboard browser-bound
+  // setup. Creates an invisible shell with TTL; owner can also abandon explicitly.
+  // Shell transitions to active only after enrollment run captures identity and
+  // first ingest succeeds (same activation path as static-secret drafts).
+  mountRefBrowserEnrollmentShell(app, {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
     pdppError,
