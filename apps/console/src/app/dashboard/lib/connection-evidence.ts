@@ -1437,5 +1437,17 @@ export function derivePrimaryRowAction(input: {
     };
   }
 
+  const sourcePressureBacklog = health?.detail_gap_backlog;
+  if (sourcePressureBacklog && sourcePressureBacklog.pending > 0) {
+    const pending = `${sourcePressureBacklog.pending_is_floor ? "at least " : ""}${sourcePressureBacklog.pending.toLocaleString()}`;
+    return {
+      kind: "cooldown_wait",
+      label: "Cooling off",
+      detail: `This connection has ${pending} pending provider-pressure gap${
+        sourcePressureBacklog.pending === 1 ? "" : "s"
+      }, so ordinary sync may be rejected by the provider-pressure cooldown. Captured progress is retained.`,
+    };
+  }
+
   return { kind: "sync" };
 }

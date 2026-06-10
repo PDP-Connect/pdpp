@@ -1653,6 +1653,30 @@ test("derivePrimaryRowAction disables ordinary sync during source-pressure coold
   }
 });
 
+test("derivePrimaryRowAction disables ordinary sync when source-pressure backlog coexists with a blocked headline state", () => {
+  const action = derivePrimaryRowAction({
+    connectorId: "chatgpt",
+    health: snapshot({
+      state: "blocked",
+      reason_code: "connector_reported_failed",
+      next_attempt_at: "2026-06-11T14:17:24.984Z",
+      detail_gap_backlog: backlog({
+        pending: 100,
+        pending_is_floor: true,
+        max_attempt_count: 10,
+      }),
+    }),
+    hasLocalDeviceProgress: false,
+  });
+  assert.equal(action.kind, "cooldown_wait");
+  if (action.kind === "cooldown_wait") {
+    assert.equal(action.label, "Cooling off");
+    assert.ok(action.detail.includes("at least 100 pending provider-pressure gaps"));
+    assert.ok(action.detail.includes("ordinary sync may be rejected"));
+    assert.ok(action.detail.includes("retained"));
+  }
+});
+
 test("derivePrimaryRowAction keeps ordinary sync for non-pressure cooling-off", () => {
   const action = derivePrimaryRowAction({
     connectorId: "github",
