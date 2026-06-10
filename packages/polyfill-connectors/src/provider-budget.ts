@@ -3,6 +3,21 @@ import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budg
 
 export type ProviderBudgetDeferReason = RunBudgetTrip | "circuit_open" | "retry_budget";
 export type CircuitBreakerState = "closed" | "half_open" | "open";
+export type ProviderBudgetCircuitTransitionTrigger =
+  | "before_request"
+  | "provider_failure"
+  | "provider_throttle"
+  | "success";
+
+export interface ProviderBudgetCircuitTransition {
+  elapsedMs: number;
+  previousState: CircuitBreakerState;
+  reason: "provider_failure" | "provider_throttle" | "reset_timeout" | "success";
+  requestCount: number;
+  retryTokensRemaining: number;
+  state: CircuitBreakerState;
+  trigger: ProviderBudgetCircuitTransitionTrigger;
+}
 
 export interface ProviderBudgetStop {
   circuitState?: CircuitBreakerState;
@@ -170,6 +185,7 @@ export class ProviderBudgetController {
   readonly pacing: ProviderPacing | null;
   readonly retryBudget: RetryBudget | null;
   readonly runBudget: RunBudget | null;
+  private readonly circuitTransitions: ProviderBudgetCircuitTransition[] = [];
 
   constructor(options: ProviderBudgetOptions = {}) {
     this.circuitBreaker = resolveCircuitBreaker(options.circuitBreaker);
@@ -184,7 +200,9 @@ export class ProviderBudgetController {
       return this.stop(runTrip);
     }
 
+    const previousCircuitState = this.circuitBreaker?.state ?? null;
     const circuitGate = this.circuitBreaker?.beforeRequest() ?? { ok: true };
+    this.recordCircuitTransition(previousCircuitState, "before_request");
     if (!circuitGate.ok) {
       return this.stop("circuit_open");
     }
@@ -200,17 +218,23 @@ export class ProviderBudgetController {
   recordSuccess(): void {
     this.retryBudget?.recordSuccess();
     this.pacing?.recordSuccess();
+    const previousCircuitState = this.circuitBreaker?.state ?? null;
     this.circuitBreaker?.recordSuccess();
+    this.recordCircuitTransition(previousCircuitState, "success");
   }
 
   recordThrottle(signal: ThrottleSignal & { retryAfterAlreadySlept?: boolean } = {}): void {
     const pacingSignal = signal.retryAfterAlreadySlept ? {} : signal;
     this.pacing?.recordThrottle(pacingSignal);
+    const previousCircuitState = this.circuitBreaker?.state ?? null;
     this.circuitBreaker?.recordFailure();
+    this.recordCircuitTransition(previousCircuitState, "provider_throttle");
   }
 
   recordFailure(): void {
+    const previousCircuitState = this.circuitBreaker?.state ?? null;
     this.circuitBreaker?.recordFailure();
+    this.recordCircuitTransition(previousCircuitState, "provider_failure");
   }
 
   consumeRetry(): ProviderBudgetGate {
@@ -230,8 +254,30 @@ export class ProviderBudgetController {
     };
   }
 
+  drainCircuitTransitions(): ProviderBudgetCircuitTransition[] {
+    return this.circuitTransitions.splice(0);
+  }
+
   private stop(reason: ProviderBudgetDeferReason): ProviderBudgetGate {
     return { ok: false, ...this.currentStop(reason) };
+  }
+
+  private recordCircuitTransition(
+    previousState: CircuitBreakerState | null,
+    trigger: ProviderBudgetCircuitTransitionTrigger
+  ): void {
+    if (!this.circuitBreaker || previousState === null || previousState === this.circuitBreaker.state) {
+      return;
+    }
+    this.circuitTransitions.push({
+      elapsedMs: this.runBudget?.elapsedMs() ?? 0,
+      previousState,
+      reason: providerBudgetTransitionReason(trigger, previousState, this.circuitBreaker.state),
+      requestCount: this.runBudget?.count ?? 0,
+      retryTokensRemaining: this.retryBudget?.remaining ?? Number.POSITIVE_INFINITY,
+      state: this.circuitBreaker.state,
+      trigger,
+    });
   }
 }
 
@@ -265,6 +311,23 @@ function sanitizeNonNegative(value: number): number {
     return 0;
   }
   return value;
+}
+
+function providerBudgetTransitionReason(
+  trigger: ProviderBudgetCircuitTransitionTrigger,
+  previousState: CircuitBreakerState,
+  state: CircuitBreakerState
+): ProviderBudgetCircuitTransition["reason"] {
+  if (trigger === "before_request" && previousState === "open" && state === "half_open") {
+    return "reset_timeout";
+  }
+  if (trigger === "provider_throttle") {
+    return "provider_throttle";
+  }
+  if (trigger === "provider_failure") {
+    return "provider_failure";
+  }
+  return "success";
 }
 
 function resolveCircuitBreaker(value: ProviderBudgetOptions["circuitBreaker"]): CircuitBreaker | null {

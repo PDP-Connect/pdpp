@@ -1,7 +1,7 @@
 # Tasks — add-provider-budget-run-control
 
-This is a proposal-only lane. No product code is written here. The tasks below
-define the implementation work that must follow.
+This change began as a proposal lane and now tracks implementation tranches. Keep
+the spec, design, tasks, and implementation in lockstep until archive.
 
 ## 1. Spec delta (this lane — proposal only)
 
@@ -48,7 +48,8 @@ separate lane or tranche with its own acceptance checks.
   - [x] Half-Open: probe request; success → Closed; failure → Open.
   - [x] Minimum-throughput guard: breaker cannot open before a minimum request count.
   - [x] When Open: propagate planned deferral immediately, without launching the provider request.
-- [ ] Expose circuit breaker state transitions to operator health view.
+- [x] Expose circuit breaker state transitions as structured run progress
+      evidence from the generic provider-budget primitive.
 - [x] Unit-test all three state transitions.
 
 ### 2.4 Run budget envelope (request cap + wall-clock deadline)
@@ -78,7 +79,8 @@ separate lane or tranche with its own acceptance checks.
 
 ### 2.7 Operator progress/visibility
 
-- [ ] Expose circuit breaker state (Closed/Open/Half-Open) in the connector health view.
+- [x] Emit run-scoped structured circuit state changes from connector runtime progress.
+- [ ] Project circuit breaker state (Closed/Open/Half-Open) in the connector health view.
 - [ ] Distinguish budget-exhaustion deferrals from source-pressure deferrals in display copy.
 - [ ] Ensure run-progress reporting distinguishes: pages fetched this run, pages deferred,
       retry events, circuit breaker state changes.

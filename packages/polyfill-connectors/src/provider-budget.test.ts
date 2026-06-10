@@ -80,6 +80,51 @@ test("CircuitBreaker: half-open probe failure reopens", () => {
   assert.equal(breaker.state, "open");
 });
 
+test("ProviderBudgetController: drains generic circuit state transitions", async () => {
+  let nowMs = 0;
+  const budget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs: 1000,
+    },
+    retryBudget: { capacity: 2 },
+  });
+
+  budget.recordThrottle({ retryAfterAlreadySlept: true });
+  assert.equal(budget.circuitBreaker?.state, "open");
+  assert.deepEqual(budget.drainCircuitTransitions(), [
+    {
+      elapsedMs: 0,
+      previousState: "closed",
+      reason: "provider_throttle",
+      requestCount: 0,
+      retryTokensRemaining: 2,
+      state: "open",
+      trigger: "provider_throttle",
+    },
+  ]);
+  assert.deepEqual(budget.drainCircuitTransitions(), [], "drain clears the durable-transition handoff buffer");
+
+  nowMs = 1000;
+  assert.equal((await budget.beforeRequest()).ok, true);
+  budget.recordSuccess();
+
+  assert.deepEqual(
+    budget.drainCircuitTransitions().map(({ previousState, reason, state, trigger }) => ({
+      previousState,
+      reason,
+      state,
+      trigger,
+    })),
+    [
+      { previousState: "open", reason: "reset_timeout", state: "half_open", trigger: "before_request" },
+      { previousState: "half_open", reason: "success", state: "closed", trigger: "success" },
+    ]
+  );
+});
+
 test("ProviderBudgetController: gates by request budget before pacing", async () => {
   const sleeps: number[] = [];
   const budget = new ProviderBudgetController({

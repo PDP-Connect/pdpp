@@ -91,6 +91,7 @@ export type {
   InteractionKind,
   InteractionRequest,
   InteractionResponse,
+  ProviderBudgetProgress,
   RecordData,
   StartMessage,
   StreamScope,

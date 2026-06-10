@@ -3729,9 +3729,28 @@ rl.on('line', (line) => {
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
     const seenProgress = [];
+    const providerBudget = {
+      object: 'provider_budget_circuit_transition',
+      circuit: {
+        previous_state: 'open',
+        state: 'half_open',
+        trigger: 'before_request',
+        reason: 'reset_timeout',
+      },
+      elapsed_ms: 1000,
+      request_count: 2,
+      retry_tokens_remaining: 'unbounded',
+    };
 
     const { connectorPath, cleanup } = createTestConnector([
-      { type: 'PROGRESS', stream: 'items', message: 'Fetching first page', count: 1, total: 3 },
+      {
+        type: 'PROGRESS',
+        stream: 'items',
+        message: 'Fetching first page',
+        count: 1,
+        total: 3,
+        provider_budget: providerBudget,
+      },
       { type: 'DONE', status: 'succeeded', records_emitted: 0 },
     ]);
 
@@ -3757,6 +3776,7 @@ rl.on('line', (line) => {
       assert.equal(seenProgress[0].message, 'Fetching first page');
       assert.equal(seenProgress[0].count, 1);
       assert.equal(seenProgress[0].total, 3);
+      assert.deepEqual(seenProgress[0].provider_budget, providerBudget);
 
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
       const progressEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.progress_reported');
@@ -3768,6 +3788,7 @@ rl.on('line', (line) => {
       assert.equal(progressEvent.data.message, 'Fetching first page');
       assert.equal(progressEvent.data.count, 1);
       assert.equal(progressEvent.data.total, 3);
+      assert.deepEqual(progressEvent.data.provider_budget, providerBudget);
     } finally {
       cleanup();
       await closeServer(server);

@@ -121,7 +121,14 @@ immediately without consulting the retry budget. (Resilience4j, Azure, Polly
 consensus.)
 
 Circuit breaker state transitions (Closed → Open, Open → Half-Open, Half-Open
-→ Closed or Open) are observable for operator health views.
+→ Closed or Open) are durable, structured run evidence. The shared
+provider-budget primitive owns transition detection; connector-specific code only
+classifies provider outcomes and drains safe transition facts into the runtime's
+progress/spine path. The transition payload is generic (`previous_state`,
+`state`, trigger/reason, elapsed/request/retry counters) and intentionally omits
+raw provider routes, record identifiers, request bodies, response bodies, and
+credentials. Operator health views derive state from that evidence rather than
+parsing ChatGPT-specific prose.
 
 ### D7. Wall-clock as outer deadline, not rate control or source-pressure signal
 
@@ -213,8 +220,9 @@ connector's in-memory provider budget/circuit state between pages.
 - Not a change to the PDPP Core protocol, grant semantics, or Authorization
   Server behavior.
 - Not a change to the manifest schema or connector public listing.
-- Not a wire-format change. Existing `DETAIL_GAP` and `STATE` messages are
-  sufficient.
+- Not a new connector message type. Existing `DETAIL_GAP` and `STATE` messages
+  remain sufficient for resumability; circuit visibility uses additive
+  structured metadata on the existing `PROGRESS` path.
 - Not a specification of provider-specific numeric defaults (fill rate, burst
   depth, retry ratio, circuit-breaker timeout). Those are tuned per provider
   using adaptive feedback; this change specifies the structural requirements,

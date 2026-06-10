@@ -218,6 +218,50 @@ violation.
 - **AND** it SHALL NOT add additional delay on top of the header value on the
   first violation of that request
 
+### Requirement: Provider-budget circuit transitions SHALL be durable run-scoped evidence
+
+SHALL the polyfill-runtime expose circuit-breaker state transitions from the
+shared provider-budget primitive as structured, run-scoped evidence. The evidence
+SHALL identify the transition (`previous_state`, `state`), the generic trigger
+and reason, and bounded run-control counters such as elapsed milliseconds,
+request count, and retry-budget posture. The evidence SHALL be emitted or
+persisted through the runtime's progress/spine path so operator health and run
+timeline surfaces can derive circuit state without parsing connector-specific
+prose.
+
+Circuit-transition evidence SHALL be scoped by the runtime envelope to the run
+and connector instance. It SHALL NOT be stored as long-lived connection state
+and SHALL NOT include raw provider URLs, query strings, record identifiers,
+conversation identifiers, cookies, bearer tokens, request bodies, response
+payloads, or other secret/user-content-bearing details. Connector-specific code
+SHOULD only classify provider outcomes and route them into the shared
+provider-budget primitive.
+
+#### Scenario: Open transition is recorded without connector-specific parsing
+
+- **WHEN** a provider-budget circuit breaker changes from Closed to Open after
+  provider throttle or failure observations
+- **THEN** the runtime SHALL emit structured transition evidence containing the
+  prior state, new state, generic reason, and bounded run-control counters
+- **AND** operator health or timeline projection SHALL be able to identify the
+  open circuit without parsing ChatGPT-specific or provider-specific prose
+
+#### Scenario: Recovery transition is recorded without leaking provider details
+
+- **WHEN** an Open circuit reaches its reset timeout and a Half-Open probe
+  succeeds
+- **THEN** the runtime SHALL record the Open → Half-Open and Half-Open → Closed
+  transitions
+- **AND** the evidence SHALL NOT contain the raw provider route, conversation ID,
+  query string, cookie, bearer token, request body, or response body
+
+#### Scenario: Another connector can reuse the primitive
+
+- **WHEN** a different 429-prone connector adopts provider-budget run control
+- **THEN** it SHALL be able to emit the same structured circuit-transition
+  evidence by binding to the shared provider-budget primitive
+- **AND** it SHALL NOT need to copy ChatGPT-specific circuit-state code
+
 ### Requirement: Polyfill-runtime checkpoint advancement SHALL be commit-gated, monotonic, and slice-aligned
 
 SHALL the polyfill-runtime advance a connector's checkpoint (cursor, bookmark,

@@ -1250,6 +1250,63 @@ function validateProgressMessage(msg, scopeByStream) {
       throw new Error(`Connector emitted invalid PROGRESS.${fieldName}: expected non-negative number`);
     }
   }
+  if (msg.provider_budget != null) {
+    validateProgressProviderBudget(msg.provider_budget);
+  }
+}
+
+const PROVIDER_BUDGET_PROGRESS_OBJECTS = new Set(['provider_budget_circuit_transition']);
+const PROVIDER_BUDGET_CIRCUIT_STATES = new Set(['closed', 'half_open', 'open']);
+const PROVIDER_BUDGET_CIRCUIT_REASONS = new Set([
+  'provider_failure',
+  'provider_throttle',
+  'reset_timeout',
+  'success',
+]);
+const PROVIDER_BUDGET_CIRCUIT_TRIGGERS = new Set([
+  'before_request',
+  'provider_failure',
+  'provider_throttle',
+  'success',
+]);
+
+function validateProgressProviderBudget(providerBudget) {
+  if (!providerBudget || typeof providerBudget !== 'object' || Array.isArray(providerBudget)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget: expected object');
+  }
+  if (!PROVIDER_BUDGET_PROGRESS_OBJECTS.has(providerBudget.object)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.object');
+  }
+  const circuit = providerBudget.circuit;
+  if (!circuit || typeof circuit !== 'object' || Array.isArray(circuit)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit: expected object');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.previous_state)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.previous_state');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.state)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.state');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_REASONS.has(circuit.reason)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.reason');
+  }
+  if (!PROVIDER_BUDGET_CIRCUIT_TRIGGERS.has(circuit.trigger)) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.trigger');
+  }
+  for (const fieldName of ['elapsed_ms', 'request_count']) {
+    const value = providerBudget[fieldName];
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Connector emitted invalid PROGRESS.provider_budget.${fieldName}`);
+    }
+  }
+  const retryTokensRemaining = providerBudget.retry_tokens_remaining;
+  if (
+    retryTokensRemaining != null
+    && retryTokensRemaining !== 'unbounded'
+    && (!Number.isFinite(retryTokensRemaining) || retryTokensRemaining < 0)
+  ) {
+    throw new Error('Connector emitted invalid PROGRESS.provider_budget.retry_tokens_remaining');
+  }
 }
 
 function validateSkipResultMessage(msg, scopeByStream) {
@@ -3227,6 +3284,7 @@ export async function runConnector(opts) {
               message: msg.message || null,
               ...(msg.count == null ? {} : { count: msg.count }),
               ...(msg.total == null ? {} : { total: msg.total }),
+              ...(msg.provider_budget == null ? {} : { provider_budget: msg.provider_budget }),
             },
           });
           onProgress(msg);

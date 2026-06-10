@@ -1658,6 +1658,61 @@ test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes 
   );
 });
 
+test("runMessagesAndConversationsWithDetail: emits structured provider-budget circuit transitions", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  let nowMs = 0;
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs: 1000,
+    },
+  });
+  providerBudget.recordFailure();
+  providerBudget.drainCircuitTransitions();
+  nowMs = 1000;
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-structured-circuit" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  const providerBudgetEvents = harness.protocolMessages.filter(
+    (message): message is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      message.type === "PROGRESS" && message.provider_budget?.object === "provider_budget_circuit_transition"
+  );
+
+  assert.deepEqual(
+    providerBudgetEvents.map((message) => message.provider_budget?.circuit.state),
+    ["half_open", "closed"],
+    "open circuit probe and recovery are emitted as structured provider-budget progress"
+  );
+  assert.equal(
+    JSON.stringify(providerBudgetEvents).includes("convo-structured-circuit"),
+    false,
+    "provider-budget events do not leak conversation ids"
+  );
+});
+
 test("runMessagesAndConversationsWithDetail: provider request budget defers cleanly before next fetch", async () => {
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];

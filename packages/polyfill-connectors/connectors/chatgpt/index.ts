@@ -31,6 +31,7 @@ import {
   type DetailCoverageMessage,
   type DetailGapMessage,
   nowIso,
+  type ProviderBudgetProgress,
   type RecordData,
   runConnector,
   type ValidateRecord,
@@ -45,6 +46,7 @@ import {
 } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
+  type ProviderBudgetCircuitTransition,
   ProviderBudgetController,
   type ProviderBudgetGate,
   retryBudgetCapacityFromRequestCap,
@@ -745,6 +747,52 @@ function isChatGptRetryableStatus(status: number | undefined): boolean {
   return status === 429 || status === 408 || (status != null && status >= 500 && status < 600);
 }
 
+function providerBudgetRetryTokensForProgress(value: number): number | "unbounded" | undefined {
+  if (value === Number.POSITIVE_INFINITY) {
+    return "unbounded";
+  }
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function providerBudgetTransitionProgress(transition: ProviderBudgetCircuitTransition): ProviderBudgetProgress {
+  const retryTokensRemaining = providerBudgetRetryTokensForProgress(transition.retryTokensRemaining);
+  const progress: ProviderBudgetProgress = {
+    circuit: {
+      previous_state: transition.previousState,
+      reason: transition.reason,
+      state: transition.state,
+      trigger: transition.trigger,
+    },
+    elapsed_ms: transition.elapsedMs,
+    object: "provider_budget_circuit_transition" as const,
+    request_count: transition.requestCount,
+  };
+  if (retryTokensRemaining !== undefined) {
+    progress.retry_tokens_remaining = retryTokensRemaining;
+  }
+  return progress;
+}
+
+async function emitChatGptProviderBudgetTransitions({
+  emit,
+  providerBudget,
+}: {
+  emit?: CollectContext["emit"] | undefined;
+  providerBudget?: ProviderBudgetController | null | undefined;
+}): Promise<void> {
+  if (!(emit && providerBudget)) {
+    providerBudget?.drainCircuitTransitions();
+    return;
+  }
+  for (const transition of providerBudget.drainCircuitTransitions()) {
+    await emit({
+      type: "PROGRESS",
+      message: `Provider-budget circuit ${transition.previousState} -> ${transition.state} (${transition.reason})`,
+      provider_budget: providerBudgetTransitionProgress(transition),
+    });
+  }
+}
+
 function chatGptEndpointRoute(path: string): string {
   if (CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN.test(path)) {
     return "/conversation/{conversation_id}";
@@ -787,12 +835,14 @@ function makeChatGptNetworkPressureDiagnostic({
  */
 async function reportChatGptRetryPressure({
   delayMs,
+  emit,
   onUnlanedRateLimited,
   providerBudget,
   response,
   retryAfterMs,
 }: {
   delayMs: number;
+  emit?: CollectContext["emit"] | undefined;
   onUnlanedRateLimited?: (() => void) | undefined;
   providerBudget?: ProviderBudgetController | null | undefined;
   response?: { status?: number } | undefined;
@@ -803,6 +853,7 @@ async function reportChatGptRetryPressure({
       retryAfterAlreadySlept: true,
       ...(retryAfterMs == null ? {} : { retryAfterMs }),
     });
+    await emitChatGptProviderBudgetTransitions({ emit, providerBudget });
   }
   const laneContext = currentAdaptiveLaneRunContext();
   await laneContext?.reportPressure({
@@ -874,6 +925,7 @@ function createChatGptApi({
       baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
       beforeAttempt: async () => {
         plannedProviderBudgetDefer = await admitChatGptProviderBudgetAttempt(providerBudget);
+        await emitChatGptProviderBudgetTransitions({ emit, providerBudget });
         if (plannedProviderBudgetDefer) {
           throw plannedProviderBudgetDefer;
         }
@@ -897,7 +949,14 @@ function createChatGptApi({
         // inside the same (serialized) detail attempt. Route the pressure to
         // either the active detail lane or the run-scoped accumulator (extracted
         // so this callback stays simple); see reportChatGptRetryPressure.
-        await reportChatGptRetryPressure({ delayMs, onUnlanedRateLimited, providerBudget, response, retryAfterMs });
+        await reportChatGptRetryPressure({
+          delayMs,
+          emit,
+          onUnlanedRateLimited,
+          providerBudget,
+          response,
+          retryAfterMs,
+        });
         if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
           return;
         }
@@ -2506,6 +2565,7 @@ export async function runMessagesAndConversationsWithDetail(
     }
     if (err instanceof ChatGptRecoverableRetryExhaustedError) {
       providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
+      await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
       observedRecoverablePressure = err;
       await deps.emit({
         type: "PROGRESS",
@@ -2567,10 +2627,12 @@ export async function runMessagesAndConversationsWithDetail(
     }
     if (detail.status !== 200) {
       providerBudget?.recordFailure();
+      await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
       throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
     }
     await processConversationDetail(deps, c, detail, emitConversation);
     providerBudget?.recordSuccess();
+    await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
     hydratedKeys.add(c.id);
     coverage.hydratedKeys.push(c.id);
     // Count this hydration against the bounded-run cap. Done after a successful

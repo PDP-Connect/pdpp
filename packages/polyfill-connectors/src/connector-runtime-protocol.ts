@@ -203,6 +203,19 @@ export interface DetailGapRecoveredMessage {
   type: "DETAIL_GAP_RECOVERED";
 }
 
+export interface ProviderBudgetProgress {
+  circuit: {
+    previous_state: "closed" | "half_open" | "open";
+    reason: "provider_failure" | "provider_throttle" | "reset_timeout" | "success";
+    state: "closed" | "half_open" | "open";
+    trigger: "before_request" | "provider_failure" | "provider_throttle" | "success";
+  };
+  elapsed_ms: number;
+  object: "provider_budget_circuit_transition";
+  request_count: number;
+  retry_tokens_remaining?: number | "unbounded";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -214,7 +227,7 @@ export type EmittedMessage =
       op?: "delete";
     }
   | { type: "STATE"; stream: string; cursor: unknown }
-  | { type: "PROGRESS"; message: string; stream?: string }
+  | { type: "PROGRESS"; message: string; stream?: string; provider_budget?: ProviderBudgetProgress }
   | ({ type: "ASSISTANCE" } & AssistanceRequest)
   | ({ type: "ASSISTANCE_STATUS" } & AssistanceCompletion)
   | {
