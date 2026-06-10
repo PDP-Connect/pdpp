@@ -7,6 +7,9 @@ Related:
 - `openspec/changes/complete-self-service-connection-onboarding/`
 - `tmp/workstreams/connection-onboarding-alignment-audit-2026-06-10.md`
 - `design-notes/full-context-refresh.md`
+- `openspec/changes/add-browser-collector-enrollment-primitive/` (Phase 5 decision disposes this change: absorb if productizing, close-as-superseded if demoting)
+- `openspec/specs/reference-connection-health/` (Phase 2/3 state vocabulary must project from this model, not duplicate it)
+- `design-notes/data-ops-backup-retirement-contract-2026-06-09.md` (Phase 6 shares the storage-hygiene diagnostics surface)
 
 ## Why This Plan Exists
 
@@ -114,6 +117,7 @@ The implementation fails if any normal owner UI contains:
 - "env var per account" normal-path language;
 - unpublished CLI commands;
 - ambiguous `connection_id` / `source_instance_id` instructions;
+- raw setup-planner enum values rendered as owner-facing status labels;
 - hidden draft/pending state after a setup submit.
 
 Advanced diagnostics may expose technical ids, but only when clearly labeled
@@ -222,6 +226,17 @@ a setup attempt view that can show:
 This may be backed by existing connector instance rows if they already carry the
 needed state, but the owner projection must make pending setup visible.
 
+Two construction constraints (avoid parallel abstractions):
+
+- The setup-attempt states and the Sources card states MUST be projections of
+  the existing `reference-connection-health` model (the same one that carries
+  the assisted-schedule honesty states like `stale_assisted_refresh` /
+  `owner_refresh_due`). Do not introduce a second, onboarding-only status enum
+  that can drift from the health projection the rest of the dashboard uses.
+- `draft`/`abandoned` setup attempts need a retirement rule at creation time
+  (TTL or explicit owner dismissal), per the data-ops retirement contract —
+  otherwise abandoned drafts accrete exactly like backup tables did.
+
 ### 2. Public/package commands are a contract
 
 Any command rendered in UI must satisfy one of:
@@ -318,8 +333,11 @@ Tasks:
 
 - Hide CLI preview commands from source cards unless the command is proven
   available in the published package.
-- Remove or demote Amazon/manual browser setup from normal owner Add flow until
-  it has a packaged non-repo command.
+- Remove broken/repo-bound Amazon/manual browser setup *commands* from normal
+  owner Add flow. Per the 2026-06-10 owner decision (productize, do not
+  demote), the interim card state is `Packaged path pending` — the source stays
+  visible as a supported-direction source, without dead commands and without
+  "not self-service" / "developer proof only" demotion copy.
 - Replace raw statuses:
   - `Track only` -> explicit existing/add distinction;
   - `Manual setup` -> only if it is actually owner-usable without repo checkout;
@@ -425,16 +443,17 @@ Acceptance:
 
 - Copying any command from normal owner UI works from a clean shell.
 
-### Phase 5: Decide browser-bound product path
+### Phase 5: Productize the browser-bound path (owner decision made)
 
 Goal: settle Amazon/Chase/ChatGPT add-new support honestly.
 
-Decision point:
-
-- If the SLVP ideal includes self-service browser-bound setup now, build a
-  packaged browser collector with generated commands and real proof.
-- If not, demote browser-bound add-new to "not self-service yet" while keeping
-  existing connections manageable.
+**DECIDED 2026-06-10 (owner): productize — do not demote.** The owner's call is
+Option A: build the packaged, owner-usable browser-bound setup path. This phase
+absorbs the active `add-browser-collector-enrollment-primitive` change (its
+intent branch currently returns `unsupported` and has no server implementation
+— that change either becomes this phase's spec home or is superseded by it;
+do not leave both open describing the same capability). Until this phase
+ships, cards carry the Phase 0 `Packaged path pending` state.
 
 Tasks if productizing:
 
@@ -460,7 +479,11 @@ Goal: prevent unrelated deployment surprises from derailing acceptance.
 Tasks:
 
 - Add disk-space preflight to `scripts/reference-stack.sh up`.
-- Add dashboard deployment readiness row for low disk/headroom.
+- Add dashboard deployment readiness row for low disk/headroom — extend the
+  `GET /_ref/deployment` `database` block that already carries
+  `physical_bytes` + per-relation sizes (shipped and live-verified
+  2026-06-09 via `surface-database-physical-footprint`); do not add a second
+  storage-diagnostics surface.
 - Document safe Docker build-cache pruning without touching data volumes.
 
 Acceptance:
@@ -510,15 +533,22 @@ implements.
 - Do not archive the change while the owner journey still depends on
   maintainer-only procedures.
 
-## Proposed Next Owner Decision
+## Owner Decision (resolved 2026-06-10)
 
-Before implementation, decide this:
+The decision point was:
 
 > For browser-bound connectors in this tranche, do we productize a packaged
 > owner-usable setup path, or do we explicitly demote add-new browser-bound setup
 > to not self-service yet?
 
-My recommendation is to demote browser-bound add-new setup immediately (Phase 0)
-and productize it in a separate focused tranche only if it remains a priority
-after Gmail/GitHub/static-secret and connection-state visibility are correct.
+The RI-owner recommendation was demote-first. **The owner decided: productize,
+do not demote.** Consequences applied throughout this plan:
+
+- Phase 0 interim honesty uses `Packaged path pending` copy, never demotion
+  copy; broken/repo-bound commands still come down immediately.
+- Phase 5 is committed work, not a decision point, and absorbs or supersedes
+  `add-browser-collector-enrollment-primitive`.
+- Phases 0–4 remain strictly ordered ahead of Phase 5: static-secret journeys,
+  the acceptance harness, and visible setup lifecycle are the foundation the
+  packaged browser path lands on.
 
