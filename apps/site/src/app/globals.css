@@ -1,5 +1,13 @@
 @import "@pdpp/brand/app.css";
 @import "tailwindcss";
+/*
+ * The site renders components from @pdpp/operator-ui. Tailwind v4's automatic
+ * source detection only scans this app's own tree, so any utility used *only*
+ * in operator-ui was being purged and dark: variants couldn't generate for that
+ * package. Registering it as an explicit @source restores those classes.
+ * Path resolves relative to this CSS file.
+ */
+@source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "fumadocs-ui/css/neutral.css";
@@ -32,6 +40,50 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+
+  /*
+   * PDPP status surface tier — maps the --status-* bg/fg token pairs from
+   * base.css into Tailwind utilities so authors can write `bg-status-success-bg`
+   * / `text-status-success-fg` etc. instead of bracket-notation.
+   * Each pair covers one connection-health semantic:
+   *   success  = healthy / active / succeeded
+   *   progress = syncing / running / in-flight
+   *   warning  = attention / stale / owner-action-required
+   *   danger   = failed / degraded / credential-error
+   *   neutral  = idle / never-run / unknown
+   *   disabled = revoked / paused / offline
+   */
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-success-fg: var(--status-success-fg);
+  --color-status-progress-bg: var(--status-progress-bg);
+  --color-status-progress-fg: var(--status-progress-fg);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-warning-fg: var(--status-warning-fg);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-danger-fg: var(--status-danger-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-disabled-bg: var(--status-disabled-bg);
+  --color-status-disabled-fg: var(--status-disabled-fg);
+
+  /* Additional brand semantic colors not previously mapped into Tailwind — closes
+   * the bracket-notation pressure for these commonly-used tokens. */
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success-badge-foreground: var(--success-badge-foreground);
+  --color-warning-badge-foreground: var(--warning-badge-foreground);
+  --color-danger-badge-foreground: var(--danger-badge-foreground);
+  --color-human: var(--human);
+  --color-human-wash: var(--human-wash);
+  --color-primary-wash: var(--primary-wash);
+  --color-success-wash: var(--success-wash);
+  --color-success-wash-strong: var(--success-wash-strong);
+  --color-warning-wash: var(--warning-wash);
+  --color-edu-fg: var(--edu-fg);
+  --color-surface-page: var(--surface-page);
+  --color-surface-card: var(--surface-card);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-overlay: var(--surface-overlay);
+  --color-border-strong: var(--border-strong);
 
   /*
    * PDPP type scale — size-only tokens matching the .pdpp-* classes in
