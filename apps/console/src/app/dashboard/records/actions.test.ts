@@ -36,6 +36,10 @@ const BEFORE_SERVER_DEPLOYMENT_HINT = /deployment is running/;
 const BEFORE_SERVER_RETURN = /phase: "before_server"[\s\S]{0,160}reached_server: false/;
 const AFTER_SERVER_RETURN = /phase: "after_server"[\s\S]{0,160}reached_server: true/;
 const ALREADY_RUNNING_PRESERVED = /reason:\s*"already_running"/;
+const FORCE_OPTION_SIGNATURE = /options: RunConnectorNowOptions = \{\}/;
+const FORCE_OPTION_BODY = /const runOptions = \{ force: options\.force === true \}/;
+const RUN_CONNECTION_WITH_OPTIONS = /runConnectionNow\(connectionId, runOptions\)/;
+const RUN_CONNECTOR_WITH_OPTIONS = /runConnectorNow\(connectorId, runOptions\)/;
 
 test("run-now action imports the typed unreachable error so it can branch on transport failure", async () => {
   const src = await readFile(ACTIONS_FILE, "utf8");
@@ -63,6 +67,14 @@ test("a server-side rejection is marked after_server/reached_server so the UI kn
 test("the already_running 409 branch is preserved alongside the phase-aware error branch", async () => {
   const src = await readFile(ACTIONS_FILE, "utf8");
   assert.match(src, ALREADY_RUNNING_PRESERVED);
+});
+
+test("run-now action forwards explicit force override to the operator client", async () => {
+  const src = await readFile(ACTIONS_FILE, "utf8");
+  assert.match(src, FORCE_OPTION_SIGNATURE);
+  assert.match(src, FORCE_OPTION_BODY);
+  assert.match(src, RUN_CONNECTION_WITH_OPTIONS);
+  assert.match(src, RUN_CONNECTOR_WITH_OPTIONS);
 });
 
 // The transport-failure detection must run BEFORE the generic message

@@ -47,12 +47,16 @@ function errorMessage(err: unknown): string {
 export async function runConnectorNowAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
   const connectionId = asString(formData.get("connection_id"));
+  const force = asString(formData.get("force")) === "true";
   const routeId = connectionId || connectorId;
   await requireDashboardAccess(connectorHref(routeId));
   let message: string | undefined;
   let error: string | undefined;
   try {
-    const result = (await (connectionId ? runConnectionNow(connectionId) : runConnectorNow(connectorId))) as {
+    const runOptions = { force };
+    const result = (await (connectionId
+      ? runConnectionNow(connectionId, runOptions)
+      : runConnectorNow(connectorId, runOptions))) as {
       run_id?: string;
       trace_id?: string;
     };

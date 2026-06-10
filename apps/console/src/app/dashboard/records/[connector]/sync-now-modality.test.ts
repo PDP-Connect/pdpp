@@ -34,6 +34,9 @@ const PRIMARY_ACTION_KEYS_HEALTH = /health: overview\.connectionHealth \?\? null
 const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(overview\.lastRun\?\.status\)/;
 const SYNC_BUTTON_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
 const SYNC_BRANCH_GUARD = /primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
+const COOLDOWN_BRANCH_GUARD = /primaryAction\.kind === "cooldown_wait" \? \(\s*<CooldownPrimaryAction/;
+const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
+const FORCE_BUTTON_WARNING = /Bypasses the provider-pressure cooldown/;
 const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
@@ -62,9 +65,13 @@ test("detail page labels failed owner syncs as retryable", async () => {
 test("SyncNowButton renders only inside the owner-syncable branch", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, SYNC_BRANCH_GUARD);
-  // Exactly one SyncNowButton render site, and it is guarded.
+  // Two render sites are allowed: ordinary sync, and the separately-named
+  // force override nested under the cooldown-only branch.
   const renders = src.match(/<SyncNowButton/g) ?? [];
-  assert.equal(renders.length, 1, "expected exactly one <SyncNowButton render site");
+  assert.equal(renders.length, 2, "expected ordinary sync plus cooldown force render sites");
+  assert.match(src, COOLDOWN_BRANCH_GUARD);
+  assert.match(src, COOLDOWN_FORCE_BUTTON);
+  assert.match(src, FORCE_BUTTON_WARNING);
 });
 
 test("push-mode connections get an honest non-clickable notice, not a dead button", async () => {

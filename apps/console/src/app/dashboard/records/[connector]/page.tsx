@@ -359,6 +359,14 @@ function ConnectorPageView({
                 idleLabel={syncIdleLabel}
                 initialRunning={running}
               />
+            ) : primaryAction.kind === "cooldown_wait" ? (
+              <CooldownPrimaryAction
+                action={primaryAction}
+                connectionId={connectorInstanceId}
+                connectorId={connectorId}
+                displayName={displayName}
+                running={running}
+              />
             ) : (
               <PrimaryActionNotice action={primaryAction} />
             )}
@@ -520,13 +528,56 @@ function emptyStreamsHint(action: PrimaryRowAction, syncIdleLabel: string): stri
 }
 
 /**
+ * Source-pressure cooldown is intentionally not the default sync path: the
+ * source has asked PDPP to slow down, so an ordinary run should wait. The owner
+ * still gets a separate, named override on the detail page because the backend
+ * supports `force: true`; keeping it separate prevents an accidental click from
+ * bypassing provider safety.
+ */
+function CooldownPrimaryAction({
+  action,
+  connectionId,
+  connectorId,
+  displayName,
+  running,
+}: {
+  action: Extract<PrimaryRowAction, { kind: "cooldown_wait" }>;
+  connectionId: string | null;
+  connectorId: string;
+  displayName: string;
+  running: boolean;
+}) {
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <span
+        className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+        data-testid="detail-action-cooldown-wait"
+        title={action.detail}
+      >
+        {action.label}
+      </span>
+      <SyncNowButton
+        connectionId={connectionId}
+        connectorId={connectorId}
+        displayName={displayName}
+        force
+        idleLabel="Force run anyway"
+        initialRunning={running}
+        title="Bypasses the provider-pressure cooldown. Use only if you accept a failed run or more throttling."
+        variant="destructive"
+      />
+    </div>
+  );
+}
+
+/**
  * Honest non-clickable primary action for a connection that cannot be synced
  * from the dashboard. Mirrors the records row's `PrimaryRowActionControl`
  * non-sync branch: push-mode (local-collector) connections show a "waiting for
  * the local device" status. Inert text, never a `<button>`, so it can never
  * reach `runConnectorNowAction`.
  */
-function PrimaryActionNotice({ action }: { action: Exclude<PrimaryRowAction, { kind: "sync" }> }) {
+function PrimaryActionNotice({ action }: { action: Exclude<PrimaryRowAction, { kind: "sync" | "cooldown_wait" }> }) {
   return (
     <span
       className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"

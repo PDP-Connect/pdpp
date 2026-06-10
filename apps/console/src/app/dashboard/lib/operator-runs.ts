@@ -72,9 +72,20 @@ function connectionControlPath(connectionId: string, suffix: string): string {
   return `/_ref/connections/${encodeURIComponent(connectionId)}${suffix}`;
 }
 
-async function runNowAt(path: string) {
+interface RunNowOptions {
+  force?: boolean;
+}
+
+async function runNowAt(path: string, options: RunNowOptions = {}) {
+  const force = options.force === true;
   const response = await fetchAs(path, {
     method: "POST",
+    ...(force
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: asJson({ force: true }),
+        }
+      : {}),
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -140,12 +151,12 @@ export async function setConnectionDisplayName(connectionId: string, displayName
   return body;
 }
 
-export function runConnectorNow(connectorId: string) {
-  return runNowAt(connectorControlPath(connectorId, "/run"));
+export function runConnectorNow(connectorId: string, options: RunNowOptions = {}) {
+  return runNowAt(connectorControlPath(connectorId, "/run"), options);
 }
 
-export function runConnectionNow(connectionId: string) {
-  return runNowAt(connectionControlPath(connectionId, "/run"));
+export function runConnectionNow(connectionId: string, options: RunNowOptions = {}) {
+  return runNowAt(connectionControlPath(connectionId, "/run"), options);
 }
 
 export function saveConnectorSchedule(
