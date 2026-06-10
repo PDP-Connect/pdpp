@@ -22,6 +22,14 @@ Integrity rules, learned the hard way:
 - This document describes intent and principles. For system state (database
   backend, what is deployed, what is archived), verify against the live
   system — point-in-time claims here go stale.
+- The live stack is a single-operator mutex. Before any container stop/start,
+  deploy, restart, database maintenance, or VACUUM against `pdpp.vivid.fish`
+  or the local stack that serves it, declare a live-stack window in
+  `tmp/workstreams/ri-owner-current-state.md` with operator, start time, scope,
+  and expected duration, and verify no other live-stack window is open. Close
+  the window with outcome and smoke evidence. This rule was added after
+  2026-06-10 coordination failure: Codex deployed into a Claude RI-owner
+  VACUUM FULL window and caused public bad-gateway during owner retest.
 Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors, design-notes/local-collector-durable-work-substrate-2026-05-19.md
 
 ## Question
