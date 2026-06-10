@@ -87,8 +87,19 @@ The local proxy checks remain `pnpm docker:smoke` and
 
 ## Residual Risks
 
-- The exact `fly launch --from ... --config deploy/flyio/fly.toml` command still
-  requires live proof against Fly after these artifacts land.
+- 2026-06-10 live proof (tasks 4.1–4.3) exercised the image-backed `fly launch`
+  path: every provisioning step the command performs succeeded, but Fly refused
+  the final release step for a trial organization (`status 422`, "disabled for
+  trial organizations"). The runtime, storage, gating, MCP, and
+  restart-survival claims were proven live on the same app/image via a direct
+  Machines API deploy. What remains unproven live: the documented command
+  completing its last step end-to-end on a payment-method-verified org, and the
+  source-build `fly launch --from` fallback. The runbook now documents the
+  payment-method prerequisite.
+- The reference process exits on an idle Postgres connection drop
+  (`uncaughtException` from the pg pool; observed once ~40s after first boot
+  over flycast). Fly's machine restart policy recovered it cleanly with no data
+  loss, but a connection-pool error handler would remove the restart blip.
 - Fly's unmanaged Postgres option is operator-managed. The runbook calls this out
   and points operators to Fly Managed Postgres or an external provider for
   production-grade database operations.

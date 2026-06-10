@@ -21,6 +21,12 @@ Fly.io does not provide a Railway-style published Template button for arbitrary
 repos that can encode this deployment as a hosted one-click link. The selected
 Fly-native path is a single `fly launch` command.
 
+Account prerequisite: the Fly organization must have a payment method on file.
+Trial organizations (no credit card) are refused at the final release step with
+`failed to create release (status 422): This functionality is disabled for
+trial organizations`, even though app creation, Postgres provisioning, and IP
+allocation succeed. Add a card at the Fly billing dashboard before launching.
+
 Fast image-backed path, using the current public Core image:
 
 ```sh
