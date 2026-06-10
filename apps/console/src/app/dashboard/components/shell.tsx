@@ -370,13 +370,21 @@ export function ServerUnreachable() {
     <div className="rounded-r-md border border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-3">
       <h2 className="pdpp-title text-destructive">Reference server unreachable</h2>
       <p className="pdpp-body mt-1 text-muted-foreground">
-        Could not reach the PDPP authorization/resource server at{" "}
-        <code className="pdpp-caption font-mono text-foreground">{getRsInternalUrl()}</code>. Start it with:
+        This dashboard could not reach its PDPP authorization/resource server at{" "}
+        <code className="pdpp-caption font-mono text-foreground">{getRsInternalUrl()}</code>. The reference server runs
+        alongside this console in your deployment; the dashboard recovers as soon as it responds again.
       </p>
-      <pre className="pdpp-caption mt-3 overflow-x-auto rounded bg-muted p-3 font-mono">
-        PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/pdpp.sqlite{"\n"}
-        node reference-implementation/server/index.js
-      </pre>
+      <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
+        <li>Confirm the PDPP service is running in your deployment (Docker, Railway, Fly, or your VPS).</li>
+        <li>Check the deployment logs for a startup error, then restart the PDPP service.</li>
+        <li>
+          Open{" "}
+          <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/deployment">
+            Deployment readiness
+          </Link>{" "}
+          once the server is reachable to confirm configuration.
+        </li>
+      </ul>
     </div>
   );
 }

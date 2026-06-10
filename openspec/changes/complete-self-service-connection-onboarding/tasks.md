@@ -74,12 +74,34 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.1 Update OpenSpec proposal/design/spec deltas so acceptance is the shipped owner add-source journey, not only planner parity.
 - [x] 9.2 Stop normal owner UI from advertising unpublished source-card CLI commands, raw setup-planner labels, browser-bound monorepo proof commands, or per-account deployment jargon.
 - [x] 9.3 Make static-secret credential help preserve task continuity by opening provider help in a new tab and keeping the form context.
-- [ ] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
+- [x] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
 - [x] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
 - [x] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
 - [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
-- [ ] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
+- [x] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [ ] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
+
+Progress note (9.4, 9.8): the owner-journey acceptance harness ships at
+`scripts/check-owner-journey-acceptance.mjs` (+ pure modules under
+`scripts/owner-journey-acceptance/`, tests at
+`scripts/check-owner-journey-acceptance.test.mjs`, wired as
+`pnpm run owner-journey:acceptance` / `:test`). It scans the normal owner setup
+surfaces for every failure class from the walkthrough — developer-only paths
+(`packages/...`, `pnpm --dir`, monorepo checkout, source-tree server start),
+raw setup-planner labels, placeholder-substitution and env-var-per-account
+jargon, same-tab credential help links, and transient-only post-submit flows —
+and checks that every command rendered in owner UI is a published subcommand of
+`@pdpp/cli` / `@pdpp/local-collector` (surface derived from package source;
+`--clean-shell` additionally resolves the published package via
+`npx -y <pkg>@<tag> --help`). It runs against local source by default and an
+optional live origin with owner auth (`--origin`, `PDPP_OWNER_SESSION_COOKIE` /
+`PDPP_OWNER_TOKEN`, never printed), and writes evidence to
+`tmp/workstreams/owner-journey-acceptance-<ts>.md`. Building it surfaced one
+forbidden string Phase 0 missed: the shared `ServerUnreachable` chrome (rendered
+on ~23 dashboard pages incl. `/dashboard/connect`) instructed a
+`packages/polyfill-connectors/...` + `node reference-implementation/server/...`
+monorepo start — fixed in the same change to deployment-oriented owner copy.
+Current owner UI now passes the full scan.
 
 Progress note (9.5): the reference now exposes a durable owner-session
 setup-status read, `GET /_ref/connections/:connectorInstanceId/setup-status`,

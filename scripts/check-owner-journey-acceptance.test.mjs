@@ -1,0 +1,341 @@
+#!/usr/bin/env node
+// Tests for the owner-journey acceptance harness.
+//
+// Two layers:
+//   1. Failure-class units — synthetic source fixtures prove every required
+//      failure class is caught, and clean fixtures pass. This is the contract:
+//      the harness would have caught the exact failures from the owner
+//      walkthrough.
+//   2. Current-pages-pass — the harness scans the REAL owner UI source and the
+//      REAL package command surface and asserts both are clean. This pins the
+//      live pages (and the Phase 0 + shell.tsx fixes) so a regression that
+//      reintroduces a developer-only path or an unpublished command fails CI.
+//
+// Run: node --test scripts/check-owner-journey-acceptance.test.mjs
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  checkCommandFreshness,
+  checkHelpLinkTargets,
+  checkPostSubmitDurability,
+  deriveSpecifierVars,
+  deriveSubcommandSurface,
+  extractRenderedCommands,
+  scanForbiddenStrings,
+  scanRenderedHelperReachability,
+  stripComments,
+} from "./owner-journey-acceptance/scan.mjs";
+import {
+  FORBIDDEN_RENDERED_HELPERS,
+  FORBIDDEN_STRING_RULES,
+  POST_SUBMIT_RULE,
+  PUBLISHED_PACKAGES,
+} from "./owner-journey-acceptance/surface-manifest.mjs";
+import { derivePublishedCommandSurface, runLocalAcceptance } from "./owner-journey-acceptance/harness.mjs";
+import { renderReport } from "./owner-journey-acceptance/report.mjs";
+import { resolveOwnerAuthFromEnv, runLiveAcceptance } from "./owner-journey-acceptance/live.mjs";
+import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.mjs";
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+function scanNormal(src) {
+  return scanForbiddenStrings({ path: "fixture.tsx", src, tier: "normal", rules: FORBIDDEN_STRING_RULES });
+}
+function classes(findings) {
+  return new Set(findings.map((f) => f.class));
+}
+
+// ── 1. Failure-class units: forbidden strings ────────────────────────────────
+
+test("catches monorepo package path in normal owner UI", () => {
+  const src = `export function X() { return <pre>{"PDPP_DB_PATH=packages/polyfill-connectors/.pdpp-data/pdpp.sqlite"}</pre>; }`;
+  assert.ok(classes(scanNormal(src)).has("developer-only-path"));
+});
+
+test("catches `pnpm --dir` in normal owner UI", () => {
+  const src = `const cmd = "pnpm --dir packages/polyfill-connectors exec tsx bin/x.ts run";`;
+  const found = scanNormal(src);
+  assert.ok(found.some((f) => f.ruleId === "pnpm-dir"));
+});
+
+test("catches `PDPP monorepo checkout` phrasing", () => {
+  const src = `const help = "Run this from your PDPP monorepo checkout.";`;
+  assert.ok(found(src, "monorepo-checkout"));
+});
+
+test("catches source-tree node server start command", () => {
+  const src = `const cmd = "node reference-implementation/server/index.js";`;
+  assert.ok(found(src, "source-tree-node-server"));
+});
+
+test('catches "replace placeholders" copy', () => {
+  const src = `const note = "Replace the placeholder with your connector_instance_id.";`;
+  assert.ok(found(src, "replace-placeholders"));
+});
+
+test('catches "env var per account" jargon', () => {
+  const src = `const note = "You need one env var per account in your deployment.";`;
+  assert.ok(found(src, "env-var-per-account"));
+});
+
+test("catches raw setup-planner labels rendered as owner status", () => {
+  for (const label of ["Track only", "Manual setup", "Ready with provider secret", "Needs browser proof"]) {
+    const src = `const status = { label: "${label}" };`;
+    assert.ok(found(src, "raw-setup-planner-label"), `expected to catch "${label}"`);
+  }
+});
+
+test("catches raw support-state enum value rendered as text", () => {
+  // Rendered text form `>proof_gated<` must trip the rule.
+  const rendered = `<span>proof_gated</span>`;
+  assert.ok(found(rendered, "raw-support-state-token"));
+});
+
+test("does NOT flag a setup-planner enum used in a switch/comparison (not rendered text)", () => {
+  const src = `switch (entry.disposition) { case "browser_bound_runbook": return label; }
+    if (entry.supportState === "proof_gated") { return x; }`;
+  const found = scanNormal(src);
+  assert.equal(
+    found.filter((f) => f.ruleId === "raw-support-state-token").length,
+    0,
+    "enum in code logic must not trip the rendered-text rule"
+  );
+});
+
+test("does NOT flag a monorepo path that appears only in a code comment", () => {
+  const src = `// The old proof command ran under packages/polyfill-connectors with pnpm --dir.
+    export function X() { return <div>Browser setup is pending.</div>; }`;
+  const found = scanNormal(src);
+  assert.equal(found.length, 0, "comments are not owner-facing copy");
+});
+
+test("does NOT flag a monorepo path that appears only in an import specifier", () => {
+  const src = `import { x } from "../../../../packages/cli/src/package-info.js";
+    export function X() { return <div>ok</div>; }`;
+  const found = scanNormal(src);
+  assert.equal(found.length, 0, "module specifiers are not owner-facing copy");
+});
+
+test("clean owner UI fixture passes the forbidden-string scan", () => {
+  const src = `export function AddCard() {
+    return <div><span>Add account</span><p>Enter the required provider credential.</p></div>;
+  }`;
+  assert.deepEqual(scanNormal(src), []);
+});
+
+// ── 2. Failure-class units: command freshness ────────────────────────────────
+
+test("derives subcommand surface from `command === 'x'` dispatch", () => {
+  const src = `if (command === 'connect') {} if (command === 'token') {}`;
+  const surface = deriveSubcommandSurface(src);
+  assert.ok(surface.has("connect") && surface.has("token"));
+});
+
+test("derives subcommand surface from a pipe-alternation usage line, ignoring placeholder args", () => {
+  const src = `usage: pdpp-local-collector <enroll|run|status|doctor> --base-url <url>`;
+  const surface = deriveSubcommandSurface(src);
+  assert.ok(surface.has("enroll") && surface.has("doctor"));
+  assert.ok(!surface.has("url"), "single <url> placeholder is not a subcommand");
+});
+
+test("flags an unpublished CLI command rendered in owner UI", () => {
+  const commands = [{ head: "npx", packageName: "@pdpp/cli", subcommand: "owner-agent-explain", path: "p", line: 1, raw: "..." }];
+  const surfaceByPackage = { "@pdpp/cli": new Set(["connect", "token"]) };
+  const { findings } = checkCommandFreshness({ commands, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].class, "unpublished-command");
+});
+
+test("passes a published CLI command rendered in owner UI", () => {
+  const commands = [{ head: "npx", packageName: "@pdpp/cli", subcommand: "connect", path: "p", line: 1, raw: "..." }];
+  const surfaceByPackage = { "@pdpp/cli": new Set(["connect", "token"]) };
+  const { findings, rendered } = checkCommandFreshness({
+    commands,
+    surfaceByPackage,
+    publishedPackages: PUBLISHED_PACKAGES,
+  });
+  assert.equal(findings.length, 0);
+  assert.equal(rendered[0].verified, "published-subcommand");
+  assert.ok(rendered[0].verificationMode, "every rendered package command carries a verification mode");
+});
+
+test("resolves package-specifier variables in array-form command builders", () => {
+  const src = `const localCollectorPackageName = "@pdpp/local-collector";
+    const localCollectorPackageSpecifier = \`\${localCollectorPackageName}@beta\`;
+    const parts = ["npx", "-y", localCollectorPackageSpecifier, "enroll", "--base-url"];`;
+  const vars = deriveSpecifierVars(src);
+  assert.equal(vars.localCollectorPackageSpecifier, "@pdpp/local-collector@beta");
+  const cmds = extractRenderedCommands(src);
+  const enroll = cmds.find((c) => c.subcommand === "enroll");
+  assert.ok(enroll, "array-form npx command must be extracted");
+  assert.equal(enroll.packageName, "@pdpp/local-collector");
+});
+
+// ── 3. Failure-class units: help links + reachability + post-submit ──────────
+
+test("flags a same-tab static-secret help link", () => {
+  const src = `<a href={field.help_url}>Open provider setup page</a>`;
+  const findings = checkHelpLinkTargets({ path: "p", src });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].class, "help-link-same-tab");
+});
+
+test("passes a help link that opens in a new tab with safe rel", () => {
+  const src = `<a href={field.help_url} target="_blank" rel="noreferrer">Open provider setup page in a new tab</a>`;
+  assert.deepEqual(checkHelpLinkTargets({ path: "p", src }), []);
+});
+
+test("reachability guard flags a rendered page wiring a monorepo-command helper", () => {
+  const src = `import { pdppBrowserCollectorRunCommand } from "x";
+    export function Card(){ return <code>{pdppBrowserCollectorRunCommand({baseUrl, connectorId})}</code>; }`;
+  const findings = scanRenderedHelperReachability({ path: "p", src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].class, "developer-only-path");
+});
+
+test("post-submit durability flags a transient-only flow and passes a durable one", () => {
+  const transient = `const notice = "Submitted. Check connections later.";`;
+  const missing = checkPostSubmitDurability({ path: "p", src: transient, rule: POST_SUBMIT_RULE });
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].class, "transient-notice-only");
+
+  const durable = `const c = draft.connection_id; const r = statusHref({ connectionId: c }); redirect(r);`;
+  assert.deepEqual(checkPostSubmitDurability({ path: "p", src: durable, rule: POST_SUBMIT_RULE }), []);
+});
+
+// ── 4. stripComments correctness ─────────────────────────────────────────────
+
+test("stripComments removes comments but preserves string/template content", () => {
+  const src = `const a = "keep //this"; // drop this\n/* drop */ const b = \`keep \${x}\`;`;
+  const out = stripComments(src);
+  assert.ok(out.includes('"keep //this"'));
+  assert.ok(out.includes("keep ${x}"));
+  assert.ok(!out.includes("drop this"));
+  assert.ok(!out.includes("/* drop */"));
+});
+
+// ── 5. Current-pages-pass: real source must be clean ─────────────────────────
+
+test("current owner UI source passes the full acceptance scan", async () => {
+  const result = await runLocalAcceptance();
+  assert.equal(
+    result.findings.length,
+    0,
+    `expected clean owner UI, got findings:\n${result.findings.map((f) => `  [${f.class}] ${f.ruleId} ${f.path}:${f.line}`).join("\n")}`
+  );
+  assert.equal(result.ok, true);
+});
+
+test("real published surface contains the subcommands rendered in owner UI", async () => {
+  const surface = await derivePublishedCommandSurface();
+  // The owner UI renders these today; they must exist in the published packages.
+  assert.ok(surface["@pdpp/cli"].has("connect"), "@pdpp/cli must publish `connect`");
+  for (const sub of ["enroll", "run", "status", "doctor", "retry-dead-letters"]) {
+    assert.ok(surface["@pdpp/local-collector"].has(sub), `@pdpp/local-collector must publish \`${sub}\``);
+  }
+});
+
+test("every rendered PDPP-package command resolves to a published subcommand", async () => {
+  const { renderedCommands } = await runLocalAcceptance();
+  const pdppCmds = renderedCommands.filter((c) => c.packageName && PUBLISHED_PACKAGES[c.packageName] && c.subcommand);
+  assert.ok(pdppCmds.length >= 4, "expected several PDPP package commands rendered");
+  for (const c of pdppCmds) {
+    assert.equal(c.verified, "published-subcommand", `${c.packageName} ${c.subcommand} should be published`);
+  }
+});
+
+// ── 6. Report + live-auth redaction ──────────────────────────────────────────
+
+test("report renders findings and never includes auth values", () => {
+  const local = {
+    ok: false,
+    findings: [{ class: "developer-only-path", ruleId: "monorepo-package-path", path: "x.tsx", line: 3, rationale: "no monorepo" }],
+    renderedCommands: [],
+    publishedSurface: { "@pdpp/cli": ["connect"] },
+    scannedFiles: { normal: ["a"], advanced: [], commandSource: [] },
+  };
+  const live = { ok: true, origin: "https://example.com", authMode: "cookie", surfaces: [], findings: [] };
+  const md = renderReport({ local, live, timestamp: "2026-06-10T00:00:00.000Z" });
+  assert.ok(md.includes("Result: FAIL"));
+  assert.ok(md.includes("monorepo-package-path"));
+  assert.ok(md.includes("Owner auth mode: cookie"));
+  assert.ok(!md.toLowerCase().includes("bearer "), "report must not echo a bearer value");
+});
+
+test("owner auth resolves from env by mode without exposing the value", () => {
+  assert.equal(resolveOwnerAuthFromEnv({}).mode, "none");
+  const cookie = resolveOwnerAuthFromEnv({ PDPP_OWNER_SESSION_COOKIE: "sid=secret" });
+  assert.equal(cookie.mode, "cookie");
+  assert.equal(cookie.header.cookie, "sid=secret"); // passed through to fetch, never printed
+  const bearer = resolveOwnerAuthFromEnv({ PDPP_OWNER_TOKEN: "tok" });
+  assert.equal(bearer.mode, "bearer");
+  assert.equal(bearer.header.authorization, "Bearer tok");
+});
+
+test("live probe scans served HTML and marks login redirects inconclusive", async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/dashboard/connect")) {
+      return { status: 200, text: async () => `<pre>packages/polyfill-connectors/x</pre>` };
+    }
+    // simulate a login redirect for the others
+    return { status: 302, text: async () => "" };
+  };
+  const result = await runLiveAcceptance({ origin: "https://example.com/", env: {}, fetchImpl });
+  assert.equal(result.authMode, "none");
+  // The 200 surface with a monorepo path is a finding; the 302s are inconclusive.
+  assert.ok(result.findings.some((f) => f.class === "developer-only-path"));
+  const connect = result.surfaces.find((s) => s.path === "/dashboard/connect");
+  assert.equal(connect.reachedOwnerSurface, true);
+  const records = result.surfaces.find((s) => s.path === "/dashboard/records");
+  assert.equal(records.reachedOwnerSurface, false);
+});
+
+// ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────
+
+test("clean-shell probe flags a rendered subcommand missing from published --help", async () => {
+  const renderedCommands = [
+    { packageName: "@pdpp/cli", subcommand: "connect", path: "p", line: 1 },
+    { packageName: "@pdpp/cli", subcommand: "owner-agent-explain", path: "p", line: 2 },
+  ];
+  // Injected probe: published help mentions `connect` but not `owner-agent-explain`.
+  const probe = async () => ({ ok: true, help: "Usage: pdpp <connect|token|read>", error: null });
+  const { findings } = await checkCleanShellFreshness({
+    renderedCommands,
+    publishedPackages: PUBLISHED_PACKAGES,
+    probe,
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].ruleId, "clean-shell-missing-subcommand");
+  assert.ok(findings[0].excerpt.includes("owner-agent-explain"));
+});
+
+test("clean-shell probe passes when every rendered subcommand is in --help", async () => {
+  const renderedCommands = [{ packageName: "@pdpp/cli", subcommand: "connect", path: "p", line: 1 }];
+  const probe = async () => ({ ok: true, help: "Usage: pdpp <connect|token>", error: null });
+  const { findings } = await checkCleanShellFreshness({
+    renderedCommands,
+    publishedPackages: PUBLISHED_PACKAGES,
+    probe,
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("clean-shell probe records a resolution failure as a finding", async () => {
+  const renderedCommands = [{ packageName: "@pdpp/cli", subcommand: "connect", path: "p", line: 1 }];
+  const probe = async () => ({ ok: false, help: "", error: "ENOTFOUND registry" });
+  const { findings, probes } = await checkCleanShellFreshness({
+    renderedCommands,
+    publishedPackages: PUBLISHED_PACKAGES,
+    probe,
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].ruleId, "clean-shell-probe-failed");
+  assert.equal(probes[0].ok, false);
+});
+
+// Helper used by several forbidden-string tests above.
+function found(src, ruleId) {
+  return scanNormal(src).some((f) => f.ruleId === ruleId);
+}
