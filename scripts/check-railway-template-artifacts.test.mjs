@@ -52,6 +52,28 @@ test('Railway core image runs console plus loopback reference AS/RS', () => {
   assert.match(supervisor, /\/console\/apps\/console\/server\.js/);
 });
 
+test('Core image carries the Docker quickstart defaults and first-boot bootstrap', () => {
+  const dockerfile = read('Dockerfile');
+  const supervisor = read('deploy/railway/core-supervisor.mjs');
+
+  // Standalone `docker run -p 3000:3000 -v pdpp_data:/var/lib/pdpp` must work
+  // with no -e flags: localhost origin default + SQLite on the mountable data
+  // dir (deploy/docker/README.md). Managed platforms override both per deploy.
+  assert.match(dockerfile, /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/);
+  assert.match(dockerfile, /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/);
+
+  // The supervisor wires the first-boot owner-credential bootstrap into BOTH
+  // children (the reference gates owner data; the console hosts the login).
+  assert.match(supervisor, /from '\.\/core-first-boot\.mjs'/);
+  assert.match(supervisor, /prepareFirstBoot\(\)/);
+  assert.equal(
+    supervisor.match(/\.\.\.firstBoot\.env/g)?.length,
+    2,
+    'first-boot env additions reach both supervised children',
+  );
+  assert.match(supervisor, /firstBoot\.bannerLines/);
+});
+
 test('Railway runbook and template handoff use the one-service core button shape', () => {
   const readme = read('deploy/railway/README.md');
   const handoff = read('deploy/railway/template.md');

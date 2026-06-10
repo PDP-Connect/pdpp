@@ -23,6 +23,8 @@
     "docker:smoke": "bash scripts/docker-smoke.sh",
     "docker:neko:dynamic-allocator-smoke": "bash scripts/docker-neko-dynamic-allocator-smoke.sh",
     "docker:stream-smoke": "node scripts/manual-action-stream-smoke.mjs",
+    "//docker-deploy": "Docker self-host deploy gate (deploy/docker/README.md). first-boot:test pins the standalone Core image's first-boot owner-credential bootstrap (generate, persist on the data volume, banner once, env always wins).",
+    "docker:first-boot:test": "node --test scripts/docker-core-first-boot.test.mjs",
     "//railway": "Railway Core deploy gate (deploy/railway/README.md). template:test checks pushbutton template artifacts; ghcr-public probes the live anonymous-pull gate that blocks publishing the button (ghcr-public:test is its offline logic); env-check is the offline preflight; mcp-query-smoke seeds records + proves the scoped MCP query; sqlite-restart-smoke proves SQLite-on-volume durability across a container replacement.",
     "railway:template:test": "node --test scripts/check-railway-template-artifacts.test.mjs",
     "railway:ghcr-public": "node scripts/check-railway-ghcr-public.mjs",

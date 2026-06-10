@@ -159,6 +159,14 @@ CMD ["node", "apps/console/server.js"]
 # Railway pushbutton Core image: one public service runs the console on Railway
 # $PORT and the reference AS/RS on loopback. This avoids a separate private app
 # service whose reserved PORT variable becomes a template prompt.
+#
+# The same image is the Docker quickstart target (deploy/docker/README.md), so
+# it carries laptop-friendly defaults that managed platforms override per
+# deploy: PDPP_REFERENCE_ORIGIN defaults to the published localhost port, and
+# PDPP_DB_PATH defaults onto /var/lib/pdpp so `-v pdpp_data:/var/lib/pdpp`
+# makes the SQLite database (and first-boot credentials, see
+# deploy/railway/core-first-boot.mjs) durable. With a database URL present the
+# runtime selects Postgres and the SQLite default is ignored.
 FROM base AS railway-core
 
 ARG PDPP_REFERENCE_REVISION=unknown
@@ -170,6 +178,8 @@ ENV NODE_ENV=production \
     RS_PORT=7663 \
     PDPP_AS_URL=http://127.0.0.1:7662 \
     PDPP_RS_URL=http://127.0.0.1:7663 \
+    PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
+    PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
     PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}

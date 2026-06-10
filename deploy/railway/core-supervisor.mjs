@@ -2,6 +2,8 @@
 import { spawn } from 'node:child_process';
 import process from 'node:process';
 
+import { prepareFirstBoot } from './core-first-boot.mjs';
+
 const children = new Map();
 let shuttingDown = false;
 let exitCode = 0;
@@ -51,8 +53,14 @@ function stop(signal) {
 process.on('SIGTERM', () => stop('SIGTERM'));
 process.on('SIGINT', () => stop('SIGINT'));
 
+// Standalone-image credential bootstrap: generate (first boot) or load
+// (subsequent boots) an owner password when the platform did not supply one,
+// so owner data is gated by default. See ./core-first-boot.mjs.
+const firstBoot = prepareFirstBoot();
+
 const referenceEnv = {
   ...process.env,
+  ...firstBoot.env,
   AS_PORT: '7662',
   RS_PORT: '7663',
   PDPP_AS_URL: 'http://127.0.0.1:7662',
@@ -61,11 +69,16 @@ const referenceEnv = {
 
 const consoleEnv = {
   ...process.env,
+  ...firstBoot.env,
   HOSTNAME: process.env.HOSTNAME || '0.0.0.0',
   PORT: process.env.PORT || '3000',
   PDPP_AS_URL: 'http://127.0.0.1:7662',
   PDPP_RS_URL: 'http://127.0.0.1:7663',
 };
+
+for (const line of firstBoot.bannerLines) {
+  console.log(line);
+}
 
 start('reference', process.execPath, ['/app/reference-implementation/server/index.js'], {
   cwd: '/app',
