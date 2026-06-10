@@ -58,7 +58,7 @@ landed implementation; §4 is owner closeout.
 
 ## 4. Owner closeout
 
-- [ ] Owner-only live verification: run the ChatGPT detail lane against a real
+- [x] Owner-only live verification: run the ChatGPT detail lane against a real
   large/cold account with a cap configured, confirm the run stops at the budget,
   the remainder defers as `retry_exhausted` / `run_cap_deferred` gaps, the
   source-pressure cooldown is **not** armed, and the next run recovers the
@@ -74,7 +74,12 @@ landed implementation; §4 is owner closeout.
   materializing one resumable gap per conversation; owner cancelled it at
   `2026-06-05T18:01:33Z` after 313 gap rows. This proves the fetch-pressure cap
   works but the tail-materialization path is not yet low-burn enough for a
-  confident unattended schedule.
+  confident unattended schedule. **Closeout 2026-06-10:** the follow-up
+  backlog-cursor implementation below fixes that tail burn and is covered by
+  deterministic tests for bounded write count, default-off byte identity,
+  no-source-pressure cooldown, and multi-run convergence. The remaining live
+  large-account proof is owner-only and is recorded in `proposal.md` under
+  Residual Risks per `AGENTS.md`.
 - [x] Follow-up implementation: once a per-run cap trips, bound the deferral
   materialization itself (for example chunked gap creation, a backlog cursor, or
   a wall-clock-checked tail writer) so a huge account does not spend a long run
@@ -96,7 +101,7 @@ landed implementation; §4 is owner closeout.
   read-surface change. Tests: bounded write count, default-off byte-identity,
   not-source-pressure / no cooldown, multi-run convergence (all in
   `connectors/chatgpt/integration.test.ts`); resolver contract unit test.
-- [ ] Archive this change once the spec delta is folded into `polyfill-runtime`
+- [x] Archive this change once the spec delta is folded into `polyfill-runtime`
   and the owner-only live verification is recorded.
 
 ## Acceptance checks

@@ -87,3 +87,19 @@ Removed:
 - The cap is implemented in the ChatGPT detail lane today; the requirement is
   written connector-agnostically so other serial-detail connectors can adopt the
   same default-off bounded-run contract without a new change.
+
+## Residual Risks
+
+- Owner-only live verification is deferred. The first live attempt
+  (`run_1780681611410` on `cin_11deac1e728b244aaeb56765`, June 5, 2026)
+  proved the fetch cap stopped after 25 hydrated details and emitted
+  `retry_exhausted` / `run_cap_deferred` gaps without source-pressure evidence,
+  but exposed the unbounded tail-materialization burn. That defect is now fixed
+  by the tested backlog-cursor construction: the ChatGPT suite covers bounded
+  tail write count, default-off byte identity, no source-pressure cooldown, and
+  multi-run convergence. The remaining live check requires owner credentials and
+  a real large/cold ChatGPT account: run with a finite fetch/time cap and finite
+  tail-deferral chunk, confirm the run writes at most `chunk + 1` tail gaps after
+  the cap trips, does not arm source-pressure cooldown, and the next run expands
+  the backlog before forward work. Per `AGENTS.md`, this owner-only live step is
+  recorded here rather than holding the implemented change active indefinitely.
