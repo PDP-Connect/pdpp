@@ -10,6 +10,8 @@ Related:
 - `openspec/changes/add-browser-collector-enrollment-primitive/` (Phase 5 decision disposes this change: absorb if productizing, close-as-superseded if demoting)
 - `openspec/specs/reference-connection-health/` (Phase 2/3 state vocabulary must project from this model, not duplicate it)
 - `design-notes/data-ops-backup-retirement-contract-2026-06-09.md` (Phase 6 shares the storage-hygiene diagnostics surface)
+- `design-notes/owner-journey-flow-design-2026-06-10.md` (the flow design: skeleton, modality variants, validation moment, state projection — Phases 2/3/5 implement it)
+- `research/connection-onboarding-prior-art-2026-06-10.md` (Plaid/Stripe/Zapier/GitHub-Importer teardown grounding the flow design)
 
 ## Why This Plan Exists
 
@@ -105,6 +107,11 @@ known residual risk.
 | CLI preview | Every shown `pdpp ...` command works with the published package/version shown in the UI, from outside the repo. |
 | Railway-like owner | Setup requires no source credential env vars per account and no local repo checkout. |
 | Failure/recovery | Pending setup/run failure is visible with next action and without leaked secrets. |
+| Credential validation moment | For connectors with a probe: wrong credential rejected in ≤10s with provider-named copy and preserved form; right credential echoes account identity ("Connected as the owner@…"). |
+| Identity-derived labels | A second account of the same provider is born labeled with its own identity; the owner never types a label to disambiguate. |
+| Time-to-first-value | Within 15s of submit the owner sees named sync stages or records-so-far counts; terminal success offers "View records" showing real records. |
+| Browser-bound enrollment (Phase 5) | Owner adds an Amazon account entirely inside the dashboard; MFA in-surface; abandoning mid-login leaves no ghost card (shell TTL). |
+| Reconnect / update mode | A needs-attention connection's primary action lands directly at the repair step (re-enter credential / re-login), never at the start of the flow. |
 
 ### Negative acceptance checks
 
@@ -381,6 +388,13 @@ Acceptance:
 
 Goal: no invisible draft/running black holes.
 
+This phase implements the flow design's stages C–E for static-secret
+connectors (see `owner-journey-flow-design-2026-06-10.md`): the synchronous
+`probeCredential` validation moment with identity echo, early activation
+(connection becomes visible/active at identity, first sync is a normal run on
+it), and the setup-status page with named stages / records-so-far from the
+run timeline.
+
 Tasks:
 
 - Expose setup attempts or pending connections from the reference API/BFF.
@@ -448,7 +462,11 @@ Acceptance:
 Goal: settle Amazon/Chase/ChatGPT add-new support honestly.
 
 **DECIDED 2026-06-10 (owner): productize — do not demote.** The owner's call is
-Option A: build the packaged, owner-usable browser-bound setup path. This phase
+Option A. The SLVP form is specified in the flow design (§B2): **in-dashboard
+"Finish in this browser" enrollment** — a connection shell plus a bounded
+ENROLLMENT RUN riding the existing streaming viewer/interaction machinery —
+not a packaged terminal command. Packaged CLI commands remain the right shape
+only for local-device collectors (§B3), which are already published. This phase
 absorbs the active `add-browser-collector-enrollment-primitive` change (its
 intent branch currently returns `unsupported` and has no server implementation
 — that change either becomes this phase's spec home or is superseded by it;
