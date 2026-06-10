@@ -14592,6 +14592,13 @@
                               "deployment_readiness": {
                                 "type": "object",
                                 "additionalProperties": true
+                              },
+                              "validation": {
+                                "type": "string",
+                                "enum": [
+                                  "synchronous",
+                                  "first_sync"
+                                ]
                               }
                             },
                             "required": [
@@ -16333,6 +16340,13 @@
                         "proof_gated",
                         "unsupported",
                         "needs_deployment_config"
+                      ]
+                    },
+                    "validation": {
+                      "type": "string",
+                      "enum": [
+                        "synchronous",
+                        "first_sync"
                       ]
                     }
                   },

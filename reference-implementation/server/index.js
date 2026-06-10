@@ -1259,6 +1259,27 @@ function loadStaticSecretInjectionHelpers() {
   return staticSecretInjectionModulePromise;
 }
 
+// Build the route-facing static-secret credential prober. The reference-only
+// probe seam lives in the connector package: the pure orchestration
+// (`probeCredential`, `hasCredentialProbe`) and the live transport factory,
+// which owns the provider dependency (imapflow / GitHub fetch). The server
+// adapter turns a thrown probe error into the route's non-throwing typed
+// result. This is NOT a Collection Profile message and is never exposed to /mcp
+// or grant-scoped reads. Resolved once at startup and injected, so the route
+// stays synchronous and tests inject a deterministic double instead.
+async function buildStaticSecretCredentialProber() {
+  const [probe, transport, adapter] = await Promise.all([
+    import('../../packages/polyfill-connectors/src/credential-probe.ts'),
+    import('../../packages/polyfill-connectors/src/credential-probe-transport.ts'),
+    import('./stores/static-secret-credential-probe.js'),
+  ]);
+  return adapter.createStaticSecretCredentialProber({
+    probeCredential: probe.probeCredential,
+    hasCredentialProbe: probe.hasCredentialProbe,
+    createLiveCredentialProbeTransport: transport.createLiveCredentialProbeTransport,
+  });
+}
+
 // Builds the controller's connection-scoped static-secret resolver (design
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
@@ -3343,7 +3364,9 @@ function buildAsApp(opts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
     pdppError,
+    canonicalConnectorKey,
     createRequestConnectorInstanceCredentialStore,
+    createRequestConnectorInstanceStore,
     resolveRegisteredConnectorManifest,
     resolveOwnerConnectorNamespace,
     getOwnerSubjectId,
@@ -3351,6 +3374,10 @@ function buildAsApp(opts = {}) {
     emitSpineEvent,
     ensureRequestId,
     setReferenceTraceId,
+    // Reference-only synchronous credential probe (owner-journey flow design
+    // B1). Resolved at startup and injected; null/absent means every connector
+    // takes the first-sync path. Never exposed to /mcp or grant-scoped reads.
+    probeStaticSecretCredential: opts.staticSecretCredentialProber ?? undefined,
   });
 
   mountRefStaticSecretDraftConnection(app, {
@@ -4631,10 +4658,17 @@ export async function startServer(opts = {}) {
     getDefaultDeliveryWorker().start();
   }
 
+  // Resolve the reference-only static-secret credential prober once at startup
+  // (it lazily imports the connector package's probe + live transport). Tests
+  // may inject their own via `opts.staticSecretCredentialProber`.
+  const staticSecretCredentialProber =
+    opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
+
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
     providerName,
+    staticSecretCredentialProber,
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
     dbPath: opts.dbPath || DB_PATH,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),

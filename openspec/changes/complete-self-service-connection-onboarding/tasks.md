@@ -118,6 +118,36 @@ durable per-connection status page instead of bouncing back to the form with a
 transient `?notice=first_sync_started`. No secret, owner cookie, browser cookie,
 or grant-scoped bearer appears in the response or logs.
 
+Progress note (Phase 2 synchronous validation moment, flow design B1/D): the
+reference now ships the optional, reference-only credential probe seam described
+in the flow design — `probeCredential(secret, context) -> { identity, detail } |
+typed error`, with a connector-keyed registry (`@pdpp/polyfill-connectors` →
+`credential-probe.ts`). Gmail (IMAP LOGIN, identity = mailbox address) and GitHub
+(`GET /user`, identity = login) are wired with an INJECTED transport
+(`credential-probe-transport.ts`), so no live provider call occurs in tests. The
+probe is NOT promoted to PDPP Core or the Collection Profile (no
+`VALIDATE`/`PREFLIGHT` message) and is NOT re-exported from the runner barrel, so
+the publishable local-collector slice never carries it. The setup planner /
+owner setup descriptor now advertise `validation: synchronous | first_sync`
+(projected from the probe registry; serialized in the static-secret-setup
+descriptor, the owner-agent intent body, and the owner-connector-templates
+`setup_plan`, with matching reference-contract schema fields). The owner-session
+static-secret capture route probes a connector's credential BEFORE storing it
+when a probe is available: a known-bad credential returns a typed
+`static_secret_credential_rejected` (HTTP 400) with a provider-named, owner-causal
+message and stores NOTHING (no credential row, audit carries the typed code
+only); a valid credential is stored and the response echoes the non-secret
+account identity (`identity.account_identity`, `validation: "synchronous"`). The
+encryption-key fail-closed (503) is checked before probing. Connectors with no
+probe self-report `skipped` and keep the first-sync activation path
+(`validation: "first_sync"`, no identity echo). The Console static-secret form
+preserves non-secret form context on a validation failure (the secret is never
+round-tripped) and shows the identity echo on the status page on success; the UI
+stays connector-generic (manifest/setup-plan driven, no connector-specific
+branch). New deterministic tests cover wrong/valid Gmail+GitHub probes, the
+no-probe first-sync path, and the validation-mode projection across
+planner/intent/CLI without secrets.
+
 Progress note: 9.6 now routes the full source setup catalog to `/dashboard/records/add` and keeps `/dashboard/connect` scoped to AI app / agent read-access setup. The Sources first screen shows existing source health, add-another-account support, and repair as distinct facts, while the dedicated Add source page owns the searchable manifest-driven catalog.
 
 Progress note (9.9): deployment headroom now uses the existing diagnostics

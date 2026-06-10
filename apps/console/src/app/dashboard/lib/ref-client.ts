@@ -695,7 +695,32 @@ async function refFetch(path: string, params?: Record<string, string | number | 
   return res.json();
 }
 
-export { RefNotFoundError };
+export { RefNotFoundError, RefRequestError };
+
+// Thrown when the owner-session static-secret capture route rejects a credential
+// at the synchronous validation moment (HTTP 400, code
+// `static_secret_credential_rejected`). The message is the provider-named,
+// owner-causal reason; nothing was stored. The Console action catches this to
+// keep the owner on the form with their non-secret context preserved, rather
+// than redirecting to a setup-status page for a connection that never started a
+// run.
+export class StaticSecretValidationError extends Error {
+  readonly code = "static_secret_credential_rejected";
+  constructor(message: string) {
+    super(message);
+    this.name = "StaticSecretValidationError";
+  }
+}
+
+function isCredentialRejectionBody(bodyText: string): boolean {
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: { code?: unknown } | string };
+    const code = typeof parsed.error === "object" && parsed.error ? parsed.error.code : parsed.error;
+    return code === "static_secret_credential_rejected";
+  } catch {
+    return false;
+  }
+}
 
 export async function getTraceTimeline(
   traceId: string,
@@ -1119,6 +1144,9 @@ export interface StaticSecretCredentialCapture {
     rotated_at: string | null;
     status: string | null;
   };
+  // Non-secret account identity from a synchronous credential probe ("Connected
+  // as {identity}"). Null when the connector has no probe (first-sync path).
+  identity: { account_identity: string; detail: string | null } | null;
   next_step: {
     kind: "run_connection";
     method: "POST";
@@ -1126,6 +1154,7 @@ export interface StaticSecretCredentialCapture {
     url: string;
   };
   object: "static_secret_credential_capture";
+  validation: "first_sync" | "synchronous";
 }
 
 export interface CreateDeviceEnrollmentCodeInput {
@@ -1176,6 +1205,11 @@ export interface StaticSecretSetup {
   };
   display_name: string;
   object: "static_secret_setup";
+  // Whether the credential is validated synchronously at capture (the route
+  // probes the secret and echoes the account identity before storing) or only
+  // at first sync. Drives the form's validate-then-redirect flow with no
+  // connector-specific branch.
+  validation: "first_sync" | "synchronous";
 }
 
 export async function getStaticSecretSetup(connectorId: string): Promise<StaticSecretSetup> {
@@ -1198,18 +1232,28 @@ export async function captureStaticSecretCredential(input: {
   credentialKind: string;
   secret: string;
 }): Promise<StaticSecretCredentialCapture> {
-  return (await refFetch(
-    `/_ref/connections/${encodeURIComponent(input.connectionId)}/static-secret-credential`,
-    undefined,
-    {
-      body: JSON.stringify({
-        credential_kind: input.credentialKind,
-        secret: input.secret,
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
+  try {
+    return (await refFetch(
+      `/_ref/connections/${encodeURIComponent(input.connectionId)}/static-secret-credential`,
+      undefined,
+      {
+        body: JSON.stringify({
+          credential_kind: input.credentialKind,
+          secret: input.secret,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }
+    )) as StaticSecretCredentialCapture;
+  } catch (err) {
+    // A synchronous validation rejection (400 static_secret_credential_rejected)
+    // becomes a typed error so the action keeps the owner on the form. The
+    // message is the provider-named, owner-causal reason from the route.
+    if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
+      throw new StaticSecretValidationError(err.message);
     }
-  )) as StaticSecretCredentialCapture;
+    throw err;
+  }
 }
 
 // Owner-facing static-secret setup lifecycle. Projected from the connection's

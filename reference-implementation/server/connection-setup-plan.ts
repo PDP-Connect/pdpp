@@ -1,3 +1,8 @@
+import {
+  type CredentialValidationMode,
+  credentialValidationMode,
+} from "../../packages/polyfill-connectors/src/credential-probe.ts";
+
 export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
 
 export type ConnectorSetupModality =
@@ -132,6 +137,13 @@ export interface ConnectionSetupPlan {
   readonly runbookPath: string | null;
   readonly setupModality: ConnectorSetupModality;
   readonly supportState: ConnectorSetupSupportState;
+  // Whether the owner-facing setup validates the credential synchronously at
+  // capture (a connector with a `probeCredential` hook echoes the account
+  // identity in ≤10s) or only at `first_sync` (the connection activates when
+  // the first ingest accepts records). Reference-only; projected from the probe
+  // registry, never a Collection Profile message. Always `first_sync` for
+  // modalities without a synchronous probe.
+  readonly validationMode: CredentialValidationMode;
 }
 
 export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex"] as const;
@@ -473,6 +485,10 @@ export function buildConnectionSetupPlan(args: {
   }
   const deploymentReadiness = buildDeploymentReadiness(deploymentArgs);
   const enrollmentKey = enrollmentKeyForCanonicalKey(connectorKey);
+  // Synchronous validation only applies to static-secret connectors with a
+  // registered probe. Everything else activates at first sync.
+  const validationMode: CredentialValidationMode =
+    setupModality === "static_secret" ? credentialValidationMode(connectorKey) : "first_sync";
 
   if (connectorModality === "local_collector") {
     if (isSupportedLocalCollectorConnector(enrollmentKey)) {
@@ -494,6 +510,7 @@ export function buildConnectionSetupPlan(args: {
         proofGate: null,
         runbookPath: null,
         setupModality,
+        validationMode,
         supportState: "supported",
       };
     }
@@ -513,6 +530,7 @@ export function buildConnectionSetupPlan(args: {
       proofGate: "local_collector_connector_proof_missing",
       runbookPath: null,
       setupModality,
+      validationMode,
       supportState: "proof_gated",
     };
   }
@@ -536,6 +554,7 @@ export function buildConnectionSetupPlan(args: {
       proofGate: "browser_collector_live_proof_missing",
       runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
       setupModality,
+      validationMode,
       supportState: "proof_gated",
     };
   }
@@ -558,6 +577,7 @@ export function buildConnectionSetupPlan(args: {
         proofGate: "static_secret_live_proof_missing",
         runbookPath: STATIC_SECRET_RUNBOOK_PATH,
         setupModality,
+        validationMode,
         supportState: "proof_gated",
       };
     }
@@ -582,6 +602,7 @@ export function buildConnectionSetupPlan(args: {
           proofGate: null,
           runbookPath: null,
           setupModality,
+          validationMode,
           supportState: "supported",
         };
       }
@@ -603,6 +624,7 @@ export function buildConnectionSetupPlan(args: {
         proofGate: deploymentBlocked ? "provider_app_deployment_config_missing" : "provider_authorization_lifecycle_missing",
         runbookPath: PROVIDER_AUTH_RUNBOOK_PATH,
         setupModality,
+        validationMode,
         supportState: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
       };
     }
@@ -623,6 +645,7 @@ export function buildConnectionSetupPlan(args: {
       proofGate: null,
       runbookPath: null,
       setupModality,
+      validationMode,
       supportState: "unsupported",
     };
   }
@@ -643,6 +666,7 @@ export function buildConnectionSetupPlan(args: {
     proofGate: null,
     runbookPath: null,
     setupModality,
+    validationMode,
     supportState: "unsupported",
   };
 }

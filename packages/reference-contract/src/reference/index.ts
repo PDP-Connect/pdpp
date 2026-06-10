@@ -326,6 +326,10 @@ const OwnerConnectorTemplateSetupPlanSchema = {
       type: "object",
       additionalProperties: true,
     },
+    validation: {
+      type: "string",
+      enum: ["synchronous", "first_sync"],
+    },
   },
   required: ["setup_modality", "support_state", "next_step_kind", "proof_gate", "runbook_path"],
 };
@@ -649,6 +653,10 @@ const OwnerConnectionIntentResponseSchema = {
     support_state: {
       type: "string",
       enum: ["supported", "proof_gated", "unsupported", "needs_deployment_config"],
+    },
+    validation: {
+      type: "string",
+      enum: ["synchronous", "first_sync"],
     },
   },
   required: [

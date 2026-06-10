@@ -54,6 +54,17 @@ export default async function StaticSecretConnectPage({
   };
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
 
+  // After a validation failure the action redirects back here with the owner's
+  // non-secret field values as `field_<name>` query params so the form context
+  // is preserved. The secret field is never round-tripped — the owner re-enters
+  // it. Connector-generic: the field names come from the manifest descriptor.
+  function preservedValue(field: StaticSecretSetupField): string | undefined {
+    if (field.secret) {
+      return;
+    }
+    return firstValue(resolvedSearchParams[`field_${field.name}`]);
+  }
+
   return (
     <DashboardShell active="records">
       <PageHeader
@@ -67,9 +78,7 @@ export default async function StaticSecretConnectPage({
         title={`Add ${setup.display_name}`}
       />
 
-      <div className="mb-5 grid gap-2">
-        {pageParams.error ? <InlineNotice message={pageParams.error} /> : null}
-      </div>
+      <div className="mb-5 grid gap-2">{pageParams.error ? <InlineNotice message={pageParams.error} /> : null}</div>
 
       <Section
         description={
@@ -106,6 +115,7 @@ export default async function StaticSecretConnectPage({
                 <span className="pdpp-eyebrow">{field.label}</span>
                 <Input
                   autoComplete={field.autocomplete ?? (field.secret ? "off" : undefined)}
+                  defaultValue={preservedValue(field)}
                   id={`static-secret-${field.name}`}
                   name={field.name}
                   placeholder={field.placeholder ?? undefined}
@@ -132,6 +142,12 @@ export default async function StaticSecretConnectPage({
                 ) : null}
               </label>
             ))}
+            {setup.validation === "synchronous" ? (
+              <p className="pdpp-caption text-muted-foreground">
+                The credential is checked with the provider when you submit. If it is valid, the account is confirmed
+                before the first sync starts; if not, you stay on this form with your details preserved.
+              </p>
+            ) : null}
             <div>
               <Button type="submit">
                 {setup.credential_capture.submit_label ?? "Create connection and start first sync"}

@@ -343,6 +343,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
             runbook_path: plan.runbookPath,
             setup_modality: plan.setupModality,
             support_state: plan.supportState,
+            validation: plan.validationMode,
             next_step: {
               kind: "enroll_local_collector",
               reason:
@@ -390,6 +391,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           runbook_path: plan.runbookPath,
           setup_modality: plan.setupModality,
           support_state: plan.supportState,
+          validation: plan.validationMode,
           next_step: nextStep,
         });
       } catch (err) {

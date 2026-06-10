@@ -15,6 +15,7 @@
 
 import { randomBytes } from "node:crypto";
 
+import { credentialValidationMode } from "../../../packages/polyfill-connectors/src/credential-probe.ts";
 import {
   displayNameForConnector,
   expectedStaticSecretCredentialKind,
@@ -171,6 +172,11 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
     connector_id: connectorId,
     display_name: displayName,
     credential_kind: credentialKind,
+    // Whether the credential is validated synchronously at capture (a registry
+    // connector with a `probeCredential` hook echoes the account identity in
+    // ≤10s) or only at first sync. Owner-generic; drives the Console form's
+    // validate-then-activate flow with no connector-specific branch.
+    validation: credentialValidationMode(connectorId),
     credential_capture: {
       description: capture.description,
       fields: capture.fields.map(projectField),

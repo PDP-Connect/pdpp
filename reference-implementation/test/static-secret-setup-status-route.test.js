@@ -46,6 +46,16 @@ async function withCredentialKey(value, fn) {
   }
 }
 
+// Permissive deterministic prober so capturing gmail in these setup-status
+// projection tests does not trigger a real network probe.
+function permissiveProber() {
+  return async ({ context }) => ({
+    ok: true,
+    identity: context?.setupFields?.account_email ?? 'synthetic@example.com',
+    detail: null,
+  });
+}
+
 async function withServer(fn) {
   const server = await startServer({
     quiet: true,
@@ -55,6 +65,7 @@ async function withServer(fn) {
     ownerAuthPassword: OWNER_PASSWORD,
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -79,6 +90,7 @@ async function withOpenServer(fn) {
     ownerAuthPassword: '',
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;

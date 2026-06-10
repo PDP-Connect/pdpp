@@ -154,6 +154,7 @@ function projectSetupPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): Re
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
     deployment_readiness: plan.deploymentReadiness,
+    validation: plan.validationMode,
   };
 }
 

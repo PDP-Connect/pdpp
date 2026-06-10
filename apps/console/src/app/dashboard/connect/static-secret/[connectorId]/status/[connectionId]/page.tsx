@@ -19,6 +19,7 @@ interface PageParams {
 }
 
 interface PageSearchParams {
+  identity?: string;
   run_id?: string;
 }
 
@@ -85,7 +86,10 @@ export default async function StaticSecretSetupStatusPage({
   const connectionId = decodeURIComponent(rawConnectionId);
   const connectorId = decodeURIComponent(rawConnectorId);
   const resolvedSearchParams = await searchParams;
-  const pageParams: PageSearchParams = { run_id: firstValue(resolvedSearchParams.run_id) };
+  const pageParams: PageSearchParams = {
+    identity: firstValue(resolvedSearchParams.identity),
+    run_id: firstValue(resolvedSearchParams.run_id),
+  };
 
   const status = await getStaticSecretSetupStatus(connectionId, pageParams.run_id ?? null).catch((err) => {
     if (err instanceof RefNotFoundError) {
@@ -94,9 +98,14 @@ export default async function StaticSecretSetupStatusPage({
     throw err;
   });
 
+  // Prefer the durable identity the projection derives from the connection's
+  // non-secret setup fields (e.g. a mailbox address). Fall back to the
+  // synchronous-probe echo passed at submit for connectors with no durable
+  // identity field (e.g. an account login). Non-secret either way.
+  const accountIdentity = status.account_identity ?? pageParams.identity ?? null;
   const described = describeState(status);
-  const title = status.account_identity
-    ? `${status.display_name ?? connectorId} · ${status.account_identity}`
+  const title = accountIdentity
+    ? `${status.display_name ?? connectorId} · ${accountIdentity}`
     : (status.display_name ?? connectorId);
 
   return (
@@ -114,6 +123,12 @@ export default async function StaticSecretSetupStatusPage({
 
       <Section description={described.detail} title={described.headline}>
         <dl className="grid max-w-2xl gap-2 rounded-md border border-border/80 bg-muted/20 p-4">
+          {accountIdentity ? (
+            <div className="flex justify-between gap-4">
+              <dt className="pdpp-caption text-muted-foreground">Connected as</dt>
+              <dd className="pdpp-caption">{accountIdentity}</dd>
+            </div>
+          ) : null}
           <div className="flex justify-between gap-4">
             <dt className="pdpp-caption text-muted-foreground">Connection</dt>
             <dd className="pdpp-caption font-mono">{status.connection_id}</dd>

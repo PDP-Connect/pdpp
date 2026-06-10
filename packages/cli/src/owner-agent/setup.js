@@ -202,6 +202,15 @@ export function formatConnectionSetupPlan(plan) {
   lines.push(`  status: ${status.label} — ${status.summary}`);
   lines.push(`  setup modality: ${setupModality}`);
   lines.push(`  connector modality: ${connectorModality}`);
+  if (typeof plan?.validation === 'string') {
+    lines.push(
+      `  credential validation: ${plan.validation}${
+        plan.validation === 'synchronous'
+          ? ' (the credential is checked and the account identity echoed before storing)'
+          : ' (the connection activates when the first sync accepts records)'
+      }`
+    );
+  }
   lines.push(`  connection active: ${plan?.connection_active === true ? 'yes' : 'no (materializes when the owner step completes)'}`);
   if (deployment?.state && deployment.state !== 'not_applicable') {
     lines.push(`  deployment readiness: ${deployment.state}`);
@@ -330,6 +339,9 @@ export function formatConnectorTemplateExplain(template) {
   lines.push(`  status: ${templateSupportStatus(template)}`);
   lines.push(`  connector modality: ${template?.connector_modality ?? 'unknown'}`);
   lines.push(`  setup modality: ${setupPlan.setup_modality ?? 'unknown'}`);
+  if (typeof setupPlan.validation === 'string') {
+    lines.push(`  credential validation: ${setupPlan.validation}`);
+  }
   lines.push(`  next step: ${templateNextStep(template)}`);
   if (setupPlan.proof_gate) {
     lines.push(`  proof gate: ${setupPlan.proof_gate}`);

@@ -887,6 +887,7 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
         runbook_path: 'docs/operator/static-secret-connection-runbook.md',
         setup_modality: 'static_secret',
         support_state: 'proof_gated',
+        validation: 'synchronous',
         next_step: {
           kind: 'capture_static_secret',
           reason: 'Open the owner-session static-secret setup page; provider secrets are not returned to agents.',
@@ -901,6 +902,8 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
     assert.match(captured.stdout, /Next step: capture_static_secret/);
     assert.match(captured.stdout, /capture endpoint: \/dashboard\/connect\/static-secret\/gmail/);
     assert.match(captured.stdout, /runbook: docs\/operator\/static-secret-connection-runbook\.md/);
+    // The CLI surfaces the synchronous validation mode without any secret.
+    assert.match(captured.stdout, /credential validation: synchronous/);
     assert.doesNotMatch(captured.stdout, /provider-secret-value/);
   });
 });

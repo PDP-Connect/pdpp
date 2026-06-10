@@ -46,6 +46,18 @@ async function withCredentialKey(value, fn) {
   }
 }
 
+// Permissive deterministic prober so capturing a probe-bearing connector (gmail)
+// in these draft/capture mechanics tests does not trigger a real network probe.
+// Synchronous validation rejection is proven separately in
+// static-secret-credential-probe-route.test.js.
+function permissiveProber() {
+  return async ({ context }) => ({
+    ok: true,
+    identity: context?.setupFields?.account_email ?? 'synthetic@example.com',
+    detail: null,
+  });
+}
+
 async function withServer(fn) {
   const server = await startServer({
     quiet: true,
@@ -55,6 +67,7 @@ async function withServer(fn) {
     ownerAuthPassword: OWNER_PASSWORD,
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -81,6 +94,7 @@ async function withOpenServer(fn) {
     ownerAuthPassword: '',
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -309,6 +323,10 @@ test('static-secret setup descriptor is manifest-authored and readiness-gated', 
       assert.equal(body.connector_id, 'gmail');
       assert.equal(body.credential_kind, 'app_password');
       assert.equal(body.deployment_readiness.state, 'ready');
+      // Gmail has a synchronous credential probe, so the owner setup descriptor
+      // advertises synchronous validation; the Console form reads this to render
+      // the validate-then-activate flow generically.
+      assert.equal(body.validation, 'synchronous');
       assert.ok(
         body.credential_capture.fields.some(
           (field) => field.name === 'account_email' && field.type === 'email' && field.secret === false,

@@ -48,6 +48,19 @@ async function withCredentialKey(value, fn) {
   }
 }
 
+// This suite exercises credential-capture MECHANICS (sealing, rotation, kind
+// mismatch, fail-closed) — not the synchronous validation moment. Inject a
+// permissive deterministic prober so a probe-bearing connector (gmail) does not
+// trigger a real network probe; every synthetic secret validates. The dedicated
+// probe-rejection behavior is proven in static-secret-credential-probe-route.test.js.
+function permissiveProber() {
+  return async ({ context }) => ({
+    ok: true,
+    identity: context?.setupFields?.account_email ?? 'synthetic@example.com',
+    detail: null,
+  });
+}
+
 async function withServer(fn) {
   const server = await startServer({
     quiet: true,
@@ -57,6 +70,7 @@ async function withServer(fn) {
     ownerAuthPassword: OWNER_PASSWORD,
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;

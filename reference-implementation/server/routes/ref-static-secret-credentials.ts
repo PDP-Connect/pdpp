@@ -6,8 +6,22 @@
 // at the owner-session capture page, but it never carries the credential itself.
 
 import { expectedStaticSecretCredentialKind, type ConnectorManifestLike } from "../connection-setup-plan.ts";
+import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
+
+// Owner-facing result of a synchronous credential probe.
+//   - `skipped: true`   — this connector has no synchronous probe; take the
+//                         first-sync path (no rejection, no identity echo).
+//   - `ok: true`        — the credential validated; carries the non-secret
+//                         account identity to echo.
+//   - `ok: false`       — the credential was rejected (or the provider was
+//                         unreachable); carries a provider-named, owner-causal
+//                         reason. Never a raw provider error, never the secret.
+export type StaticSecretProbeResult =
+  | { readonly ok: true; readonly skipped: true }
+  | { readonly detail?: string | null; readonly identity: string; readonly ok: true; readonly skipped?: false }
+  | { readonly code: string; readonly message: string; readonly ok: false; readonly retryable?: boolean };
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -61,8 +75,36 @@ interface ConnectorInstanceCredentialStore {
   getMetadata(connectorInstanceId: string): Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
+interface ConnectorInstanceRow {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly sourceBinding?: unknown;
+  readonly status: string;
+}
+
+interface ConnectorInstanceStore {
+  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+}
+
+// Non-secret context handed to a probe. The Gmail probe needs the mailbox
+// address (a non-secret setup field captured at draft creation); the GitHub
+// probe needs only the secret. Never carries the secret.
+export interface StaticSecretProbeContext {
+  readonly connectorInstanceId?: string | null;
+  readonly setupFields?: Readonly<Record<string, string>> | null;
+}
+
 export interface MountRefStaticSecretCredentialsContext {
+  // Canonicalize a connector id/key (strip the registry prefix) so the probe
+  // registry lookup matches. Optional: when absent the connector id is used as
+  // given (matching the existing draft-route fallback).
+  canonicalConnectorKey?(value: string | null | undefined): string | null;
   createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
+  // Read-only connector-instance store, used to recover the draft's non-secret
+  // setup fields for the probe context. Optional: when absent the probe runs
+  // with no setup-field context (fine for connectors whose probe needs none,
+  // e.g. GitHub).
+  createRequestConnectorInstanceStore?(): ConnectorInstanceStore;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
   ensureRequestId(res: RouteResponse): string;
@@ -70,6 +112,18 @@ export interface MountRefStaticSecretCredentialsContext {
   handleError(res: unknown, err: unknown): void;
   now?(): string;
   pdppError: PdppErrorFn;
+  // Run the connector's synchronous credential probe. Injected so the route is
+  // transport-agnostic: production wires the package probe + live transport;
+  // tests inject a deterministic double. Returns a typed result and MUST NOT
+  // throw for a normal rejection. It returns `{ ok: true, skipped: true }` for a
+  // connector with no probe (the route then keeps the first-sync path), so the
+  // route needs no separate has-probe gate. It MUST NOT echo the secret. When
+  // this is not injected at all, every connector takes the first-sync path.
+  probeStaticSecretCredential?(input: {
+    connectorKey: string;
+    context: StaticSecretProbeContext;
+    secret: string;
+  }): Promise<StaticSecretProbeResult>;
   requireOwnerSession: MiddlewareHandler;
   resolveOwnerConnectorNamespace(
     req: unknown,
@@ -181,6 +235,45 @@ async function emitCaptureAudit(
   });
 }
 
+// Pull the non-secret setup fields out of the draft's source binding. The draft
+// binding is `{ kind: "static_secret_draft", setup_fields: {...} }`; only
+// non-secret fields are ever stored there (the secret lives in the credential
+// store), so this is safe to read for the probe context.
+function setupFieldsFromBinding(sourceBinding: unknown): Record<string, string> | null {
+  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
+    return null;
+  }
+  const raw = (sourceBinding as { setup_fields?: unknown }).setup_fields;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const fields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "string" && value.length > 0) {
+      fields[key] = value;
+    }
+  }
+  return Object.keys(fields).length > 0 ? fields : null;
+}
+
+// Resolve the non-secret setup-field context for a connector's probe by reading
+// the draft instance's source binding. Best-effort: a connector whose probe
+// needs no setup fields (e.g. GitHub) is unaffected when this returns null.
+async function probeContextForInstance(
+  ctx: MountRefStaticSecretCredentialsContext,
+  connectorInstanceId: string
+): Promise<StaticSecretProbeContext> {
+  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    return { connectorInstanceId, setupFields: null };
+  }
+  const store = ctx.createRequestConnectorInstanceStore();
+  const instance = await store.get(connectorInstanceId);
+  return {
+    connectorInstanceId,
+    setupFields: instance ? setupFieldsFromBinding(instance.sourceBinding) : null,
+  };
+}
+
 function parseCaptureBody(
   ctx: MountRefStaticSecretCredentialsContext,
   res: RouteResponse,
@@ -278,6 +371,66 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           );
           return;
         }
+        // Fail closed before probing when the instance-level credential key
+        // provider is missing: there is no point validating a credential we
+        // cannot store, and this preserves the existing 503
+        // `credential_encryption_key_missing` contract ahead of the probe.
+        if (!isCredentialEncryptionConfigured()) {
+          await emitCaptureAudit(ctx, req, res, {
+            connectionId: namespace.connectorInstanceId,
+            connectorId: namespace.connectorId,
+            credentialKind,
+            error: errWithCode("credential_encryption_key_missing"),
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          ctx.pdppError(
+            res,
+            503,
+            "credential_encryption_key_missing",
+            "Credential encryption is required but no instance-level key provider is configured. Configure it before capturing a static-secret credential. No credential was validated or stored."
+          );
+          return;
+        }
+
+        // Synchronous validation moment (owner-journey flow design B1). When a
+        // probe is injected, validate the credential against the provider BEFORE
+        // storing it: a known-bad credential is rejected with a provider-named,
+        // owner-causal message and NOTHING is written to the credential store.
+        // The prober self-reports `skipped: true` for a connector with no probe,
+        // so the first-sync path is preserved without a separate gate. The probe
+        // is injected, so no live provider call happens under test.
+        const probeConnectorKey = ctx.canonicalConnectorKey
+          ? (ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId)
+          : namespace.connectorId;
+        let probedIdentity: { detail: string | null; identity: string } | null = null;
+        if (typeof ctx.probeStaticSecretCredential === "function") {
+          const probeContext = await probeContextForInstance(ctx, namespace.connectorInstanceId);
+          const probeResult = await ctx.probeStaticSecretCredential({
+            connectorKey: probeConnectorKey,
+            context: probeContext,
+            secret: capture.secret,
+          });
+          if (!probeResult.ok) {
+            // Validation failed: do NOT store the credential or any of its
+            // metadata. Audit the rejection with the typed code only (no secret,
+            // no raw provider error). The owner sees the provider-named message
+            // and keeps their form context.
+            await emitCaptureAudit(ctx, req, res, {
+              connectionId: namespace.connectorInstanceId,
+              connectorId: namespace.connectorId,
+              credentialKind,
+              error: errWithCode(probeResult.code),
+              outcome: "failed",
+              ownerSubjectId,
+            });
+            ctx.pdppError(res, 400, "static_secret_credential_rejected", probeResult.message);
+            return;
+          }
+          if (probeResult.skipped !== true) {
+            probedIdentity = { detail: probeResult.detail ?? null, identity: probeResult.identity };
+          }
+        }
         const store = ctx.createRequestConnectorInstanceCredentialStore();
         const previous = await store.getMetadata(namespace.connectorInstanceId);
         const now = ctx.now ? ctx.now() : new Date().toISOString();
@@ -303,6 +456,14 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           connector_instance_id: namespace.connectorInstanceId,
           connector_id: namespace.connectorId,
           credential: projectCredentialMetadata(metadata),
+          // Non-secret account identity from a synchronous probe ("Connected as
+          // {identity}"). Null when the connector has no probe (first-sync path)
+          // or the probe returned no identity. Never carries the secret.
+          identity: probedIdentity
+            ? { account_identity: probedIdentity.identity, detail: probedIdentity.detail }
+            : null,
+          // Whether the credential was validated synchronously before storing.
+          validation: probedIdentity ? "synchronous" : "first_sync",
           next_step: {
             kind: "run_connection",
             method: "POST",
