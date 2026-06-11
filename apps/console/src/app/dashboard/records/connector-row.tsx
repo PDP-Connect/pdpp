@@ -1,5 +1,7 @@
 "use client";
 
+import { StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -23,8 +25,8 @@ import {
   syncActionIdleLabel,
   syncStartFailureLead,
 } from "../lib/connection-evidence.ts";
-import { isRevokedConnection } from "../lib/records-list-classification.ts";
 import { formatNextAction } from "../lib/next-action.ts";
+import { isRevokedConnection } from "../lib/records-list-classification.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { normalizeKnownGaps, resolvePartialCoverageCue } from "../lib/run-gaps.ts";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
@@ -296,8 +298,8 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
             localDeviceProgress={overview.localDeviceProgress ?? null}
-            revokedAt={overview.revokedAt ?? null}
             revoked={revoked}
+            revokedAt={overview.revokedAt ?? null}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
             runsHref={runsHref}
@@ -305,8 +307,8 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
           <PrimaryRowActionControl
             action={rowAction}
             displayName={displayName}
-            isPending={isPending}
             idleLabel={syncIdleLabel}
+            isPending={isPending}
             onSync={handleSync}
             running={running}
           />
@@ -746,22 +748,21 @@ function ConnectionHealthStatus({
     health,
     localDeviceProgress,
   });
-  const { label, shape, tone, title } = display;
-  const content = (
-    <span className={`pdpp-caption inline-flex items-center gap-1 ${connectionHealthTextClass(tone)}`} title={title}>
-      <StatusDot shape={shape} tone={tone} />
-      {label}
+  const { title } = display;
+  // StatusBadge vocabulary is keyed on the raw API state, not the derived
+  // label. Pass health.state so the badge tone follows the vocabulary; the
+  // label comes from the vocabulary entry (or falls back to the raw state).
+  const badge = (
+    <span title={title}>
+      <StatusBadge status={health.state} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
     </span>
   );
   const healthPill = lastRun ? (
-    <Link
-      className="underline-offset-2 hover:text-foreground/80 hover:underline"
-      href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-    >
-      {content}
+    <Link className="underline-offset-2 hover:opacity-80" href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}>
+      {badge}
     </Link>
   ) : (
-    content
+    badge
   );
 
   // RunningBadge surfaces a scheduler-run elapsed-time counter; the headline
@@ -804,19 +805,6 @@ function conditionNoticeClass(tone: EvidenceTone): string {
     return "border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 text-[color:var(--warning)]";
   }
   return "border-l-muted-foreground/40 bg-muted/40 text-muted-foreground";
-}
-
-function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "running" | "warning"): string {
-  if (tone === "danger") {
-    return "text-destructive";
-  }
-  if (tone === "warning") {
-    return "text-[color:var(--warning)]";
-  }
-  if (tone === "running") {
-    return "text-blue-700 dark:text-blue-300";
-  }
-  return "text-muted-foreground";
 }
 
 function AxisChipBadge({ chip }: { chip: AxisChip }) {

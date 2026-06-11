@@ -17,7 +17,7 @@
  */
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { ListResponse, TimelineEnvelope } from "../../lib/ref-client.ts";
 import { Button } from "../../ui/button.tsx";
 import { Input } from "../../ui/input.tsx";
@@ -45,6 +45,13 @@ export interface ListWithPeekParams<T> {
   activeFilterChips: { label: string; value: string }[];
   /** Build a list href that preserves filters but applies overrides. */
   buildListHref: (overrides: Record<string, string | undefined>) => string;
+  /**
+   * Optional: derive a date-group key from an item (e.g. "Today", "Yesterday",
+   * or an ISO date string). When provided, the list inserts a sticky separator
+   * row whenever the key changes between consecutive items. Omit to render the
+   * list as a flat sequence (the default for grants and traces).
+   */
+  dateGroupKey?: (item: T) => string;
   description?: ReactNode;
   emptyHint: ReactNode;
   emptyTitle: string;
@@ -206,6 +213,7 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
     result,
     rowKey,
     renderRow,
+    dateGroupKey,
     filters,
     activeFilterChips,
     resetHref,
@@ -221,11 +229,23 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
         <EmptyState hint={emptyHint} title={emptyTitle} />
       ) : (
         <DataList>
-          {result.data.map((item) => {
+          {result.data.map((item, index) => {
             const id = rowKey(item);
             const peeked = peekId === id;
             const href = buildListHref({ peek: id });
-            return <li key={id}>{renderRow(item, { peeked, href })}</li>;
+            const groupKey = dateGroupKey ? dateGroupKey(item) : null;
+            const prevGroupKey = dateGroupKey && index > 0 ? dateGroupKey(result.data[index - 1]) : null;
+            const showSeparator = groupKey !== null && groupKey !== prevGroupKey;
+            return (
+              <Fragment key={id}>
+                {showSeparator ? (
+                  <li className="pdpp-eyebrow sticky top-0 z-10 border-border/60 border-y bg-muted/80 px-3 py-1.5 text-muted-foreground backdrop-blur-sm">
+                    {groupKey}
+                  </li>
+                ) : null}
+                <li>{renderRow(item, { peeked, href })}</li>
+              </Fragment>
+            );
           })}
         </DataList>
       )}

@@ -78,6 +78,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     result,
     rowKey: (run) => run.run_id,
     renderRow: (run, { peeked, href }) => <RunRow chips href={href} peeked={peeked} run={run} />,
+    dateGroupKey: (run) => runDateGroup(run.last_at),
     filters: {
       query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
       connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },
@@ -85,8 +86,8 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
         name: "status",
         defaultValue: params.status ?? "",
         options: [
-          { value: "succeeded", label: "succeeded" },
           { value: "failed", label: "failed" },
+          { value: "succeeded", label: "succeeded" },
           { value: "cancelled", label: "cancelled" },
           { value: "started", label: "started" },
           { value: "waiting_for_browser_surface", label: "waiting for browser" },
@@ -123,4 +124,29 @@ function isLiveRun(run: RunSummary): boolean {
 
 function isTerminalRunStatus(status: string): boolean {
   return ["cancelled", "failed", "rejected", "succeeded"].includes(status);
+}
+
+/**
+ * Map an ISO timestamp to a human-readable date group label for the runs list.
+ * "Today" / "Yesterday" for the two most recent days; a locale date string
+ * (e.g. "Jun 8, 2026") for older entries. The comparison uses the local
+ * calendar day of the JS runtime (the server), which is fine for an operator
+ * console — precision to the exact viewer timezone is not required.
+ */
+function runDateGroup(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown date";
+  }
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  const itemDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (itemDay.getTime() === today.getTime()) {
+    return "Today";
+  }
+  if (itemDay.getTime() === yesterday.getTime()) {
+    return "Yesterday";
+  }
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
