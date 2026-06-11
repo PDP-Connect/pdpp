@@ -9,9 +9,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  deriveAutoPausedBanner,
   deriveConnectionNextStep,
   deriveConnectionStatusDisplay,
+  deriveFailureSummary,
   derivePrimaryRowAction,
+  deriveStreakDots,
   formatCoverageAxis,
   formatDominantCondition,
   formatFreshnessAxis,
@@ -1711,4 +1714,219 @@ test("syncActionIdleLabel keeps non-failed idle sync copy", () => {
   assert.equal(syncActionIdleLabel("started"), "Sync now");
   assert.equal(syncActionIdleLabel(null), "Sync now");
   assert.equal(syncActionIdleLabel(undefined), "Sync now");
+});
+
+// ─── deriveFailureSummary ─────────────────────────────────────────────────────
+
+// Top-level regex constants for useTopLevelRegex compliance
+const PROSE_GAP_RE = /gap/i;
+const PROSE_INCOMPLETE_RE = /incomplete/i;
+const PROSE_THROTTLE_RE = /throttl/i;
+const PROSE_BACKOFF_RE = /back-off|backoff|retry/i;
+const PROSE_RECONNECT_RE = /reconnect/i;
+
+test("deriveFailureSummary returns null for healthy state", () => {
+  assert.equal(deriveFailureSummary(snapshot({ state: "healthy" })), null);
+});
+
+test("deriveFailureSummary returns null for idle state", () => {
+  assert.equal(deriveFailureSummary(snapshot({ state: "idle" })), null);
+});
+
+test("deriveFailureSummary returns null for null input", () => {
+  assert.equal(deriveFailureSummary(null), null);
+});
+
+test("deriveFailureSummary degraded → 'What's missing?' trigger, view_runs CTA", () => {
+  const result = deriveFailureSummary(
+    snapshot({ state: "degraded", axes: { coverage: "gaps", freshness: "fresh", attention: "none", outbox: "idle" } })
+  );
+  assert.ok(result);
+  assert.equal(result.triggerLabel, "What's missing?");
+  assert.equal(result.cta, "view_runs");
+  assert.match(result.prose, PROSE_GAP_RE);
+});
+
+test("deriveFailureSummary degraded with complete coverage → generic prose", () => {
+  const result = deriveFailureSummary(
+    snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    })
+  );
+  assert.ok(result);
+  assert.equal(result.triggerLabel, "What's missing?");
+  assert.match(result.prose, PROSE_INCOMPLETE_RE);
+});
+
+test("deriveFailureSummary cooling_off source_pressure → honest prose about throttling", () => {
+  const result = deriveFailureSummary(snapshot({ state: "cooling_off", reason_code: "source_pressure" }));
+  assert.ok(result);
+  assert.equal(result.triggerLabel, "What's wrong?");
+  assert.equal(result.cta, "wait");
+  assert.match(result.prose, PROSE_THROTTLE_RE);
+});
+
+test("deriveFailureSummary cooling_off failure back-off → retry prose", () => {
+  const result = deriveFailureSummary(snapshot({ state: "cooling_off", reason_code: "reddit_login_unexpected_ui" }));
+  assert.ok(result);
+  assert.equal(result.cta, "wait");
+  assert.match(result.prose, PROSE_BACKOFF_RE);
+});
+
+test("deriveFailureSummary blocked → reconnect CTA", () => {
+  const result = deriveFailureSummary(snapshot({ state: "blocked" }));
+  assert.ok(result);
+  assert.equal(result.triggerLabel, "What's wrong?");
+  assert.equal(result.cta, "reconnect");
+  assert.match(result.prose, PROSE_RECONNECT_RE);
+});
+
+test("deriveFailureSummary needs_attention → reconnect CTA", () => {
+  const result = deriveFailureSummary(snapshot({ state: "needs_attention" }));
+  assert.ok(result);
+  assert.equal(result.cta, "reconnect");
+});
+
+test("deriveFailureSummary passes through reason_code", () => {
+  const result = deriveFailureSummary(snapshot({ state: "blocked", reason_code: "browser_context_died" }));
+  assert.ok(result);
+  assert.equal(result.reasonCode, "browser_context_died");
+});
+
+test("deriveFailureSummary passes through next_attempt_at", () => {
+  const result = deriveFailureSummary(snapshot({ state: "cooling_off", next_attempt_at: "2026-05-15T15:36:00Z" }));
+  assert.ok(result);
+  assert.equal(result.nextAttemptAt, "2026-05-15T15:36:00Z");
+});
+
+test("deriveFailureSummary passes through last_success_at", () => {
+  const result = deriveFailureSummary(snapshot({ state: "blocked", last_success_at: "2026-04-28T19:33:00Z" }));
+  assert.ok(result);
+  assert.equal(result.lastSuccessAt, "2026-04-28T19:33:00Z");
+});
+
+// ─── deriveStreakDots ─────────────────────────────────────────────────────────
+
+test("deriveStreakDots returns empty array for no runs", () => {
+  assert.deepEqual(deriveStreakDots([]), []);
+});
+
+test("deriveStreakDots maps succeeded → ✓ success", () => {
+  const dots = deriveStreakDots([{ status: "succeeded", first_at: "2026-05-15T00:00:00Z" }]);
+  assert.equal(dots.length, 1);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].symbol, "✓");
+  assert.equal(dots[0].tone, "success");
+});
+
+test("deriveStreakDots maps failed → ✕ danger", () => {
+  const dots = deriveStreakDots([
+    { status: "failed", first_at: "2026-05-15T00:00:00Z", failure_reason: "browser_timeout" },
+  ]);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].symbol, "✕");
+  assert.equal(dots[0].tone, "danger");
+  assert.equal(dots[0].statusLabel, "browser_timeout");
+});
+
+test("deriveStreakDots maps cancelled → ⊘ neutral", () => {
+  const dots = deriveStreakDots([{ status: "cancelled", first_at: "2026-05-15T00:00:00Z" }]);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].symbol, "⊘");
+  assert.equal(dots[0].tone, "neutral");
+});
+
+test("deriveStreakDots maps degraded → ⚠ warning", () => {
+  const dots = deriveStreakDots([{ status: "degraded", first_at: "2026-05-15T00:00:00Z" }]);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].symbol, "⚠");
+  assert.equal(dots[0].tone, "warning");
+});
+
+test("deriveStreakDots caps at 14 runs", () => {
+  const runs = Array.from({ length: 20 }, (_, i) => ({
+    status: "succeeded",
+    first_at: `2026-05-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+  }));
+  assert.equal(deriveStreakDots(runs).length, 14);
+});
+
+test("deriveStreakDots preserves the at timestamp for tooltip", () => {
+  const ts = "2026-05-15T13:00:00Z";
+  const dots = deriveStreakDots([{ status: "succeeded", first_at: ts }]);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].at, ts);
+});
+
+// ─── deriveAutoPausedBanner ───────────────────────────────────────────────────
+
+test("deriveAutoPausedBanner returns null when no schedule", () => {
+  assert.equal(deriveAutoPausedBanner(null), null);
+  assert.equal(deriveAutoPausedBanner(undefined), null);
+});
+
+test("deriveAutoPausedBanner returns null when backoff not applied", () => {
+  const schedule = {
+    scheduler_backoff: {
+      backoff_applied: false,
+      consecutive_failures: 0,
+      next_run_at: null,
+      reason_class: null,
+      recommended_health_state: null as "blocked" | "cooling_off" | null,
+    },
+  };
+  assert.equal(deriveAutoPausedBanner(schedule), null);
+});
+
+test("deriveAutoPausedBanner returns null when scheduler_backoff is null", () => {
+  assert.equal(deriveAutoPausedBanner({ scheduler_backoff: null }), null);
+});
+
+test("deriveAutoPausedBanner returns banner with consecutive failures and reason", () => {
+  const schedule = {
+    scheduler_backoff: {
+      backoff_applied: true,
+      consecutive_failures: 5,
+      next_run_at: "2026-05-15T15:36:00Z",
+      reason_class: "reddit_login_unexpected_ui",
+      recommended_health_state: "cooling_off" as const,
+    },
+  };
+  const banner = deriveAutoPausedBanner(schedule);
+  assert.ok(banner);
+  assert.equal(banner.consecutiveFailures, 5);
+  assert.equal(banner.nextRunAt, "2026-05-15T15:36:00Z");
+  assert.equal(banner.reasonLabel, "reddit login unexpected ui");
+  assert.equal(banner.isTerminal, false);
+});
+
+test("deriveAutoPausedBanner marks terminal when recommended_health_state is blocked", () => {
+  const schedule = {
+    scheduler_backoff: {
+      backoff_applied: true,
+      consecutive_failures: 47,
+      next_run_at: null,
+      reason_class: "connector_reported_failed",
+      recommended_health_state: "blocked" as const,
+    },
+  };
+  const banner = deriveAutoPausedBanner(schedule);
+  assert.ok(banner);
+  assert.equal(banner.isTerminal, true);
+});
+
+test("deriveAutoPausedBanner handles null reason_class gracefully", () => {
+  const schedule = {
+    scheduler_backoff: {
+      backoff_applied: true,
+      consecutive_failures: 3,
+      next_run_at: null,
+      reason_class: null,
+      recommended_health_state: "cooling_off" as const,
+    },
+  };
+  const banner = deriveAutoPausedBanner(schedule);
+  assert.ok(banner);
+  assert.equal(banner.reasonLabel, null);
 });

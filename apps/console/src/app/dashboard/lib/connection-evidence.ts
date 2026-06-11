@@ -1411,6 +1411,208 @@ export function syncStartFailureLead(phase: "before_server" | "after_server"): s
   return "The reference server rejected the sync, so it did not start.";
 }
 
+// ─── What's wrong? expander ───────────────────────────────────────────────────
+
+/**
+ * Structured failure summary for the "What's wrong?" expander on the
+ * connector detail page.
+ *
+ * Shown only when health is degraded, cooling_off, blocked, or needs_attention.
+ * The expander's trigger label follows design decision 9 in the mocks:
+ * `degraded` opens "What's missing?"; everything else opens "What's wrong?".
+ *
+ * Pure and JSX-free so it can be unit-tested without a browser harness.
+ */
+export interface FailureSummary {
+  /**
+   * Primary remediation CTA.
+   * - `reconnect` → link to the add-source flow (credential/browser failures)
+   * - `view_runs` → link to the runs list (protocol failures, gaps)
+   * - `wait` → informational, no link (cooling_off in back-off)
+   */
+  cta: "reconnect" | "view_runs" | "wait";
+  /** ISO timestamp of the last known success. */
+  lastSuccessAt: string | null;
+  /** next_attempt_at from the health snapshot — when the next retry fires. */
+  nextAttemptAt: string | null;
+  /**
+   * One or two prose sentences the operator reads first. Plain English, no
+   * codes. Mirrors the design brief's per-state copy (§C of the mocks).
+   */
+  prose: string;
+  /** reason_code to show in the fact box, or null when absent. */
+  reasonCode: string | null;
+  /** Button label for the collapsed expander. */
+  triggerLabel: "What's missing?" | "What's wrong?";
+}
+
+/**
+ * Derive a `FailureSummary` from the connection health snapshot.
+ * Returns `null` for states that do not warrant an expander (`healthy`,
+ * `idle`, `unknown`).
+ */
+export function deriveFailureSummary(health: RefConnectionHealthSnapshot | null | undefined): FailureSummary | null {
+  if (!health) {
+    return null;
+  }
+  const { state, reason_code, next_attempt_at, last_success_at } = health;
+
+  switch (state) {
+    case "degraded": {
+      const hasCoverageGaps =
+        health.axes.coverage === "gaps" ||
+        health.axes.coverage === "partial" ||
+        health.axes.coverage === "terminal_gap";
+      return {
+        triggerLabel: "What's missing?",
+        prose: hasCoverageGaps
+          ? "Some streams did not finish collecting on the last run. Data already collected is safe; the gap fills on the next successful run."
+          : "The connection ran but coverage or freshness is incomplete. Existing records are valid and collection will resume normally.",
+        reasonCode: reason_code,
+        nextAttemptAt: next_attempt_at,
+        lastSuccessAt: last_success_at,
+        cta: "view_runs",
+      };
+    }
+    case "cooling_off": {
+      const isSourcePressure = reason_code === SOURCE_PRESSURE_REASON_CODE;
+      return {
+        triggerLabel: "What's wrong?",
+        prose: isSourcePressure
+          ? "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt."
+          : "The scheduler entered back-off after one or more failed runs. It will retry automatically; captured progress is retained.",
+        reasonCode: reason_code,
+        nextAttemptAt: next_attempt_at,
+        lastSuccessAt: last_success_at,
+        cta: "wait",
+      };
+    }
+    case "blocked": {
+      return {
+        triggerLabel: "What's wrong?",
+        prose:
+          "The connection has stopped making progress and automatic retries are paused. This usually means the credentials expired or the provider blocked the session. Reconnect to start a fresh setup, or try a manual run to see if the issue cleared on its own.",
+        reasonCode: reason_code,
+        nextAttemptAt: next_attempt_at,
+        lastSuccessAt: last_success_at,
+        cta: "reconnect",
+      };
+    }
+    case "needs_attention": {
+      const dominantSummary = formatDominantCondition(health);
+      return {
+        triggerLabel: "What's wrong?",
+        prose: dominantSummary
+          ? dominantSummary.label
+          : "Owner action is required before this connection can make progress. Open the run detail for the exact step.",
+        reasonCode: reason_code,
+        nextAttemptAt: next_attempt_at,
+        lastSuccessAt: last_success_at,
+        cta: "reconnect",
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// ─── 14-day streak strip ──────────────────────────────────────────────────────
+
+/** Symbol and tone for one run in the streak strip. */
+export interface StreakDot {
+  /** ISO timestamp used for the title tooltip. */
+  at: string;
+  /** Human-readable status for the title tooltip. */
+  statusLabel: string;
+  /** Unicode symbol for the dot. */
+  symbol: "✓" | "⚠" | "✕" | "⊘" | "⏸";
+  tone: "success" | "warning" | "danger" | "neutral";
+}
+
+/**
+ * Derive streak dots from an array of run summaries (newest-first).
+ *
+ * Symbols follow design decision 8 in the mocks: `✓ ⚠ ✕ ⊘ ⏸`.
+ * Limited to the most recent 14 runs to keep the strip compact.
+ *
+ * Pure and JSX-free so it can be unit-tested without a browser harness.
+ */
+export function deriveStreakDots(
+  runs: readonly { status: string; first_at: string; failure_reason?: string | null }[]
+): StreakDot[] {
+  return runs.slice(0, 14).map((r): StreakDot => {
+    const s = r.status;
+    if (s === "succeeded" || s === "success" || s === "completed") {
+      return { symbol: "✓", tone: "success", at: r.first_at, statusLabel: "Succeeded" };
+    }
+    if (s === "failed" || s === "error") {
+      return { symbol: "✕", tone: "danger", at: r.first_at, statusLabel: r.failure_reason ?? "Failed" };
+    }
+    if (s === "cancelled" || s === "canceled") {
+      return { symbol: "⊘", tone: "neutral", at: r.first_at, statusLabel: "Cancelled" };
+    }
+    if (s === "paused" || s === "skipped") {
+      return { symbol: "⏸", tone: "neutral", at: r.first_at, statusLabel: "Skipped" };
+    }
+    if (s === "degraded" || s === "partial") {
+      return { symbol: "⚠", tone: "warning", at: r.first_at, statusLabel: "Partial" };
+    }
+    // in_progress / started — not shown in a historical strip but included
+    // defensively so the map never throws.
+    return { symbol: "⚠", tone: "neutral", at: r.first_at, statusLabel: s.replace(/_/g, " ") };
+  });
+}
+
+// ─── Auto-paused banner ───────────────────────────────────────────────────────
+
+/**
+ * Derive the auto-paused banner data from the schedule's backoff field.
+ *
+ * Returns `null` when no backoff is active, so callers can conditionally
+ * render the banner without duplicating the predicate.
+ *
+ * Pure and JSX-free so it can be unit-tested without a browser harness.
+ */
+export interface AutoPausedBanner {
+  /** Number of consecutive failures that triggered the back-off. */
+  consecutiveFailures: number;
+  /**
+   * Whether the recommended_health_state says `blocked` (gave up / terminal)
+   * vs `cooling_off` (back-off, will retry).
+   */
+  isTerminal: boolean;
+  /** ISO timestamp for when the next attempt will fire, or null. */
+  nextRunAt: string | null;
+  /** reason_class from the backoff, humanized for display. */
+  reasonLabel: string | null;
+}
+
+export function deriveAutoPausedBanner(
+  schedule:
+    | {
+        scheduler_backoff: {
+          backoff_applied: boolean;
+          consecutive_failures: number;
+          next_run_at: string | null;
+          reason_class: string | null;
+          recommended_health_state: "blocked" | "cooling_off" | null;
+        } | null;
+      }
+    | null
+    | undefined
+): AutoPausedBanner | null {
+  const backoff = schedule?.scheduler_backoff;
+  if (!backoff?.backoff_applied) {
+    return null;
+  }
+  return {
+    consecutiveFailures: backoff.consecutive_failures,
+    reasonLabel: backoff.reason_class ? backoff.reason_class.replace(/[_-]+/g, " ") : null,
+    nextRunAt: backoff.next_run_at,
+    isTerminal: backoff.recommended_health_state === "blocked",
+  };
+}
+
 export function derivePrimaryRowAction(input: {
   connectorId: string | null | undefined;
   health?: RefConnectionHealthSnapshot | null;

@@ -15,9 +15,19 @@ import {
   indexCollectionReportByStream,
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
-import { derivePrimaryRowAction, syncActionIdleLabel, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
-import { isRevokedConnection } from "../../lib/records-list-classification.ts";
+import {
+  type AutoPausedBanner,
+  deriveAutoPausedBanner,
+  deriveFailureSummary,
+  derivePrimaryRowAction,
+  deriveStreakDots,
+  type FailureSummary,
+  type PrimaryRowAction,
+  type StreakDot,
+  syncActionIdleLabel,
+} from "../../lib/connection-evidence.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
   type DeviceSourceInstance,
   getConnectorSchedule,
@@ -323,6 +333,9 @@ function ConnectorPageView({
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);
+  const failureSummary = deriveFailureSummary(connectionHealth);
+  const streakDots = deriveStreakDots(recentRuns);
+  const autoPausedBanner = deriveAutoPausedBanner(schedule);
 
   return (
     <DashboardShell active="records">
@@ -390,24 +403,11 @@ function ConnectorPageView({
         title={displayName}
       />
 
-      {revoked ? (
-        <Section
-          description="Future collection is stopped for this connection. Retained records, grants, runs, and audit evidence stay visible; reconnect starts a fresh setup path for this source."
-          title="Revoked connection"
-        >
-          <Link
-            className={buttonVariants({ variant: "default", size: "sm" })}
-            href={addSourceHrefForConnector(connectorId)}
-          >
-            Reconnect source
-          </Link>
-          {overview.revokedAt ? (
-            <p className="pdpp-caption mt-3 text-muted-foreground">
-              Revoked <Timestamp value={overview.revokedAt} />.
-            </p>
-          ) : null}
-        </Section>
-      ) : null}
+      {streakDots.length > 0 ? <StreakStrip connectorId={connectorId} dots={streakDots} /> : null}
+
+      {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
+
+      {failureSummary ? <FailureExpander connectorId={connectorId} summary={failureSummary} /> : null}
 
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
@@ -464,45 +464,7 @@ function ConnectorPageView({
         )}
       </Section>
 
-      <Section
-        description="Each run is an artifact you can inspect. Click through for the full trace."
-        title={`Recent runs (${recentRuns.length})`}
-      >
-        {recentRuns.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">No runs yet for this connector.</p>
-        ) : (
-          <DataList>
-            {recentRuns.map((r) => (
-              <li key={r.run_id}>
-                <Link
-                  className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
-                  href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`}
-                >
-                  <span className="pdpp-caption flex items-center gap-2">
-                    <StatusBadge status={r.status} />
-                    <span className="font-mono text-muted-foreground text-xs">{r.run_id}</span>
-                  </span>
-                  <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
-                    <Timestamp value={r.first_at} />
-                    <span aria-hidden>·</span>
-                    <span>{durationLabel(r.first_at, r.last_at)}</span>
-                    <span aria-hidden>·</span>
-                    <span>
-                      {r.event_count.toLocaleString()} event{r.event_count === 1 ? "" : "s"}
-                    </span>
-                    {r.failure_reason ? (
-                      <>
-                        <span aria-hidden>·</span>
-                        <span className="text-destructive">{r.failure_reason}</span>
-                      </>
-                    ) : null}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </DataList>
-        )}
-      </Section>
+      <RecentRunsSection autoPausedBanner={autoPausedBanner} connectorId={connectorId} recentRuns={recentRuns} />
 
       <ConnectionDangerZone
         connectionId={connectorInstanceId ?? connectionId}
@@ -510,6 +472,68 @@ function ConnectorPageView({
         message={dangerMessage}
       />
     </DashboardShell>
+  );
+}
+
+/**
+ * Recent runs section with optional auto-paused banner. Extracted to keep
+ * `ConnectorPageView` under the cognitive complexity budget while containing
+ * the conditional branches needed for the banner and run rows.
+ */
+function RecentRunsSection({
+  autoPausedBanner,
+  connectorId,
+  recentRuns,
+}: {
+  autoPausedBanner: AutoPausedBanner | null;
+  connectorId: string;
+  recentRuns: RunSummary[];
+}) {
+  return (
+    <Section
+      description="Each run is an artifact you can inspect. Click through for the full trace."
+      title={`Recent runs (${recentRuns.length})`}
+    >
+      {recentRuns.length === 0 ? (
+        <p className="pdpp-caption text-muted-foreground italic">No runs yet for this connector.</p>
+      ) : (
+        <DataList>
+          {autoPausedBanner ? (
+            <li data-testid="auto-paused-banner">
+              <AutoPausedBannerRow banner={autoPausedBanner} connectorId={connectorId} />
+            </li>
+          ) : null}
+          {recentRuns.map((r) => (
+            <li key={r.run_id}>
+              <Link
+                className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                href={`/dashboard/runs/${encodeURIComponent(r.run_id)}`}
+              >
+                <span className="pdpp-caption flex items-center gap-2">
+                  <StatusBadge status={r.status} />
+                  <span className="font-mono text-muted-foreground text-xs">{r.run_id}</span>
+                </span>
+                <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
+                  <Timestamp value={r.first_at} />
+                  <span aria-hidden>·</span>
+                  <span>{durationLabel(r.first_at, r.last_at)}</span>
+                  <span aria-hidden>·</span>
+                  <span>
+                    {r.event_count.toLocaleString()} event{r.event_count === 1 ? "" : "s"}
+                  </span>
+                  {r.failure_reason ? (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span className="text-destructive">{r.failure_reason}</span>
+                    </>
+                  ) : null}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </DataList>
+      )}
+    </Section>
   );
 }
 
@@ -641,6 +665,27 @@ function ConnectionIdentityLine({
   );
 }
 
+function RevokedConnectionSection({ connectorId, revokedAt }: { connectorId: string; revokedAt: string | null }) {
+  return (
+    <Section
+      description="Future collection is stopped for this connection. Retained records, grants, runs, and audit evidence stay visible; reconnect starts a fresh setup path for this source."
+      title="Revoked connection"
+    >
+      <Link
+        className={buttonVariants({ variant: "default", size: "sm" })}
+        href={addSourceHrefForConnector(connectorId)}
+      >
+        Reconnect source
+      </Link>
+      {revokedAt ? (
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          Revoked <Timestamp value={revokedAt} />.
+        </p>
+      ) : null}
+    </Section>
+  );
+}
+
 function summarizeSourceInstancesForHeader(sourceInstances: readonly DeviceSourceInstance[]): {
   deviceLabels: string[];
   pendingOnDevices: number;
@@ -681,6 +726,206 @@ function errorMessage(reason: unknown): string {
     return reason.message;
   }
   return String(reason);
+}
+
+// ─── Surface 1: "What's wrong?" / "What's missing?" expander ─────────────────
+
+/**
+ * Structured failure expander. Shows when health is degraded, cooling_off,
+ * blocked, or needs_attention. Collapsed by default; renders as a `<details>`
+ * element so it works without JS and screen-readers announce its state.
+ *
+ * Design: §C of `connector-health-ui-mocks-2026-05-15.md`.
+ * Decision 9: `degraded` opens "What's missing?", all others open "What's wrong?".
+ * Decision 10: filled-primary "Reconnect" in expander earns primary weight here
+ * because the user has invested in understanding the problem.
+ */
+function FailureExpander({ connectorId, summary }: { connectorId: string; summary: FailureSummary }) {
+  return (
+    <div className="border-border/70 border-b" data-testid="failure-expander">
+      <details>
+        <summary className="pdpp-body flex cursor-pointer list-none items-center gap-2 px-4 py-3 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+          <span
+            aria-hidden
+            className={[
+              "inline-block size-2 rounded-full",
+              summary.cta === "reconnect" ? "bg-destructive" : "bg-[color:var(--warning)]",
+            ].join(" ")}
+          />
+          <span className="font-medium">{summary.triggerLabel}</span>
+          <span className="pdpp-caption ml-auto select-none text-muted-foreground">▸</span>
+        </summary>
+
+        <div className="flex flex-col gap-4 px-4 pt-2 pb-4">
+          {/* Prose explanation */}
+          <p className="pdpp-body text-muted-foreground" data-testid="failure-expander-prose">
+            {summary.prose}
+          </p>
+
+          {/* Fact box */}
+          <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded border border-border/60 bg-muted/30 px-3 py-2">
+            {summary.reasonCode ? (
+              <>
+                <dt className="text-muted-foreground">reason code</dt>
+                <dd className="font-mono tabular-nums" data-testid="failure-expander-reason-code">
+                  {summary.reasonCode}
+                </dd>
+              </>
+            ) : null}
+            {summary.nextAttemptAt ? (
+              <>
+                <dt className="text-muted-foreground">next attempt</dt>
+                <dd className="tabular-nums">
+                  <Timestamp value={summary.nextAttemptAt} />
+                </dd>
+              </>
+            ) : null}
+            {summary.lastSuccessAt ? (
+              <>
+                <dt className="text-muted-foreground">last success</dt>
+                <dd className="tabular-nums">
+                  <Timestamp value={summary.lastSuccessAt} />
+                </dd>
+              </>
+            ) : null}
+          </dl>
+
+          {/* Primary CTA */}
+          {summary.cta === "reconnect" && (
+            <div>
+              <Link
+                className={buttonVariants({ variant: "default", size: "sm" })}
+                data-testid="failure-expander-reconnect"
+                href={addSourceHrefForConnector(connectorId)}
+              >
+                Reconnect
+              </Link>
+            </div>
+          )}
+          {summary.cta === "view_runs" && (
+            <div>
+              <Link
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+                data-testid="failure-expander-view-runs"
+                href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+              >
+                View runs →
+              </Link>
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// ─── Surface 2: 14-day streak strip ──────────────────────────────────────────
+
+function streakDotToneClass(tone: StreakDot["tone"]): string {
+  if (tone === "success") {
+    return "text-[color:var(--success,theme(colors.emerald.600))]";
+  }
+  if (tone === "danger") {
+    return "text-destructive";
+  }
+  if (tone === "warning") {
+    return "text-[color:var(--warning)]";
+  }
+  return "text-muted-foreground";
+}
+
+/**
+ * Compact per-run symbol strip showing the last ≤14 runs at a glance.
+ *
+ * Design: §B.2 of the mocks. Symbols are ✓ ⚠ ✕ ⊘ ⏸ per decision 8
+ * (no sparklines; symbols are scannable and accessible). Renders just below
+ * the page header so the operator gets a health fingerprint before diving in.
+ */
+function StreakStrip({ connectorId, dots }: { connectorId: string; dots: StreakDot[] }) {
+  const failureCount = dots.filter((d) => d.tone === "danger").length;
+  const failureLabel = failureCount === 0 ? "0 failures" : `${failureCount} failure${failureCount === 1 ? "" : "s"}`;
+
+  return (
+    <div className="flex items-center gap-3 border-border/70 border-b px-4 py-2" data-testid="streak-strip">
+      <span className="pdpp-eyebrow text-muted-foreground">Last {dots.length} runs</span>
+      <span className="flex items-center gap-1">
+        {dots.map((d, i) => (
+          <span
+            aria-hidden
+            className={["font-mono text-sm tabular-nums", streakDotToneClass(d.tone)].join(" ")}
+            // biome-ignore lint/suspicious/noArrayIndexKey: positional streak dots have no stable id
+            key={i}
+            title={`${d.statusLabel} · ${d.at}`}
+          >
+            {d.symbol}
+          </span>
+        ))}
+      </span>
+      <Link
+        className="pdpp-caption ml-auto text-muted-foreground hover:text-foreground"
+        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+      >
+        {failureLabel} · All runs →
+      </Link>
+    </div>
+  );
+}
+
+// ─── Surface 3: Auto-paused banner in the run timeline ───────────────────────
+
+/**
+ * Amber banner shown at the top of the run timeline when the scheduler has
+ * entered back-off after consecutive failures.
+ *
+ * Design: §D.4 of the mocks. The banner sits above the run rows (before the
+ * list), converting a wall of red rows into a legible "the system noticed;
+ * here's what it did" moment. The terminal (`blocked`) variant is red-tinted.
+ */
+function AutoPausedBannerRow({ banner, connectorId }: { banner: AutoPausedBanner; connectorId: string }) {
+  const failures = banner.consecutiveFailures;
+  const failureNoun = `${failures} consecutive failure${failures === 1 ? "" : "s"}`;
+  const reasonSuffix = banner.reasonLabel ? ` of ${banner.reasonLabel}` : "";
+
+  return (
+    <div
+      className={[
+        "mx-4 my-1 rounded px-4 py-3",
+        banner.isTerminal
+          ? "bg-destructive/10 text-destructive"
+          : "bg-[color:var(--warning)]/10 text-[color:var(--warning)]",
+      ].join(" ")}
+      data-testid="auto-paused-banner-row"
+    >
+      {banner.isTerminal ? (
+        <>
+          <span className="pdpp-body font-medium">⊘ Stopped retrying.</span>{" "}
+          <span className="pdpp-caption">
+            After {failureNoun}
+            {reasonSuffix}, automatic attempts are paused.{" "}
+            <Link className="underline hover:no-underline" href={addSourceHrefForConnector(connectorId)}>
+              Reconnect
+            </Link>{" "}
+            or try a manual run.
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="pdpp-body font-medium">
+            ⏱ Auto-paused after {failureNoun}
+            {reasonSuffix}.
+          </span>
+          {banner.nextRunAt ? (
+            <>
+              {" "}
+              <span className="pdpp-caption">
+                Next retry at <Timestamp value={banner.nextRunAt} />.
+              </span>
+            </>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 function durationLabel(firstAt: string, lastAt: string): string {
