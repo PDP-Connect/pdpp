@@ -286,7 +286,7 @@ interface PendingDetailGapSummary {
    * `rowToGap` returns it; the source-pressure backlog rollup reads it as the
    * cooldown governor's `attemptCount`. Optional/`unknown` because not every
    * gap projection populates it.
-  */
+   */
   readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
   readonly last_attempt_at?: unknown;
@@ -657,9 +657,7 @@ function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): un
  * block, a `run.failed` that exited before the terminal builder ran, or any
  * malformed payload — absence reads as "no facts", never as `complete`.
  */
-function readCollectionFactsFromTerminalData(
-  data: Record<string, unknown> | null
-): RuntimeCollectionFacts | null {
+function readCollectionFactsFromTerminalData(data: Record<string, unknown> | null): RuntimeCollectionFacts | null {
   if (!data) {
     return null;
   }
@@ -687,18 +685,14 @@ function readCollectionFactsFromTerminalData(
       // anything not a safe non-negative integer reads as absent (`unknown`),
       // never a fabricated denominator. (Spec: "Considered evidence is unreadable".)
       considered:
-        typeof entry.considered === "number" &&
-        Number.isSafeInteger(entry.considered) &&
-        entry.considered >= 0
+        typeof entry.considered === "number" && Number.isSafeInteger(entry.considered) && entry.considered >= 0
           ? entry.considered
           : null,
       // `covered` is OMITTED upstream when unknown. Re-validate defensively the
       // same way as `considered`: anything not a safe non-negative integer reads
       // as absent (`null`), never a fabricated covered count.
       covered:
-        typeof entry.covered === "number" &&
-        Number.isSafeInteger(entry.covered) &&
-        entry.covered >= 0
+        typeof entry.covered === "number" && Number.isSafeInteger(entry.covered) && entry.covered >= 0
           ? entry.covered
           : null,
       checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
@@ -793,8 +787,10 @@ function parseCollectionRatePayload(raw: unknown): CollectionRateSnapshot | null
   const current_interval_ms = typeof r.current_interval_ms === "number" ? r.current_interval_ms : null;
   const effective_rate_per_min = typeof r.effective_rate_per_min === "number" ? r.effective_rate_per_min : null;
   if (
-    ceiling_interval_ms === null || ceiling_rate_per_min === null ||
-    current_interval_ms === null || effective_rate_per_min === null
+    ceiling_interval_ms === null ||
+    ceiling_rate_per_min === null ||
+    current_interval_ms === null ||
+    effective_rate_per_min === null
   ) {
     return null;
   }
@@ -1031,17 +1027,12 @@ async function getRecoveredSourcePressureGapCount(
  * honest "N no longer retrievable" count (§6.3) spans all terminal gaps.
  * `null` means unmeasured, never a fabricated zero.
  */
-async function getTerminalGapCount(
-  store: ConnectorDetailGapStoreLike,
-  connectorId: string
-): Promise<number | null> {
+async function getTerminalGapCount(store: ConnectorDetailGapStoreLike, connectorId: string): Promise<number | null> {
   if (typeof store.countGapsByStatusForConnector !== "function") {
     return null;
   }
   try {
-    const terminal = await Promise.resolve(
-      store.countGapsByStatusForConnector(connectorId, { status: "terminal" })
-    );
+    const terminal = await Promise.resolve(store.countGapsByStatusForConnector(connectorId, { status: "terminal" }));
     return typeof terminal === "number" && Number.isFinite(terminal) && terminal >= 0 ? Math.floor(terminal) : null;
   } catch {
     return null;
@@ -1332,6 +1323,78 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
     }
   }
   return null;
+}
+
+// Generic terminal reasons that carry NO specific cause — a connector that
+// flattens any terminal failure into one of these hides the real signal. When
+// the run reason is one of these, a credential-bearing known-gap should win
+// (§10-C); a SPECIFIC failure_reason is left untouched.
+const GENERIC_TERMINAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "connector_reported_failed",
+  "connector_exited",
+  "unknown",
+]);
+
+/**
+ * §10-C: recover a credential-specific reason from a run whose top-level
+ * `failure_reason` is a GENERIC placeholder (e.g. `connector_reported_failed`)
+ * but whose degrading known-gaps signal an auth failure (a 401/403 message or a
+ * `refresh_credentials` recovery hint). Returns `credentials_required` so the
+ * downstream `isCredentialReason` gate projects `needs_attention` + a Reconnect
+ * CTA (and the §10-F escalation push) instead of a silent generic failure.
+ * Returns `null` when the failure_reason is already specific (left untouched) or
+ * no known-gap signals credentials.
+ */
+function credentialReasonFromGenericFailure(run: ConnectorRunSummary | null): string | null {
+  if (!run) {
+    return null;
+  }
+  const failureReason = run.failure_reason;
+  // A specific failure_reason is authoritative — do not override it.
+  if (
+    typeof failureReason === "string" &&
+    failureReason.length > 0 &&
+    !GENERIC_TERMINAL_FAILURE_REASONS.has(failureReason)
+  ) {
+    return null;
+  }
+  for (const gap of run.known_gaps) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      continue;
+    }
+    const severity = (gap as { severity?: unknown }).severity;
+    if (severity === "informational" || severity === "recoverable") {
+      continue;
+    }
+    const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
+    const message = (gap as { message?: unknown }).message;
+    if (recoveryAction === "refresh_credentials" || isAuthFailureMessage(message)) {
+      return "credentials_required";
+    }
+  }
+  return null;
+}
+
+/**
+ * True when a known-gap message indicates an authentication/credential failure
+ * (a 401/403, expired token, dead session). Mirrors the `isCredentialReason`
+ * vocabulary so an auth failure buried in a connector's message is recognised
+ * even when the top-level run reason is generic (§10-C).
+ */
+function isAuthFailureMessage(message: unknown): boolean {
+  if (typeof message !== "string" || message.length === 0) {
+    return false;
+  }
+  const text = message.toLowerCase();
+  return (
+    text.includes("401") ||
+    text.includes("403") ||
+    text.includes("auth") ||
+    text.includes("credential") ||
+    text.includes("session_expired") ||
+    text.includes("reauth") ||
+    text.includes("invalid_token")
+  );
 }
 
 /**
@@ -1806,9 +1869,7 @@ function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): L
   for (const row of rows) {
     const store = typeof row.store === "string" && row.store ? row.store : "unknown_store";
     const status =
-      typeof row.status === "string" && LOCAL_COVERAGE_ACCOUNTED_STATUSES.has(row.status)
-        ? row.status
-        : "unaccounted";
+      typeof row.status === "string" && LOCAL_COVERAGE_ACCOUNTED_STATUSES.has(row.status) ? row.status : "unaccounted";
     if (status === "unaccounted") {
       unaccountedStores.push(store);
     }
@@ -2654,10 +2715,8 @@ export async function loadSharedBrowserSurfaceReader(
   // the reject branch preserves the prior per-connector failure path so each
   // projection still routes to `BROWSER_SURFACE_UNRELIABLE_PROJECTION`.
   return {
-    listNonTerminalLeases: () =>
-      snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.leases),
-    listSurfaces: () =>
-      snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.surfaces),
+    listNonTerminalLeases: () => (snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.leases)),
+    listSurfaces: () => (snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.surfaces)),
   };
 }
 
@@ -2847,6 +2906,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
       latestStatus: mapRunStatus(input.lastRun?.status) ?? backoffEvidence.schedulerFailureStatus,
       reasonCode:
+        // §10-C: a credential/auth signal buried in a known-gap takes priority
+        // over a GENERIC top-level `failure_reason` (e.g. ChatGPT's terminal 401
+        // surfaces as `connector_reported_failed`, which hides the auth cause and
+        // produces a silent failure with no reconnect prompt). A SPECIFIC
+        // failure_reason still wins — this only fires when the run reason is the
+        // generic `connector_reported_failed` placeholder.
+        credentialReasonFromGenericFailure(input.lastRun) ??
         input.lastRun?.failure_reason ??
         firstDegradingKnownGapReason(input.lastRun) ??
         firstPendingDetailGapReason(pendingDetailGaps) ??
@@ -3035,10 +3101,7 @@ async function projectConnectorSummaryForInstance(
   if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
     return null;
   }
-  const live = await getConnectorRecordProjection(
-    recordStorageConnectorIdForConnection(instance),
-    connectorInstanceId
-  );
+  const live = await getConnectorRecordProjection(recordStorageConnectorIdForConnection(instance), connectorInstanceId);
   const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
     await Promise.all([
       getScheduleFrom(controller, connectorId, { connectorInstanceId }),

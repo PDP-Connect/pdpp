@@ -860,3 +860,69 @@ test('acceptance 7.3: no manifest policy keeps the prior complete behaviour inta
   assertHeadline(snap, 'healthy');
   assert.equal(snap.axes.coverage, 'complete');
 });
+
+// ─── §10-C: a flattened auth failure must surface as a credential prompt ──────
+
+test('§10-C: a failed run whose known_gap is an auth 401 (flattened to a generic reason) drives a credential prompt, not a silent failure', () => {
+  // The live ChatGPT case: a terminal 401 is reported as the GENERIC
+  // `connector_reported_failed`, but the auth signal survives in the gap's
+  // `recovery_hint.action` + message. `firstDegradingKnownGapReason` must
+  // surface a credential reason so the headline routes to a reconnect path
+  // (and the §10-F escalation push) instead of a silent generic failure.
+  const run = failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'run_failed',
+        reason: 'connector_reported_failed',
+        stream: null,
+        severity: 'actionable',
+        message: 'apiFetch got 401 on GET /conversation/abc (auth - not retryable)',
+        recovery_hint: { action: 'refresh_credentials', retryable: false },
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: { enabled: true },
+  });
+  // The credential signal is recovered: the connection is NOT silently
+  // generic-failed. It surfaces a credentials condition that drives the
+  // owner-facing reconnect path (the same `isCredentialReason` gate the
+  // dashboard reads for its "Reconnect" CTA).
+  assert.notEqual(snap.state, 'healthy');
+  const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
+  assert.ok(
+    credentialCondition,
+    `expected a CredentialsValid:false condition (reconnect prompt), got conditions: ${JSON.stringify(snap.conditions?.map((c) => `${c.type}:${c.status}`))}`,
+  );
+  assert.equal(credentialCondition.remediation?.action, 'refresh_credentials');
+});
+
+test('§10-C control: a non-auth generic failure does NOT manufacture a credential prompt', () => {
+  // A genuine non-credential failure (e.g. a parser error) must stay generic —
+  // the credential-awareness must not over-fire on every failed run.
+  const run = failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'run_failed',
+        reason: 'connector_reported_failed',
+        stream: null,
+        severity: 'actionable',
+        message: 'parser error: unexpected token in stream payload',
+        recovery_hint: { action: 'retry_on_connector_upgrade', retryable: false },
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: { enabled: true },
+  });
+  const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
+  assert.equal(credentialCondition, undefined, 'a non-auth failure must NOT manufacture a credential/reconnect prompt');
+});

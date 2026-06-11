@@ -1141,17 +1141,46 @@ function createChatGptApi({
     return fresh;
   }
 
+  // Re-extract the page's CURRENT bearer token, discarding the cached one. The
+  // ChatGPT web `access_token` is a short-lived JWT that the browser rotates
+  // silently; a long run (the recovery backlog can take 10s of minutes under
+  // pacing) outlives the token it cached at run start, so a late fetch sees a
+  // stale token and gets a 401 even though the page already holds a fresh one.
+  // Clearing the cache and re-reading `#client-bootstrap` picks up the live
+  // token. Returns the fresh auth, or throws `chatgpt_auth_missing` if the page
+  // genuinely has no token (the session is actually dead → owner reconnect).
+  function reauth(): Promise<ChatGptAuth> {
+    authCache = null;
+    return auth();
+  }
+
   async function fetchOnce(
     path: string,
     { method, body, parseJson = true }: { method: string; body?: unknown; parseJson?: boolean }
   ): Promise<ChatGptFetchResult> {
-    const a = await auth();
     const timeoutMs = resolveChatGptBackendFetchTimeoutMs();
-    return await withTimeout(
-      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, parseJson, auth: a, timeoutMs }),
-      timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS,
-      `chatgpt_backend_fetch_evaluate_timeout after ${timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS}ms`
-    );
+    const evaluate = (a: ChatGptAuth): Promise<ChatGptFetchResult> =>
+      withTimeout(
+        page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, parseJson, auth: a, timeoutMs }),
+        timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS,
+        `chatgpt_backend_fetch_evaluate_timeout after ${timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS}ms`
+      );
+    const usedAuth = await auth();
+    const result = await evaluate(usedAuth);
+    // Stale-token self-heal: a 401 on the cached token is almost always a
+    // rotated/expired JWT, not a dead session. Re-extract the page's current
+    // token ONCE and retry — but only if it actually CHANGED (a different token
+    // means the page rotated; an identical token means the session is genuinely
+    // unauthorized, so retrying would just loop). If the retry still 401s, or the
+    // token is unchanged, the result flows on to `shouldAbort` → terminal auth
+    // error, which §10-C routes to a reconnect prompt rather than a silent fail.
+    if (result.status === 401) {
+      const refreshed = await reauth();
+      if (refreshed.accessToken && refreshed.accessToken !== usedAuth.accessToken) {
+        return evaluate(refreshed);
+      }
+    }
+    return result;
   }
 
   function fetchWithRetry(
