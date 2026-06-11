@@ -206,6 +206,35 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   border-radius: 0.75rem;
 }
 
+/* ─── Authorship classes (three-class trust model) ──────────────────────
+ * Each consent block names its provenance with a data-authorship attribute so
+ * the three classes — protocol facts, manifest-authored descriptions, and
+ * client-authored claims — stay visually and semantically distinct. The dashed
+ * left rule on client blocks is the non-color affordance for claimed, not
+ * enforced. */
+.hosted-ui-authorship {
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+}
+.hosted-ui-authorship + .hosted-ui-authorship { margin-top: 0.875rem; }
+.hosted-ui-authorship-eyebrow { display: block; margin-bottom: 0.375rem; }
+.hosted-ui-authorship[data-authorship="protocol"] { border-left-color: var(--primary); }
+.hosted-ui-authorship[data-authorship="manifest"] { border-left-color: var(--human); }
+.hosted-ui-authorship[data-authorship="client"] {
+  border-left-style: dashed;
+  border-left-color: var(--muted-foreground);
+}
+.hosted-ui-authorship[data-authorship="client"] .hosted-ui-authorship-eyebrow {
+  color: var(--muted-foreground);
+}
+.hosted-ui-client-claim + .hosted-ui-client-claim { margin-top: 0.5rem; }
+.hosted-ui-client-claim-disclaimer {
+  margin-top: 0.5rem;
+  font-style: italic;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
 /* ─── Hosted-ui layout ──────────────────────────────────────────────── */
 .hosted-ui-page {
   max-width: 640px;
