@@ -87,6 +87,12 @@ const AXIS_CHIP_SUCCESS_CLASS = /function diagnosticsAxisChipClass[\s\S]*emerald
 const AXIS_CHIP_WARNING_CLASS = /function diagnosticsAxisChipClass[\s\S]*var\(--warning\)/;
 const AXIS_CHIP_DANGER_CLASS = /function diagnosticsAxisChipClass[\s\S]*destructive/;
 const REDUNDANT_OUTBOX_LINE_TESTID = /data-testid="diagnostics-outbox"/;
+
+const COLLECTION_RATE_BLOCK_TITLE = /title="Collection rate"/;
+const COLLECTION_RATE_HELPER = /formatCollectionRateReadout/;
+const COLLECTION_RATE_TESTID = /data-testid="diagnostics-collection-rate"/;
+const COLLECTION_RATE_UNKNOWN_TESTID = /data-testid="diagnostics-collection-rate-unknown"/;
+const COLLECTION_RATE_UNAVAILABLE_COPY = /Collection rate unavailable/;
 const REDUNDANT_OUTBOX_HELPER = /summarizeOutboxForRow/;
 
 const FORWARD_DISPOSITION_TESTID = /data-testid="diagnostics-forward-disposition"/;
@@ -345,4 +351,15 @@ test("source last_error renders an inline human message, not just a hidden title
   assert.match(src, SOURCE_ERROR_FORMATTER_PICKS_MESSAGE);
   // The full object is still preserved in the title for deeper inspection.
   assert.match(src, SOURCE_ERROR_PRESERVES_TITLE);
+});
+
+test("diagnostics renders a Collection rate block that degrades to an explicit unknown", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  // The block exists and derives its readout through the pure formatter.
+  assert.match(src, COLLECTION_RATE_BLOCK_TITLE);
+  assert.match(src, COLLECTION_RATE_HELPER);
+  // Honest-by-default: a populated readout and an explicit unavailable branch.
+  assert.match(src, COLLECTION_RATE_TESTID);
+  assert.match(src, COLLECTION_RATE_UNKNOWN_TESTID);
+  assert.match(src, COLLECTION_RATE_UNAVAILABLE_COPY);
 });

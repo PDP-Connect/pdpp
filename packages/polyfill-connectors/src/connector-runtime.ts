@@ -82,6 +82,7 @@ export type {
   AssistanceRequest,
   AssistanceResponseContract,
   AssistanceSensitivity,
+  CollectionRateProgress,
   DetailCoverageMessage,
   DetailGapMessage,
   DetailGapNetworkPressure,

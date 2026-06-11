@@ -1,4 +1,4 @@
-import { type PacingOptions, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
+import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
 import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.js";
 import type { SendDelayHint } from "./send-governor.js";
 
@@ -261,6 +261,16 @@ export class ProviderBudgetController implements SendDelayHint {
   /** Alias of {@link nextDelayMs} with a request-path-readable name. */
   pacingDelayHint(): number {
     return this.nextDelayMs();
+  }
+
+  /**
+   * Operator-legible snapshot of the rate controller's live state, or null when
+   * pacing is disabled. The connector persists `snapshot.intervalMs` for
+   * warm-start across runs and surfaces the snapshot as redacted run-trace
+   * progress. PURE: reads only, never advances GCRA state.
+   */
+  snapshotPacing(): PacingSnapshot | null {
+    return this.pacing?.snapshot() ?? null;
   }
 
   recordRequest(): void {
