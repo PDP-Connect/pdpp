@@ -96,14 +96,47 @@ export function validateCimdUrl(clientId) {
 }
 
 /**
+ * Expand a pair of 16-bit hex hextets representing an embedded IPv4 address
+ * (used in both IPv4-mapped and 6to4 extraction) to a dotted-decimal string.
+ * Each hextet is a 16-bit value; together they encode 32 bits of IPv4.
+ * Returns null if either value is outside the 16-bit unsigned range.
+ */
+function hexHextetsToV4(hi16, lo16) {
+  if (hi16 < 0 || hi16 > 0xffff || lo16 < 0 || lo16 > 0xffff) return null;
+  const a = (hi16 >> 8) & 0xff;
+  const b = hi16 & 0xff;
+  const c = (lo16 >> 8) & 0xff;
+  const d = lo16 & 0xff;
+  return `${a}.${b}.${c}.${d}`;
+}
+
+/**
  * Check whether a resolved IP is in a forbidden private/loopback/multicast range.
  * Returns true if the IP is forbidden (SSRF risk), false if safe to fetch.
  */
 export function isForbiddenIp(ip) {
   const normalized = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
-  const mappedV4 = normalized.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/);
-  if (mappedV4) {
-    return isForbiddenIp(mappedV4[1]);
+
+  // IPv4-mapped IPv6 — dotted form: ::ffff:127.0.0.1 or 0:0:0:0:0:ffff:127.0.0.1
+  const mappedV4Dotted = normalized.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mappedV4Dotted) {
+    return isForbiddenIp(mappedV4Dotted[1]);
+  }
+
+  // IPv4-mapped IPv6 — hex form: ::ffff:7f00:1  (each group is a 16-bit hextet)
+  // Matches ::ffff:HHHH:HHHH where the two final groups encode the IPv4 address.
+  const mappedV4Hex = normalized.match(/^(?:::ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedV4Hex) {
+    const v4 = hexHextetsToV4(parseInt(mappedV4Hex[1], 16), parseInt(mappedV4Hex[2], 16));
+    if (v4) return isForbiddenIp(v4);
+  }
+
+  // 6to4 — 2002:HHHH:HHHH::/48 embeds a public IPv4 in bits 16-47.
+  // Block if the embedded address is itself forbidden.
+  const sixToFour = normalized.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4})(?::.*)?$/);
+  if (sixToFour) {
+    const v4 = hexHextetsToV4(parseInt(sixToFour[1], 16), parseInt(sixToFour[2], 16));
+    if (v4 && isForbiddenIp(v4)) return true;
   }
 
   // IPv4 checks

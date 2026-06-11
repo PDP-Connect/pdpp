@@ -419,6 +419,7 @@ const VIOLATION_STRING_MAX = 200;
 const VIOLATION_LIST_MAX = 20;
 const GAP_STRING_MAX = 200;
 const GAP_LIST_MAX = 20;
+const CONNECTOR_ERROR_MESSAGE_MAX = 500;
 const KNOWN_GAPS_MAX = 50;
 const GAP_DIAGNOSTICS_BYTES_MAX = 8 * 1024;
 const GAP_DIAGNOSTICS_DEPTH_MAX = 6;
@@ -513,6 +514,19 @@ function boundGapString(value) {
     .replace(/\b\d{6}\b/g, '[REDACTED_OTP]');
   if (redacted.length <= GAP_STRING_MAX) return redacted;
   return redacted.slice(0, GAP_STRING_MAX - 1) + '…';
+}
+
+/**
+ * Sanitize a connector-authored error message before persisting it as
+ * `connector_error_message` on a terminal spine event.  The message is
+ * connector-authored and therefore untrusted: apply the same redaction
+ * as redactStderrTail and cap the length.
+ */
+function boundConnectorErrorMessage(value) {
+  if (typeof value !== 'string') return null;
+  const { text } = redactStderrTail(value);
+  if (text.length <= CONNECTOR_ERROR_MESSAGE_MAX) return text;
+  return text.slice(0, CONNECTOR_ERROR_MESSAGE_MAX - 1) + '…';
 }
 
 function boundGapStringList(values) {
@@ -2361,7 +2375,7 @@ export async function runConnector(opts) {
       ...(reportedRecordsEmitted === null || reportedRecordsEmitted === undefined
         ? {}
         : { reported_records_emitted: reportedRecordsEmitted }),
-      ...(connectorError?.message ? { connector_error_message: connectorError.message } : {}),
+      ...(connectorError?.message ? { connector_error_message: boundConnectorErrorMessage(connectorError.message) } : {}),
       ...(connectorError?.retryable === null || connectorError?.retryable === undefined
         ? {}
         : { connector_error_retryable: connectorError.retryable }),

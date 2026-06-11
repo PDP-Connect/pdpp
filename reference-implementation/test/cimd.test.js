@@ -62,6 +62,38 @@ test('CIMD IP guard blocks loopback private and link-local ranges', () => {
   assert.equal(isForbiddenIp('2606:2800:220:1:248:1893:25c8:1946'), false);
 });
 
+test('CIMD IP guard blocks hex-form IPv4-mapped and 6to4 addresses encoding private ranges', () => {
+  // Hex-form IPv4-mapped: ::ffff:HHHH:HHHH where the two hextets are the IPv4 in hex
+  // ::ffff:7f00:1 == ::ffff:127.0.0.1 == 127.0.0.1 (loopback)
+  assert.equal(isForbiddenIp('::ffff:7f00:1'), true, '::ffff:7f00:1 (127.0.0.1) should be forbidden');
+  // ::ffff:0a00:1 == 10.0.0.1 (private)
+  assert.equal(isForbiddenIp('::ffff:0a00:1'), true, '::ffff:0a00:1 (10.0.0.1) should be forbidden');
+  // ::ffff:c0a8:101 == 192.168.1.1 (private)
+  assert.equal(isForbiddenIp('::ffff:c0a8:101'), true, '::ffff:c0a8:101 (192.168.1.1) should be forbidden');
+  // ::ffff:a9fe:101 == 169.254.1.1 (link-local)
+  assert.equal(isForbiddenIp('::ffff:a9fe:101'), true, '::ffff:a9fe:101 (169.254.1.1) should be forbidden');
+  // ::ffff:6440:1 == 100.64.0.1 (CGNAT)
+  assert.equal(isForbiddenIp('::ffff:6440:1'), true, '::ffff:6440:1 (100.64.0.1) should be forbidden');
+
+  // Public address in hex-form IPv4-mapped should be allowed
+  // ::ffff:5db8:d822 == 93.184.216.34 (example.com)
+  assert.equal(isForbiddenIp('::ffff:5db8:d822'), false, '::ffff:5db8:d822 (93.184.216.34) should be allowed');
+
+  // 6to4: 2002:HHHH:HHHH:: embeds IPv4 in bits 16-47
+  // 2002:7f00:0001:: embeds 127.0.0.1 (loopback)
+  assert.equal(isForbiddenIp('2002:7f00:0001::'), true, '2002:7f00:0001:: (127.0.0.1) should be forbidden');
+  // 2002:0a00:0001:: embeds 10.0.0.1 (private)
+  assert.equal(isForbiddenIp('2002:0a00:0001::'), true, '2002:0a00:0001:: (10.0.0.1) should be forbidden');
+  // 2002:c0a8:0101:: embeds 192.168.1.1 (private)
+  assert.equal(isForbiddenIp('2002:c0a8:0101::'), true, '2002:c0a8:0101:: (192.168.1.1) should be forbidden');
+  // 2002:a9fe:0101:: embeds 169.254.1.1 (link-local)
+  assert.equal(isForbiddenIp('2002:a9fe:0101::'), true, '2002:a9fe:0101:: (169.254.1.1) should be forbidden');
+
+  // 6to4 with public embedded address should be allowed
+  // 2002:5db8:d822:: embeds 93.184.216.34 (example.com)
+  assert.equal(isForbiddenIp('2002:5db8:d822::'), false, '2002:5db8:d822:: (93.184.216.34) should be allowed');
+});
+
 test('CIMD redirect_uris must be same-origin except listed localhost development redirects', () => {
   const clientId = 'https://client.example/oauth/client.json';
   validateCimdRedirectUris(
