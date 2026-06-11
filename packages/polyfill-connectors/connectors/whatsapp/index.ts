@@ -18,6 +18,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { runConnector } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { validateRecord } from "./schemas.ts";
 
 interface ParsedMessage {
@@ -51,6 +52,55 @@ const WHATSAPP_LINE_SPLIT_RE = /\r?\n/;
 const CHAT_ID_HASH_LENGTH = 16;
 
 const nowIso = (): string => new Date().toISOString();
+
+// ─── Fingerprinted record emission ───────────────────────────────────────────
+
+type EmitRecord = (stream: string, record: Record<string, unknown>) => Promise<void>;
+type FingerprintCursor = ReturnType<typeof openFingerprintCursor>;
+
+async function emitChatRecord(
+  parsed: ParsedChat,
+  first: string | null,
+  last: string | null,
+  chatsCursor: FingerprintCursor,
+  emitRecord: EmitRecord
+): Promise<void> {
+  const record = {
+    id: parsed.chatId,
+    title: parsed.title,
+    participants: parsed.participants,
+    message_count: parsed.messages.length,
+    first_message_date: first,
+    last_message_date: last,
+  };
+  if (chatsCursor.shouldEmit(record)) {
+    await emitRecord("chats", record);
+  }
+}
+
+async function emitMessageRecords(
+  parsed: ParsedChat,
+  messagesCursor: FingerprintCursor,
+  emitRecord: EmitRecord
+): Promise<void> {
+  for (let i = 0; i < parsed.messages.length; i++) {
+    const m = parsed.messages[i];
+    if (!m) {
+      continue;
+    }
+    const record = {
+      id: `${parsed.chatId}:${i}`,
+      chat_id: parsed.chatId,
+      author: m.author,
+      content: m.content,
+      has_attachment: !!m.has_attachment,
+      sent_at: m.sent_at,
+    };
+    if (messagesCursor.shouldEmit(record)) {
+      await emitRecord("messages", record);
+    }
+  }
+}
 
 function parseDateTime(dateStr: string, timeStr: string): string | null {
   try {
@@ -104,8 +154,18 @@ function parseChatFile(filename: string, content: string): ParsedChat {
 runConnector({
   name: "whatsapp",
   validateRecord,
-  async collect({ requested, emit, emitRecord }) {
+  async collect({ requested, state, emit, emitRecord }) {
     const importDir = process.env.WHATSAPP_EXPORT_DIR || join(homedir(), ".pdpp/imports/whatsapp");
+
+    // Per-record fingerprint cursors — one per stream — seeded from the prior
+    // run's STATE. WhatsApp re-parses all exported .txt files on every run
+    // (file-based, no incremental API). Without fingerprint gating, every
+    // unchanged message produces a fresh RECORD version each run, accumulating
+    // unbounded churn downstream. The cursor skips records whose content has
+    // not changed and carries unchanged fingerprints forward into the next
+    // STATE write so they are not re-emitted on the following run either.
+    const chatsCursor = openFingerprintCursor(state.chats);
+    const messagesCursor = openFingerprintCursor(state.messages);
 
     let files: string[];
     try {
@@ -133,36 +193,41 @@ runConnector({
       const last = parsed.messages.at(-1)?.sent_at || null;
 
       if (requested.has("chats")) {
-        await emitRecord("chats", {
-          id: parsed.chatId,
-          title: parsed.title,
-          participants: parsed.participants,
-          message_count: parsed.messages.length,
-          first_message_date: first,
-          last_message_date: last,
-        });
+        await emitChatRecord(parsed, first, last, chatsCursor, emitRecord);
       }
 
       if (requested.has("messages")) {
-        for (let i = 0; i < parsed.messages.length; i++) {
-          const m = parsed.messages[i];
-          if (!m) {
-            continue;
-          }
-          await emitRecord("messages", {
-            id: `${parsed.chatId}:${i}`,
-            chat_id: parsed.chatId,
-            author: m.author,
-            content: m.content,
-            has_attachment: !!m.has_attachment,
-            sent_at: m.sent_at,
-          });
-        }
+        await emitMessageRecords(parsed, messagesCursor, emitRecord);
       }
       await emit({
         type: "PROGRESS",
         message: `Imported ${f}: ${parsed.messages.length} messages`,
       });
+    }
+
+    // Drop fingerprints for chats/messages that disappeared from the export
+    // directory since the prior run (full-scan streams re-enumerate everything).
+    if (requested.has("chats")) {
+      chatsCursor.pruneStale();
+    }
+    if (requested.has("messages")) {
+      messagesCursor.pruneStale();
+    }
+
+    // Emit STATE checkpoints so fingerprint maps survive into the next run.
+    if (requested.has("chats")) {
+      const cursor: Record<string, unknown> = { synced_at: nowIso() };
+      if (chatsCursor.size() > 0) {
+        cursor.fingerprints = chatsCursor.toState();
+      }
+      await emit({ type: "STATE", stream: "chats", cursor });
+    }
+    if (requested.has("messages")) {
+      const cursor: Record<string, unknown> = { synced_at: nowIso() };
+      if (messagesCursor.size() > 0) {
+        cursor.fingerprints = messagesCursor.toState();
+      }
+      await emit({ type: "STATE", stream: "messages", cursor });
     }
   },
 });
