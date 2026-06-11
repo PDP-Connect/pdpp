@@ -265,24 +265,25 @@ export class ChatGptRateLimitDensityTracker {
 
 // ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
 //
-// The density stop bounds a *pressured* run: it defers the tail once the
-// account serves enough 429s. But a large-history account that is genuinely
-// COLD (0% 429) has no such brake — a serial detail lane at ~3s/conversation
-// can walk tens of thousands of conversations for many hours before it
-// finishes. That is safe when an owner is present and watching, but it is the
-// one thing that keeps unattended scheduling from being ideal (readiness report
-// F4 #1 / Next slice #1): a single nudge could turn into an unbounded run.
+// DEFAULT BEHAVIOR: BOTH CAPS ARE OFF. When neither env var is set (the normal
+// case), both `maxDetailFetchesPerRun` and `maxRunWallClockMs` resolve to
+// `Infinity`. A run terminates on genuine work-drained (all gaps + forward-walk
+// exhausted) or on real source pressure (density stop). These caps are NOT
+// safety invariants and NOT the default throttle. The single authored safety
+// number is the rate ceiling (PDPP_CHATGPT_PACING_MIN_INTERVAL_MS, L320–327).
 //
-// This budget bounds every run by SIZE and/or TIME, independent of source
-// pressure. In this lane one admitted conversation-detail hydration maps to
-// one provider request budget unit. When the run has admitted
-// `maxDetailFetchesPerRun` conversation-detail requests, or has spent
-// `maxRunWallClockMs` of wall-clock in the detail phase, it stops launching new
-// detail fetches and defers the remaining tail as
-// resumable DETAIL_GAP records — the SAME deferral the density stop and the
-// per-conversation exhaustion path use, so a later run recovers the gaps first
-// and walks forward. Strictly safer than today: it can only ever make a run
-// stop EARLIER, never fetch more.
+// When an owner opts in (sets either env var to a positive finite value), this
+// budget bounds that run by SIZE and/or TIME, independent of source pressure.
+// In this lane one admitted conversation-detail hydration maps to one provider
+// request budget unit. When the run has admitted `maxDetailFetchesPerRun`
+// conversation-detail requests, or has spent `maxRunWallClockMs` of wall-clock
+// in the detail phase, it stops launching new detail fetches and defers the
+// remaining tail as resumable DETAIL_GAP records — the SAME deferral the
+// density stop and the per-conversation exhaustion path use, so a later run
+// recovers the gaps first and walks forward. Strictly safer than today: it can
+// only ever make a run stop EARLIER, never fetch more. A run that stops due to
+// these opt-in caps does NOT affect 100% convergence — the gap substrate and
+// scheduler cadence drain the backlog over compounding runs regardless.
 //
 // Crucially this is NOT a source-pressure signal — the account did not throttle
 // us, the run chose to stop. So the deferred gaps carry reason
@@ -295,7 +296,8 @@ export class ChatGptRateLimitDensityTracker {
 // ChatGPT ships an adaptive provider-control profile by default: conservative
 // cold-start pacing, AIMD speed-up on clean success, retry-budget protection,
 // and source-pressure deferral on real throttling. Size/time caps are explicit
-// owner/system envelopes only; they are not the default throttle.
+// OPT-IN owner/system envelopes (default Infinity = off); they are not the
+// default throttle and not a safety invariant.
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
 const CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV = "PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN";
@@ -340,6 +342,14 @@ const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
 // default reset, 8 cool-downs is ~40 min of waiting — far beyond any normal run
 // envelope, so a budgeted run hits its wall-clock cap first and this guard never
 // fires; it exists only to bound an uncapped (Infinity wall-clock) run.
+//
+// No-forward-progress pathology verdict: this guard is SUFFICIENT. A
+// slow-but-successful crawl (every request succeeds, but slowly) never trips
+// the circuit and is bounded by the scheduler cadence — each run commits its
+// hydrated prefix before the next dispatch arrives, so nothing is lost and the
+// wall-clock cap is never the load-bearing stop for a genuinely progressing
+// run. The pathological case (circuit keeps re-opening = hostile provider, not
+// merely slow) is exactly what this constant bounds.
 const CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES = 8;
 // Floor for a single cool-down wait. The circuit reports its exact remaining
 // cool-down; this guarantees each wait cycle yields to the event loop and makes
@@ -350,10 +360,14 @@ const CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS = 50;
 /**
  * Resolve the maximum conversation-detail provider requests a single run may
  * admit before deferring the remaining tail as resumable DETAIL_GAP records.
- * Unset or any value < 1 returns Infinity: no detail-count cap. A positive
- * integer opts into an owner/system envelope. The env var keeps its legacy
- * detail-fetch name because this lane has a one-detail-fetch-to-one-provider-
- * request mapping.
+ *
+ * **Default: `Infinity` (off).** Unset or any value < 1 returns Infinity — the
+ * cap is inactive and the run terminates on work-drained or source pressure.
+ * This is an OPT-IN unattended-scheduling envelope, NOT a safety invariant.
+ * The single authored safety number is the rate ceiling
+ * (PDPP_CHATGPT_PACING_MIN_INTERVAL_MS). A positive integer opts into this
+ * envelope. The env var keeps its legacy detail-fetch name because this lane
+ * has a one-detail-fetch-to-one-provider-request mapping.
  */
 export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
@@ -369,10 +383,15 @@ export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = pr
 
 /**
  * Resolve the maximum wall-clock (ms) the conversation-detail phase may spend
- * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
- * any value <= 0 returns Infinity: no wall-clock cap. A positive value opts into
- * an owner/system envelope. The budget spans the gap-recovery pass and the
- * forward-walk pass of a single run.
+ * before deferring the remaining tail as resumable DETAIL_GAP records.
+ *
+ * **Default: `Infinity` (off).** Unset or any value <= 0 returns Infinity —
+ * the cap is inactive and the run terminates on work-drained or source
+ * pressure. This is an OPT-IN unattended-scheduling envelope, NOT a safety
+ * invariant. The single authored safety number is the rate ceiling
+ * (PDPP_CHATGPT_PACING_MIN_INTERVAL_MS). A positive value opts into this
+ * envelope. The budget spans the gap-recovery pass and the forward-walk pass
+ * of a single run.
  */
 export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV]?.trim();
