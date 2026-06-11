@@ -196,3 +196,14 @@ or bearer material. Deterministic route, planner, console, CLI, contract, and
 OpenSpec checks are green. Live end-to-end Google Maps Timeline import remains
 owner-data gated: it requires the owner to provide a real Timeline export and a
 deployed image containing this tranche.
+
+## 10. Google Maps Timeline Refresh UX
+
+- [ ] 10.1 Promote the decided Google Maps Timeline refresh plan into connector-authored setup metadata: platform export guidance, official help links, accepted formats, validation expectations, primary/secondary acquisition methods, and large-file fallback copy.
+- [ ] 10.2 Ensure the Add source and source detail flows render Google Maps Timeline as phone-first guided import/refresh, not live OAuth sync, desktop scraping, local collector enrollment, or maintainer runbook setup.
+- [ ] 10.3 Add pre-ingest validation feedback for Timeline uploads: detected format, estimated point/segment counts, detected date range, duplicate/stale/empty status, and concrete remediation for unsupported files.
+- [ ] 10.4 Preserve one source identity across equivalent Timeline acquisition methods while recording acquisition method, source format, coverage, and import provenance per run or record batch.
+- [ ] 10.5 Model scheduled Takeout as an advanced/probe lane that can enable best-effort recurring imports only after the first archive proves current Timeline records, and otherwise steers back to phone export/share.
+- [ ] 10.6 Keep Google Maps Data Portability as a separate provider-authorization source and prevent UI or setup-plan copy from claiming it supplies Timeline points/segments.
+- [ ] 10.7 Add owner-journey acceptance checks proving the Timeline flow contains no PDPP developer vocabulary, no repo/package-internal commands, no fake OAuth claim, and no source-specific Console UI branch.
+- [ ] 10.8 Complete an owner-gated live pilot with a contemporary Timeline export or record the parser-format residual risk before archive.

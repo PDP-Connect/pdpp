@@ -302,6 +302,32 @@ shells from static-secret drafts so the retirement sweep never touches unrelated
 drafts. Active connections (enrollment captured source identity and flipped
 status) are never touched by retirement.
 
+### 15. Google Maps Timeline refresh is phone-first guided import, not fake OAuth
+
+Google Maps Timeline is the canonical stress test for manual/upload setup
+quality. The SLVP target is a phone-first guided refresh assistant that helps
+the owner obtain, share/upload, validate, import, and refresh Timeline export
+files. It is not a Gmail-style account sync, not a desktop Timeline scrape, and
+not a developer runbook.
+
+The setup engine should project this from connector-authored setup metadata:
+primary phone export/upload guidance, Android/iOS instructions and official help
+links, accepted file formats, validation expectations, large-file fallback, and
+optional advanced acquisition methods such as scheduled Takeout probes. The
+Console renders those descriptors generically. It does not hardcode Google Maps
+Timeline copy in React.
+
+Google Takeout is allowed as a best-effort recurring-backup probe only after an
+initial archive proves the owner's account still emits current Timeline records.
+If Takeout yields no Timeline data, stale Timeline data, or encrypted-backup
+metadata only, the setup status should clearly steer back to phone export/share.
+
+Google Data Portability remains a separate provider-authorization source for the
+Maps resource groups Google documents. It must not be presented as equivalent to
+Timeline points/segments unless Google documents those resources.
+
+Design note: `design-notes/google-maps-timeline-refresh-slvp-plan-2026-06-11.md`.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

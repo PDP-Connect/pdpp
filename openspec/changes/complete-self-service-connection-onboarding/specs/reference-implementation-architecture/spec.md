@@ -178,3 +178,51 @@ owner-usable.
   still show its existing data without a dead add action
 - **AND** a needs-attention connection's repair action SHALL land on that
   connection's detail surface, not at the start of the add-source flow
+
+### Requirement: Manual import setup SHALL provide connector-authored acquisition and validation guidance
+
+The reference implementation SHALL, for connectors whose setup modality is
+`manual_or_upload`, present owner-usable acquisition, upload, validation, and
+refresh guidance from connector-authored setup metadata and the shared setup
+engine. It SHALL NOT imply provider authorization, background API sync, or
+developer-maintainer setup when the connector's normal source is an
+owner-provided artifact.
+
+#### Scenario: Google Maps Timeline uses guided export and upload
+
+- **WHEN** an owner starts setup for Google Maps Timeline data
+- **THEN** the setup plan SHALL present it as a manual/import Timeline source
+  rather than a live Google account sync
+- **AND** owner setup surfaces SHALL provide connector-authored Android/iOS
+  export guidance, accepted file/format hints, official help links, and an
+  upload/share or large-file handoff action
+- **AND** those surfaces SHALL NOT require a PDPP monorepo checkout,
+  package-internal command, or manual substitution of internal ids
+
+#### Scenario: Manual import validates before long ingest
+
+- **WHEN** an owner supplies an import artifact for a manual/import connector
+- **THEN** the reference SHALL validate the artifact shape before treating setup
+  as successful
+- **AND** it SHALL surface non-secret validation evidence such as detected
+  format, estimated record or segment count, date range when available, duplicate
+  or stale-file status, and the next action for unsupported files
+
+#### Scenario: Acquisition methods share one source identity when semantics match
+
+- **WHEN** multiple acquisition methods such as phone export upload, Android
+  share target, server import-folder handoff, or validated Takeout archive
+  produce the same owner Timeline record family
+- **THEN** the reference MAY ingest them into the same stream definitions and
+  source binding
+- **AND** each run or record batch SHALL retain non-secret provenance for the
+  acquisition method, source format, detected coverage, and source binding
+
+#### Scenario: Google Data Portability remains separate from Timeline import
+
+- **WHEN** a Google Data Portability connector is available for documented Maps
+  resources
+- **THEN** setup surfaces SHALL present it as a provider-authorization source
+  distinct from Google Maps Timeline import
+- **AND** they SHALL NOT claim it provides Timeline points or Timeline segments
+  unless the provider documents those resources
