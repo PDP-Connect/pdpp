@@ -42,8 +42,8 @@
       "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings. Google's documented Data Portability API exposes other Maps resource groups, but not Timeline points or Timeline segments, so this connector does not authenticate to Google or refresh in the background."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [
