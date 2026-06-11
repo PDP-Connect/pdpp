@@ -456,6 +456,25 @@ export interface SearchLexicalOutput {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+/**
+ * Returns `true` when `err` is an `invalidQueryError`-shaped throw from
+ * `record-filters.js#compileRequestFilters` (e.g. "Unknown field" on a stream
+ * that lacks the filtered field). Used in the owner-mode fan-out paths to
+ * convert per-source filter-compilation failures into
+ * `source_skipped_not_applicable` warnings rather than failing the whole
+ * request — matches the intent in `B4` of the intent-fulfillment audit.
+ *
+ * A plain `Error` with a `code` string property is the `invalidQueryError`
+ * shape; errors without `code` (or whose code is not a string) are re-thrown
+ * so unexpected failures stay visible.
+ */
+function isInvalidQueryError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    typeof (err as Error & { code?: unknown }).code === "string"
+  );
+}
+
 // `connection_id` is the canonical public connection identifier;
 // `connector_instance_id` is the deprecated wire alias accepted during the
 // migration window defined by
@@ -822,14 +841,24 @@ export async function executeSearchLexical(
           continue;
         }
         const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
-        const planEntries = dependencies.buildSearchPlanForGrant({
-          manifest,
-          grant,
-          streamsFilter: params.streams,
-          filter: params.filter,
-          filteredStream: params.filteredStream,
-          connectorId: binding.connectorId,
-        });
+        let planEntries: SearchLexicalPlanEntry[];
+        try {
+          planEntries = dependencies.buildSearchPlanForGrant({
+            manifest,
+            grant,
+            streamsFilter: params.streams,
+            filter: params.filter,
+            filteredStream: params.filteredStream,
+            connectorId: binding.connectorId,
+          });
+        } catch (err) {
+          if (!isInvalidQueryError(err)) throw err;
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
         if (planEntries.length === 0) {
           skippedSources.push({
             source: binding.connectorId,
@@ -858,14 +887,21 @@ export async function executeSearchLexical(
           continue;
         }
         const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
-        const planEntries = dependencies.buildSearchPlanForGrant({
-          manifest,
-          grant,
-          streamsFilter: params.streams,
-          filter: params.filter,
-          filteredStream: params.filteredStream,
-          connectorId,
-        });
+        let planEntries: SearchLexicalPlanEntry[];
+        try {
+          planEntries = dependencies.buildSearchPlanForGrant({
+            manifest,
+            grant,
+            streamsFilter: params.streams,
+            filter: params.filter,
+            filteredStream: params.filteredStream,
+            connectorId,
+          });
+        } catch (err) {
+          if (!isInvalidQueryError(err)) throw err;
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
         if (planEntries.length === 0) {
           skippedSources.push({ source: connectorId });
           continue;

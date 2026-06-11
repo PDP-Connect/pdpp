@@ -60,10 +60,12 @@ function makeLexicalDeps({
   ownerConnectors,
   brokenManifestConnectors = [],
   emptyPlanConnectors = [],
+  throwingFilterConnectors = [],
 }) {
   const stored = new Map();
   const broken = new Set(brokenManifestConnectors);
   const empty = new Set(emptyPlanConnectors);
+  const throwing = new Set(throwingFilterConnectors);
   return {
     getAdvertisement: () => lexicalAd,
     listOwnerVisibleConnectorIds: () => ownerConnectors,
@@ -77,6 +79,13 @@ function makeLexicalDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'messages' }] }),
     buildSearchPlanForGrant: ({ manifest, connectorId }) => {
       if (empty.has(connectorId)) return [];
+      if (throwing.has(connectorId)) {
+        // Simulates compileRequestFilters throwing "Unknown field" when the
+        // stream's schema lacks the filtered field.
+        const err = new Error('Unknown field: received_at');
+        err.code = 'invalid_request';
+        throw err;
+      }
       return (manifest.streams || []).map((s) => ({
         streamName: s.name,
         searchableFields: ['subject'],
@@ -108,10 +117,12 @@ function makeSemanticDeps({
   ownerConnectors,
   brokenManifestConnectors = [],
   emptyPlanConnectors = [],
+  throwingFilterConnectors = [],
 }) {
   const stored = new Map();
   const broken = new Set(brokenManifestConnectors);
   const empty = new Set(emptyPlanConnectors);
+  const throwing = new Set(throwingFilterConnectors);
   return {
     getAdvertisement: () => semanticAd,
     getCurrentBackendIdentity: () => SEMANTIC_BACKEND_ID,
@@ -126,6 +137,11 @@ function makeSemanticDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'messages' }] }),
     buildSearchPlanForGrant: ({ manifest, connectorId }) => {
       if (empty.has(connectorId)) return [];
+      if (throwing.has(connectorId)) {
+        const err = new Error('Unknown field: received_at');
+        err.code = 'invalid_request';
+        throw err;
+      }
       return (manifest.streams || []).map((s) => ({
         streamName: s.name,
         searchableFields: ['subject'],
@@ -240,4 +256,86 @@ test('semantic search emits source_skipped_not_applicable when the searchable pl
   );
   assert.equal(skipped.length, 1);
   assert.equal(skipped[0].detail?.source, 'no_fields');
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// B4: Unknown-field filter → skip, not ok:false
+//
+// When an owner fan-out query filters on a field that exists in some streams
+// but not others, the per-source filter compilation throws an
+// `invalidQueryError`-shaped error. The operation must convert it to a
+// `source_skipped_not_applicable` warning rather than propagating it as a
+// whole-request failure.
+// ───────────────────────────────────────────────────────────────────────
+
+test('lexical: multi-source query — unknown-field filter skips that source, others succeed', async () => {
+  // "acme" has the filtered field; "legacy" lacks it (throws invalidQueryError).
+  const deps = makeLexicalDeps({
+    ownerConnectors: ['acme', 'legacy'],
+    throwingFilterConnectors: ['legacy'],
+  });
+  const result = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'hello', 'streams[]': 'messages', filter: { received_at: { gte: '2026-01-01' } } } },
+    deps,
+  );
+  // The skip warning is present for the throwing source.
+  const skipped = (result.envelope.meta?.warnings ?? []).filter(
+    (w) => w.code === SEARCH_SOURCE_SKIPPED_WARNING_CODE,
+  );
+  assert.equal(skipped.length, 1, 'exactly one source skipped');
+  assert.equal(skipped[0].detail?.source, 'legacy');
+  // The non-throwing source contributed a result.
+  assert.equal(result.envelope.data.some((d) => d.connector_id === 'acme'), true, 'acme result present');
+});
+
+test('lexical: single-source unknown-field filter propagates as error (no silent widening)', async () => {
+  // Single source with a throwing filter — the error should propagate, not be swallowed.
+  // In client mode (single manifest path), the caller controls the filter and
+  // must get an error back so they can fix the request.
+  const stored = new Map();
+  const deps = {
+    getAdvertisement: () => lexicalAd,
+    listOwnerVisibleConnectorIds: () => ['acme'],
+    resolveOwnerManifestForConnector: () => ({ streams: [{ name: 'messages' }] }),
+    buildOwnerReadGrantForManifest: (manifest) => ({
+      streams: (manifest.streams || []).map((s) => ({ name: s.name })),
+    }),
+    resolveClientManifest: () => ({ streams: [{ name: 'messages' }] }),
+    buildSearchPlanForGrant: () => {
+      const err = new Error('Unknown field: received_at');
+      err.code = 'invalid_request';
+      throw err;
+    },
+    buildSnapshot: ({ q }) => ({ snapshot_id: `snap_${q}`, query: q, results: [] }),
+    persistSnapshot: (snap) => stored.set(snap.snapshot_id, snap),
+    loadSnapshot: (id) => stored.get(id) ?? null,
+    formatRecordUrl: ({ stream, recordKey }) => `/v1/streams/${stream}/records/${recordKey}`,
+  };
+  // Owner fan-out with single connector: should emit skip warning, not throw.
+  const result = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'hello', 'streams[]': 'messages', filter: { received_at: { gte: '2026-01-01' } } } },
+    deps,
+  );
+  const skipped = (result.envelope.meta?.warnings ?? []).filter(
+    (w) => w.code === SEARCH_SOURCE_SKIPPED_WARNING_CODE,
+  );
+  assert.equal(skipped.length, 1, 'single-connector unknown-field emits skip warning');
+  assert.equal(result.envelope.data.length, 0, 'no results from skipped connector');
+});
+
+test('semantic: multi-source query — unknown-field filter skips that source, others succeed', async () => {
+  const deps = makeSemanticDeps({
+    ownerConnectors: ['acme', 'legacy'],
+    throwingFilterConnectors: ['legacy'],
+  });
+  const result = await executeSearchSemantic(
+    { actor: ownerActor, query: { q: 'hello', 'streams[]': 'messages', filter: { received_at: { gte: '2026-01-01' } } } },
+    deps,
+  );
+  const skipped = (result.envelope.meta?.warnings ?? []).filter(
+    (w) => w.code === SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
+  );
+  assert.equal(skipped.length, 1, 'exactly one source skipped');
+  assert.equal(skipped[0].detail?.source, 'legacy');
+  assert.equal(result.envelope.data.some((d) => d.connector_id === 'acme'), true, 'acme result present');
 });
