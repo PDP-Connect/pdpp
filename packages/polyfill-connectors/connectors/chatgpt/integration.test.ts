@@ -1574,6 +1574,340 @@ test("runMessagesAndConversationsWithDetail: a wall-clock budget defers the tail
   assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock budget exactly once");
 });
 
+test("runMessagesAndConversationsWithDetail: an open upstream-pressure circuit with budget remaining waits out the cool-down and CONTINUES (does not defer-all-and-stop)", async () => {
+  // The live `run_1781150455121` defect: the upstream-pressure circuit opened
+  // with ~13 min of a 15-min budget unused, and the run deferred the entire tail
+  // and quit — because `circuit_open` was bucketed with the genuine run caps. A
+  // tripped circuit is a TRANSIENT back-off (it auto-closes after its reset
+  // timeout), not budget exhaustion. With budget remaining the run must wait out
+  // the cool-down and RESUME, not stop on the first trip.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let nowMs = 0;
+  const resetTimeoutMs = 300_000; // 5-min default cool-down (the live shape).
+  // failureRateThreshold/minimumThroughput 1 → a single recorded failure opens
+  // the circuit; `now` is the shared fake clock the wait advances.
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs,
+    },
+  });
+  // Open the circuit BEFORE the run: the first detail attempt admits into an
+  // already-open circuit, the exact live shape (circuit opened mid-recovery,
+  // then the next pass admits into it).
+  providerBudget.recordFailure();
+  providerBudget.drainCircuitTransitions();
+  assert.equal(providerBudget.circuitCooldownMs(), resetTimeoutMs, "circuit is open with the full cool-down owed");
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      // Real provider-budget gate: throws `circuit_open` while the circuit is
+      // open, admits (and the run continues) once it half-opens after the wait.
+      await admitFakeProviderBudget(providerBudget);
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const waitSleeps: number[] = [];
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      // The wait-out sleep advances the shared clock so the circuit auto-closes
+      // (open → half_open) on the next admit — exactly what real wall-clock does.
+      // A generous wall-clock budget remains (the live "budget remaining" case).
+      sleep: (ms) => {
+        waitSleeps.push(ms);
+        nowMs += ms;
+      },
+      runBudget: new ChatGptRunBudget({ maxWallClockMs: 15 * 60_000, now: () => nowMs }),
+    }
+  );
+
+  // The run CONTINUED: every conversation was hydrated after the cool-down, NOT
+  // deferred-all on the first circuit trip.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "the run resumes and hydrates the full tail after waiting out the circuit"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, [], "nothing is deferred when the circuit cools down within budget");
+  // It paid exactly the cool-down (bounded by remaining budget) at least once.
+  assert.ok(
+    waitSleeps.some((ms) => ms === resetTimeoutMs),
+    "the run waits the circuit's exact cool-down within the remaining run budget"
+  );
+  // No run-cap / source-pressure DETAIL_GAP was emitted — the tail was collected.
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "a transient circuit trip with budget remaining defers nothing"
+  );
+  const waitProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("circuit open; waiting")
+  );
+  assert.ok(waitProgress.length >= 1, "the wait-out emits operator-legible progress");
+  assert.equal(
+    JSON.stringify(waitProgress).includes("convo-1") || JSON.stringify(waitProgress).includes("convo-2"),
+    false,
+    "wait-out progress does not leak conversation ids"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: genuine wall-clock exhaustion DURING a circuit wait defers the tail (budget exhaustion still stops)", async () => {
+  // The other side of the discrimination: when the run budget is genuinely
+  // exhausted, the run must still defer the remaining tail and stop — a circuit
+  // trip must not let it wait past its envelope. Here the budget is too small to
+  // wait out even one cool-down, so the first circuit trip with no budget left
+  // defers as a resumable run-cap gap.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let nowMs = 0;
+  const resetTimeoutMs = 300_000;
+  // windowSize 1 → the single recordFailure after the first hydration opens the
+  // circuit despite the connector's recordSuccess() on that hydration.
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs,
+      windowSize: 1,
+    },
+  });
+  // First fetch succeeds (consumes the whole tiny wall budget via the clock),
+  // then the circuit is opened so the SECOND admit trips circuit_open with the
+  // budget already spent → genuine exhaustion, defer the tail.
+  let fetchCount = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      fetchCount += 1;
+      fetchedIds.push(path);
+      await Promise.resolve();
+      // The first hydration burns the entire wall budget, AND opens the circuit
+      // so the next admit trips circuit_open with zero budget left.
+      if (fetchCount === 1) {
+        nowMs += 1000; // elapsed 1000 >= 500ms cap → budget exhausted
+        providerBudget.recordFailure();
+        providerBudget.drainCircuitTransitions();
+      }
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const waitSleeps: number[] = [];
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        waitSleeps.push(ms);
+        nowMs += ms;
+      },
+      runBudget: new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs }),
+    }
+  );
+
+  // convo-1 hydrated; convo-2's admit trips the circuit with no budget left, so
+  // convo-2..3 defer as resumable run-cap gaps. The run did NOT wait the
+  // cool-down (no budget to wait it out).
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1"], "no fetch after genuine budget exhaustion");
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3"]);
+  assert.equal(waitSleeps.length, 0, "an exhausted budget is never waited out as a transient circuit");
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.ok(gaps.length >= 1, "the exhausted-budget tail is deferred as durable DETAIL_GAP records");
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "budget-exhaustion gaps are resumable run-cap gaps (no source-pressure cooldown armed)"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: a circuit that NEVER closes converges to a bounded defer (no infinite loop)", async () => {
+  // Forward-progress guard: a genuinely hostile provider whose circuit re-opens
+  // on every cool-down probe must NOT loop forever within an uncapped (Infinity
+  // wall-clock) budget. We model "never closes" faithfully: the circuit
+  // half-opens after each cool-down, the probe FETCH fails (the provider is still
+  // hot), and that failure re-opens the circuit — exactly the real half-open →
+  // fail → re-open cycle. With no wall-clock cap, the ONLY thing that can stop
+  // the wait loop is the bounded cycle guard. windowSize 1 → a single failure
+  // dominates the window so the re-open is deterministic.
+  const harness = makeRecordingEmit(validateRecord);
+  let nowMs = 0;
+  const resetTimeoutMs = 60_000;
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs,
+      windowSize: 1,
+    },
+  });
+  providerBudget.recordFailure();
+  providerBudget.drainCircuitTransitions();
+
+  // Every fetch fails the half-open probe and re-opens the circuit, then throws
+  // circuit_open — so the admit never succeeds and the wait loop must rely on its
+  // bounded cycle guard (not budget, not the circuit) to converge to a defer.
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (): Promise<ChatGptFetchResult> => {
+      // A failed probe re-opens the circuit at the current (advanced) clock.
+      providerBudget.recordFailure();
+      providerBudget.drainCircuitTransitions();
+      // The gate is now open again: surface the same circuit_open planned defer
+      // the real admit path raises, so the wait loop treats it as transient.
+      throw new ChatGptPlannedProviderBudgetDeferredError(
+        "circuit re-opened on a failed half-open probe",
+        "circuit_open"
+      );
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const waitSleeps: number[] = [];
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        waitSleeps.push(ms);
+        nowMs += ms;
+      },
+      // No wall-clock cap (Infinity): the ONLY thing that can stop the wait loop
+      // is the bounded cycle guard, proving the guard — not the budget — bounds it.
+      runBudget: new ChatGptRunBudget(),
+    }
+  );
+
+  // Bounded: the wait loop ran a finite number of cycles, then deferred the tail.
+  assert.ok(waitSleeps.length > 0, "the run does wait out the circuit while it can");
+  assert.ok(waitSleeps.length <= 32, "the wait loop is bounded (does not spin) even with no wall-clock cap");
+  assert.equal(coverage.hydratedKeys.length, 0, "a never-closing circuit hydrates nothing");
+  assert.deepEqual(coverage.gapKeys, ["convo-1", "convo-2"], "the tail defers durably after the bounded waits");
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.ok(gaps.length >= 1, "a never-closing circuit ends with durable DETAIL_GAP records, not an infinite loop");
+});
+
+test("runMessagesAndConversationsWithDetail: the live 136s/900s shape now runs the full budget instead of exiting early (regression)", async () => {
+  // Regression for the exact live shape: a 15-min (900s) budget, a circuit that
+  // opens early but cools within budget. BEFORE the fix the run exited after the
+  // first trip (~136s, ~13 min budget abandoned). AFTER, it waits out each
+  // cool-down and keeps collecting until the work is done OR the budget is truly
+  // spent — so a long tail makes meaningful forward progress instead of stopping
+  // at the first circuit trip.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let nowMs = 0;
+  const resetTimeoutMs = 300_000; // 5 min, the CHATGPT default.
+  // windowSize 1 → a single recordFailure opens the circuit regardless of the
+  // connector's own recordSuccess() calls on the preceding hydrations.
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs,
+      windowSize: 1,
+    },
+  });
+  // The circuit opens once, early (after the first couple of fetches), then cools
+  // down within budget and stays closed — a transient burst, the live pattern.
+  let opened = false;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
+      fetchedIds.push(path);
+      // Each successful detail "costs" ~10s of wall-clock.
+      nowMs += 10_000;
+      // After two successes, a transient burst opens the circuit exactly once.
+      if (!opened && fetchedIds.length === 2) {
+        opened = true;
+        providerBudget.recordFailure();
+        providerBudget.drainCircuitTransitions();
+      }
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 6 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: (ms) => {
+      nowMs += ms;
+    },
+    runBudget: new ChatGptRunBudget({ maxWallClockMs: 900_000, now: () => nowMs }),
+  });
+
+  // BEFORE the fix: fetchedIds.length === 2, the rest deferred at the first trip,
+  // run ends ~20s in with ~880s budget unused. AFTER: it waits the 5-min
+  // cool-down (well within the 900s budget) and hydrates the FULL tail.
+  assert.equal(coverage.hydratedKeys.length, 6, "the full tail is collected after waiting out the transient circuit");
+  assert.deepEqual(coverage.gapKeys, [], "no work is abandoned while budget remains");
+  assert.ok(
+    fetchedIds.length > 2,
+    "the run collects MORE than the pre-circuit prefix (it would have exited at 2 before the fix)"
+  );
+  // The run used a meaningful chunk of its budget (it waited the cool-down)
+  // rather than exiting at ~20s — but stayed within the 900s envelope.
+  assert.ok(nowMs >= resetTimeoutMs, "the run spent real budget waiting out the cool-down, not exiting early");
+  assert.ok(nowMs <= 900_000, "and stayed within the wall-clock envelope");
+});
+
 test("runMessagesAndConversationsWithDetail: empty budget leaves a large backlog unbounded", async () => {
   // The generic primitive can still run unbounded: a budget with neither knob
   // set hydrates every conversation and emits zero gaps.

@@ -587,6 +587,34 @@ test('owner-agent initiating provider authorization returns deployment blockers,
   });
 });
 
+test('owner-agent initiating Google Maps Data Portability blocks on provider app config', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    await registerConnector(asUrl, loadPackageManifest('google_maps_data_portability'));
+    const { status, body } = await createIntent(rsUrl, ownerToken, {
+      connector_id: 'google-maps-data-portability',
+    });
+    assert.equal(status, 201);
+    assert.equal(body.connector_key, 'google-maps-data-portability');
+    assert.equal(body.connector_modality, 'api_network');
+    assert.equal(body.setup_modality, 'provider_authorization');
+    assert.equal(body.support_state, 'needs_deployment_config');
+    assert.equal(body.proof_gate, 'provider_app_deployment_config_missing');
+    assert.equal(body.next_step.kind, 'needs_deployment_config');
+    assert.deepEqual(
+      body.deployment_readiness.blockers.map((item) => item.key),
+      [
+        'GOOGLE_DATAPORTABILITY_CLIENT_ID',
+        'GOOGLE_DATAPORTABILITY_CLIENT_SECRET',
+        'GOOGLE_DATAPORTABILITY_REDIRECT_URI',
+      ],
+    );
+    const serialized = JSON.stringify(body);
+    assert.doesNotMatch(serialized, /GMAIL_APP_PASSWORD|GOOGLE_APP_PASSWORD|Timeline\\.json|owner_session/i);
+    assert.doesNotMatch(serialized, /access_token|refresh_token|client-secret-value/i);
+  });
+});
+
 test('owner-agent initiating an unknown connector gets unsupported / unknown modality', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);

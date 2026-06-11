@@ -5,10 +5,10 @@
 
 ## 2. Manifest And Setup Contract
 
-- [ ] 2.1 Add a first-party `google_maps_data_portability` manifest with `setup.modality: provider_authorization`, Google Data Portability deployment config keys, documented Maps scopes, and honest public-listing/proof state.
-- [ ] 2.2 Register the manifest with the reference manifest registration path so Add source can render it from manifest/setup-plan data.
-- [ ] 2.3 Prove the shared setup planner classifies the source as provider authorization, reports deployment config blockers, and does not use source-specific UI branches.
-- [ ] 2.4 Add tests proving Gmail app passwords/static-secret setup do not apply to Google Maps Data Portability.
+- [x] 2.1 Add a first-party `google_maps_data_portability` manifest with `setup.modality: provider_authorization`, Google Data Portability deployment config keys, documented Maps scopes, and honest public-listing/proof state.
+- [x] 2.2 Register the manifest with the reference manifest registration path so Add source can render it from manifest/setup-plan data.
+- [x] 2.3 Prove the shared setup planner classifies the source as provider authorization, reports deployment config blockers, and does not use source-specific UI branches.
+- [x] 2.4 Add tests proving Gmail app passwords/static-secret setup do not apply to Google Maps Data Portability.
 
 ## 3. Provider Authorization
 
@@ -30,5 +30,5 @@
 - [ ] 5.1 Add unit tests for provider-auth setup planning, exchanger calls, token secrecy, partial consent, and multi-account connection creation.
 - [ ] 5.2 Add archive parser fixtures from documented or scrubbed Data Portability Maps samples.
 - [ ] 5.3 Add a black-box setup route test from manifest registration through provider-auth initiation/callback.
-- [ ] 5.4 Run focused package tests and OpenSpec validation.
-- [ ] 5.5 Record the live proof gap if Google OAuth app verification or owner-held credentials block full live validation.
+- [x] 5.4 Run focused package tests and OpenSpec validation.
+- [x] 5.5 Record the live proof gap if Google OAuth app verification or owner-held credentials block full live validation.

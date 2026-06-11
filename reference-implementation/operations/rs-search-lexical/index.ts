@@ -457,21 +457,22 @@ export interface SearchLexicalOutput {
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
 /**
- * Returns `true` when `err` is an `invalidQueryError`-shaped throw from
- * `record-filters.js#compileRequestFilters` (e.g. "Unknown field" on a stream
- * that lacks the filtered field). Used in the owner-mode fan-out paths to
- * convert per-source filter-compilation failures into
- * `source_skipped_not_applicable` warnings rather than failing the whole
- * request — matches the intent in `B4` of the intent-fulfillment audit.
+ * Returns `true` when `err` is the per-stream schema-miss case from
+ * `record-filters.js#compileRequestFilters` — specifically the
+ * `'filter_field_not_in_schema'` code emitted when the filtered field does
+ * not appear in this stream's manifest schema. Used in the owner-mode fan-out
+ * paths to skip inapplicable connectors rather than failing the whole request
+ * (matches intent `B4` of the intent-fulfillment audit).
  *
- * A plain `Error` with a `code` string property is the `invalidQueryError`
- * shape; errors without `code` (or whose code is not a string) are re-thrown
- * so unexpected failures stay visible.
+ * Hard filter errors (range not supported on this field type, range operator
+ * not declared in the manifest, etc.) carry a different code and MUST NOT be
+ * swallowed — they are user errors that should return 400 regardless of which
+ * connector triggered them.
  */
 function isInvalidQueryError(err: unknown): boolean {
   return (
     err instanceof Error &&
-    typeof (err as Error & { code?: unknown }).code === "string"
+    (err as Error & { code?: unknown }).code === "filter_field_not_in_schema"
   );
 }
 

@@ -103,7 +103,11 @@ export function compileRequestFilters(filter, streamGrant, manifestStream) {
 
     const fieldSchema = getFieldSchema(manifestStream, field);
     if (!fieldSchema) {
-      throw invalidQueryError(`Unknown field: ${field}`);
+      // Per-stream schema miss: field exists in the request but not this
+      // stream's manifest schema. Code 'filter_field_not_in_schema' lets
+      // fan-out owner-mode paths skip inapplicable connectors without
+      // suppressing hard per-field errors (undeclared range, unsupported op).
+      throw invalidQueryError(`Unknown field: ${field}`, 'filter_field_not_in_schema');
     }
 
     if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {

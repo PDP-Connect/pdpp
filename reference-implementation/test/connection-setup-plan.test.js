@@ -251,6 +251,42 @@ test('setup planner distinguishes provider app readiness from owner authorizatio
   assert.equal(readyButUnproven.proofGate, 'provider_authorization_lifecycle_missing');
 });
 
+test('setup planner classifies Google Maps Data Portability as deployment-blocked provider auth', async () => {
+  const manifest = (await import('../../packages/polyfill-connectors/manifests/google_maps_data_portability.json', {
+    with: { type: 'json' },
+  })).default;
+  const plan = buildConnectionSetupPlan({
+    connectorKey: 'google-maps-data-portability',
+    manifest,
+  });
+
+  assert.equal(plan.connectorModality, 'api_network');
+  assert.equal(plan.setupModality, 'provider_authorization');
+  assert.equal(plan.supportState, 'needs_deployment_config');
+  assert.equal(plan.catalogDisposition, 'provider_auth_deployment_blocked');
+  assert.equal(plan.nextStepKind, 'needs_deployment_config');
+  assert.equal(plan.ownerAgentIntent.status, 'needs_deployment_config');
+  assert.equal(plan.ownerAgentIntent.nextStepKind, 'needs_deployment_config');
+  assert.equal(plan.proofGate, 'provider_app_deployment_config_missing');
+  assert.equal(plan.validationMode, 'first_sync');
+  assert.deepEqual(
+    plan.deploymentReadiness.blockers.map((item) => item.key),
+    [
+      'GOOGLE_DATAPORTABILITY_CLIENT_ID',
+      'GOOGLE_DATAPORTABILITY_CLIENT_SECRET',
+      'GOOGLE_DATAPORTABILITY_REDIRECT_URI',
+    ],
+  );
+  assert.equal(plan.deploymentReadiness.blockers[1].secret, true);
+  assert.ok(manifest.capabilities.auth.resource_groups.includes('maps.vehicle_profile'));
+  assert.ok(
+    manifest.capabilities.auth.scopes.includes(
+      'https://www.googleapis.com/auth/dataportability.maps.starred_places',
+    ),
+  );
+  assert.equal(manifest.capabilities.auth.scopes.some((scope) => /gmail|userinfo|timeline/i.test(scope)), false);
+});
+
 test('classifyConnectorSetupModality separates binding class from setup class', () => {
   assert.equal(classifyConnectorSetupModality('gmail', staticSecretManifest('gmail', 'app_password')), 'static_secret');
   assert.equal(

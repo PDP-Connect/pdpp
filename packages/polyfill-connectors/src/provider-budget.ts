@@ -172,6 +172,22 @@ export class CircuitBreaker {
     return this._state;
   }
 
+  /**
+   * Milliseconds until an open circuit auto-transitions to `half_open` (the next
+   * `beforeRequest()` would probe). `0` when the circuit is not open, or already
+   * eligible to half-open. A transient back-off can sleep this exact duration to
+   * resume the instant the cool-down elapses — distinguishing a transient
+   * provider-pressure trip ("slow down, then continue") from genuine budget
+   * exhaustion ("stop"). PURE: reads only, never advances state.
+   */
+  remainingCooldownMs(): number {
+    if (this._state !== "open" || this.openedAt == null) {
+      return 0;
+    }
+    const elapsedOpenMs = Math.max(0, this.now() - this.openedAt);
+    return Math.max(0, this.resetTimeoutMs - elapsedOpenMs);
+  }
+
   private close(): void {
     this._state = "closed";
     this.openedAt = null;
@@ -271,6 +287,17 @@ export class ProviderBudgetController implements SendDelayHint {
    */
   snapshotPacing(): PacingSnapshot | null {
     return this.pacing?.snapshot() ?? null;
+  }
+
+  /**
+   * Milliseconds until an open circuit auto-transitions to `half_open`, or `0`
+   * when the circuit is closed/half-open/absent. A `circuit_open` gate is a
+   * TRANSIENT back-off, not budget exhaustion: a caller can sleep this exact
+   * cool-down (bounded by its own remaining run budget) and re-admit, instead of
+   * deferring all remaining work. PURE: reads only, never advances state.
+   */
+  circuitCooldownMs(): number {
+    return this.circuitBreaker?.remainingCooldownMs() ?? 0;
   }
 
   recordRequest(): void {

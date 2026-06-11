@@ -7,6 +7,7 @@ import {
   createConnectorHttpGovernor,
   DEFAULT_PACING_INITIAL_INTERVAL_MS,
   DEFAULT_PACING_MIN_INTERVAL_MS,
+  DEFAULT_PACING_STALENESS_MS,
   readPersistedPacingInterval,
 } from "./connector-http-governor.ts";
 import { RetryExhaustedError } from "./http-retry.ts";
@@ -363,6 +364,46 @@ test("warm-start seam: an absent / malformed state slice yields null (cold start
     readPersistedPacingInterval({ pacing_interval_ms: "nan", pacing_recorded_at_ms: Date.now() }),
     null,
     "non-numeric interval → cold start"
+  );
+});
+
+test("warm-start staleness window is on a hours scale: default window >= 1h so scheduled-run spacing is covered", () => {
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+  assert.ok(
+    DEFAULT_PACING_STALENESS_MS >= ONE_HOUR_MS,
+    `DEFAULT_PACING_STALENESS_MS (${DEFAULT_PACING_STALENESS_MS}ms) must be >= 1h so a learned interval from a prior scheduled run (typically hours apart) is still restored. Got ${DEFAULT_PACING_STALENESS_MS / 1000}s — this is a sub-minute window and would make warm-start silently inert for real collection runs.`
+  );
+});
+
+test("warm-start staleness window: a learned interval persisted 1h ago is restored (within 6h window)", () => {
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+  const persistedAt = 1_000_000_000;
+  const slice = {
+    pacing_interval_ms: 750,
+    pacing_recorded_at_ms: persistedAt,
+  };
+  // 1 hour later — well within the 6h default window
+  const restored = readPersistedPacingInterval(slice, { now: () => persistedAt + ONE_HOUR_MS });
+  assert.equal(
+    restored,
+    750,
+    "a learned interval from 1h ago is restored — warm-start is meaningful across scheduled runs"
+  );
+});
+
+test("warm-start staleness window: a learned interval persisted 7h ago is discarded (beyond 6h window)", () => {
+  const SEVEN_HOURS_MS = 7 * 60 * 60 * 1000;
+  const persistedAt = 1_000_000_000;
+  const slice = {
+    pacing_interval_ms: 750,
+    pacing_recorded_at_ms: persistedAt,
+  };
+  // 7 hours later — past the 6h default window (provider quota likely reset)
+  const restored = readPersistedPacingInterval(slice, { now: () => persistedAt + SEVEN_HOURS_MS });
+  assert.equal(
+    restored,
+    null,
+    "a learned interval from 7h ago is discarded — cold-start conservatively against a possibly-reset quota"
   );
 });
 

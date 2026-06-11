@@ -72,3 +72,22 @@ test("RunBudget: elapsedMs returns 0 before first tripReason() call", () => {
   const budget = new RunBudget({ now: () => 9999 });
   assert.equal(budget.elapsedMs(), 0, "no elapsed before anchor");
 });
+
+test("RunBudget: remainingWallClockMs is Infinity when no wall-clock cap is set", () => {
+  const budget = new RunBudget({ maxRequests: 5 });
+  assert.equal(budget.remainingWallClockMs(), Number.POSITIVE_INFINITY, "uncapped time = unbounded wait budget");
+});
+
+test("RunBudget: remainingWallClockMs returns the full budget before any request, then shrinks with elapsed", () => {
+  let nowMs = 1000;
+  const budget = new RunBudget({ maxWallClockMs: 500, now: () => nowMs });
+  // Anchors the clock on first consult — a transient back-off that asks "how long
+  // may I wait?" before the first request gets the full budget, not zero.
+  assert.equal(budget.remainingWallClockMs(), 500, "full budget remains at anchor");
+  nowMs = 1300;
+  assert.equal(budget.remainingWallClockMs(), 200, "elapsed 300 → 200 remaining");
+  nowMs = 1500;
+  assert.equal(budget.remainingWallClockMs(), 0, "elapsed 500 → 0 remaining (cap reached)");
+  nowMs = 1700;
+  assert.equal(budget.remainingWallClockMs(), 0, "never negative once the cap is passed");
+});

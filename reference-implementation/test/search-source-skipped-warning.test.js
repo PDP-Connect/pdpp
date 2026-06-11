@@ -83,7 +83,7 @@ function makeLexicalDeps({
         // Simulates compileRequestFilters throwing "Unknown field" when the
         // stream's schema lacks the filtered field.
         const err = new Error('Unknown field: received_at');
-        err.code = 'invalid_request';
+        err.code = 'filter_field_not_in_schema';
         throw err;
       }
       return (manifest.streams || []).map((s) => ({
@@ -139,7 +139,7 @@ function makeSemanticDeps({
       if (empty.has(connectorId)) return [];
       if (throwing.has(connectorId)) {
         const err = new Error('Unknown field: received_at');
-        err.code = 'invalid_request';
+        err.code = 'filter_field_not_in_schema';
         throw err;
       }
       return (manifest.streams || []).map((s) => ({
@@ -303,7 +303,7 @@ test('lexical: single-source unknown-field filter propagates as error (no silent
     resolveClientManifest: () => ({ streams: [{ name: 'messages' }] }),
     buildSearchPlanForGrant: () => {
       const err = new Error('Unknown field: received_at');
-      err.code = 'invalid_request';
+      err.code = 'filter_field_not_in_schema';
       throw err;
     },
     buildSnapshot: ({ q }) => ({ snapshot_id: `snap_${q}`, query: q, results: [] }),

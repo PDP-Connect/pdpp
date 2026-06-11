@@ -48,6 +48,7 @@ const CONNECTORS = [
   "slack",
   "google_takeout",
   "google_maps",
+  "google_maps_data_portability",
   "twitter_archive",
   "imessage",
   "strava",

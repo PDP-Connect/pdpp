@@ -117,6 +117,8 @@ test('fingerprint is stable per (key, plaintext), changes with plaintext, hides 
   assert.ok(fingerprintsEqual(fp1, fp2), 'same secret -> same fingerprint');
   assert.ok(!fingerprintsEqual(fp1, fp3), 'different secret -> different fingerprint');
   assert.ok(!fp1.includes(APP_PASSWORD));
+  // Fingerprint must be 16 bytes wide (32 hex chars) — S-7 fix.
+  assert.equal(fp1.length, 32, 'fingerprint must be 32 hex chars (16 bytes / 128-bit)');
 });
 
 test('from-env fails closed with a clear, secret-free error when key absent', () => {

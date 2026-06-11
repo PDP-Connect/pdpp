@@ -20,6 +20,18 @@ connector the only honest path?
   https://developers.google.com/data-portability/user-guide/time-based
 - Google Data Portability API OAuth scopes, accessed 2026-06-11:
   https://developers.google.com/data-portability/user-guide/scopes
+- Google Data Portability API method guide, accessed 2026-06-11:
+  https://developers.google.com/data-portability/user-guide/methods
+- Google Data Portability REST reference, accessed 2026-06-11:
+  https://developers.google.com/data-portability/reference/rest
+- Google Data Portability `portabilityArchive.initiate` reference, accessed
+  2026-06-11:
+  https://developers.google.com/data-portability/reference/rest/v1/portabilityArchive/initiate
+- Google Data Portability `archiveJobs.getPortabilityArchiveState` reference,
+  accessed 2026-06-11:
+  https://developers.google.com/data-portability/reference/rest/v1/archiveJobs/getPortabilityArchiveState
+- Google Data Portability `accessType.check` reference, accessed 2026-06-11:
+  https://developers.google.com/data-portability/reference/rest/v1/accessType/check
 - Google Data Portability API Maps schema reference, accessed 2026-06-11:
   https://developers.google.com/data-portability/schema-reference/local_actions
 - Google Maps Help: Manage your Google Maps Timeline, Android and desktop
@@ -31,11 +43,17 @@ connector the only honest path?
 
 Google does expose a Data Portability API with OAuth and time-based exports.
 The API supports Maps resource scopes such as starred places, labeled places,
-commute routes/settings, reviews, photos/videos, Q&A, Maps activity, and My
-Maps. The documented flow is OAuth consent, initiate archive, poll archive
-state, then download signed archive URLs. Time-based access can support repeated
-exports, but Google documents a 24-hour cadence floor and requires a refresh
-token for later exports.
+commute routes/settings, vehicle profiles, reviews, photos/videos, Q&A, Maps
+activity, and My Maps. The documented flow is OAuth consent, optionally check
+access type, initiate archive, poll archive state, then download signed archive
+URLs. Google documents the concrete REST endpoints as:
+
+- `POST https://dataportability.googleapis.com/v1/accessType:check`
+- `POST https://dataportability.googleapis.com/v1/portabilityArchive:initiate`
+- `GET https://dataportability.googleapis.com/v1/archiveJobs/{job}/portabilityArchiveState`
+
+Time-based access can support repeated exports, but Google documents a 24-hour
+cadence floor and requires a refresh token for later exports.
 
 This is not the same as Google Maps Timeline location history. The Maps schema
 reference enumerates Maps export objects, but it does not document raw Timeline

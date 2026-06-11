@@ -119,6 +119,57 @@ so the forward walk advancing never loses the deferred recovery tail.
 - **AND** the deferral SHALL carry a budget-exhaustion reason disjoint from the
   source-pressure reason set
 
+### Requirement: A transient upstream-pressure circuit during a detail pass SHALL be waited out within run budget, not treated as budget exhaustion
+
+SHALL the polyfill-runtime, when the upstream-pressure circuit breaker opens
+during a conversation-detail pass (a `circuit_open` provider-budget gate),
+distinguish that TRANSIENT back-off from genuine run-budget exhaustion
+(`max_wall_clock` / `max_detail_fetches` / retry-budget). On `circuit_open` the
+runtime SHALL wait out the circuit's cool-down — bounded by the remaining run
+budget — and then resume the same detail work, rather than deferring the entire
+remaining tail and finishing the run. Only when the run budget is genuinely
+exhausted (or a bounded number of consecutive cool-down waits is reached, the
+forward-progress guard against a circuit that keeps re-opening) SHALL the runtime
+defer the remaining tail as durable `DETAIL_GAP` records and finish. The wait
+SHALL make forward progress every cycle (advancing real wall-clock toward the cap
+and decrementing the bounded cycle guard), so a circuit that never closes still
+converges to a durable defer rather than looping forever. The durable-gap
+invariant SHALL be preserved: any work not collected when the run does finish
+SHALL remain recorded as resumable `DETAIL_GAP` records.
+
+This is the in-pass analogue of the recovery-phase requirement above: a tripped
+upstream-pressure circuit is a "slow down, then continue" signal, not "we are out
+of budget." Bucketing `circuit_open` with the genuine run caps caused the live
+`run_1781150455121` defect — a run finishing after 136 s of a 900 s budget with
+~13 minutes unused, because the circuit trip deferred everything remaining.
+
+#### Scenario: An open circuit with budget remaining waits out the cool-down and resumes
+
+- **WHEN** the upstream-pressure circuit opens during a detail pass and run budget
+  (wall-clock or fetch count) remains
+- **THEN** the runtime SHALL wait the circuit's cool-down, bounded by the
+  remaining run budget, and then resume collecting the same detail work
+- **AND** the run SHALL NOT defer the entire remaining tail and finish on the
+  first circuit trip
+
+#### Scenario: Genuine budget exhaustion during the wait defers the tail
+
+- **WHEN** the run budget (wall-clock or fetch cap) is reached while waiting out an
+  open circuit
+- **THEN** the runtime SHALL stop waiting and defer the remaining conversations as
+  durable resumable `DETAIL_GAP` records
+- **AND** the deferral reason SHALL be a run-cap reason disjoint from the
+  source-pressure reason set
+
+#### Scenario: A circuit that keeps re-opening converges to a bounded defer
+
+- **WHEN** the circuit re-opens on every cool-down wait across the bounded cycle
+  guard, with run budget still notionally remaining
+- **THEN** the runtime SHALL defer the remaining tail as durable `DETAIL_GAP`
+  records rather than waiting unbounded
+- **AND** the wait loop SHALL make forward progress every cycle so it can never
+  spin indefinitely
+
 ### Requirement: The adaptive controller's live rate state SHALL be legible to an operator
 
 SHALL the polyfill-runtime surface the adaptive rate controller's live state so

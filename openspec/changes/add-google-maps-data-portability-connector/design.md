@@ -86,3 +86,13 @@ The connector's refresh policy must respect Google's Data Portability cadence an
 - A successful callback creates distinct connection ids for two authorized Google accounts or labels.
 - Provider tokens never appear in console, owner-agent, MCP, REST read, CLI read, audit, or run timeline responses.
 - Data Portability archive runs emit documented Maps records, coverage for partially authorized scopes, and no Timeline point/segment claims.
+
+## Live Proof Gap
+
+The API-backed tranche can be replayed against mock transport and shared setup-planning tests, but a live owner authorization is blocked until the deployment has Google Data Portability OAuth app material:
+
+- `GOOGLE_DATAPORTABILITY_CLIENT_ID`
+- `GOOGLE_DATAPORTABILITY_CLIENT_SECRET`
+- `GOOGLE_DATAPORTABILITY_REDIRECT_URI`
+
+No `GOOGLE_APP_PASSWORD_PDPP`, Gmail app password, Google account password, owner bearer token, or Takeout/Timeline export is a substitute for those provider-authorization prerequisites.

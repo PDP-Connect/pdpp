@@ -278,10 +278,17 @@ export const PACING_STATE_RECORDED_AT_KEY = "pacing_recorded_at_ms";
 /**
  * Default staleness guard (ms): a learned interval older than this is discarded
  * so a long-idle resume cold-starts conservatively against a possibly-reset
- * provider quota. Derived as 8× the cold discovery seed, not a new authored
- * number.
+ * provider quota.
+ *
+ * Rationale: provider quotas reset on hour/day scales and scheduled connector
+ * runs are spaced hours apart, so a learned interval is meaningful for HOURS.
+ * 6 hours covers typical quota-reset cadences (most providers use daily or
+ * per-hour windows) and matches the expected gap between scheduled runs, while
+ * still discarding rates from arbitrarily distant prior sessions.
+ * Operator-tunable via the `stalenessMs` option if a connector's quota resets
+ * faster (or if you want a larger safety margin).
  */
-export const DEFAULT_PACING_STALENESS_MS = 8 * DEFAULT_PACING_INITIAL_INTERVAL_MS;
+export const DEFAULT_PACING_STALENESS_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 export interface PacingPersistOptions {
   /** State sub-key for the interval. Default: {@link PACING_STATE_INTERVAL_KEY}. */
