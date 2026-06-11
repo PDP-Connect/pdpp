@@ -339,7 +339,7 @@ export interface MountRsReadContext {
   resolveNativeStorageBinding(opts: unknown): StorageBindingLike | null;
   resolveOwnerManifest(req: unknown, opts: unknown): Promise<ResolvedManifest>;
   resolveOwnerManifestFromScope(ownerScope: unknown, opts: unknown): Promise<ResolvedManifest>;
-  resolveOwnerReadScope(req: unknown, opts: unknown): OwnerScopeLike;
+  resolveOwnerReadScope(req: unknown, opts: unknown): Promise<OwnerScopeLike>;
   resolveReadRequestBindings(args: {
     ownerSubjectId: string | null;
     storageBinding: StorageBindingLike;
@@ -466,7 +466,7 @@ async function resolveReadScope(
   queryContext: QueryContext
 ): Promise<ReadScope> {
   if (tokenInfo.pdpp_token_kind === "owner") {
-    const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
+    const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
     const sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
     queryContext.sourceDescriptor = sourceDescriptor;
     const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
@@ -1164,7 +1164,7 @@ async function buildStreamsListOwnerPlan(
     };
   }
 
-  const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
+  const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
   // Set source before manifest resolution so malformed connector failures
   // remain attributable in query.received/query.rejected.
   queryContext.sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
@@ -1375,7 +1375,7 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
         };
 
         if (tokenInfo.pdpp_token_kind === "owner") {
-          const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
+          const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
           sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
           queryContext.sourceDescriptor = sourceDescriptor;
           const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
@@ -1839,7 +1839,7 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
         };
 
         if (tokenInfo.pdpp_token_kind === "owner") {
-          const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
+          const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
           queryContext.sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
           const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
           storageBinding = ownerResolved.storageBinding;
@@ -2228,7 +2228,7 @@ async function resolveBlobActorScope(
   tokenInfo: TokenInfo
 ): Promise<BlobActorScope> {
   if (tokenInfo.pdpp_token_kind === "owner") {
-    const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
+    const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
     const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
     return {
       storageBinding: ownerResolved.storageBinding,

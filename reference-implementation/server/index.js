@@ -70,7 +70,7 @@ import {
   parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
 import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
-import { projectStorageDisplayName } from './connection-id-request.js';
+import { projectStorageDisplayName, resolveRequestConnectionId } from './connection-id-request.js';
 import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
 import {
   createPostgresConnectorInstanceStore,
@@ -1441,7 +1441,7 @@ function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS
   return map;
 }
 
-function resolveOwnerReadScope(req, opts = {}) {
+async function resolveOwnerReadScope(req, opts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
   const nativeStorageBinding = resolveNativeStorageBinding(opts);
   if (nativeManifest && nativeStorageBinding) {
@@ -1453,7 +1453,26 @@ function resolveOwnerReadScope(req, opts = {}) {
     };
   }
 
+  const ownerSubjectId = getOwnerTokenSubjectId(req);
   const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+  const requestedConnection = resolveRequestConnectionId(req.query);
+  if (requestedConnection.connectionId) {
+    const connectorKey = connectorId ? (canonicalConnectorKey(connectorId) ?? connectorId) : null;
+    const namespace = await resolveOwnerConnectorInstanceNamespace({
+      ownerSubjectId,
+      connectorId: connectorKey,
+      connectorInstanceId: requestedConnection.connectionId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      allowDefaultAccount: false,
+    });
+    return {
+      public_scope: 'polyfill',
+      owner_subject_id: ownerSubjectId,
+      source: { kind: 'connector', id: namespace.connectorId },
+      storage_binding: storageTargetForConnectorNamespace(namespace),
+    };
+  }
+
   if (!connectorId) {
     const err = new Error('connector_id must be a single non-empty string for polyfill owner access');
     err.code = 'invalid_request';
@@ -1471,7 +1490,7 @@ function resolveOwnerReadScope(req, opts = {}) {
 
   return {
     public_scope: 'polyfill',
-    owner_subject_id: getOwnerTokenSubjectId(req),
+    owner_subject_id: ownerSubjectId,
     source: { kind: 'connector', id: connectorKey },
     storage_binding: {
       connector_id: connectorKey,
@@ -1767,7 +1786,7 @@ async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
 }
 
 async function resolveOwnerManifest(req, opts = {}) {
-  const ownerScope = resolveOwnerReadScope(req, opts);
+  const ownerScope = await resolveOwnerReadScope(req, opts);
   return resolveOwnerManifestFromScope(ownerScope, opts);
 }
 

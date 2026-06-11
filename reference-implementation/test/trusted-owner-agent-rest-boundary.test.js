@@ -254,6 +254,21 @@ test('trusted owner-agent bearer reaches connector-scoped blob read surface', as
     assert.equal(records.status, 200);
     assert.equal(records.body.data?.[0]?.id, 'owner_agent_attach_1');
 
+    const recordsByConnection = await fetchJson(
+      `${rsUrl}/v1/streams/attachments/records?connection_id=${encodeURIComponent(attachmentsStream.connection_id)}&limit=1`,
+      { headers: authHeaders },
+    );
+    assert.equal(recordsByConnection.status, 200);
+    assert.equal(recordsByConnection.body.data?.[0]?.id, 'owner_agent_attach_1');
+
+    const conflictingConnectionSelectors = await fetchJson(
+      `${rsUrl}/v1/streams/attachments/records?connection_id=${encodeURIComponent(attachmentsStream.connection_id)}&connector_instance_id=cin_other&limit=1`,
+      { headers: authHeaders },
+    );
+    assert.equal(conflictingConnectionSelectors.status, 400);
+    assert.equal(conflictingConnectionSelectors.body.error?.code, 'invalid_argument');
+    assert.equal(conflictingConnectionSelectors.body.error?.param, 'connector_instance_id');
+
     const search = await fetchJson(`${rsUrl}/v1/search?q=owner-agent&limit=1`, { headers: authHeaders });
     assert.equal(search.status, 200);
 
