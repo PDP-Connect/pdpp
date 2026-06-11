@@ -1661,13 +1661,14 @@ function summarizeSearch(body, results) {
   const hasMore = envelopeField(body, 'has_more') === true ? ' has_more=true.' : '';
   const nextCursor = envelopeStringField(body, 'next_cursor');
   const cursorText = nextCursor ? ` next_cursor=${formatScalar(nextCursor)}.` : '';
+  const firstFetchText = results[0]?.id ? ` first_fetch_id=${formatInlineValue(results[0].id)}` : '';
   const sourceMixText = formatSearchSourceMix(body);
   const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
   const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
   const fetchHint = previews.length > 0
     ? '\nFetch a hit with `fetch` using the shown id as-is; ids are self-contained. Pass connection_id only when shown separately.'
     : '';
-  return `search: ${results.length} hit(s).${hasMore}${cursorText}${sourceMixText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+  return `search: ${results.length} hit(s).${hasMore}${cursorText}${firstFetchText}${sourceMixText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
 }
 
 function formatSearchSourceMix(body) {

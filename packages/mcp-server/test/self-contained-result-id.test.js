@@ -46,8 +46,27 @@ function makeMultiSourceFetch() {
     calls.push({ url: url.toString(), method: init.method ?? 'GET' });
 
     if (url.pathname === '/v1/search') {
+      if (url.searchParams.get('q') === 'nothing') {
+        return jsonResponse({
+          object: 'list',
+          hits: [],
+          meta: {
+            package: {
+              source_mix: [],
+            },
+          },
+        });
+      }
       return jsonResponse({
         object: 'list',
+        meta: {
+          package: {
+            source_mix: [
+              { connection_id: 'cin_aaa', connector_key: 'amazon', display_name: 'peregrine Amazon', count: 1 },
+              { connection_id: 'cin_bbb', connector_key: 'amazon', display_name: 'vivid fish Amazon', count: 1 },
+            ],
+          },
+        },
         hits: [
           {
             stream: 'orders',
@@ -130,8 +149,13 @@ test('multi-source search returns self-contained ids in structured results and c
 
   // Model-visible text carries the complete handles, untruncated.
   const text = result.content[0].text;
+  assert.match(text, /first_fetch_id=cin_aaa\/orders:o1/);
   assert.match(text, /id=cin_aaa\/orders:o1/);
   assert.match(text, /id=cin_bbb\/orders:o9/);
+  assert.ok(
+    text.indexOf('first_fetch_id=cin_aaa/orders:o1') < text.indexOf('source_mix='),
+    'first fetch handle must appear before verbose source metadata for clipped host previews',
+  );
   // The connection is embedded in the id; it is not repeated as a second
   // model-carried field the host could bury.
   assert.doesNotMatch(text, /connection_id=/);
@@ -148,7 +172,7 @@ test('search to fetch journey completes from content[] text alone with ONE handl
 
   // Consume ONLY what the model can see: content[] text.
   const searchText = searchResult.content[0].text;
-  const id = /id=([^\s]+)/.exec(searchText)?.[1];
+  const id = /first_fetch_id=([^\s]+)/.exec(searchText)?.[1];
   assert.equal(id, 'cin_aaa/orders:o1');
 
   // ONE opaque handle, no connection_id argument — the exact call shape the
@@ -171,6 +195,19 @@ test('search to fetch journey completes from content[] text alone with ONE handl
   const recordCalls = calls.filter((entry) => entry.url.includes('/v1/streams/orders/records/o1'));
   assert.equal(recordCalls.length, 1);
   assert.equal(new URL(recordCalls[0].url).searchParams.get('connection_id'), 'cin_aaa');
+
+  await client.close();
+  await server.close();
+});
+
+test('zero-hit search does not invent a first fetch handle', async () => {
+  const { fetch } = makeMultiSourceFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({ name: 'search', arguments: { q: 'nothing' } });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent.results, []);
+  assert.doesNotMatch(result.content[0].text, /first_fetch_id=/);
 
   await client.close();
   await server.close();
