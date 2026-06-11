@@ -501,6 +501,14 @@ export interface PendingGrantRequest {
       fields?: string[] | null;
       view?: string | null;
       necessity?: string | null;
+      // REQUEST-scoped, CLIENT-authored per-stream claims. Rendered as claims,
+      // never as protocol facts (see `buildClientClaimsBlock`). Carried through
+      // `normalizeStreamSelection` in server/auth.js; the renderer surfaces it.
+      client_claims?: {
+        purpose?: string | null;
+        commitments?: string[] | null;
+        [key: string]: unknown;
+      } | null;
     }> | null;
     access_mode?: string | null;
     purpose_description?: string | null;
@@ -552,8 +560,58 @@ interface PendingConsentCumulativeRisk {
   total_stream_count?: number;
 }
 
+// ─── Authorship classes (the three-class trust model) ────────────────────────
+//
+// The hosted consent HTML keeps protocol facts, manifest-authored descriptions,
+// and client-authored claims visually and semantically distinct, so a consumer
+// (a standards reviewer, or the authorship-token console card that mirrors this
+// surface) can point at any element and name its provenance:
+//
+//   • PROTOCOL — facts the owner's server enforces/verifies (grant scope,
+//     access mode, retention, the source binding, the resolved client-identity
+//     origin). Trusted.
+//   • MANIFEST — the owner-trusted human descriptions for the requested streams
+//     (stream labels/details from the resolved manifest).
+//   • CLIENT   — claims the client itself authored (its self-described app name,
+//     the purpose_description, and per-stream client_claims). Rendered, never
+//     trusted: each carries a "they say / not enforced" affordance.
+//
+// `data-authorship` is the machine-readable provenance hook (one per block),
+// matching the operator-ui consent-card contract; `data-surface` keeps the
+// existing human/protocol temperature.
+
+type ConsentAuthorship = "protocol" | "manifest" | "client";
+
+const AUTHORSHIP_EYEBROW: Record<ConsentAuthorship, string> = {
+  client: "They claim — not verified by your server",
+  manifest: "Your server describes",
+  protocol: "Your server enforces",
+};
+
+/**
+ * Wrap a consent block in an authorship-tagged section. `data-authorship` names
+ * the block's provenance class; the eyebrow makes the boundary legible without
+ * relying on color alone.
+ */
+function renderAuthorshipBlock(
+  authorship: ConsentAuthorship,
+  ariaLabel: string,
+  childrenHtml: string,
+  ui: ConsentUiRenderer
+): string {
+  return `<div class="hosted-ui-authorship" data-authorship="${authorship}" aria-label="${ui.escapeHtml(
+    ariaLabel
+  )}"><span class="pdpp-eyebrow hosted-ui-authorship-eyebrow">${ui.escapeHtml(
+    AUTHORSHIP_EYEBROW[authorship]
+  )}</span>${childrenHtml}</div>`;
+}
+
 interface ConsentClientDisplay {
-  facts: Array<{ label: string; value?: unknown; html?: string }>;
+  // CLIENT: the client's own self-described display (its app name).
+  clientFacts: Array<{ label: string; value?: unknown; html?: string }>;
+  // PROTOCOL: server-resolved identity facts (the client_id origin / metadata
+  // document URL). Empty for pre-registered clients with no derived identity.
+  protocolFacts: Array<{ label: string; value?: unknown; html?: string }>;
   titleName: string;
 }
 
@@ -575,23 +633,77 @@ function buildConsentClientDisplay(
   const clientId = typeof client.client_id === "string" ? client.client_id : null;
   const clientName = client.client_display?.name || clientId || "Client application";
   if (client.registration_mode !== "client_id_metadata_document") {
+    // Pre-registered/public client: the "Requesting app" name is whatever the
+    // client supplied at registration — a client-authored claim, not a fact.
     return {
-      facts: [{ label: "Requesting app", value: clientName }],
+      protocolFacts: [],
+      clientFacts: [{ label: "Requesting app", value: clientName }],
       titleName: clientName,
     };
   }
 
+  // CIMD client: the URL-origin identity is a protocol fact (it is the
+  // verifiable identifier the client authenticated as); the self-described
+  // app name is a client-authored claim (see the CIMD consent-display spec).
   const identity = clientOriginFromClientId(clientId) || clientId || "Client application";
-  const facts: Array<{ label: string; value?: unknown; html?: string }> = [
+  const protocolFacts: Array<{ label: string; value?: unknown; html?: string }> = [
     { label: "Client identity", html: `<code>${ui.escapeHtml(identity)}</code>` },
   ];
-  if (clientName && clientName !== identity) {
-    facts.push({ label: "Self-described app name", value: clientName });
-  }
   if (clientId) {
-    facts.push({ label: "Metadata document", html: `<code>${ui.escapeHtml(clientId)}</code>` });
+    protocolFacts.push({ label: "Metadata document", html: `<code>${ui.escapeHtml(clientId)}</code>` });
   }
-  return { facts, titleName: identity };
+  const clientFacts: Array<{ label: string; value?: unknown; html?: string }> = [];
+  if (clientName && clientName !== identity) {
+    clientFacts.push({ label: "Self-described app name", value: clientName });
+  }
+  return { protocolFacts, clientFacts, titleName: identity };
+}
+
+/**
+ * Render the per-stream `client_claims` (REQUEST-scoped, CLIENT-authored) as a
+ * distinct, disclaimed block. Each claim is the client's own word about why it
+ * wants a stream and what it commits to — the server does not vouch for any of
+ * it. Returns "" when no stream carries claims (so the block never appears with
+ * an empty body).
+ */
+function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): string {
+  const rows: string[] = [];
+  for (const stream of streams) {
+    const claims = stream?.client_claims;
+    if (!claims || typeof claims !== "object") {
+      continue;
+    }
+    const parts: string[] = [];
+    const purpose = typeof claims.purpose === "string" ? claims.purpose.trim() : "";
+    if (purpose) {
+      parts.push(`<p class="hosted-ui-client-claim-purpose">${ui.escapeHtml(purpose)}</p>`);
+    }
+    const commitments = Array.isArray(claims.commitments)
+      ? claims.commitments.filter((c): c is string => typeof c === "string" && c.trim() !== "")
+      : [];
+    if (commitments.length > 0) {
+      parts.push(
+        `<ul class="hosted-ui-client-claim-commitments">${commitments
+          .map((c) => `<li>${ui.escapeHtml(c)}</li>`)
+          .join("")}</ul>`
+      );
+    }
+    if (parts.length === 0) {
+      continue;
+    }
+    rows.push(
+      `<div class="hosted-ui-client-claim"><span class="hosted-ui-stream-name">${ui.escapeHtml(
+        stream.name
+      )}</span>${parts.join("")}</div>`
+    );
+  }
+  if (rows.length === 0) {
+    return "";
+  }
+  const body = `<span class="pdpp-title">What this app says it will do</span>${rows.join(
+    ""
+  )}<p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
+  return renderAuthorshipBlock("client", "Client-authored claims", body, ui);
 }
 
 function buildStreamsBlock(
@@ -665,17 +777,40 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
     .map((card) => {
       const sourceLabel = card.source?.id || `source ${card.index + 1}`;
       const streams = Array.isArray(card.resolvedStreams) ? card.resolvedStreams : [];
-      const streamsBlock = buildStreamsBlock(streams, sourceLabel, card.manifestStreamNames ?? null, ui);
-      const facts = ui.renderKeyValueList([
-        { label: "Source", value: sourceLabel },
-        { label: "Access mode", value: card.access_mode || "unspecified" },
-        { label: "Sensitivity", value: card.sensitivity || "standard" },
-        { label: "Purpose", value: card.purpose_code || "unspecified" },
-      ]);
+      // MANIFEST: the requested streams, named/described by the manifest.
+      const manifestBlock = renderAuthorshipBlock(
+        "manifest",
+        `Requested streams for ${sourceLabel}`,
+        buildStreamsBlock(streams, sourceLabel, card.manifestStreamNames ?? null, ui),
+        ui
+      );
+      // PROTOCOL: source binding, access mode, and sensitivity — server-derived.
+      const protocolBlock = renderAuthorshipBlock(
+        "protocol",
+        `Protocol facts for ${sourceLabel}`,
+        ui.renderKeyValueList([
+          { label: "Source", value: sourceLabel },
+          { label: "Access mode", value: card.access_mode || "unspecified" },
+          { label: "Sensitivity", value: card.sensitivity || "standard" },
+        ]),
+        ui
+      );
+      // CLIENT: the client-authored purpose for this source plus any per-stream
+      // client_claims. Rendered as claims, never as facts.
+      const clientPurpose = card.purpose_code || "unspecified";
+      const clientPurposeBlock = renderAuthorshipBlock(
+        "client",
+        `Client-authored purpose for ${sourceLabel}`,
+        ui.renderKeyValueList([{ label: "Stated purpose", value: clientPurpose }]),
+        ui
+      );
+      const clientClaimsBlock = buildClientClaimsBlock(streams, ui);
       return ui.renderSurface({
         surface: "human",
         ariaLabel: `Source ${card.index + 1}`,
-        children: `<h3 class="pdpp-title">${ui.escapeHtml(sourceLabel)}</h3>${facts}${streamsBlock}`,
+        children: `<h3 class="pdpp-title">${ui.escapeHtml(
+          sourceLabel
+        )}</h3>${clientPurposeBlock}${clientClaimsBlock}${manifestBlock}${protocolBlock}`,
       });
     })
     .join("\n");
@@ -853,7 +988,21 @@ function renderBatchConsentHtml(
     ui.renderSurface({
       surface: "human",
       ariaLabel: "Client identity",
-      children: ui.renderKeyValueList(clientDisplay.facts),
+      children: [
+        clientDisplay.protocolFacts.length > 0
+          ? renderAuthorshipBlock("protocol", "Client identity", ui.renderKeyValueList(clientDisplay.protocolFacts), ui)
+          : "",
+        clientDisplay.clientFacts.length > 0
+          ? renderAuthorshipBlock(
+              "client",
+              "Client-authored display",
+              ui.renderKeyValueList(clientDisplay.clientFacts),
+              ui
+            )
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
     }),
     overCapWarning,
     broadWarning,
@@ -916,13 +1065,12 @@ export function renderPendingGrantConsentHtml(
       </div>`;
   }
 
-  const factsRaw: Array<{ label: string; value?: unknown; html?: string } | null> = [
-    ...clientDisplay.facts,
+  // PROTOCOL: facts the owner's server enforces or verifies. The client-identity
+  // origin (for CIMD clients), the source binding, the access mode, and the
+  // retention bound are all server-determined — never client-asserted.
+  const protocolFactsRaw: Array<{ label: string; value?: unknown; html?: string } | null> = [
+    ...clientDisplay.protocolFacts,
     sourceBinding?.id ? { label: sourceFactLabel, value: sourceBinding.id } : null,
-    {
-      label: "Purpose",
-      value: selection.purpose_description || selection.purpose_code,
-    },
     { label: "Access mode", value: selection.access_mode },
     selection.retention
       ? {
@@ -931,9 +1079,33 @@ export function renderPendingGrantConsentHtml(
         }
       : null,
   ];
-  const facts = ui.renderKeyValueList(
-    factsRaw.filter((x): x is { label: string; value?: unknown; html?: string } => x !== null)
+  const protocolFacts = protocolFactsRaw.filter(
+    (x): x is { label: string; value?: unknown; html?: string } => x !== null
   );
+  const protocolBlock =
+    protocolFacts.length > 0
+      ? renderAuthorshipBlock("protocol", "Protocol facts", ui.renderKeyValueList(protocolFacts), ui)
+      : "";
+
+  // CLIENT: the client's own claims about itself — its self-described app name
+  // and the free-text purpose it stated. Rendered as claims, never as facts.
+  const clientFactsRaw: Array<{ label: string; value?: unknown; html?: string }> = [...clientDisplay.clientFacts];
+  const clientPurpose = selection.purpose_description || selection.purpose_code;
+  if (clientPurpose) {
+    clientFactsRaw.push({ label: "Stated purpose", value: clientPurpose });
+  }
+  const clientIdentityBlock =
+    clientFactsRaw.length > 0
+      ? renderAuthorshipBlock("client", "Client-authored display", ui.renderKeyValueList(clientFactsRaw), ui)
+      : "";
+
+  // CLIENT: per-stream client_claims (purpose/commitments), if any. Previously
+  // dropped entirely — now surfaced as a distinct, disclaimed claims block.
+  const clientClaimsBlock = buildClientClaimsBlock(requestedStreams, ui);
+
+  // MANIFEST: the streams the owner's server is being asked to project, named
+  // and described by the resolved manifest (owner-trusted human descriptions).
+  const manifestBlock = renderAuthorshipBlock("manifest", "Requested streams", streamsBlock, ui);
 
   const codeBlock = pending.userCode
     ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${ui.escapeHtml(pending.userCode)}</div></div>`
@@ -966,7 +1138,17 @@ export function renderPendingGrantConsentHtml(
     ui.renderSurface({
       surface: "human",
       ariaLabel: "Consent request",
-      children: [codeBlock, facts, streamsBlock, continuousBlock, actions].filter(Boolean).join("\n"),
+      children: [
+        codeBlock,
+        clientIdentityBlock,
+        clientClaimsBlock,
+        manifestBlock,
+        protocolBlock,
+        continuousBlock,
+        actions,
+      ]
+        .filter(Boolean)
+        .join("\n"),
     }),
   ].join("\n");
 
