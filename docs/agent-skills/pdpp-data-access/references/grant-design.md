@@ -234,6 +234,93 @@ Existing grant covers `issues`. New task needs `pull_requests`. Don't request a 
 
 Two grants now exist, the user can revoke the upgrade alone, and the audit trail stays clean.
 
+## Replayable proof: introspect a live token and verify the grant contract
+
+After `pdpp connect` or `POST /consent/approve`, you can inspect any live token
+against the AS to confirm it is active and read back the full grant it encodes.
+This is the authoritative check — it re-runs the grant-contract validation on
+each call.
+
+```bash
+# AS_URL = the authorization server base URL, e.g. http://localhost:7662
+# TOKEN  = opaque bearer token from /consent/approve or pdpp token <provider-url>
+curl -sX POST "$AS_URL/introspect" \
+  -H 'Content-Type: application/json' \
+  -d "{\"token\": \"$TOKEN\"}" | jq .
+```
+
+A healthy active client token returns:
+
+```json
+{
+  "active": true,
+  "pdpp_token_kind": "client",
+  "subject_id": "owner_local",
+  "exp": 1749081600,
+  "grant_id": "grt_3ce1d18c8b6f4f9b",
+  "client_id": "my_client",
+  "grant": {
+    "version": "0.1.0",
+    "grant_id": "grt_3ce1d18c8b6f4f9b",
+    "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+    "purpose_code": "assist.summarize",
+    "access_mode": "single_use",
+    "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }]
+  },
+  "trace_id": "trc_a1b2c3d4e5f60001",
+  "scenario_id": null
+}
+```
+
+Key verification points:
+
+- `active: true` — token is valid and the underlying grant is still active.
+- `pdpp_token_kind` — `"client"` for grant-scoped tokens, `"owner"` for self-export tokens.
+- `grant_id` — confirms which grant backs this token.
+- `grant.streams[].resources` — present and populated only when the grant was
+  scoped to specific record keys (see "Record-scoped access with resources[]" below).
+- `grant_storage_binding` is **never present** in the public response — the AS
+  redacts the internal storage connector id before returning the envelope.
+
+If a grant has been consumed (`single_use`) or revoked, the token will still exist
+in the token store but return `active: false` with an `inactive_reason`. A revoked
+grant looks like:
+
+```json
+{ "active": false, "inactive_reason": "grant_revoked", "grant_id": "...", "client_id": "..." }
+```
+
+Possible `inactive_reason` values: `grant_revoked`, `grant_expired`, `token_revoked`,
+`token_expired`, `grant_invalid`.
+
+## Record-scoped access with `resources[]`
+
+`resources[]` on a stream entry restricts a grant to specific record keys — an
+RFC 8707-style audience binding at the record level. The RS enforces this as a
+SQL `WHERE record_key IN (...)` predicate; records outside the list are invisible
+to that token even if they exist in the store.
+
+```json
+{
+  "streams": [{
+    "name": "top_artists",
+    "fields": ["id", "name", "popularity"],
+    "resources": ["artist_01", "artist_02", "artist_03"]
+  }]
+}
+```
+
+Use `resources[]` when the user explicitly named the items they want to share
+("just those three invoices", "only the two pull requests I linked"). Do not use
+it for time-bounded or field-projected access — that is what `time_range` and
+`fields` are for. An empty `resources[]` array is equivalent to omitting the
+field (all records visible within the other grant constraints).
+
+After the grant is issued, confirm the enforcement by calling `POST /introspect`
+and reading `grant.streams[].resources` in the response. The RS enforces the same
+list at query time, so aggregate results and record lists will only count or return
+the named keys.
+
 ## Estimating "is this too broad?"
 
 Quick sniff test before you POST:

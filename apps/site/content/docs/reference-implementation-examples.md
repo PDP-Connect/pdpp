@@ -267,3 +267,186 @@ That split is intentional. The reference implementation is proving one engine su
 
 - native provider access identified with `source.kind = "provider_native"`
 - polyfill access identified with `source.kind = "connector"`
+
+## Example 4: Token introspection — verify an issued token and read its grant
+
+The AS exposes RFC 7662-style token introspection at `POST /introspect` with PDPP
+extensions. The RS uses this endpoint internally to authorize every request; third
+parties (e.g., an RS operator building a proxy layer) can call it directly.
+
+`grant_storage_binding` is the one internal field the AS redacts before returning
+the response — the public envelope never exposes storage-layer connector ids.
+
+### Step 1: Introspect a live client token
+
+```bash
+# TOKEN = the opaque bearer token returned by /consent/approve
+curl -sX POST "$AS_URL/introspect" \
+  -H 'Content-Type: application/json' \
+  -d "{\"token\": \"$TOKEN\"}" | jq .
+```
+
+Reference response for a **valid, active client-scoped token**:
+
+```json
+{
+  "active": true,
+  "pdpp_token_kind": "client",
+  "subject_id": "owner_local",
+  "exp": 1749081600,
+  "grant_id": "grt_3ce1d18c8b6f4f9b",
+  "client_id": "longview_planning_v1",
+  "grant": {
+    "version": "0.1.0",
+    "grant_id": "grt_3ce1d18c8b6f4f9b",
+    "subject": { "id": "owner_local" },
+    "client": {
+      "client_id": "longview_planning_v1",
+      "client_display": { "name": "Longview" }
+    },
+    "source": {
+      "kind": "provider_native",
+      "id": "northstar_hr"
+    },
+    "purpose_code": "https://longview.example/purpose/career-move-planning",
+    "access_mode": "continuous",
+    "streams": [
+      {
+        "name": "pay_statements",
+        "view": "summary",
+        "fields": ["employer", "pay_period_start", "pay_period_end", "gross_pay", "net_pay", "currency"]
+      }
+    ]
+  },
+  "trace_id": "trc_a1b2c3d4e5f60001",
+  "scenario_id": null
+}
+```
+
+PDPP extension fields in the response:
+
+| Field | Meaning |
+| --- | --- |
+| `pdpp_token_kind` | `"client"` for grant-scoped tokens, `"owner"` for owner self-export tokens, `"mcp_package"` for MCP grant-package tokens |
+| `grant_id` | The grant that backs this token (client tokens only) |
+| `grant` | Full persisted grant object — source, streams, access_mode, purpose |
+| `subject_id` | The data owner who approved the grant |
+| `exp` | Unix timestamp at which the token expires (null if no expiry) |
+| `trace_id` | Audit trace id from the original consent ceremony; null if none |
+| `scenario_id` | Test/scenario tag when present; null in production flows |
+
+### Step 2: Token inactive — grant revoked
+
+When the underlying grant is revoked (or has already been consumed for a
+`single_use` grant), introspection returns `active: false` with a typed reason:
+
+```json
+{
+  "active": false,
+  "inactive_reason": "grant_revoked",
+  "grant_id": "grt_3ce1d18c8b6f4f9b",
+  "client_id": "longview_planning_v1",
+  "subject_id": "owner_local"
+}
+```
+
+Possible `inactive_reason` values:
+
+| Value | Cause |
+| --- | --- |
+| `grant_revoked` | Grant was explicitly revoked; token is now dead |
+| `grant_expired` | Token's `expires_at` has passed |
+| `token_revoked` | Token itself was revoked (owner tokens) |
+| `token_expired` | Owner/mcp_package token past expiry |
+| `grant_invalid` | Grant's persisted state no longer matches the registered manifest contract |
+
+### Step 3: Introspect an MCP grant-package token
+
+MCP grant-package tokens return a different active shape — `grant_package_id`
+instead of `grant_id`, and a `package` object instead of `grant`:
+
+```json
+{
+  "active": true,
+  "pdpp_token_kind": "mcp_package",
+  "subject_id": "owner_local",
+  "exp": 1749081600,
+  "grant_package_id": "gpkg_7f8a9b0c1d2e3f40",
+  "client_id": "my_mcp_client",
+  "package": {
+    "package_id": "gpkg_7f8a9b0c1d2e3f40",
+    "grants": [
+      { "grant_id": "grt_abc1", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/gmail" } },
+      { "grant_id": "grt_abc2", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" } }
+    ]
+  },
+  "trace_id": "trc_b2c3d4e5f6a70002"
+}
+```
+
+## Example 5: Record-level audience binding with `resources[]`
+
+`resources[]` on a stream scopes a grant to specific record keys, implementing
+RFC 8707-style resource indicators at the record level. The RS enforces the list
+as a SQL `WHERE record_key IN (...)` predicate — records not in the list return
+`blob_not_found` or are simply absent from query results. This is how a client
+requesting "just these three invoices" can receive a narrower grant than one
+requesting an entire stream.
+
+### Step 1: Stage a PAR request with record-scoped `resources[]`
+
+```bash
+curl -sX POST "$AS_URL/oauth/par" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_id": "my_client",
+    "authorization_details": [{
+      "type": "https://pdpp.org/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+      "purpose_code": "assist.summarize",
+      "purpose_description": "Retrieve the three named artists for a comparison task.",
+      "access_mode": "single_use",
+      "streams": [{
+        "name": "top_artists",
+        "fields": ["id", "name", "popularity"],
+        "resources": ["artist_01", "artist_02", "artist_03"]
+      }]
+    }]
+  }' | jq -r .request_uri
+```
+
+### Step 2: Owner approves — grant has resources[] embedded
+
+```bash
+APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+TOKEN=$(echo $APPROVED | jq -r .token)
+```
+
+The issued grant embeds `resources` on the stream:
+
+```json
+{
+  "streams": [{
+    "name": "top_artists",
+    "fields": ["id", "name", "popularity"],
+    "resources": ["artist_01", "artist_02", "artist_03"]
+  }]
+}
+```
+
+### Step 3: RS enforces the resources[] list — only those records are visible
+
+```bash
+curl -s "$RS_URL/v1/streams/top_artists/records" \
+  -H "Authorization: Bearer $TOKEN" | jq '.data[].id'
+# → "artist_01"
+# → "artist_02"
+# → "artist_03"
+# records outside resources[] are absent from results even if they exist
+```
+
+Aggregate queries are equally scoped: a `sum` over `popularity` on this token
+counts only those three records. The enforcement is in SQL (`record_key IN (?)`
+pushdown), so the RS never loads the hidden records into application memory.
