@@ -115,6 +115,12 @@
   --color-callout-warning-bg: var(--callout-warning-bg);
   --color-callout-warning-fg: var(--callout-warning-fg);
   --color-callout-warning-border: var(--callout-warning-border);
+  --color-authorship-protocol-border: var(--authorship-protocol-border);
+  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
+  --color-authorship-manifest-border: var(--authorship-manifest-border);
+  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
+  --color-authorship-client-border: var(--authorship-client-border);
+  --color-authorship-client-wash: var(--authorship-client-wash);
 
   /*
    * PDPP radius scale — bridges the brand radius tokens (base.css :root) into
