@@ -495,10 +495,11 @@ export function resolveChatGptProviderBudget(
 // possibly-reset provider quota.
 const CHATGPT_PACING_STATE_INTERVAL_KEY = "pacing_interval_ms";
 const CHATGPT_PACING_STATE_RECORDED_AT_KEY = "pacing_recorded_at_ms";
-// Staleness guard: discard a learned interval older than this. Derived as a
-// multiple of the burst-tolerance horizon (2 × default initial interval), not a
-// new authored number — a resume past this gap is treated as a fresh cold start.
-const CHATGPT_PACING_STATE_STALENESS_MS = 8 * CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS;
+// Staleness guard: discard a learned interval older than this. Provider quotas
+// reset on hour/day scales and scheduled runs are spaced hours apart, so a
+// learned interval is meaningful for hours. 6 hours covers typical quota-reset
+// cadences and expected run spacing while still discarding arbitrarily old rates.
+const CHATGPT_PACING_STATE_STALENESS_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 interface ChatGptPersistedPacing {
   intervalMs: number;
