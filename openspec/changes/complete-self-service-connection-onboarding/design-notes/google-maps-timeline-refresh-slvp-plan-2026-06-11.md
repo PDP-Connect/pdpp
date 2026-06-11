@@ -7,6 +7,9 @@ Confidence: >95% for the target owner experience, based on current Google
 documentation and prior art; <95% for any claim that Google offers a raw
 Timeline OAuth/API path.
 
+SLVP means Stripe, Linear, Vercel, and Plaid as literal company-quality bars.
+It is not a quality acronym.
+
 ## Question
 
 What is the SLVP-ideal setup and refresh experience for Google Maps Timeline
@@ -108,6 +111,16 @@ or secondary action. That action should be framed as a probe:
 The ideal recurring Takeout lane watches a destination such as Drive once the
 owner has authorized that destination. It should not depend on scraping expiring
 email links as the normal path.
+
+### Collection control
+
+Timeline import and refresh should honor the current control-system ideal:
+avoid unnecessary lag, checkpoint incrementally at coverage-safe boundaries, and
+govern work from real source/run evidence rather than fixed pessimism. A valid
+file/share event should start validation and import immediately unless there is
+a real capacity, safety, or dependency gate. Google Takeout's two-month
+scheduled export cadence is a provider constraint, not a PDPP cooldown pattern
+to copy into phone export, upload, share-target, or import-folder flows.
 
 ## Data Model And Provenance
 
