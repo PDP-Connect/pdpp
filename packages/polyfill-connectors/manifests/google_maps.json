@@ -15,6 +15,21 @@
       }
     }
   },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Google Maps Timeline export",
+      "description": "Export Timeline data from Google Maps or Android location settings, then provide the JSON export to PDPP.",
+      "accepted_file_names": [
+        "Timeline.json",
+        "timeline.json",
+        "location-history.json",
+        "Records.json"
+      ],
+      "help_url": "https://support.google.com/maps/thread/315670197/export-timeline-data",
+      "help_text": "Google Maps Timeline exports are owner-provided files. No Google account password or app password is used for this connector."
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {

@@ -81,6 +81,22 @@ test('setup planner proof-gates filesystem connectors outside the proven enrollm
   assert.equal(plan.enrollmentKey, undefined);
 });
 
+test('setup planner treats manifest-declared manual/upload connectors as import setup, not local collector', () => {
+  const plan = buildConnectionSetupPlan({
+    connectorKey: 'google-maps',
+    manifest: manifest('google-maps', { filesystem: { required: true } }, { setup: { modality: 'manual_or_upload' } }),
+  });
+  assert.equal(plan.connectorModality, 'local_collector');
+  assert.equal(plan.setupModality, 'manual_or_upload');
+  assert.equal(plan.supportState, 'proof_gated');
+  assert.equal(plan.catalogDisposition, 'manual_upload_pending');
+  assert.equal(plan.nextStepKind, 'provide_import_file');
+  assert.equal(plan.ownerAgentIntent.status, 'proof_gated');
+  assert.equal(plan.ownerAgentIntent.nextStepKind, 'provide_import_file');
+  assert.equal(plan.proofGate, 'manual_upload_capture_missing');
+  assert.equal(plan.enrollmentKey, undefined);
+});
+
 test('setup planner keeps browser-bound connectors proof-gated before live proof', () => {
   const amazon = buildConnectionSetupPlan({
     connectorKey: 'amazon',
@@ -211,6 +227,13 @@ test('setup planner distinguishes provider app readiness from owner authorizatio
 
 test('classifyConnectorSetupModality separates binding class from setup class', () => {
   assert.equal(classifyConnectorSetupModality('gmail', staticSecretManifest('gmail', 'app_password')), 'static_secret');
+  assert.equal(
+    classifyConnectorSetupModality(
+      'google-maps',
+      manifest('google-maps', { filesystem: {} }, { setup: { modality: 'manual_or_upload' } }),
+    ),
+    'manual_or_upload',
+  );
   assert.equal(classifyConnectorSetupModality('gmail', manifest('gmail', { network: {} })), 'unsupported');
   assert.equal(
     classifyConnectorSetupModality('oauth-source', {

@@ -90,6 +90,8 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
 - [x] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [x] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
+- [x] 9.10 Ensure manifest-declared manual/upload connectors project as manual/import setup rather than local-collector enrollment.
+- [ ] 9.11 Productize the generic owner file/artifact capture step for `manual_or_upload` connectors.
 
 Progress note (9.4, 9.8): the owner-journey acceptance harness ships at
 `scripts/check-owner-journey-acceptance.mjs` (+ pure modules under
@@ -166,3 +168,11 @@ preflights disk headroom before build/restart and blocks the critical
 low-space case without deleting data. `/_ref/deployment` now includes a
 `disk_headroom` block sourced from the database filesystem, and the dashboard
 readiness rows render low-headroom warnings with explicit operator action.
+
+Progress note (9.10): manifest-declared file/import connectors now use
+`setup.modality: manual_or_upload` as the owner setup class even when their
+runtime binding is filesystem-backed. The planner returns
+`manual_upload_pending` / `provide_import_file`, and the source catalog projects
+that generically instead of deep-linking to local-device enrollment. Google Maps
+declares this setup posture in its manifest. The actual generic dashboard
+file/artifact capture primitive remains 9.11.

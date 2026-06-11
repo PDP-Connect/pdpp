@@ -62,17 +62,19 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
       return 1;
     case "browser_collector_manual":
       return 2;
-    case "provider_auth_deployment_blocked":
+    case "manual_upload_pending":
       return 3;
+    case "provider_auth_deployment_blocked":
+      return 4;
     case "browser_bound_runbook":
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return 4;
+      return 5;
     case "api_network_unsupported":
     case "unknown_unsupported":
-      return 5;
-    default:
       return 6;
+    default:
+      return 7;
   }
 }
 
@@ -85,6 +87,8 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "static_secret_connect":
       return { label: "Add account", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+    case "manual_upload_pending":
+      return { label: "Import flow pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "provider_auth_deployment_blocked":
       return { label: "Deployment needed", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "browser_bound_runbook":
@@ -106,6 +110,8 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
       return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
+    case "manual_upload_pending":
+      return "This source imports an owner-provided file. The connector declares the import shape, but the dashboard file-capture step is not packaged yet.";
     case "provider_auth_deployment_blocked":
       return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
@@ -158,6 +164,7 @@ export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSuppo
       return "self_service";
     case "browser_collector_manual":
     case "browser_bound_runbook":
+    case "manual_upload_pending":
       return "packaged_path_pending";
     case "provider_auth_deployment_blocked":
       return "deployment_prerequisite";

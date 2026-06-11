@@ -21,6 +21,7 @@ import {
   deploymentBlockedEntries,
   localCollectorEntries,
   localCollectorUnprovenEntries,
+  manualUploadPendingEntries,
   staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
@@ -146,6 +147,15 @@ function staticSecretManifestKeys(manifests: readonly CatalogManifestLike[]): st
     .map(canonicalKeyFromManifestId);
 }
 
+function manualUploadManifest(connectorId: string): CatalogManifestLike {
+  return {
+    connector_id: connectorId,
+    display_name: connectorId,
+    runtime_requirements: { bindings: { filesystem: { required: true } } },
+    setup: { modality: "manual_or_upload" },
+  };
+}
+
 test("static-secret manifests are connect entries, not flatly unsupported", async () => {
   // Static-secret connectors declare their setup form in the connector manifest.
   // The catalog must route every such manifest to the static_secret_connect
@@ -162,6 +172,22 @@ test("static-secret manifests are connect entries, not flatly unsupported", asyn
     assert.equal(entry.disposition, "static_secret_connect");
     assert.equal(entry.enrollmentKey, undefined, `${key} must not deep-link into enrollment`);
   }
+});
+
+test("manual/upload manifests are import-pending entries, not unproven local collectors", () => {
+  const catalog = buildConnectorCatalog([manualUploadManifest("google-maps")]);
+  const [entry] = catalog;
+  assert.ok(entry, "synthetic manual/upload manifest should produce a catalog entry");
+  assert.equal(entry.connectorKey, "google-maps");
+  assert.equal(entry.modality, "local_collector");
+  assert.equal(entry.setupModality, "manual_or_upload");
+  assert.equal(entry.supportState, "proof_gated");
+  assert.equal(entry.disposition, "manual_upload_pending");
+  assert.equal(entry.nextStepKind, "provide_import_file");
+  assert.equal(entry.proofGate, "manual_upload_capture_missing");
+  assert.equal(entry.enrollmentKey, undefined);
+  assert.deepEqual(manualUploadPendingEntries(catalog), [entry]);
+  assert.deepEqual(localCollectorUnprovenEntries(catalog), []);
 });
 
 test("other network connectors stay flatly api_network_unsupported", async () => {
@@ -238,6 +264,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     browserCollectorEntries(catalog),
     browserBoundRunbookEntries(catalog),
     staticSecretConnectEntries(catalog),
+    manualUploadPendingEntries(catalog),
     deploymentBlockedEntries(catalog),
     unsupportedNetworkEntries(catalog),
   ];
@@ -249,6 +276,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
   // Exactly the two static-secret connectors (gmail, github).
   assert.equal(staticSecretConnectEntries(catalog).length, 2, "gmail + github");
+  assert.ok(manualUploadPendingEntries(catalog).length >= 1, "file/import connectors");
   assert.ok(unsupportedNetworkEntries(catalog).length >= 1);
 });
 

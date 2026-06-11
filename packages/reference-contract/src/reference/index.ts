@@ -316,6 +316,7 @@ const OwnerConnectorTemplateSetupPlanSchema = {
         "capture_static_secret",
         "open_provider_auth",
         "needs_deployment_config",
+        "provide_import_file",
         "manual_runbook",
         "unsupported",
       ],
@@ -560,10 +561,11 @@ const OwnerConnectionIntentRequestSchema = {
 // Typed next step a connection intent returns. The route projects the shared
 // setup-plan vocabulary: supported local collectors emit enrollment material;
 // proof-gated connectors emit either a non-secret owner-session step
-// (`capture_static_secret`) or `manual_runbook`; deployment-blocked provider
-// authorization emits `needs_deployment_config`; unsupported connectors emit
-// `unsupported`. `enroll_browser_collector`, `capture_static_secret`, and
-// `open_provider_auth` SHALL NOT carry provider/browser secrets.
+// (`capture_static_secret`), a file-import step (`provide_import_file`), or
+// `manual_runbook`; deployment-blocked provider authorization emits
+// `needs_deployment_config`; unsupported connectors emit `unsupported`.
+// `enroll_browser_collector`, `capture_static_secret`, `provide_import_file`,
+// and `open_provider_auth` SHALL NOT carry provider/browser secrets.
 const OwnerConnectionIntentNextStepSchema = {
   type: "object",
   additionalProperties: true,
@@ -576,6 +578,7 @@ const OwnerConnectionIntentNextStepSchema = {
         "capture_static_secret",
         "open_provider_auth",
         "needs_deployment_config",
+        "provide_import_file",
         "manual_runbook",
         "unsupported",
       ],

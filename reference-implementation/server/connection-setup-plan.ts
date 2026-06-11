@@ -22,6 +22,7 @@ export type ConnectorSetupNextStepKind =
   | "capture_static_secret"
   | "open_provider_auth"
   | "needs_deployment_config"
+  | "provide_import_file"
   | "manual_runbook"
   | "unsupported";
 
@@ -31,6 +32,7 @@ export type ConnectorCatalogDisposition =
   | "browser_collector_manual"
   | "browser_bound_runbook"
   | "static_secret_connect"
+  | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
   | "provider_auth_proof_gated"
   | "api_network_unsupported"
@@ -394,6 +396,16 @@ export function classifyConnectorSetupModality(
   _connectorKey: string,
   manifest: ConnectorManifestLike | null
 ): ConnectorSetupModality {
+  const authKind = authKindFromManifest(manifest);
+  if (
+    authKind === "manual_or_upload" ||
+    authKind === "manual-upload" ||
+    authKind === "manual_upload" ||
+    authKind === "file_import" ||
+    authKind === "upload"
+  ) {
+    return "manual_or_upload";
+  }
   const connectorModality = classifyConnectorIntentModality(manifest);
   if (connectorModality === "local_collector") {
     return "local_collector";
@@ -402,7 +414,6 @@ export function classifyConnectorSetupModality(
     return "browser_bound";
   }
   if (connectorModality === "api_network") {
-    const authKind = authKindFromManifest(manifest);
     if (staticSecretCredentialCaptureFromManifest(manifest)) {
       return "static_secret";
     }
@@ -474,6 +485,9 @@ export function unsupportedReason(modality: ConnectorIntentModality | ConnectorS
   if (modality === "local_collector") {
     return "This filesystem-backed connector is not in the proven local-collector enrollment set yet. The reference can classify it as local-collector class, but it must not advertise setup until a connector-specific local collector path is proven.";
   }
+  if (modality === "manual_or_upload") {
+    return "This connector imports an owner-provided file or artifact declared by its connector manifest. The reference recognizes the setup class, but the generic owner upload/import capture flow is not packaged yet.";
+  }
   return "Unknown connector: no manifest with runtime binding requirements is registered for this connector_id. Register the connector or check the connector_id.";
 }
 
@@ -509,6 +523,28 @@ export function buildConnectionSetupPlan(args: {
   // registered probe. Everything else activates at first sync.
   const validationMode: CredentialValidationMode =
     setupModality === "static_secret" ? credentialValidationMode(connectorKey) : "first_sync";
+
+  if (setupModality === "manual_or_upload") {
+    return {
+      catalogDisposition: "manual_upload_pending",
+      connectorKey,
+      connectorModality,
+      deploymentReadiness,
+      displayName,
+      nextStepKind: "provide_import_file",
+      ownerAgentIntent: {
+        method: null,
+        nextStepKind: "provide_import_file",
+        reason: unsupportedReason(setupModality),
+        status: "proof_gated",
+      },
+      proofGate: "manual_upload_capture_missing",
+      runbookPath: null,
+      setupModality,
+      validationMode,
+      supportState: "proof_gated",
+    };
+  }
 
   if (connectorModality === "local_collector") {
     if (isSupportedLocalCollectorConnector(enrollmentKey)) {

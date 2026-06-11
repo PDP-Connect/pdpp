@@ -72,6 +72,9 @@ export type CatalogModality = ConnectorIntentModality;
  *   A real owner connect route exists; the picker links to that owner-session
  *   capture form, not to local-device enrollment, and the connection stays
  *   hidden until first ingest accepts records.
+ * - `manual_upload_pending` — a manifest-declared file/import connector. The
+ *   connector owns the accepted artifact shape, but the generic dashboard
+ *   capture step is not packaged yet.
  * - `api_network_unsupported` — no owner connect route; visible with its reason,
  *   not creatable here.
  * - `unknown_unsupported` — a manifest with no recognized binding; surfaced
@@ -198,6 +201,11 @@ export function browserBoundRunbookEntries(catalog: readonly ConnectorCatalogEnt
  */
 export function staticSecretConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "static_secret_connect");
+}
+
+/** Manual/file import entries awaiting a generic owner file-capture path. */
+export function manualUploadPendingEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter((e) => e.disposition === "manual_upload_pending");
 }
 
 /** Provider-authorization entries blocked on instance-level deployment config. */

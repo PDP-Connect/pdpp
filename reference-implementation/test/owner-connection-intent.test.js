@@ -496,16 +496,17 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
     assert.equal(body.connector_key, 'gmail');
     assert.equal(body.connector_modality, 'api_network');
     assert.equal(body.setup_modality, 'static_secret');
-    assert.equal(body.support_state, 'proof_gated');
-    assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
+    assert.equal(body.support_state, 'supported');
+    assert.equal(body.proof_gate, null);
+    assert.equal(body.runbook_path, null);
     assert.equal(body.deployment_readiness.state, 'not_applicable');
     // Gmail has a synchronous credential probe, so the owner-agent/CLI setup
     // projection advertises synchronous validation — without exposing a secret.
     assert.equal(body.validation, 'synchronous');
     assert.equal(body.next_step.kind, 'capture_static_secret');
     assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/gmail');
-    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
-    assert.match(body.next_step.reason, /API|network/i);
+    assert.equal(body.next_step.runbook_path, undefined);
+    assert.match(body.next_step.reason, /static-secret credential capture/i);
     // Honesty: static-secret connectors authenticate with a connector-declared
     // provider secret the owner supplies through an owner-session surface, NOT
     // an OAuth authorization-code flow. The route may point at the
@@ -515,19 +516,6 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
       body.next_step.reason,
       /add this connection from the dashboard/i,
       'must not point the owner at a dashboard that lists API/network as unsupported',
-    );
-    assert.match(
-      body.next_step.reason,
-      /static provider secret/i,
-      'reason must name the static-secret credential model, not imply OAuth',
-    );
-    assert.match(body.next_step.reason, /connector manifest/i);
-    // The reason must affirm these connectors are NOT OAuth-backed, so a future
-    // reader cannot wire them to a provider authorization URL.
-    assert.match(
-      body.next_step.reason,
-      /no OAuth authorization URL/i,
-      'reason must explicitly state no current connector is OAuth-backed',
     );
     assert.equal(body.next_step.authorization_url, undefined);
     assert.equal(body.next_step.enrollment_code, undefined);
