@@ -162,62 +162,6 @@
         "resources": true
       },
       "incremental": true
-    },
-    {
-      "name": "resource_exports",
-      "description": "Metadata for downloaded Google Data Portability Maps archive files.",
-      "display": {
-        "label": "Your Google Maps export files",
-        "detail": "Per-file provenance for downloaded Data Portability archives after Google marks an archive job complete. The connector preserves the source resource group and archive file identity before parsing records."
-      },
-      "semantics": "append_only",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "resource_group": {
-            "type": "string"
-          },
-          "archive_job_id": {
-            "type": "string"
-          },
-          "source_file": {
-            "type": "string"
-          },
-          "export_time": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "source": {
-            "type": "string",
-            "enum": [
-              "google_data_portability_api"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "resource_group",
-          "archive_job_id",
-          "source_file",
-          "source"
-        ]
-      },
-      "primary_key": [
-        "id"
-      ],
-      "cursor_field": "export_time",
-      "consent_time_field": "export_time",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": true
     }
   ]
 }

@@ -33,6 +33,9 @@ connector the only honest path?
 - Google Data Portability `accessType.check` reference, accessed 2026-06-11:
   https://developers.google.com/data-portability/reference/rest/v1/accessType/check
 - Google Data Portability API Maps schema reference, accessed 2026-06-11:
+  https://developers.google.com/data-portability/schema-reference/maps
+- Google Data Portability API Maps (Your Places) schema reference, accessed
+  2026-06-11:
   https://developers.google.com/data-portability/schema-reference/local_actions
 - Google Maps Help: Manage your Google Maps Timeline, Android and desktop
   variants, accessed 2026-06-11:
@@ -44,9 +47,11 @@ connector the only honest path?
 Google does expose a Data Portability API with OAuth and time-based exports.
 The API supports Maps resource scopes such as starred places, labeled places,
 commute routes/settings, vehicle profiles, reviews, photos/videos, Q&A, Maps
-activity, and My Maps. The documented flow is OAuth consent, optionally check
-access type, initiate archive, poll archive state, then download signed archive
-URLs. Google documents the concrete REST endpoints as:
+activity, and My Maps. The Maps schema reference was current as of its
+2026-03-16 update. The documented flow is OAuth consent, optionally check
+access type, initiate archive, poll archive state on Google's five-to-sixty
+minute cadence, then download signed archive URLs when Google returns
+`COMPLETE`. Google documents the concrete REST endpoints as:
 
 - `POST https://dataportability.googleapis.com/v1/accessType:check`
 - `POST https://dataportability.googleapis.com/v1/portabilityArchive:initiate`

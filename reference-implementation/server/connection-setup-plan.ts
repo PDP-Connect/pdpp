@@ -205,7 +205,10 @@ export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 //
 // "test_provider" is a synthetic connector used by the deterministic test suite
 // to exercise the full lifecycle without live provider credentials.
-export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = ["test_provider"] as const;
+export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = [
+  "test_provider",
+  "google-maps-data-portability",
+] as const;
 
 export type ProviderAuthLifecycleProvenConnector =
   (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];

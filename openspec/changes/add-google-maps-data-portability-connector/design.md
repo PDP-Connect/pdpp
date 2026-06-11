@@ -44,6 +44,12 @@ The runtime does not perform browser automation. It uses the Data Portability AP
 
 The connector must preserve archive/export provenance per record: resource group, source file, export job id when available, and capture/export time.
 
+The first implemented runtime tranche proves steps 1 and 2 through the
+`archive_jobs` stream. It intentionally does not parse Maps payload records yet:
+Google archives can take minutes to days to complete, signed URLs are returned
+only after `COMPLETE`, and parser work needs documented or scrubbed archive
+samples before stream-specific records can be advertised.
+
 ### Streams
 
 The first tranche should model only documented Maps resources. Candidate streams include:
@@ -89,7 +95,9 @@ The connector's refresh policy must respect Google's Data Portability cadence an
 
 ## Live Proof Gap
 
-The API-backed tranche can be replayed against mock transport and shared setup-planning tests, but a live owner authorization is blocked until the deployment has Google Data Portability OAuth app material:
+The API-backed setup and archive-job lifecycle can be replayed against mock
+transport and shared setup-planning tests, but a live owner authorization is
+blocked until the deployment has Google Data Portability OAuth app material:
 
 - `GOOGLE_DATAPORTABILITY_CLIENT_ID`
 - `GOOGLE_DATAPORTABILITY_CLIENT_SECRET`

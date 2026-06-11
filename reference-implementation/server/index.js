@@ -82,6 +82,11 @@ import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from './stores/connector-instance-credential-store.js';
+import {
+  configuredGoogleDataPortabilityProviderAuthConnectorKeys,
+  createGoogleDataPortabilityProviderAuthExchanger,
+} from './provider-auth/google-data-portability.ts';
+import { resolveProviderAuthRunEnv } from './stores/provider-auth-run-credentials.js';
 import { resolveStaticSecretRunEnv } from './stores/static-secret-run-credentials.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
@@ -1343,13 +1348,31 @@ function buildControllerManualUploadRunEnvResolver() {
   };
 }
 
+function buildControllerProviderAuthRunEnvResolver() {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+    const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
+    return resolveProviderAuthRunEnv({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
+      sourceBinding: connectorInstance?.sourceBinding ?? null,
+      credentialStore: createRequestConnectorInstanceCredentialStore(),
+    });
+  };
+}
+
 function buildConnectionScopedRunEnvResolver() {
   const staticSecretResolver = buildControllerStaticSecretRunEnvResolver();
+  const providerAuthResolver = buildControllerProviderAuthRunEnvResolver();
   const manualUploadResolver = buildControllerManualUploadRunEnvResolver();
   return async (args) => {
     const staticSecretEnv = await staticSecretResolver(args);
     if (staticSecretEnv !== null) {
       return staticSecretEnv;
+    }
+    const providerAuthEnv = await providerAuthResolver(args);
+    if (providerAuthEnv !== null) {
+      return providerAuthEnv;
     }
     return manualUploadResolver(args);
   };
@@ -3516,6 +3539,14 @@ function buildAsApp(opts = {}) {
   // The in-process pending-auth store is scoped to this RS process instance and
   // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
   const pendingAuthStore = createInProcessPendingAuthStore();
+  const defaultProviderAuthConnectorKeys = configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+  const providerAuthExchanger =
+    opts.providerAuthExchanger ??
+    (defaultProviderAuthConnectorKeys.length > 0
+      ? createGoogleDataPortabilityProviderAuthExchanger({
+          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
+        })
+      : null);
   const providerAuthCtx = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
@@ -3531,11 +3562,11 @@ function buildAsApp(opts = {}) {
     generateSpineId,
     setReferenceTraceId,
     pendingAuthStore,
-    // Exchanger is wired via opts so tests can inject a deterministic double.
-    exchanger: opts.providerAuthExchanger ?? null,
+    // Tests can inject a deterministic double; production wires real provider
+    // exchangers only when their deployment-level OAuth app config is present.
+    exchanger: providerAuthExchanger,
     // Connector keys for which provider-app deployment config is in place.
-    // Populated by opts or env-var inspection in production deployments.
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? defaultProviderAuthConnectorKeys,
     // The callback URL lives on the AS app (/_ref/provider-auth/callback).
     resolveCallbackBaseUrl: (req) => {
       const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);

@@ -12,23 +12,24 @@
 
 ## 3. Provider Authorization
 
-- [ ] 3.1 Implement a Google Data Portability provider-auth exchanger using the existing provider-auth lifecycle seam.
-- [ ] 3.2 Persist provider tokens in the encrypted per-connection credential store, not process env and not owner-agent-visible state.
-- [ ] 3.3 Support multiple Google accounts as separate connector instances with distinct connection ids and owner-visible labels.
-- [ ] 3.4 Handle partial-scope consent and denied consent as typed setup/coverage outcomes.
+- [x] 3.1 Implement a Google Data Portability provider-auth exchanger using the existing provider-auth lifecycle seam.
+- [x] 3.2 Persist provider tokens in the encrypted per-connection credential store, not process env and not owner-agent-visible state.
+- [x] 3.3 Support repeated Google authorizations as separate connector instances with distinct connection ids and owner-visible labels.
+- [x] 3.4 Handle partial-scope consent and denied consent as typed setup/coverage outcomes.
 
 ## 4. Archive Runtime
 
-- [ ] 4.1 Implement Data Portability archive initiation, polling, download, and expiry handling.
+- [x] 4.1 Implement Data Portability archive initiation and cadence-safe polling into `archive_jobs`.
+- [ ] 4.1a Implement signed-URL download and expiry handling after Google returns `COMPLETE`.
 - [ ] 4.2 Parse documented Maps resource groups into manifest-declared streams.
 - [ ] 4.3 Emit per-stream coverage for authorized, unavailable, denied, empty, and failed resource groups.
 - [ ] 4.4 Preserve archive/source-file/export provenance on emitted records.
-- [ ] 4.5 Keep Timeline point/segment collection out of this connector until Google documents equivalent Data Portability resources.
+- [x] 4.5 Keep Timeline point/segment collection out of this connector until Google documents equivalent Data Portability resources.
 
 ## 5. Verification
 
-- [ ] 5.1 Add unit tests for provider-auth setup planning, exchanger calls, token secrecy, partial consent, and multi-account connection creation.
+- [x] 5.1 Add unit tests for provider-auth setup planning, exchanger calls, token secrecy, partial consent, and multi-account connection creation.
 - [ ] 5.2 Add archive parser fixtures from documented or scrubbed Data Portability Maps samples.
-- [ ] 5.3 Add a black-box setup route test from manifest registration through provider-auth initiation/callback.
+- [x] 5.3 Add a black-box setup route test from manifest registration through provider-auth initiation/callback.
 - [x] 5.4 Run focused package tests and OpenSpec validation.
 - [x] 5.5 Record the live proof gap if Google OAuth app verification or owner-held credentials block full live validation.

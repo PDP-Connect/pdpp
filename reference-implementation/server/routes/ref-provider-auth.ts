@@ -55,6 +55,8 @@ export interface ProviderAccount {
   readonly accountId: string;
   /** Display label for the account (e.g. email address). */
   readonly displayLabel?: string | null;
+  /** Non-secret provider/account metadata persisted on the connector instance. */
+  readonly sourceBinding?: Record<string, unknown> | null;
 }
 
 /**
@@ -265,6 +267,34 @@ function errWithCode(code: string): { code: string } {
 
 function stripTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function providerErrorCode(err: unknown, fallback: string): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.trim() ? code.trim() : fallback;
+}
+
+function providerErrorStatus(err: unknown, fallback: number): number {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 600
+    ? status
+    : fallback;
+}
+
+function providerErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message.trim() ? err.message : fallback;
+}
+
+function buildProviderAccountSourceBinding(account: ProviderAccount): Record<string, unknown> {
+  const extra =
+    account.sourceBinding && typeof account.sourceBinding === "object" && !Array.isArray(account.sourceBinding)
+      ? account.sourceBinding
+      : {};
+  return {
+    ...extra,
+    kind: "provider_auth_account",
+    account_id: account.accountId,
+  };
 }
 
 function buildCallbackRedirectUri(ctx: MountRefProviderAuthContext, req: unknown): string {
@@ -626,6 +656,7 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
             tokens,
           });
         } catch (inventoryErr) {
+          const code = providerErrorCode(inventoryErr, "provider_auth_inventory_failed");
           await emitCallbackAudit(ctx, res, {
             connectorId: resolvedConnectorId,
             ownerSubjectId: resolvedOwnerSubjectId,
@@ -635,9 +666,12 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
           });
           ctx.pdppError(
             res,
-            502,
-            "provider_auth_inventory_failed",
-            "Account inventory or connection test failed after authorization. No connection was activated."
+            providerErrorStatus(inventoryErr, 502),
+            code,
+            providerErrorMessage(
+              inventoryErr,
+              "Account inventory or connection test failed after authorization. No connection was activated."
+            )
           );
           return;
         }
@@ -668,6 +702,7 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
         for (const account of accounts) {
           const sourceBindingKey = account.accountId;
           const displayName = account.displayLabel ?? account.accountId;
+          const sourceBinding = buildProviderAccountSourceBinding(account);
           const draftInstance = await store.upsert({
             ownerSubjectId: resolvedOwnerSubjectId,
             connectorId: resolvedConnectorId,
@@ -675,10 +710,7 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
             status: "draft",
             sourceKind: "account",
             sourceBindingKey,
-            sourceBinding: {
-              kind: "provider_auth_account",
-              account_id: account.accountId,
-            },
+            sourceBinding,
             createdAt: now,
             updatedAt: now,
           });
@@ -699,10 +731,7 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
             status: "active",
             sourceKind: "account",
             sourceBindingKey,
-            sourceBinding: {
-              kind: "provider_auth_account",
-              account_id: account.accountId,
-            },
+            sourceBinding,
             createdAt: now,
             updatedAt: now,
           });
