@@ -1,10 +1,10 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/google-takeout",
-  "connector_key": "google-takeout",
-  "manifest_uri": "https://registry.pdpp.org/connectors/google-takeout",
+  "connector_id": "google-maps",
+  "connector_key": "google-maps",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-maps",
   "version": "0.1.0",
-  "display_name": "Google Takeout",
+  "display_name": "Google Maps",
   "runtime_requirements": {
     "bindings": {
       "network": {
@@ -23,7 +23,7 @@
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Google Takeout requires the user to request and download a fresh archive; refresh cannot run in the background."
+      "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings; the connector does not authenticate to Google or refresh in the background."
     },
     "public_listing": {
       "listed": false,
@@ -32,11 +32,11 @@
   },
   "streams": [
     {
-      "name": "location_history",
-      "description": "Location history from Google Maps Timeline.",
+      "name": "timeline_points",
+      "description": "Timestamped Google Maps Timeline location points.",
       "display": {
-        "label": "Your Google location history",
-        "detail": "Places you've been with timestamps, lat/lon, accuracy, activity type when available. Parsed from Google Takeout Records.json."
+        "label": "Your Google Maps location points",
+        "detail": "Timestamped latitude/longitude observations from Google Maps Timeline exports, including source format and activity hints when available."
       },
       "semantics": "append_only",
       "schema": {
@@ -50,18 +50,24 @@
             "format": "date-time"
           },
           "latitude": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "number"
           },
           "longitude": {
+            "type": "number"
+          },
+          "accuracy_meters": {
             "type": [
               "number",
               "null"
             ]
           },
-          "accuracy_meters": {
+          "altitude_m": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "velocity_mps": {
             "type": [
               "number",
               "null"
@@ -73,22 +79,38 @@
               "null"
             ]
           },
-          "velocity_mps": {
+          "segment_id": {
             "type": [
-              "number",
+              "string",
               "null"
             ]
           },
-          "altitude_m": {
-            "type": [
-              "number",
-              "null"
+          "source_format": {
+            "type": "string",
+            "enum": [
+              "legacy_records",
+              "semantic_segments",
+              "timeline_objects"
+            ]
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "raw_location",
+              "timeline_path",
+              "visit_location",
+              "activity_start",
+              "activity_end"
             ]
           }
         },
         "required": [
           "id",
-          "timestamp"
+          "timestamp",
+          "latitude",
+          "longitude",
+          "source_format",
+          "source_kind"
         ]
       },
       "primary_key": [
@@ -103,11 +125,11 @@
       "incremental": true
     },
     {
-      "name": "youtube_watch_history",
-      "description": "YouTube watch history.",
+      "name": "timeline_segments",
+      "description": "Google Maps Timeline visits, activities, and path segments.",
       "display": {
-        "label": "Your YouTube watch history",
-        "detail": "Videos watched with watch time, video URL, title, channel name."
+        "label": "Your Google Maps visits and activities",
+        "detail": "Normalized Timeline visits, activities, and movement segments when the export provides semantic Timeline entries."
       },
       "semantics": "append_only",
       "schema": {
@@ -116,92 +138,82 @@
           "id": {
             "type": "string"
           },
-          "watched_at": {
+          "start_time": {
             "type": "string",
             "format": "date-time"
           },
-          "video_url": {
+          "end_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "segment_kind": {
+            "type": "string",
+            "enum": [
+              "path",
+              "visit",
+              "activity"
+            ]
+          },
+          "source_format": {
+            "type": "string",
+            "enum": [
+              "legacy_records",
+              "semantic_segments",
+              "timeline_objects"
+            ]
+          },
+          "latitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "longitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "place_id": {
             "type": [
               "string",
               "null"
             ]
           },
-          "video_title": {
+          "semantic_type": {
             "type": [
               "string",
               "null"
             ]
           },
-          "channel_name": {
+          "activity_type": {
             "type": [
               "string",
               "null"
             ]
           },
-          "channel_url": {
+          "probability": {
             "type": [
-              "string",
+              "number",
               "null"
             ]
           }
         },
         "required": [
           "id",
-          "watched_at"
+          "start_time",
+          "segment_kind",
+          "source_format"
         ]
       },
       "primary_key": [
         "id"
       ],
-      "cursor_field": "watched_at",
-      "consent_time_field": "watched_at",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": true
-    },
-    {
-      "name": "search_history",
-      "description": "Google search queries from My Activity.",
-      "display": {
-        "label": "Your Google search history",
-        "detail": "Search queries with timestamps and products (Search, Maps, Images, etc.)."
-      },
-      "semantics": "append_only",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "timestamp": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "query": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "product": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "timestamp"
-        ]
-      },
-      "primary_key": [
-        "id"
-      ],
-      "cursor_field": "timestamp",
-      "consent_time_field": "timestamp",
+      "cursor_field": "start_time",
+      "consent_time_field": "start_time",
       "selection": {
         "fields": true,
         "resources": true

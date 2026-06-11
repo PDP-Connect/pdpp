@@ -59,6 +59,10 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
     connectorPath: join(CONNECTORS_DIR, "google_takeout", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "google_takeout.json"),
   },
+  google_maps: {
+    connectorPath: join(CONNECTORS_DIR, "google_maps", "index.ts"),
+    manifestPath: join(MANIFEST_DIR, "google_maps.json"),
+  },
   twitter_archive: {
     connectorPath: join(CONNECTORS_DIR, "twitter_archive", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "twitter_archive.json"),

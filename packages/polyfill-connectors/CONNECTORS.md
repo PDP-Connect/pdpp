@@ -1,6 +1,6 @@
 # Polyfill connector registry
 
-30 connectors, organized by auth/operational class.
+31 connectors, organized by auth/operational class.
 
 ## What the status columns mean
 
@@ -68,6 +68,7 @@ These connectors parse local files without network access. Run on-device only. *
 | codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | ✅ | ✅ |
 | whatsapp | `~/.pdpp/imports/whatsapp/*.txt` (chat exports) | 🟡 code ready | ✅ (expected) |
 | google_takeout | `~/.pdpp/imports/google_takeout/` (extracted takeout) | 🟡 code ready | ✅ (expected) |
+| google_maps | `~/.pdpp/imports/google_maps/` (Google Maps Timeline export or legacy Takeout location file) | 🟡 code ready | ✅ (expected) |
 | twitter_archive | `~/.pdpp/imports/twitter_archive/` (extracted archive) | 🟡 code ready | ✅ (expected) |
 | imessage | `~/Library/Messages/chat.db` (auto-discovered on macOS) | 🟡 code ready | ✅ (expected) |
 | apple_health | `~/.pdpp/imports/apple_health/` (extracted iOS export) | 🟡 code ready | ✅ (expected) |
