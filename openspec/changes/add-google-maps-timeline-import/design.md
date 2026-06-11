@@ -7,9 +7,11 @@ Google Maps Timeline has two relevant export paths:
 
 The implementation should therefore collect from owner-provided files. It should not attempt to automate Google Maps web sessions or mobile app state.
 
+2026-06-11 correction: Google also exposes a Data Portability API with OAuth and time-based exports for some Maps resource groups, but the documented Maps schema does not expose Timeline points or Timeline segments. Google's Timeline help says Timeline data is device-backed and exported from mobile. Therefore this change remains a Timeline import fallback. A future API-backed Google Maps connector must be modeled separately against Google Data Portability scopes and must not be presented as equivalent to `timeline_points` / `timeline_segments`.
+
 ## Design
 
-Add a dedicated `google_maps` connector instead of expanding the generic `google_takeout` product surface. The dedicated connector gives owners a clear "Google Maps Timeline" source in connection setup while still allowing the parser to accept legacy Takeout location files for compatibility with existing exports.
+Add a dedicated `google_maps` import connector instead of expanding the generic `google_takeout` product surface. The dedicated connector gives owners a clear "Google Maps Timeline Import" source in connection setup while still allowing the parser to accept legacy Takeout location files for compatibility with existing exports.
 
 The connector emits two normalized streams:
 
@@ -29,6 +31,7 @@ Each record carries `source_format` so downstream users can distinguish legacy r
 ## Alternatives Considered
 
 - **Browser scrape `maps.google.com/timeline`**: rejected. It is more fragile, more likely to trigger bot/captcha defenses, and misaligned with Google's current device/app export guidance.
+- **Treat Google Data Portability API as this connector's runtime**: rejected for this change. It may be the right future provider-authorization source for Google-exposed Maps data, but it does not document Timeline points/segments, has OAuth approval and partial-scope constraints, and should not silently change the meaning of the Timeline import streams.
 - **Only extend `google_takeout`**: rejected for user experience. Owners looking for Maps should not need to infer that Timeline lives under Takeout, and newer mobile Timeline exports are not necessarily full Takeout archives.
 - **Emit one raw JSON stream**: rejected. It would be easier, but it would not provide an agent-friendly read surface or stable cursor semantics.
 

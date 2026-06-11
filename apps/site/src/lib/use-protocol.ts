@@ -19,9 +19,12 @@ import { createSeededServer, type Grant, type MockPDPPServer, type QueryResult }
 
 export type ProtocolPhase = "idle" | "granted" | "revoked";
 
+export type ClientIntrospection = ReturnType<MockPDPPServer["introspectClientToken"]>;
+
 export interface ProtocolState {
   exportResult: QueryResult | null;
   grant: Grant | null;
+  introspection: ClientIntrospection | null;
   phase: ProtocolPhase;
   queryResult: QueryResult | null;
   serverStats: { name: string; recordCount: number; fields: string[] }[];
@@ -163,9 +166,16 @@ export function useProtocol() {
     setExportResult(null);
   }, []);
 
+  // The introspection envelope the RS reads before serving any query. Derived
+  // from the live grant so it reflects active → revoked transitions: an idle
+  // page shows the introspection against the demo grant id (inactive), a
+  // granted page shows it active, a revoked page shows active:false.
+  const introspection: ClientIntrospection = server.introspectClientToken(grant?.grant_id ?? GRANT_TEMPLATE.grant_id);
+
   return {
     phase,
     grant,
+    introspection,
     queryResult,
     syncResult,
     syncCursor,

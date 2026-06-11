@@ -106,8 +106,8 @@ test("grant filter reads as a protocol fact via authorship tokens, no literals",
 
   assert.match(
     projectionSrc,
-    /var\(--authorship-protocol\)/,
-    "the grant filter line must use the protocol authorship token"
+    /var\(--authorship-protocol-accent\)/,
+    "the grant filter line must use the protocol authorship accent token"
   );
   // No raw oklch/rgba/hex colour literals anywhere in the set-piece.
   assert.doesNotMatch(projectionSrc, /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/, "set-piece must not hardcode colour literals");

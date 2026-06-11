@@ -216,6 +216,26 @@ export interface ProviderBudgetProgress {
   retry_tokens_remaining?: number | "unbounded";
 }
 
+/**
+ * Operator-legible snapshot of the adaptive collection rate controller's live
+ * state, emitted as redacted run-trace progress so an operator can watch the
+ * controller speed up and back off. Carries NO account/conversation content —
+ * only rate numbers and the back-off reason (SLVP ideal §5: legibility).
+ */
+export interface CollectionRateProgress {
+  /** The rate ceiling: fastest interval (ms) the controller may reach. */
+  ceiling_interval_ms: number;
+  /** Effective ceiling rate (requests/min) — the cap the probe never crosses. */
+  ceiling_rate_per_min: number;
+  /** Current learned inter-request interval (ms). */
+  current_interval_ms: number;
+  /** Current effective rate (requests/min) = 60000 / current_interval_ms. */
+  effective_rate_per_min: number;
+  /** Most recent back-off, or null when none has fired this run. */
+  last_backoff: { at_interval_ms: number; reason: "retry_after" | "throttle" } | null;
+  object: "collection_rate";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -227,7 +247,13 @@ export type EmittedMessage =
       op?: "delete";
     }
   | { type: "STATE"; stream: string; cursor: unknown }
-  | { type: "PROGRESS"; message: string; stream?: string; provider_budget?: ProviderBudgetProgress }
+  | {
+      type: "PROGRESS";
+      message: string;
+      stream?: string;
+      provider_budget?: ProviderBudgetProgress;
+      collection_rate?: CollectionRateProgress;
+    }
   | ({ type: "ASSISTANCE" } & AssistanceRequest)
   | ({ type: "ASSISTANCE_STATUS" } & AssistanceCompletion)
   | {

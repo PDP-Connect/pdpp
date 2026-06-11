@@ -28,6 +28,7 @@ import {
   buildDetailCoverageMessage,
   buildDetailGap,
   type CollectContext,
+  type CollectionRateProgress,
   type DetailCoverageMessage,
   type DetailGapMessage,
   nowIso,
@@ -308,7 +309,21 @@ const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS"
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
 const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
-const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 2500;
+// Cold-start DISCOVERY seed (ms), used ONLY when no fresh learned interval is
+// restored from durable state (see warm-start below). It is a one-time entry to
+// the AIMD ramp, NOT a hand-authored operating point: warm-start persists the
+// learned interval across runs so the descent compounds. Lowered from the legacy
+// 2500ms so a genuine cold start is "safe but not glacial" (the SLVP ideal) while
+// staying well above the ceiling. The circuit breaker + density stop + DETAIL_GAP
+// deferral absorb any cold-start pressure exactly as before.
+const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
+// THE ONE OWNER NUMBER: the rate ceiling. The fastest inter-request interval
+// (= maximum sustained rate) the additive-increase loop may ever reach — the
+// operator's risk tolerance, set below the provider's estimated behavioral
+// flagging threshold. It cannot be discovered by probing without risking the
+// account, so it is the single fixed prior the controller never crosses. Tune via
+// PDPP_CHATGPT_PACING_MIN_INTERVAL_MS. Every other pacing constant is a derived
+// horizon or an AIMD shape; this is the only behavioral safety number.
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
 const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
@@ -415,7 +430,13 @@ function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | 
   return Math.floor(parsed);
 }
 
-export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.env): ProviderBudgetController | null {
+export function resolveChatGptProviderBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  // Warm-start: a learned interval restored from durable connector state (already
+  // staleness-guarded by the caller). Seeds the controller so the AIMD descent
+  // compounds across runs instead of resetting to the cold discovery interval.
+  restoredIntervalMs?: number | null
+): ProviderBudgetController | null {
   const pacingInitialOverride = env[CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV]?.trim();
   const initialIntervalMs =
     pacingInitialOverride == null || pacingInitialOverride === ""
@@ -434,8 +455,11 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
     initialIntervalMs == null
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
-  // Calibrated 2026-06-11 (run_1781139968889): the adaptive lane is the SOLE
-  // send governor; pacing rides as a `launchDelayHint` (pacingMode: "signal").
+  // The adaptive lane is the SOLE send governor; pacing rides as a
+  // `launchDelayHint` (pacingMode: "signal"). The cold `initialIntervalMs` is a
+  // one-time discovery seed; `restoredIntervalMs` (when fresh) is the warm-start
+  // value so descent compounds across runs (SLVP ideal §5.2).
+  const restored = restoredIntervalMs == null || !Number.isFinite(restoredIntervalMs) ? null : restoredIntervalMs;
   return new ProviderBudgetController({
     ...(hasCircuitBreaker
       ? {
@@ -451,11 +475,90 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
             ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
             initialIntervalMs,
             minIntervalMs,
+            ...(restored == null ? {} : { restoredIntervalMs: restored }),
           },
         }),
     pacingMode: "signal",
     ...(hasRetryBudget ? { retryBudget: { capacity: retryBudgetCapacity, refillPerSuccess: 0.2 } } : {}),
   });
+}
+
+// ─── Warm-start persistence (learned rate across runs) ───────────────────
+//
+// The controller's learned inter-request interval is persisted to the durable
+// `messages` STATE cursor so the AIMD descent compounds across runs instead of
+// resetting to the cold discovery seed every boundary (the ephemeral-state
+// binding constraint, adaptive-floor-diagnosis §C). The cursor already rides the
+// connector's durable state substrate; this adds two sibling fields next to
+// `last_update_time`. A staleness guard discards a learned interval older than
+// the guard window so a long-idle resume does not start aggressive against a
+// possibly-reset provider quota.
+const CHATGPT_PACING_STATE_INTERVAL_KEY = "pacing_interval_ms";
+const CHATGPT_PACING_STATE_RECORDED_AT_KEY = "pacing_recorded_at_ms";
+// Staleness guard: discard a learned interval older than this. Derived as a
+// multiple of the burst-tolerance horizon (2 × default initial interval), not a
+// new authored number — a resume past this gap is treated as a fresh cold start.
+const CHATGPT_PACING_STATE_STALENESS_MS = 8 * CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS;
+
+interface ChatGptPersistedPacing {
+  intervalMs: number;
+  recordedAtMs: number;
+}
+
+/** Read the persisted learned interval from the messages cursor, if present. */
+export function readChatGptPersistedPacing(state: CollectContext["state"] | undefined): ChatGptPersistedPacing | null {
+  const messages = (state as { messages?: Record<string, unknown> } | undefined)?.messages;
+  if (!messages || typeof messages !== "object") {
+    return null;
+  }
+  const intervalMs = (messages as Record<string, unknown>)[CHATGPT_PACING_STATE_INTERVAL_KEY];
+  const recordedAtMs = (messages as Record<string, unknown>)[CHATGPT_PACING_STATE_RECORDED_AT_KEY];
+  if (typeof intervalMs !== "number" || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return null;
+  }
+  if (typeof recordedAtMs !== "number" || !Number.isFinite(recordedAtMs)) {
+    return null;
+  }
+  return { intervalMs, recordedAtMs };
+}
+
+/**
+ * Decide the warm-start interval to restore: the persisted learned interval when
+ * it is fresh (within the staleness guard), else null (cold start). `now` is
+ * injectable for tests.
+ */
+export function resolveChatGptWarmStartInterval(
+  state: CollectContext["state"] | undefined,
+  now: () => number = Date.now,
+  stalenessMs: number = CHATGPT_PACING_STATE_STALENESS_MS
+): number | null {
+  const persisted = readChatGptPersistedPacing(state);
+  if (!persisted) {
+    return null;
+  }
+  if (now() - persisted.recordedAtMs > stalenessMs) {
+    return null;
+  }
+  return persisted.intervalMs;
+}
+
+/**
+ * Build the STATE event fields that persist the controller's final learned
+ * interval alongside the messages cursor, so the next run warm-starts from it.
+ * Returns an empty object when there is nothing to persist (no pacing).
+ */
+export function buildChatGptPacingStateFields(
+  providerBudget: ProviderBudgetController | null | undefined,
+  now: () => number = Date.now
+): Record<string, number> {
+  const snapshot = providerBudget?.snapshotPacing();
+  if (!snapshot) {
+    return {};
+  }
+  return {
+    [CHATGPT_PACING_STATE_INTERVAL_KEY]: snapshot.intervalMs,
+    [CHATGPT_PACING_STATE_RECORDED_AT_KEY]: now(),
+  };
 }
 
 /**
@@ -794,6 +897,65 @@ async function emitChatGptProviderBudgetTransitions({
       provider_budget: providerBudgetTransitionProgress(transition),
     });
   }
+}
+
+/** Requests/min from an interval (ms); 0 interval reads as 0 rate (never ∞). */
+function chatGptRatePerMin(intervalMs: number): number {
+  return intervalMs > 0 ? Math.round(60_000 / intervalMs) : 0;
+}
+
+/**
+ * Build the operator-legible `collection_rate` progress from the controller's
+ * pacing snapshot. PURE; carries no account content — only rate numbers and the
+ * last back-off reason (SLVP ideal §5: the controller's state is legible).
+ */
+export function buildChatGptCollectionRateProgress(
+  providerBudget: ProviderBudgetController | null | undefined
+): CollectionRateProgress | null {
+  const snapshot = providerBudget?.snapshotPacing();
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    ceiling_interval_ms: snapshot.minIntervalMs,
+    ceiling_rate_per_min: chatGptRatePerMin(snapshot.minIntervalMs),
+    current_interval_ms: snapshot.intervalMs,
+    effective_rate_per_min: chatGptRatePerMin(snapshot.intervalMs),
+    last_backoff: snapshot.lastBackoff
+      ? { at_interval_ms: snapshot.lastBackoff.atIntervalMs, reason: snapshot.lastBackoff.reason }
+      : null,
+    object: "collection_rate",
+  };
+}
+
+/**
+ * Emit a `collection_rate` progress event when the controller's interval has
+ * changed since the last emission (a speed-up or back-off TRANSITION), so the
+ * run trace shows the adaptation without one event per request. Returns the
+ * interval just emitted so the caller can track the last-seen value.
+ */
+async function emitChatGptCollectionRateOnChange(
+  emit: CollectContext["emit"] | undefined,
+  providerBudget: ProviderBudgetController | null | undefined,
+  lastEmittedIntervalMs: number | null
+): Promise<number | null> {
+  if (!(emit && providerBudget)) {
+    return lastEmittedIntervalMs;
+  }
+  const rate = buildChatGptCollectionRateProgress(providerBudget);
+  if (!rate || rate.current_interval_ms === lastEmittedIntervalMs) {
+    return lastEmittedIntervalMs;
+  }
+  const backoffSuffix = rate.last_backoff
+    ? `; last backed off to ${rate.last_backoff.at_interval_ms}ms (${rate.last_backoff.reason})`
+    : "";
+  await emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `Collection rate ${rate.effective_rate_per_min}/min (interval ${rate.current_interval_ms}ms; ceiling ${rate.ceiling_rate_per_min}/min)${backoffSuffix}`,
+    collection_rate: rate,
+  });
+  return rate.current_interval_ms;
 }
 
 function chatGptEndpointRoute(path: string): string {
@@ -1730,9 +1892,21 @@ async function selectConversationListsForRequestedStreams({
   return { conversationsToSync: [], messageDetailConversations: [] };
 }
 
-const CONVO_DETAIL_PAUSE_MIN_MS = 1500;
-const CONVO_DETAIL_PAUSE_MAX_MS = 3000;
+// ε ANTI-PHASE-LOCK JITTER, NOT a rate floor. The lane waits
+// `max(launchDelay≈εjitter, cooldown, pacingDelayHint())`; the GCRA rate-AIMD
+// (pacingDelayHint) is the SOLE rate authority. These bounds are a sub-second
+// ±ε noise band — a single serial collector has no competing flows for which a
+// jitter *floor* has any convergence role, so jitter survives only to break
+// timing patterns, never to cap throughput below the controller's learned rate.
+// (Legacy 1500/3000 was a hand-tuned manual throttle that overrode the
+// controller from below — the single biggest delete per the SLVP ideal.)
+const CONVO_DETAIL_PAUSE_MIN_MS = 0;
+const CONVO_DETAIL_PAUSE_MAX_MS = 150;
 const CONVO_DETAIL_INITIAL_CONCURRENCY = 1;
+// Concurrency is a HARD, NON-ADAPTIVE ceiling of 1 — not a second control
+// dimension. With max === initial === 1 the lane's concurrency-AIMD
+// (maybeIncreaseConcurrency) is inert dead code (`currentConcurrency >=
+// maxConcurrency` is always true); rate is the single adaptive variable.
 const CONVO_DETAIL_MAX_CONCURRENCY = 1;
 
 // ─── Cold-state A/B probe overrides (DEFAULTS FROZEN) ────────────────────
@@ -1749,9 +1923,11 @@ const CONVO_DETAIL_MAX_CONCURRENCY = 1;
 // against the REAL connector lane (with real DETAIL_GAP/cursor semantics)
 // without hand-editing — and committing — the frozen constants. They are
 // PROBE-ONLY knobs: when the env vars are unset/invalid the production
-// defaults (1 / 1 / 1500ms / 3000ms) hold exactly, so normal runs are
-// byte-for-byte unchanged. Do NOT set these in a production environment;
-// setting concurrency > 1 against a hot account increases 429 pressure.
+// defaults (concurrency 1 / 1, ε-jitter 0ms / 150ms) hold exactly. The pause
+// knobs now tune the ε anti-phase-lock band, NOT a rate floor — the GCRA
+// rate-AIMD is the rate authority. Do NOT set the concurrency probe in a
+// production environment; setting concurrency > 1 against a hot account
+// increases 429 pressure.
 const CHATGPT_DETAIL_INITIAL_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE";
 const CHATGPT_DETAIL_MAX_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE";
 const CHATGPT_DETAIL_PAUSE_MIN_MS_ENV = "PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE";
@@ -2435,12 +2611,17 @@ export async function runMessagesAndConversationsWithDetail(
   });
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
   let runCapDeferReason: ChatGptRunCapReason | null = null;
+  // Last collection-rate interval surfaced to the run trace, so the controller's
+  // state is emitted on speed-up/back-off TRANSITIONS, not once per request.
+  let lastEmittedRateIntervalMs: number | null = null;
   const gapKeys = new Set<string>();
   const hydratedKeys = new Set<string>();
   // Once run-cap or source-pressure deferral trips, all later conversation
   // details are local bookkeeping: emit durable DETAIL_GAP rows for the tail,
-  // then abort queued lane work so the paced launch delay is not paid for each
-  // no-op tail item.
+  // then abort queued lane work. With the launch-jitter floor deleted (now an ε
+  // band), draining the tail through the lane costs sub-ms per item, so this
+  // abort is a micro-optimization (queued tasks reject immediately), no longer
+  // the load-bearing mechanism that made tail iteration affordable.
   const tailStopController = new AbortController();
 
   async function emitConversationDetailGapOnce(c: ConversationListItem, gap: DetailGapMessage): Promise<void> {
@@ -2570,6 +2751,11 @@ export async function runMessagesAndConversationsWithDetail(
     if (err instanceof ChatGptRecoverableRetryExhaustedError) {
       providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
       await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
+      lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
+        deps.emit,
+        providerBudget,
+        lastEmittedRateIntervalMs
+      );
       observedRecoverablePressure = err;
       await deps.emit({
         type: "PROGRESS",
@@ -2637,6 +2823,11 @@ export async function runMessagesAndConversationsWithDetail(
     await processConversationDetail(deps, c, detail, emitConversation);
     providerBudget?.recordSuccess();
     await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
+    lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
+      deps.emit,
+      providerBudget,
+      lastEmittedRateIntervalMs
+    );
     hydratedKeys.add(c.id);
     coverage.hydratedKeys.push(c.id);
     // Count this hydration against the bounded-run cap. Done after a successful
@@ -2845,25 +3036,53 @@ async function recoverPendingConversationDetailGapPage(
   return { recovered, stoppedWithPending };
 }
 
+/**
+ * Run gap recovery before the forward walk. Returns void: recovery stopping with
+ * pending items (a transient source-pressure circuit trip) is NOT a reason to
+ * terminate the run — the un-hydrated recovery items are already durable
+ * `DETAIL_GAP` records and will be re-attempted next run. The caller decides
+ * whether to proceed to the forward walk based on the RUN BUDGET, not on
+ * recovery's transient stop (drain-within-budget, recovery-early-exit-diagnosis
+ * §5). The intra-recovery `stoppedWithPending` paging guard inside
+ * `recoverPendingConversationDetailGapPage` is unchanged; only this inter-phase
+ * decision changes.
+ */
 async function recoverPendingMessageDetailGapsBeforeForwardRun(
   deps: StreamDeps,
   wantsMessages: boolean,
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
-): Promise<boolean> {
+): Promise<void> {
   if (!wantsMessages) {
-    return false;
+    return;
   }
   const recovery = await recoverPendingConversationDetailGaps(deps, emitConversation, pacing);
-  if (!recovery.stoppedWithPending) {
-    return false;
+  if (recovery.stoppedWithPending) {
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message:
+        "Gap recovery stopped short with retryable gaps still pending; they remain durable DETAIL_GAP records and the run continues its forward walk while budget remains",
+    });
   }
-  await deps.emit({
-    type: "PROGRESS",
+}
+
+/**
+ * Emit a messages STATE event that carries ONLY the controller's learned pacing
+ * interval (cursor unchanged), so warm-start survives a run that defers before
+ * the forward walk wrote its own messages STATE. No-op when there is no pacing
+ * state to persist.
+ */
+function persistChatGptPacingStateOnly(deps: StreamDeps, priorMessagesCursor: string | null): void {
+  const pacingFields = buildChatGptPacingStateFields(deps.providerBudget);
+  if (Object.keys(pacingFields).length === 0) {
+    return;
+  }
+  deps.emit({
+    type: "STATE",
     stream: "messages",
-    message: "Stopped pending message-detail recovery because the current page still has retryable gaps",
+    cursor: { last_update_time: priorMessagesCursor, ...pacingFields },
   });
-  return true;
 }
 
 export async function runConversationsAndMessagesStreams(
@@ -2895,9 +3114,18 @@ export async function runConversationsAndMessagesStreams(
     await deps.emitRecord("conversations", buildConversationRecord(c, detail));
   };
 
-  if (
-    await recoverPendingMessageDetailGapsBeforeForwardRun(deps, wantsMessages, emitConversation, options.detailPacing)
-  ) {
+  await recoverPendingMessageDetailGapsBeforeForwardRun(deps, wantsMessages, emitConversation, options.detailPacing);
+  // Drain-within-budget: recovery stopping short on transient source pressure
+  // does NOT terminate the run (the deferred items stay durable DETAIL_GAPs).
+  // Proceed to the forward walk unless the RUN BUDGET is genuinely exhausted —
+  // the forward walk's list phase still advances the cursor and discovers new
+  // conversations even when the detail endpoint is under pressure
+  // (recovery-early-exit-diagnosis §5).
+  if (deps.runBudget?.shouldStop()) {
+    // Genuine budget exhaustion (not transient source pressure): defer to the
+    // next run, but persist the learned interval first so warm-start survives a
+    // recovery-only, budget-exhausted run.
+    persistChatGptPacingStateOnly(deps, priorMessagesCursor);
     return;
   }
 
@@ -2952,7 +3180,12 @@ export async function runConversationsAndMessagesStreams(
       deps.emit({
         type: "STATE",
         stream: "messages",
-        cursor: { last_update_time: maxMessagesUpdate || priorMessagesCursor || null },
+        // Persist the controller's learned interval alongside the cursor so the
+        // next run warm-starts from it (warm-start, SLVP ideal §5.2).
+        cursor: {
+          last_update_time: maxMessagesUpdate || priorMessagesCursor || null,
+          ...buildChatGptPacingStateFields(deps.providerBudget),
+        },
       });
     }
   }
@@ -3040,7 +3273,11 @@ if (isMainModule(import.meta.url)) {
         maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
         maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
       });
-      const providerBudget = resolveChatGptProviderBudget();
+      // Warm-start: restore the controller's learned interval from durable state
+      // (staleness-guarded) so the AIMD descent compounds across runs instead of
+      // cold-starting at the discovery seed every boundary.
+      const warmStartIntervalMs = resolveChatGptWarmStartInterval(state);
+      const providerBudget = resolveChatGptProviderBudget(process.env, warmStartIntervalMs);
 
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
