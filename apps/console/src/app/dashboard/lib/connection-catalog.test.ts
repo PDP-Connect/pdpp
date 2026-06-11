@@ -21,6 +21,7 @@ import {
   deploymentBlockedEntries,
   localCollectorEntries,
   localCollectorUnprovenEntries,
+  manualUploadConnectEntries,
   manualUploadPendingEntries,
   staticSecretConnectEntries,
   unsupportedNetworkEntries,
@@ -156,6 +157,20 @@ function manualUploadManifest(connectorId: string): CatalogManifestLike {
   };
 }
 
+function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
+  return {
+    ...manualUploadManifest(connectorId),
+    setup: {
+      modality: "manual_or_upload",
+      manual_or_upload: {
+        accepted_file_names: ["Timeline.json"],
+        import_dir_env_var: "GOOGLE_MAPS_TIMELINE_DIR",
+        label: "Timeline export",
+      },
+    },
+  };
+}
+
 test("static-secret manifests are connect entries, not flatly unsupported", async () => {
   // Static-secret connectors declare their setup form in the connector manifest.
   // The catalog must route every such manifest to the static_secret_connect
@@ -187,6 +202,23 @@ test("manual/upload manifests are import-pending entries, not unproven local col
   assert.equal(entry.proofGate, "manual_upload_capture_missing");
   assert.equal(entry.enrollmentKey, undefined);
   assert.deepEqual(manualUploadPendingEntries(catalog), [entry]);
+  assert.deepEqual(localCollectorUnprovenEntries(catalog), []);
+});
+
+test("manual/upload manifests with import env bindings are self-service import entries", () => {
+  const catalog = buildConnectorCatalog([manualUploadConnectManifest("google-maps")]);
+  const [entry] = catalog;
+  assert.ok(entry, "synthetic manual/upload manifest should produce a catalog entry");
+  assert.equal(entry.connectorKey, "google-maps");
+  assert.equal(entry.modality, "local_collector");
+  assert.equal(entry.setupModality, "manual_or_upload");
+  assert.equal(entry.supportState, "supported");
+  assert.equal(entry.disposition, "manual_upload_connect");
+  assert.equal(entry.nextStepKind, "provide_import_file");
+  assert.equal(entry.proofGate, null);
+  assert.equal(entry.enrollmentKey, undefined);
+  assert.deepEqual(manualUploadConnectEntries(catalog), [entry]);
+  assert.deepEqual(manualUploadPendingEntries(catalog), []);
   assert.deepEqual(localCollectorUnprovenEntries(catalog), []);
 });
 
@@ -264,6 +296,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     browserCollectorEntries(catalog),
     browserBoundRunbookEntries(catalog),
     staticSecretConnectEntries(catalog),
+    manualUploadConnectEntries(catalog),
     manualUploadPendingEntries(catalog),
     deploymentBlockedEntries(catalog),
     unsupportedNetworkEntries(catalog),
@@ -276,7 +309,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
   // Exactly the two static-secret connectors (gmail, github).
   assert.equal(staticSecretConnectEntries(catalog).length, 2, "gmail + github");
-  assert.ok(manualUploadPendingEntries(catalog).length >= 1, "file/import connectors");
+  assert.ok(manualUploadConnectEntries(catalog).length >= 1, "file/import connectors");
   assert.ok(unsupportedNetworkEntries(catalog).length >= 1);
 });
 

@@ -60,6 +60,7 @@ const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
   'doordash',
   'github',
   'gmail',
+  'google-maps',
   'google-takeout',
   'heb',
   'ical',

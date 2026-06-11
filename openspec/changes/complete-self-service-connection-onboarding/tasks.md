@@ -91,7 +91,7 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [x] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
 - [x] 9.10 Ensure manifest-declared manual/upload connectors project as manual/import setup rather than local-collector enrollment.
-- [ ] 9.11 Productize the generic owner file/artifact capture step for `manual_or_upload` connectors.
+- [x] 9.11 Productize the generic owner file/artifact capture step for `manual_or_upload` connectors.
 
 Progress note (9.4, 9.8): the owner-journey acceptance harness ships at
 `scripts/check-owner-journey-acceptance.mjs` (+ pure modules under
@@ -175,4 +175,24 @@ runtime binding is filesystem-backed. The planner returns
 `manual_upload_pending` / `provide_import_file`, and the source catalog projects
 that generically instead of deep-linking to local-device enrollment. Google Maps
 declares this setup posture in its manifest. The actual generic dashboard
-file/artifact capture primitive remains 9.11.
+file/artifact capture primitive is implemented in 9.11.
+
+Progress note (9.11): the reference now has a generic owner-session
+manual/upload setup primitive for manifest-declared `manual_or_upload`
+connectors with an import binding. The setup planner projects
+`manual_upload_connect` / `provide_import_file`; the console catalog links to a
+manifest-driven upload page with no connector-specific React branches; the
+owner-session route stores the uploaded artifact under a connection-scoped
+import directory, creates an invisible `draft` connection with
+`sourceKind: "manual"`, and starts the first run through the same connection
+run path as other setups. The run environment resolver injects the
+connection-scoped import directory for manual/upload runs, so schedulers and
+owner-triggered runs share one path. The durable setup-status page is now
+generic (`/dashboard/connect/status/:connectionId`) and distinguishes
+`setup_kind: manual_upload` from static-secret setup, so file imports never show
+"credential missing" copy. Owner-facing responses do not expose import
+directories, env-var plumbing, file contents, provider secrets, browser cookies,
+or bearer material. Deterministic route, planner, console, CLI, contract, and
+OpenSpec checks are green. Live end-to-end Google Maps Timeline import remains
+owner-data gated: it requires the owner to provide a real Timeline export and a
+deployed image containing this tranche.

@@ -908,6 +908,42 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
   });
 });
 
+test('setup formats a manual/upload connector with an owner upload endpoint', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({
+      body: {
+        object: 'owner_connection_intent',
+        connector_id: 'google-maps',
+        connector_key: 'google-maps',
+        connector_modality: 'local_collector',
+        connection_active: false,
+        deployment_readiness: { state: 'not_applicable', guidance: null, blockers: [] },
+        proof_gate: null,
+        runbook_path: null,
+        setup_modality: 'manual_or_upload',
+        support_state: 'supported',
+        next_step: {
+          kind: 'provide_import_file',
+          reason: 'Upload the owner-provided import file from the owner session.',
+          upload_endpoint: '/dashboard/connect/manual-upload/google-maps',
+        },
+      },
+    });
+    const code = await runOwnerAgent(['setup', 'google-maps', '--entrypoint', 'https://ref.test'], captured.io, {
+      fetch,
+      home,
+    });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /status: supported/);
+    assert.match(captured.stdout, /setup modality: manual_or_upload/);
+    assert.match(captured.stdout, /Next step: provide_import_file/);
+    assert.match(captured.stdout, /upload endpoint: \/dashboard\/connect\/manual-upload\/google-maps/);
+    assert.doesNotMatch(captured.stdout, /GOOGLE_MAPS_TIMELINE_DIR|import_dir|pdpp_owner_session/i);
+  });
+});
+
 test('setup formats an unsupported connector', async () => {
   await withTmpHome(async (home) => {
     await seedCredential(home);

@@ -1,5 +1,5 @@
 /**
- * Static-secret setup-status projection.
+ * Connection setup-status projection.
  *
  * A static-secret connection is born as an invisible `draft` connector instance
  * (see add-static-secret-owner-session-connect-path Decision 1): a real row
@@ -11,17 +11,16 @@
  * design Decision 12).
  *
  * This module is the pure projection that turns the durable state a draft (or
- * freshly-activated) connection already carries — its instance status, its
- * non-secret credential metadata, and its current/last run — into one
- * owner-facing setup-lifecycle view. It introduces NO new durable storage and NO
- * parallel onboarding enum: `setup_state` is projected onto the canonical
+ * freshly-activated) connection already carries into one owner-facing
+ * setup-lifecycle view. It introduces NO new durable storage and NO parallel
+ * onboarding enum: `setup_state` is projected onto the canonical
  * `ConnectionHealthState` taxonomy the rest of the dashboard already uses, so a
  * setup card and a Sources card cannot drift.
  *
  * The function is pure: no I/O, no clock reads. The caller (the owner-session
  * setup-status route) collects the durable evidence and passes it in. The output
  * carries only non-secret identifiers and metadata — never a provider secret,
- * owner/browser cookie, or grant-scoped bearer.
+ * uploaded artifact contents, owner/browser cookie, or grant-scoped bearer.
  */
 
 import type { ConnectionHealthState } from "./connection-health.ts";
@@ -69,6 +68,15 @@ export interface SetupStatusCredentialMetadata {
   readonly present: boolean;
 }
 
+export type ConnectionSetupKind = "manual_upload" | "static_secret" | "unknown";
+
+export interface SetupStatusMaterialMetadata {
+  readonly capturedAt?: string | null;
+  readonly kind: ConnectionSetupKind;
+  readonly label: string;
+  readonly present: boolean;
+}
+
 // A non-secret view of a run. `status` is the spine run status
 // (started/in_progress/succeeded/failed/...). `failureReason` is the terminal
 // failure reason when the run failed.
@@ -93,7 +101,7 @@ export interface SetupStatusInstance {
   readonly updatedAt: string | null;
 }
 
-export interface ProjectStaticSecretSetupStatusInput {
+export interface ProjectConnectionSetupStatusInput {
   // The currently in-flight run for this connection, if any
   // (`controller_active_runs` keyed on connector_instance_id).
   readonly activeRun: SetupStatusRun | null;
@@ -105,15 +113,19 @@ export interface ProjectStaticSecretSetupStatusInput {
   // The most recent run for this connection (terminal or otherwise), if known.
   // Used to surface a failed first sync after the run leaves the active table.
   readonly lastRun: SetupStatusRun | null;
+  readonly setupKind?: ConnectionSetupKind;
+  readonly setupMaterial?: SetupStatusMaterialMetadata | null;
 }
 
-export interface StaticSecretSetupStatus {
+export interface ConnectionSetupStatus {
   // The owner-entered account identity (e.g. mailbox), when known. Non-secret.
   readonly account_identity: string | null;
   readonly connection_id: string;
   readonly connector_id: string;
   readonly created_at: string | null;
-  // Non-secret credential presence/metadata.
+  // Back-compat static-secret metadata. Manual/upload setup surfaces should use
+  // `setup_material`; this remains for existing callers that still show the
+  // credential lifecycle.
   readonly credential: {
     readonly present: boolean;
     readonly credential_kind: string | null;
@@ -127,7 +139,7 @@ export interface StaticSecretSetupStatus {
     readonly reason: string;
     readonly remediation: string;
   } | null;
-  readonly object: "static_secret_setup_status";
+  readonly object: "connection_setup_status";
   // True while the connection is not yet a working connection (draft) and the
   // owner still has a setup action to complete or await.
   readonly pending: boolean;
@@ -140,6 +152,13 @@ export interface StaticSecretSetupStatus {
   } | null;
   // True while a first sync run is in flight.
   readonly running: boolean;
+  readonly setup_kind: ConnectionSetupKind;
+  readonly setup_material: {
+    readonly captured_at: string | null;
+    readonly kind: ConnectionSetupKind;
+    readonly label: string;
+    readonly present: boolean;
+  };
   // The owner-facing setup lifecycle label.
   readonly setup_state: StaticSecretSetupState;
   // The real connector-instance status (draft/active/paused/revoked).
@@ -158,7 +177,10 @@ function runIsRunning(run: SetupStatusRun | null): boolean {
   return run != null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
 }
 
-function accountIdentity(input: ProjectStaticSecretSetupStatusInput): string | null {
+export type ProjectStaticSecretSetupStatusInput = ProjectConnectionSetupStatusInput;
+export type StaticSecretSetupStatus = ConnectionSetupStatus;
+
+function accountIdentity(input: ProjectConnectionSetupStatusInput): string | null {
   const fields = input.instance.setupFields;
   const name = input.identityFieldName;
   if (!(fields && name)) {
@@ -171,7 +193,10 @@ function accountIdentity(input: ProjectStaticSecretSetupStatusInput): string | n
 // Failure remediation copy is owner-safe and operator-voiced: it names the
 // recovery step for a failed first sync without leaking the secret or the
 // provider error verbatim.
-function remediationForReason(reason: string): string {
+function remediationForReason(reason: string, setupKind: ConnectionSetupKind): string {
+  if (setupKind === "manual_upload") {
+    return "Choose a valid import file and start the first import again.";
+  }
   const lower = reason.toLowerCase();
   if (lower.includes("auth") || lower.includes("credential") || lower.includes("password") || lower.includes("login")) {
     return "Re-enter the provider credential and start the first sync again.";
@@ -180,8 +205,8 @@ function remediationForReason(reason: string): string {
 }
 
 function deriveSetupState(
-  input: ProjectStaticSecretSetupStatusInput,
-  hasCredential: boolean,
+  input: ProjectConnectionSetupStatusInput,
+  hasSetupMaterial: boolean,
   running: boolean
 ): StaticSecretSetupState {
   const status = input.instance.status;
@@ -198,7 +223,7 @@ function deriveSetupState(
     return "unknown";
   }
   // Draft lifecycle.
-  if (!hasCredential) {
+  if (!hasSetupMaterial) {
     return "awaiting_credential";
   }
   if (running) {
@@ -213,33 +238,62 @@ function deriveSetupState(
   return "first_sync_pending";
 }
 
-export function projectStaticSecretSetupStatus(input: ProjectStaticSecretSetupStatusInput): StaticSecretSetupStatus {
-  const hasCredential = input.credential?.present === true;
+function defaultSetupMaterial(
+  setupKind: ConnectionSetupKind,
+  credential: SetupStatusCredentialMetadata | null
+): SetupStatusMaterialMetadata {
+  if (setupKind === "manual_upload") {
+    return { kind: "manual_upload", label: "Import file", present: true, capturedAt: null };
+  }
+  if (setupKind === "static_secret") {
+    return {
+      kind: "static_secret",
+      label: "Provider credential",
+      present: credential?.present === true,
+      capturedAt: credential?.capturedAt ?? null,
+    };
+  }
+  return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
+}
+
+export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatusInput): ConnectionSetupStatus {
+  const setupKind = input.setupKind ?? "static_secret";
+  const material = input.setupMaterial ?? defaultSetupMaterial(setupKind, input.credential);
+  const hasSetupMaterial = material.present === true;
   // A run is "running" when the active-run table holds it OR the last-run
   // summary still reports a non-terminal status (covers the window between
   // submit and the active-run row landing).
   const running = runIsRunning(input.activeRun) || (input.activeRun == null && runIsRunning(input.lastRun));
-  const setupState = deriveSetupState(input, hasCredential, running);
+  const setupState = deriveSetupState(input, hasSetupMaterial, running);
   const run = input.activeRun ?? input.lastRun ?? null;
 
   const failed = setupState === "first_sync_failed";
   const failureReason =
     (failed ? (run?.failureReason ?? input.lastRun?.failureReason) : null) || (failed ? "first_sync_failed" : null);
-  const lastError = failureReason ? { reason: failureReason, remediation: remediationForReason(failureReason) } : null;
+  const lastError = failureReason
+    ? { reason: failureReason, remediation: remediationForReason(failureReason, setupKind) }
+    : null;
 
   return {
-    object: "static_secret_setup_status",
+    object: "connection_setup_status",
     connection_id: input.instance.connectorInstanceId,
     connector_id: input.instance.connectorId,
     display_name: input.instance.displayName,
     account_identity: accountIdentity(input),
     status: input.instance.status,
     setup_state: setupState,
+    setup_kind: setupKind,
+    setup_material: {
+      kind: material.kind,
+      label: material.label,
+      present: material.present,
+      captured_at: material.capturedAt ?? null,
+    },
     health_state: SETUP_STATE_HEALTH[setupState],
     pending: input.instance.status === "draft",
     running,
     credential: {
-      present: hasCredential,
+      present: input.credential?.present === true,
       credential_kind: input.credential?.credentialKind ?? null,
       captured_at: input.credential?.capturedAt ?? null,
     },
@@ -255,4 +309,8 @@ export function projectStaticSecretSetupStatus(input: ProjectStaticSecretSetupSt
     created_at: input.instance.createdAt,
     updated_at: input.instance.updatedAt,
   };
+}
+
+export function projectStaticSecretSetupStatus(input: ProjectStaticSecretSetupStatusInput): StaticSecretSetupStatus {
+  return projectConnectionSetupStatus({ ...input, setupKind: input.setupKind ?? "static_secret" });
 }

@@ -62,19 +62,21 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
       return 1;
     case "browser_collector_manual":
       return 2;
-    case "manual_upload_pending":
+    case "manual_upload_connect":
       return 3;
-    case "provider_auth_deployment_blocked":
+    case "manual_upload_pending":
       return 4;
+    case "provider_auth_deployment_blocked":
+      return 5;
     case "browser_bound_runbook":
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return 5;
+      return 6;
     case "api_network_unsupported":
     case "unknown_unsupported":
-      return 6;
-    default:
       return 7;
+    default:
+      return 8;
   }
 }
 
@@ -87,6 +89,8 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "static_secret_connect":
       return { label: "Add account", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+    case "manual_upload_connect":
+      return { label: "Import file", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
     case "manual_upload_pending":
       return { label: "Import flow pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "provider_auth_deployment_blocked":
@@ -110,6 +114,8 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
       return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
+    case "manual_upload_connect":
+      return "Upload an owner-exported file. Submit again with another export to add another import connection.";
     case "manual_upload_pending":
       return "This source imports an owner-provided file. The connector declares the import shape, but the dashboard file-capture step is not packaged yet.";
     case "provider_auth_deployment_blocked":
@@ -144,6 +150,11 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         href: `/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
         label: "Add account",
       };
+    case "manual_upload_connect":
+      return {
+        href: `/dashboard/connect/manual-upload/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Import file",
+      };
     case "provider_auth_deployment_blocked":
       return { href: "/dashboard/deployment", label: "Open deployment" };
     default:
@@ -161,6 +172,7 @@ export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSuppo
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
+    case "manual_upload_connect":
       return "self_service";
     case "browser_collector_manual":
     case "browser_bound_runbook":

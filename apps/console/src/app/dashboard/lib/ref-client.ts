@@ -1303,7 +1303,7 @@ export type StaticSecretSetupStateValue =
   | "revoked"
   | "unknown";
 
-export interface StaticSecretSetupStatus {
+export interface ConnectionSetupStatus {
   account_identity: string | null;
   connection_id: string;
   connector_id: string;
@@ -1319,7 +1319,7 @@ export interface StaticSecretSetupStatus {
     reason: string;
     remediation: string;
   } | null;
-  object: "static_secret_setup_status";
+  object: "connection_setup_status";
   pending: boolean;
   run: {
     finished_at: string | null;
@@ -1328,19 +1328,101 @@ export interface StaticSecretSetupStatus {
     status: string | null;
   } | null;
   running: boolean;
+  setup_kind: "manual_upload" | "static_secret" | "unknown";
+  setup_material: {
+    captured_at: string | null;
+    kind: "manual_upload" | "static_secret" | "unknown";
+    label: string;
+    present: boolean;
+  };
   setup_state: StaticSecretSetupStateValue;
   status: string;
   updated_at: string | null;
 }
 
-export async function getStaticSecretSetupStatus(
+export type StaticSecretSetupStatus = ConnectionSetupStatus;
+
+export async function getConnectionSetupStatus(
   connectionId: string,
   runId?: string | null
-): Promise<StaticSecretSetupStatus> {
+): Promise<ConnectionSetupStatus> {
   const suffix = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
   return (await refFetch(
     `/_ref/connections/${encodeURIComponent(connectionId)}/setup-status${suffix}`
-  )) as StaticSecretSetupStatus;
+  )) as ConnectionSetupStatus;
+}
+
+export function getStaticSecretSetupStatus(
+  connectionId: string,
+  runId?: string | null
+): Promise<StaticSecretSetupStatus> {
+  return getConnectionSetupStatus(connectionId, runId);
+}
+
+// ---------------------------------------------------------------------------
+// Manual/upload setup: owner-session file capture for manual_or_upload sources
+// ---------------------------------------------------------------------------
+
+export interface ManualUploadSetup {
+  accepted_file_names: string[];
+  connector_id: string;
+  description: string | null;
+  display_name: string;
+  help_text: string | null;
+  help_url: string | null;
+  label: string;
+  object: "manual_upload_setup";
+}
+
+export interface ManualUploadDraftConnection {
+  connection_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+  next_step: {
+    kind: "run_connection";
+    method: "POST";
+    reason?: string;
+    url: string;
+  };
+  object: "manual_upload_draft_connection";
+  status: "draft";
+  uploaded_file_name: string;
+}
+
+export async function getManualUploadSetup(connectorId: string): Promise<ManualUploadSetup> {
+  return (await refFetch(
+    `/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-setup`
+  )) as ManualUploadSetup;
+}
+
+export async function createManualUploadDraftConnection(
+  connectorId: string,
+  file: File
+): Promise<ManualUploadDraftConnection> {
+  const url = new URL(
+    `${getAsInternalUrl()}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`
+  );
+  url.searchParams.set("file_name", file.name);
+  const init = await withOwnerSessionCookie({
+    method: "POST",
+    body: file,
+    cache: "no-store",
+  });
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), init);
+  } catch (err) {
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 401 && isOwnerSessionRequiredBody(body)) {
+      await redirectToOwnerLogin();
+    }
+    throw new RefRequestError(describeErrorText(body, `manual upload failed (${res.status})`), res.status, body);
+  }
+  return res.json() as Promise<ManualUploadDraftConnection>;
 }
 
 export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter>> {

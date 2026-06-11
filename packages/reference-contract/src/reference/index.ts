@@ -591,6 +591,7 @@ const OwnerConnectionIntentNextStepSchema = {
     expires_at: { type: "string" },
     local_binding_name: { type: "string" },
     runbook_path: { type: "string" },
+    upload_endpoint: { type: "string" },
   },
   required: ["kind"],
 };

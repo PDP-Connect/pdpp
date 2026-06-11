@@ -181,6 +181,16 @@ async function createDraft(asUrl, cookie, connectorId, setupFields = { account_e
   });
 }
 
+async function createManualUploadDraft(asUrl, cookie, connectorId) {
+  const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`);
+  url.searchParams.set('file_name', 'Timeline.json');
+  return fetchJson(url, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream', Cookie: cookie },
+    body: '{"timelineObjects":[]}',
+  });
+}
+
 async function capture(asUrl, cookie, connectionId) {
   return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`, {
     method: 'POST',
@@ -283,10 +293,13 @@ test('pending static-secret setup is visible before any records are accepted', a
       // pending, awaiting credential, account identity surfaced.
       const awaiting = await getStatus(asUrl, cookie, connectionId);
       assert.equal(awaiting.status, 200, awaiting.text);
-      assert.equal(awaiting.body.object, 'static_secret_setup_status');
+      assert.equal(awaiting.body.object, 'connection_setup_status');
       assert.equal(awaiting.body.connection_id, connectionId);
       assert.equal(awaiting.body.connector_id, 'gmail');
       assert.equal(awaiting.body.status, 'draft');
+      assert.equal(awaiting.body.setup_kind, 'static_secret');
+      assert.equal(awaiting.body.setup_material.label, 'Provider credential');
+      assert.equal(awaiting.body.setup_material.present, false);
       assert.equal(awaiting.body.setup_state, 'awaiting_credential');
       assert.equal(awaiting.body.health_state, 'idle');
       assert.equal(awaiting.body.pending, true);
@@ -299,6 +312,7 @@ test('pending static-secret setup is visible before any records are accepted', a
       assert.equal(captured.status, 201, captured.text);
       const afterCapture = await getStatus(asUrl, cookie, connectionId);
       assert.equal(afterCapture.body.credential.present, true);
+      assert.equal(afterCapture.body.setup_material.present, true);
       assert.equal(afterCapture.body.credential.credential_kind, 'app_password');
       assert.equal(afterCapture.body.setup_state, 'first_sync_pending');
       assert.equal(afterCapture.body.pending, true);
@@ -316,6 +330,29 @@ test('pending static-secret setup is visible before any records are accepted', a
       assert.ok(!afterCapture.text.includes(SECRET), 'status must not echo the secret');
       clearActiveRun(connectionId);
     });
+  });
+});
+
+test('pending manual/upload setup is visible without credential semantics', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const created = await createManualUploadDraft(asUrl, cookie, 'google-maps');
+    assert.equal(created.status, 201, created.text);
+    const connectionId = created.body.connection_id;
+
+    const pending = await getStatus(asUrl, cookie, connectionId);
+    assert.equal(pending.status, 200, pending.text);
+    assert.equal(pending.body.object, 'connection_setup_status');
+    assert.equal(pending.body.connector_id, 'google-maps');
+    assert.equal(pending.body.status, 'draft');
+    assert.equal(pending.body.setup_kind, 'manual_upload');
+    assert.equal(pending.body.setup_state, 'first_sync_pending');
+    assert.equal(pending.body.setup_material.label, 'Import file (Timeline.json)');
+    assert.equal(pending.body.setup_material.present, true);
+    assert.equal(pending.body.credential.present, false);
+    assert.ok(!pending.text.includes('timelineObjects'), 'status must not echo uploaded file contents');
   });
 });
 

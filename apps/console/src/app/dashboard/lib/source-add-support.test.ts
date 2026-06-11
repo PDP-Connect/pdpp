@@ -15,8 +15,8 @@ import { buildSourceAddSupport, resolveSourceAddSupport } from "./source-add-sup
 const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const STATIC_SECRET_ROUTE_RE = /\/dashboard\/connect\/static-secret\/ynab/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/dashboard\/device-exporters\?connector=/;
+const MANUAL_UPLOAD_ROUTE_RE = /\/dashboard\/connect\/manual-upload\/google-maps/;
 const MOVES_INTO_DASHBOARD_RE = /moves into the dashboard/i;
-const IMPORT_PENDING_RE = /dashboard soon|not packaged yet|imports/i;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
@@ -67,7 +67,14 @@ function manualUploadManifest(connectorId: string): CatalogManifestLike {
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { filesystem: {} } },
-    setup: { modality: "manual_or_upload" },
+    setup: {
+      modality: "manual_or_upload",
+      manual_or_upload: {
+        accepted_file_names: ["Timeline.json"],
+        import_dir_env_var: "GOOGLE_MAPS_TIMELINE_DIR",
+        label: "Timeline export",
+      },
+    },
   };
 }
 
@@ -103,13 +110,13 @@ test("browser-bound source is packaged-path-pending with NO action (never demote
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 
-test("manual/upload source is packaged-path-pending with NO local-collector action", () => {
+test("manual/upload source supports self-service add with the generic upload route", () => {
   const map = buildSourceAddSupport([manualUploadManifest("google-maps")]);
   const support = resolveSourceAddSupport(map, "google-maps");
   assert.ok(support);
-  assert.equal(support.support, "packaged_path_pending");
-  assert.equal(support.action, null, "manual/upload add-new must not route to local-device enrollment");
-  assert.match(support.supportLabel, IMPORT_PENDING_RE);
+  assert.equal(support.support, "self_service");
+  assert.ok(support.action, "manual/upload add-new must expose the generic upload action");
+  assert.match(support.action.href, MANUAL_UPLOAD_ROUTE_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 

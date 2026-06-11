@@ -7881,7 +7881,7 @@
         "tags": [
           "records"
         ],
-        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`.",
+        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
         "parameters": [
           {
             "in": "path",
@@ -8124,6 +8124,10 @@
                           "count"
                         ]
                       }
+                    },
+                    "other_count": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -14573,6 +14577,7 @@
                                   "capture_static_secret",
                                   "open_provider_auth",
                                   "needs_deployment_config",
+                                  "provide_import_file",
                                   "manual_runbook",
                                   "unsupported"
                                 ]
@@ -16273,6 +16278,7 @@
                             "capture_static_secret",
                             "open_provider_auth",
                             "needs_deployment_config",
+                            "provide_import_file",
                             "manual_runbook",
                             "unsupported"
                           ]
@@ -16302,6 +16308,9 @@
                           "type": "string"
                         },
                         "runbook_path": {
+                          "type": "string"
+                        },
+                        "upload_endpoint": {
                           "type": "string"
                         }
                       },

@@ -1,4 +1,4 @@
-// Reference-only owner-session static-secret SETUP-STATUS read.
+// Reference-only owner-session connection SETUP-STATUS read.
 //
 // A static-secret connection is born as an invisible `draft` connector instance
 // that every connection read surface hides until first ingest flips it to
@@ -10,9 +10,9 @@
 //
 // This route is the durable, owner-session-only read that makes pending setup
 // visible. It resolves the draft (or freshly-active) connection by
-// connector_instance_id, reads the non-secret credential metadata and the
+// connector_instance_id, reads the non-secret setup evidence and the
 // current/last run, and projects them through the pure
-// `projectStaticSecretSetupStatus` module. It introduces NO new durable storage
+// `projectConnectionSetupStatus` module. It introduces NO new durable storage
 // and NO parallel onboarding enum: the owner-facing `setup_state` projects onto
 // the canonical `ConnectionHealthState` taxonomy.
 //
@@ -20,7 +20,12 @@
 // It never accepts or returns a provider secret, owner/browser cookie, or
 // grant-scoped bearer.
 
-import { projectStaticSecretSetupStatus, type SetupStatusRun } from "../../runtime/static-secret-setup-status.ts";
+import {
+  type ConnectionSetupKind,
+  projectConnectionSetupStatus,
+  type SetupStatusMaterialMetadata,
+  type SetupStatusRun,
+} from "../../runtime/static-secret-setup-status.ts";
 import { type ConnectorManifestLike, staticSecretCredentialCaptureFromManifest } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
@@ -127,6 +132,53 @@ function setupFieldsFromBinding(sourceBinding: unknown): Record<string, unknown>
   return fields as Record<string, unknown>;
 }
 
+function bindingKind(sourceBinding: unknown): string | null {
+  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
+    return null;
+  }
+  const kind = (sourceBinding as { kind?: unknown }).kind;
+  return typeof kind === "string" ? kind : null;
+}
+
+function setupKindFromBinding(sourceBinding: unknown): ConnectionSetupKind {
+  const kind = bindingKind(sourceBinding);
+  if (kind === "manual_upload" || kind === "manual_upload_draft") {
+    return "manual_upload";
+  }
+  if (kind === "static_secret_draft") {
+    return "static_secret";
+  }
+  return "unknown";
+}
+
+function setupMaterialFromBinding(
+  setupKind: ConnectionSetupKind,
+  sourceBinding: unknown,
+  credentialMeta: CredentialMetadata | null
+): SetupStatusMaterialMetadata {
+  if (setupKind === "manual_upload") {
+    const uploaded =
+      sourceBinding && typeof sourceBinding === "object"
+        ? (sourceBinding as { uploaded_file_name?: unknown }).uploaded_file_name
+        : null;
+    return {
+      kind: "manual_upload",
+      label: typeof uploaded === "string" && uploaded.length > 0 ? `Import file (${uploaded})` : "Import file",
+      present: true,
+      capturedAt: null,
+    };
+  }
+  if (setupKind === "static_secret") {
+    return {
+      kind: "static_secret",
+      label: "Provider credential",
+      present: credentialMeta?.present === true,
+      capturedAt: credentialMeta?.capturedAt ?? null,
+    };
+  }
+  return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
+}
+
 const TERMINAL_FAILURE = new Set(["failed", "cancelled", "abandoned"]);
 
 // Resolve the run evidence for the setup-status projection.
@@ -177,8 +229,9 @@ function firstQueryValue(value: unknown): string | null {
 
 // GET /_ref/connections/:connectorInstanceId/setup-status
 //
-// Owner-session-only. Projects the visible setup lifecycle for one static-secret
-// connection (draft or active). No secret is accepted or returned.
+// Owner-session-only. Projects the visible setup lifecycle for one connection
+// (draft or active). No secret, uploaded file content, or internal path is
+// accepted or returned.
 export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStaticSecretSetupStatusContext): void {
   app.get(
     "/_ref/connections/:connectorInstanceId/setup-status",
@@ -209,7 +262,9 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
         }
         const manifest = await ctx.resolveRegisteredConnectorManifest(instance.connectorId);
         const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
-        const credentialMeta = await credentialStore.getMetadata(namespace.connectorInstanceId);
+        const setupKind = setupKindFromBinding(instance.sourceBinding);
+        const credentialMeta =
+          setupKind === "static_secret" ? await credentialStore.getMetadata(namespace.connectorInstanceId) : null;
         const requestedRunId = firstQueryValue(req.query?.run_id);
         const { activeRun, lastRun } = await resolveRunEvidence(
           ctx,
@@ -218,7 +273,7 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
           requestedRunId
         );
 
-        const status = projectStaticSecretSetupStatus({
+        const status = projectConnectionSetupStatus({
           instance: {
             connectorInstanceId: instance.connectorInstanceId,
             connectorId: ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId,
@@ -238,6 +293,8 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
           activeRun,
           lastRun,
           identityFieldName: identityFieldName(manifest),
+          setupKind,
+          setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
         });
 
         res.status(200).json(status);

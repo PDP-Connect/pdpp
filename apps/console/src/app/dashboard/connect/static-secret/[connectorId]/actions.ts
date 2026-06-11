@@ -38,8 +38,8 @@ function formRetryHref(connectorId: string, error: string, setupFields: Record<s
 // owner lands here — a bookmarkable URL backed by the connection's real
 // draft/active/run state — instead of bouncing back to the form with a
 // transient query-string notice that vanishes on the next navigation.
-function statusHref(connectorId: string, connectionId: string, runId: string | null, identity?: string | null): string {
-  const base = `/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}/status/${encodeURIComponent(connectionId)}`;
+function statusHref(connectionId: string, runId: string | null, identity?: string | null): string {
+  const base = `/dashboard/connect/status/${encodeURIComponent(connectionId)}`;
   const query = new URLSearchParams();
   if (runId) {
     query.set("run_id", runId);
@@ -118,12 +118,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
-    target = statusHref(
-      connectorId,
-      draft.connection_id,
-      started.run_id ?? null,
-      captured.identity?.account_identity ?? null
-    );
+    target = statusHref(draft.connection_id, started.run_id ?? null, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       // Synchronous validation rejected the credential — nothing was stored, no
@@ -134,7 +129,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       // The draft exists but a later step (capture/run) failed for a non-
       // validation reason; the owner can see and repair it on its durable status
       // surface, so the submitted account is never invisible.
-      target = statusHref(connectorId, draftConnectionId, null);
+      target = statusHref(draftConnectionId, null);
     } else {
       target = pageHref(connectorId, { error: errorMessage(err) });
     }

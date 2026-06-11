@@ -377,6 +377,9 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
         if (nextStepKind === "capture_static_secret") {
           nextStep.capture_endpoint = `/dashboard/connect/static-secret/${encodeURIComponent(connectorKey)}`;
         }
+        if (nextStepKind === "provide_import_file") {
+          nextStep.upload_endpoint = `/dashboard/connect/manual-upload/${encodeURIComponent(connectorKey)}`;
+        }
         if (plan.runbookPath) {
           nextStep.runbook_path = plan.runbookPath;
         }

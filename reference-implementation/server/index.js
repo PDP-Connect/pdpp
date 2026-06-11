@@ -6,6 +6,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
@@ -394,6 +396,7 @@ import {
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
 import { mountRefStaticSecretSetupStatus } from './routes/ref-static-secret-setup-status.ts';
+import { mountRefManualUploadDraftConnection } from './routes/ref-manual-upload-draft-connection.ts';
 import { mountRefBrowserEnrollmentShell } from './routes/ref-browser-enrollment-shell.ts';
 import {
   createInProcessPendingAuthStore,
@@ -1320,6 +1323,35 @@ function buildControllerStaticSecretRunEnvResolver() {
       isStaticSecretConnector,
       buildConnectionScopedSecretEnv,
     });
+  };
+}
+
+function buildControllerManualUploadRunEnvResolver() {
+  return async ({ connectorInstanceId }) => {
+    const instance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
+    const binding = instance?.sourceBinding;
+    if (
+      !binding ||
+      typeof binding !== 'object' ||
+      (binding.kind !== 'manual_upload_draft' && binding.kind !== 'manual_upload') ||
+      typeof binding.import_dir !== 'string' ||
+      typeof binding.import_dir_env_var !== 'string'
+    ) {
+      return null;
+    }
+    return { [binding.import_dir_env_var]: binding.import_dir };
+  };
+}
+
+function buildConnectionScopedRunEnvResolver() {
+  const staticSecretResolver = buildControllerStaticSecretRunEnvResolver();
+  const manualUploadResolver = buildControllerManualUploadRunEnvResolver();
+  return async (args) => {
+    const staticSecretEnv = await staticSecretResolver(args);
+    if (staticSecretEnv !== null) {
+      return staticSecretEnv;
+    }
+    return manualUploadResolver(args);
   };
 }
 
@@ -3423,6 +3455,28 @@ function buildAsApp(opts = {}) {
     setReferenceTraceId,
   });
 
+  {
+    const resolvedDbPath = opts.dbPath || DB_PATH;
+    const importBaseDir =
+      resolvedDbPath !== ':memory:'
+        ? path.join(path.dirname(resolvedDbPath), 'imports')
+        : path.join(os.tmpdir(), 'pdpp-imports');
+    mountRefManualUploadDraftConnection(app, {
+      requireOwnerSession: ownerAuth.requireOwnerSession,
+      handleError,
+      pdppError,
+      canonicalConnectorKey,
+      createRequestConnectorInstanceStore,
+      resolveRegisteredConnectorManifest,
+      getOwnerSubjectId,
+      createTraceContext,
+      emitSpineEvent,
+      ensureRequestId,
+      setReferenceTraceId,
+      importBaseDir,
+    });
+  }
+
   // Browser-enrollment shell: pre-credential draft for in-dashboard browser-bound
   // setup. Creates an invisible shell with TTL; owner can also abandon explicitly.
   // Shell transitions to active when an enrollment run captures source identity;
@@ -4674,7 +4728,7 @@ export async function startServer(opts = {}) {
       registerNonce: (args) => runTargetRegistry.registerNonce(args),
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
     },
-    resolveStaticSecretRunEnv: buildControllerStaticSecretRunEnvResolver(),
+    resolveStaticSecretRunEnv: buildConnectionScopedRunEnvResolver(),
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   let schedulerManager = null;
@@ -5051,16 +5105,14 @@ function createReferenceSchedulerManager({
   let stopped = false;
   let refreshChain = Promise.resolve();
 
-  // The SAME connection-scoped static-secret resolver the controller uses for
-  // manual runs (design Decision 5), bound to the scheduler's owner subject.
-  // Scheduled and manual runs MUST resolve credentials identically: a store
-  // row satisfies both, and a scheduled launch never falls back to a
-  // process-global (possibly empty-string) secret when a stored credential
-  // exists. See openspec/specs/reference-connector-instances — "Credential is
-  // recoverable only by the orchestrator" (scheduled-run scenario).
-  const staticSecretRunEnvResolver = buildControllerStaticSecretRunEnvResolver();
-  const resolveScheduledStaticSecretRunEnv = ({ connectorId, connectorInstanceId }) =>
-    staticSecretRunEnvResolver({ connectorId, connectorInstanceId, ownerSubjectId });
+  // The SAME connection-scoped setup-material resolver the controller uses for
+  // manual runs, bound to the scheduler's owner subject. Scheduled and manual
+  // runs MUST resolve credentials/import bindings identically: a connection row
+  // satisfies both, and a scheduled launch never falls back to process-global
+  // setup material when a connection-scoped binding exists.
+  const connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver();
+  const resolveScheduledConnectionScopedRunEnv = ({ connectorId, connectorInstanceId }) =>
+    connectionScopedRunEnvResolver({ connectorId, connectorInstanceId, ownerSubjectId });
 
   async function buildConnectors() {
     const schedules = await Promise.resolve(schedulerStore.listSchedules());
@@ -5135,7 +5187,7 @@ function createReferenceSchedulerManager({
       rsUrl: runtimeContext.rsUrl,
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
-      resolveStaticSecretRunEnv: resolveScheduledStaticSecretRunEnv,
+      resolveStaticSecretRunEnv: resolveScheduledConnectionScopedRunEnv,
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by
         // construction: getSyncState keys storage off its storage-target

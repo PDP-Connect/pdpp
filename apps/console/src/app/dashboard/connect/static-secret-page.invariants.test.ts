@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const PAGE_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/page.tsx", import.meta.url));
 const ACTION_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/actions.ts", import.meta.url));
-const STATUS_PAGE_FILE = fileURLToPath(
+const STATUS_PAGE_FILE = fileURLToPath(new URL("./status/[connectionId]/page.tsx", import.meta.url));
+const LEGACY_STATUS_PAGE_FILE = fileURLToPath(
   new URL("./static-secret/[connectorId]/status/[connectionId]/page.tsx", import.meta.url)
 );
 
@@ -30,21 +31,23 @@ const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
 const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields\)/;
 const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
 const RUN_NOW = /runConnectionNow\(draft\.connection_id\)/;
-const STATUS_SURFACE_PATH = /\/dashboard\/connect\/static-secret\/[^\n]*\/status\//;
+const STATUS_SURFACE_PATH = /\/dashboard\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;
 const NO_NOTICE_REDIRECT = /notice:\s*"first_sync_started"/;
 const NO_LEGACY_BRANCH = /isStaticSecretConnector/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 const NO_BEARER = /Authorization:\s*`Bearer/;
 
-const STATUS_FETCH = /getStaticSecretSetupStatus\(/;
+const STATUS_FETCH = /getConnectionSetupStatus\(/;
 const STATUS_SETUP_STATE = /setup_state/;
+const STATUS_SETUP_MATERIAL = /setup_material/;
 const STATUS_FAILED_STATE = /first_sync_failed/;
 const STATUS_LAST_ERROR = /last_error/;
 const STATUS_CONNECTION_ID = /connection_id/;
 const STATUS_NOT_FOUND = /notFound\(\)/;
 const STATUS_NO_PASSWORD_INPUT = /type="password"/;
 const STATUS_NO_SECRET_INPUT = /name="secret"/;
+const LEGACY_REDIRECT = /\/dashboard\/connect\/status\/\$\{encodeURIComponent/;
 
 test("static-secret page is an owner-session capture form, not an agent secret prompt", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -93,6 +96,7 @@ test("durable setup-status page reads the connection-scoped status route and sur
   // Surfaces the projected lifecycle (running/pending/failed/active) and the
   // identifiers the owner needs, with no provider-specific branches.
   assert.match(src, STATUS_SETUP_STATE);
+  assert.match(src, STATUS_SETUP_MATERIAL);
   assert.match(src, STATUS_FAILED_STATE);
   assert.match(src, STATUS_LAST_ERROR);
   assert.match(src, STATUS_CONNECTION_ID);
@@ -103,4 +107,10 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
   assert.doesNotMatch(src, STATUS_NO_PASSWORD_INPUT);
   assert.doesNotMatch(src, STATUS_NO_SECRET_INPUT);
+});
+
+test("legacy static-secret setup-status URL redirects to the generic setup-status surface", async () => {
+  const src = await readFile(LEGACY_STATUS_PAGE_FILE, "utf8");
+  assert.match(src, LEGACY_REDIRECT);
+  assert.doesNotMatch(src, STATUS_FETCH);
 });

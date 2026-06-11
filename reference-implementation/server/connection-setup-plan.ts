@@ -32,6 +32,7 @@ export type ConnectorCatalogDisposition =
   | "browser_collector_manual"
   | "browser_bound_runbook"
   | "static_secret_connect"
+  | "manual_upload_connect"
   | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
   | "provider_auth_proof_gated"
@@ -63,6 +64,14 @@ export interface ConnectorManifestLike {
       readonly credential_kind?: string | null;
       readonly label?: string | null;
       readonly submit_label?: string | null;
+    } | null;
+    readonly manual_or_upload?: {
+      readonly accepted_file_names?: readonly string[] | null;
+      readonly description?: string | null;
+      readonly help_text?: string | null;
+      readonly help_url?: string | null;
+      readonly import_dir_env_var?: string | null;
+      readonly label?: string | null;
     } | null;
     readonly modality?: string | null;
     readonly deployment_config?: readonly string[] | null;
@@ -107,6 +116,15 @@ export interface StaticSecretCredentialCaptureSetup {
   readonly kind: string;
   readonly label: string;
   readonly submitLabel: string | null;
+}
+
+export interface ManualUploadSetup {
+  readonly acceptedFileNames: readonly string[];
+  readonly description: string | null;
+  readonly helpText: string | null;
+  readonly helpUrl: string | null;
+  readonly importDirEnvVar: string | null;
+  readonly label: string;
 }
 
 export interface ConnectorSetupDeploymentBlocker {
@@ -320,6 +338,26 @@ export function staticSecretCredentialCaptureFromManifest(
   };
 }
 
+export function manualUploadSetupFromManifest(
+  manifest: ConnectorManifestLike | null | undefined
+): ManualUploadSetup | null {
+  if (manifest?.setup?.modality !== "manual_or_upload") {
+    return null;
+  }
+  const meta = manifest.setup.manual_or_upload;
+  const acceptedFileNames = Array.isArray(meta?.accepted_file_names)
+    ? meta.accepted_file_names.filter((value): value is string => cleanString(value) !== null)
+    : [];
+  return {
+    acceptedFileNames,
+    description: cleanString(meta?.description),
+    helpText: cleanString(meta?.help_text),
+    helpUrl: cleanString(meta?.help_url),
+    importDirEnvVar: cleanString(meta?.import_dir_env_var),
+    label: cleanString(meta?.label) ?? "Import file",
+  };
+}
+
 export function expectedStaticSecretCredentialKind(
   _connectorId: string,
   manifest?: ConnectorManifestLike | null
@@ -525,6 +563,29 @@ export function buildConnectionSetupPlan(args: {
     setupModality === "static_secret" ? credentialValidationMode(connectorKey) : "first_sync";
 
   if (setupModality === "manual_or_upload") {
+    const uploadSetup = manualUploadSetupFromManifest(args.manifest);
+    if (uploadSetup?.importDirEnvVar) {
+      return {
+        catalogDisposition: "manual_upload_connect",
+        connectorKey,
+        connectorModality,
+        deploymentReadiness,
+        displayName,
+        nextStepKind: "provide_import_file",
+        ownerAgentIntent: {
+          method: "POST",
+          nextStepKind: "provide_import_file",
+          reason:
+            "Upload the owner-provided import file from the owner session. The connection activates after the first accepted ingest.",
+          status: "supported",
+        },
+        proofGate: null,
+        runbookPath: null,
+        setupModality,
+        validationMode,
+        supportState: "supported",
+      };
+    }
     return {
       catalogDisposition: "manual_upload_pending",
       connectorKey,

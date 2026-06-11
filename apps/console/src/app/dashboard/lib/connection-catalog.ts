@@ -24,6 +24,7 @@ import {
   canonicalConnectorKey,
   classifyConnectorIntentModality,
   enrollmentKeyForCanonicalKey,
+  type StaticSecretSetupFieldLike,
 } from "pdpp-reference-implementation/connection-setup-plan";
 
 /**
@@ -47,7 +48,23 @@ export interface CatalogManifestLike {
   name?: string | null;
   runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
   setup?: {
+    credential_capture?: {
+      credential_kind?: string | null;
+      description?: string | null;
+      fields?: readonly StaticSecretSetupFieldLike[] | null;
+      kind?: string | null;
+      label?: string | null;
+      submit_label?: string | null;
+    } | null;
     deployment_config?: readonly string[] | null;
+    manual_or_upload?: {
+      accepted_file_names?: readonly string[] | null;
+      description?: string | null;
+      help_text?: string | null;
+      help_url?: string | null;
+      import_dir_env_var?: string | null;
+      label?: string | null;
+    } | null;
     modality?: string | null;
   } | null;
 }
@@ -72,9 +89,13 @@ export type CatalogModality = ConnectorIntentModality;
  *   A real owner connect route exists; the picker links to that owner-session
  *   capture form, not to local-device enrollment, and the connection stays
  *   hidden until first ingest accepts records.
+ * - `manual_upload_connect` — a manifest-declared file/import connector whose
+ *   owner-session upload route is packaged; the picker links to the generic
+ *   file-capture form and the connection stays hidden until first ingest
+ *   accepts records.
  * - `manual_upload_pending` — a manifest-declared file/import connector. The
- *   connector owns the accepted artifact shape, but the generic dashboard
- *   capture step is not packaged yet.
+ *   connector owns the accepted artifact shape, but no generic capture env
+ *   binding is declared yet.
  * - `api_network_unsupported` — no owner connect route; visible with its reason,
  *   not creatable here.
  * - `unknown_unsupported` — a manifest with no recognized binding; surfaced
@@ -85,12 +106,12 @@ export type CatalogDisposition = ConnectorCatalogDisposition;
 export interface ConnectorCatalogEntry {
   /** Canonical bare connector key (registry-URL prefix stripped). */
   connectorKey: string;
+  /** Non-secret deployment blockers, separated from per-connection owner action. */
+  deploymentReadiness: ConnectorSetupDeploymentReadiness;
   /** Owner-meaningful display name from the manifest, falling back to the key. */
   displayName: string;
   /** What the console can honestly do with this connector today. */
   disposition: CatalogDisposition;
-  /** Non-secret deployment blockers, separated from per-connection owner action. */
-  deploymentReadiness: ConnectorSetupDeploymentReadiness;
   /**
    * The `?connector=` value to deep-link into the enrollment form, present only
    * for dispositions the console can actually start (`local_collector_enroll`,
@@ -100,14 +121,14 @@ export interface ConnectorCatalogEntry {
   enrollmentKey?: string;
   /** Binding-derived modality. */
   modality: CatalogModality;
-  /** The owner setup modality selected by the shared planner. */
-  setupModality: ConnectorSetupModality;
   /** The next owner step selected by the shared planner. */
   nextStepKind: ConnectorSetupNextStepKind;
   /** Proof gate blocking support, if any. */
   proofGate: string | null;
   /** Optional runbook path surfaced in advanced/details copy. */
   runbookPath: string | null;
+  /** The owner setup modality selected by the shared planner. */
+  setupModality: ConnectorSetupModality;
   /** Support state selected by the shared planner. */
   supportState: ConnectorSetupSupportState;
 }
@@ -201,6 +222,11 @@ export function browserBoundRunbookEntries(catalog: readonly ConnectorCatalogEnt
  */
 export function staticSecretConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "static_secret_connect");
+}
+
+/** Manual/file import entries with a packaged owner upload-and-run path. */
+export function manualUploadConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter((e) => e.disposition === "manual_upload_connect");
 }
 
 /** Manual/file import entries awaiting a generic owner file-capture path. */

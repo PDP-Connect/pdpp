@@ -26,6 +26,7 @@
         "location-history.json",
         "Records.json"
       ],
+      "import_dir_env_var": "GOOGLE_MAPS_TIMELINE_DIR",
       "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
       "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account password or app password is used."
     }

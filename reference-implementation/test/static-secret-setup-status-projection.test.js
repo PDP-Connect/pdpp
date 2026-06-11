@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { projectStaticSecretSetupStatus } from '../runtime/static-secret-setup-status.ts';
+import { projectConnectionSetupStatus, projectStaticSecretSetupStatus } from '../runtime/static-secret-setup-status.ts';
 
 // Pure-projection coverage for the static-secret setup-status view. No I/O — the
 // route collects the durable evidence and passes it in. These lock the mapping
@@ -30,6 +30,10 @@ test('draft without a credential projects awaiting_credential -> idle', () => {
   assert.equal(status.pending, true);
   assert.equal(status.running, false);
   assert.equal(status.account_identity, 'owner@example.com');
+  assert.equal(status.object, 'connection_setup_status');
+  assert.equal(status.setup_kind, 'static_secret');
+  assert.equal(status.setup_material.label, 'Provider credential');
+  assert.equal(status.setup_material.present, false);
   assert.equal(status.credential.present, false);
   assert.equal(status.last_error, null);
 });
@@ -45,6 +49,7 @@ test('draft with a credential and an in-flight run projects first_sync_running',
   assert.equal(status.setup_state, 'first_sync_running');
   assert.equal(status.health_state, 'idle');
   assert.equal(status.running, true);
+  assert.equal(status.setup_material.present, true);
   assert.equal(status.run.run_id, 'run_1');
 });
 
@@ -114,4 +119,31 @@ test('missing identity field name yields a null account_identity, never a throw'
   });
   assert.equal(status.account_identity, null);
   assert.equal(status.setup_state, 'awaiting_credential');
+});
+
+test('manual/upload draft projects captured import file without credential semantics', () => {
+  const status = projectConnectionSetupStatus({
+    instance: {
+      ...baseInstance,
+      connectorId: 'google-maps',
+      displayName: 'Google Maps Timeline Import',
+      setupFields: null,
+    },
+    credential: null,
+    activeRun: { runId: 'run_import', status: 'in_progress', startedAt: '2026-06-10T00:02:00.000Z' },
+    lastRun: null,
+    setupKind: 'manual_upload',
+    setupMaterial: {
+      kind: 'manual_upload',
+      label: 'Import file (Timeline.json)',
+      present: true,
+      capturedAt: null,
+    },
+  });
+  assert.equal(status.object, 'connection_setup_status');
+  assert.equal(status.setup_kind, 'manual_upload');
+  assert.equal(status.setup_state, 'first_sync_running');
+  assert.equal(status.setup_material.label, 'Import file (Timeline.json)');
+  assert.equal(status.setup_material.present, true);
+  assert.equal(status.credential.present, false);
 });

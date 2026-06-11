@@ -174,6 +174,7 @@ const NEXT_STEP_DETAIL_KEYS = [
   ['enrollment_code', 'enrollment code'],
   ['local_binding_name', 'local binding name'],
   ['capture_endpoint', 'capture endpoint'],
+  ['upload_endpoint', 'upload endpoint'],
   ['authorization_url', 'authorization url'],
   ['runbook_path', 'runbook'],
   ['expires_at', 'expires'],

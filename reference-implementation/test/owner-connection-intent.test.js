@@ -527,6 +527,31 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
   });
 });
 
+test('owner-agent initiating a manual/upload connector gets a non-secret upload step', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    await registerConnector(asUrl, loadPackageManifest('google_maps'));
+    const { status, body, resp } = await createIntent(rsUrl, ownerToken, { connector_id: 'google-maps' });
+    assert.equal(status, 201);
+    assert.equal(body.connector_key, 'google-maps');
+    assert.equal(body.connector_modality, 'local_collector');
+    assert.equal(body.setup_modality, 'manual_or_upload');
+    assert.equal(body.support_state, 'supported');
+    assert.equal(body.proof_gate, null);
+    assert.equal(body.next_step.kind, 'provide_import_file');
+    assert.equal(body.next_step.upload_endpoint, '/dashboard/connect/manual-upload/google-maps');
+    assert.equal(body.next_step.enrollment_code, undefined);
+    assert.equal(body.next_step.capture_endpoint, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /GOOGLE_MAPS_TIMELINE_DIR|import_dir|pdpp_owner_session/i);
+
+    const audit = findIntentAuditEvent(resp);
+    assert.equal(audit.actor_type, 'owner_agent');
+    assert.equal(audit.data?.connector_key, 'google-maps');
+    assert.equal(audit.data?.connector_modality, 'local_collector');
+    assert.equal(audit.data?.next_step_kind, 'provide_import_file');
+  });
+});
+
 test('owner-agent initiating provider authorization returns deployment blockers, not secrets or fake support', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
@@ -703,6 +728,7 @@ test('owner-agent intent contract exposes the setup-plan next-step vocabulary', 
     'capture_static_secret',
     'open_provider_auth',
     'needs_deployment_config',
+    'provide_import_file',
     'manual_runbook',
     'unsupported',
   ]);

@@ -97,6 +97,32 @@ test('setup planner treats manifest-declared manual/upload connectors as import 
   assert.equal(plan.enrollmentKey, undefined);
 });
 
+test('setup planner supports manual/upload connectors that declare an import env binding', () => {
+  const plan = buildConnectionSetupPlan({
+    connectorKey: 'google-maps',
+    manifest: manifest('google-maps', { filesystem: { required: true } }, {
+      setup: {
+        modality: 'manual_or_upload',
+        manual_or_upload: {
+          import_dir_env_var: 'GOOGLE_MAPS_TIMELINE_DIR',
+          accepted_file_names: ['Timeline.json'],
+          label: 'Timeline export',
+        },
+      },
+    }),
+  });
+  assert.equal(plan.connectorModality, 'local_collector');
+  assert.equal(plan.setupModality, 'manual_or_upload');
+  assert.equal(plan.supportState, 'supported');
+  assert.equal(plan.catalogDisposition, 'manual_upload_connect');
+  assert.equal(plan.nextStepKind, 'provide_import_file');
+  assert.equal(plan.ownerAgentIntent.status, 'supported');
+  assert.equal(plan.ownerAgentIntent.method, 'POST');
+  assert.equal(plan.ownerAgentIntent.nextStepKind, 'provide_import_file');
+  assert.equal(plan.proofGate, null);
+  assert.equal(plan.enrollmentKey, undefined);
+});
+
 test('setup planner keeps browser-bound connectors proof-gated before live proof', () => {
   const amazon = buildConnectionSetupPlan({
     connectorKey: 'amazon',
