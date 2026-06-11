@@ -393,6 +393,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
   readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
+  readonly spineGetRunLatestCollectionRateEvent: ReadOneQuery;
   // Spine — append and correlation search.
   readonly spineInsertEvent: MutationQuery;
   readonly spineListEventsByGrantId: ReadManyQuery;
@@ -639,6 +640,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineListEventsByRunId",
     "spineGetRunStartedEvent",
     "spineGetRunTerminalEvent",
+    "spineGetRunLatestCollectionRateEvent",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
     "authPendingConsentsGetByApprovalId",

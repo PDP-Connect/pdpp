@@ -1267,6 +1267,9 @@ function validateProgressMessage(msg, scopeByStream) {
   if (msg.provider_budget != null) {
     validateProgressProviderBudget(msg.provider_budget);
   }
+  if (msg.collection_rate != null) {
+    validateProgressCollectionRate(msg.collection_rate);
+  }
 }
 
 const PROVIDER_BUDGET_PROGRESS_OBJECTS = new Set(['provider_budget_circuit_transition']);
@@ -1320,6 +1323,35 @@ function validateProgressProviderBudget(providerBudget) {
     && (!Number.isFinite(retryTokensRemaining) || retryTokensRemaining < 0)
   ) {
     throw new Error('Connector emitted invalid PROGRESS.provider_budget.retry_tokens_remaining');
+  }
+}
+
+const COLLECTION_RATE_BACKOFF_REASONS = new Set(['retry_after', 'throttle']);
+
+function validateProgressCollectionRate(collectionRate) {
+  if (!collectionRate || typeof collectionRate !== 'object' || Array.isArray(collectionRate)) {
+    throw new Error('Connector emitted invalid PROGRESS.collection_rate: expected object');
+  }
+  if (collectionRate.object !== 'collection_rate') {
+    throw new Error('Connector emitted invalid PROGRESS.collection_rate.object');
+  }
+  for (const fieldName of ['ceiling_interval_ms', 'ceiling_rate_per_min', 'current_interval_ms', 'effective_rate_per_min']) {
+    const value = collectionRate[fieldName];
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Connector emitted invalid PROGRESS.collection_rate.${fieldName}: expected non-negative number`);
+    }
+  }
+  const lastBackoff = collectionRate.last_backoff;
+  if (lastBackoff != null) {
+    if (!lastBackoff || typeof lastBackoff !== 'object' || Array.isArray(lastBackoff)) {
+      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff: expected object or null');
+    }
+    if (!Number.isFinite(lastBackoff.at_interval_ms) || lastBackoff.at_interval_ms < 0) {
+      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.at_interval_ms');
+    }
+    if (!COLLECTION_RATE_BACKOFF_REASONS.has(lastBackoff.reason)) {
+      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.reason');
+    }
   }
 }
 
@@ -2270,6 +2302,10 @@ export async function runConnector(opts) {
   const knownGaps = [];
   const durableDetailGaps = [];
   const detailCoverageByStateStream = new Map();
+  // Latest `collection_rate` progress payload seen this run. Updated on each
+  // rate-change PROGRESS event so the terminal event can carry the final
+  // learned state for post-run diagnostics (reference → snapshot derivation).
+  let lastSeenCollectionRate = null;
 
   // Batch records for ingest
   const recordBatch = {};
@@ -2396,6 +2432,11 @@ export async function runConnector(opts) {
           }
         : {}),
       ...(collectionFacts ? { collection_facts: collectionFacts } : {}),
+      // Final adaptive rate controller state: the last `collection_rate` progress
+      // payload emitted this run. Persisted on the terminal event so the reference
+      // can surface it as `connection_health.collection_rate` after the run ends,
+      // without a separate spine scan. Absent when no controller was active.
+      ...(lastSeenCollectionRate != null ? { collection_rate: lastSeenCollectionRate } : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
         : {}),
@@ -3299,8 +3340,12 @@ export async function runConnector(opts) {
               ...(msg.count == null ? {} : { count: msg.count }),
               ...(msg.total == null ? {} : { total: msg.total }),
               ...(msg.provider_budget == null ? {} : { provider_budget: msg.provider_budget }),
+              ...(msg.collection_rate == null ? {} : { collection_rate: msg.collection_rate }),
             },
           });
+          if (msg.collection_rate != null) {
+            lastSeenCollectionRate = msg.collection_rate;
+          }
           onProgress(msg);
           break;
 

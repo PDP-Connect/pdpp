@@ -3795,6 +3795,125 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('runtime persists collection_rate in spine events and terminal event', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+    const seenProgress = [];
+    const collectionRate = {
+      object: 'collection_rate',
+      ceiling_interval_ms: 1000,
+      ceiling_rate_per_min: 60,
+      current_interval_ms: 1500,
+      effective_rate_per_min: 40,
+      last_backoff: { at_interval_ms: 2000, reason: 'throttle' },
+    };
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'PROGRESS',
+        stream: 'items',
+        message: 'Collection rate 40/min (interval 1500ms; ceiling 60/min)',
+        collection_rate: collectionRate,
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+        onProgress: (msg) => {
+          if (msg.type === 'PROGRESS') seenProgress.push(msg);
+        },
+      });
+
+      assert.equal(result.status, 'succeeded');
+      assert.equal(seenProgress.length, 1);
+      assert.deepEqual(seenProgress[0].collection_rate, collectionRate);
+
+      // collection_rate must appear in the run.progress_reported spine event.
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const progressEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.progress_reported');
+      assert.ok(progressEvent, 'expected run.progress_reported event');
+      assert.deepEqual(progressEvent.data.collection_rate, collectionRate,
+        'collection_rate must be persisted in the spine event data');
+
+      // collection_rate must also appear on the terminal event for post-run
+      // projection (the reference→snapshot plumbing hop).
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      assert.ok(completedEvent, 'expected run.completed event');
+      assert.deepEqual(completedEvent.data.collection_rate, collectionRate,
+        'collection_rate must be stamped on the terminal event for post-run snapshot derivation');
+
+      // The connection health snapshot must surface the collection_rate field.
+      const { body: connectorDetail } = await fetchJson(
+        `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`
+      );
+      assert.ok(connectorDetail, 'connector detail must be accessible');
+      const health = connectorDetail.connection_health;
+      assert.ok(health, 'connection_health must be present');
+      assert.deepEqual(health.collection_rate, {
+        ceiling_interval_ms: collectionRate.ceiling_interval_ms,
+        ceiling_rate_per_min: collectionRate.ceiling_rate_per_min,
+        current_interval_ms: collectionRate.current_interval_ms,
+        effective_rate_per_min: collectionRate.effective_rate_per_min,
+        last_backoff: collectionRate.last_backoff,
+      }, 'connection_health.collection_rate must reflect the latest rate-change event');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('connection_health.collection_rate is null when no rate event has been emitted', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    // Run with a plain PROGRESS event that carries no collection_rate.
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'PROGRESS', stream: 'items', message: 'Fetching page', count: 1, total: 3 },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+        onProgress: () => {},
+      });
+
+      assert.equal(result.status, 'succeeded');
+
+      const { body: connectorDetail } = await fetchJson(
+        `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`
+      );
+      assert.ok(connectorDetail, 'connector detail must be accessible');
+      assert.equal(connectorDetail.connection_health?.collection_rate, null,
+        'collection_rate must be null when no rate event was emitted (honest unknown, no false rate)');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('runtime rejects malformed PROGRESS envelopes as protocol violations', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;

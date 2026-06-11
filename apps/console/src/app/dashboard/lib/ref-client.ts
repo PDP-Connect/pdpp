@@ -560,7 +560,7 @@ export interface RefCollectionRateSnapshot {
   /** Current effective rate (requests/min). */
   effective_rate_per_min: number;
   /** Most recent back-off, or null when none. */
-  last_backoff: { at: string | null; at_interval_ms: number; reason: string } | null;
+  last_backoff: { at?: string | null; at_interval_ms: number; reason: string } | null;
 }
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
