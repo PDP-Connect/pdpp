@@ -156,6 +156,49 @@ class MalformedExpandLimitError extends Error {
   }
 }
 
+// Thrown when `expand` is requested on a stream whose schema advertises no
+// expand_capabilities. The RS would also reject this with invalid_expand, but
+// the MCP adapter catches it first so the error message names the stream and
+// the canonical fix (consult schema before constructing expand arguments).
+class UnadvertisedExpandError extends Error {
+  constructor(stream, relations) {
+    const relClause = relations.length
+      ? `Relations requested: ${relations.join(', ')}. `
+      : '';
+    super(
+      `Stream '${stream}' has no advertised expand_capabilities. ${relClause}` +
+        "Consult GET /v1/schema (expand_capabilities) before passing expand; " +
+        "unadvertised relations are rejected.",
+    );
+    this.name = 'UnadvertisedExpandError';
+    this.code = 'invalid_expand';
+  }
+}
+
+// Fetch the compact schema for `stream` and throw UnadvertisedExpandError when
+// no expand_capabilities are advertised. Called only when the caller has
+// already supplied an `expand` argument, so the extra RS round-trip is bounded
+// to expand-using calls. The connection_id is forwarded so multi-source grants
+// resolve cleanly.
+async function assertExpandCapabilities(rs, stream, relations, connectionId) {
+  const schemaQuery = { view: 'compact', stream };
+  if (connectionId) schemaQuery.connection_id = connectionId;
+  const schemaResp = await rs.getJson('/v1/schema', { query: schemaQuery });
+  if (!schemaResp.ok) return; // schema unavailable — let RS enforce
+  const schemaDoc = unwrapSchemaBody(schemaResp.body);
+  const streams = schemaDoc?.streams ?? [];
+  // Find any stream row that matches (may be multiple for shared stream names).
+  const matchingStream = Array.isArray(streams)
+    ? streams.find((s) => s && (s.name === stream || s.stream === stream || s.stream_name === stream))
+    : null;
+  if (!matchingStream) return; // unknown stream — let RS enforce
+  const expandCaps = matchingStream.expand_capabilities;
+  const hasExpandCaps = Array.isArray(expandCaps) ? expandCaps.length > 0 : Boolean(expandCaps);
+  if (!hasExpandCaps) {
+    throw new UnadvertisedExpandError(stream, relations);
+  }
+}
+
 // Thrown when a self-contained fetch id embeds one connection while the
 // explicit `connection_id` argument names another. Silently preferring either
 // handle could read the wrong source, so the disagreement is rejected with a
@@ -433,6 +476,9 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, 'stream');
+        if (Array.isArray(args?.expand) && args.expand.length > 0) {
+          await assertExpandCapabilities(rs, stream, args.expand, args?.connection_id);
+        }
         const query = applyExpandLimitToQuery(
           applyFilterToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.filter),
           args?.expand_limit,
@@ -564,6 +610,10 @@ export function buildTools({ rs, providerUrl }) {
         const ref = parseRecordResultId(args.id);
         if (ref.connectionId && typeof args?.connection_id === 'string' && args.connection_id !== ref.connectionId) {
           throw new ConflictingConnectionIdError(ref.connectionId, args.connection_id);
+        }
+        if (Array.isArray(args?.expand) && args.expand.length > 0) {
+          const connId = args?.connection_id ?? ref.connectionId;
+          await assertExpandCapabilities(rs, ref.stream, args.expand, connId);
         }
         const query = applyExpandLimitToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.expand_limit);
         // A self-contained id carries its own connection scope; forward it so a
@@ -2147,4 +2197,6 @@ export const __internal = {
   toFetchToolResult,
   resolveStreamName,
   resolveSchemaDetail,
+  assertExpandCapabilities,
+  UnadvertisedExpandError,
 };

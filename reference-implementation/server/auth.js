@@ -2127,6 +2127,12 @@ export async function registerDynamicClient(input = {}, extraMetadata = {}) {
     clientSecret: null,
   });
   const registered = await getRegisteredClient(clientId);
+  // Seed optional identity URI fields from AS_PUBLIC_URL when the registrant
+  // omitted them. This gives PDPP's own AS a stable, discoverable identity in
+  // every DCR response without altering any caller-supplied values.
+  const asBase = process.env.AS_PUBLIC_URL
+    ? process.env.AS_PUBLIC_URL.replace(/\/+$/, '')
+    : null;
   return {
     client_id: registered.client_id,
     client_id_issued_at: Math.floor(new Date(registered.created_at).getTime() / 1000),
@@ -2136,10 +2142,10 @@ export async function registerDynamicClient(input = {}, extraMetadata = {}) {
     grant_types: registered.metadata.grant_types || undefined,
     response_types: registered.metadata.response_types || undefined,
     application_type: registered.metadata.application_type || undefined,
-    client_uri: registered.metadata.client_uri || undefined,
-    logo_uri: registered.metadata.logo_uri || undefined,
-    policy_uri: registered.metadata.policy_uri || undefined,
-    tos_uri: registered.metadata.tos_uri || undefined,
+    client_uri: registered.metadata.client_uri || (asBase ? asBase : undefined),
+    logo_uri: registered.metadata.logo_uri || (asBase ? `${asBase}/icon.svg` : undefined),
+    policy_uri: registered.metadata.policy_uri || (asBase ? asBase : undefined),
+    tos_uri: registered.metadata.tos_uri || (asBase ? asBase : undefined),
   };
 }
 

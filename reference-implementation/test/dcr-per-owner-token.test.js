@@ -336,3 +336,81 @@ test('owner device approval binds a public dynamic client to the approving owner
     assert.equal(inactive.inactive_reason, 'token_revoked');
   });
 });
+
+// ── DCR optional URI seeding from AS_PUBLIC_URL ──────────────────────────────
+
+test('DCR seeds client_uri / logo_uri / policy_uri / tos_uri from AS_PUBLIC_URL when registrant omits them', async () => {
+  const prior = process.env.AS_PUBLIC_URL;
+  process.env.AS_PUBLIC_URL = 'https://as.example.com';
+  try {
+    await withServer(async ({ asUrl }) => {
+      const result = await registerClient(asUrl, {
+        client_name: 'minimal-client',
+        token_endpoint_auth_method: 'none',
+      });
+      assert.equal(result.status, 201, 'registration must succeed');
+      assert.equal(result.body.client_uri, 'https://as.example.com', 'client_uri must be seeded from AS_PUBLIC_URL');
+      assert.equal(result.body.logo_uri, 'https://as.example.com/icon.svg', 'logo_uri must be seeded as base/icon.svg');
+      assert.equal(result.body.policy_uri, 'https://as.example.com', 'policy_uri must be seeded from AS_PUBLIC_URL');
+      assert.equal(result.body.tos_uri, 'https://as.example.com', 'tos_uri must be seeded from AS_PUBLIC_URL');
+    });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.AS_PUBLIC_URL;
+    } else {
+      process.env.AS_PUBLIC_URL = prior;
+    }
+  }
+});
+
+test('DCR does not override explicit client_uri / logo_uri / policy_uri / tos_uri from registrant', async () => {
+  const prior = process.env.AS_PUBLIC_URL;
+  process.env.AS_PUBLIC_URL = 'https://as.example.com';
+  try {
+    await withServer(async ({ asUrl }) => {
+      const result = await registerClient(asUrl, {
+        client_name: 'explicit-uri-client',
+        client_uri: 'https://my-client.example.com',
+        logo_uri: 'https://my-client.example.com/logo.png',
+        policy_uri: 'https://my-client.example.com/privacy',
+        tos_uri: 'https://my-client.example.com/terms',
+        token_endpoint_auth_method: 'none',
+      });
+      assert.equal(result.status, 201, 'registration must succeed');
+      assert.equal(result.body.client_uri, 'https://my-client.example.com', 'explicit client_uri must not be overridden');
+      assert.equal(result.body.logo_uri, 'https://my-client.example.com/logo.png', 'explicit logo_uri must not be overridden');
+      assert.equal(result.body.policy_uri, 'https://my-client.example.com/privacy', 'explicit policy_uri must not be overridden');
+      assert.equal(result.body.tos_uri, 'https://my-client.example.com/terms', 'explicit tos_uri must not be overridden');
+    });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.AS_PUBLIC_URL;
+    } else {
+      process.env.AS_PUBLIC_URL = prior;
+    }
+  }
+});
+
+test('DCR omits URI fields when AS_PUBLIC_URL is not set', async () => {
+  const prior = process.env.AS_PUBLIC_URL;
+  delete process.env.AS_PUBLIC_URL;
+  try {
+    await withServer(async ({ asUrl }) => {
+      const result = await registerClient(asUrl, {
+        client_name: 'no-public-url-client',
+        token_endpoint_auth_method: 'none',
+      });
+      assert.equal(result.status, 201, 'registration must succeed');
+      assert.equal(result.body.client_uri, undefined, 'client_uri must be absent when AS_PUBLIC_URL unset');
+      assert.equal(result.body.logo_uri, undefined, 'logo_uri must be absent when AS_PUBLIC_URL unset');
+      assert.equal(result.body.policy_uri, undefined, 'policy_uri must be absent when AS_PUBLIC_URL unset');
+      assert.equal(result.body.tos_uri, undefined, 'tos_uri must be absent when AS_PUBLIC_URL unset');
+    });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.AS_PUBLIC_URL;
+    } else {
+      process.env.AS_PUBLIC_URL = prior;
+    }
+  }
+});
