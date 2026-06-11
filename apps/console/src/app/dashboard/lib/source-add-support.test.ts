@@ -16,7 +16,7 @@ const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const STATIC_SECRET_ROUTE_RE = /\/dashboard\/connect\/static-secret\/ynab/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/dashboard\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/dashboard\/connect\/manual-upload\/google-maps/;
-const MOVES_INTO_DASHBOARD_RE = /moves into the dashboard/i;
+const PACKAGED_PATH_PENDING_RE = /^Packaged path pending$/;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
@@ -105,8 +105,10 @@ test("browser-bound source is packaged-path-pending with NO action (never demote
   assert.equal(support.support, "packaged_path_pending");
   assert.equal(support.action, null, "packaged-path-pending add-new must not render a dead action");
   // Honest copy: the source is not inert — it is a supported-direction source
-  // whose add-another path is being productized.
-  assert.match(support.supportLabel, MOVES_INTO_DASHBOARD_RE);
+  // whose add-another path is being productized. The chip carries the SHORT
+  // agreed label; the longer "browser setup moves into the dashboard" sentence
+  // lives in setup guidance, not the chip (so it never reads as a second claim).
+  assert.match(support.supportLabel, PACKAGED_PATH_PENDING_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 

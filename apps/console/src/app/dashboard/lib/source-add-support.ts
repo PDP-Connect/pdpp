@@ -43,9 +43,14 @@ export interface SourceAddSupport {
 
 const SUPPORT_LABELS: Record<AddAccountSupport, string> = {
   self_service: "Add another account",
-  packaged_path_pending: "Adding another account moves into the dashboard soon",
+  // Short agreed label; the longer "browser setup will move into the dashboard"
+  // sentence lives in source-setup-presentation guidance as peek disclosure, so
+  // the chip never competes with the existing-data line as a second claim.
+  packaged_path_pending: "Packaged path pending",
   deployment_prerequisite: "Adding another account needs deployment setup",
-  not_self_service: "Adding another account is not self-service yet",
+  // Proof-gated sources have working data but no shipped owner add path. Honest,
+  // never demotion copy — was the overruled "is not self-service yet".
+  not_self_service: "Existing data only",
 };
 
 const SUPPORT_TONES: Record<AddAccountSupport, string> = {
