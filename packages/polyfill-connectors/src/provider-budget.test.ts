@@ -80,6 +80,56 @@ test("CircuitBreaker: half-open probe failure reopens", () => {
   assert.equal(breaker.state, "open");
 });
 
+test("CircuitBreaker: remainingCooldownMs reports the exact wait until half-open, 0 when not open", () => {
+  let nowMs = 0;
+  const breaker = new CircuitBreaker({
+    failureRateThreshold: 0.5,
+    minimumThroughput: 2,
+    now: () => nowMs,
+    resetTimeoutMs: 1000,
+  });
+
+  // Closed circuit owes no cool-down — a transient back-off has nothing to wait.
+  assert.equal(breaker.remainingCooldownMs(), 0, "closed circuit owes no cool-down");
+
+  breaker.recordFailure();
+  breaker.recordFailure();
+  assert.equal(breaker.state, "open");
+  assert.equal(breaker.remainingCooldownMs(), 1000, "freshly opened circuit owes the full reset timeout");
+
+  nowMs = 600;
+  assert.equal(breaker.remainingCooldownMs(), 400, "cool-down shrinks as the clock advances");
+
+  nowMs = 1000;
+  assert.equal(breaker.remainingCooldownMs(), 0, "no cool-down owed once the reset timeout has elapsed");
+
+  // Half-open after a probe also owes nothing (it is no longer blocking).
+  assert.equal(breaker.beforeRequest().ok, true);
+  assert.equal(breaker.state, "half_open");
+  assert.equal(breaker.remainingCooldownMs(), 0, "half-open circuit owes no cool-down");
+});
+
+test("ProviderBudgetController: circuitCooldownMs surfaces the breaker's remaining cool-down (0 when no breaker)", () => {
+  let nowMs = 0;
+  const budget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      now: () => nowMs,
+      resetTimeoutMs: 5000,
+      windowSize: 1,
+    },
+  });
+  assert.equal(budget.circuitCooldownMs(), 0, "no cool-down owed before the circuit opens");
+  budget.recordFailure();
+  assert.equal(budget.circuitCooldownMs(), 5000, "open circuit surfaces the full cool-down");
+  nowMs = 2000;
+  assert.equal(budget.circuitCooldownMs(), 3000, "cool-down shrinks with elapsed time");
+
+  const noBreaker = new ProviderBudgetController({ retryBudget: { capacity: 1 } });
+  assert.equal(noBreaker.circuitCooldownMs(), 0, "a controller without a circuit breaker owes no cool-down");
+});
+
 test("ProviderBudgetController: drains generic circuit state transitions", async () => {
   let nowMs = 0;
   const budget = new ProviderBudgetController({

@@ -327,6 +327,25 @@ const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
 const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
+// Forward-progress guard for the wait-out-circuit loop. A `circuit_open` gate is
+// a TRANSIENT back-off, not budget exhaustion: the lane waits out the circuit's
+// cool-down (bounded by the remaining run budget) and re-admits rather than
+// deferring all remaining work and quitting (the live `run_1781150455121` 136s
+// early-exit defect). This caps how many consecutive cool-down waits a single
+// admit may pay before it gives up and defers the tail — so a circuit that keeps
+// re-opening (the provider is genuinely hostile, not transiently busy) still
+// converges to a durable defer instead of looping forever within budget. The
+// real budget (wall-clock / detail-fetch) is the primary stop; this is the
+// belt-and-braces ceiling on a pathological re-open storm. With the 5-min
+// default reset, 8 cool-downs is ~40 min of waiting — far beyond any normal run
+// envelope, so a budgeted run hits its wall-clock cap first and this guard never
+// fires; it exists only to bound an uncapped (Infinity wall-clock) run.
+const CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES = 8;
+// Floor for a single cool-down wait. The circuit reports its exact remaining
+// cool-down; this guarantees each wait cycle yields to the event loop and makes
+// forward progress even when the reported cool-down has already elapsed to ~0
+// (the next probe half-opens the circuit), so the wait loop can never spin.
+const CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS = 50;
 
 /**
  * Resolve the maximum conversation-detail provider requests a single run may
@@ -596,6 +615,16 @@ export class ChatGptRunBudget {
     return this.inner.elapsedMs();
   }
 
+  /**
+   * Wall-clock budget still available before the time cap trips, in ms
+   * (`Infinity` when uncapped). Lets a transient back-off — e.g. waiting out an
+   * open upstream-pressure circuit — bound its sleep by the time the run truly
+   * has left, so a provider slow-down is never mistaken for budget exhaustion.
+   */
+  remainingWallClockMs(): number {
+    return this.inner.remainingWallClockMs();
+  }
+
   /** Returns the trip reason or null. Anchors clock on first call. */
   reason(): "max_detail_fetches" | "max_wall_clock" | null {
     const trip = this.inner.tripReason();
@@ -837,6 +866,19 @@ async function admitChatGptProviderBudgetAttempt(
     reason,
     providerGate
   );
+}
+
+/**
+ * Whether a planned provider-budget defer is a TRANSIENT upstream-pressure
+ * circuit trip (`circuit_open`) rather than genuine budget exhaustion
+ * (`max_wall_clock` / `max_detail_fetches` / `provider_retry_budget`). The
+ * former is a "slow down, then continue" signal the run should wait out within
+ * its remaining budget; the latter is a "stop" signal that defers the tail. The
+ * live `run_1781150455121` defect was conflating the two — quitting after 136s
+ * of a 900s budget because a circuit trip was treated as exhaustion.
+ */
+function isChatGptTransientCircuitDefer(err: unknown): err is ChatGptPlannedProviderBudgetDeferredError {
+  return err instanceof ChatGptPlannedProviderBudgetDeferredError && err.reason === "circuit_open";
 }
 
 function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
@@ -2770,6 +2812,57 @@ export async function runMessagesAndConversationsWithDetail(
     return null;
   }
 
+  // Fetch one conversation detail, treating a `circuit_open` provider-budget
+  // defer as a TRANSIENT back-off rather than budget exhaustion. The upstream-
+  // pressure circuit auto-transitions open→half_open after its reset timeout, so
+  // instead of deferring the whole tail and quitting (the live
+  // `run_1781150455121` defect: 136s exit, ~13 min budget unused), wait out the
+  // circuit's exact cool-down — bounded by the remaining run budget — then retry
+  // the SAME conversation. Forward progress is guaranteed: each wait advances
+  // real wall-clock toward the cap AND decrements a bounded cycle guard, so a
+  // circuit that keeps re-opening (a genuinely hostile provider, not a transient
+  // burst) converges to a durable defer instead of looping. Genuine budget
+  // exhaustion (`max_wall_clock` / `max_detail_fetches`) is never waited out:
+  // that planned defer propagates immediately to the run-cap tail path. This is
+  // "adapt down fast, up slow, inside a fixed envelope you never probe" — the
+  // circuit already dropped the rate; one half-open success resumes it.
+  async function fetchConversationDetailWaitingOutCircuit(c: ConversationListItem): Promise<ChatGptFetchResult> {
+    for (let cycle = 0; cycle < CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES; cycle += 1) {
+      try {
+        return await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+      } catch (err) {
+        if (!isChatGptTransientCircuitDefer(err)) {
+          throw err;
+        }
+        // Genuine budget exhaustion takes precedence over a transient circuit:
+        // if the run is genuinely out of wall-clock/detail budget, stop waiting
+        // and let the run-cap tail path defer the remainder durably.
+        if (runBudget.shouldStop()) {
+          throw err;
+        }
+        const remainingRunBudgetMs = runBudget.remainingWallClockMs();
+        if (remainingRunBudgetMs <= 0) {
+          throw err;
+        }
+        const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
+        // Sleep the circuit's exact cool-down, never past the remaining run
+        // budget, and at least one floor tick so a cool-down already near zero
+        // still yields and re-probes (half-opening the circuit on the next try).
+        const waitMs = Math.max(CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS, Math.min(cooldownMs, remainingRunBudgetMs));
+        await deps.emit({
+          type: "PROGRESS",
+          stream: "messages",
+          message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (cycle ${cycle + 1}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+        });
+        await sleep(waitMs);
+      }
+    }
+    // The circuit stayed open across every bounded wait cycle. One last attempt;
+    // if it still defers, the run-cap tail path takes over (durable defer, no
+    // infinite loop).
+    return await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+  }
+
   await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
       return { status: 404, json: null };
@@ -2807,7 +2900,7 @@ export async function runMessagesAndConversationsWithDetail(
     }
     let detail: ChatGptFetchResult;
     try {
-      detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+      detail = await fetchConversationDetailWaitingOutCircuit(c);
     } catch (err) {
       const fetchErrorDefer = await maybeDeferForFetchError(c, err);
       if (fetchErrorDefer) {

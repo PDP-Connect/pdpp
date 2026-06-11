@@ -67,3 +67,25 @@
 - [x] 7.2 `tsc` + lint baselines.
 - [x] 7.3 `openspec validate --all --strict` green.
 - [ ] 7.4 Owner: supervised live calibration run (NOT done in this change).
+
+## 8. In-pass circuit-continue (the in-pass analogue of §4)
+
+Closes the live `run_1781150455121` defect: a `circuit_open` provider-budget gate
+DURING a detail pass was bucketed with the genuine run caps
+(`chatGptRunCapReasonFromProviderGate`), so a transient upstream-pressure circuit
+deferred the entire remaining tail and finished the run after 136 s of a 900 s
+budget. §4 fixed the recovery→forward-walk hand-off; this fixes the in-pass case.
+
+- [x] 8.1 `CircuitBreaker.remainingCooldownMs()` + `ProviderBudgetController.circuitCooldownMs()`
+  expose the exact open→half_open cool-down so a transient back-off can sleep it precisely.
+- [x] 8.2 `RunBudget.remainingWallClockMs()` (+ `ChatGptRunBudget` delegate) bounds the
+  cool-down wait by the run's true remaining wall-clock budget.
+- [x] 8.3 `fetchConversationDetailWaitingOutCircuit`: on a `circuit_open` planned defer,
+  wait the cool-down (bounded by remaining budget), then retry the same conversation;
+  genuine budget exhaustion (`max_wall_clock`/`max_detail_fetches`) propagates immediately
+  to the run-cap tail path. Forward-progress guard: a bounded cycle count + clock advance
+  guarantees a never-closing circuit converges to a durable defer (no infinite loop).
+- [x] 8.4 Tests: an open circuit with budget remaining CONTINUES (waits, resumes, collects
+  the full tail); genuine wall-clock exhaustion during a wait still defers; a never-closing
+  circuit is bounded; the live 136 s/900 s shape now runs the full budget. Src tests for the
+  three new primitives. All green; `tsc` 0; biome clean.
