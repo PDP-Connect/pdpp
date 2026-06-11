@@ -13,6 +13,22 @@ export interface PacingOptions {
    */
   initialIntervalMs?: number;
   /**
+   * §10-E (SLVP-ideal): the maximum age (ms) at which a warm-start interval is
+   * still considered valid. If `now() - restoredAtMs > maxWarmStartAgeMs` the
+   * restored interval is discarded and the controller cold-starts at
+   * `initialIntervalMs`. This prevents a burst into a quota the provider may
+   * have tightened during a long idle period.
+   *
+   * A value equivalent to the scheduler's maximum cross-run cooldown delay
+   * (DEFAULT_MAX_COOLDOWN_MS = 6h) is the recommended default: after an idle
+   * span that long the provider's quota window has certainly cycled and the
+   * prior learned rate is no longer a safe entry point.
+   *
+   * Absent (or absent `restoredAtMs`) → staleness checking disabled; caller
+   * owns freshness (backward-compatible).
+   */
+  maxWarmStartAgeMs?: number;
+  /**
    * Minimum inter-request interval (ms). The floor the AIMD fill rate can
    * reach via additive increase. Defaults to 0 (no floor below initial).
    */
@@ -22,12 +38,24 @@ export interface PacingOptions {
   /** Injectable clock for tests. Default: Date.now. */
   now?: () => number;
   /**
+   * Timestamp (ms since epoch, e.g. Date.now()) when `restoredIntervalMs` was
+   * persisted. Used together with `maxWarmStartAgeMs` to enforce the §10-E
+   * staleness guard inside the constructor. Ignored if `maxWarmStartAgeMs` is
+   * absent or `restoredIntervalMs` is absent.
+   */
+  restoredAtMs?: number;
+  /**
    * Warm-start seed: the interval the controller had LEARNED at the end of a
    * prior run, restored so the AIMD descent compounds across runs instead of
    * resetting to `initialIntervalMs` at every boundary. Clamped to never be
    * faster than `minIntervalMs` (the rate ceiling). Absent → cold start at
-   * `initialIntervalMs`. The caller owns the staleness guard (deciding whether a
-   * persisted interval is fresh enough to restore at all).
+   * `initialIntervalMs`.
+   *
+   * §10-E (SLVP-ideal): if `restoredAtMs` + `maxWarmStartAgeMs` are also
+   * supplied, the staleness guard is enforced here — a persisted interval older
+   * than `maxWarmStartAgeMs` is treated as stale and the controller cold-starts
+   * at `initialIntervalMs` instead. Without those two fields, the caller owns
+   * the staleness decision (backward-compatible behaviour).
    */
   restoredIntervalMs?: number;
   /** Injectable sleep for tests. Default: real setTimeout. */
@@ -102,12 +130,53 @@ export class ProviderPacing {
     // clamped to never be faster than the rate ceiling (minIntervalMs). A
     // restored value is never trusted to be faster than the operator's ceiling,
     // and never slower-than-useless past the cold seed is irrelevant (a slower
-    // restored value is honored — it means the prior run had backed off). The
-    // caller decides freshness (staleness guard) before passing a value here.
-    this._currentIntervalMs =
-      options.restoredIntervalMs == null
-        ? this.initialIntervalMs
-        : Math.max(this.minIntervalMs, options.restoredIntervalMs);
+    // restored value is honored — it means the prior run had backed off).
+    //
+    // §10-E (SLVP-ideal): if restoredAtMs + maxWarmStartAgeMs are provided,
+    // enforce a staleness guard: a persisted interval that is older than the
+    // staleness window is treated as cold (the provider may have tightened its
+    // quota during a long idle and the prior learned rate is no longer a safe
+    // entry point). Without those fields the caller owns freshness — backward-
+    // compatible with pre-§10-E callers who do their own staleness check.
+    this._currentIntervalMs = ProviderPacing.resolveInitialInterval(
+      options,
+      this.initialIntervalMs,
+      this.minIntervalMs,
+      this.now
+    );
+  }
+
+  /**
+   * §10-E: resolve the initial _currentIntervalMs from constructor options,
+   * applying the staleness guard when restoredAtMs + maxWarmStartAgeMs are both
+   * present. Extracted as a static pure helper so it is testable without
+   * constructing a full instance.
+   *
+   * Decision table:
+   *   restoredIntervalMs absent          → initialIntervalMs (cold start)
+   *   restoredAtMs or maxWarmStartAgeMs absent → Math.max(min, restored)  (caller-owned freshness)
+   *   now() - restoredAtMs > maxWarmStartAgeMs → initialIntervalMs (stale → cold)
+   *   otherwise                           → Math.max(min, restored)  (fresh → warm)
+   */
+  private static resolveInitialInterval(
+    options: PacingOptions,
+    initialIntervalMs: number,
+    minIntervalMs: number,
+    now: () => number
+  ): number {
+    if (options.restoredIntervalMs == null) {
+      return initialIntervalMs;
+    }
+    // Apply staleness guard only when both staleness fields are provided.
+    if (options.restoredAtMs != null && options.maxWarmStartAgeMs != null) {
+      const ageMs = now() - options.restoredAtMs;
+      if (ageMs > options.maxWarmStartAgeMs) {
+        // Stale: cold-start so the pacer does not burst into a potentially
+        // tightened quota after a long idle (§10-E).
+        return initialIntervalMs;
+      }
+    }
+    return Math.max(minIntervalMs, options.restoredIntervalMs);
   }
 
   /**
@@ -163,8 +232,20 @@ export class ProviderPacing {
     }
   }
 
-  /** Record a successful response — additive increase (reduce interval toward minIntervalMs). */
-  recordSuccess(): void {
+  /**
+   * Record a successful response — additive increase (reduce interval toward minIntervalMs).
+   *
+   * §10-D (SLVP-ideal): pass `{ suppressAdditiveIncrease: true }` to suppress
+   * the decrease while a source-pressure cooldown is active. The recovery lane
+   * calls this so its successes do NOT un-learn the back-off the cooldown is
+   * protecting. Throttle signals still fire unconditionally — recovery may
+   * DECELERATE the shared pacer, never ACCELERATE it during cooldown.
+   */
+  recordSuccess(opts?: { suppressAdditiveIncrease?: boolean }): void {
+    if (opts?.suppressAdditiveIncrease === true) {
+      // §10-D: cooldown-exempt recovery lane — leave interval unchanged.
+      return;
+    }
     this._currentIntervalMs = Math.max(this.minIntervalMs, this._currentIntervalMs - this.additiveIncreaseMs);
   }
 

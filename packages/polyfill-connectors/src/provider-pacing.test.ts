@@ -324,3 +324,176 @@ test("ProviderPacing: snapshot() exposes interval, ceiling, and last back-off fo
   pacing.recordThrottle({ retryAfterMs: 5000 });
   assert.equal(pacing.snapshot().lastBackoff?.reason, "retry_after", "retry-after back-off reason recorded");
 });
+
+// ─── SLVP-ideal §10-D: pacer pollution suppression ──────────────────────────
+
+test("ProviderPacing: recordSuccess with suppressAdditiveIncrease=true leaves interval unchanged", () => {
+  // §10-D — while a source-pressure cooldown is active, the recovery lane's
+  // successes MUST NOT additive-decrease the shared interval (which would
+  // un-learn the back-off and re-pressure the source). Passing
+  // suppressAdditiveIncrease=true to recordSuccess suppresses the decrease.
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  // Drive interval down to a warm learned value
+  pacing.recordSuccess(); // 900
+  pacing.recordSuccess(); // 800
+  const intervalBeforeRecovery = pacing.currentIntervalMs;
+  assert.equal(intervalBeforeRecovery, 800);
+
+  // Recovery-only success: interval MUST NOT change
+  pacing.recordSuccess({ suppressAdditiveIncrease: true });
+  assert.equal(
+    pacing.currentIntervalMs,
+    intervalBeforeRecovery,
+    "suppressAdditiveIncrease=true leaves the interval unchanged"
+  );
+
+  // Multiple suppressed successes still do not move the interval
+  pacing.recordSuccess({ suppressAdditiveIncrease: true });
+  pacing.recordSuccess({ suppressAdditiveIncrease: true });
+  assert.equal(
+    pacing.currentIntervalMs,
+    intervalBeforeRecovery,
+    "repeated suppressed successes leave interval unchanged"
+  );
+});
+
+test("ProviderPacing: recordThrottle still increases interval even when called after suppressed success", () => {
+  // §10-D — recovery may DECELERATE the pacer (throttle still fires), never
+  // accelerate it. Throttle must still increase the interval even after a
+  // sequence of suppressed successes.
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    multiplicativeDecreaseFactor: 0.5,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  pacing.recordSuccess(); // 900
+  const before = pacing.currentIntervalMs; // 900
+
+  // Suppressed success does NOT change interval
+  pacing.recordSuccess({ suppressAdditiveIncrease: true });
+  assert.equal(pacing.currentIntervalMs, before, "suppressed success: no change");
+
+  // Throttle still fires — multiplicative increase
+  pacing.recordThrottle();
+  assert.ok(
+    pacing.currentIntervalMs > before,
+    `throttle must still increase interval after suppressed success; before=${before} after=${pacing.currentIntervalMs}`
+  );
+});
+
+test("ProviderPacing: recordSuccess without suppressAdditiveIncrease (or false) still decreases interval normally", () => {
+  // §10-D — the flag is opt-in; a plain recordSuccess() / recordSuccess({suppressAdditiveIncrease:false})
+  // must behave identically to the existing additive-decrease behavior.
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(pacing.currentIntervalMs, 1000);
+  pacing.recordSuccess();
+  assert.equal(pacing.currentIntervalMs, 900, "plain recordSuccess() still decreases interval");
+  pacing.recordSuccess({ suppressAdditiveIncrease: false });
+  assert.equal(pacing.currentIntervalMs, 800, "recordSuccess({suppress:false}) still decreases interval");
+});
+
+// ─── SLVP-ideal §10-E: stale warm-start cold re-entry ───────────────────────
+
+test("ProviderPacing §10-E: stale warm-start yields cold-start interval (no burst into possibly-tightened quota)", () => {
+  // §10-E — if idle since last run > maxWarmStartAgeMs, the first request of ANY
+  // lane re-enters at the conservative cold-start initialIntervalMs, not the
+  // restored aggressive one. Warm-start accelerates a *continuing* descent; it
+  // must not grant a *cold* burst when the provider may have tightened since then.
+  const nowMs = 10_000_000; // arbitrary "current" timestamp
+  const maxWarmStartAgeMs = 6 * 60 * 60 * 1000; // 6 hours — the §10-E staleness window
+  const staleAge = maxWarmStartAgeMs + 1; // one ms past the window
+
+  const stale = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    restoredIntervalMs: 320, // learned aggressive interval from prior run
+    restoredAtMs: nowMs - staleAge, // persisted staleAge ms ago → stale
+    maxWarmStartAgeMs,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(
+    stale.currentIntervalMs,
+    1000,
+    "stale warm-start: must cold-restart at initialIntervalMs, not the restored 320ms"
+  );
+});
+
+test("ProviderPacing §10-E: fresh warm-start (within staleness window) restores the learned interval", () => {
+  // §10-E — a warm-start whose persisted timestamp is within maxWarmStartAgeMs
+  // MUST restore the learned interval (continuing AIMD descent across runs).
+  const nowMs = 10_000_000;
+  const maxWarmStartAgeMs = 6 * 60 * 60 * 1000;
+  const freshAge = maxWarmStartAgeMs - 1; // one ms inside the window
+
+  const fresh = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    restoredIntervalMs: 320,
+    restoredAtMs: nowMs - freshAge,
+    maxWarmStartAgeMs,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(
+    fresh.currentIntervalMs,
+    320,
+    "fresh warm-start: restores the learned interval so AIMD descent compounds across runs"
+  );
+});
+
+test("ProviderPacing §10-E: warm-start without restoredAtMs or maxWarmStartAgeMs behaves as before (caller-owned guard)", () => {
+  // §10-E — if neither restoredAtMs nor maxWarmStartAgeMs is provided, staleness
+  // checking is disabled and the existing behaviour is preserved (backwards-
+  // compatible: the caller has already decided freshness, as documented in prior
+  // PacingOptions.restoredIntervalMs comment).
+  const nowMs = 10_000_000;
+
+  // No staleness params → treats as fresh → restores interval (existing behaviour)
+  const noStaleness = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    restoredIntervalMs: 320,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(
+    noStaleness.currentIntervalMs,
+    320,
+    "no staleness params → restored interval used (backwards-compatible)"
+  );
+});
+
+test("ProviderPacing §10-E: warm-start exactly AT the staleness boundary is still treated as fresh", () => {
+  // §10-E — boundary condition: age === maxWarmStartAgeMs is still fresh (not stale).
+  // Stale = strictly greater than the window.
+  const nowMs = 10_000_000;
+  const maxWarmStartAgeMs = 6 * 60 * 60 * 1000;
+  const exactBoundary = maxWarmStartAgeMs; // exactly at the window edge
+
+  const boundary = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    restoredIntervalMs: 320,
+    restoredAtMs: nowMs - exactBoundary,
+    maxWarmStartAgeMs,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(boundary.currentIntervalMs, 320, "warm-start exactly at the age boundary is still treated as fresh");
+});

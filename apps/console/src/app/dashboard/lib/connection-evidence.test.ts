@@ -1808,6 +1808,77 @@ test("deriveFailureSummary passes through last_success_at", () => {
   assert.equal(result.lastSuccessAt, "2026-04-28T19:33:00Z");
 });
 
+// §6.2 invariant: source-pressure blocked must NEVER emit cta:"reconnect".
+// A blocked state whose root cause is source-pressure is self-resolving; a
+// Reconnect CTA would direct the owner to a manual action that is unnecessary
+// and confusing. deriveFailureSummary MUST apply the same isSourcePressureCooldown
+// guard that synthesizeConnectionVerdict already applies. (spec §6.2)
+test("deriveFailureSummary blocked + source_pressure reason_code → cta is 'wait', NOT 'reconnect'", () => {
+  const result = deriveFailureSummary(
+    snapshot({ state: "blocked", reason_code: "source_pressure" })
+  );
+  assert.ok(result);
+  assert.notEqual(result.cta, "reconnect", "source-pressure blocked must not yield reconnect CTA");
+  assert.equal(result.cta, "wait");
+});
+
+test("deriveFailureSummary blocked + backlog + next_attempt_at (inferred source-pressure) → cta is 'wait', NOT 'reconnect'", () => {
+  // isSourcePressureCooldown also fires when there is a pending backlog AND a
+  // scheduled next_attempt_at, even without an explicit reason_code. The
+  // deriveFailureSummary blocked branch must honour the same inference.
+  const result = deriveFailureSummary(
+    snapshot({
+      state: "blocked",
+      reason_code: null,
+      next_attempt_at: "2026-05-20T10:00:00Z",
+      detail_gap_backlog: backlog({ pending: 5 }),
+    })
+  );
+  assert.ok(result);
+  assert.notEqual(result.cta, "reconnect", "inferred source-pressure blocked must not yield reconnect CTA");
+  assert.equal(result.cta, "wait");
+});
+
+// §6.3 invariant: "done" (caught up) must be false when terminal > 0.
+// If the backlog reports terminal gaps, the honest copy is NOT "caught up" but
+// "recovered all still-available; N no longer retrievable." Emitting "caught up"
+// while terminal>0 is a silent-lie per the red-team correction in §10-A.
+const TERMINAL_CAVEAT_RE = /no longer retrievable|terminal|not retrievable/i;
+const CAUGHT_UP_RE = /^caught up/;
+
+test("§6.3 backlog with terminal>0 does NOT say 'caught up' — emits caveat about unretrievable items", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 0, recovered: 10, terminal: 3 }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.doesNotMatch(out?.backlogScale ?? "", CAUGHT_UP_RE, "must not claim caught up when terminal>0");
+  assert.match(out?.backlogScale ?? "", TERMINAL_CAVEAT_RE, "must surface a caveat about unretrievable items");
+});
+
+test("§6.3 backlog with terminal===0 still says 'caught up' (no false caveat)", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 0, recovered: 10, terminal: 0 }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.backlogScale ?? "", CAUGHT_UP_RE, "zero terminal must still say caught up");
+});
+
 // ─── deriveStreakDots ─────────────────────────────────────────────────────────
 
 test("deriveStreakDots returns empty array for no runs", () => {

@@ -117,6 +117,13 @@ interface BaseCollectContext {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  /**
+   * SLVP-ideal §4.3: when true, the connector MUST run its gap-recovery pass
+   * then return before any forward walk / list-phase fetch. Threaded from the
+   * START message's `recovery_only` field. Absent/false = ordinary full run —
+   * optional so connectors that do not implement recovery-only ignore it.
+   */
+  recoveryOnly?: boolean;
   requestDetailGapPage: (req?: {
     maxBytes?: number;
     streams?: readonly string[];
@@ -698,6 +705,9 @@ export function runConnector(config: RunConnectorConfig): void {
       emittedAt,
       detailGaps: startMsg.detail_gaps ?? [],
       requestDetailGapPage,
+      // §4.3: forward recovery_only from the START message so connectors can
+      // suppress the forward walk while draining non-pressure detail gaps.
+      recoveryOnly: startMsg.recovery_only === true,
     };
 
     if (browser) {

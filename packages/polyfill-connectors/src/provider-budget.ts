@@ -304,9 +304,16 @@ export class ProviderBudgetController implements SendDelayHint {
     this.runBudget?.recordRequest();
   }
 
-  recordSuccess(): void {
+  /**
+   * §10-D (SLVP-ideal): pass `{ suppressAdditiveIncrease: true }` when this
+   * success fires from the cooldown-exempt recovery lane so the shared pacer
+   * interval is not decreased (un-learning the back-off the cooldown protects).
+   * Throttles still fire unconditionally — recovery may decelerate, never
+   * accelerate the shared pacer during cooldown.
+   */
+  recordSuccess(opts?: { suppressAdditiveIncrease?: boolean }): void {
     this.retryBudget?.recordSuccess();
-    this.pacing?.recordSuccess();
+    this.pacing?.recordSuccess(opts);
     const previousCircuitState = this.circuitBreaker?.state ?? null;
     this.circuitBreaker?.recordSuccess();
     this.recordCircuitTransition(previousCircuitState, "success");

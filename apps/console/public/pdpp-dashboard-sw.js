@@ -1,5 +1,6 @@
 const PDPP_KNOWN_PUSH_TYPES = new Set([
   "pdpp.assistance_requested",
+  "pdpp.escalation",
   "pdpp.pending_interaction",
   "pdpp.test_notification",
 ]);
@@ -21,6 +22,15 @@ function pdppDefaultTag(payload) {
   if (payload.type === "pdpp.test_notification") {
     const suffix = typeof payload.timestamp === "string" ? payload.timestamp : Date.now();
     return `pdpp-test-notification-${suffix}`;
+  }
+  // Escalation tag is per-connector + reason so deduplication collapses
+  // repeated pushes for the same human-required state into one notification.
+  // The scheduler already emits at most one escalation per streak, but the
+  // service-worker tag provides a second dedup layer at the OS level.
+  if (payload.type === "pdpp.escalation") {
+    const connName = typeof payload.connector_display_name === "string" ? payload.connector_display_name : "connector";
+    const reason = typeof payload.escalation_reason === "string" ? payload.escalation_reason : "escalation";
+    return `pdpp-escalation-${connName}-${reason}`;
   }
   if (typeof payload.assistance_request_id === "string") return `pdpp-${payload.assistance_request_id}`;
   if (typeof payload.interaction_id === "string") return `pdpp-${payload.interaction_id}`;

@@ -66,6 +66,7 @@ import {
   classifyChatGptSourcePressure,
   consumeChatGptProviderRetryBudget,
   processConversationDetail,
+  readChatGptPersistedPacing,
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
   resolveChatGptMaxDetailFetchesPerRun,
@@ -73,7 +74,6 @@ import {
   resolveChatGptMaxTailDeferralGapsPerRun,
   resolveChatGptProviderBudget,
   resolveChatGptRateLimitDensityStop,
-  resolveChatGptWarmStartInterval,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -3335,25 +3335,42 @@ test("runConversationsAndMessagesStreams: warm-start round-trip — a run persis
   const learned = providerBudget.pacing.currentIntervalMs;
   assert.ok(learned < coldInterval, "the controller learned a faster interval across the run");
 
-  // Persist exactly as the connector does, then read it back through the
-  // staleness-guarded resolver as the NEXT run would.
+  // Persist exactly as the connector does, then read it back as the NEXT run
+  // would. The RAW persisted pacing (interval + recordedAt) flows straight into
+  // resolveChatGptProviderBudget, which hands restoredAtMs + the 6h
+  // maxWarmStartAgeMs to ProviderPacing — the shared primitive owns the §10-E
+  // staleness decision (no ChatGPT-specific resolver). This test covers the
+  // WIRING (raw state → budget warm-starts); the staleness clock behaviour
+  // itself is unit-tested against ProviderPacing in provider-pacing.test.ts.
   const now = 1_000_000;
   const persistedFields = buildChatGptPacingStateFields(providerBudget, () => now);
   const nextState = { messages: { last_update_time: null, ...persistedFields } } as CollectContext["state"];
-  const restored = resolveChatGptWarmStartInterval(nextState, () => now + 1000);
-  assert.equal(restored, learned, "a fresh next run restores the prior run's learned interval");
+  const persisted = readChatGptPersistedPacing(nextState);
+  assert.ok(persisted, "the persisted pacing carries the learned interval + recordedAt");
+  assert.equal(persisted?.intervalMs, learned, "the persisted interval is the prior run's learned value");
+  assert.equal(persisted?.recordedAtMs, now, "the persisted pacing carries WHEN it was learned (for §10-E)");
 
-  // The restored interval seeds a fresh controller below the cold seed.
-  const warmBudget = resolveChatGptProviderBudget({}, restored);
+  // A fresh warm-start (recordedAt within the window) resumes at the learned
+  // interval. recordedAtMs ≈ Date.now() here, so the guard treats it as fresh.
+  const warmBudget = resolveChatGptProviderBudget({}, { intervalMs: learned, recordedAtMs: Date.now() });
   assert.equal(
     warmBudget?.pacing?.currentIntervalMs,
     learned,
-    "warm-start resumes near the learned interval, not the cold default"
+    "a fresh warm-start resumes near the learned interval, not the cold default"
   );
 
-  // A stale resume (older than the guard) falls back to cold.
-  const staleRestored = resolveChatGptWarmStartInterval(nextState, () => now + 10 * 60 * 60 * 1000);
-  assert.equal(staleRestored, null, "a stale persisted interval is discarded (cold start)");
+  // A STALE resume (learned > 6h ago) cold-starts: ProviderPacing discards the
+  // restored interval and uses the discovery seed, so a long idle never bursts
+  // into a possibly-tightened quota (§10-E).
+  const staleBudget = resolveChatGptProviderBudget(
+    {},
+    { intervalMs: learned, recordedAtMs: Date.now() - 7 * 60 * 60 * 1000 }
+  );
+  assert.equal(
+    staleBudget?.pacing?.currentIntervalMs,
+    coldInterval,
+    "a stale persisted interval is discarded — ProviderPacing cold-starts at the discovery seed"
+  );
 });
 
 test("buildChatGptCollectionRateProgress: legible rate state carries no account content", () => {
@@ -4191,4 +4208,97 @@ test("runMessagesAndConversationsWithDetail: no-cap run is byte-for-byte unchang
 
   const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
   assert.equal(gaps.length, 0, "no gaps materialized on an uncapped run");
+});
+
+// ─── SLVP-ideal §4.3/§4.4: recoveryOnly suppresses the forward walk ─────────
+
+test("runConversationsAndMessagesStreams: recoveryOnly=true runs recovery then returns before list-phase fetch", async () => {
+  // §4.3 — when recoveryOnly is set, the connector MUST run the recovery pass
+  // (recoverPendingMessageDetailGapsBeforeForwardRun) then return without
+  // touching the list-phase fetch (/conversations?...) or any forward-walk
+  // detail fetches. This prevents the recovery lane from re-pressuring the
+  // source the cooldown is protecting (§4.4 mandatory sequencing guard).
+  const harness = makeRecordingEmit(validateRecord);
+  const recoveredConvo = makeConvo({ id: "convo-recover-only", update_time: 1_700_000_100 });
+  const fetchedPaths: string[] = [];
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetchedPaths.push(path);
+      if (path === `/conversation/${recoveredConvo.id}`) {
+        return Promise.resolve(makeDetailOk());
+      }
+      // The list-phase URL must NEVER be reached in recoveryOnly mode
+      return Promise.resolve({
+        status: 200,
+        json: { items: [], has_missing_conversations: false, total: 0 },
+      });
+    },
+  };
+
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [makeDetailGapFromConvo("gap-recovery-only", recoveredConvo)],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    recoveryOnly: true,
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  // Recovery fetch (the gap detail) MUST have fired
+  assert.ok(
+    fetchedPaths.some((p) => p === `/conversation/${recoveredConvo.id}`),
+    `recovery detail fetch must fire; got: ${JSON.stringify(fetchedPaths)}`
+  );
+
+  // List-phase fetch MUST NOT have fired — this is the forward-walk suppression
+  assert.ok(
+    !fetchedPaths.some((p) => p.startsWith("/conversations?")),
+    `list-phase fetch must be suppressed in recoveryOnly mode; got: ${JSON.stringify(fetchedPaths)}`
+  );
+
+  // The recovered gap must surface a DETAIL_GAP_RECOVERED protocol message
+  const recovered = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP_RECOVERED");
+  assert.equal(recovered.length, 1, "recovered gap emits exactly one DETAIL_GAP_RECOVERED");
+});
+
+test("runConversationsAndMessagesStreams: recoveryOnly=false (default) performs list-phase fetch as normal", async () => {
+  // Confirm the existing behavior is unchanged when recoveryOnly is absent/false.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedPaths: string[] = [];
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetchedPaths.push(path);
+      if (path.startsWith("/conversations?")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: [], has_missing_conversations: false, total: 0 },
+        });
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // recoveryOnly absent (defaults to false)
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  assert.ok(
+    fetchedPaths.some((p) => p.startsWith("/conversations?")),
+    "list-phase fetch fires on a normal (non-recoveryOnly) run"
+  );
 });

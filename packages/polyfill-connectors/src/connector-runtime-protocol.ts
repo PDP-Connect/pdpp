@@ -37,6 +37,13 @@ export interface StreamScope {
 
 export interface StartMessage {
   detail_gaps?: readonly DetailGapStartEntry[];
+  /**
+   * SLVP-ideal §4.3 recovery-only launch mode. When true, the connector drains
+   * pending non-source-pressure detail gaps and MUST NOT perform the forward
+   * walk or new list-phase fetches — the source-pressure cooldown is deferring
+   * new source-touching work. Absent/false = an ordinary full run.
+   */
+  recovery_only?: boolean;
   scope: { streams: readonly StreamScope[] };
   state?: Record<string, unknown>;
   streamsToBackfill?: readonly string[];

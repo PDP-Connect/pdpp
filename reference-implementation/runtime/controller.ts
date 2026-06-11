@@ -144,7 +144,8 @@ export interface SchedulerBackoffApi {
   readonly consecutive_failures: number;
   readonly next_run_at: string | null;
   readonly reason_class: string | null;
-  readonly recommended_health_state: "blocked" | "cooling_off" | null;
+  // §10-B: `needs_attention` added — cooldown exhausted no-progress cycle budget.
+  readonly recommended_health_state: "blocked" | "cooling_off" | "needs_attention" | null;
 }
 
 export interface RefreshPolicy {
@@ -1616,10 +1617,16 @@ function mergeBackoffAndCooldown(
   const nextRunAt = cooldownDefersFurther ? cooldown.nextRunAt : decision.nextRunAt;
 
   // `blocked` (chronic failure) is the strongest state and is never softened.
+  // §10-B: `needs_attention` from the cooldown governor (dead-but-429ing
+  // provider exhausted its maxCooldownCycles budget) surfaces here — it is
+  // stronger than plain `cooling_off` but weaker than `blocked`.
   // Otherwise, if either governor is cooling, surface `cooling_off`.
   let recommendedHealthState: SchedulerBackoffApi["recommended_health_state"];
   if (decision.recommendedHealthState === "blocked") {
     recommendedHealthState = "blocked";
+  } else if (cooldown.recommendedHealthState === "needs_attention") {
+    // §10-B escalation: cooldown has exhausted its no-progress cycle budget.
+    recommendedHealthState = "needs_attention";
   } else if (decision.recommendedHealthState === "cooling_off" || cooldownDefersNow) {
     recommendedHealthState = "cooling_off";
   } else {
