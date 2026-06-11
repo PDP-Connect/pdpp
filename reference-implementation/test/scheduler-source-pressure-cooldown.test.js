@@ -132,6 +132,33 @@ test('non-pressure gap reasons do not engage cooldown (no accidental throttle)',
   assert.equal(decision.pendingPressureGapCount, 0);
 });
 
+// ─── Cross-run invariant: run_cap_deferred must never arm the cooldown ───────
+//
+// This is the non-negotiable correctness property the bounded-run compounding
+// model depends on: a run that was stopped by the owner/system cap (opt-in
+// unattended envelope) defers its tail with reason `run_cap_deferred`. That
+// reason MUST NOT appear in SOURCE_PRESSURE_GAP_REASONS and MUST NOT engage
+// the source-pressure cooldown governor, because a capped run is not evidence
+// of a hot provider — the next scheduled run must be free to proceed at the
+// normal cadence and drain the remaining gaps. If this guard broke, each
+// bounded run would arm an exponential cooldown and the backlog would never
+// converge to 100%.
+
+test('run_cap_deferred is not a source-pressure reason and does not engage cooldown', () => {
+  assert.equal(
+    SOURCE_PRESSURE_GAP_REASONS.has('run_cap_deferred'),
+    false,
+    'run_cap_deferred must not be in SOURCE_PRESSURE_GAP_REASONS',
+  );
+  const decision = computeSourcePressureCooldown(
+    [gap({ reason: 'run_cap_deferred' })],
+    BASE_INTERVAL_MS,
+    T0,
+  );
+  assert.equal(decision.cooldownApplied, false, 'run_cap_deferred gap must not arm the source-pressure cooldown');
+  assert.equal(decision.pendingPressureGapCount, 0);
+});
+
 test('mixed gaps count only the pressure-reason subset', () => {
   const decision = computeSourcePressureCooldown(
     [gap({ reason: 'upstream_pressure' }), gap({ reason: 'retry_exhausted' }), gap({ reason: 'rate_limited' })],
