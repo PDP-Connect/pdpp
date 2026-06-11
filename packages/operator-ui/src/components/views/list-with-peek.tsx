@@ -234,7 +234,11 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
             const peeked = peekId === id;
             const href = buildListHref({ peek: id });
             const groupKey = dateGroupKey ? dateGroupKey(item) : null;
-            const prevGroupKey = dateGroupKey && index > 0 ? dateGroupKey(result.data[index - 1]) : null;
+            // `result.data[index - 1]` is typed `T | undefined` under
+            // noUncheckedIndexedAccess; binding it first lets the `prevItem`
+            // truthiness guard narrow it to `T` before `dateGroupKey` consumes it.
+            const prevItem = index > 0 ? result.data[index - 1] : undefined;
+            const prevGroupKey = dateGroupKey && prevItem ? dateGroupKey(prevItem) : null;
             const showSeparator = groupKey !== null && groupKey !== prevGroupKey;
             return (
               <Fragment key={id}>

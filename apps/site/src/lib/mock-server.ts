@@ -206,7 +206,7 @@ export class MockPDPPServer {
     };
   }
 
-  // ── Introspection (for completeness) ──
+  // ── Introspection ──
 
   introspect(grantId: string): { active: boolean; grant: Grant | null } {
     const grant = this.grants.get(grantId);
@@ -214,6 +214,35 @@ export class MockPDPPServer {
       return { active: false, grant: null };
     }
     return { active: grant.status === "active", grant };
+  }
+
+  /**
+   * RFC 7662-shaped token introspection with the PDPP extensions the RS reads
+   * before serving any query: the token kind (owner vs client) and the bound
+   * subject. The reference docs describe these exact fields (see the Export
+   * section's `pdpp_token_kind` / `subject_id`); this returns the live shape so
+   * the reference page can show the real exchange, not prose. The RS determines
+   * token kind from introspection, never from token syntax.
+   */
+  introspectClientToken(grantId: string): {
+    active: boolean;
+    pdpp_token_kind: "client";
+    grant_id: string;
+    grant_status: Grant["status"] | "unknown";
+    client_id: string | null;
+    subject_id: string;
+    scope_streams: string[];
+  } {
+    const grant = this.grants.get(grantId);
+    return {
+      active: grant?.status === "active",
+      pdpp_token_kind: "client",
+      grant_id: grantId,
+      grant_status: grant?.status ?? "unknown",
+      client_id: grant?.client_id ?? null,
+      subject_id: "user_abc123",
+      scope_streams: grant?.streams.map((s) => s.name) ?? [],
+    };
   }
 
   // ── Stats ──
