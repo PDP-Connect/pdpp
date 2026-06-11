@@ -14,6 +14,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { Suspense } from "react";
 import { DashboardShell } from "./components/shell.tsx";
 import { WebPushSettings } from "./components/web-push-settings.tsx";
+import { rethrowControlFlow } from "./lib/control-flow.ts";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getWebPushConfig, listWebPushSubscriptions } from "./lib/ref-client.ts";
 
@@ -75,6 +76,10 @@ async function DatasetSummarySection() {
       />
     );
   } catch (err) {
+    // A redirect (e.g. owner-session re-auth) thrown by the read path is control
+    // flow, not a data error: re-throw it so the navigation runs instead of
+    // surfacing its `NEXT_REDIRECT` digest as the hero's error message.
+    rethrowControlFlow(err);
     return <OverviewHeroError message={err instanceof Error ? err.message : undefined} />;
   }
 }
@@ -83,7 +88,8 @@ async function AttentionSection() {
   try {
     const data = await loadAttentionSummary();
     return <AttentionOverview data={data} routes={dashboardRoutes} />;
-  } catch {
+  } catch (err) {
+    rethrowControlFlow(err);
     return <AttentionOverviewError />;
   }
 }
@@ -92,7 +98,8 @@ async function RecentActivitySection() {
   try {
     const data = await loadRecentActivity();
     return <RecentActivityOverview data={data} routes={dashboardRoutes} />;
-  } catch {
+  } catch (err) {
+    rethrowControlFlow(err);
     return <RecentActivityError />;
   }
 }
@@ -101,7 +108,8 @@ async function WebPushSettingsSection() {
   try {
     const [webPush, subscriptions] = await Promise.all([getWebPushConfig(), listWebPushSubscriptions()]);
     return <WebPushSettings config={webPush} subscriptions={subscriptions.data} />;
-  } catch {
+  } catch (err) {
+    rethrowControlFlow(err);
     return null;
   }
 }
