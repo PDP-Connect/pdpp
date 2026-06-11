@@ -93,8 +93,8 @@ export default async function StaticSecretConnectPage({
               setup.deployment_readiness.guidance ??
               "Configure the instance-level credential key provider before entering a provider credential."
             }
-            surface="human"
             title="Credential storage is not ready"
+            tone="warning"
           >
             <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
               {setup.deployment_readiness.blockers.map((blocker) => (

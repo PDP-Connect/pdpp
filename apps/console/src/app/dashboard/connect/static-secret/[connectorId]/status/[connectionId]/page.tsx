@@ -187,8 +187,8 @@ export default async function StaticSecretSetupStatusPage({
       </Section>
 
       {status.last_error ? (
-        <Callout className="mt-5" description={status.last_error.remediation} surface="human" title="First sync failed">
-          <p className="pdpp-caption text-muted-foreground">Reason: {status.last_error.reason}</p>
+        <Callout className="mt-5" description={status.last_error.remediation} title="First sync failed" tone="warning">
+          <p className="pdpp-caption text-callout-warning-fg/80">Reason: {status.last_error.reason}</p>
         </Callout>
       ) : null}
     </DashboardShell>

@@ -265,13 +265,13 @@ function InlineNotice({ message }: { message: string }) {
 // MCP endpoint rejects owner bearers by design.
 function OwnerScopeCallout() {
   return (
-    <Callout className="mb-6" surface="human" title="Use this for operator and trusted-agent access only">
-      <p className="pdpp-caption text-muted-foreground">
+    <Callout className="mb-6" title="Use this for operator and trusted-agent access only" tone="warning">
+      <p className="pdpp-caption text-callout-warning-fg/80">
         Owner-agent credentials are owner bearers — they grant the operator's full read access to{" "}
         <code className="font-mono">/v1/*</code>. Use them for the operator themselves, for CLI tools and scripts you
         wrote, and for trusted local agents that run on your behalf.
       </p>
-      <p className="pdpp-caption mt-2 text-muted-foreground">
+      <p className="pdpp-caption mt-2 text-callout-warning-fg/80">
         Ordinary MCP clients (Claude, ChatGPT, third-party agents) should connect through the OAuth scoped-grant flow at{" "}
         <code className="font-mono">/mcp</code>. That path is documented in the{" "}
         <Link className="underline-offset-2 hover:underline" href="/dashboard/connect">

@@ -258,14 +258,14 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 // nearly flat — base.css steps each tone's fill up and adds a same-hue inset
 // ring so a failure is easy to spot in a scannable list.
 const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
-  // Bound to the --status-*-bg token tier from packages/pdpp-brand/base.css so the
-  // fill is defined in one place and adapts to light/dark via the CSS variable.
-  // Text color is handled by the data-status-tone CSS rules in base.css (which
-  // need higher specificity than .pdpp-eyebrow anyway — see comment there).
-  danger: "bg-[color:var(--status-danger-bg)]",
-  success: "bg-[color:var(--status-success-bg)]",
-  warning: "bg-[color:var(--status-warning-bg)]",
-  neutral: "bg-[color:var(--status-neutral-bg)]",
+  // Uses the theme-mapped bg-status-* utilities (--color-status-*-bg in @theme
+  // inline) — no bracket notation needed. Text color is handled by the
+  // data-status-tone CSS rules in base.css (higher specificity than
+  // .pdpp-eyebrow; see comment there).
+  danger: "bg-status-danger-bg",
+  success: "bg-status-success-bg",
+  warning: "bg-status-warning-bg",
+  neutral: "bg-status-neutral-bg",
 };
 
 export function StatusBadge({
@@ -295,36 +295,84 @@ export function StatusBadge({
 
 // ─── Callout: the one card pattern ─────────────────────────────────────────
 // Use sparingly. Reserved for genuinely bounded context:
-//   - inline human-tinted workspace step (grant request / device flow)
-//   - protocol-tinted protocol-data emphasis
-//   - neutral bordered box (last resort)
+//   - `info`     — informational / advisory note (cool-blue tint; token-backed)
+//   - `warning`  — owner-action required or non-blocking risk (amber tint; token-backed)
+//   - `human`    — inline workspace step with human-temperature left-border
+//   - `protocol` — protocol-data emphasis with protocol-temperature left-border
+//   - `neutral`  — plain bordered box (last resort; no temperature signal)
+//
+// `tone` (new) takes `info` | `warning`; `surface` (legacy) takes
+// `neutral` | `human` | `protocol`. Passing `tone` wins over `surface`
+// for the styling — callers migrating from faked inline warm callouts should
+// switch to `tone="info"` or `tone="warning"`.
 
 export function Callout({
   title,
   description,
   children,
   surface = "neutral",
+  tone,
   action,
   className = "",
 }: {
   title?: ReactNode;
   description?: ReactNode;
   children?: ReactNode;
+  /** Legacy temperature surface. Prefer `tone` for informational/warning callouts. */
   surface?: "neutral" | "human" | "protocol";
+  /** Semantic callout tone. When set, overrides `surface` styling. */
+  tone?: "info" | "warning";
   action?: ReactNode;
   className?: string;
 }) {
-  const surfaceAttr = surface === "neutral" ? undefined : surface;
-  const neutralClass = surface === "neutral" ? "border-border/80 bg-muted/30 border rounded-md" : "rounded-md";
+  let containerClass: string;
+  let titleColorClass: string;
+  let descColorClass: string;
+
+  if (tone === "info") {
+    containerClass =
+      "rounded-md border px-4 py-3 bg-callout-info-bg border-callout-info-border";
+    titleColorClass = "text-callout-info-fg";
+    descColorClass = "text-callout-info-fg/80";
+  } else if (tone === "warning") {
+    containerClass =
+      "rounded-md border px-4 py-3 bg-callout-warning-bg border-callout-warning-border";
+    titleColorClass = "text-callout-warning-fg";
+    descColorClass = "text-callout-warning-fg/80";
+  } else {
+    const surfaceAttr = surface === "neutral" ? undefined : surface;
+    const neutralClass =
+      surface === "neutral" ? "border-border/80 bg-muted/30 border rounded-md" : "rounded-md";
+    containerClass = neutralClass;
+    titleColorClass = "text-foreground";
+    descColorClass = "text-muted-foreground";
+    return (
+      <div className={`${containerClass} px-4 py-3 ${className}`.trim()} data-surface={surfaceAttr}>
+        {title || action ? (
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            {title ? <h3 className={`pdpp-title ${titleColorClass}`}>{title}</h3> : <span />}
+            {action ? <div className="pdpp-caption">{action}</div> : null}
+          </div>
+        ) : null}
+        {description ? (
+          <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p>
+        ) : null}
+        {children}
+      </div>
+    );
+  }
+
   return (
-    <div className={`${neutralClass} px-4 py-3 ${className}`.trim()} data-surface={surfaceAttr}>
+    <div className={`${containerClass} ${className}`.trim()}>
       {title || action ? (
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-          {title ? <h3 className="pdpp-title text-foreground">{title}</h3> : <span />}
+          {title ? <h3 className={`pdpp-title ${titleColorClass}`}>{title}</h3> : <span />}
           {action ? <div className="pdpp-caption">{action}</div> : null}
         </div>
       ) : null}
-      {description ? <p className="pdpp-caption mb-2 text-muted-foreground">{description}</p> : null}
+      {description ? (
+        <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p>
+      ) : null}
       {children}
     </div>
   );
