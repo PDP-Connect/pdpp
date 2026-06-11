@@ -13,6 +13,7 @@ import {
   summarizeAxisChips,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
+  synthesizeConnectionVerdict,
 } from "../../lib/connection-evidence.ts";
 import type {
   DeviceSourceInstance,
@@ -160,11 +161,19 @@ function ProjectedStateDiagnostics({
     .map((id) => conditionById.get(id))
     .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
 
+  // Single-voice synthesis [SLVP §1.3, Frame 3 P11]: the detail header badge
+  // uses the SAME effective state as the list row, so a source-pressure
+  // cooldown reads "cooling off" on both surfaces with no vocabulary drift. The
+  // synthesized runbook is the badge tooltip. The raw `reason_code` still shows
+  // beside it here — the detail page is the place for the underlying evidence.
+  const verdict = synthesizeConnectionVerdict(connectionHealth);
   return (
     <div className="flex flex-col gap-2">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
         <span>Health:</span>
-        <StatusBadge status={connectionHealth.state} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+        <span title={verdict.runbook}>
+          <StatusBadge status={verdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+        </span>
         {connectionHealth.reason_code ? (
           <>
             {" · "}

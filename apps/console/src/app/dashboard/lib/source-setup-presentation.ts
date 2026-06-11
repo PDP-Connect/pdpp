@@ -99,7 +99,9 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return { label: "Not self-service yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+      // Existing data keeps working; there is just no shipped owner add path.
+      // Agreed label — kills the last "not self-service" string on the surface.
+      return { label: "Existing data only", tone: "border-border bg-muted/30 text-muted-foreground" };
     default:
       return { label: "Not supported yet", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
@@ -111,7 +113,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
+      return "Browser setup will move into the dashboard. Existing collected data remains usable; the packaged in-dashboard add path is still pending.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
@@ -123,7 +125,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
+      return "Browser setup will move into the dashboard. Existing collected data remains usable; the packaged in-dashboard add path is still pending.";
     case "local_collector_unproven":
       return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
     case "provider_auth_proof_gated":

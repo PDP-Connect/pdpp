@@ -31,6 +31,7 @@ import {
   summarizeSchedule,
   syncActionIdleLabel,
   syncStartFailureLead,
+  synthesizeConnectionVerdict,
 } from "./connection-evidence.ts";
 import type {
   RefConnectionHealthCondition,
@@ -1962,4 +1963,113 @@ test("formatCollectionRateReadout omits the back-off line when none has fired", 
   });
   assert.ok(readout);
   assert.equal(readout.backoffLabel, null, "no back-off → no back-off line");
+});
+
+// ─── synthesizeConnectionVerdict: the single-voice "handling it" layer [SLVP §1.3]
+//
+// The decisive ChatGPT-card fix: a rate-limited connection whose root cause is a
+// source-pressure cooldown must read as "handling it" (cooling off, warning,
+// no button), NEVER as "broken" (blocked, danger). A genuine blocked connection
+// (no cooldown) keeps its danger badge and reconnect CTA.
+
+const DANGER_WORDS_RE = /broken|failed|error/i;
+
+test("synthesizeConnectionVerdict: blocked + source_pressure reads as cooling off, NOT blocked", () => {
+  // The live ChatGPT shape from Defect 4: the scheduler hit its retry threshold
+  // (state projected `blocked`) but the root cause is a 429 source-pressure
+  // cooldown — the last run succeeded and deferred detail as resumable gaps.
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "blocked",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-05-19T13:00:00Z",
+      detail_gap_backlog: backlog({ pending: 137, pending_is_floor: true, next_attempt_at: "2026-05-19T13:00:00Z" }),
+      axes: { coverage: "retryable_gap", freshness: "fresh", attention: "none", outbox: "idle" },
+    })
+  );
+  // The badge is suppressed from blocked → cooling_off (warning, not danger).
+  assert.equal(verdict.badgeState, "cooling_off");
+  assert.equal(verdict.suppressedBlocked, true);
+  // The system is handling it: no danger, no owner button.
+  assert.equal(verdict.handlingItself, true);
+  // One honest sentence: throttled, resuming on its own, data safe.
+  assert.match(verdict.runbook, /throttled/i);
+  assert.match(verdict.runbook, /no action needed/i);
+  assert.match(verdict.runbook, /2026-05-19T13:00:00Z/);
+  assert.doesNotMatch(verdict.runbook, DANGER_WORDS_RE);
+});
+
+test("synthesizeConnectionVerdict: cooling_off + source_pressure also reads as handling-it", () => {
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-05-19T14:00:00Z",
+      detail_gap_backlog: backlog({ pending: 0, recovered: 12 }),
+    })
+  );
+  assert.equal(verdict.badgeState, "cooling_off");
+  assert.equal(verdict.handlingItself, true);
+  assert.equal(verdict.suppressedBlocked, false, "the raw state was already cooling_off — nothing to suppress");
+  assert.match(verdict.runbook, /no action needed/i);
+});
+
+test("synthesizeConnectionVerdict: a blocked + backlog + scheduled-retry connection is treated as a cooldown", () => {
+  // No explicit source_pressure reason_code, but a pending backlog plus a
+  // scheduled next attempt is a deferral, not a terminal stop.
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "blocked",
+      reason_code: null,
+      next_attempt_at: "2026-05-19T15:00:00Z",
+      detail_gap_backlog: backlog({ pending: 40 }),
+    })
+  );
+  assert.equal(verdict.badgeState, "cooling_off");
+  assert.equal(verdict.suppressedBlocked, true);
+  assert.equal(verdict.handlingItself, true);
+});
+
+test("synthesizeConnectionVerdict: genuine blocked (no cooldown) keeps danger + reconnect framing", () => {
+  // Credential expiry / provider block: no source-pressure cooldown, no pending
+  // backlog, no scheduled retry. This MUST stay blocked so the owner acts.
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "blocked",
+      reason_code: "credentials_expired",
+      next_attempt_at: null,
+      detail_gap_backlog: null,
+    })
+  );
+  assert.equal(verdict.badgeState, "blocked");
+  assert.equal(verdict.handlingItself, false, "a genuinely blocked connection needs owner action");
+  assert.equal(verdict.suppressedBlocked, false);
+  assert.match(verdict.runbook, /reconnect/i);
+});
+
+test("synthesizeConnectionVerdict: needs_attention surfaces the dominant condition and needs action", () => {
+  const verdict = synthesizeConnectionVerdict(snapshot({ state: "needs_attention", reason_code: "reauth_required" }));
+  assert.equal(verdict.badgeState, "needs_attention");
+  assert.equal(verdict.handlingItself, false);
+});
+
+test("synthesizeConnectionVerdict: healthy reads as handling-it with no scary copy", () => {
+  const verdict = synthesizeConnectionVerdict(snapshot({ state: "healthy" }));
+  assert.equal(verdict.badgeState, "healthy");
+  assert.equal(verdict.handlingItself, true);
+  assert.doesNotMatch(verdict.runbook, DANGER_WORDS_RE);
+});
+
+test("synthesizeConnectionVerdict: degraded retryable_gap reads as recoverable handling-it", () => {
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "degraded",
+      axes: { coverage: "retryable_gap", freshness: "fresh", attention: "none", outbox: "idle" },
+      detail_gap_backlog: backlog({ pending: 250, pending_is_floor: true }),
+    })
+  );
+  assert.equal(verdict.badgeState, "degraded");
+  assert.equal(verdict.handlingItself, true, "a retryable gap fills on an ordinary run — the system is handling it");
+  assert.match(verdict.runbook, /recoverable|stay valid/i);
+  assert.match(verdict.runbook, /250/);
 });

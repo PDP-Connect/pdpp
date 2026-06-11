@@ -343,8 +343,8 @@ export function RecordsListView({
 
       {interactive ? (
         <SourceAccountsSummary
-          addSupportByConnectorId={addSupportByConnectorId}
           addSourceHref={routes.section.addSource}
+          addSupportByConnectorId={addSupportByConnectorId}
           overviews={labeled}
         />
       ) : null}
@@ -511,9 +511,7 @@ function SourceAccountCard({
           {group.revokedCount > 0 ? (
             <>
               {" · "}
-              <span className="text-muted-foreground">
-                {group.revokedCount} revoked
-              </span>
+              <span className="text-muted-foreground">{group.revokedCount} revoked</span>
             </>
           ) : null}
           {group.needsAttentionCount > 0 ? (
@@ -561,13 +559,18 @@ function SourceAccountActions({
           Reconnect
         </Link>
       ) : group.revokedCount > 0 ? (
+        // A revoked source's only path is the add-source SETUP PICKER, not a
+        // re-auth of the revoked connection [SLVP §1.3, Defect 6]. The verb must
+        // match that destination: "Start new setup", secondary-weight — never an
+        // imperative "Reconnect" that promises a repair the picker can't deliver
+        // (for a browser-bound source it lands on "Packaged path pending").
         <Link
           className={buttonVariants({ variant: "outline", size: "sm" })}
           data-testid="source-reconnect-action"
           href={support?.action?.href ?? addSourceSearchHref(addSourceHref, group.connectorId)}
-          title="This source has a revoked connection. Reconnect starts the supported setup path for another connection."
+          title="This source has a revoked connection. Starting a new setup begins the supported setup path for another connection — it does not re-authorize the revoked one."
         >
-          Reconnect
+          Start new setup
         </Link>
       ) : null}
       {group.revokedCount === 0 && support?.action ? (

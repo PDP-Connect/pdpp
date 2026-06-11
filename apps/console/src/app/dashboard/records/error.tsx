@@ -1,45 +1,110 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
+import { readLastRecordsReadAt } from "./last-known-read.ts";
 
 /**
- * Records-segment error boundary (App Router convention).
+ * Records-segment error boundary (App Router convention) — partial-aware.
  *
- * Scopes a records-area failure to the records area instead of letting it fall
- * through to the dashboard-wide `Something went wrong`. The owner reported that
- * a `Sync now` (or a Reddit sync) could crash the page to the generic
- * dashboard boundary; the run-start *action* now returns its failures as a
- * row-local toast, but a subsequent `router.refresh()` re-render can still
- * throw if a data read fails. When it does, this boundary keeps the owner in
- * the Sources context with a retry and a link back to the list, rather
- * than ejecting them to a contextless page.
+ * The owner reported hitting "Couldn't load your connections" — every card
+ * gone — during a reference rebuild, when a transient read failed mid
+ * `router.refresh()` (a poll tick or a post-Sync revalidation;
+ * `records-page-poller.tsx` / `connector-row.tsx`). A read blip at the very
+ * moment the owner most wants the page (ChatGPT consuming deployment resources
+ * mid-run) should never blank all 19 cards.
  *
- * Self-contained on purpose (mirrors `dashboard/error.tsx`): it must not import
- * server-only modules, since the dashboard shell transitively pulls in
- * `lib/owner-token.ts` (`server-only`). See
- * https://nextjs.org/docs/app/getting-started/error-handling.
+ * So this boundary is NOT a full-viewport takeover. It renders a compact,
+ * top-anchored banner that:
+ *   - frames the failure honestly as a *read* failure, not a data change;
+ *   - names *when* the data was last confirmed live (last-known timestamp,
+ *     read from the client-side `sessionStorage` marker the poller stamps —
+ *     see `last-known-read.ts`), so "showing last-known status" is truthful;
+ *   - offers an explicit Retry; and
+ *   - quietly auto-retries once after a short delay, so a transient blip
+ *     self-heals back to the live list without the owner lifting a finger.
+ *
+ * Self-contained on purpose (mirrors `dashboard/error.tsx`): a `"use client"`
+ * boundary must not import server-only modules, since the dashboard shell
+ * transitively pulls in `lib/owner-token.ts` (`server-only`). The last-known
+ * snapshot therefore comes from a client-cached marker, never a server read
+ * inside the boundary. See https://nextjs.org/docs/app/getting-started/error-handling.
  */
+
+// How long to wait before the single automatic recovery attempt. Long enough to
+// let a transient reference rebuild / 500 clear, short enough to feel like a
+// self-healing page rather than a stuck one.
+const AUTO_RETRY_DELAY_MS = 4000;
+
+function formatLastKnown(at: number | null): string | null {
+  if (at === null) {
+    return null;
+  }
+  try {
+    return new Date(at).toLocaleString();
+  } catch {
+    return null;
+  }
+}
+
 export default function RecordsError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  const [lastKnown, setLastKnown] = useState<string | null>(null);
+  const [autoRetried, setAutoRetried] = useState(false);
+
   useEffect(() => {
     console.error(error);
+    // Read the client-cached last-good timestamp on mount (sessionStorage is
+    // unavailable during SSR, so this stays in an effect).
+    setLastKnown(formatLastKnown(readLastRecordsReadAt()));
   }, [error]);
 
+  useEffect(() => {
+    // One automatic recovery attempt: re-run the segment render after a short
+    // delay so a transient read failure clears itself. If the read still fails
+    // the boundary re-mounts and the owner is left with the manual Retry — we
+    // never loop, so a persistent failure does not thrash the deployment.
+    if (autoRetried) {
+      return;
+    }
+    const id = setTimeout(() => {
+      setAutoRetried(true);
+      reset();
+    }, AUTO_RETRY_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [autoRetried, reset]);
+
+  const lastKnownLine = lastKnown
+    ? `Showing last-known status from ${lastKnown}.`
+    : "Showing the last status that loaded.";
+
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
-      <h1 className="pdpp-heading text-foreground">Couldn't load your connections</h1>
-      <p className="max-w-prose text-muted-foreground">
-        The Sources view ran into an error while reading from your reference deployment. Your data and connections are
-        unaffected — this is a read failure, not a change. Try again, or check your reference deployment status.
+    <section
+      aria-live="polite"
+      className="mb-6 rounded-md border border-[color:var(--warning)]/30 border-l-4 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-4 py-3"
+      data-testid="records-read-failure-banner"
+      role="status"
+    >
+      <p className="pdpp-body font-medium text-foreground">Couldn't refresh your connections</p>
+      <p className="pdpp-caption mt-1 max-w-prose text-muted-foreground">
+        The Sources view hit an error reading from your reference deployment. Your data and connections are unaffected —
+        this is a read failure, not a change. {lastKnownLine} Retrying automatically…
       </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
-          Try again
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <button
+          className={buttonVariants({ variant: "default", size: "sm" })}
+          data-testid="records-read-failure-retry"
+          onClick={() => {
+            setAutoRetried(true);
+            reset();
+          }}
+          type="button"
+        >
+          Retry now
         </button>
         <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/records">
-          Back to connections
+          Reload Sources
         </a>
       </div>
-    </main>
+    </section>
   );
 }

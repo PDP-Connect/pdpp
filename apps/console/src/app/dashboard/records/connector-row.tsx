@@ -24,6 +24,7 @@ import {
   summarizeAxisChips,
   syncActionIdleLabel,
   syncStartFailureLead,
+  synthesizeConnectionVerdict,
 } from "../lib/connection-evidence.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import { isRevokedConnection } from "../lib/records-list-classification.ts";
@@ -60,7 +61,9 @@ type RowPrimaryAction =
   | {
       detail: string;
       href: string;
-      kind: "reconnect";
+      // A new-setup start (revoked row → add-source picker). Secondary-weight,
+      // because the verb leads to a NEW setup, not a repair of this connection.
+      kind: "new_setup";
       label: string;
     };
 
@@ -234,13 +237,19 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(lastRun?.status);
+  // The verb must match the destination [SLVP §1.3, Defect 6]. A revoked row's
+  // href is the add-source SETUP PICKER (a new-setup start), not a re-auth — so
+  // "Reconnect" was a dead-end promise (for a browser-bound source like Reddit
+  // the picker shows "Packaged path pending"). Label it "Start new setup" and
+  // render it secondary-weight, so it never reads as an imperative repair that
+  // re-authorizes the existing connection.
   const rowAction: RowPrimaryAction = revoked
     ? {
-        kind: "reconnect",
+        kind: "new_setup",
         href: addSourceHrefForConnector(connector.connector_id),
-        label: "Reconnect",
+        label: "Start new setup",
         detail:
-          "This connection is revoked: future collection is stopped while retained records stay visible. Reconnect starts the supported setup path for this source.",
+          "This connection is revoked: future collection is stopped while retained records stay visible. Starting a new setup begins the supported setup path for this source — it does not re-authorize the revoked connection.",
       }
     : primaryAction;
   const durableProgress = formatLastDurableProgress({
@@ -279,13 +288,11 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
         <ConnectorStats
           displayedStreamCount={displayedStreamCount}
           hasError={Boolean(overview.error)}
-          hasPartialCoverageHint={hasPartialCoverageHint}
           lastRun={lastRun}
           lastSuccessfulRun={lastSuccessfulRun}
           localDeviceProgress={overview.localDeviceProgress ?? null}
           recordCount={recordCount}
           retainedBytes={retainedBytes ?? null}
-          runsHref={runsHref}
           totalRecords={totalRecords}
           totalRetainedBytes={totalRetainedBytes ?? null}
         />
@@ -322,8 +329,10 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
         durableProgress={durableProgress}
         nextAction={nextAction}
         nextStep={nextStep}
+        partialCoverageHref={hasPartialCoverageHint ? `${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}` : null}
         projectionFreshness={projectionFreshness}
         revoked={revoked}
+        runbook={connectionHealth ? synthesizeConnectionVerdict(connectionHealth).runbook : null}
         toast={toast}
       />
     </li>
@@ -353,11 +362,14 @@ function PrimaryRowActionControl({
   onSync: () => void;
   running: boolean;
 }) {
-  if (action.kind === "reconnect") {
+  if (action.kind === "new_setup") {
+    // Secondary/outline weight: a new-setup start is NOT a primary repair. The
+    // imperative filled button is reserved for true owner-action states (Sync /
+    // a detail-page reconnect). The label's verb matches its destination.
     return (
       <Link
-        aria-label={`Reconnect ${displayName}`}
-        className={buttonVariants({ variant: "default", size: "sm" })}
+        aria-label={`${action.label} for ${displayName}`}
+        className={buttonVariants({ variant: "outline", size: "sm" })}
         href={action.href}
         title={action.detail}
       >
@@ -391,28 +403,28 @@ function PrimaryRowActionControl({
 function ConnectorStats({
   displayedStreamCount,
   hasError,
-  hasPartialCoverageHint,
   lastRun,
   lastSuccessfulRun,
   localDeviceProgress,
   recordCount,
   retainedBytes,
-  runsHref,
   totalRecords,
   totalRetainedBytes,
 }: {
   displayedStreamCount: number;
   hasError: boolean;
-  hasPartialCoverageHint: boolean;
   lastRun: ConnectorRunRef | null;
   lastSuccessfulRun: ConnectorRunRef | null;
   localDeviceProgress: ConnectorOverview["localDeviceProgress"];
   recordCount: ReturnType<typeof resolveRecordCountDisplay>;
   retainedBytes: ConnectorOverview["retainedBytes"] | null;
-  runsHref: string;
   totalRecords: number;
   totalRetainedBytes: number | null;
 }) {
+  // The secondary-metrics slot [SLVP §1.2 slot 3]: last-success + record count
+  // in 13px tabular secondary. It carries NO colored link — the
+  // partial-coverage cue moved into the peek so it never competes with the one
+  // StatusBadge as a second row-level color [Defect 8].
   return (
     <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
       <span>
@@ -434,15 +446,6 @@ function ConnectorStats({
         localDeviceProgress={localDeviceProgress ?? null}
         totalRecords={totalRecords}
       />
-      {hasPartialCoverageHint ? (
-        <Link
-          className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
-          href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
-          title="Latest run produced records but reported known source gaps"
-        >
-          Partial source coverage
-        </Link>
-      ) : null}
     </div>
   );
 }
@@ -454,8 +457,10 @@ function ConnectorRowEvidence({
   durableProgress,
   nextAction,
   nextStep,
+  partialCoverageHref,
   projectionFreshness,
   revoked,
+  runbook,
   toast,
 }: {
   axisChips: AxisChip[];
@@ -464,13 +469,19 @@ function ConnectorRowEvidence({
   durableProgress: ReturnType<typeof formatLastDurableProgress>;
   nextAction: ReturnType<typeof formatNextAction>;
   nextStep: NextStepGuidance | null;
+  /** Run-detail href for the partial-coverage cue, or null when none. */
+  partialCoverageHref: string | null;
   projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
   revoked: boolean;
+  /** The synthesized one-line "handling it" runbook (peek summary), or null. */
+  runbook: string | null;
   toast: ToastState;
 }) {
-  return (
-    <>
-      {revoked ? (
+  // The revoked notice and the action toast stay ALWAYS-VISIBLE: a revoked
+  // connection is a standing fact, and a toast is a transient action result.
+  if (revoked) {
+    return (
+      <>
         <div
           className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-muted-foreground"
           data-testid="connection-revoked-notice"
@@ -478,38 +489,91 @@ function ConnectorRowEvidence({
           Future collection is stopped. Retained records stay visible; use Reconnect to start a fresh setup path for
           this source.
         </div>
-      ) : null}
+        <ConnectorRowToast toast={toast} />
+      </>
+    );
+  }
 
-      {!revoked && axisChips.length > 0 ? (
-        <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
-          {axisChips.map((chip) => (
-            <AxisChipBadge chip={chip} key={chip.label} />
-          ))}
-          {durableProgress.unavailable ? (
-            <span
-              className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
-              data-testid="durable-progress-unavailable"
-              title="Last durable progress could not be derived from current evidence."
-            >
-              {durableProgress.label}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+  // The row's ONE peek [SLVP §1.2]: everything that used to stack as siblings
+  // (axis chips, dominant-condition notice, next-action pill, next-step
+  // guidance, projection-unreliable notice, partial-coverage link) now lives
+  // inside a single `<details>` disclosure whose `<summary>` is the synthesized
+  // one-sentence runbook. The row stays singular; depth is one click (or the
+  // badge tooltip) away. No client JS — native disclosure, keyboard-activatable.
+  const hasAxisChips = axisChips.length > 0;
+  const hasPeekBody =
+    hasAxisChips ||
+    durableProgress.unavailable ||
+    projectionFreshness.unreliable ||
+    dominantCondition !== null ||
+    nextAction !== null ||
+    nextStep !== null ||
+    partialCoverageHref !== null;
 
-      {!revoked && projectionFreshness.unreliable ? (
-        <div
-          className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
-          data-testid="projection-unreliable"
-          title={projectionFreshness.detail}
+  // Nothing to disclose and no runbook → a clean (green/ready) row shows no
+  // peek at all, exactly per the "healthy rows render no extra" rule.
+  if (!(hasPeekBody || runbook)) {
+    return <ConnectorRowToast toast={toast} />;
+  }
+
+  return (
+    <>
+      <details className="group mx-3 mb-2" data-testid="connector-row-peek">
+        <summary
+          className="pdpp-caption flex cursor-pointer list-none items-center gap-1.5 text-muted-foreground underline-offset-2 hover:text-foreground"
+          data-testid="connector-row-peek-summary"
         >
-          <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
-        </div>
-      ) : null}
+          <span aria-hidden className="inline-block transition-transform group-open:rotate-90">
+            ▸
+          </span>
+          <span className="min-w-0 truncate">{runbook ?? "Status detail"}</span>
+        </summary>
+        {hasPeekBody ? (
+          <div className="mt-2 flex flex-col gap-2" data-testid="connector-row-peek-body">
+            {hasAxisChips ? (
+              <div className="flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
+                {axisChips.map((chip) => (
+                  <AxisChipBadge chip={chip} key={chip.label} />
+                ))}
+                {durableProgress.unavailable ? (
+                  <span
+                    className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
+                    data-testid="durable-progress-unavailable"
+                    title="Last durable progress could not be derived from current evidence."
+                  >
+                    {durableProgress.label}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
 
-      {!revoked && dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
-      {!revoked && nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
-      {!revoked && nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
+            {projectionFreshness.unreliable ? (
+              <div
+                className="pdpp-caption border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
+                data-testid="projection-unreliable"
+                title={projectionFreshness.detail}
+              >
+                <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
+              </div>
+            ) : null}
+
+            {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
+            {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
+            {nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
+
+            {partialCoverageHref ? (
+              <Link
+                className="pdpp-caption inline-flex w-fit items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
+                data-testid="partial-coverage-link"
+                href={partialCoverageHref}
+                title="Latest run produced records but reported known source gaps"
+              >
+                Partial source coverage
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
       <ConnectorRowToast toast={toast} />
     </>
   );
@@ -748,13 +812,17 @@ function ConnectionHealthStatus({
     health,
     localDeviceProgress,
   });
-  const { title } = display;
-  // StatusBadge vocabulary is keyed on the raw API state, not the derived
-  // label. Pass health.state so the badge tone follows the vocabulary; the
-  // label comes from the vocabulary entry (or falls back to the raw state).
+  // Single-voice synthesis [SLVP §1.3]: the badge renders the EFFECTIVE state,
+  // which suppresses `blocked` → `cooling_off` when the root cause is a
+  // source-pressure cooldown, so a rate-limited connection reads "handling it"
+  // (warning), not "broken" (danger). The synthesized one-line runbook is the
+  // badge tooltip — the sub-second pressure valve — so depth needs no
+  // navigation. A genuinely blocked connection keeps its danger badge.
+  const verdict = synthesizeConnectionVerdict(health);
+  const title = verdict.runbook || display.title;
   const badge = (
     <span title={title}>
-      <StatusBadge status={health.state} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+      <StatusBadge status={verdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
     </span>
   );
   const healthPill = lastRun ? (
@@ -788,7 +856,7 @@ function DominantConditionNotice({ condition }: { condition: ReturnType<typeof f
   }
   return (
     <div
-      className={`pdpp-caption mx-3 mb-2 border-l-2 px-3 py-2 ${conditionNoticeClass(condition.tone)}`}
+      className={`pdpp-caption border-l-2 px-3 py-2 ${conditionNoticeClass(condition.tone)}`}
       data-testid="dominant-condition"
       title={condition.title}
     >
@@ -1075,7 +1143,7 @@ function NextActionPill({
   );
   return (
     <div
-      className="mx-3 mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-3 py-2"
+      className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-3 py-2"
       data-next-action-source={formatted.variant}
       data-testid="next-action-pill"
     >
@@ -1120,7 +1188,7 @@ function NextStepGuidanceRow({ detailHref, guidance }: { detailHref: string; gui
   const labelColor = danger ? "text-destructive" : "text-foreground";
   return (
     <Link
-      className={`mx-3 mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 px-3 py-2 underline-offset-2 hover:underline ${accent}`}
+      className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 px-3 py-2 underline-offset-2 hover:underline ${accent}`}
       data-next-step-tone={guidance.tone}
       data-testid="next-step-guidance"
       href={detailHref}

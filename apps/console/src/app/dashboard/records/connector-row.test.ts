@@ -26,7 +26,9 @@ const ROW_FILE = `${HERE}connector-row.tsx`;
 
 const FORMAT_NEXT_ACTION_CALL = /formatNextAction\(connectionHealth\?\.next_action \?\? null\)/;
 const PILL_USAGE = /<NextActionPill /;
-const PILL_CONDITIONAL = /\{!revoked && nextAction \? <NextActionPill /;
+// Rendered inside the row peek (revoked rows return early before the peek), so
+// the guard is `nextAction ?`, not `!revoked && nextAction ?`.
+const PILL_CONDITIONAL = /\{nextAction \? <NextActionPill /;
 const LINK_GUARD = /formatted\.actionTarget !== null && formatted\.variant === "structured"/;
 const PILL_USES_DETAIL_HREF = /href=\{detailHref\}/;
 const PILL_LINKS_RAW_TARGET = /href=\{formatted\.actionTarget\}/;
@@ -35,9 +37,14 @@ const FRESHNESS_DEVICE_NO_PUSH_TESTID = /data-testid="freshness-device-no-push"/
 const NO_PUSH_RECEIVED_YET = /no push received yet/;
 const REVOKED_STATUS_TESTID = /data-testid="connection-status-revoked"/;
 const REVOKED_NOTICE_TESTID = /data-testid="connection-revoked-notice"/;
-const REVOKED_RECONNECT_ACTION = /action\.kind === "reconnect"/;
+// A revoked row's action is a NEW-SETUP start (the href is the add-source
+// picker, not a re-auth), so the verb matches the destination [SLVP §1.3].
+const REVOKED_NEW_SETUP_ACTION = /action\.kind === "new_setup"/;
+const REVOKED_START_NEW_SETUP_LABEL = /Start new setup/;
 const REVOKED_ADD_SOURCE_SEARCH = /\/dashboard\/records\/add\?source_q=/;
-const REVOKED_SUPPRESSES_ACTIVE_HEALTH = /!\s*revoked && axisChips\.length > 0/;
+// Revoked rows return early from ConnectorRowEvidence — only the revoked notice
+// and toast render — so the active-health peek (axis chips etc.) is suppressed.
+const REVOKED_SUPPRESSES_ACTIVE_HEALTH = /if \(revoked\) \{/;
 
 test("connector-row reads next_action from connection_health and renders a pill", async () => {
   const src = await readFile(ROW_FILE, "utf8");
@@ -45,11 +52,14 @@ test("connector-row reads next_action from connection_health and renders a pill"
   assert.match(src, PILL_USAGE);
 });
 
-test("connector-row surfaces revoked connections as visible reconnectable rows", async () => {
+test("connector-row surfaces revoked connections as visible new-setup rows", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, REVOKED_STATUS_TESTID);
   assert.match(src, REVOKED_NOTICE_TESTID);
-  assert.match(src, REVOKED_RECONNECT_ACTION);
+  // The verb matches the destination: a revoked row starts a NEW setup (the
+  // add-source picker), it does not "Reconnect" (re-auth) the revoked one.
+  assert.match(src, REVOKED_NEW_SETUP_ACTION);
+  assert.match(src, REVOKED_START_NEW_SETUP_LABEL);
   assert.match(src, REVOKED_ADD_SOURCE_SEARCH);
   assert.match(src, REVOKED_SUPPRESSES_ACTIVE_HEALTH);
 });
@@ -157,7 +167,9 @@ const DERIVES_NEXT_STEP = /deriveConnectionNextStep\(\{/;
 const NEXT_STEP_SUPPRESSED_BY_STRUCTURED = /hasStructuredNextAction: nextAction !== null/;
 const NEXT_STEP_SUPPRESSED_BY_DOMINANT = /hasDominantCondition: dominantCondition !== null/;
 const NEXT_STEP_SYNC_GATED_ON_PUSH_MODE = /supportsOwnerSync: !overview\.localDeviceProgress/;
-const NEXT_STEP_RENDERED = /\{!revoked && nextStep \? <NextStepGuidanceRow /;
+// Rendered inside the row peek now (revoked rows return early before the peek),
+// so the guard is just `nextStep ?`, not `!revoked && nextStep ?`.
+const NEXT_STEP_RENDERED = /\{nextStep \? <NextStepGuidanceRow /;
 const NEXT_STEP_ROW_LINKS_DETAIL = /href=\{detailHref\}/;
 const NEXT_STEP_TESTID = /data-testid="next-step-guidance"/;
 
