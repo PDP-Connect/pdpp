@@ -116,8 +116,27 @@ export function decodeOwnerSession(
   return payload;
 }
 
+/**
+ * Derive the HMAC signing secret for owner session cookies using scrypt.
+ *
+ * Previously this was a single-round SHA-256 hash, which is GPU-fast and
+ * offline-brute-forceable if a session cookie leaks. Replaced with scrypt at
+ * the same cost parameters used by credential-encryption.js (N=16384, r=8,
+ * p=1) to match the ~100 000× work factor increase.
+ *
+ * The domain string "pdpp-owner-session-kdf-v1" acts as a fixed application
+ * salt that defeats cross-context rainbow tables. The password itself is the
+ * per-server variable, so no additional random salt storage is required for
+ * this placeholder auth implementation.
+ *
+ * Migration note: existing pdpp_owner_session cookies issued under the old
+ * SHA-256 derivation will fail HMAC verification and be silently rejected —
+ * the owner must log in again after deploying this change. This is acceptable
+ * for the placeholder single-owner auth model.
+ */
 export function deriveOwnerSessionSecret(password: string): Buffer {
-  return crypto.createHash("sha256").update(`pdpp-owner-session:${password}`).digest();
+  const domainSalt = Buffer.from("pdpp-owner-session-kdf-v1", "utf8");
+  return crypto.scryptSync(password, domainSalt, 32, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
 }
 
 export function parseCookieHeader(header?: string | null): Record<string, string> {
