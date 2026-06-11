@@ -268,6 +268,28 @@ test("provider-authorization deployment blockers are separate from unsupported n
   assert.equal(entry.enrollmentKey, undefined);
 });
 
+test("Google Maps Data Portability is the API-backed provider-auth source, not Timeline import", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
+  assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
+  assert.equal(entry.displayName, "Google Maps Data Portability");
+  assert.equal(entry.modality, "api_network");
+  assert.equal(entry.setupModality, "provider_authorization");
+  assert.equal(entry.supportState, "needs_deployment_config");
+  assert.equal(entry.disposition, "provider_auth_deployment_blocked");
+  assert.equal(entry.nextStepKind, "needs_deployment_config");
+  assert.equal(entry.proofGate, "provider_app_deployment_config_missing");
+  assert.deepEqual(
+    entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    [
+      "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+      "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+      "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
+    ]
+  );
+  assert.equal(entry.enrollmentKey, undefined);
+});
+
 test("claude-code manifest slug maps to the claude_code enrollment key", async () => {
   // The manifest slug is `claude-code` (hyphen); the proven enrollment path and
   // the form's COLLECTOR_RUN_CONNECTORS literal use `claude_code` (underscore).
@@ -310,6 +332,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   // Exactly the two static-secret connectors (gmail, github).
   assert.equal(staticSecretConnectEntries(catalog).length, 2, "gmail + github");
   assert.ok(manualUploadConnectEntries(catalog).length >= 1, "file/import connectors");
+  assert.ok(deploymentBlockedEntries(catalog).length >= 1, "provider-auth API connectors");
   assert.ok(unsupportedNetworkEntries(catalog).length >= 1);
 });
 

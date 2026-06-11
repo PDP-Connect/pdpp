@@ -61,6 +61,7 @@ const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
   'github',
   'gmail',
   'google-maps',
+  'google-maps-data-portability',
   'google-takeout',
   'heb',
   'ical',

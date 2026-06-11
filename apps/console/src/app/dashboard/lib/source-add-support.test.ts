@@ -78,6 +78,18 @@ function manualUploadManifest(connectorId: string): CatalogManifestLike {
   };
 }
 
+function providerAuthManifest(connectorId: string): CatalogManifestLike {
+  return {
+    connector_id: connectorId,
+    display_name: connectorId,
+    runtime_requirements: { bindings: { network: {} } },
+    setup: {
+      modality: "provider_authorization",
+      deployment_config: ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET"],
+    },
+  };
+}
+
 test("static-secret source supports self-service add-another-account with an action", () => {
   const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
   const support = resolveSourceAddSupport(map, "ynab");
@@ -118,6 +130,16 @@ test("manual/upload source supports self-service add with the generic upload rou
   assert.ok(support.action, "manual/upload add-new must expose the generic upload action");
   assert.match(support.action.href, MANUAL_UPLOAD_ROUTE_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
+});
+
+test("provider-auth source reports deployment prerequisite, not static-secret setup", () => {
+  const map = buildSourceAddSupport([providerAuthManifest("google-maps-data-portability")]);
+  const support = resolveSourceAddSupport(map, "google-maps-data-portability");
+  assert.ok(support);
+  assert.equal(support.support, "deployment_prerequisite");
+  assert.equal(support.action, null);
+  assert.match(support.supportLabel, /deployment setup/i);
+  assert.doesNotMatch(support.supportLabel, /app password|credential|env var/i);
 });
 
 test("a connection's raw registry-prefixed connector_id resolves to the canonical key", () => {
