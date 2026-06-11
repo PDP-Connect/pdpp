@@ -1,3 +1,4 @@
+import type { CollectionRateProgress } from "./connector-runtime-protocol.js";
 import {
   type HttpRetryBudget,
   type HttpRetryResponse,
@@ -5,21 +6,43 @@ import {
   retryHttp,
   TerminalHttpStatusError,
 } from "./http-retry.js";
-import { ProviderPacing } from "./provider-pacing.js";
+import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.js";
 import type { SendGovernor } from "./send-governor.js";
 
 /**
- * Shared HTTP request governor for API connectors that previously hand-rolled
- * `if (status === 429) throw new Error("<name>_rate_limited")` with no
- * Retry-After honor and no inline retry.
+ * Shared HTTP request governor for API connectors.
  *
- * It converges those connectors onto the doctrine
- * (design-notes/provider-rate-governance-convergence-2026-06-10.md):
+ * NEW-CONNECTOR ONE-LINER: to add an API connector with fastest-safe adaptive
+ * collection, call `createConnectorHttpGovernor({ name })` — discovery,
+ * warm-start, back-off, and observability are automatic.
  *
- * - ONE pre-flight send governor: a per-provider {@link ProviderPacing} bucket
- *   whose single `admit()` is the only pre-flight wait. (These API connectors
- *   are serial — one in-flight request — so a concurrency lane would be a
- *   no-op governor; pacing is the right single governor here.)
+ * That bare call gives a connector author, by default and with zero additional
+ * adoption surface:
+ *
+ * - **Adaptive, fastest-safe collection** — a per-provider {@link ProviderPacing}
+ *   GCRA bucket whose interval STARTS conservative (slow-start discovery seed)
+ *   and accelerates under sustained success (AIMD additive increase), backing off
+ *   multiplicatively the instant the provider throttles, never crossing the
+ *   owner-authored rate ceiling. This is the SLVP-ideal "adapt rate down fast and
+ *   up slow inside a fixed envelope you never probe", hoisted here as the DEFAULT
+ *   so every governor-using connector inherits it (Phase A of the
+ *   collection-governor generalization). The behavior was proven live on ChatGPT
+ *   (19 → 32.7 conv/min); its live-calibrated values are the shared defaults
+ *   below.
+ * - **Warm-start across runs (opt-in seam, ~2 lines)** — the learned interval is
+ *   ephemeral within a process. To compound the descent across runs, a connector
+ *   restores last run's interval via `restoredIntervalMs` (from
+ *   {@link readPersistedPacingInterval}) and persists this run's interval via
+ *   {@link buildPacingStateFields}. The governor owns the GCRA mechanics; the
+ *   connector only threads its durable state.
+ * - **collection_rate observability** — {@link buildCollectionRateProgress} turns
+ *   the governor's live {@link snapshot} into the redacted `collection_rate`
+ *   run-trace progress every connector can emit, so an operator can watch the
+ *   controller speed up and back off.
+ * - ONE pre-flight send governor: pacing's single `admit()` is the only
+ *   pre-flight wait. (These API connectors are serial — one in-flight request —
+ *   so a concurrency lane would be a no-op governor; pacing is the right single
+ *   governor here.)
  * - Retry-After honor with the per-request double-pay guard handled inside
  *   `retryHttp` (the server interval is slept once, not stacked on backoff).
  * - A Finagle-style ratio-based retry budget bounds retry *volume*.
@@ -30,6 +53,9 @@ import type { SendGovernor } from "./send-governor.js";
  * Transport-agnostic: the caller supplies `send` (native `fetch`, a browser
  * `page.evaluate` fetch, etc.). The governor normalizes the response into the
  * minimal `{ status, headers }` shape `retryHttp` needs via `classify`.
+ *
+ * Scope: API connectors only. Browser-bound connectors (amazon/chase/usaa) and
+ * reddit are Phase B (a separate research verdict) and do NOT use this factory.
  */
 export interface ConnectorHttpGovernorOptions {
   /** Base backoff (ms) for jittered exponential delay. Default: 1000. */
@@ -45,15 +71,30 @@ export interface ConnectorHttpGovernorOptions {
   /** Injectable clock for the pacing bucket (tests). */
   now?: () => number;
   /**
-   * Conservative starting inter-request interval (ms) for the single pacing
-   * governor. Unknown-quota API; start polite. Default: 0 (no pacing wait) so
-   * adoption is opt-in for pacing — set a positive value to enable smoothing.
+   * Conservative slow-start DISCOVERY interval (ms) the AIMD ramp enters from on
+   * a cold start. Unknown-quota API; start polite. Default:
+   * {@link DEFAULT_PACING_INITIAL_INTERVAL_MS} (adaptive collection is on by
+   * default). Pass `0` to opt OUT of pacing entirely (no pre-flight wait — the
+   * pre-convergence byte-identical behavior).
    */
   pacingInitialIntervalMs?: number;
-  /** Minimum inter-request interval the AIMD fill-rate may reach. Default: 0. */
+  /**
+   * The rate ceiling: the fastest inter-request interval (= maximum sustained
+   * rate) the AIMD additive-increase loop may ever reach. THE ONE owner-authored
+   * safety number — set below the provider's behavioral flagging threshold.
+   * Default: {@link DEFAULT_PACING_MIN_INTERVAL_MS}.
+   */
   pacingMinIntervalMs?: number;
   /** Injectable RNG for jitter (tests). */
   random?: () => number;
+  /**
+   * Warm-start seed: the interval the controller LEARNED at the end of a prior
+   * run, restored so the AIMD descent compounds across runs instead of resetting
+   * to the cold discovery seed at each boundary. Read it from durable connector
+   * state with {@link readPersistedPacingInterval} (which owns the staleness
+   * guard). Absent → cold start at `pacingInitialIntervalMs`.
+   */
+  restoredIntervalMs?: number | null;
   /** Optional ratio-based retry budget (Finagle). Absent → only `maxAttempts`. */
   retryBudget?: HttpRetryBudget;
   /** Injectable sleep (tests). */
@@ -83,6 +124,14 @@ export interface ConnectorHttpGovernor {
     send: () => R | Promise<R>,
     classify: (raw: R) => { status: number; headers?: Record<string, string | undefined>; value: T }
   ): Promise<ConnectorHttpResult<T>>;
+  /**
+   * Operator-legible snapshot of the live rate controller, or `null` when pacing
+   * is disabled (`pacingInitialIntervalMs: 0`). `snapshot.intervalMs` is the
+   * durable value a connector persists for warm-start; pass it to
+   * {@link buildPacingStateFields} / {@link buildCollectionRateProgress}. PURE:
+   * reads only, never advances GCRA state.
+   */
+  snapshot(): PacingSnapshot | null;
 }
 
 /**
@@ -100,11 +149,40 @@ const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 60_000;
 const DEFAULT_MAX_RETRY_AFTER_MS = 5 * 60_000;
+/**
+ * Cold-start DISCOVERY seed (ms) every governor enters the AIMD ramp from when
+ * no fresh learned interval is restored. "Safe but not glacial": polite against
+ * an unknown-quota API, well above the ceiling. Live-calibrated on ChatGPT
+ * (run_1781139968889) and adopted as the shared default for all API connectors.
+ */
+export const DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
+/**
+ * THE ONE OWNER NUMBER: the rate ceiling. The fastest inter-request interval
+ * (= maximum sustained rate) additive-increase may ever reach — the operator's
+ * risk tolerance, set below the provider's behavioral flagging threshold. Every
+ * other pacing constant is a derived horizon or AIMD shape; this is the only
+ * behavioral safety number. Live-calibrated default; override per connector via
+ * `pacingMinIntervalMs` when a provider's quota warrants a more conservative cap.
+ */
+export const DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 
 export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOptions): ConnectorHttpGovernor {
+  // Adaptive collection is ON by default: a bare `{ name }` yields slow-start
+  // discovery + AIMD accelerate-under-success + ceiling-bounded back-off. Pass
+  // `pacingInitialIntervalMs: 0` to opt out of pacing entirely.
+  const pacingInitialIntervalMs = options.pacingInitialIntervalMs ?? DEFAULT_PACING_INITIAL_INTERVAL_MS;
+  const pacingMinIntervalMs = options.pacingMinIntervalMs ?? DEFAULT_PACING_MIN_INTERVAL_MS;
+  const pacingEnabled = pacingInitialIntervalMs > 0;
+  // Warm-start: seed from the prior run's learned interval when the connector
+  // restored one (already staleness-guarded by readPersistedPacingInterval).
+  const restored =
+    options.restoredIntervalMs == null || !Number.isFinite(options.restoredIntervalMs)
+      ? null
+      : options.restoredIntervalMs;
   const pacing = new ProviderPacing({
-    initialIntervalMs: options.pacingInitialIntervalMs ?? 0,
-    minIntervalMs: options.pacingMinIntervalMs ?? 0,
+    initialIntervalMs: pacingInitialIntervalMs,
+    minIntervalMs: pacingMinIntervalMs,
+    ...(restored == null ? {} : { restoredIntervalMs: restored }),
     ...(options.now == null ? {} : { now: options.now }),
     ...(options.sleep == null ? {} : { sleep: (ms: number) => Promise.resolve(options.sleep?.(ms)) }),
   });
@@ -168,7 +246,11 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
     }
   }
 
-  return { governor, request };
+  function snapshot(): PacingSnapshot | null {
+    return pacingEnabled ? pacing.snapshot() : null;
+  }
+
+  return { governor, request, snapshot };
 }
 
 function isRateLimitTerminal(error: unknown): boolean {
@@ -180,4 +262,120 @@ function isRateLimitTerminal(error: unknown): boolean {
     return error.status === 429;
   }
   return false;
+}
+
+// ─── Warm-start persistence + observability helpers (shared, opt-in) ─────────
+//
+// These let any governor-using connector thread the learned rate across runs and
+// surface it to operators with ~2 lines of glue, instead of hand-rolling the
+// read/write/snapshot logic the ChatGPT detail path pioneered. The governor owns
+// the GCRA mechanics; the connector owns where its durable state lives.
+
+/** Default state sub-key the persisted learned interval is stored under. */
+export const PACING_STATE_INTERVAL_KEY = "pacing_interval_ms";
+/** Default state sub-key the persist timestamp (ms epoch) is stored under. */
+export const PACING_STATE_RECORDED_AT_KEY = "pacing_recorded_at_ms";
+/**
+ * Default staleness guard (ms): a learned interval older than this is discarded
+ * so a long-idle resume cold-starts conservatively against a possibly-reset
+ * provider quota. Derived as 8× the cold discovery seed, not a new authored
+ * number.
+ */
+export const DEFAULT_PACING_STALENESS_MS = 8 * DEFAULT_PACING_INITIAL_INTERVAL_MS;
+
+export interface PacingPersistOptions {
+  /** State sub-key for the interval. Default: {@link PACING_STATE_INTERVAL_KEY}. */
+  intervalKey?: string;
+  /** Injectable clock (tests). Default: Date.now. */
+  now?: () => number;
+  /** State sub-key for the timestamp. Default: {@link PACING_STATE_RECORDED_AT_KEY}. */
+  recordedAtKey?: string;
+  /** Staleness window (ms). Default: {@link DEFAULT_PACING_STALENESS_MS}. */
+  stalenessMs?: number;
+}
+
+/**
+ * Read a fresh learned interval out of a connector's durable state cursor for
+ * warm-start, applying the staleness guard. Returns `null` when absent, malformed,
+ * or older than `stalenessMs` (→ cold start). Pass the result as the governor's
+ * `restoredIntervalMs`. `stateSlice` is the per-stream cursor object the connector
+ * persisted the pacing fields into (e.g. `state.messages`).
+ */
+export function readPersistedPacingInterval(
+  stateSlice: Record<string, unknown> | null | undefined,
+  options: PacingPersistOptions = {}
+): number | null {
+  if (!stateSlice || typeof stateSlice !== "object") {
+    return null;
+  }
+  const intervalKey = options.intervalKey ?? PACING_STATE_INTERVAL_KEY;
+  const recordedAtKey = options.recordedAtKey ?? PACING_STATE_RECORDED_AT_KEY;
+  const stalenessMs = options.stalenessMs ?? DEFAULT_PACING_STALENESS_MS;
+  const now = options.now ?? Date.now;
+  const intervalMs = stateSlice[intervalKey];
+  const recordedAtMs = stateSlice[recordedAtKey];
+  if (typeof intervalMs !== "number" || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return null;
+  }
+  if (typeof recordedAtMs !== "number" || !Number.isFinite(recordedAtMs)) {
+    return null;
+  }
+  if (now() - recordedAtMs > stalenessMs) {
+    return null;
+  }
+  return intervalMs;
+}
+
+/**
+ * Build the durable state fields that persist a governor's learned interval for
+ * the next run's warm-start. Spread the result into the connector's STATE cursor
+ * alongside its own cursor fields. Returns `{}` when pacing is disabled (nothing
+ * to persist).
+ */
+export function buildPacingStateFields(
+  governor: Pick<ConnectorHttpGovernor, "snapshot"> | null | undefined,
+  options: PacingPersistOptions = {}
+): Record<string, number> {
+  const snapshot = governor?.snapshot();
+  if (!snapshot) {
+    return {};
+  }
+  const intervalKey = options.intervalKey ?? PACING_STATE_INTERVAL_KEY;
+  const recordedAtKey = options.recordedAtKey ?? PACING_STATE_RECORDED_AT_KEY;
+  const now = options.now ?? Date.now;
+  return {
+    [intervalKey]: snapshot.intervalMs,
+    [recordedAtKey]: now(),
+  };
+}
+
+/** Requests/min from an interval (ms); 0 interval reads as 0 rate (never ∞). */
+function ratePerMinFromInterval(intervalMs: number): number {
+  return intervalMs > 0 ? Math.round(60_000 / intervalMs) : 0;
+}
+
+/**
+ * Build the operator-legible `collection_rate` progress from a governor's live
+ * snapshot, or `null` when pacing is disabled. PURE; carries no account content —
+ * only rate numbers and the last back-off reason (SLVP ideal §5: legibility).
+ * The shape matches the `CollectionRateProgress` runtime-protocol type so the
+ * caller can emit it as `{ type: "PROGRESS", collection_rate }`.
+ */
+export function buildCollectionRateProgress(
+  governor: Pick<ConnectorHttpGovernor, "snapshot"> | null | undefined
+): CollectionRateProgress | null {
+  const snapshot = governor?.snapshot();
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    ceiling_interval_ms: snapshot.minIntervalMs,
+    ceiling_rate_per_min: ratePerMinFromInterval(snapshot.minIntervalMs),
+    current_interval_ms: snapshot.intervalMs,
+    effective_rate_per_min: ratePerMinFromInterval(snapshot.intervalMs),
+    last_backoff: snapshot.lastBackoff
+      ? { at_interval_ms: snapshot.lastBackoff.atIntervalMs, reason: snapshot.lastBackoff.reason }
+      : null,
+    object: "collection_rate",
+  };
 }

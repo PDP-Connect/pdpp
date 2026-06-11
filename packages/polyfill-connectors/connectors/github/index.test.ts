@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, before, test } from "node:test";
+import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
   collectGists,
@@ -15,6 +16,25 @@ import {
 } from "./index.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
+
+// The connector now ships adaptive pacing on by default (the shared governor's
+// default-on rate control). Its module-scoped governor sleeps the real GCRA
+// interval between requests, which would make these fetch-stubbing collector
+// tests pay seconds of real wall-clock. Resolve pacing waits instantly so the
+// suite stays fast and timing-deterministic; behavioral pacing is proven in
+// src/connector-http-governor.test.ts, not here.
+const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
+before(() => {
+  // Fire the callback on the next microtask (async, but no real delay) so the
+  // pacing `await sleep(...)` resolves immediately without re-entrant stack risk.
+  const instantSetTimeout = (handler: TimerHandler, _ms?: number, ...args: unknown[]) => {
+    if (typeof handler === "function") {
+      queueMicrotask(() => (handler as (...a: unknown[]) => void)(...args));
+    }
+    return 0 as unknown as ReturnType<typeof ORIGINAL_SET_TIMEOUT>;
+  };
+  globalThis.setTimeout = instantSetTimeout as unknown as typeof globalThis.setTimeout;
+});
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
@@ -134,6 +154,43 @@ test("collectUser: user-only scope emits only user entity records and state", as
   );
   assert.equal(records[0]?.data.id, "42");
   assert.equal("followers" in (records[0]?.data ?? {}), false);
+});
+
+test("collectUser: records the user cursor on ctx.userCursor as the warm-start carrier", async () => {
+  installUserFetch();
+  const { ctx, states } = makeCtx(["user"]);
+  await collectUser(ctx);
+
+  // collect() re-emits this cursor at run end merged with the final learned
+  // pacing interval, so it must be captured (the warm-start persistence carrier).
+  assert.ok(ctx.userCursor, "the user cursor is recorded for warm-start persistence");
+  assert.equal(
+    ctx.userCursor,
+    states.find((s) => s.stream === "user")?.cursor,
+    "the recorded carrier is the same object emitted as the user STATE cursor"
+  );
+});
+
+test("warm-start: pacing fields merged onto the user cursor round-trip through readPersistedPacingInterval", () => {
+  installUserFetch();
+  // Simulate the collect-end persist: the user cursor + the learned pacing fields.
+  const now = 2_000_000;
+  const persistedUserCursor = {
+    fetched_at: "2026-06-10T00:00:00Z",
+    fingerprints: { someKey: "fp" },
+    ...buildPacingStateFields(
+      { snapshot: () => ({ intervalMs: 480, minIntervalMs: 250, lastBackoff: null }) },
+      {
+        now: () => now,
+      }
+    ),
+  };
+  // The fingerprint cursor and the pacing keys coexist (disjoint keys).
+  assert.equal(persistedUserCursor.fetched_at, "2026-06-10T00:00:00Z");
+  assert.ok(persistedUserCursor.fingerprints);
+  // Next run reads the learned interval back off the user cursor (warm-start).
+  const restored = readPersistedPacingInterval(persistedUserCursor, { now: () => now + 1000 });
+  assert.equal(restored, 480, "the next run warm-starts from the interval persisted on the user cursor");
 });
 
 // ─── Starred dropped-item evidence ──────────────────────────────────────

@@ -20,7 +20,12 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
-import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import {
+  buildCollectionRateProgress,
+  buildPacingStateFields,
+  createConnectorHttpGovernor,
+  readPersistedPacingInterval,
+} from "../../src/connector-http-governor.ts";
 import { buildDetailCoverageMessage, type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -54,10 +59,38 @@ import type {
 
 const USER_AGENT = "pdpp-connector-github/0.1";
 
-// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// Single per-provider send governor + retry layer. The bare factory call yields
+// the shared ADAPTIVE rate controller by default: slow-start discovery → AIMD
+// accelerate-under-success → ceiling-bounded back-off, all automatic (Phase A
+// collection-governor generalization). `maxAttempts: 1` keeps the
 // 403-quota/`github_rate_limited` throw byte-identical (cross-run cooldown via
 // `retryablePattern`); raising it activates the wired Retry-After honor.
-const httpGovernor = createConnectorHttpGovernor({ name: "github", maxAttempts: 1 });
+//
+// `let` (not `const`) so `collect` can re-seed it WARM-STARTED from durable state
+// at run start, compounding the AIMD descent across runs. This is the reference
+// for the warm-start seam every API connector can copy: read the prior run's
+// learned interval off a declared stream cursor → re-seed → persist it back onto
+// the same cursor at run end (see `collectUser`). The runtime gates STATE on
+// declared streams, so warm-start state must piggyback a REAL stream cursor (here
+// the `user` entity stream, which github collects whenever `user`/`user_stats` is
+// requested) — never a synthetic one. When `user` is not in scope this run simply
+// does not persist a learned rate; the next run cold-starts.
+let httpGovernor = createConnectorHttpGovernor({ name: "github", maxAttempts: 1 });
+
+/**
+ * Re-seed the module governor warm-started from the prior run's learned rate,
+ * read off the `user` stream cursor where the previous run persisted it (see
+ * `collectUser`). A stale or absent value cold-starts at the discovery seed.
+ */
+function restoreGithubPacing(state: Record<string, unknown>): void {
+  const userCursor = state.user as Record<string, unknown> | undefined;
+  const restoredIntervalMs = readPersistedPacingInterval(userCursor);
+  httpGovernor = createConnectorHttpGovernor({
+    name: "github",
+    maxAttempts: 1,
+    ...(restoredIntervalMs == null ? {} : { restoredIntervalMs }),
+  });
+}
 
 interface ProgressExtra {
   count?: number;
@@ -149,6 +182,14 @@ export interface StreamCtx {
   requested: Map<string, { name?: string; time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
   token: string;
+  /**
+   * Warm-start carrier: when `collectUser` writes the `user` STATE cursor it
+   * records the cursor object here so `collect` can re-emit it at run end merged
+   * with the FINAL learned pacing interval — persisting the rate the controller
+   * settled on after the whole run, not the early-run rate. Undefined when `user`
+   * was not collected (warm-start simply does not persist this run).
+   */
+  userCursor?: Record<string, unknown>;
 }
 
 /**
@@ -199,13 +240,17 @@ export async function collectUser(ctx: StreamCtx): Promise<void> {
     if (userFpCursor.shouldEmit(entityRec)) {
       await ctx.emitRecord("user", entityRec);
     }
+    const userCursor: Record<string, unknown> = {
+      fetched_at: nowIso(),
+      fingerprints: userFpCursor.toState(),
+    };
+    // Record the cursor so `collect` can re-emit it at run end with the final
+    // learned pacing interval merged in (warm-start carrier).
+    ctx.userCursor = userCursor;
     await ctx.emit({
       type: "STATE",
       stream: "user",
-      cursor: {
-        fetched_at: nowIso(),
-        fingerprints: userFpCursor.toState(),
-      },
+      cursor: userCursor,
     });
   }
 
@@ -894,6 +939,9 @@ if (isMainModule(import.meta.url)) {
       if (!token) {
         throw new Error("github_auth_failed");
       }
+      // Warm-start the adaptive rate controller from the prior run's learned
+      // interval (line 1 of the seam: restore).
+      restoreGithubPacing(state);
       const ctx: StreamCtx = {
         token,
         state,
@@ -920,6 +968,26 @@ if (isMainModule(import.meta.url)) {
       }
       if (requested.has("gists")) {
         await collectGists(ctx);
+      }
+
+      // Surface the controller's live rate to the operator (legibility) using the
+      // shared helper — a connector author never hand-rolls rate observability.
+      const collectionRate = buildCollectionRateProgress(httpGovernor);
+      if (collectionRate) {
+        await emit({
+          type: "PROGRESS",
+          message: `Collection rate ${collectionRate.effective_rate_per_min}/min (interval ${collectionRate.current_interval_ms}ms; ceiling ${collectionRate.ceiling_rate_per_min}/min)`,
+          collection_rate: collectionRate,
+        });
+      }
+      // Persist the FINAL learned interval so the next run warm-starts from it.
+      // It rides the already-declared `user` stream cursor (re-emitted here,
+      // last-write-wins, merged with the fingerprint cursor collectUser built).
+      // Skipped when `user` was not collected — warm-start simply does not
+      // persist this run rather than emitting a STATE for an undeclared stream.
+      const pacingFields = buildPacingStateFields(httpGovernor);
+      if (ctx.userCursor && Object.keys(pacingFields).length > 0) {
+        await emit({ type: "STATE", stream: "user", cursor: { ...ctx.userCursor, ...pacingFields } });
       }
     },
   });
