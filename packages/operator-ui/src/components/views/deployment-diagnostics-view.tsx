@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
@@ -21,6 +22,50 @@ interface DeploymentDiagnosticsViewProps {
   title?: string;
 }
 
+// ─── Section group divider ──────────────────────────────────────────────────
+// Visual separator + label that steps up above the pdpp-title Section headers.
+// Uses pdpp-heading (20px/600) so section groups read clearly above their
+// constituent sections (pdpp-title = 14px/600).
+
+function SectionGroupDivider({ label }: { label: string }) {
+  return (
+    <div className="mb-5 mt-2 border-border/60 border-t pt-5">
+      <h2 className="pdpp-heading text-foreground">{label}</h2>
+    </div>
+  );
+}
+
+// ─── Section nav ────────────────────────────────────────────────────────────
+// Sticky in-page jump strip. One link per major section group so the operator
+// can reach any area of this long page without scrolling.
+
+const SECTION_NAV_ITEMS = [
+  { id: "readiness", label: "Readiness" },
+  { id: "warnings", label: "Warnings" },
+  { id: "retrieval", label: "Retrieval" },
+  { id: "storage", label: "Storage" },
+  { id: "diagnostics", label: "Diagnostics" },
+] as const;
+
+function DeploymentSectionNav() {
+  return (
+    <nav
+      aria-label="Page sections"
+      className="sticky top-0 z-10 -mx-6 mb-6 flex flex-wrap gap-x-0.5 border-border/80 border-b bg-background px-6 py-2 sm:-mx-8 sm:px-8 md:-mx-10 md:px-10"
+    >
+      {SECTION_NAV_ITEMS.map((item) => (
+        <Link
+          className="pdpp-caption rounded px-2.5 py-1 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          href={`#${item.id}`}
+          key={item.id}
+        >
+          {item.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
 export function DeploymentDiagnosticsView({
   actions,
   afterDiagnostics,
@@ -34,20 +79,30 @@ export function DeploymentDiagnosticsView({
   return (
     <>
       <PageHeader actions={actions} breadcrumbs={breadcrumbs} description={description} title={title} />
+      <DeploymentSectionNav />
 
-      {beforeDiagnostics}
+      <div className="scroll-mt-16" id="readiness">{beforeDiagnostics}</div>
       <WarningsSection warnings={report.warnings} />
-      <RuntimeCapabilitiesSection capabilities={report.runtime_capabilities} />
-      <LexicalSection report={report} />
-      <SemanticSection report={report} />
-      <ParticipationSection participation={report.semantic.participation} />
-      <ManifestsSection manifests={report.manifests} />
-      <DatabaseSection
-        database={report.database}
-        indexKind={report.semantic.index.kind}
-        retainedBytes={retainedBytes}
-      />
-      <EnvironmentSection environment={report.environment} />
+      <div className="scroll-mt-16" id="retrieval">
+        <SectionGroupDivider label="Retrieval" />
+        <RuntimeCapabilitiesSection capabilities={report.runtime_capabilities} />
+        <LexicalSection report={report} />
+        <SemanticSection report={report} />
+        <ParticipationSection participation={report.semantic.participation} />
+        <ManifestsSection manifests={report.manifests} />
+      </div>
+      <div className="scroll-mt-16" id="storage">
+        <SectionGroupDivider label="Storage & Readiness" />
+        <DatabaseSection
+          database={report.database}
+          indexKind={report.semantic.index.kind}
+          retainedBytes={retainedBytes}
+        />
+      </div>
+      <div className="scroll-mt-16" id="diagnostics">
+        <SectionGroupDivider label="Diagnostics" />
+        <EnvironmentSection environment={report.environment} />
+      </div>
       {afterDiagnostics}
     </>
   );
@@ -78,13 +133,13 @@ const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], 
 function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {
   if (warnings.length === 0) {
     return (
-      <Section title="Warnings">
+      <Section id="warnings" title="Warnings">
         <p className="pdpp-body text-muted-foreground">No warnings. Retrieval looks operational.</p>
       </Section>
     );
   }
   return (
-    <Section title={`Warnings (${warnings.length})`}>
+    <Section id="warnings" title={`Warnings (${warnings.length})`}>
       <div className="flex flex-col gap-3">
         {warnings.map((warning) => (
           <Callout
@@ -280,10 +335,14 @@ function ParticipationSection({
 }: {
   participation: DeploymentDiagnostics["semantic"]["participation"];
 }) {
+  const summary =
+    participation.field_count > 0
+      ? `${participation.field_count} field${participation.field_count === 1 ? "" : "s"} across ${participation.connector_count} connector${participation.connector_count === 1 ? "" : "s"}`
+      : "No participating fields";
   return (
     <Section
-      description="Every (connector, stream, field) that contributes to semantic retrieval. Derived from loaded manifests — changing a manifest's semantic_fields updates this list after restart or reconciliation."
-      title={`Participation (${participation.field_count} fields across ${participation.connector_count} connectors)`}
+      description="Every (connector, stream, field) that contributes to semantic retrieval. Derived from loaded manifests."
+      title="Participation"
     >
       {participation.tuples.length === 0 ? (
         <EmptyState
@@ -291,26 +350,38 @@ function ParticipationSection({
           title="No participating fields"
         />
       ) : (
-        <table className="w-full border-border/80 border-y text-left text-sm">
-          <thead>
-            <tr className="text-muted-foreground text-xs uppercase tracking-wide">
-              <th className="px-2 py-2 font-medium">Connector</th>
-              <th className="px-2 py-2 font-medium">Stream</th>
-              <th className="px-2 py-2 font-medium">Field</th>
-              <th className="px-2 py-2 font-medium">Provenance</th>
-            </tr>
-          </thead>
-          <tbody>
-            {participation.tuples.map((t) => (
-              <tr className="border-border/60 border-t" key={`${t.connector_id}::${t.stream}::${t.field}`}>
-                <td className="px-2 py-1.5 font-mono text-xs">{formatConnectorKeyForDisplay(t.connector_id)}</td>
-                <td className="px-2 py-1.5">{t.stream}</td>
-                <td className="px-2 py-1.5 font-mono text-xs">{t.field}</td>
-                <td className="px-2 py-1.5 text-muted-foreground text-xs">{t.provenance}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <details className="group">
+          <summary className="pdpp-caption flex cursor-pointer select-none list-none items-center gap-2 text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+            <span className="inline-flex size-4 items-center justify-center rounded text-xs transition-transform group-open:rotate-90">
+              ▶
+            </span>
+            <span>
+              {summary} — <span className="underline-offset-2 hover:underline">expand to browse</span>
+            </span>
+          </summary>
+          <div className="mt-3">
+            <table className="w-full border-border/80 border-y text-left text-sm">
+              <thead>
+                <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+                  <th className="px-2 py-2 font-semibold">Connector</th>
+                  <th className="px-2 py-2 font-semibold">Stream</th>
+                  <th className="px-2 py-2 font-semibold">Field</th>
+                  <th className="px-2 py-2 font-semibold">Provenance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {participation.tuples.map((t) => (
+                  <tr className="border-border/60 border-t" key={`${t.connector_id}::${t.stream}::${t.field}`}>
+                    <td className="px-2 py-1.5 font-mono text-xs">{formatConnectorKeyForDisplay(t.connector_id)}</td>
+                    <td className="px-2 py-1.5">{t.stream}</td>
+                    <td className="px-2 py-1.5 font-mono text-xs">{t.field}</td>
+                    <td className="px-2 py-1.5 text-muted-foreground text-xs">{t.provenance}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
     </Section>
   );
