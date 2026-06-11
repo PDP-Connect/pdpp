@@ -70,6 +70,17 @@ services:
       PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: ${PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER:-}
       PDPP_CAPTURE_FIXTURES: ${PDPP_CAPTURE_FIXTURES:-}
       PDPP_BROWSER_SURFACE_DIAGNOSTICS: ${PDPP_BROWSER_SURFACE_DIAGNOSTICS:-}
+      # Operator-forced browser-surface routing. Leave EMPTY in the normal
+      # managed deployment: when PDPP_NEKO_MANAGED_CONNECTORS is configured
+      # (docker-compose.neko.yml), the controller leases a surface per run and
+      # injects the full PDPP_BROWSER_SURFACE_* block into the connector child
+      # (reference-implementation/runtime/browser-surface-leases.ts), so these
+      # globals are not needed and a static URL here would point managed
+      # connectors at the wrong profile in dynamic mode. Set them only to pin
+      # ALL browser connectors to one remote CDP endpoint (e.g. a single-neko
+      # deployment that does not run the lease manager).
+      PDPP_BROWSER_SURFACE_REQUIRED: ${PDPP_BROWSER_SURFACE_REQUIRED:-}
+      PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: ${PDPP_BROWSER_SURFACE_REMOTE_CDP_URL:-}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
       NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
       NTFY_USERNAME: ${NTFY_USERNAME:-}
