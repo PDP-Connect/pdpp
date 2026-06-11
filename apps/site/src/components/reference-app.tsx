@@ -225,20 +225,28 @@ const SECTION_TEMPERATURE: Record<SectionId, "human" | "protocol" | "neutral"> =
   spec: "neutral",
 };
 
-function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (id: SectionId) => void }) {
+function Stepper({
+  activeId,
+  onNavigate,
+  phase,
+}: {
+  activeId: SectionId;
+  onNavigate: (id: SectionId) => void;
+  phase: ProtocolPhase;
+}) {
   return (
     <nav
       aria-label="Protocol sections"
-      className="fixed top-1/2 right-6 z-30 hidden -translate-y-1/2 flex-col gap-0.5 lg:flex"
+      className="fixed top-1/2 right-6 z-30 hidden -translate-y-1/2 flex-col items-end gap-0.5 lg:flex"
     >
       {SECTIONS.map(({ id, label }) => {
         const isActive = id === activeId;
         const temp = SECTION_TEMPERATURE[id];
-        let inactiveColor = "var(--muted-foreground)";
+        let inactiveColor = "var(--authorship-client)";
         if (temp === "human") {
-          inactiveColor = "oklch(0.52 0.09 45 / 0.7)";
+          inactiveColor = "var(--authorship-manifest-strong)";
         } else if (temp === "protocol") {
-          inactiveColor = "oklch(0.580 0.172 253.7 / 0.5)";
+          inactiveColor = "var(--authorship-protocol-strong)";
         }
         return (
           <button
@@ -255,7 +263,29 @@ function Stepper({ activeId, onNavigate }: { activeId: SectionId; onNavigate: (i
           </button>
         );
       })}
+      {/* Grant state machine — anchored as the rail's terminal status row so it
+          reads as a protocol indicator with spatial context, never a floating
+          toast that collides with the consent CTA. Surfaces only on the
+          lifecycle sections where grant state is meaningful. */}
+      {PROTOCOL_INDICATOR_SECTIONS.includes(activeId) && <GrantStatusRow phase={phase} />}
     </nav>
+  );
+}
+
+// Shared grant-status atom used by both the desktop rail (Stepper) and the
+// mobile/tablet sticky header, so the "Grant: <state>" indicator is anchored
+// to a stable slot at every viewport and never floats over interactive content.
+function GrantStatusRow({ phase }: { phase: ProtocolPhase }) {
+  const { dotColor, grantLabel } = resolveGrantIndicator(phase);
+  return (
+    <div
+      aria-live="polite"
+      className="mt-1 flex items-center gap-2 rounded-md border px-2 py-1 text-right"
+      style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+    >
+      <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
+      <span className="font-medium text-muted-foreground text-xs">Grant: {grantLabel}</span>
+    </div>
   );
 }
 
@@ -266,9 +296,8 @@ function DetailPanel({ spec, label, children }: { spec: string; label?: string; 
   return (
     <div className="mt-6 w-full" style={{ maxWidth: "52ch" }}>
       <button
-        className="mb-2 flex items-center gap-1 text-xs"
+        className="mb-2 flex items-center gap-1 text-muted-foreground text-xs"
         onClick={() => setOpen((v) => !v)}
-        style={{ color: "var(--muted-foreground)" }}
         type="button"
       >
         <span
@@ -278,14 +307,12 @@ function DetailPanel({ spec, label, children }: { spec: string; label?: string; 
           &#x203A;
         </span>
         {label || "Protocol details"}
-        <span className="ml-1 font-mono" style={{ color: "var(--edu-fg)" }}>
-          {spec}
-        </span>
+        <span className="ml-1 font-mono text-edu-fg">{spec}</span>
       </button>
       {open && (
         <div
           className="flex flex-col gap-2 border-l-2 pl-3 text-xs leading-relaxed"
-          style={{ borderColor: "oklch(0.580 0.172 253.7 / 0.25)", color: "var(--muted-foreground)" }}
+          style={{ borderColor: "var(--authorship-protocol-wash)", color: "var(--muted-foreground)" }}
         >
           {children}
         </div>
@@ -296,9 +323,24 @@ function DetailPanel({ spec, label, children }: { spec: string; label?: string; 
 
 // ─── Field projection animation ─────────────────────────────────────────────
 
+// The one expressive set-piece (design-direction decision 5): the grant
+// visibly filters data fields — allowed fields flow through, others fade and
+// redact. Restrained ease-out vocabulary (150–250ms, no spring/bounce).
+// prefers-reduced-motion users get the static final state: the projected
+// result, no motion. The animation only enters on scroll-into-view, once.
+const PROJECTION_EASE = "var(--ease-enter)";
+const PROJECTION_DURATION_MS = 200;
+// Per-chip stagger stays inside the set-piece's restraint budget.
+const PROJECTION_STAGGER_MS = 24;
+
 function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]; allFields: string[] }) {
   const ref = useRef<HTMLDivElement>(null);
+  const prefersReduced = useRef(false);
   const [phase, setPhase] = useState<"hidden" | "show" | "filter" | "result">("hidden");
+
+  useEffect(() => {
+    prefersReduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -308,9 +350,15 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
     const obs = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          setPhase("show");
-          setTimeout(() => setPhase("filter"), 500);
-          setTimeout(() => setPhase("result"), 950);
+          if (prefersReduced.current) {
+            // Static final state: skip the show→filter→result choreography and
+            // render the projected outcome directly, with no transitions.
+            setPhase("result");
+          } else {
+            setPhase("show");
+            setTimeout(() => setPhase("filter"), 320);
+            setTimeout(() => setPhase("result"), 620);
+          }
           obs.disconnect();
         }
       },
@@ -320,7 +368,11 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
     return () => obs.disconnect();
   }, []);
 
-  const easeOut = "cubic-bezier(0.16, 1, 0.3, 1)";
+  const reduced = prefersReduced.current;
+  const easeOut = PROJECTION_EASE;
+  // Reduced-motion: zero-duration so any property change is an instant cut.
+  const dur = reduced ? 0 : PROJECTION_DURATION_MS;
+  const stagger = reduced ? 0 : PROJECTION_STAGGER_MS;
 
   return (
     <div className="w-full py-4" ref={ref} style={{ maxWidth: "580px" }}>
@@ -329,7 +381,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
         style={{
           color: "var(--muted-foreground)",
           opacity: phase === "hidden" ? 0 : 0.5,
-          transition: `opacity 300ms ${easeOut}`,
+          transition: `opacity ${dur}ms ${easeOut}`,
         }}
       >
         GET /v1/streams/pay_statements/records
@@ -343,7 +395,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               color: "var(--muted-foreground)",
               opacity: phase === "hidden" ? 0 : 1,
-              transition: `opacity 300ms ${easeOut}`,
+              transition: `opacity ${dur}ms ${easeOut}`,
             }}
           >
             Record on server ({allFields.length} fields)
@@ -374,7 +426,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                     color: granted ? "var(--success)" : "var(--muted-foreground)",
                     opacity,
                     transform,
-                    transition: `opacity 360ms ${easeOut} ${phase === "hidden" ? i * 32 : 120}ms, transform 360ms ${easeOut} ${phase === "hidden" ? i * 32 : 120}ms`,
+                    transition: `opacity ${dur}ms ${easeOut} ${phase === "hidden" ? i * stagger : stagger * 4}ms, transform ${dur}ms ${easeOut} ${phase === "hidden" ? i * stagger : stagger * 4}ms`,
                     textDecoration: dimmedByFilter ? "line-through" : "none",
                   }}
                 >
@@ -390,18 +442,21 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
           <div
             className="h-0.5 flex-1"
             style={{
-              backgroundColor: phase === "filter" || phase === "result" ? "var(--primary)" : "var(--border)",
+              backgroundColor:
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
-              boxShadow: phase === "filter" || phase === "result" ? "0 0 8px oklch(0.580 0.172 253.7 / 0.3)" : "none",
-              transition: `opacity 220ms ${easeOut} 220ms, background-color 280ms ${easeOut}, box-shadow 280ms ${easeOut}`,
+              boxShadow:
+                phase === "filter" || phase === "result" ? "0 0 8px var(--authorship-protocol-strong)" : "none",
+              transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
           <span
             className="shrink-0 font-medium font-mono text-xs"
             style={{
-              color: phase === "filter" || phase === "result" ? "var(--primary)" : "var(--muted-foreground)",
+              color:
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--muted-foreground)",
               opacity: phase === "hidden" ? 0 : 1,
-              transition: `opacity 220ms ${easeOut} 220ms, color 280ms ${easeOut}`,
+              transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, color ${dur}ms ${easeOut}`,
             }}
           >
             grant filter
@@ -409,10 +464,12 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
           <div
             className="h-0.5 flex-1"
             style={{
-              backgroundColor: phase === "filter" || phase === "result" ? "var(--primary)" : "var(--border)",
+              backgroundColor:
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
-              boxShadow: phase === "filter" || phase === "result" ? "0 0 8px oklch(0.580 0.172 253.7 / 0.3)" : "none",
-              transition: `opacity 220ms ${easeOut} 220ms, background-color 280ms ${easeOut}, box-shadow 280ms ${easeOut}`,
+              boxShadow:
+                phase === "filter" || phase === "result" ? "0 0 8px var(--authorship-protocol-strong)" : "none",
+              transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
         </div>
@@ -424,7 +481,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               color: "var(--success)",
               opacity: phase === "result" ? 1 : 0,
-              transition: `opacity 400ms ${easeOut}`,
+              transition: `opacity ${dur}ms ${easeOut}`,
             }}
           >
             Response to client ({grantedFields.length} fields)
@@ -440,7 +497,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                   fontWeight: 500,
                   opacity: phase === "result" ? 1 : 0,
                   transform: phase === "result" ? "translateY(0)" : "translateY(12px)",
-                  transition: `opacity 360ms ${easeOut} ${i * 48}ms, transform 360ms ${easeOut} ${i * 48}ms`,
+                  transition: `opacity ${dur}ms ${easeOut} ${i * stagger}ms, transform ${dur}ms ${easeOut} ${i * stagger}ms`,
                 }}
               >
                 {f}
@@ -540,7 +597,7 @@ function IncrementalSync() {
               transition: "opacity 300ms 100ms",
             }}
           >
-            Sync one payroll cycle later: <span style={{ color: "var(--success)" }}>1 new pay statement</span>
+            Sync one payroll cycle later: <span className="text-success">1 new pay statement</span>
           </div>
           <div className="flex flex-wrap items-center gap-0.5">
             {/* Existing records (dimmed) */}
@@ -613,16 +670,9 @@ function OutcomeCard({
           {variant === "granted" ? "\u2713" : "\u00d7"}
         </div>
         <div className="font-medium text-sm">{variant === "granted" ? "Access granted" : "Grant revoked"}</div>
-        <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-          {message}
-        </div>
+        <div className="text-muted-foreground text-xs">{message}</div>
       </div>
-      <button
-        className="px-0.5 font-mono text-xs"
-        onClick={onReset}
-        style={{ color: "var(--muted-foreground)" }}
-        type="button"
-      >
+      <button className="px-0.5 font-mono text-muted-foreground text-xs" onClick={onReset} type="button">
         {"\u21ba"} reset flow
       </button>
     </div>
@@ -948,9 +998,7 @@ function DefaultReferenceHero() {
             >
               PDPP
             </span>
-            <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
-              v0.1.0 · Open reference
-            </span>
+            <span className="font-mono text-muted-foreground text-xs">v0.1.0 · Open reference</span>
           </div>
         </Reveal>
         <Reveal delay={50}>
@@ -1097,11 +1145,15 @@ function StickyHeader({
   activeSection,
   currentLabel,
   navigateTo,
+  phase,
 }: {
   activeSection: SectionId;
   currentLabel: string;
   navigateTo: (id: SectionId) => void;
+  phase: ProtocolPhase;
 }) {
+  const showGrant = PROTOCOL_INDICATOR_SECTIONS.includes(activeSection);
+  const { dotColor, grantLabel } = resolveGrantIndicator(phase);
   return (
     <header
       className="sticky top-0 z-40 flex h-12 items-center gap-2 px-4 md:gap-3 md:px-6"
@@ -1112,10 +1164,7 @@ function StickyHeader({
       }}
     >
       <SiteHeader currentLabel={currentLabel} />
-      <span
-        className="font-mono text-xs uppercase tracking-wide md:hidden"
-        style={{ color: "var(--muted-foreground)" }}
-      >
+      <span className="font-mono text-muted-foreground text-xs uppercase tracking-wide md:hidden">
         {SECTIONS.find((s) => s.id === activeSection)?.label}
       </span>
       <div className="flex-1" />
@@ -1135,6 +1184,19 @@ function StickyHeader({
           </button>
         ))}
       </nav>
+      {/* Grant state — anchored in the sticky header below lg, where the
+          right-rail Stepper (which hosts the same indicator at lg+) is hidden.
+          Stable slot, never overlaps the consent CTA. */}
+      {showGrant && (
+        <div
+          aria-live="polite"
+          className="flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 lg:hidden"
+          style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+        >
+          <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
+          <span className="font-medium text-muted-foreground text-xs">Grant: {grantLabel}</span>
+        </div>
+      )}
       <span className="hidden font-mono text-xs md:inline" style={{ color: "var(--muted-foreground)", opacity: 0.65 }}>
         v0.1.0
       </span>
@@ -1154,9 +1216,7 @@ function AccessModeSelector({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-        Access mode:
-      </span>
+      <span className="text-muted-foreground text-xs">Access mode:</span>
       {ACCESS_MODES.map((mode) => (
         <button
           className="rounded px-2 py-1 font-mono text-xs transition-colors"
@@ -1216,27 +1276,6 @@ function ConsentStageBody({
   return <ConsentOutcomeCard onReset={handleReset} phase={phase} />;
 }
 
-function GrantIndicator({ activeSection, phase }: { activeSection: SectionId; phase: ProtocolPhase }) {
-  if (!PROTOCOL_INDICATOR_SECTIONS.includes(activeSection)) {
-    return null;
-  }
-  const { dotColor, grantLabel } = resolveGrantIndicator(phase);
-  return (
-    <div
-      className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-xs"
-      style={{
-        backgroundColor: "var(--card)",
-        border: "1px solid var(--border)",
-        boxShadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
-        opacity: 0.9,
-      }}
-    >
-      <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
-      <span style={{ color: "var(--muted-foreground)" }}>Grant: {grantLabel}</span>
-    </div>
-  );
-}
-
 export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppProps = {}) {
   const [activeSection, setActiveSection] = useState<SectionId>(SECTIONS[0].id);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -1278,13 +1317,16 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--background)", color: "var(--foreground)" }}>
-      <StickyHeader activeSection={activeSection} currentLabel={currentLabel} navigateTo={navigateTo} />
+      <StickyHeader
+        activeSection={activeSection}
+        currentLabel={currentLabel}
+        navigateTo={navigateTo}
+        phase={protocol.phase}
+      />
 
-      {/* Right-side stepper (large screens) */}
-      <Stepper activeId={activeSection} onNavigate={navigateTo} />
-
-      {/* Protocol state indicator — visible during sections 4-8 */}
-      <GrantIndicator activeSection={activeSection} phase={protocol.phase} />
+      {/* Right-side stepper (large screens). The grant state indicator is
+          anchored as the rail's terminal row — no floating toast. */}
+      <Stepper activeId={activeSection} onNavigate={navigateTo} phase={protocol.phase} />
 
       {hero ?? <DefaultReferenceHero />}
 
@@ -1297,13 +1339,11 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
           config={SECTION_CONTENT[0]}
           detail={
             <DetailPanel label="See one realization path" spec="§7 Manifest, Collection Profile">
-              <p className="pdpp-caption mb-3" style={{ color: "var(--muted-foreground)" }}>
+              <p className="pdpp-caption mb-3 text-muted-foreground">
                 The reference uses a user-side connector runtime. It is one realization path for PDPP; the protocol
                 itself is defined by consent, grants, and enforcement.
               </p>
-              <p className="font-medium" style={{ color: "var(--foreground)" }}>
-                Connector manifest
-              </p>
+              <p className="font-medium text-foreground">Connector manifest</p>
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
@@ -1322,9 +1362,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
 }`}
               </pre>
 
-              <p className="mt-4 font-medium" style={{ color: "var(--foreground)" }}>
-                Collection runtime message flow
-              </p>
+              <p className="mt-4 font-medium text-foreground">Collection runtime message flow</p>
               <p>
                 The runtime spawns the connector as a child process. Communication is stdin/stdout JSONL. The connector
                 never sees the raw grant or token.
@@ -1387,9 +1425,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
                     key={m.detail}
                     style={{ borderBottom: i < arr.length - 1 ? "1px solid var(--border)" : "none" }}
                   >
-                    <span className="w-4 shrink-0 text-center" style={{ color: "var(--muted-foreground)" }}>
-                      {m.dir}
-                    </span>
+                    <span className="w-4 shrink-0 text-center text-muted-foreground">{m.dir}</span>
                     <span className="shrink-0 font-medium" style={{ color: m.color }}>
                       {m.msg}
                     </span>
@@ -1413,9 +1449,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
                 </span>
               </div>
 
-              <p className="mt-3 font-medium" style={{ color: "var(--foreground)" }}>
-                Platform access methods
-              </p>
+              <p className="mt-3 font-medium text-foreground">Platform access methods</p>
               <p>
                 The <code className="font-mono">bindings</code> field in the manifest declares what the connector needs
                 from the runtime. Some compensation sources can expose native exports. Others still need browser
@@ -1555,7 +1589,7 @@ Content-Type: application/json
                 </div>
                 <span
                   className="rounded px-1.5 py-0.5 font-mono text-xs"
-                  style={{ backgroundColor: "oklch(0.62 0.15 70 / 0.1)", color: "var(--warning)" }}
+                  style={{ backgroundColor: "var(--warning-wash)", color: "var(--warning)" }}
                 >
                   client request
                 </span>
@@ -1571,15 +1605,11 @@ Content-Type: application/json
                   >
                     client app
                   </span>
-                  <span className="font-mono text-xs" style={{ color: "var(--success)" }}>
-                    verified
-                  </span>
+                  <span className="font-mono text-success text-xs">verified</span>
                 </div>
               </div>
 
-              <div className="mb-3 text-xs" style={{ color: "var(--foreground)" }}>
-                {LONGVIEW_PURPOSE_DESCRIPTION}
-              </div>
+              <div className="mb-3 text-foreground text-xs">{LONGVIEW_PURPOSE_DESCRIPTION}</div>
             </div>
 
             {/* Requested streams */}
@@ -1594,9 +1624,7 @@ Content-Type: application/json
                   key={s.name}
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                  <span className="font-mono text-xs" style={{ color: "var(--foreground)" }}>
-                    {s.name}
-                  </span>
+                  <span className="font-mono text-foreground text-xs">{s.name}</span>
                   <span
                     className="text-xs"
                     style={{
@@ -1624,9 +1652,7 @@ Content-Type: application/json
           config={SECTION_CONTENT[3]}
           detail={
             <DetailPanel label="See the trust model" spec="§5.1 Client Display, §5.2 Client Claims">
-              <p className="font-medium" style={{ color: "var(--foreground)" }}>
-                Three content layers in the consent card above:
-              </p>
+              <p className="font-medium text-foreground">Three content layers in the consent card above:</p>
 
               {/* Trust model mapping — what in the UI comes from where */}
               <div className="mt-1 flex flex-col gap-0">
@@ -1675,7 +1701,7 @@ Content-Type: application/json
                   >
                     <div className="mt-1.5 h-1 w-1 shrink-0 rounded-full" style={{ backgroundColor: row.color }} />
                     <div className="min-w-0 flex-1">
-                      <span style={{ color: "var(--foreground)" }}>{row.element}</span>
+                      <span className="text-foreground">{row.element}</span>
                       <br />
                       <span className="font-mono" style={{ color: "var(--muted-foreground)", opacity: 0.7 }}>
                         {row.source}
@@ -1820,17 +1846,16 @@ PDPP-Version: 0.1.0
               <p>Edge cases:</p>
               <div className="flex flex-col gap-1 font-mono text-xs">
                 <span>
-                  <span style={{ color: "var(--destructive)" }}>403 grant_revoked</span> — grant has been revoked
+                  <span className="text-destructive">403 grant_revoked</span> — grant has been revoked
                 </span>
                 <span>
-                  <span style={{ color: "var(--destructive)" }}>403 field_not_granted</span> — filter targets
-                  unauthorized field
+                  <span className="text-destructive">403 field_not_granted</span> — filter targets unauthorized field
                 </span>
                 <span>
-                  <span style={{ color: "var(--destructive)" }}>403 insufficient_scope</span> — stream not in grant
+                  <span className="text-destructive">403 insufficient_scope</span> — stream not in grant
                 </span>
                 <span>
-                  <span style={{ color: "var(--warning)" }}>410 Gone</span> — changes_since cursor has expired
+                  <span className="text-warning">410 Gone</span> — changes_since cursor has expired
                 </span>
               </div>
             </DetailPanel>
@@ -1838,10 +1863,8 @@ PDPP-Version: 0.1.0
         >
           {protocol.phase === "revoked" ? (
             <div className="w-full overflow-hidden rounded-xl px-5 py-8 text-center" data-surface="protocol">
-              <div className="mb-2 font-mono text-xs" style={{ color: "var(--destructive)" }}>
-                403 grant_revoked
-              </div>
-              <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+              <div className="mb-2 font-mono text-destructive text-xs">403 grant_revoked</div>
+              <div className="text-muted-foreground text-xs">
                 The grant has been revoked. No further queries will be served.
               </div>
             </div>
@@ -1854,10 +1877,8 @@ PDPP-Version: 0.1.0
                   data-surface="protocol"
                   style={{ maxWidth: "440px" }}
                 >
-                  <div className="mb-2 font-medium text-xs" style={{ color: "var(--success)" }}>
-                    Actual response (first record)
-                  </div>
-                  <pre className="overflow-x-auto font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="mb-2 font-medium text-success text-xs">Actual response (first record)</div>
+                  <pre className="overflow-x-auto font-mono text-muted-foreground text-xs">
                     {JSON.stringify(protocol.queryResult.records[0].data, null, 2)}
                   </pre>
                   <div className="mt-2 text-xs italic" style={{ color: "var(--muted-foreground)", opacity: 0.7 }}>
@@ -1906,9 +1927,7 @@ Authorization: Bearer <client_token>
                 </span>
                 <span>A client MUST NOT use a next_cursor value as a changes_since parameter.</span>
               </div>
-              <p className="mt-3 font-medium" style={{ color: "var(--foreground)" }}>
-                Tombstones
-              </p>
+              <p className="mt-3 font-medium text-foreground">Tombstones</p>
               <p>
                 When a record is deleted from a mutable_state stream, the RS includes a tombstone in incremental sync
                 responses:
@@ -1924,9 +1943,7 @@ Authorization: Bearer <client_token>
   "emitted_at": "2026-04-08T10:00:01Z" }`}
               </pre>
 
-              <p className="mt-3 font-medium" style={{ color: "var(--foreground)" }}>
-                Cursor expiry
-              </p>
+              <p className="mt-3 font-medium text-foreground">Cursor expiry</p>
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
@@ -1947,7 +1964,7 @@ Authorization: Bearer <client_token>
             <div className="flex w-full flex-col gap-6">
               {/* Live sync state from mock server */}
               <div className="w-full" style={{ maxWidth: "520px" }}>
-                <div className="mb-2 font-medium text-xs" style={{ color: "var(--muted-foreground)" }}>
+                <div className="mb-2 font-medium text-muted-foreground text-xs">
                   Initial sync: {protocol.syncResult?.records?.length || 24} records
                 </div>
                 <div className="mb-1 flex flex-wrap items-center gap-0.5">
@@ -1981,7 +1998,7 @@ Authorization: Bearer <client_token>
               {/* Live delta result */}
               {protocol.syncResult?.records && protocol.syncResult.records.length > 24 && (
                 <div className="w-full" style={{ maxWidth: "520px" }}>
-                  <div className="mb-2 font-medium text-xs" style={{ color: "var(--success)" }}>
+                  <div className="mb-2 font-medium text-success text-xs">
                     Delta: {protocol.syncResult.records.length - 24} new record
                     {protocol.syncResult.records.length - 24 === 1 ? "" : "s"}
                   </div>
@@ -2089,12 +2106,8 @@ Authorization: Bearer <owner_token>
             <div className="w-full overflow-hidden rounded-xl px-5 py-6" data-surface="human">
               <div className="mb-4 flex items-center gap-2">
                 <div className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--success)" }} />
-                <span className="font-medium text-xs" style={{ color: "var(--success)" }}>
-                  Owner access
-                </span>
-                <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  No grant required
-                </span>
+                <span className="font-medium text-success text-xs">Owner access</span>
+                <span className="font-mono text-muted-foreground text-xs">No grant required</span>
               </div>
               <div className="flex flex-col">
                 {protocol.serverStats.map((s) => (
@@ -2105,16 +2118,14 @@ Authorization: Bearer <owner_token>
                     style={{ borderBottom: "1px solid var(--border)" }}
                     type="button"
                   >
-                    <span className="font-medium text-xs" style={{ color: "var(--foreground)" }}>
-                      {s.name}
-                    </span>
-                    <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
+                    <span className="font-medium text-foreground text-xs">{s.name}</span>
+                    <span className="font-mono text-muted-foreground text-xs">
                       {s.fields.length} fields, {s.recordCount} records
                     </span>
                   </button>
                 ))}
               </div>
-              <div className="mt-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
+              <div className="mt-3 text-muted-foreground text-xs">
                 Click a stream to export. All fields returned, no projection.
               </div>
             </div>
@@ -2127,7 +2138,7 @@ Authorization: Bearer <owner_token>
               }
               return (
                 <div className="w-full overflow-hidden rounded-xl px-5 py-4" data-surface="protocol">
-                  <div className="mb-2 font-medium text-xs" style={{ color: "var(--success)" }}>
+                  <div className="mb-2 font-medium text-success text-xs">
                     Exported {protocol.exportResult.records.length} records (all fields)
                   </div>
                   <div
@@ -2193,23 +2204,16 @@ Authorization: Bearer <owner_token>
                   key={ref}
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                  <span className="w-16 shrink-0 font-medium text-xs" style={{ color: "var(--foreground)" }}>
-                    {ref}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs" style={{ color: "var(--edu-fg)" }}>
-                    {spec}
-                  </span>
-                  <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                    {desc}
-                  </span>
+                  <span className="w-16 shrink-0 font-medium text-foreground text-xs">{ref}</span>
+                  <span className="shrink-0 font-mono text-edu-fg text-xs">{spec}</span>
+                  <span className="text-muted-foreground text-xs">{desc}</span>
                 </div>
               ))}
             </div>
             <a
-              className="font-medium text-sm transition-opacity hover:opacity-70"
+              className="font-medium text-primary text-sm transition-opacity hover:opacity-70"
               href={`${SPEC_BASE_URL}/spec-core`}
               rel="noopener noreferrer"
-              style={{ color: "var(--primary)" }}
               target="_blank"
             >
               Read the full specification →
