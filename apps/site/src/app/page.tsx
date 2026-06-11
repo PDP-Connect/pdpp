@@ -39,12 +39,12 @@ export default function Home() {
                 style={{
                   backgroundColor: "var(--primary-wash)",
                   color: "var(--primary)",
-                  border: "1px solid oklch(0.580 0.172 253.7 / 0.15)",
+                  border: "1px solid var(--authorship-protocol-border)",
                 }}
               >
                 PDPP
               </span>
-              <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
+              <span className="font-mono text-xs tracking-wide" style={{ color: "var(--muted-foreground)" }}>
                 v0.1.0 · Open reference
               </span>
             </span>

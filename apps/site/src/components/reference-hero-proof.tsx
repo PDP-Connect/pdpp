@@ -7,7 +7,7 @@ export function ReferenceHeroProof() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
         <section className="overflow-hidden rounded-xl" data-surface="human">
           <div className="px-5 py-5 md:px-6 md:py-6">
-            <div className="pdpp-eyebrow" style={{ color: "var(--human)", marginBottom: "0.75rem" }}>
+            <div className="pdpp-eyebrow" style={{ color: "var(--authorship-manifest-fg)", marginBottom: "0.75rem" }}>
               Consent surface
             </div>
             <div style={{ marginBottom: "0.9rem" }}>
@@ -43,7 +43,7 @@ export function ReferenceHeroProof() {
 
         <section className="overflow-hidden rounded-xl" data-surface="protocol">
           <div className="px-5 py-5 md:px-6 md:py-6">
-            <div className="pdpp-eyebrow" style={{ color: "var(--primary)", marginBottom: "0.75rem" }}>
+            <div className="pdpp-eyebrow" style={{ color: "var(--authorship-protocol-fg)", marginBottom: "0.75rem" }}>
               Grant + response
             </div>
             <pre

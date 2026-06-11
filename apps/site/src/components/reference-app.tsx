@@ -26,7 +26,7 @@ import {
   LONGVIEW_PURPOSE_DESCRIPTION,
   LONGVIEW_TOS_URI,
 } from "@/lib/longview-world.ts";
-import { type ProtocolPhase, useProtocol } from "@/lib/use-protocol.ts";
+import { type ClientIntrospection, type ProtocolPhase, useProtocol } from "@/lib/use-protocol.ts";
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -446,7 +446,9 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                 phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
-                phase === "filter" || phase === "result" ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)" : "none",
+                phase === "filter" || phase === "result"
+                  ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)"
+                  : "none",
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
@@ -454,7 +456,9 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             className="shrink-0 font-medium font-mono text-xs"
             style={{
               color:
-                phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--muted-foreground)",
+                phase === "filter" || phase === "result"
+                  ? "var(--authorship-protocol-accent)"
+                  : "var(--muted-foreground)",
               opacity: phase === "hidden" ? 0 : 1,
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, color ${dur}ms ${easeOut}`,
             }}
@@ -468,7 +472,9 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                 phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
-                phase === "filter" || phase === "result" ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)" : "none",
+                phase === "filter" || phase === "result"
+                  ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)"
+                  : "none",
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
@@ -638,6 +644,81 @@ function IncrementalSync() {
             changes_since: "cursor_a8f2..." → 1 record returned
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Token introspection ────────────────────────────────────────────────────
+
+// The protocol moment that gates EVERY query and was previously invisible
+// (only described in prose in the Enforce/Export detail panels): before the RS
+// projects a single field, it introspects the bearer token to learn its kind
+// (owner vs client), the bound subject, and the live grant status. This is what
+// makes revocation and single-use enforceable — a revoked grant flips
+// `active` to false here, one step before projection, so the next line of the
+// exchange is a 403 instead of data. Rendered as a protocol fact: real
+// request/response shape from the mock server's introspection endpoint, not a
+// diagram. The verdict pill recolors live as the grant moves active → revoked.
+
+function IntrospectionField({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-0.5">
+      <span className="shrink-0 font-mono text-xs" style={{ color: "var(--muted-foreground)", opacity: 0.65 }}>
+        {label}
+      </span>
+      <span
+        className="truncate font-mono text-xs"
+        style={{ color: accent ? "var(--authorship-protocol-fg)" : "var(--foreground)" }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function TokenIntrospection({ introspection }: { introspection: ClientIntrospection }) {
+  const active = introspection.active;
+  const verdictColor = active ? "var(--success)" : "var(--destructive)";
+  const verdictWash = active ? "var(--success-wash)" : "var(--status-danger-bg)";
+  return (
+    <div className="w-full overflow-hidden rounded-xl" data-surface="protocol" style={{ maxWidth: "440px" }}>
+      <div className="px-5 pt-4 pb-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)", opacity: 0.7 }}>
+            POST /introspect
+          </span>
+          <span
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide"
+            style={{ backgroundColor: "var(--authorship-protocol-wash)", color: "var(--authorship-protocol-fg)" }}
+          >
+            RS reads first
+          </span>
+        </div>
+        <pre className="overflow-x-auto font-mono text-xs" style={{ margin: 0, color: "var(--muted-foreground)" }}>
+          {"token=<client_token>"}
+        </pre>
+      </div>
+      <div className="flex flex-col px-5 py-3">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide"
+            style={{ backgroundColor: verdictWash, color: verdictColor }}
+          >
+            active: {String(active)}
+          </span>
+          <span className="font-mono text-muted-foreground text-xs">
+            {active ? "query proceeds to projection" : "query refused — 403"}
+          </span>
+        </div>
+        <IntrospectionField accent label="pdpp_token_kind" value={introspection.pdpp_token_kind} />
+        <IntrospectionField label="grant_status" value={introspection.grant_status} />
+        <IntrospectionField label="subject_id" value={introspection.subject_id} />
+        <IntrospectionField label="grant_id" value={introspection.grant_id} />
+        <IntrospectionField label="scope_streams" value={`[${introspection.scope_streams.join(", ") || "—"}]`} />
+      </div>
+      <div className="px-5 pb-3 text-xs italic" style={{ color: "var(--muted-foreground)", opacity: 0.7 }}>
+        The RS decides token kind and grant status from introspection, never from the token's syntax.
       </div>
     </div>
   );
@@ -1862,14 +1943,18 @@ PDPP-Version: 0.1.0
           }
         >
           {protocol.phase === "revoked" ? (
-            <div className="w-full overflow-hidden rounded-xl px-5 py-8 text-center" data-surface="protocol">
-              <div className="mb-2 font-mono text-destructive text-xs">403 grant_revoked</div>
-              <div className="text-muted-foreground text-xs">
-                The grant has been revoked. No further queries will be served.
+            <div className="flex w-full flex-col items-center gap-6">
+              <TokenIntrospection introspection={protocol.introspection} />
+              <div className="w-full overflow-hidden rounded-xl px-5 py-8 text-center" data-surface="protocol">
+                <div className="mb-2 font-mono text-destructive text-xs">403 grant_revoked</div>
+                <div className="text-muted-foreground text-xs">
+                  Introspection returned active:false, so no further queries are served.
+                </div>
               </div>
             </div>
           ) : (
             <div className="flex w-full flex-col items-center gap-6">
+              <TokenIntrospection introspection={protocol.introspection} />
               <FieldProjection allFields={ALL_PAY_STATEMENT_FIELDS} grantedFields={grantedPayStatementFields} />
               {protocol.queryResult?.records?.[0] && (
                 <div
@@ -2189,7 +2274,11 @@ Authorization: Bearer <owner_token>
           <div className="flex w-full flex-col gap-6">
             <div className="flex flex-col gap-2">
               {[
-                { ref: "Enforce", spec: "§8 Resource Server", desc: "Field projection, effective filter composition" },
+                {
+                  ref: "Enforce",
+                  spec: "§8 Resource Server",
+                  desc: "Token introspection, field projection, effective filter composition",
+                },
                 { ref: "Request", spec: "§5 Selection Request", desc: "RFC 9396 authorization_details envelope" },
                 { ref: "Consent", spec: "§5.1, §5.2", desc: "Client display, client claims, attribution" },
                 { ref: "Grant", spec: "§6 Grant", desc: "Immutable consent artifact with three time axes" },
