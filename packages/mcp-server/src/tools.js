@@ -495,7 +495,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'aggregate',
       title: 'Aggregate PDPP records',
       description:
-        'Compute a single-stream aggregation via `GET /v1/streams/{stream}/aggregate`. Prefer over `query_records` when you only need a count, sum, min/max, distinct count, or grouped/time-bucketed rollup — returns small bucket rows, never record bodies. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with one dimension: `group_by` XOR `group_by_time` (requires `granularity`). Groupable fields are advertised by `GET /v1/schema`. Forwards args verbatim. ' +
+        'Compute a single-stream aggregation via `GET /v1/streams/{stream}/aggregate`. Prefer over `query_records` when you only need a count, sum, min/max, distinct count, or grouped/time-bucketed rollup — returns small bucket rows, never record bodies. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with one dimension: `group_by` XOR `group_by_time` (requires `granularity`). Grouped responses include `other_count` (records in groups beyond `limit`) so you can detect top-N truncation without a second call. Groupable fields are advertised by `GET /v1/schema`. Forwards args verbatim. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
@@ -1085,7 +1085,8 @@ function summarizeAggregate(body, stream) {
       return `${formatScalar(key)}=${count == null ? '?' : count}`;
     });
     const more = groups.length > AGGREGATE_GROUP_PREVIEW_LIMIT ? ` more_groups=${groups.length - AGGREGATE_GROUP_PREVIEW_LIMIT};` : '';
-    return `${head} ${dimension}: ${groups.length} group(s) [${shown.join(', ')}]${more} canonical envelope in structuredContent.data`;
+    const otherCount = typeof agg.other_count === 'number' ? ` other_count=${agg.other_count};` : '';
+    return `${head} ${dimension}: ${groups.length} group(s) [${shown.join(', ')}]${more}${otherCount} canonical envelope in structuredContent.data`;
   }
 
   // Ungrouped: the scalar answer lives in `value`. Fall back to

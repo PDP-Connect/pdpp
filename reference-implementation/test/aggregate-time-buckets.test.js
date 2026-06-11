@@ -1,9 +1,10 @@
 /**
- * Aggregate time-bucket + count_distinct contract tests.
+ * Aggregate time-bucket + count_distinct + other_count contract tests.
  *
  * Exercises the canonical read-contract aggregation extension promoted from
  * `design-notes/read-contract-aggregation-design-2026-05-28.md` and specced in
- * `openspec/changes/add-aggregate-time-buckets-and-distinct`:
+ * `openspec/changes/add-aggregate-time-buckets-and-distinct` and
+ * `openspec/changes/add-aggregate-other-rollup`:
  *
  *   - scalar group_by unchanged (regression);
  *   - group_by_time day bucketing, time_zone default + echo, explicit zone,
@@ -11,7 +12,8 @@
  *     rejection, single grouping dimension rejection;
  *   - exact count_distinct with null excluded and approximate=false, plus
  *     undeclared/ungranted distinct field rejection;
- *   - manifest validation of group_by_time / count_distinct declarations.
+ *   - manifest validation of group_by_time / count_distinct declarations;
+ *   - other_count explicit rollup for truncated group_by and group_by_time.
  *
  * These call the storage-layer `aggregateRecords` directly (the same path the
  * `rs.streams.aggregate` operation wires its `aggregate` dependency to),
@@ -143,6 +145,8 @@ test('scalar group_by is unchanged (count-desc, key-asc) and carries null additi
       { key: 'bob', count: 2 },
       { key: null, count: 1 },
     ]);
+    // All 3 groups fit within limit=10; other_count is 0 (no truncation).
+    assert.equal(res.other_count, 0);
   });
 });
 
@@ -163,6 +167,8 @@ test('group_by_time buckets by UTC day by default, echoes UTC, and orders ascend
       { key: '2026-05-03', count: 1 },
       { key: null, count: 1 },
     ]);
+    // 4 buckets fit within default limit; other_count is 0.
+    assert.equal(res.other_count, 0);
   });
 });
 
@@ -359,4 +365,59 @@ test('manifest validation rejects an unknown count_distinct field', async () => 
   } finally {
     closeDb();
   }
+});
+
+test('group_by other_count is the sum of counts for groups beyond limit', async () => {
+  // 3 distinct senders (alice=2, bob=2, null=1). limit=2 returns top 2;
+  // other_count should be the count from the 3rd group (null=1).
+  await withSeeded(SAMPLE, async () => {
+    const res = await aggregateRecords(target(), STREAM, grant, {
+      metric: 'count',
+      group_by: 'sender',
+      limit: '2',
+    }, manifestWith(FULL_AGGREGATIONS));
+    assert.equal(res.limit, 2);
+    assert.equal(res.groups.length, 2);
+    // Top 2 by count-desc: alice=2, bob=2
+    assert.deepEqual(res.groups, [
+      { key: 'alice', count: 2 },
+      { key: 'bob', count: 2 },
+    ]);
+    // Truncated: null=1. other_count = 1.
+    assert.equal(res.other_count, 1);
+  });
+});
+
+test('group_by other_count is 0 when all groups fit within limit', async () => {
+  await withSeeded(SAMPLE, async () => {
+    const res = await aggregateRecords(target(), STREAM, grant, {
+      metric: 'count',
+      group_by: 'sender',
+      limit: '100',
+    }, manifestWith(FULL_AGGREGATIONS));
+    assert.equal(res.groups.length, 3);
+    assert.equal(res.other_count, 0);
+  });
+});
+
+test('group_by_time other_count covers buckets truncated by limit', async () => {
+  // SAMPLE has 4 buckets (3 UTC day buckets + 1 null). limit=2 returns only
+  // the first 2 ascending; other_count is the sum of the remaining buckets.
+  await withSeeded(SAMPLE, async () => {
+    const res = await aggregateRecords(target(), STREAM, grant, {
+      metric: 'count',
+      group_by_time: 'occurred_at',
+      granularity: 'day',
+      limit: '2',
+    }, manifestWith(FULL_AGGREGATIONS));
+    assert.equal(res.limit, 2);
+    assert.equal(res.groups.length, 2);
+    // First 2 ascending: 2026-05-01=2, 2026-05-02=1
+    assert.deepEqual(res.groups, [
+      { key: '2026-05-01', count: 2 },
+      { key: '2026-05-02', count: 1 },
+    ]);
+    // Truncated: 2026-05-03=1, null=1. other_count = 1+1 = 2.
+    assert.equal(res.other_count, 2);
+  });
 });
