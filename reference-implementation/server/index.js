@@ -171,6 +171,7 @@ import {
   readCollectorProtocolHeader,
 } from './collector-protocol.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { resolveOwnerExposurePosture } from './owner-exposure-posture.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createStreamingSessionStore } from './streaming/sessions.js';
 import { createDefaultStreamingCompanionFactory } from './streaming/companion-factory.js';
@@ -2511,12 +2512,23 @@ function buildAsApp(opts = {}) {
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
   const publicDcrRateLimiter = createPublicDcrRateLimiter(opts.publicDynamicClientRegistrationRateLimit);
   const ownerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
+  // Owner-exposure posture flows in from startServer. When buildAsApp is
+  // driven directly (a few low-level tests), no posture is supplied and we
+  // default to the historical open-when-disabled, unlocked-registry behavior
+  // so those fixtures stay frictionless. Production always supplies a posture.
+  const ownerExposurePosture = opts.ownerExposurePosture ?? null;
+  const allowUnauthenticatedOwnerWhenDisabled =
+    ownerExposurePosture ? ownerExposurePosture.allowUnauthenticatedOwnerWhenDisabled : true;
+  const lockConnectorRegistry = ownerExposurePosture
+    ? ownerExposurePosture.lockConnectorRegistry
+    : false;
   const ownerAuth = createOwnerAuthPlaceholder({
     password: ownerAuthConfig.password,
     subjectId: ownerAuthConfig.subjectId,
     sessionTtlSeconds: ownerAuthConfig.sessionTtlSeconds,
     forceSecureCookies: ownerAuthConfig.forceSecureCookies,
     sameSite: ownerAuthConfig.sameSite,
+    allowUnauthenticatedWhenDisabled: allowUnauthenticatedOwnerWhenDisabled,
     providerName,
   });
   app.use((req, res, next) => {
@@ -3561,7 +3573,21 @@ function buildAsApp(opts = {}) {
     // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
     // same routes, same operation delegation, same error mapping, same response
     // envelopes. Only mounted in polyfill mode, matching the original guard.
-    const asPolyfillConnectorsContext = { registerConnector, getConnectorManifest, handleError, pdppError };
+    // Security audit S-2 (lane A1): `POST /connectors` upserts a connector
+    // manifest, and a bumped `version` invalidates every existing grant — a
+    // one-request grant-wipe DoS. On any internet-facing posture (or when the
+    // operator sets PDPP_LOCK_CONNECTOR_REGISTRY=1) we require an owner session
+    // for the register route. In local-dev the route stays open so the
+    // `pnpm dev` / test harness can self-register manifests frictionlessly.
+    // GET /connectors/:id (manifest read) is unchanged — it exposes no user
+    // data and is needed by the unauthenticated client-side connect flow.
+    const asPolyfillConnectorsContext = {
+      registerConnector,
+      getConnectorManifest,
+      handleError,
+      pdppError,
+      requireOwnerSessionForRegister: lockConnectorRegistry ? ownerAuth.requireOwnerSession : null,
+    };
     mountAsPolyfillConnectorRegister(app, asPolyfillConnectorsContext);
     mountAsPolyfillConnectorDetail(app, asPolyfillConnectorsContext);
   }
@@ -4584,8 +4610,43 @@ export async function startServer(opts = {}) {
     // PDPP_REFERENCE_ORIGIN.
     referenceBaseUrl: configuredAsPublicUrl || null,
   };
-  const ownerAuthSubjectId =
-    resolveOwnerAuthPlaceholderConfig(opts).subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+  const resolvedOwnerAuthConfig = resolveOwnerAuthPlaceholderConfig(opts);
+  const ownerAuthSubjectId = resolvedOwnerAuthConfig.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+
+  // ── Owner-exposure posture (security audit S-1 / S-2, lane A1) ────────────
+  // Decide whether this deployment is internet-facing. In a hosted posture an
+  // unset PDPP_OWNER_PASSWORD is a full bypass of the owner control plane, so
+  // we FAIL CLOSED: refuse to boot. In a local-dev (loopback) posture we keep
+  // the password-optional convenience and the open `requireOwnerSession`
+  // fall-through. The posture also gates `POST /connectors` (manifest upsert)
+  // so a one-request grant-wipe DoS is not reachable unauthenticated on a
+  // hosted surface. See server/owner-exposure-posture.ts for the signal logic.
+  const ownerExposurePosture = resolveOwnerExposurePosture({
+    hasOwnerPassword:
+      typeof resolvedOwnerAuthConfig.password === 'string' && resolvedOwnerAuthConfig.password.length > 0,
+    bindHost: opts.bindHost,
+    publicUrlOption: configuredAsPublicUrl,
+    env: process.env,
+    isTestContext: !!process.env.NODE_TEST_CONTEXT,
+  });
+  if (ownerExposurePosture.refuseBootReason) {
+    // Throw BEFORE any listener binds. The CLI entrypoint's `.catch` exits(1)
+    // with the fatal log line; the test harness sees a rejected promise.
+    throw new Error(ownerExposurePosture.refuseBootReason);
+  }
+  if (
+    !ownerExposurePosture.hosted &&
+    ownerExposurePosture.bindsNonLoopback &&
+    !(typeof resolvedOwnerAuthConfig.password === 'string' && resolvedOwnerAuthConfig.password.length > 0)
+  ) {
+    // Local-dev posture that still binds a non-loopback interface without a
+    // password — not refused (could be a deliberate LAN demo), but loud.
+    logger.warn(
+      { bindHost: opts.bindHost ?? '(all interfaces)' },
+      'reference server is binding a non-loopback interface with PDPP_OWNER_PASSWORD unset — the owner control plane (/_ref, connector registry) is reachable without authentication. Set PDPP_OWNER_PASSWORD to gate it.',
+    );
+  }
+
   const webPushConfig = opts.webPushConfig || resolveWebPushConfig();
   const webPushStore = opts.webPushSubscriptionStore || createWebPushSubscriptionStore();
   // Reference-internal run-target registry, lifted out of buildAsApp so the
@@ -4699,6 +4760,9 @@ export async function startServer(opts = {}) {
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
     ownerAuthSameSite: opts.ownerAuthSameSite,
+    // Owner-exposure posture: gates the disabled-auth fall-through and the
+    // connector-registry lock (security audit S-1 / S-2, lane A1).
+    ownerExposurePosture,
     webPushConfig,
     webPushSubscriptionStore: webPushStore,
     agentConnectTtlMs: opts.agentConnectTtlMs,
