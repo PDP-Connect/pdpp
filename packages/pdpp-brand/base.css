@@ -161,6 +161,27 @@
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
 
+  /* ─── Authorship temperature (PROVISIONAL) ───────────────────────────────
+     The copper-human / blue-protocol / neutral-client trust-temperature tier.
+     These NAMES are the contract; a parallel lane formalizes the canonical
+     values. Until that lands, derive from existing semantic tokens so the tier
+     is real and dark-mode-correct everywhere it is consumed (the underlying
+     --human / --primary / --muted-foreground / --border vars already carry
+     light + dark values). Replace these derivations — not the names — when the
+     formal tier ships.
+       - manifest  = copper/warm: owner-authored consent surface
+       - protocol  = cool blue:   enforced, verifiable protocol facts
+       - client    = neutral grey: rendered, never trusted client claims */
+  --authorship-manifest: var(--human);
+  --authorship-manifest-strong: color-mix(in oklab, var(--human) 70%, transparent);
+  --authorship-manifest-wash: var(--human-wash);
+  --authorship-protocol: var(--primary);
+  --authorship-protocol-strong: color-mix(in oklab, var(--primary) 55%, transparent);
+  --authorship-protocol-wash: var(--primary-wash);
+  --authorship-client: var(--muted-foreground);
+  --authorship-client-wash: color-mix(in oklab, var(--muted-foreground) 8%, transparent);
+  --authorship-client-border: var(--border);
+
   /* Surface tint: the literal "lift toward the page color" used by
      color-mix() expressions across the brand. White in light mode, near-black
      in dark mode so the same `color-mix(in oklab, X 92%, var(--surface-tint))`
@@ -183,6 +204,10 @@
   --motion-exit: var(--duration-fast) var(--ease-exit);
   --motion-state: var(--duration-base) var(--ease-standard);
   --motion-feedback: var(--duration-fast) var(--ease-spring);
+  /* The landing field-projection set-piece: restrained ease-out within the
+     150–250ms vocabulary, no spring/bounce. Reduced-motion zeroes
+     --duration-base below, collapsing this to an instant cut. */
+  --motion-projection: var(--duration-base) var(--ease-enter);
 
   --stagger-fast: 30ms;
   --stagger-base: 50ms;

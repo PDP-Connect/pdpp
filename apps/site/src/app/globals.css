@@ -75,6 +75,20 @@
   --color-human: var(--human);
   --color-human-wash: var(--human-wash);
   --color-primary-wash: var(--primary-wash);
+
+  /* Authorship temperature tier (provisional values live in base.css) — the
+   * trust model made visible. manifest = copper/owner, protocol = blue/enforced,
+   * client = neutral/untrusted. Exposes bg-authorship-* / text-authorship-* /
+   * border-authorship-* utilities. */
+  --color-authorship-manifest: var(--authorship-manifest);
+  --color-authorship-manifest-strong: var(--authorship-manifest-strong);
+  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
+  --color-authorship-protocol: var(--authorship-protocol);
+  --color-authorship-protocol-strong: var(--authorship-protocol-strong);
+  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
+  --color-authorship-client: var(--authorship-client);
+  --color-authorship-client-wash: var(--authorship-client-wash);
+  --color-authorship-client-border: var(--authorship-client-border);
   --color-success-wash: var(--success-wash);
   --color-success-wash-strong: var(--success-wash-strong);
   --color-warning-wash: var(--warning-wash);
