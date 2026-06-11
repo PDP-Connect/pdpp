@@ -149,6 +149,76 @@ test('a source-pressure cooldown does NOT suppress the dispatch when non-pressur
   }
 });
 
+// THE DEADLOCK CASE (the live bug): a STALE failure-backoff streak inflates the
+// failure-backoff effectiveIntervalMs (e.g. 16h) so the connection can never run
+// a successful run to clear the streak — a deadlock. Recovery of NON-pressure
+// gaps must NOT be gated by that failure-backoff interval: draining already-
+// deferred gaps cannot worsen a failure streak, so it proceeds on the minimal
+// recovery cadence (one base interval) regardless of the inflated backoff.
+test('recovery fires even when a stale failure-backoff interval has NOT elapsed (the live deadlock)', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-recovery-deadlock-'));
+  const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, 'deadlock.mjs');
+  const completedRuns = [];
+  const connectorId = 'chatgpt-recovery-deadlock-connector';
+
+  // Seed a streak of FAILED runs so computeNextRunWithBackoff inflates
+  // effectiveIntervalMs far beyond the elapsed time (intervalElapsed=false).
+  const now = Date.now();
+  const failedHistory = Array.from({ length: 6 }, (_, i) => ({
+    connector_id: connectorId,
+    connector_instance_id: connectorId,
+    status: 'failed',
+    error: 'simulated upstream failure',
+    started_at: new Date(now - (i + 1) * 60_000).toISOString(),
+    completed_at: new Date(now - (i + 1) * 60_000).toISOString(),
+    records_emitted: 0,
+  }));
+  const deadlockStore = {
+    listRunHistory: () => failedHistory,
+    // last run only ~200ms ago -> a 50ms base interval HAS elapsed (recovery
+    // cadence) but the inflated failure-backoff interval has NOT.
+    listLastRunTimes: () => [{ connector_id: connectorId, connector_instance_id: connectorId, last_run_time_ms: now - 200 }],
+    appendRunHistory: () => {},
+    upsertLastRunTime: () => {},
+  };
+
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId,
+      connectorPath,
+      manifest: POLICY_BLOCKED_MANIFEST,
+      intervalMs: 50,
+      maxRetries: 0,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    schedulerStore: deadlockStore,
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    // No source-pressure gaps here — the blocker is purely the failure-backoff
+    // interval, proving recovery is independent of BOTH governors.
+    getSourcePressureGaps: () => [],
+    getNonPressureRecoverableCount: () => 942,
+  });
+
+  try {
+    scheduler.start();
+    // Recovery-only launch reaches the policy-blocked gate (eligible despite the
+    // un-elapsed failure-backoff interval).
+    await waitFor(() => policySkips(completedRuns).length >= 1, 5000);
+    scheduler.stop();
+
+    assert.ok(
+      policySkips(completedRuns).length >= 1,
+      'recovery fires despite the stale failure-backoff interval — breaks the deadlock',
+    );
+    assert.equal(readAttempts(attemptsPath).length, 0, 'policy-blocked manifest never spawns');
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 // THE CONTROL (no regression): same cooldown, but ZERO non-pressure recovery
 // work -> the legacy behaviour holds, the cooldown suppresses the dispatch.
 test('a source-pressure cooldown still suppresses the dispatch when there is NO non-pressure recovery work', async () => {

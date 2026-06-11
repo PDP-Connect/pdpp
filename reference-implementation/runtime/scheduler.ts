@@ -1929,29 +1929,34 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     const elapsed = now - lastRun;
     const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
-    // Forward-walk eligibility: gated by BOTH the schedule interval AND the
-    // source-pressure cooldown. New source-touching work (the forward walk and
-    // its list-phase fetches) must respect the hot-bucket cooldown.
+    // Forward-walk eligibility: gated by BOTH the failure-backoff interval AND
+    // the source-pressure cooldown. New source-touching work (the forward walk
+    // and its list-phase fetches) must respect both governors.
     let eligible = intervalElapsed && !cooldownDefers;
 
-    // ─── Recovery-only eligibility (SLVP-ideal §4.3, the cooldown-starves-
-    // recovery fix) ───────────────────────────────────────────────────────
-    // The source-pressure cooldown is reason-discriminated: it reads ONLY
-    // `upstream_pressure`/`rate_limited` gaps (SOURCE_PRESSURE_GAP_REASONS).
-    // Non-source-pressure pending gaps (`run_cap_deferred`/`retry_exhausted`)
-    // are NOT source pressure — the cooldown has no claim over them. But the
-    // legacy single binary gate above skipped the WHOLE dispatch when the
-    // cooldown defers, so a handful of pressure gaps starved the recovery of
-    // hundreds of non-pressure gaps (the live 942-gap head-of-line-blocking
-    // stall). The fix: when the cooldown defers the forward walk but the
-    // schedule interval HAS elapsed and there is non-source-pressure recovery
-    // work pending, launch in RECOVERY-ONLY mode — the connector drains the
-    // non-pressure backlog (recovery-before-forward-walk) and returns BEFORE
-    // touching the hot bucket. Recovery rides the same pacer/circuit, so it
-    // still backs off on 429 and re-defers (it is not a raw-fetch bypass).
-    // This keeps the dispatch work-conserving for the non-congested sub-flow.
+    // ─── Recovery-only eligibility (SLVP-ideal §4.3) ────────────────────────
+    // Recovery of NON-source-pressure pending gaps (`run_cap_deferred` /
+    // `retry_exhausted`) is a separate, work-conserving sub-flow. NEITHER
+    // governor has a claim over it:
+    //   - the source-pressure cooldown is reason-discriminated (reads only
+    //     `upstream_pressure`/`rate_limited`), so it must not block non-pressure
+    //     recovery (the live 942-gap head-of-line-blocking stall);
+    //   - the failure-backoff `effectiveIntervalMs` is ALSO not a valid gate
+    //     here. On this live connection a stale failure streak (months-old
+    //     `failed` runs, never cleared because every tick since only `skipped`)
+    //     inflated `effectiveIntervalMs` to 16h, deadlocking the connection:
+    //     the backoff blocks the run, so no successful run ever clears the
+    //     streak. Draining already-deferred non-pressure gaps cannot worsen a
+    //     failure streak or re-pressure a hot bucket, so it must proceed on a
+    //     minimal RECOVERY CADENCE (one base schedule interval), independent of
+    //     both governors. The connector drains recovery-before-forward-walk and
+    //     returns BEFORE the forward walk (riding the same pacer/circuit, so it
+    //     still backs off on 429 and re-defers — not a raw-fetch bypass).
+    // A genuinely `blocked` connection is still excluded below (nothing safe to
+    // recover until the owner re-auths).
+    const recoveryCadenceElapsed = elapsed >= scheduleIntervalMs;
     let recoveryOnly = false;
-    if (!eligible && intervalElapsed && cooldownDefers) {
+    if (!eligible && recoveryCadenceElapsed) {
       const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
       if (nonPressureRecoverable > 0) {
         eligible = true;
