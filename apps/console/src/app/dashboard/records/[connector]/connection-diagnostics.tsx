@@ -1,5 +1,6 @@
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
-import { DataList, Section } from "@pdpp/operator-ui/components/primitives";
+import { DataList, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
@@ -156,8 +157,9 @@ function ProjectedStateDiagnostics({
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="pdpp-caption text-muted-foreground">
-        Health: <span className="text-foreground">{connectionHealth.state.replace(/_/g, " ")}</span>
+      <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
+        <span>Health:</span>
+        <StatusBadge status={connectionHealth.state} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
         {connectionHealth.reason_code ? (
           <>
             {" · "}

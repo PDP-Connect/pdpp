@@ -8,12 +8,17 @@
  * One entity, one row shape everywhere. A run row leads with *what happened to
  * whom* (the connector label via `runRowLabel`) plus its lifecycle StatusBadge,
  * and demotes the raw `run_…` id to a monospace lookup key on the detail line —
- * alongside the event count, optional provider, and any failure reason.
+ * alongside the event count, optional provider, any failure reason, and run
+ * duration (first_at..last_at).
  *
  * The standalone list additionally surfaces operator-actionable chips
  * (needs-input, browser-surface backpressure); the overview mini-lists omit
  * those via `chips={false}` but keep the identical core grammar so the same run
  * never reads two different ways depending on where it is shown.
+ *
+ * Danger row tint: failed/rejected/cancelled rows get a 2px left border in
+ * --status-danger-fg and a low-alpha --status-danger-bg fill so operators can
+ * spot failures sub-second on long lists. Design direction decision 2.
  */
 
 import Link from "next/link";
@@ -22,6 +27,24 @@ import { runRowLabel } from "../lib/summary-row-label.ts";
 import { Timestamp } from "../ui/timestamp.tsx";
 import { StatusBadge } from "./primitives.tsx";
 import { browserSurfaceStatusCopy, isAwaitingInteraction } from "./run-row-helpers.ts";
+
+const DANGER_STATUSES = new Set(["failed", "rejected", "cancelled"]);
+
+/** Format elapsed seconds as a compact duration string, e.g. "1m 4s", "32s". */
+function formatRunDuration(startIso: string, endIso: string): string | null {
+  const startMs = Date.parse(startIso);
+  const endMs = Date.parse(endIso);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+    return null;
+  }
+  const totalSeconds = Math.round((endMs - startMs) / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
 
 export function RunRow({
   run,
@@ -38,13 +61,19 @@ export function RunRow({
 }) {
   const awaitingInput = chips && isAwaitingInteraction(run);
   const browserSurfaceCopy = chips ? browserSurfaceStatusCopy(run) : null;
+  const isDanger = DANGER_STATUSES.has(run.status);
+  const duration = formatRunDuration(run.first_at, run.last_at);
+
+  // Danger tint: left border + low-alpha fill. When peeked, bg-muted wins to
+  // keep the selected row clearly highlighted.
+  const rowClass = isDanger
+    ? `block border-l-2 py-2 pr-3 pl-[10px] transition-colors [border-left-color:var(--status-danger-fg)] [background-color:var(--status-danger-bg)] ${
+        peeked ? "bg-muted" : ""
+      }`
+    : `block px-3 py-2 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/50"}`;
+
   return (
-    <Link
-      aria-current={peeked ? "true" : undefined}
-      className={`block px-3 py-2 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/50"}`}
-      href={href}
-      scroll={false}
-    >
+    <Link aria-current={peeked ? "true" : undefined} className={rowClass} href={href} scroll={false}>
       {/* Lead with the connector + outcome (what an operator scans for); the
           raw run id is demoted to a monospace lookup key on the detail line. */}
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -64,6 +93,12 @@ export function RunRow({
         <span className="tabular-nums">
           {run.event_count} event{run.event_count === 1 ? "" : "s"}
         </span>
+        {duration ? (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span className="tabular-nums">{duration}</span>
+          </>
+        ) : null}
         {run.provider_id ? (
           <>
             <span className="text-muted-foreground/50">·</span>

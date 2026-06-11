@@ -68,3 +68,28 @@ export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   complete: { label: "complete", tone: "success" },
   unknown: { label: "no tasks", tone: "neutral" },
 };
+
+/**
+ * Connection health vocabulary — keyed on raw API `state` strings from
+ * `RefConnectionHealthSnapshot.state` (e.g. "healthy", "blocked").
+ *
+ * Used with `StatusBadge` on the connection-detail diagnostics surface and the
+ * Sources list row to render every health state as a consistent chip. "idle"
+ * and "unknown" map to neutral tone. "running" / syncing states are not raw
+ * API states but derived display states; those use "warning" tone here.
+ *
+ * Tone mapping mirrors `deriveConnectionStatusDisplay`:
+ *   success  → healthy (with durable progress)
+ *   warning  → needs_attention, cooling_off, degraded, idle/syncing
+ *   danger   → blocked
+ *   neutral  → healthy (no data), idle, unknown
+ */
+export const CONNECTION_HEALTH_VOCABULARY: StatusVocabulary = {
+  healthy: { label: "healthy", tone: "success" },
+  needs_attention: { label: "needs attention", tone: "warning" },
+  cooling_off: { label: "cooling off", tone: "warning" },
+  blocked: { label: "blocked", tone: "danger" },
+  degraded: { label: "degraded", tone: "warning" },
+  idle: { label: "idle", tone: "neutral" },
+  unknown: { label: "unknown", tone: "neutral" },
+};
