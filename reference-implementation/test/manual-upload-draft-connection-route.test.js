@@ -119,7 +119,17 @@ async function getSetup(asUrl, cookie, connectorId) {
   });
 }
 
-async function createDraft(asUrl, cookie, connectorId, fileName = 'Timeline.json', body = '{"timelineObjects":[]}') {
+const VALID_TIMELINE_BODY = JSON.stringify({
+  locations: [
+    {
+      timestampMs: '1717595122000',
+      latitudeE7: 377_749_000,
+      longitudeE7: -1_224_194_000,
+    },
+  ],
+});
+
+async function createDraft(asUrl, cookie, connectorId, fileName = 'Timeline.json', body = VALID_TIMELINE_BODY) {
   const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`);
   url.searchParams.set('file_name', fileName);
   return fetchJson(url, {
@@ -160,8 +170,12 @@ test('manual/upload setup descriptor is manifest-authored', async () => {
     assert.equal(body.connector_id, 'google-maps');
     assert.equal(body.display_name, 'Google Maps Timeline Import');
     assert.equal(body.label, 'Google Maps Timeline export file');
+    assert.ok(body.acquisition_methods.some((method) => method.platform === 'android' && method.posture === 'primary'));
+    assert.ok(body.acquisition_methods.some((method) => method.platform === 'ios' && method.posture === 'primary'));
     assert.ok(body.accepted_file_names.includes('Timeline.json'));
     assert.ok(body.help_url.startsWith('https://support.google.com/maps/'));
+    assert.ok(body.large_file_fallback.includes('import-folder'));
+    assert.ok(body.validation_expectations.includes('Detected Timeline format'));
     assert.equal(Object.hasOwn(body, 'import_dir'), false, 'setup response must not leak server paths');
     assert.equal(Object.hasOwn(body, 'import_dir_env_var'), false, 'setup response must not expose env-var plumbing');
   });
@@ -177,6 +191,10 @@ test('owner upload creates an invisible draft with connection-scoped import bind
     assert.equal(created.body.connector_id, 'google-maps');
     assert.equal(created.body.status, 'draft');
     assert.equal(created.body.uploaded_file_name, 'Timeline.json');
+    assert.equal(created.body.validation.status, 'valid');
+    assert.equal(created.body.validation.detected_format, 'legacy_records');
+    assert.equal(created.body.validation.estimated_points, 1);
+    assert.equal(created.body.validation.date_range.start, '2024-06-05T13:45:22.000Z');
     assert.equal(created.body.next_step.kind, 'run_connection');
     assert.equal(Object.hasOwn(created.body, 'import_dir'), false, 'create response must not leak server paths');
     assert.ok(!created.text.includes(tmp), 'create response must not include the data directory path');
@@ -208,9 +226,36 @@ test('owner upload creates an invisible draft with connection-scoped import bind
     const binding = JSON.parse(row.source_binding_json);
     assert.equal(binding.kind, 'manual_upload_draft');
     assert.equal(binding.import_dir_env_var, 'GOOGLE_MAPS_TIMELINE_DIR');
+    assert.equal(binding.acquisition_method, 'owner_upload');
+    assert.equal(binding.import_validation.status, 'valid');
+    assert.equal(binding.import_validation.detected_format, 'legacy_records');
+    assert.equal(binding.import_validation.estimated_points, 1);
     assert.equal(binding.uploaded_file_name, 'Timeline.json');
     assert.ok(binding.import_dir.startsWith(join(tmp, 'imports', 'google-maps')), binding.import_dir);
-    assert.equal(readFileSync(join(binding.import_dir, 'Timeline.json'), 'utf8'), '{"timelineObjects":[]}');
+    assert.equal(readFileSync(join(binding.import_dir, 'Timeline.json'), 'utf8'), VALID_TIMELINE_BODY);
+  });
+});
+
+test('Timeline manual upload records coverage-safe validation without fixed refresh cooldown', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+    const created = await createDraft(asUrl, cookie, 'google-maps');
+    assert.equal(created.status, 201, created.text);
+
+    const bindingJson = getDb()
+      .prepare(
+        `SELECT source_binding_json
+           FROM connector_instances
+          WHERE connector_instance_id = ?`,
+      )
+      .get(created.body.connection_id).source_binding_json;
+    const binding = JSON.parse(bindingJson);
+    assert.equal(binding.import_validation.status, 'valid');
+    assert.equal(binding.import_validation.date_range.end, '2024-06-05T13:45:22.000Z');
+    assert.equal(Object.hasOwn(binding, 'cooldown_until'), false);
+    assert.equal(Object.hasOwn(binding, 'next_allowed_import_at'), false);
+    assert.equal(Object.hasOwn(binding, 'takeout_cadence'), false);
   });
 });
 
@@ -230,6 +275,26 @@ test('unsafe or unsupported file names are rejected before a draft row is create
 
     const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
     assert.equal(rowCount, 0, 'invalid upload inputs must not create a draft');
+  });
+});
+
+test('Timeline validation rejects unsupported and empty files before a draft row is created', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const unsupported = await createDraft(asUrl, cookie, 'google-maps', 'Timeline.json', '{"archive_jobs":[]}');
+    assert.equal(unsupported.status, 400);
+    assert.equal(unsupported.body?.error?.code, 'import_file_unsupported');
+    assert.match(unsupported.body?.error?.message ?? '', /Timeline JSON export/);
+
+    const empty = await createDraft(asUrl, cookie, 'google-maps', 'Timeline.json', '{"timelineObjects":[]}');
+    assert.equal(empty.status, 400);
+    assert.equal(empty.body?.error?.code, 'import_file_empty');
+    assert.match(empty.body?.error?.message ?? '', /does not contain importable/);
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 0, 'validation failures must not create a draft');
   });
 });
 

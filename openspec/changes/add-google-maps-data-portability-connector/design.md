@@ -91,7 +91,8 @@ The connector's refresh policy must respect Google's Data Portability cadence an
 - A missing Google provider app configuration blocks setup before owner authorization.
 - A successful callback creates distinct connection ids for two authorized Google accounts or labels.
 - Provider tokens never appear in console, owner-agent, MCP, REST read, CLI read, audit, or run timeline responses.
-- Data Portability archive runs emit documented Maps records, coverage for partially authorized scopes, and no Timeline point/segment claims.
+- Data Portability archive-job runs emit documented Maps archive lifecycle state and no Timeline point/segment claims.
+- In the payload-parser tranche, documented or scrubbed Maps archive fixtures prove each advertised Maps payload stream before that stream appears as collected rather than merely authorized, skipped, or unavailable.
 
 ## Live Proof Gap
 

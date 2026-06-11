@@ -65,6 +65,33 @@ export default async function ManualUploadConnectPage({
         }
         title={setup.label}
       >
+        {setup.acquisition_methods.length > 0 ? (
+          <div className="mb-4 grid max-w-2xl gap-2">
+            {setup.acquisition_methods.map((method) => (
+              <div className="rounded-md border border-border/80 bg-background px-4 py-3" key={method.label}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-foreground">{method.label}</span>
+                  {method.posture ? (
+                    <span className="pdpp-caption rounded-sm bg-muted px-1.5 py-0.5 text-muted-foreground">
+                      {method.posture}
+                    </span>
+                  ) : null}
+                </div>
+                {method.detail ? <p className="pdpp-caption mt-1 text-muted-foreground">{method.detail}</p> : null}
+                {method.help_url ? (
+                  <a
+                    className="pdpp-caption mt-1 inline-flex underline decoration-dotted underline-offset-4"
+                    href={method.help_url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Open instructions
+                  </a>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
         <form
           action={createManualUploadConnectionAction}
           className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4"
@@ -99,20 +126,28 @@ export default async function ManualUploadConnectPage({
             </span>
             {setup.help_text ? <span className="pdpp-caption text-muted-foreground">{setup.help_text}</span> : null}
           </label>
+          {setup.validation_expectations.length > 0 ? (
+            <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
+              Validation checks: {setup.validation_expectations.join(", ")}.
+            </div>
+          ) : null}
           <div>
             <Button type="submit">Upload and start first sync</Button>
           </div>
         </form>
+        {setup.large_file_fallback ? (
+          <p className="pdpp-caption mt-3 max-w-2xl text-muted-foreground">{setup.large_file_fallback}</p>
+        ) : null}
       </Section>
 
       <Callout
         className="mt-5"
-        description="Submit the form again with a new export file to add another import for this connector. Each submission creates a separate connection."
+        description="After the first import, refresh this source from its status page so new files keep the same source identity and record their own import provenance."
         surface="human"
         title="No deployment changes"
       >
         <p className="pdpp-caption text-muted-foreground">
-          This is a file import. No provider password, app password, or per-account deployment variable is required.
+          This is a file import. No provider account sign-in or deployment change is required.
         </p>
       </Callout>
     </DashboardShell>

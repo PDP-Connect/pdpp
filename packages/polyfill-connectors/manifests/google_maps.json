@@ -20,6 +20,34 @@
     "manual_or_upload": {
       "label": "Google Maps Timeline export file",
       "description": "Export Timeline data from the Google Maps mobile app or Android location settings, then provide the JSON export to PDPP.",
+      "acquisition_methods": [
+        {
+          "label": "Export from Android",
+          "platform": "android",
+          "posture": "primary",
+          "detail": "Open Android Settings > Location > Location services > Timeline > Export Timeline data, then share or upload the JSON file.",
+          "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en"
+        },
+        {
+          "label": "Export from iPhone",
+          "platform": "ios",
+          "posture": "primary",
+          "detail": "Open Google Maps Settings > Location & Privacy > Export Timeline data, then share or upload the JSON file.",
+          "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DiOS&hl=en"
+        },
+        {
+          "label": "Import-folder handoff",
+          "platform": "server",
+          "posture": "secondary",
+          "detail": "For a large export, place the file in the configured server import folder and start the same manual import flow."
+        },
+        {
+          "label": "Takeout backup probe",
+          "platform": "takeout",
+          "posture": "advanced",
+          "detail": "Use only as a best-effort backup probe after a first archive proves current Timeline records. Takeout's two-month cadence is not a phone-export cooldown."
+        }
+      ],
       "accepted_file_names": [
         "Timeline.json",
         "timeline.json",
@@ -28,7 +56,18 @@
       ],
       "import_dir_env_var": "GOOGLE_MAPS_TIMELINE_DIR",
       "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
-      "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account password or app password is used."
+      "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account sign-in is used.",
+      "large_file_fallback": "Use the server import-folder handoff for large Timeline archives instead of waiting on a browser upload.",
+      "validation": {
+        "kind": "google_maps_timeline",
+        "max_file_bytes": 104857600
+      },
+      "validation_expectations": [
+        "Detected Timeline format",
+        "Estimated points and segments",
+        "Detected date range",
+        "Duplicate, stale, empty, or unsupported file status"
+      ]
     }
   },
   "capabilities": {

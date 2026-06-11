@@ -199,11 +199,14 @@ deployed image containing this tranche.
 
 ## 10. Google Maps Timeline Refresh UX
 
-- [ ] 10.1 Promote the decided Google Maps Timeline refresh plan into connector-authored setup metadata: platform export guidance, official help links, accepted formats, validation expectations, primary/secondary acquisition methods, and large-file fallback copy.
+- [x] 10.1 Promote the decided Google Maps Timeline refresh plan into connector-authored setup metadata: platform export guidance, official help links, accepted formats, validation expectations, primary/secondary acquisition methods, and large-file fallback copy.
 - [ ] 10.2 Ensure the Add source and source detail flows render Google Maps Timeline as phone-first guided import/refresh, not live OAuth sync, desktop scraping, local collector enrollment, or maintainer runbook setup.
 - [ ] 10.3 Add pre-ingest validation feedback for Timeline uploads: detected format, estimated point/segment counts, detected date range, duplicate/stale/empty status, and concrete remediation for unsupported files.
 - [ ] 10.4 Preserve one source identity across equivalent Timeline acquisition methods while recording acquisition method, source format, coverage, and import provenance per run or record batch.
-- [ ] 10.5 Model scheduled Takeout as an advanced/probe lane that can enable best-effort recurring imports only after the first archive proves current Timeline records, and otherwise steers back to phone export/share.
-- [ ] 10.6 Keep Google Maps Data Portability as a separate provider-authorization source and prevent UI or setup-plan copy from claiming it supplies Timeline points/segments.
+- [x] 10.5 Model scheduled Takeout as an advanced/probe lane that can enable best-effort recurring imports only after the first archive proves current Timeline records, and otherwise steers back to phone export/share.
+- [x] 10.6 Keep Google Maps Data Portability as a separate provider-authorization source and prevent UI or setup-plan copy from claiming it supplies Timeline points/segments.
 - [ ] 10.7 Add owner-journey acceptance checks proving the Timeline flow contains no PDPP developer vocabulary, no repo/package-internal commands, no fake OAuth claim, and no source-specific Console UI branch.
 - [ ] 10.8 Complete an owner-gated live pilot with a contemporary Timeline export or record the parser-format residual risk before archive.
+- [x] 10.9 Add Timeline refresh governance tests proving valid uploads start validation/import without a fixed cooldown, Takeout cadence is scoped to the Takeout probe lane, and checkpoint/provenance state is recorded at the earliest coverage-safe boundary available to the parser/run model.
+
+Progress note: this tranche added manifest-authored Timeline acquisition metadata, generic manual/upload rendering, a pure Timeline artifact validator with duplicate/stale/empty/unsupported/large-file remediation, and owner-session route validation before draft creation. Valid uploads store non-secret validation evidence and acquisition provenance in the manual-upload source binding without fixed cooldown fields; Takeout appears only as an advanced probe in connector metadata. The Add source/manual upload flow is covered, but route-level duplicate/stale detection still needs connection-history inputs, source-detail refresh that reuses an existing connection/source identity remains open in 10.2/10.4, and owner live pilot remains open in 10.8.

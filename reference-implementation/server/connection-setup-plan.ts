@@ -67,11 +67,15 @@ export interface ConnectorManifestLike {
     } | null;
     readonly manual_or_upload?: {
       readonly accepted_file_names?: readonly string[] | null;
+      readonly acquisition_methods?: readonly ManualUploadAcquisitionMethodLike[] | null;
       readonly description?: string | null;
       readonly help_text?: string | null;
       readonly help_url?: string | null;
       readonly import_dir_env_var?: string | null;
       readonly label?: string | null;
+      readonly large_file_fallback?: string | null;
+      readonly validation?: ManualUploadValidationLike | null;
+      readonly validation_expectations?: readonly string[] | null;
     } | null;
     readonly modality?: string | null;
     readonly deployment_config?: readonly string[] | null;
@@ -119,12 +123,42 @@ export interface StaticSecretCredentialCaptureSetup {
 }
 
 export interface ManualUploadSetup {
+  readonly acquisitionMethods: readonly ManualUploadAcquisitionMethod[];
   readonly acceptedFileNames: readonly string[];
   readonly description: string | null;
   readonly helpText: string | null;
   readonly helpUrl: string | null;
   readonly importDirEnvVar: string | null;
   readonly label: string;
+  readonly largeFileFallback: string | null;
+  readonly validation: ManualUploadValidation | null;
+  readonly validationExpectations: readonly string[];
+}
+
+export interface ManualUploadAcquisitionMethodLike {
+  readonly detail?: string | null;
+  readonly help_url?: string | null;
+  readonly label?: string | null;
+  readonly platform?: string | null;
+  readonly posture?: string | null;
+}
+
+export interface ManualUploadAcquisitionMethod {
+  readonly detail: string | null;
+  readonly helpUrl: string | null;
+  readonly label: string;
+  readonly platform: string | null;
+  readonly posture: string | null;
+}
+
+export interface ManualUploadValidationLike {
+  readonly kind?: string | null;
+  readonly max_file_bytes?: number | null;
+}
+
+export interface ManualUploadValidation {
+  readonly kind: string;
+  readonly maxFileBytes: number | null;
 }
 
 export interface ConnectorSetupDeploymentBlocker {
@@ -351,13 +385,41 @@ export function manualUploadSetupFromManifest(
   const acceptedFileNames = Array.isArray(meta?.accepted_file_names)
     ? meta.accepted_file_names.filter((value): value is string => cleanString(value) !== null)
     : [];
+  const acquisitionMethods = Array.isArray(meta?.acquisition_methods)
+    ? meta.acquisition_methods
+        .map((method): ManualUploadAcquisitionMethod | null => {
+          const label = cleanString(method?.label);
+          if (!label) {
+            return null;
+          }
+          return {
+            detail: cleanString(method?.detail),
+            helpUrl: cleanString(method?.help_url),
+            label,
+            platform: cleanString(method?.platform),
+            posture: cleanString(method?.posture),
+          };
+        })
+        .filter((method): method is ManualUploadAcquisitionMethod => method !== null)
+    : [];
+  const validationKind = cleanString(meta?.validation?.kind);
+  const maxFileBytes =
+    typeof meta?.validation?.max_file_bytes === "number" && Number.isFinite(meta.validation.max_file_bytes)
+      ? meta.validation.max_file_bytes
+      : null;
   return {
+    acquisitionMethods,
     acceptedFileNames,
     description: cleanString(meta?.description),
     helpText: cleanString(meta?.help_text),
     helpUrl: cleanString(meta?.help_url),
     importDirEnvVar: cleanString(meta?.import_dir_env_var),
     label: cleanString(meta?.label) ?? "Import file",
+    largeFileFallback: cleanString(meta?.large_file_fallback),
+    validation: validationKind ? { kind: validationKind, maxFileBytes } : null,
+    validationExpectations: Array.isArray(meta?.validation_expectations)
+      ? meta.validation_expectations.filter((value): value is string => cleanString(value) !== null)
+      : [],
   };
 }
 

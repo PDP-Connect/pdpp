@@ -16,6 +16,7 @@ import {
   displayNameForConnector,
   manualUploadSetupFromManifest,
 } from "../connection-setup-plan.ts";
+import { validateGoogleMapsTimelineArtifact } from "../../../packages/polyfill-connectors/connectors/google_maps/validation.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 const PATH_SEP_RE = /[\\/]/;
@@ -68,6 +69,8 @@ interface ConnectorInstanceStore {
     updatedAt: string;
   }): Promise<ConnectorInstance> | ConnectorInstance;
 }
+
+type ManualUploadValidationResult = ReturnType<typeof validateGoogleMapsTimelineArtifact>;
 
 export interface MountRefManualUploadDraftConnectionContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
@@ -157,11 +160,20 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
           object: "manual_upload_setup",
           connector_id: connectorId,
           display_name: displayNameForConnector(connectorId, manifest),
+          acquisition_methods: setup.acquisitionMethods.map((method) => ({
+            detail: method.detail,
+            help_url: method.helpUrl,
+            label: method.label,
+            platform: method.platform,
+            posture: method.posture,
+          })),
           accepted_file_names: setup.acceptedFileNames,
           label: setup.label,
           description: setup.description,
           help_url: setup.helpUrl,
           help_text: setup.helpText,
+          large_file_fallback: setup.largeFileFallback,
+          validation_expectations: setup.validationExpectations,
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -247,6 +259,27 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           return;
         }
 
+        const validation = validateManualUploadArtifact(setup.validation?.kind ?? null, fileBytes, {
+          maxFileBytes: setup.validation?.maxFileBytes ?? null,
+        });
+        if (validation && validation.status !== "valid") {
+          await emitManualUploadAudit(ctx, req, res, {
+            connectorId,
+            error: errorWithCode(`import_file_${validation.status}`),
+            operation: "create",
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          ctx.pdppError(
+            res,
+            validation.status === "too_large" ? 413 : 400,
+            `import_file_${validation.status}`,
+            validation.remediation ?? "Choose a supported import file.",
+            "import_file"
+          );
+          return;
+        }
+
         const sourceBindingKey = `manual_upload_draft_${randomBytes(24).toString("hex")}`;
         const displayName = displayNameForConnector(connectorId, manifest);
         const importDir = join(ctx.importBaseDir, safePathSegment(connectorId), sourceBindingKey);
@@ -267,6 +300,8 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
               kind: "manual_upload_draft",
               import_dir: importDir,
               import_dir_env_var: setup.importDirEnvVar,
+              import_validation: validation,
+              acquisition_method: "owner_upload",
               uploaded_file_name: fileName,
             },
             createdAt: now,
@@ -292,6 +327,7 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           connector_id: connectorId,
           display_name: displayName,
           status: "draft",
+          validation,
           uploaded_file_name: fileName,
           next_step: {
             kind: "run_connection",
@@ -306,6 +342,19 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
       }
     }
   );
+}
+
+function validateManualUploadArtifact(
+  kind: string | null,
+  fileBytes: Buffer,
+  options: { maxFileBytes: number | null }
+): ManualUploadValidationResult | null {
+  // The validator is selected by connector-authored manifest metadata so Console
+  // stays connector-generic while Timeline gets pre-ingest evidence.
+  if (kind === "google_maps_timeline") {
+    return validateGoogleMapsTimelineArtifact(fileBytes, { maxFileBytes: options.maxFileBytes });
+  }
+  return null;
 }
 
 function firstQueryValue(value: unknown): string | null {

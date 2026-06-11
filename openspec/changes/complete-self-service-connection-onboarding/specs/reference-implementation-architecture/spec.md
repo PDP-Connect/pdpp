@@ -208,6 +208,14 @@ owner-provided artifact.
   format, estimated record or segment count, date range when available, duplicate
   or stale-file status, and the next action for unsupported files
 
+#### Scenario: Timeline refresh starts without fixed cooldown
+
+- **WHEN** an owner supplies a valid Timeline file through upload, share target, or import-folder handoff
+- **THEN** validation and import SHALL start immediately unless a real capacity, safety, or dependency gate exists
+- **AND** checkpoint and provenance state SHALL advance at coverage-safe boundaries rather than only at final completion when the implementation can identify those boundaries
+- **AND** fixed cooldowns or source-level waiting periods SHALL NOT be used for manual upload, share, or import-folder refresh flows
+- **AND** Google Takeout's two-month cadence SHALL be represented only as a provider/export constraint for the Takeout probe lane, not copied into phone export or direct upload refresh governance
+
 #### Scenario: Acquisition methods share one source identity when semantics match
 
 - **WHEN** multiple acquisition methods such as phone export upload, Android

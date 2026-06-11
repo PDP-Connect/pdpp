@@ -1376,6 +1376,13 @@ export function getStaticSecretSetupStatus(
 // ---------------------------------------------------------------------------
 
 export interface ManualUploadSetup {
+  acquisition_methods: {
+    detail: string | null;
+    help_url: string | null;
+    label: string;
+    platform: string | null;
+    posture: string | null;
+  }[];
   accepted_file_names: string[];
   connector_id: string;
   description: string | null;
@@ -1383,7 +1390,9 @@ export interface ManualUploadSetup {
   help_text: string | null;
   help_url: string | null;
   label: string;
+  large_file_fallback: string | null;
   object: "manual_upload_setup";
+  validation_expectations: string[];
 }
 
 export interface ManualUploadDraftConnection {
@@ -1400,6 +1409,13 @@ export interface ManualUploadDraftConnection {
   object: "manual_upload_draft_connection";
   status: "draft";
   uploaded_file_name: string;
+  validation?: {
+    date_range: { end: string | null; start: string | null };
+    detected_format: string;
+    estimated_points: number;
+    estimated_segments: number;
+    status: string;
+  } | null;
 }
 
 export async function getManualUploadSetup(connectorId: string): Promise<ManualUploadSetup> {

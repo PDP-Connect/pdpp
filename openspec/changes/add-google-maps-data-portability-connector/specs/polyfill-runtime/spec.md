@@ -20,7 +20,13 @@ The first-party Google Maps Data Portability connector SHALL use Google's Data P
 
 - **WHEN** a run starts for the Google Maps Data Portability connector
 - **THEN** the runtime SHALL initiate or resume a Data Portability archive/export lifecycle
-- **AND** it SHALL poll, download, parse, and checkpoint archive state without launching a browser.
+- **AND** it SHALL poll provider archive state, emit and checkpoint `archive_jobs`, and never launch a browser.
+
+#### Scenario: Archive payload parsing
+
+- **WHEN** Google returns `COMPLETE` and documented or scrubbed archive fixtures exist for an advertised Maps stream
+- **THEN** the runtime SHALL download and parse the supported archive payload files
+- **AND** it SHALL emit records while preserving resource-group and source-file provenance.
 
 #### Scenario: Archive contains multiple resource files
 

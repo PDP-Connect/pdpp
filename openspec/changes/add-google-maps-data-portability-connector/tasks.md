@@ -22,6 +22,7 @@
 - [x] 4.1 Implement Data Portability archive initiation and cadence-safe polling into `archive_jobs`.
 - [ ] 4.1a Implement signed-URL download and expiry handling after Google returns `COMPLETE`.
 - [ ] 4.2 Parse documented Maps resource groups into manifest-declared streams.
+- [ ] 4.2a Keep `archive_jobs` lifecycle proof separate from Maps payload stream proof; each advertised Maps payload stream requires documented or scrubbed fixture coverage before it appears as collected rather than authorized, skipped, or unavailable.
 - [ ] 4.3 Emit per-stream coverage for authorized, unavailable, denied, empty, and failed resource groups.
 - [ ] 4.4 Preserve archive/source-file/export provenance on emitted records.
 - [x] 4.5 Keep Timeline point/segment collection out of this connector until Google documents equivalent Data Portability resources.
