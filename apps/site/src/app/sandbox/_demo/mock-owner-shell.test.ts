@@ -29,6 +29,10 @@ const SANDBOX_OVERVIEW_CONTENT_IMPORT_RE = /from\s+["'](?:\.\/|\.\.\/)overview-c
 const SANDBOX_OVERVIEW_CONTENT_RENDER_RE = /<SandboxOverviewContent\s*\/>/;
 const SANDBOX_FOOTER_NAME_RE = /SandboxFooter/;
 const SANDBOX_FOOTER_RENDER_RE = /<SandboxFooter\s*\/>/;
+const SANDBOX_MODE_BANNER_COMPONENT_RE = /function SandboxModeBanner/;
+// The site shell always renders in mock-owner mode (no live branch), so the
+// banner is unconditional — no mode guard required. Accept either form.
+const SANDBOX_MODE_BANNER_RENDER_RE = /<SandboxModeBanner\s*\/>/;
 const SANDBOX_OVERVIEW_ROUTE_RE = /export const sandboxRoutes: Routes = makeRoutes\(["']\/sandbox["']\);/;
 const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
@@ -216,6 +220,11 @@ test("DashboardShell renders the sandbox footer with no live AS/RS probe", async
   // mock-owner sandbox binding and must not probe a configured AS/RS.
   assert.match(src, SANDBOX_FOOTER_NAME_RE, "shell must define a SandboxFooter for mock-owner mode");
   assert.match(src, SANDBOX_FOOTER_RENDER_RE, "shell must render <SandboxFooter />");
+  // The sandbox mode banner must also be present: a persistent top-of-content
+  // notice that demo data is not production. The footer is sidebar-only and
+  // easily missed; the banner sits above every page's content.
+  assert.match(src, SANDBOX_MODE_BANNER_COMPONENT_RE, "shell must define a SandboxModeBanner component");
+  assert.match(src, SANDBOX_MODE_BANNER_RENDER_RE, "shell must render <SandboxModeBanner /> when mode is mock-owner");
 });
 
 test("sandboxRoutes overview is `/sandbox`", async () => {

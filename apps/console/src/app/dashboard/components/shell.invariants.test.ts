@@ -39,6 +39,11 @@ const MOBILE_DRAWER_PROVIDER_IMPORT_RE =
   /import \{[\s\S]*MobileDrawerProvider[\s\S]*\} from "@pdpp\/operator-ui\/components\/mobile-drawer"/;
 const MOBILE_DRAWER_PROVIDER_WRAP_RE =
   /<MobileDrawerProvider>[\s\S]*<MobileDrawer>[\s\S]*<\/MobileDrawer>[\s\S]*<\/MobileDrawerProvider>/;
+// Sandbox mode banner — must be rendered when mode is mock-owner, never in live mode.
+const SANDBOX_MODE_BANNER_COMPONENT_RE = /function SandboxModeBanner/;
+const SANDBOX_MODE_BANNER_RENDER_RE = /mode === "mock-owner" \? <SandboxModeBanner/;
+const SANDBOX_MODE_BANNER_TESTID_RE = /data-testid="sandbox-mode-banner"/;
+const SANDBOX_MODE_BANNER_ROLE_RE = /role="note"/;
 
 test("shell renders DeploymentSubnav when active is deployment (live mode only)", async () => {
   const src = await readFile(SHELL_FILE, "utf8");
@@ -86,4 +91,19 @@ test("shell wraps the topbar trigger and drawer in the same MobileDrawerProvider
   const src = await readFile(SHELL_FILE, "utf8");
   assert.match(src, MOBILE_DRAWER_PROVIDER_IMPORT_RE);
   assert.match(src, MOBILE_DRAWER_PROVIDER_WRAP_RE);
+});
+
+test("shell has a SandboxModeBanner component rendered in mock-owner mode", async () => {
+  // The banner must exist as a named component (findable without rendering)
+  // and be rendered conditionally on mode === "mock-owner" so it is present
+  // on every sandbox page and absent on every live-owner page.
+  const src = await readFile(SHELL_FILE, "utf8");
+  assert.match(src, SANDBOX_MODE_BANNER_COMPONENT_RE, "SandboxModeBanner component must be defined in shell.tsx");
+  assert.match(src, SANDBOX_MODE_BANNER_RENDER_RE, "SandboxModeBanner must be rendered when mode is mock-owner");
+});
+
+test("SandboxModeBanner has a testid and ARIA role for accessibility and test pinning", async () => {
+  const src = await readFile(SHELL_FILE, "utf8");
+  assert.match(src, SANDBOX_MODE_BANNER_TESTID_RE, "SandboxModeBanner must carry data-testid=sandbox-mode-banner");
+  assert.match(src, SANDBOX_MODE_BANNER_ROLE_RE, "SandboxModeBanner must carry role=note");
 });
