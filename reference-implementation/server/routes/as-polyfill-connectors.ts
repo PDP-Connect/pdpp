@@ -10,9 +10,17 @@
 //   POST /connectors            - register a polyfill connector manifest
 //   GET  /connectors/:connectorId - retrieve a registered connector manifest
 //
-// Auth posture: none (no requireToken / requireOwner). These routes are
-// intentionally unauthenticated in the original — the polyfill connector
-// registry only holds connector manifests, not user data.
+// Auth posture:
+//   GET  /connectors/:connectorId — unauthenticated. Manifest read exposes no
+//     user data and is needed by the unauthenticated client-side connect flow.
+//   POST /connectors — gated by owner session on any internet-facing posture
+//     (or when PDPP_LOCK_CONNECTOR_REGISTRY=1). A manifest upsert that bumps
+//     `version` invalidates every existing grant — a one-request grant-wipe
+//     DoS — so it must be owner-authenticated on a hosted surface. In a
+//     local-dev posture the register route stays open so the `pnpm dev` / test
+//     harness can self-register manifests frictionlessly. The host decides the
+//     posture and passes `requireOwnerSessionForRegister` accordingly (security
+//     audit S-2, lane A1).
 //
 // The canonical operations own semantic logic:
 //   - `as.polyfill.connector.register` (operations/as-polyfill-connector-register)
@@ -22,7 +30,7 @@
 
 import { executeAsPolyfillConnectorDetail } from "../../operations/as-polyfill-connector-detail/index.ts";
 import { executeAsPolyfillConnectorRegister } from "../../operations/as-polyfill-connector-register/index.ts";
-import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
   readonly body?: Record<string, unknown>;
@@ -56,6 +64,13 @@ export interface MountAsPolyfillConnectorsContext {
    * Delegated to `registerConnector` in the `buildAsApp` closure.
    */
   registerConnector(manifest: Record<string, unknown>): Promise<unknown> | unknown;
+  /**
+   * Owner-session middleware to gate `POST /connectors`, or `null`/`undefined`
+   * to leave the register route unauthenticated (local-dev posture). The host
+   * supplies `ownerAuth.requireOwnerSession` on an internet-facing posture so a
+   * manifest upsert cannot wipe grants unauthenticated (security audit S-2).
+   */
+  requireOwnerSessionForRegister?: MiddlewareHandler | null;
 }
 
 // POST /connectors
@@ -76,6 +91,13 @@ export function mountAsPolyfillConnectorRegister(app: AppLike, ctx: MountAsPolyf
       ctx.handleError(res, err);
     }
   };
+  // Insert the owner-session gate before the handler when the host supplied
+  // one (hosted posture). The transport forwards extra positional args as
+  // middlewares, matching `requireOwnerSession`'s `(req, res, next)` shape.
+  if (ctx.requireOwnerSessionForRegister) {
+    app.post("/connectors", ctx.requireOwnerSessionForRegister, handler);
+    return;
+  }
   app.post("/connectors", handler);
 }
 

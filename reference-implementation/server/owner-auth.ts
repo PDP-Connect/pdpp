@@ -115,6 +115,19 @@ interface SignedInPageOptions {
 
 export interface OwnerAuthPlaceholderOptions {
   /**
+   * When owner auth is DISABLED (no password), this controls whether
+   * `requireOwnerSession` falls through to the open local-dev behavior
+   * (`true`, the historical default) or fails closed with a 401 / login
+   * redirect (`false`). The host computes this from the owner-exposure
+   * posture: it is `true` only in a local-dev (loopback) posture or under
+   * the explicit `PDPP_ALLOW_UNAUTHENTICATED_OWNER=1` override, and `false`
+   * on any internet-facing deployment. Security audit S-1: an unset password
+   * must never silently open the owner control plane on a hosted surface.
+   * Defaults to `true` to preserve the password-optional convenience for the
+   * unit-test fixtures that construct this directly without a posture.
+   */
+  allowUnauthenticatedWhenDisabled?: boolean;
+  /**
    * Optional explicit CSRF HMAC secret. Defaults to a fresh random
    * 32-byte buffer minted per process. The default is the right
    * answer for almost everyone — explicit override exists only for
@@ -448,6 +461,7 @@ export function createOwnerAuthPlaceholder({
   sessionTtlSeconds = OWNER_SESSION_DEFAULT_TTL_SECONDS,
   sameSite = "lax",
   forceSecureCookies = false,
+  allowUnauthenticatedWhenDisabled = true,
   csrfSecret: csrfSecretOverride = null,
 }: OwnerAuthPlaceholderOptions = {}): OwnerAuthPlaceholder {
   // `exactOptionalPropertyTypes` won't accept `undefined` in these fields,
@@ -793,20 +807,7 @@ export function createOwnerAuthPlaceholder({
     });
   }
 
-  function requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
-    if (!enabled) {
-      // Disabled: fall through to current open local-dev behavior.
-      next();
-      return;
-    }
-
-    const current = session.readSession(req);
-    if (current) {
-      req.ownerSession = current;
-      next();
-      return;
-    }
-
+  function denyOwnerAccess(req: AuthRequest, res: AuthResponse): void {
     if (wantsHtml(req)) {
       const returnTo = encodeURIComponent(deriveReturnToFromRequest(req));
       res.redirect(`/owner/login?return_to=${returnTo}`);
@@ -823,6 +824,33 @@ export function createOwnerAuthPlaceholder({
             "Owner session required. This is the reference implementation placeholder owner auth; sign in at /owner/login.",
         },
       });
+  }
+
+  function requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
+    if (!enabled) {
+      // Owner auth is disabled (no PDPP_OWNER_PASSWORD). Whether that means
+      // "open" depends on the deployment posture the host computed:
+      //   - local-dev / explicit override → fall through (frictionless dev).
+      //   - any internet-facing posture    → fail closed (401 / login redirect).
+      // Security audit S-1: an unset password must never silently open the
+      // owner control plane on a hosted surface. The host's boot guard makes
+      // hosted-without-password unreachable; this is defense in depth.
+      if (allowUnauthenticatedWhenDisabled) {
+        next();
+        return;
+      }
+      denyOwnerAccess(req, res);
+      return;
+    }
+
+    const current = session.readSession(req);
+    if (current) {
+      req.ownerSession = current;
+      next();
+      return;
+    }
+
+    denyOwnerAccess(req, res);
   }
 
   return {
