@@ -110,6 +110,9 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   qfx_download_failed: "We couldn't download the transactions file",
   qfx_parse_failed: "We couldn't read the transactions file",
   records_not_found: "We didn't find any records to import",
+  // ─── Google Maps Timeline reason codes ────────────────────────────────────
+  timeline_points_not_found: "We couldn't find any location points to import",
+  timeline_segments_not_found: "We couldn't find any timeline segments to import",
   // ─── Resumable retry / bounded-run cap deferrals ───────────────────────
   // Two distinct codes, neither of which means the service was busy (that copy
   // belongs to `upstream_pressure` / `upstream_pressure_deferred`):

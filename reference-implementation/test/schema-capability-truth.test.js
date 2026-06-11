@@ -178,7 +178,7 @@ test('runtime rejects filters on undeclared fields', () => {
     () =>
       compileRequestFilters({ nope: 'x' }, NO_FIELD_GRANT_LIMIT, manifestStream),
     (err) =>
-      err.code === 'invalid_request' &&
+      err.code === 'filter_field_not_in_schema' &&
       /Unknown field/.test(err.message),
   );
 });
