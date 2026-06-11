@@ -89,38 +89,34 @@
   --color-border-strong: var(--border-strong);
 
   /*
-   * PDPP authorship token tier — trust-provenance surfaces. Three authorship
-   * classes (protocol/manifest/client) each with bg/fg/accent, plus callout
-   * info/warning tone tokens. Maps --authorship-* and --callout-* from base.css.
-   *
-   *   protocol = cool blue (enforced protocol facts; grants, projections, scopes)
-   *   manifest = copper/warm (owner-authored content; display names, consent text)
-   *   client   = neutral grey + dashed border (client-claimed; never trusted)
-   *
-   * Usage: bg-authorship-protocol-bg, text-authorship-manifest-fg,
-   *        border-authorship-client-accent, bg-callout-info-bg, etc.
+   * PDPP authorship token tier — trust-provenance surfaces.
+   * protocol = cool blue (enforced protocol facts; grants, projections, scopes)
+   * manifest = copper/warm (owner-authored content; display names, consent text)
+   * client   = neutral grey + dashed border (client-claimed; never trusted)
+   * Roles: -fg · -accent · -border · -wash (see base.css for values).
+   * Usage: text-authorship-manifest-fg, border-authorship-client-border, etc.
    */
-  --color-authorship-protocol-bg: var(--authorship-protocol-bg);
   --color-authorship-protocol-fg: var(--authorship-protocol-fg);
   --color-authorship-protocol-accent: var(--authorship-protocol-accent);
-  --color-authorship-manifest-bg: var(--authorship-manifest-bg);
+  --color-authorship-protocol-border: var(--authorship-protocol-border);
+  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
+
   --color-authorship-manifest-fg: var(--authorship-manifest-fg);
   --color-authorship-manifest-accent: var(--authorship-manifest-accent);
-  --color-authorship-client-bg: var(--authorship-client-bg);
+  --color-authorship-manifest-border: var(--authorship-manifest-border);
+  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
+
   --color-authorship-client-fg: var(--authorship-client-fg);
   --color-authorship-client-accent: var(--authorship-client-accent);
+  --color-authorship-client-border: var(--authorship-client-border);
+  --color-authorship-client-wash: var(--authorship-client-wash);
+
   --color-callout-info-bg: var(--callout-info-bg);
   --color-callout-info-fg: var(--callout-info-fg);
   --color-callout-info-border: var(--callout-info-border);
   --color-callout-warning-bg: var(--callout-warning-bg);
   --color-callout-warning-fg: var(--callout-warning-fg);
   --color-callout-warning-border: var(--callout-warning-border);
-  --color-authorship-protocol-border: var(--authorship-protocol-border);
-  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
-  --color-authorship-manifest-border: var(--authorship-manifest-border);
-  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
-  --color-authorship-client-border: var(--authorship-client-border);
-  --color-authorship-client-wash: var(--authorship-client-wash);
 
   /*
    * PDPP radius scale — bridges the brand radius tokens (base.css :root) into
