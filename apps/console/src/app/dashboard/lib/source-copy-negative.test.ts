@@ -37,12 +37,18 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ADD_SUPPORT_FILE = `${HERE}source-add-support.ts`;
 const SETUP_PRESENTATION_FILE = `${HERE}source-setup-presentation.ts`;
 
+// The three exact overruled phrases, hoisted to module scope (project lint:
+// useTopLevelRegex). These must never survive in a comment-stripped label.
+const OVERRULED_DEMOTION_SENTENCE_RE = /is not self-service yet/i;
+const OVERRULED_STATUS_LABEL_RE = /Not self-service yet/;
+const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
+
 /**
  * Forbidden owner-facing copy. Each entry is a human-readable class + the regex
  * that must NEVER match an owner-facing Sources label. Sourced from the
  * realignment plan's negative acceptance checks (§2.4 of the SLVP plan).
  */
-const FORBIDDEN_COPY: ReadonlyArray<{ class: string; re: RegExp }> = [
+const FORBIDDEN_COPY: readonly { class: string; re: RegExp }[] = [
   { class: "overruled-demotion", re: /not self-service/i },
   { class: "inert-tracking", re: /\bTrack only\b/i },
   { class: "monorepo-package-path", re: /packages\//i },
@@ -52,15 +58,13 @@ const FORBIDDEN_COPY: ReadonlyArray<{ class: string; re: RegExp }> = [
 ];
 
 /**
- * Strip line and block comments and JSX/TS line comments so only string
- * literals (the owner-facing surface) remain. Deliberately conservative: it
- * removes `//…` and `/* … *\/` runs. The enum JSDoc that legitimately
- * *describes* `not_self_service` must not trip the source-literal scan.
+ * Strip line and block comments so only string literals (the owner-facing
+ * surface) remain. Deliberately conservative: it removes line comments and
+ * block-comment runs. The enum JSDoc that legitimately describes
+ * `not_self_service` must not trip the source-literal scan.
  */
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
 /** A minimal catalog entry stub for a given disposition. */
@@ -73,7 +77,7 @@ function entryForDisposition(disposition: ConnectorCatalogEntry["disposition"]):
 }
 
 /** Every disposition the setup presentation switches over. */
-const ALL_DISPOSITIONS: ReadonlyArray<ConnectorCatalogEntry["disposition"]> = [
+const ALL_DISPOSITIONS: readonly ConnectorCatalogEntry["disposition"][] = [
   "local_collector_enroll",
   "static_secret_connect",
   "browser_collector_manual",
@@ -106,8 +110,20 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
   // Drive the real projection with representative manifests, then assert every
   // produced label is in the agreed set and free of forbidden copy.
   const map = buildSourceAddSupport([
-    { connector_id: "ynab", display_name: "ynab", runtime_requirements: { bindings: { network: {} } }, setup: { modality: "static_secret", credential_capture: { credential_kind: "api_token", fields: [{ name: "t", label: "T", secret: true }] } } } as never,
-    { connector_id: "browser_src", display_name: "browser_src", runtime_requirements: { bindings: { browser: {} } } } as never,
+    {
+      connector_id: "ynab",
+      display_name: "ynab",
+      runtime_requirements: { bindings: { network: {} } },
+      setup: {
+        modality: "static_secret",
+        credential_capture: { credential_kind: "api_token", fields: [{ name: "t", label: "T", secret: true }] },
+      },
+    } as never,
+    {
+      connector_id: "browser_src",
+      display_name: "browser_src",
+      runtime_requirements: { bindings: { browser: {} } },
+    } as never,
   ]);
   const labels = [...map.values()].map((s: SourceAddSupport) => s.supportLabel);
   assert.ok(labels.length > 0, "projection must produce at least one label");
@@ -147,8 +163,16 @@ test("the specific overruled strings never reappear anywhere in the copy modules
   // These exact phrases were the overruled copy. They must not exist even in a
   // label literal. (Comments are allowed to reference history; these assertions
   // scan the comment-stripped quoted-string surface.)
-  const STRIPPED = stripComments(addSupport) + "\n" + stripComments(presentation);
-  assert.doesNotMatch(STRIPPED, /is not self-service yet/i, "overruled 'is not self-service yet' demotion copy reappeared");
-  assert.doesNotMatch(STRIPPED, /Not self-service yet/, "overruled 'Not self-service yet' status label reappeared");
-  assert.doesNotMatch(STRIPPED, /moves into the dashboard soon/i, "the contradictory 'moves into the dashboard soon' chip copy reappeared");
+  const stripped = `${stripComments(addSupport)}\n${stripComments(presentation)}`;
+  assert.doesNotMatch(
+    stripped,
+    OVERRULED_DEMOTION_SENTENCE_RE,
+    "overruled 'is not self-service yet' demotion copy reappeared"
+  );
+  assert.doesNotMatch(stripped, OVERRULED_STATUS_LABEL_RE, "overruled 'Not self-service yet' status label reappeared");
+  assert.doesNotMatch(
+    stripped,
+    CONTRADICTORY_CHIP_RE,
+    "the contradictory 'moves into the dashboard soon' chip copy reappeared"
+  );
 });
