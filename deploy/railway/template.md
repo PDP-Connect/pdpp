@@ -72,6 +72,20 @@ PDPP_CREDENTIAL_ENCRYPTION_KEY=${{ secret(64) }}
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
+Optional, for the API-backed Google Maps Data Portability source:
+
+```sh
+GOOGLE_DATAPORTABILITY_CLIENT_ID=<google-oauth-client-id>
+GOOGLE_DATAPORTABILITY_CLIENT_SECRET=<google-oauth-client-secret>
+GOOGLE_DATAPORTABILITY_REDIRECT_URI=https://${{core.RAILWAY_PUBLIC_DOMAIN}}/_ref/provider-auth/callback
+GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS=
+```
+
+These are deployment-level Google OAuth app settings. Keep them optional in the
+public button unless the template can supply a reusable approved OAuth app;
+otherwise they become extra deploy-page prompts for a source many operators may
+not enable.
+
 Do not set these as Railway service variables on `core`:
 
 ```sh

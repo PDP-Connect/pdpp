@@ -74,6 +74,22 @@ PDPP_POSTGRES_PASSWORD=...                      # change if you ever publish Pos
 PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0               # opt out of semantic search model download
 ```
 
+To enable the API-backed Google Maps Data Portability source, create a Google
+OAuth client for your PDPP origin and add the callback URL to Google exactly as
+shown:
+
+```sh
+GOOGLE_DATAPORTABILITY_CLIENT_ID=...
+GOOGLE_DATAPORTABILITY_CLIENT_SECRET=...
+GOOGLE_DATAPORTABILITY_REDIRECT_URI=https://pdpp.example.com/_ref/provider-auth/callback
+# Optional: comma-separated documented Maps resource groups; blank = connector default.
+GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS=
+```
+
+These are deployment-level OAuth app settings. They are not per-account Google
+credentials, and a Gmail/Google app password cannot authorize the Google Data
+Portability API.
+
 **Browser-backed connectors (ChatGPT, USAA, ...):** the default `reference`
 image is browser-free. If you run these connectors inside the reference
 container rather than via the local collector, add this to `.env`:

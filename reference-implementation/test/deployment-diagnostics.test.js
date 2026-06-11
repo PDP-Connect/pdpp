@@ -71,10 +71,31 @@ function manifestWithoutSemantic() {
 
 test('buildEnvironmentReport redacts explicitly-secret allowlist entries', () => {
   const report = buildEnvironmentReport({
+    GOOGLE_DATAPORTABILITY_CLIENT_ID: 'google-client-id.apps.googleusercontent.com',
+    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: 'google-client-secret-should-never-appear',
+    GOOGLE_DATAPORTABILITY_REDIRECT_URI: 'https://pdpp.example/_ref/provider-auth/callback',
     PDPP_DCR_INITIAL_ACCESS_TOKENS: 'real-token-value-should-never-appear',
     PDPP_OWNER_PASSWORD: 'owner-password-should-never-appear',
     NODE_ENV: 'production',
   });
+  const googleClientIdEntry = report.find((e) => e.name === 'GOOGLE_DATAPORTABILITY_CLIENT_ID');
+  assert.ok(googleClientIdEntry, 'Google Data Portability client id entry is present');
+  assert.equal(googleClientIdEntry.provenance, 'present');
+  assert.equal(googleClientIdEntry.value, 'google-client-id.apps.googleusercontent.com');
+  assert.equal(googleClientIdEntry.secret, false);
+
+  const googleClientSecretEntry = report.find((e) => e.name === 'GOOGLE_DATAPORTABILITY_CLIENT_SECRET');
+  assert.ok(googleClientSecretEntry, 'Google Data Portability client secret entry is present');
+  assert.equal(googleClientSecretEntry.provenance, 'redacted');
+  assert.equal(googleClientSecretEntry.value, null, 'Google OAuth client secret MUST NOT reach the dashboard');
+  assert.equal(googleClientSecretEntry.secret, true);
+
+  const googleRedirectEntry = report.find((e) => e.name === 'GOOGLE_DATAPORTABILITY_REDIRECT_URI');
+  assert.ok(googleRedirectEntry, 'Google Data Portability redirect URI entry is present');
+  assert.equal(googleRedirectEntry.provenance, 'present');
+  assert.equal(googleRedirectEntry.value, 'https://pdpp.example/_ref/provider-auth/callback');
+  assert.equal(googleRedirectEntry.secret, false);
+
   const tokenEntry = report.find((e) => e.name === 'PDPP_DCR_INITIAL_ACCESS_TOKENS');
   assert.ok(tokenEntry, 'secret allowlist entry is present');
   assert.equal(tokenEntry.provenance, 'redacted');

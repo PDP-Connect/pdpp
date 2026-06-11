@@ -37,6 +37,12 @@ services:
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
       PDPP_EMBEDDING_CACHE_DIR: /var/cache/pdpp/transformers
       PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
+      # Optional Google Data Portability OAuth app material. Required only to
+      # let owners add the API-backed Google Maps Data Portability source.
+      GOOGLE_DATAPORTABILITY_CLIENT_ID: ${GOOGLE_DATAPORTABILITY_CLIENT_ID:-}
+      GOOGLE_DATAPORTABILITY_CLIENT_SECRET: ${GOOGLE_DATAPORTABILITY_CLIENT_SECRET:-}
+      GOOGLE_DATAPORTABILITY_REDIRECT_URI: ${GOOGLE_DATAPORTABILITY_REDIRECT_URI:-}
+      GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS: ${GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS:-}
     volumes:
       - pdpp-transformers:/var/cache/pdpp/transformers
     depends_on:

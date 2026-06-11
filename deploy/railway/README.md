@@ -72,6 +72,21 @@ PDPP_CREDENTIAL_ENCRYPTION_KEY=${{ secret(64) }}
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
+Optional Google Maps Data Portability API support requires deployment-level
+Google OAuth app material on the same `core` service:
+
+```sh
+GOOGLE_DATAPORTABILITY_CLIENT_ID=<google-oauth-client-id>
+GOOGLE_DATAPORTABILITY_CLIENT_SECRET=<google-oauth-client-secret>
+GOOGLE_DATAPORTABILITY_REDIRECT_URI=https://${{core.RAILWAY_PUBLIC_DOMAIN}}/_ref/provider-auth/callback
+# Optional: comma-separated documented Maps resource groups; blank = connector default.
+GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS=
+```
+
+These are OAuth app settings for the deployment, not owner account credentials.
+Do not use a Gmail/Google app password for this source; Google Data Portability
+requires OAuth scopes and a matching redirect URI.
+
 Do not set `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or `PDPP_RS_URL` as
 Railway variables on the `core` service. Railway injects `PORT`; the image
 supervisor owns the internal AS/RS ports and loopback proxy targets. Keeping
