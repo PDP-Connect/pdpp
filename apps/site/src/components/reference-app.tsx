@@ -242,11 +242,11 @@ function Stepper({
       {SECTIONS.map(({ id, label }) => {
         const isActive = id === activeId;
         const temp = SECTION_TEMPERATURE[id];
-        let inactiveColor = "var(--authorship-client)";
+        let inactiveColor = "var(--authorship-client-fg)";
         if (temp === "human") {
-          inactiveColor = "var(--authorship-manifest-strong)";
+          inactiveColor = "color-mix(in oklab, var(--authorship-manifest-accent) 70%, transparent)";
         } else if (temp === "protocol") {
-          inactiveColor = "var(--authorship-protocol-strong)";
+          inactiveColor = "color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)";
         }
         return (
           <button
@@ -443,10 +443,10 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             className="h-0.5 flex-1"
             style={{
               backgroundColor:
-                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--border)",
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
-                phase === "filter" || phase === "result" ? "0 0 8px var(--authorship-protocol-strong)" : "none",
+                phase === "filter" || phase === "result" ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)" : "none",
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
@@ -454,7 +454,7 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             className="shrink-0 font-medium font-mono text-xs"
             style={{
               color:
-                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--muted-foreground)",
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--muted-foreground)",
               opacity: phase === "hidden" ? 0 : 1,
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, color ${dur}ms ${easeOut}`,
             }}
@@ -465,10 +465,10 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             className="h-0.5 flex-1"
             style={{
               backgroundColor:
-                phase === "filter" || phase === "result" ? "var(--authorship-protocol)" : "var(--border)",
+                phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
               opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
-                phase === "filter" || phase === "result" ? "0 0 8px var(--authorship-protocol-strong)" : "none",
+                phase === "filter" || phase === "result" ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)" : "none",
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
