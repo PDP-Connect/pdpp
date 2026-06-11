@@ -15,6 +15,7 @@ import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
 import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import {
+  type CollectionRateSnapshot,
   type ConnectionAttentionEvidence,
   type ConnectionDetailGapBacklogEvidence,
   type ConnectionHealthSnapshot,
@@ -715,6 +716,91 @@ function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | nul
   }
   const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
   return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
+}
+
+/**
+ * Read the latest adaptive collection rate controller snapshot for a run.
+ *
+ * For completed runs the snapshot is stamped on the terminal event by the
+ * runtime (`buildRunTerminalData`), so we read it from there with no extra
+ * query. For in-progress runs (no terminal event yet) we fall back to the
+ * most recent `run.progress_reported` spine event that carries a
+ * `collection_rate` payload. Returns `null` when no rate evidence exists
+ * (controller never fired a rate-change transition, or the run predates the
+ * adaptive rate controller).
+ */
+async function readLatestCollectionRateForRun(
+  runId: string,
+  terminalData: Record<string, unknown> | null
+): Promise<CollectionRateSnapshot | null> {
+  // Fast path: terminal event already carries the final rate snapshot.
+  if (terminalData != null) {
+    return parseCollectionRatePayload(terminalData.collection_rate);
+  }
+  // Slow path: run still in progress — query the latest progress event.
+  const row = isPostgresStorageBackend()
+    ? ((
+        await postgresQuery(
+          `SELECT data_json::text AS data_json
+           FROM spine_events
+           WHERE run_id = $1
+             AND event_type = 'run.progress_reported'
+             AND data_json::jsonb ? 'collection_rate'
+           ORDER BY event_seq DESC
+           LIMIT 1`,
+          [runId]
+        )
+      ).rows[0] as { data_json?: string } | undefined)
+    : getOne<{ data_json?: string }>(referenceQueries.spineGetRunLatestCollectionRateEvent, [runId]);
+  if (!row?.data_json) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.data_json);
+  } catch {
+    return null;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parseCollectionRatePayload((parsed as Record<string, unknown>).collection_rate);
+  }
+  return null;
+}
+
+/**
+ * Parse and validate a raw `collection_rate` payload from a spine event's
+ * `data_json`. Returns `null` for any shape that does not match the expected
+ * structure — old runs predating the field, missing payloads, or malformed
+ * data all collapse to the honest `null` unknown.
+ */
+function parseCollectionRatePayload(raw: unknown): CollectionRateSnapshot | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  if (r.object !== "collection_rate") {
+    return null;
+  }
+  const ceiling_interval_ms = typeof r.ceiling_interval_ms === "number" ? r.ceiling_interval_ms : null;
+  const ceiling_rate_per_min = typeof r.ceiling_rate_per_min === "number" ? r.ceiling_rate_per_min : null;
+  const current_interval_ms = typeof r.current_interval_ms === "number" ? r.current_interval_ms : null;
+  const effective_rate_per_min = typeof r.effective_rate_per_min === "number" ? r.effective_rate_per_min : null;
+  if (
+    ceiling_interval_ms === null || ceiling_rate_per_min === null ||
+    current_interval_ms === null || effective_rate_per_min === null
+  ) {
+    return null;
+  }
+  let last_backoff: CollectionRateSnapshot["last_backoff"] = null;
+  if (r.last_backoff != null) {
+    const lb = r.last_backoff as Record<string, unknown>;
+    const at_interval_ms = typeof lb.at_interval_ms === "number" ? lb.at_interval_ms : null;
+    const reason = typeof lb.reason === "string" ? lb.reason : null;
+    if (at_interval_ms !== null && reason !== null) {
+      last_backoff = { at_interval_ms, reason };
+    }
+  }
+  return { ceiling_interval_ms, ceiling_rate_per_min, current_interval_ms, effective_rate_per_min, last_backoff };
 }
 
 async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
@@ -2631,6 +2717,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * Omitting it preserves the prior behavior (treated as schedulable;
    * staleness degrades).
    */
+  /**
+   * Adaptive collection rate controller snapshot derived from the latest run's
+   * progress events. Passed through verbatim to `computeConnectionHealth` as a
+   * pure annotation — no classification step reads it. `null`/absent when no
+   * controller state has been observed for this connection.
+   */
+  readonly collectionRate?: CollectionRateSnapshot | null;
   readonly refreshPolicy?: unknown;
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
@@ -2703,6 +2796,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     activity: { active: activeRunId !== null },
     attention,
     backoff: backoffEvidence.backoff,
+    collectionRate: input.collectionRate ?? null,
     coverage,
     detailGapBacklog,
     freshness: { axis: freshnessAxis },
@@ -2923,6 +3017,15 @@ async function projectConnectorSummaryForInstance(
       getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
     ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
+  // Adaptive rate controller snapshot: read from the latest run's terminal
+  // event (fast path) or its most recent rate-change progress event (in-
+  // progress run). `null` when no controller has fired for this connection.
+  const collectionRate = lastRun?.run_id
+    ? await readLatestCollectionRateForRun(
+        lastRun.run_id,
+        lastRun.status !== "pending" ? await readRunTerminalEventData(lastRun.run_id) : null
+      )
+    : null;
   const localDeviceProgress =
     instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
   // A heartbeat can satisfy freshness only when it represents a healthy
@@ -2941,6 +3044,7 @@ async function projectConnectorSummaryForInstance(
   });
   const connectionHealth = projectConnectorSummaryConnectionHealth({
     attentionRecords: attention.records,
+    collectionRate,
     freshness,
     lastRun,
     lastSuccessfulRun,
@@ -3072,6 +3176,12 @@ export async function getConnectorDetail(
       getConnectorLocalCoverageAxis(connectorId, null),
     ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
+  const collectionRate = lastRun?.run_id
+    ? await readLatestCollectionRateForRun(
+        lastRun.run_id,
+        lastRun.status !== "pending" ? await readRunTerminalEventData(lastRun.run_id) : null
+      )
+    : null;
   const freshness = buildConnectorFreshness({
     lastRun,
     lastSuccessfulRun,
@@ -3080,6 +3190,7 @@ export async function getConnectorDetail(
   });
   const connectionHealth = projectConnectorSummaryConnectionHealth({
     attentionRecords: attention.records,
+    collectionRate,
     freshness,
     lastRun,
     lastSuccessfulRun,

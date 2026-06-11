@@ -1267,6 +1267,47 @@ test('next_action: idle and degraded headlines do not synthesize a CTA', () => {
   assert.equal(degradedSnap.next_action, null);
 });
 
+// ─── collection_rate passthrough ───────────────────────────────────────────
+
+test('collection_rate: null when not supplied', () => {
+  const snap = computeConnectionHealth(input({ run: run(), coverage: { axis: 'complete' }, freshness: { axis: 'fresh' } }));
+  assert.equal(snap.collection_rate, null,
+    'collection_rate must be null when no rate evidence is passed in (honest unknown, no false zero)');
+});
+
+test('collection_rate: threaded through as pure annotation without affecting health state', () => {
+  const rate = {
+    ceiling_interval_ms: 1000,
+    ceiling_rate_per_min: 60,
+    current_interval_ms: 1500,
+    effective_rate_per_min: 40,
+    last_backoff: { at_interval_ms: 2000, reason: 'throttle' },
+  };
+  const snap = computeConnectionHealth(
+    input({ run: run(), coverage: { axis: 'complete' }, freshness: { axis: 'fresh' }, collectionRate: rate })
+  );
+  // collection_rate is a pure annotation — it must not change the headline state.
+  assert.equal(snap.state, 'healthy');
+  assert.deepEqual(snap.collection_rate, rate,
+    'collection_rate must be surfaced verbatim on the snapshot');
+});
+
+test('collection_rate: surfaced on degraded connections too (annotation, not a health gate)', () => {
+  const rate = {
+    ceiling_interval_ms: 1000,
+    ceiling_rate_per_min: 60,
+    current_interval_ms: 3000,
+    effective_rate_per_min: 20,
+    last_backoff: { at_interval_ms: 3000, reason: 'retry_after' },
+  };
+  const snap = computeConnectionHealth(
+    input({ run: run({ latestStatus: 'failed' }), coverage: { axis: 'partial' }, collectionRate: rate })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.deepEqual(snap.collection_rate, rate,
+    'collection_rate is available even when the connection is degraded');
+});
+
 function findCondition(snap, type) {
   assert.ok(Array.isArray(snap.conditions), 'conditions must be present on health snapshot');
   return snap.conditions.find((condition) => condition.type === type);

@@ -665,9 +665,42 @@ export interface RemoteSurfaceDetail {
   readonly wait_reason: string | null;
 }
 
+/**
+ * Adaptive collection rate controller snapshot, derived by the reference from
+ * the connector's `collection_rate` run-trace progress events. Carries only
+ * rate numbers and the last back-off reason — no account content, locator,
+ * stream body, or per-connector branch. SHALL NOT be exposed to grant-scoped
+ * clients (owner-only diagnostic, same policy as `detail_gap_backlog`).
+ */
+export interface CollectionRateSnapshot {
+  /** Rate ceiling: fastest interval (ms) the controller may reach. */
+  readonly ceiling_interval_ms: number;
+  /** Effective ceiling rate (requests/min). */
+  readonly ceiling_rate_per_min: number;
+  /** Current learned inter-request interval (ms). */
+  readonly current_interval_ms: number;
+  /** Current effective rate (requests/min). */
+  readonly effective_rate_per_min: number;
+  /** Most recent back-off recorded this run, or null when none has fired. */
+  readonly last_backoff: {
+    readonly at_interval_ms: number;
+    readonly reason: string;
+  } | null;
+}
+
 export interface ConnectionHealthSnapshot {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
+  /**
+   * Additive, nullable adaptive collection rate controller state
+   * ({@link CollectionRateSnapshot}). Derived by the reference from the
+   * connector's `collection_rate` run-trace progress events. `null`/omitted
+   * when no controller state has been observed (e.g. no recent run, or a
+   * reference predating the field). Pure annotation: no classification step
+   * reads it; cannot move the headline state or any axis. Owner-only
+   * diagnostic. SHALL NOT be exposed to grant-scoped clients.
+   */
+  readonly collection_rate: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
   /**
    * Additive, nullable source-pressure detail-gap backlog rollup
@@ -918,6 +951,13 @@ export interface ComputeConnectionHealthInput {
   readonly backoff: ConnectionBackoffEvidence | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   /**
+   * Adaptive collection rate controller snapshot. Passed through verbatim from
+   * the caller (the reference derives it from run-trace progress events). Pure
+   * annotation: no classification step reads it, so it cannot move the headline
+   * state or any axis. `null`/absent yields a `null` rollup on the snapshot.
+   */
+  readonly collectionRate?: CollectionRateSnapshot | null;
+  /**
    * Source-pressure detail-gap backlog evidence. The projection derives the
    * additive {@link DetailGapBacklog} rollup from it via
    * {@link deriveSourcePressureBacklog} and attaches it to the snapshot. It is
@@ -978,6 +1018,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const conditions = projectConditions(input, axes);
   const conditionSet = indexConditions(conditions);
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
+  const collectionRate = input.collectionRate ?? null;
   const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
@@ -1000,6 +1041,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     const dominantConditionId = pickDominantConditionId(args.state, conditions);
     return snapshot({
       ...args,
+      collectionRate,
       conditions,
       detailGapBacklog,
       dominantConditionId,
@@ -2424,6 +2466,7 @@ function degradedReasonCode(input: ComputeConnectionHealthInput): string | null 
 interface SnapshotArgs {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
+  readonly collectionRate?: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly detailGapBacklog?: DetailGapBacklog | null;
   readonly dominantConditionId: string | null;
@@ -2442,6 +2485,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
   return {
     state: args.state,
     reason_code: args.reasonCode,
+    collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
     detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
