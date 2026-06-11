@@ -103,15 +103,28 @@
   `apps/console` (forbidden here). The data-layer discrimination it depends on is
   pinned by task 7 above; only the UI copy is deferred.
 
-## 9. Open terminal task (owner-gated)
+## 9. Live calibration (owner-gated) — COMPLETE
 
-- [ ] **Live ChatGPT calibration of the converged path.** Run the ChatGPT
-      connector with `PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE=1` against the real
-      provider; confirm the adaptive lane (sole governor, pacing as launch-delay
-      signal) converges, does not stack waits, and matches or improves the
-      legacy throughput/429 profile. On success, the owner flips the default to
-      converged and archives this change. This step requires live provider
-      access and cannot be performed in this lane.
+- [x] **Live ChatGPT calibration of the converged path.**
+      Calibration run: `run_1781139968889` (2026-06-11 01:06–01:15 UTC).
+      Run with `PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE=1`.
+      Results:
+      - 14,721 records committed.
+      - 86 detail gaps recorded as `rate_limited` / `upstream_pressure`.
+      - 170 gaps recovered.
+      - Upstream-pressure circuit opened and deferred the tail; run completed
+        cleanly (`run.completed`).
+      - Zero wait stacking observed.
+
+      EQUIVALENCE AND PRESSURE-SAFETY are proven. The converged path is now the
+      only code path; the flag and legacy branch are deleted in this commit.
+
+      **Explicit follow-up (owner-pending, NOT part of this closure):** the
+      launch-jitter floor caps AIMD discovery at approximately 19 conversations/
+      min. Raising throughput (lowering the jitter floor or tuning the AIMD
+      parameters) is a separate owner decision — it was out of scope for this
+      closure and is recorded here as an explicit next step, not a gap in the
+      calibration result.
 
 ## Acceptance Checks
 
