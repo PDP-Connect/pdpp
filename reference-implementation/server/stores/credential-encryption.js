@@ -188,11 +188,16 @@ export function createCredentialCipher(keyMaterial) {
      * distinguish "the secret changed" from "the secret is the same" without
      * revealing any bytes. Derived under the operator key + a fixed domain salt so
      * it is stable for a given (key, plaintext) pair but useless without the key.
+     *
+     * v2: widened from 8 bytes (64-bit, ~2^32 birthday bound) to 16 bytes (128-bit)
+     * to eliminate practical collision risk. The operator key already provides
+     * per-deployment uniqueness that defeats global precomputed tables. The domain
+     * string change to v2 ensures a clean break from any cached v1 values.
      */
     fingerprint(plaintext) {
       if (typeof plaintext !== 'string' || plaintext.length === 0) return null;
-      const salt = Buffer.from('pdpp.credential.fingerprint.v1', 'utf8');
-      return scryptSync(`${secret}\n${plaintext}`, salt, 8, SCRYPT_PARAMS).toString('hex');
+      const salt = Buffer.from('pdpp.credential.fingerprint.v2', 'utf8');
+      return scryptSync(`${secret}\n${plaintext}`, salt, 16, SCRYPT_PARAMS).toString('hex');
     },
   };
 }
