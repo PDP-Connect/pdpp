@@ -23,3 +23,4 @@
 
 - [x] 4.1 Update connector inventory docs.
 - [x] 4.2 Report remaining proof gap for a live owner-export pilot.
+- [x] 4.3 Clarify that this source is a Timeline import fallback, not a Google Maps Data Portability API connection.

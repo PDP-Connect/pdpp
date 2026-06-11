@@ -4,7 +4,7 @@
   "connector_key": "google-maps",
   "manifest_uri": "https://registry.pdpp.org/connectors/google-maps",
   "version": "0.1.0",
-  "display_name": "Google Maps",
+  "display_name": "Google Maps Timeline Import",
   "runtime_requirements": {
     "bindings": {
       "network": {
@@ -18,16 +18,16 @@
   "setup": {
     "modality": "manual_or_upload",
     "manual_or_upload": {
-      "label": "Google Maps Timeline export",
-      "description": "Export Timeline data from Google Maps or Android location settings, then provide the JSON export to PDPP.",
+      "label": "Google Maps Timeline export file",
+      "description": "Export Timeline data from the Google Maps mobile app or Android location settings, then provide the JSON export to PDPP.",
       "accepted_file_names": [
         "Timeline.json",
         "timeline.json",
         "location-history.json",
         "Records.json"
       ],
-      "help_url": "https://support.google.com/maps/thread/315670197/export-timeline-data",
-      "help_text": "Google Maps Timeline exports are owner-provided files. No Google account password or app password is used for this connector."
+      "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
+      "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account password or app password is used."
     }
   },
   "capabilities": {
@@ -38,7 +38,7 @@
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings; the connector does not authenticate to Google or refresh in the background."
+      "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings. Google's documented Data Portability API exposes other Maps resource groups, but not Timeline points or Timeline segments, so this connector does not authenticate to Google or refresh in the background."
     },
     "public_listing": {
       "listed": false,

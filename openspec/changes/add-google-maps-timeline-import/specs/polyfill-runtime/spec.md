@@ -2,7 +2,7 @@
 
 ### Requirement: Google Maps Timeline import SHALL be file-based and provenance-preserving
 
-The first-party Google Maps connector SHALL collect from owner-provided export files rather than scraping Google Maps, SHALL require filesystem access and no network or browser binding, SHALL emit validated normalized Timeline records, and SHALL preserve source-format provenance on each emitted record.
+The first-party Google Maps Timeline import connector SHALL collect from owner-provided export files rather than scraping Google Maps or using a Google account credential, SHALL require filesystem access and no network or browser binding, SHALL emit validated normalized Timeline records, and SHALL preserve source-format provenance on each emitted record. It SHALL NOT be advertised as an API-backed Google Maps connection.
 
 #### Scenario: Owner imports a Google Maps Timeline export
 
