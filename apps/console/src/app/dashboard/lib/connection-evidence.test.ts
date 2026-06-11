@@ -15,6 +15,7 @@ import {
   deriveFailureSummary,
   derivePrimaryRowAction,
   deriveStreakDots,
+  formatCollectionRateReadout,
   formatCoverageAxis,
   formatDominantCondition,
   formatFreshnessAxis,
@@ -1308,7 +1309,7 @@ test("a source-pressure-drained backlog does not say caught up when other detail
       state: "cooling_off",
       reason_code: "source_pressure",
       next_attempt_at: null,
-      detail_gap_backlog: backlog({ pending: 0, pending_other: 1_899, pending_other_is_floor: true }),
+      detail_gap_backlog: backlog({ pending: 0, pending_other: 1899, pending_other_is_floor: true }),
     }),
     supportsOwnerSync: true,
   });
@@ -1929,4 +1930,36 @@ test("deriveAutoPausedBanner handles null reason_class gracefully", () => {
   const banner = deriveAutoPausedBanner(schedule);
   assert.ok(banner);
   assert.equal(banner.reasonLabel, null);
+});
+
+test("formatCollectionRateReadout degrades to null when no controller state is present (honest unknown)", () => {
+  assert.equal(formatCollectionRateReadout(null), null, "null state → no false rate");
+  assert.equal(formatCollectionRateReadout(undefined), null, "absent field → no false rate");
+});
+
+test("formatCollectionRateReadout surfaces current rate, ceiling, and last back-off", () => {
+  const readout = formatCollectionRateReadout({
+    ceiling_interval_ms: 250,
+    ceiling_rate_per_min: 240,
+    current_interval_ms: 500,
+    effective_rate_per_min: 120,
+    last_backoff: { at: null, at_interval_ms: 1000, reason: "throttle" },
+  });
+  assert.ok(readout);
+  assert.match(readout.currentLabel, /120\/min/);
+  assert.match(readout.currentLabel, /500ms/);
+  assert.match(readout.ceilingLabel, /240\/min/);
+  assert.equal(readout.backoffLabel, "last backed off to 1,000ms (throttle)");
+});
+
+test("formatCollectionRateReadout omits the back-off line when none has fired", () => {
+  const readout = formatCollectionRateReadout({
+    ceiling_interval_ms: 250,
+    ceiling_rate_per_min: 240,
+    current_interval_ms: 250,
+    effective_rate_per_min: 240,
+    last_backoff: null,
+  });
+  assert.ok(readout);
+  assert.equal(readout.backoffLabel, null, "no back-off → no back-off line");
 });

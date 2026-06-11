@@ -54,6 +54,8 @@ import { ProviderBudgetController } from "../../src/provider-budget.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
   applyChatGptColdStatePreflight,
+  buildChatGptCollectionRateProgress,
+  buildChatGptPacingStateFields,
   CHATGPT_RETRYABLE_ERROR_PATTERN,
   type ChatGptDetailLaneTuning,
   ChatGptPlannedProviderBudgetDeferredError,
@@ -71,6 +73,7 @@ import {
   resolveChatGptMaxTailDeferralGapsPerRun,
   resolveChatGptProviderBudget,
   resolveChatGptRateLimitDensityStop,
+  resolveChatGptWarmStartInterval,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -173,13 +176,15 @@ test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => 
 });
 
 test("resolveChatGptDetailLaneTuning defaults to the frozen production values when no probe env is set", () => {
-  // OpenSpec add-connector-adaptive-lanes: ChatGPT maxConcurrency MUST stay at 1
-  // until cold-state evidence. With no probe env, defaults are byte-identical.
+  // ChatGPT maxConcurrency MUST stay at 1 (a hard ceiling, not a controller).
+  // The pause window is now an ε anti-phase-lock band (0/150), NOT a 1500ms rate
+  // floor — the GCRA rate-AIMD is the sole rate authority (ship-adaptive-
+  // collection-rate-controller §1).
   assert.deepEqual(resolveChatGptDetailLaneTuning({}), {
     initialConcurrency: 1,
     maxConcurrency: 1,
-    pauseMinMs: 1500,
-    pauseMaxMs: 3000,
+    pauseMinMs: 0,
+    pauseMaxMs: 150,
   });
 });
 
@@ -219,7 +224,7 @@ test("resolveChatGptDetailLaneTuning falls back to the frozen default per-knob o
       PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "-5",
       PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "  ",
     }),
-    { initialConcurrency: 1, maxConcurrency: 1, pauseMinMs: 1500, pauseMaxMs: 3000 }
+    { initialConcurrency: 1, maxConcurrency: 1, pauseMinMs: 0, pauseMaxMs: 150 }
   );
 });
 
@@ -894,7 +899,10 @@ test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lan
 
   assert.deepEqual(fetches, ["/conversation/convo-1", "/conversation/convo-2"]);
   assert.equal(maxActiveFetches, 1, "conversation detail fetches must not overlap");
-  assert.deepEqual(pauses, [1500], "one deterministic minimum pause between two detail requests");
+  // ε-jitter, not a rate floor: with random=0 the launch jitter is 0 and (no
+  // pacing hint configured here) the lane pays no launch wait. The GCRA rate-AIMD
+  // is the rate authority; the jitter band never imposes a floor of its own.
+  assert.deepEqual(pauses, [], "ε-jitter imposes no deterministic launch floor (was a 1500ms manual throttle)");
   const progressMessages = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
   );
@@ -964,12 +972,14 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
 
   assert.equal(maxActiveFetches, 1, "intermediate pressure must not raise detail concurrency");
   // Each conversation's request absorbs its own 45_000 backoff (2 requests).
-  // The launch between them pays only the ordinary minimum pause (1500ms), NOT
-  // a second mirrored 45_000 cooldown. Pre-fix this was [45_000, 45_000, 45_000].
+  // The absorbed backoff is NOT double-paid as a launch cooldown, and the
+  // inter-launch jitter is now ε (0 with random=0), so only the two absorbed
+  // request backoffs remain. Pre-floor-delete this was [45_000, 1500, 45_000];
+  // pre-double-pay-fix it was [45_000, 45_000, 45_000].
   assert.deepEqual(
     pauses,
-    [45_000, 1500, 45_000],
-    "absorbed retry backoff is not double-paid as a launch cooldown; only the ordinary inter-launch pause remains"
+    [45_000, 45_000],
+    "absorbed retry backoff is not double-paid; ε-jitter adds no launch floor between requests"
   );
   const progressMessages = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
@@ -1296,7 +1306,11 @@ test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; exp
   const defaultBudget = resolveChatGptProviderBudget({});
   assert.ok(defaultBudget instanceof ProviderBudgetController);
   assert.ok(defaultBudget.pacing, "ChatGPT default enables adaptive inter-request pacing");
-  assert.equal(defaultBudget.pacing.currentIntervalMs, 2500, "ChatGPT starts at a conservative cold interval");
+  assert.equal(
+    defaultBudget.pacing.currentIntervalMs,
+    1000,
+    "ChatGPT cold-starts at the discovery seed (lowered from glacial 2500ms); warm-start restores the learned value on later runs"
+  );
   assert.ok(defaultBudget.retryBudget, "ChatGPT default keeps a retry budget even without a request cap");
   assert.equal(defaultBudget.retryBudget.capacity, 5);
   assert.ok(defaultBudget.circuitBreaker, "ChatGPT default enables a circuit breaker");
@@ -1598,11 +1612,12 @@ test("runMessagesAndConversationsWithDetail: empty budget leaves a large backlog
   );
 });
 
-test("runMessagesAndConversationsWithDetail: lane retains its launch delay (sole send governor; pacing via launchDelayHint)", async () => {
-  // Converged path: pacingMode "signal" — the controller does NOT sleep in
-  // beforeRequest(); the lane is the sole send governor and retains its launch
-  // delay window. The legacy behavior (zeroed launch delay + controller-owned
-  // wait) was removed in the 2026-06-11 calibration commit.
+test("runMessagesAndConversationsWithDetail: the GCRA pacing hint is the rate authority, not a launch-jitter floor", async () => {
+  // Signal mode: the controller does NOT sleep in beforeRequest(); the lane is
+  // the sole send governor and folds the GCRA interval in via launchDelayHint.
+  // After the floor delete, the lane's launch wait equals the LEARNED pacing
+  // interval (250ms here), NOT a fixed 1500ms jitter floor — proving the
+  // controller binds the rate. The ε-jitter window adds at most a few hundred ms.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const providerSleeps: number[] = [];
@@ -1640,6 +1655,8 @@ test("runMessagesAndConversationsWithDetail: lane retains its launch delay (sole
     [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
     makeEmitConversation(deps),
     {
+      // random=0 → ε-jitter contributes 0; the launch wait is governed purely by
+      // the GCRA pacing hint folded in via max(launchDelay≈0, cooldown, hint).
       random: () => 0,
       sleep: (ms) => {
         laneSleeps.push(ms);
@@ -1647,8 +1664,8 @@ test("runMessagesAndConversationsWithDetail: lane retains its launch delay (sole
       tuning: {
         initialConcurrency: 1,
         maxConcurrency: 1,
-        pauseMaxMs: 3000,
-        pauseMinMs: 1500,
+        pauseMaxMs: 150,
+        pauseMinMs: 0,
       },
     }
   );
@@ -1658,12 +1675,17 @@ test("runMessagesAndConversationsWithDetail: lane retains its launch delay (sole
   // Signal mode: controller does NOT sleep in beforeRequest() — pacing hint is
   // delivered via launchDelayHint to the lane, which does the single wait.
   assert.equal(providerSleeps.length, 0, "controller does not sleep in signal mode (lane owns the single wait)");
-  // Lane retains its launch delay — at least one launch-window sleep is expected
-  // for the second conversation onward (random=0 → pauseMinMs=1500 ms).
+  // The lane's launch wait tracks the LEARNED pacing interval (250ms), proving
+  // the GCRA rate-AIMD binds the rate. No 1500ms floor exists anymore.
+  assert.equal(
+    laneSleeps.some((ms) => ms === 250),
+    true,
+    "lane launch wait equals the GCRA pacing interval (the rate authority)"
+  );
   assert.equal(
     laneSleeps.some((ms) => ms >= 1500),
-    true,
-    "lane retains its launch delay window (sole send governor)"
+    false,
+    "no fixed launch-jitter floor of 1500ms binds the rate anymore"
   );
 });
 
@@ -2813,7 +2835,12 @@ test("runConversationsAndMessagesStreams: drains paged pending message gaps beyo
   );
 });
 
-test("runConversationsAndMessagesStreams: stops paging and skips forward detail when recovery page remains pending", async () => {
+test("runConversationsAndMessagesStreams: a GENUINELY budget-exhausted recovery still defers (no forward walk)", async () => {
+  // Drain-within-budget keeps the "defer" path for the RIGHT reason: when the run
+  // budget is genuinely exhausted by recovery, the forward walk is still skipped
+  // (the budget-exhaustion scenario). The OTHER scenario — transient source
+  // pressure with budget remaining — is covered separately below; that one now
+  // proceeds to the forward walk instead of terminating.
   const harness = makeRecordingEmit(validateRecord);
   const first = makeConvo({ id: "convo-budget-first", update_time: 1_700_000_100 });
   const second = makeConvo({ id: "convo-budget-second", update_time: 1_700_000_200 });
@@ -2840,24 +2867,221 @@ test("runConversationsAndMessagesStreams: stops paging and skips forward detail 
       requestedNextPage = true;
       return Promise.resolve([]);
     },
+    // maxFetches:1 → recovery hydrates one item and EXHAUSTS the run budget.
     runBudget: new ChatGptRunBudget({ maxFetches: 1 }),
   };
 
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, ["/conversation/convo-budget-first"]);
-  assert.equal(requestedNextPage, false, "a partially recovered page is the adaptive stop condition");
-  assert.equal(harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length, 1);
   assert.equal(
-    harness.protocolMessages.some(
-      (message) => message.type === "PROGRESS" && /Stopped pending message-detail recovery/.test(message.message)
-    ),
-    true
+    requestedNextPage,
+    false,
+    "a partially recovered page is the adaptive stop condition (intra-recovery guard)"
   );
+  assert.equal(harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length, 1);
   assert.equal(
     fetches.some((path) => path.startsWith("/conversations")),
     false,
-    "forward message-detail collection is skipped after adaptive recovery stop"
+    "a genuinely budget-exhausted run still skips the forward walk (budget-exhaustion defer)"
+  );
+});
+
+test("runConversationsAndMessagesStreams: source-pressure recovery stop with budget remaining PROCEEDS to the forward walk", async () => {
+  // Drain-within-budget (recovery-early-exit-diagnosis §5): a transient
+  // source-pressure circuit tripping during recovery must NOT terminate the run
+  // when budget remains. The forward walk's LIST phase still advances the cursor
+  // and discovers new conversations; un-hydrated recovery items stay durable
+  // DETAIL_GAPs. Force a source-pressure stop (not a budget stop) by pre-tripping
+  // the density stop, with NO run-cap so budget is plentiful.
+  const harness = makeRecordingEmit(validateRecord);
+  const recItem = makeConvo({ id: "rec-pressured", update_time: 1_700_000_000 });
+  const fetchedDetail: string[] = [];
+  const listedCursors: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations")) {
+        listedCursors.push(path);
+        return {
+          status: 200,
+          json: {
+            items: [
+              { id: "fwd-new", title: "f", create_time: 1_700_000_900, update_time: 1_700_000_900, current_node: "a1" },
+            ],
+          } as ChatGptJson,
+        };
+      }
+      fetchedDetail.push(path);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [makeDetailGapFromConvo("gap-pressured", recItem)],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // No run-cap → budget is plentiful; the only reason recovery stops is source
+    // pressure, exercised via a pre-tripped density stop below.
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    {
+      detailPacing: {
+        random: () => 0,
+        sleep: () => undefined,
+        // Pre-trip the density stop so recovery defers its tail as upstream_pressure
+        // immediately — a source-pressure stop with budget still remaining.
+        densityStopThreshold: 1,
+        preDetailRateLimited: 1,
+      },
+    }
+  );
+
+  // The recovery item is deferred as a durable source-pressure DETAIL_GAP (the
+  // lose-nothing invariant holds regardless of the forward walk proceeding).
+  const pressureGaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      m.type === "DETAIL_GAP" && m.reason === "upstream_pressure"
+  );
+  assert.ok(pressureGaps.length >= 1, "un-hydrated recovery items remain durable upstream_pressure DETAIL_GAPs");
+
+  // THE FIX: the forward walk proceeds — the conversation list is fetched
+  // (cursor would advance) instead of the run terminating after recovery.
+  assert.ok(listedCursors.length >= 1, "the forward walk's list phase runs (advancing the cursor)");
+  assert.ok(
+    harness.protocolMessages.some(
+      (m) => m.type === "PROGRESS" && /run continues its forward walk while budget remains/.test(m.message)
+    ),
+    "the run announces it continues to the forward walk despite the recovery stop"
+  );
+});
+
+test("runConversationsAndMessagesStreams: warm-start round-trip — a run persists its learned interval; the next run restores it", async () => {
+  // Run 1 hydrates several conversations (the controller speeds up), then persists
+  // the learned interval onto the messages STATE cursor. Run 2 reads that cursor
+  // and the controller resumes near the learned interval, not the cold seed.
+  const harness = makeRecordingEmit(validateRecord);
+  const convos = [
+    makeConvo({ id: "w1", update_time: 1_700_000_010 }),
+    makeConvo({ id: "w2", update_time: 1_700_000_020 }),
+    makeConvo({ id: "w3", update_time: 1_700_000_030 }),
+  ];
+  const providerBudget = resolveChatGptProviderBudget({});
+  assert.ok(providerBudget?.pacing);
+  const coldInterval = providerBudget.pacing.currentIntervalMs;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+  });
+
+  // The controller sped up across the 3 successes.
+  const learned = providerBudget.pacing.currentIntervalMs;
+  assert.ok(learned < coldInterval, "the controller learned a faster interval across the run");
+
+  // Persist exactly as the connector does, then read it back through the
+  // staleness-guarded resolver as the NEXT run would.
+  const now = 1_000_000;
+  const persistedFields = buildChatGptPacingStateFields(providerBudget, () => now);
+  const nextState = { messages: { last_update_time: null, ...persistedFields } } as CollectContext["state"];
+  const restored = resolveChatGptWarmStartInterval(nextState, () => now + 1000);
+  assert.equal(restored, learned, "a fresh next run restores the prior run's learned interval");
+
+  // The restored interval seeds a fresh controller below the cold seed.
+  const warmBudget = resolveChatGptProviderBudget({}, restored);
+  assert.equal(
+    warmBudget?.pacing?.currentIntervalMs,
+    learned,
+    "warm-start resumes near the learned interval, not the cold default"
+  );
+
+  // A stale resume (older than the guard) falls back to cold.
+  const staleRestored = resolveChatGptWarmStartInterval(nextState, () => now + 10 * 60 * 60 * 1000);
+  assert.equal(staleRestored, null, "a stale persisted interval is discarded (cold start)");
+});
+
+test("buildChatGptCollectionRateProgress: legible rate state carries no account content", () => {
+  const providerBudget = resolveChatGptProviderBudget({});
+  assert.ok(providerBudget?.pacing);
+  providerBudget.pacing.recordSuccess();
+  providerBudget.pacing.recordThrottle();
+  const progress = buildChatGptCollectionRateProgress(providerBudget);
+  assert.ok(progress);
+  assert.equal(progress.object, "collection_rate");
+  assert.equal(progress.ceiling_interval_ms, 250, "the ceiling is surfaced");
+  assert.ok(progress.effective_rate_per_min > 0, "an effective rate is reported");
+  assert.equal(progress.last_backoff?.reason, "throttle", "the last back-off reason is legible");
+  // No account content anywhere in the serialized event.
+  const serialized = JSON.stringify(progress);
+  assert.equal(
+    /convo|conversation|title|token|gizmo/i.test(serialized),
+    false,
+    "rate state carries no account content"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: emits a collection_rate progress event as the controller speeds up", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const providerBudget = resolveChatGptProviderBudget({});
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget as ProviderBudgetController);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "r1" }), makeConvo({ id: "r2" }), makeConvo({ id: "r3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  const rateEvents = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.collection_rate?.object === "collection_rate"
+  );
+  assert.ok(rateEvents.length >= 1, "the controller's rate state is emitted as run-trace progress");
+  const intervals = rateEvents.map((m) => m.collection_rate?.current_interval_ms ?? 0);
+  const firstInterval = intervals[0] as number;
+  const lastInterval = intervals.at(-1) as number;
+  assert.ok(lastInterval < firstInterval, "the emitted interval decreases as the controller speeds up");
+  assert.equal(
+    rateEvents.some((m) => /r1|r2|r3|conversation\//.test(JSON.stringify(m.collection_rate))),
+    false,
+    "rate events carry no conversation ids"
   );
 });
 

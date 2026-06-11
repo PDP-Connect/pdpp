@@ -21,6 +21,15 @@ export interface PacingOptions {
   multiplicativeDecreaseFactor?: number;
   /** Injectable clock for tests. Default: Date.now. */
   now?: () => number;
+  /**
+   * Warm-start seed: the interval the controller had LEARNED at the end of a
+   * prior run, restored so the AIMD descent compounds across runs instead of
+   * resetting to `initialIntervalMs` at every boundary. Clamped to never be
+   * faster than `minIntervalMs` (the rate ceiling). Absent → cold start at
+   * `initialIntervalMs`. The caller owns the staleness guard (deciding whether a
+   * persisted interval is fresh enough to restore at all).
+   */
+  restoredIntervalMs?: number;
   /** Injectable sleep for tests. Default: real setTimeout. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -28,6 +37,26 @@ export interface PacingOptions {
 export interface ThrottleSignal {
   /** If present, honor this delay exactly for the next admit() call. */
   retryAfterMs?: number;
+}
+
+/** Why the controller last backed off, for operator-legible rate state. */
+export type PacingBackoffReason = "retry_after" | "throttle";
+
+export interface PacingBackoff {
+  /** The interval (ms) the controller increased TO when this back-off fired. */
+  atIntervalMs: number;
+  reason: PacingBackoffReason;
+}
+
+/**
+ * Operator-legible snapshot of the controller's live rate state. `intervalMs` is
+ * the durable value to persist for warm-start; `minIntervalMs` is the rate
+ * ceiling; `lastBackoff` makes the most recent slow-down visible.
+ */
+export interface PacingSnapshot {
+  intervalMs: number;
+  lastBackoff: PacingBackoff | null;
+  minIntervalMs: number;
 }
 
 const DEFAULT_INITIAL_INTERVAL_MS = 1000;
@@ -58,6 +87,8 @@ export class ProviderPacing {
   private tat: number | null = null;
   /** Override for the next admit() call (from retryAfterMs). */
   private nextRetryAfterMs: number | null = null;
+  /** Most recent back-off event, for operator-legible rate state. */
+  private _lastBackoff: PacingBackoff | null = null;
 
   constructor(options: PacingOptions) {
     this.initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
@@ -67,7 +98,16 @@ export class ProviderPacing {
     this.multiplicativeDecreaseFactor = options.multiplicativeDecreaseFactor ?? 0.5;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
-    this._currentIntervalMs = this.initialIntervalMs;
+    // Warm-start: seed from the prior run's learned interval when supplied,
+    // clamped to never be faster than the rate ceiling (minIntervalMs). A
+    // restored value is never trusted to be faster than the operator's ceiling,
+    // and never slower-than-useless past the cold seed is irrelevant (a slower
+    // restored value is honored — it means the prior run had backed off). The
+    // caller decides freshness (staleness guard) before passing a value here.
+    this._currentIntervalMs =
+      options.restoredIntervalMs == null
+        ? this.initialIntervalMs
+        : Math.max(this.minIntervalMs, options.restoredIntervalMs);
   }
 
   /**
@@ -133,17 +173,35 @@ export class ProviderPacing {
    * If `signal.retryAfterMs` is set, the next admit() will honor it exactly.
    */
   recordThrottle(signal?: ThrottleSignal): void {
+    const reason: PacingBackoffReason = signal?.retryAfterMs == null ? "throttle" : "retry_after";
     if (signal?.retryAfterMs != null) {
       this.nextRetryAfterMs = signal.retryAfterMs;
     }
     // Multiplicative decrease: divide fill rate (multiply interval).
     const decreased = this._currentIntervalMs / this.multiplicativeDecreaseFactor;
-    // Throttle never decreases the interval below initialIntervalMs.
+    // Throttle never decreases the interval below initialIntervalMs (the
+    // conservative baseline), so a single throttle bounces the rate back toward
+    // the cold floor even when warm-start had restored a faster learned interval.
     this._currentIntervalMs = Math.max(this.initialIntervalMs, decreased);
+    this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
   }
 
   /** Current inter-request interval (ms) for observability and tests. */
   get currentIntervalMs(): number {
     return this._currentIntervalMs;
+  }
+
+  /**
+   * Operator-legible snapshot of the controller's live rate state. `intervalMs`
+   * is the durable value the connector persists for warm-start across runs;
+   * `minIntervalMs` is the rate ceiling; `lastBackoff` surfaces the most recent
+   * slow-down. PURE: reads only, never advances GCRA state.
+   */
+  snapshot(): PacingSnapshot {
+    return {
+      intervalMs: this._currentIntervalMs,
+      lastBackoff: this._lastBackoff,
+      minIntervalMs: this.minIntervalMs,
+    };
   }
 }

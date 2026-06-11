@@ -433,9 +433,9 @@ export interface RefConnectorSummary {
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
+  retained_bytes?: RefRetainedBytesBreakdown | null;
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   revoked_at?: string | null;
-  retained_bytes?: RefRetainedBytesBreakdown | null;
   schedule: RefSchedule | null;
   status?: string | null;
   stream_count?: number;
@@ -542,6 +542,27 @@ export interface RefDetailGapBacklog {
   recovered: number | null;
 }
 
+/**
+ * The adaptive collection rate controller's last-known state, surfaced so an
+ * operator can see the adaptation (the way Stripe shows rate-limit headroom).
+ * Additive and nullable on the snapshot: a reference predating the field omits
+ * it, and the console renders an explicit unknown rather than inventing a rate.
+ * Derived by the reference from the connector's `collection_rate` run-trace
+ * progress events.
+ */
+export interface RefCollectionRateSnapshot {
+  /** The rate ceiling: fastest interval (ms) the probe never crosses. */
+  ceiling_interval_ms: number;
+  /** Effective ceiling rate (requests/min). */
+  ceiling_rate_per_min: number;
+  /** Current learned inter-request interval (ms). */
+  current_interval_ms: number;
+  /** Current effective rate (requests/min). */
+  effective_rate_per_min: number;
+  /** Most recent back-off, or null when none. */
+  last_backoff: { at: string | null; at_interval_ms: number; reason: string } | null;
+}
+
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
 
 export interface RefConnectionConditionRemediation {
@@ -578,6 +599,13 @@ export interface RefConnectionHealthSnapshot {
     stale: boolean;
     syncing: boolean;
   };
+  /**
+   * Additive, nullable adaptive collection rate controller state
+   * ({@link RefCollectionRateSnapshot}). `null`/omitted when the reference did not
+   * surface controller state (e.g. a reference predating the field); the console
+   * then renders an explicit unknown, never a false zero or green.
+   */
+  collection_rate?: RefCollectionRateSnapshot | null;
   conditions?: readonly RefConnectionHealthCondition[];
   /**
    * Additive, nullable source-pressure detail-gap backlog rollup
@@ -913,6 +941,17 @@ export interface DeploymentDiagnostics {
     physical_bytes?: number | null;
     top_relations?: ReadonlyArray<{ name: string; bytes: number }> | null;
   };
+  // Ordered filesystem entries: data dir first, Postgres data mount second
+  // (when a distinct volume). Empty array when all probes failed or no probes
+  // ran. mount_label is set when more than one distinct FS is reported
+  // ("data", "postgres"). Optional for backward compat with older servers
+  // that returned a singular object — callers should use `disk_headroom ?? []`.
+  disk_headroom?: ReadonlyArray<{
+    path: string;
+    free_bytes: number | null;
+    total_bytes: number | null;
+    mount_label?: string;
+  }>;
   environment: ReadonlyArray<{
     name: string;
     value: string | null;
@@ -1025,17 +1064,6 @@ export interface DeploymentDiagnostics {
       | "collector_protocol_outdated"
       | "low_disk_headroom";
     message: string;
-  }>;
-  // Ordered filesystem entries: data dir first, Postgres data mount second
-  // (when a distinct volume). Empty array when all probes failed or no probes
-  // ran. mount_label is set when more than one distinct FS is reported
-  // ("data", "postgres"). Optional for backward compat with older servers
-  // that returned a singular object — callers should use `disk_headroom ?? []`.
-  disk_headroom?: ReadonlyArray<{
-    path: string;
-    free_bytes: number | null;
-    total_bytes: number | null;
-    mount_label?: string;
   }>;
 }
 
@@ -1216,7 +1244,9 @@ export interface StaticSecretSetup {
 }
 
 export async function getStaticSecretSetup(connectorId: string): Promise<StaticSecretSetup> {
-  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/static-secret-setup`)) as StaticSecretSetup;
+  return (await refFetch(
+    `/_ref/connectors/${encodeURIComponent(connectorId)}/static-secret-setup`
+  )) as StaticSecretSetup;
 }
 
 export async function createStaticSecretDraftConnection(

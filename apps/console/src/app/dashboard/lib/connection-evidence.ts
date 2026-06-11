@@ -17,6 +17,7 @@
 
 import type {
   DeviceSourceInstance,
+  RefCollectionRateSnapshot,
   RefConnectionHealthSnapshot,
   RefDetailGapBacklog,
   RefForwardDisposition,
@@ -1652,4 +1653,35 @@ export function derivePrimaryRowAction(input: {
   }
 
   return { kind: "sync" };
+}
+
+export interface CollectionRateReadout {
+  /** "last backed off to Xms (reason)" or null when no back-off has fired. */
+  backoffLabel: string | null;
+  /** "ceiling N/min" sub-line. */
+  ceilingLabel: string;
+  /** "current N/min" headline. */
+  currentLabel: string;
+}
+
+/**
+ * Format the adaptive collection rate controller's state into the small
+ * operator-facing readout the diagnostics panel renders. Returns null when no
+ * controller state is available — the caller then shows an explicit unknown,
+ * never a false zero or a false green (honest-by-default).
+ */
+export function formatCollectionRateReadout(
+  rate: RefCollectionRateSnapshot | null | undefined
+): CollectionRateReadout | null {
+  if (!rate || typeof rate.effective_rate_per_min !== "number") {
+    return null;
+  }
+  const backoffLabel = rate.last_backoff
+    ? `last backed off to ${rate.last_backoff.at_interval_ms.toLocaleString()}ms (${rate.last_backoff.reason})`
+    : null;
+  return {
+    backoffLabel,
+    currentLabel: `${rate.effective_rate_per_min.toLocaleString()}/min · interval ${rate.current_interval_ms.toLocaleString()}ms`,
+    ceilingLabel: `ceiling ${rate.ceiling_rate_per_min.toLocaleString()}/min · interval ${rate.ceiling_interval_ms.toLocaleString()}ms`,
+  };
 }

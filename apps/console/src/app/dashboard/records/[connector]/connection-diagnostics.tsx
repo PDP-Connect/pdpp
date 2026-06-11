@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
 import {
+  formatCollectionRateReadout,
   formatDominantCondition,
   formatForwardDisposition,
   formatProjectionFreshness,
@@ -80,6 +81,10 @@ export function ConnectionDiagnostics({
               localDeviceProgress={localDeviceProgress}
               sourceInstances={sourceInstances}
             />
+          </DiagnosticsBlock>
+
+          <DiagnosticsBlock title="Collection rate">
+            <CollectionRateDiagnostics connectionHealth={connectionHealth} />
           </DiagnosticsBlock>
 
           <DiagnosticsBlock title="Schedule & backoff">
@@ -244,6 +249,44 @@ function ProjectedStateDiagnostics({
           No durable success recorded.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The adaptive collection rate controller's live state — the way Stripe shows
+ * rate-limit headroom. Shows the current effective rate, the ceiling the probe
+ * never crosses, and the last back-off (when any). Honest-by-default: when the
+ * reference does not surface controller state, this renders an explicit unknown,
+ * never a false zero or a false green.
+ */
+function CollectionRateDiagnostics({ connectionHealth }: { connectionHealth: RefConnectionHealthSnapshot | null }) {
+  const readout = formatCollectionRateReadout(connectionHealth?.collection_rate);
+  if (!readout) {
+    return (
+      <p
+        className="pdpp-caption text-muted-foreground"
+        data-testid="diagnostics-collection-rate-unknown"
+        title="The reference did not surface adaptive collection rate state for this connection (e.g. no recent run, or a reference predating the field)."
+      >
+        Collection rate unavailable.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1" data-testid="diagnostics-collection-rate">
+      <p className="pdpp-caption text-muted-foreground tabular-nums">
+        Current: <span className="text-foreground">{readout.currentLabel}</span>
+      </p>
+      <p className="pdpp-caption text-muted-foreground tabular-nums">{readout.ceilingLabel}</p>
+      {readout.backoffLabel ? (
+        <p
+          className="pdpp-caption text-[color:var(--warning)] tabular-nums"
+          data-testid="diagnostics-collection-rate-backoff"
+        >
+          {readout.backoffLabel}
+        </p>
+      ) : null}
     </div>
   );
 }
