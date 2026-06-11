@@ -1057,6 +1057,12 @@ const AggregationResponseSchema = {
         required: ["key", "count"],
       },
     },
+    // Sum of counts for groups/buckets truncated by `limit`. Emitted whenever
+    // a grouped response is returned (zero when all groups fit; present but 0
+    // is explicit confirmation that no records were dropped). Omitted for
+    // ungrouped aggregations. See:
+    //   openspec/changes/add-aggregate-other-rollup
+    other_count: { type: "integer", minimum: 0 },
   },
   required: ["object", "stream", "metric", "filtered_record_count"],
 };
@@ -1983,7 +1989,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`.",
+      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
     request: {
       headers: AuthHeaderSchema,
       params: StreamNamePathSchema,

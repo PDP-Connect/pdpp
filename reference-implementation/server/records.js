@@ -2688,24 +2688,33 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
 
   if (aggregateRequest.groupBy) {
     response.limit = aggregateRequest.limit;
-    response.groups = [...groups.values()]
-      .sort((left, right) => {
-        const countCmp = right.count - left.count;
-        if (countCmp !== 0) return countCmp;
-        return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
-      })
-      .slice(0, aggregateRequest.limit);
+    const sortedGroups = [...groups.values()].sort((left, right) => {
+      const countCmp = right.count - left.count;
+      if (countCmp !== 0) return countCmp;
+      return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
+    });
+    response.groups = sortedGroups.slice(0, aggregateRequest.limit);
+    // `other_count`: sum of counts for groups beyond `limit`. Emitted
+    // whenever truncation occurs (groups.size > limit) so callers can tell
+    // the top-N is a proper subset of the full facet set. Zero when all
+    // groups fit within the limit; omitted when no grouping was requested.
+    const truncated = sortedGroups.slice(aggregateRequest.limit);
+    response.other_count = truncated.reduce((acc, g) => acc + g.count, 0);
   } else if (aggregateRequest.groupByTime) {
     response.limit = aggregateRequest.limit;
     // Time buckets are a series: order by bucket start ascending, with the
     // null/unparseable bucket sorted last.
-    response.groups = [...timeBuckets.values()]
-      .sort((left, right) => {
-        if (left.key == null) return right.key == null ? 0 : 1;
-        if (right.key == null) return -1;
-        return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
-      })
-      .slice(0, aggregateRequest.limit);
+    const sortedBuckets = [...timeBuckets.values()].sort((left, right) => {
+      if (left.key == null) return right.key == null ? 0 : 1;
+      if (right.key == null) return -1;
+      return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+    });
+    response.groups = sortedBuckets.slice(0, aggregateRequest.limit);
+    // `other_count` for time buckets: records in buckets beyond the limit.
+    // A bounded time range + large granularity rarely triggers this; still
+    // emitted for honesty when it does.
+    const truncatedBuckets = sortedBuckets.slice(aggregateRequest.limit);
+    response.other_count = truncatedBuckets.reduce((acc, g) => acc + g.count, 0);
   } else if (aggregateRequest.metric === 'count') {
     response.value = visibleCount;
   } else if (aggregateRequest.metric === 'count_distinct') {
