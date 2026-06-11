@@ -777,3 +777,78 @@ export async function fanoutTestWebPush({
     logContext: `test notification for ${normalizedOwnerSubjectId}`,
   });
 }
+
+// ─── §10-F: Human-required-state escalation push ─────────────────────────────
+//
+// Emitted ONCE per transition into a human-required state (blocked or
+// needs_attention). Hands-off is silent-until-it-isn't; this is the
+// "then loud exactly once" path (spec §10-F).
+//
+// Lock-screen safety: body is hardcoded copy — never connector-supplied
+// free text. The connector display name appears only in the title, which
+// the service worker renders in a non-secret context.
+
+export function buildEscalationPushPayload({ connectorDisplayName, reason, connectionUrl }) {
+  // Body copy is deliberately generic and reason-independent: whatever
+  // caused the escalation (blocked credentials, repeated failures,
+  // dead-but-429ing provider), the only actionable message is "check the
+  // dashboard". Connector-specific copy must NOT appear in the body because
+  // push bodies are visible on lock screens before the owner authenticates.
+  const body = 'Your attention is required to continue syncing.';
+  const title = `PDPP ${connectorDisplayName}: action needed`;
+  return Object.freeze({
+    type: 'pdpp.escalation',
+    title,
+    body,
+    connector_display_name: connectorDisplayName,
+    escalation_reason: reason,
+    timestamp: nowIso(),
+    url: connectionUrl || '/dashboard',
+  });
+}
+
+/**
+ * Fan out a deduplicated "human required" escalation push to all active
+ * subscriptions for the owner. Parallel to fanoutPendingInteractionWebPush
+ * but for cross-run governance escalations (blocked/needs_attention) rather
+ * than in-run interaction prompts.
+ *
+ * @param {object} args
+ * @param {object} [args.config]
+ * @param {object} [args.store]
+ * @param {Function} [args.sender]
+ * @param {string} args.connectorDisplayName
+ * @param {string} args.ownerSubjectId
+ * @param {'blocked'|'needs_attention'} args.reason
+ * @param {string} [args.connectionUrl]
+ * @param {object} [args.log]
+ */
+export async function fanoutEscalationWebPush({
+  config = resolveWebPushConfig(),
+  store = getDefaultWebPushSubscriptionStore(),
+  sender = defaultSendNotification,
+  connectorDisplayName,
+  ownerSubjectId,
+  reason,
+  connectionUrl = '/dashboard',
+  log = console,
+}) {
+  if (!config.enabled) {
+    return { attempted: 0, sent: 0, unavailable: true };
+  }
+  const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
+  if (!normalizedOwnerSubjectId) {
+    log.warn?.(`[controller] escalation push skipped: missing owner subject (reason=${reason})`);
+    return { attempted: 0, sent: 0, unavailable: false };
+  }
+  const payload = buildEscalationPushPayload({ connectorDisplayName, reason, connectionUrl });
+  return sendPayloadToOwnerSubscriptions({
+    config,
+    store,
+    sender,
+    ownerSubjectId: normalizedOwnerSubjectId,
+    payload,
+    log,
+    logContext: `escalation (${reason}) for ${normalizedOwnerSubjectId}`,
+  });
+}

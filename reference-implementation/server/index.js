@@ -123,6 +123,7 @@ import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceEx
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
   createWebPushSubscriptionStore,
+  fanoutEscalationWebPush,
   fanoutPendingInteractionWebPush,
   fanoutTestWebPush,
   resolveWebPushConfig,
@@ -5298,6 +5299,45 @@ function createReferenceSchedulerManager({
         }
         return gaps;
       },
+      getNonPressureRecoverableCount: async (connectorId, connectorInstanceId) => {
+        // Durable non-pressure recovery probe for the cross-run eligibility split
+        // (SLVP-ideal §4.3). Counts pending detail gaps for this connector instance
+        // whose reason is NOT in SOURCE_PRESSURE_GAP_REASONS (i.e. run_cap_deferred,
+        // retry_exhausted, temporary_unavailable, null, etc.). A non-zero count
+        // allows a recovery-only launch while a source-pressure cooldown is active —
+        // draining non-congested work without touching the forward walk.
+        //
+        // Uses the same `listPendingGapsForConnector` read as the pressure probe so
+        // both probes share a single bounded scan. Instance scoping mirrors the
+        // pressure probe: `listPendingGapsForConnector` spans every instance of the
+        // connector type; the `connector_instance_id` filter keeps cooldown
+        // per-source.
+        //
+        // Fail-CLOSED to 0 on error: unlike the pressure probe (which fails open so
+        // an unreadable store cannot silently pause a schedule), a false positive here
+        // would launch a recovery run INTO an active cooldown window. When unsure
+        // whether recovery work exists, do not bypass the cooldown — the next clean
+        // tick recovers it.
+        try {
+          const store = getDefaultConnectorDetailGapStore();
+          const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
+          const instanceKey = connectorInstanceId || connectorId;
+          let count = 0;
+          for (const row of rows ?? []) {
+            // Exclude source-pressure reasons — they belong to Governor A (cooldown),
+            // not to the recovery lane.
+            if (typeof row?.reason === 'string' && SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) continue;
+            // Scope to this connection's instance (same guard as the pressure probe).
+            if ((row.connector_instance_id || connectorId) !== instanceKey) continue;
+            count += 1;
+          }
+          return count;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err: message }, `[scheduler] non-pressure recovery probe failed for ${connectorId}`);
+          return 0;
+        }
+      },
       onInteraction: async (interaction) => {
         const connectorDisplayName =
           typeof interaction?.connector_display_name === 'string' && interaction.connector_display_name.trim()
@@ -5351,6 +5391,28 @@ function createReferenceSchedulerManager({
           request_id: interaction.request_id,
           status: 'cancelled',
         };
+      },
+      // §10-F: push escalation on transition into human-required state.
+      // Fires ONCE per streak/flag (dedup lives in the scheduler runtime maps
+      // announcedBlockedClass + notifiedNeedsHumanSkips). Errors are swallowed
+      // so a push delivery failure never crashes the scheduler loop.
+      onHumanRequiredStateEscalation: async ({ connectorId, connectorInstanceId, reason }) => {
+        const connectorDisplayName = connectorId;
+        const connectionUrl = `/dashboard/deployment`;
+        try {
+          await fanoutEscalationWebPush({
+            config: webPushConfig,
+            store: webPushSubscriptionStore,
+            connectorDisplayName,
+            ownerSubjectId,
+            reason,
+            connectionUrl,
+            log: logger,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger?.warn?.(`[scheduler] §10-F escalation push failed for ${connectorId} (${reason}): ${message}`);
+        }
       },
       onRunComplete: (record) => {
         logger?.info?.(

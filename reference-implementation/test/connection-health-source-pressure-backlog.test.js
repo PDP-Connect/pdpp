@@ -266,6 +266,7 @@ test('snapshot: backlog carries only counts + an optional ISO timestamp (no secr
     'pending_other',
     'pending_other_is_floor',
     'recovered',
+    'terminal',
   ]);
   assert.equal(typeof rollup.pending, 'number');
   assert.equal(typeof rollup.max_attempt_count, 'number');
@@ -274,6 +275,8 @@ test('snapshot: backlog carries only counts + an optional ISO timestamp (no secr
   assert.equal(typeof rollup.pending_other_is_floor, 'boolean');
   assert.ok(rollup.next_attempt_at === null || typeof rollup.next_attempt_at === 'string');
   assert.ok(rollup.recovered === null || typeof rollup.recovered === 'number');
+  // §10-A: terminal is a bounded count or null (unmeasured) — never a secret.
+  assert.ok(rollup.terminal === null || typeof rollup.terminal === 'number');
 });
 
 test('snapshot: manual-refresh connector still exposes the backlog', () => {

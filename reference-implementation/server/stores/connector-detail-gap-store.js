@@ -215,7 +215,13 @@ export function createSqliteConnectorDetailGapStore() {
           list_cursor_json = excluded.list_cursor_json,
           scope_json = excluded.scope_json,
           reason = excluded.reason,
-          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          -- §10-A: preserve both 'recovered' and 'terminal' — terminal is sticky,
+          -- a terminalized gap must not be silently resurrected into the
+          -- fillable-pending set by a re-upsert (spec §10-A).
+          status = CASE
+            WHEN connector_detail_gaps.status IN ('recovered', 'terminal') THEN connector_detail_gaps.status
+            ELSE 'pending'
+          END,
           next_attempt_after = excluded.next_attempt_after,
           last_error_json = excluded.last_error_json,
           last_run_id = excluded.last_run_id,
@@ -225,7 +231,11 @@ export function createSqliteConnectorDetailGapStore() {
           list_cursor_json = excluded.list_cursor_json,
           scope_json = excluded.scope_json,
           reason = excluded.reason,
-          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          -- §10-A: preserve both 'recovered' and 'terminal' — terminal is sticky.
+          status = CASE
+            WHEN connector_detail_gaps.status IN ('recovered', 'terminal') THEN connector_detail_gaps.status
+            ELSE 'pending'
+          END,
           next_attempt_after = excluded.next_attempt_after,
           last_error_json = excluded.last_error_json,
           last_run_id = excluded.last_run_id,
@@ -358,6 +368,18 @@ export function createSqliteConnectorDetailGapStore() {
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gapId]));
     },
 
+    // Single-row read by gap id, or null if absent. Used by the §10-A terminal
+    // classifier to read attempt_count BEFORE deciding to terminalize — a
+    // read-then-decide pattern that avoids a write-then-rollback window where a
+    // concurrent reader (or a crash between writes) could observe a gap as
+    // terminal that should still be pending.
+    async getGapById(gapId) {
+      const id = nonEmptyString(gapId);
+      if (!id) return null;
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [id]));
+    },
+
     // Reset in_progress gaps from prior runs (different runId, same scope) back
     // to pending so crash leftovers become retryable. Never touches recovered gaps.
     async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
@@ -407,7 +429,13 @@ export function createPostgresConnectorDetailGapStore() {
           list_cursor_json = EXCLUDED.list_cursor_json,
           scope_json = EXCLUDED.scope_json,
           reason = EXCLUDED.reason,
-          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          -- §10-A: preserve both 'recovered' and 'terminal' — terminal is sticky,
+          -- a terminalized gap must not be silently resurrected into the
+          -- fillable-pending set by a re-upsert (spec §10-A).
+          status = CASE
+            WHEN connector_detail_gaps.status IN ('recovered', 'terminal') THEN connector_detail_gaps.status
+            ELSE 'pending'
+          END,
           next_attempt_after = EXCLUDED.next_attempt_after,
           last_error_json = EXCLUDED.last_error_json,
           last_run_id = EXCLUDED.last_run_id,
@@ -505,6 +533,15 @@ export function createPostgresConnectorDetailGapStore() {
         gapId,
       ]);
       return rowToGap(result.rows[0]);
+    },
+
+    // Single-row read by gap id, or null if absent. See the SQLite path for the
+    // read-then-decide rationale (§10-A terminal classifier).
+    async getGapById(gapId) {
+      const id = nonEmptyString(gapId);
+      if (!id) return null;
+      const result = await postgresQuery('SELECT * FROM connector_detail_gaps WHERE gap_id = $1 LIMIT 1', [id]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
     },
 
     async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {

@@ -313,6 +313,13 @@ interface DetailGapProjection {
    * not expose it, or the aggregate failed) — never a fabricated `0`.
    */
   readonly recovered: number | null;
+  /**
+   * Exact count of detail gaps in the `terminal` status (§10-A — permanently
+   * unfillable). NOT reason-scoped. `null` when unmeasured — never a fabricated
+   * `0`. Surfaces the "N no longer retrievable" count so the UI tells the truth
+   * about 100% (§6.3).
+   */
+  readonly terminal: number | null;
   readonly unreliable: boolean;
 }
 
@@ -977,10 +984,11 @@ async function getConnectorDetailGapProjection(
       gaps,
       readLimit: DETAIL_GAP_PROJECTION_LIMIT,
       recovered: await getRecoveredSourcePressureGapCount(store, connectorId),
+      terminal: await getTerminalGapCount(store, connectorId),
       unreliable: false,
     };
   } catch {
-    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, recovered: null, unreliable: true };
+    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, recovered: null, terminal: null, unreliable: true };
   }
 }
 
@@ -1009,6 +1017,32 @@ async function getRecoveredSourcePressureGapCount(
       })
     );
     return typeof recovered === "number" && Number.isFinite(recovered) && recovered >= 0 ? Math.floor(recovered) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Optional `terminal` count (§10-A) for the backlog rollup: an exact,
+ * connector-wide count of detail gaps in the `terminal` status (permanently
+ * unfillable — 404/410/permanent error, recovery budget exhausted). Unlike
+ * `recovered`, this is NOT reason-scoped: a gap becomes terminal because of a
+ * non-transient HTTP error regardless of its original defer reason, so the
+ * honest "N no longer retrievable" count (§6.3) spans all terminal gaps.
+ * `null` means unmeasured, never a fabricated zero.
+ */
+async function getTerminalGapCount(
+  store: ConnectorDetailGapStoreLike,
+  connectorId: string
+): Promise<number | null> {
+  if (typeof store.countGapsByStatusForConnector !== "function") {
+    return null;
+  }
+  try {
+    const terminal = await Promise.resolve(
+      store.countGapsByStatusForConnector(connectorId, { status: "terminal" })
+    );
+    return typeof terminal === "number" && Number.isFinite(terminal) && terminal >= 0 ? Math.floor(terminal) : null;
   } catch {
     return null;
   }
@@ -2699,6 +2733,8 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * `0`).
    */
   readonly pendingDetailGapsRecovered?: number | null;
+  /** §10-A terminal-gap count (permanently unfillable); `null` when unmeasured. */
+  readonly pendingDetailGapsTerminal?: number | null;
   /**
    * Pre-projected browser-surface evidence for the connection. The list
    * and detail operations read it via
@@ -2790,6 +2826,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     pendingGaps: mapPendingPressureGaps(pendingDetailGaps),
     readLimit: input.pendingDetailGapsReadLimit ?? null,
     recovered: input.pendingDetailGapsRecovered ?? null,
+    terminal: input.pendingDetailGapsTerminal ?? null,
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
@@ -3055,6 +3092,7 @@ async function projectConnectorSummaryForInstance(
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     pendingDetailGapsRecovered: detailGaps.recovered,
+    pendingDetailGapsTerminal: detailGaps.terminal,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,
@@ -3206,6 +3244,7 @@ export async function getConnectorDetail(
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     pendingDetailGapsRecovered: detailGaps.recovered,
+    pendingDetailGapsTerminal: detailGaps.terminal,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,

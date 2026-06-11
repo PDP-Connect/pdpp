@@ -751,9 +751,24 @@ function formatSourcePressureBacklogScale(backlog: RefDetailGapBacklog | null | 
       : `${pendingOther.toLocaleString()} ${noun}`;
     return `${count} still pending`;
   }
-  // A readable, drained backlog (real `0`). When the reference also produced a
-  // recovered count, surface it so the drained state reads as caught-up progress
-  // rather than an empty / broken cue.
+  // §6.3 (corrected by red-team §10-A): "done" requires terminal===0. If the
+  // reference reports terminal gaps, the honest copy is NOT "caught up" but
+  // "recovered everything still available; N items no longer retrievable."
+  // Older projections omit the field — treat absence/null as zero so we never
+  // emit a false caveat against servers that don't yet track terminal gaps.
+  const terminalCount = typeof backlog.terminal === "number" && backlog.terminal > 0 ? Math.floor(backlog.terminal) : 0;
+  if (terminalCount > 0) {
+    const noun = terminalCount === 1 ? "item is" : "items are";
+    const recoveredClause =
+      typeof backlog.recovered === "number" && backlog.recovered > 0
+        ? ` (${Math.floor(backlog.recovered).toLocaleString()} recovered)`
+        : "";
+    return `recovered all still-available${recoveredClause} — ${terminalCount.toLocaleString()} ${noun} no longer retrievable at the source`;
+  }
+
+  // A readable, drained backlog (real `0`, terminal===0). When the reference
+  // also produced a recovered count, surface it so the drained state reads as
+  // caught-up progress rather than an empty / broken cue.
   const recovered = typeof backlog.recovered === "number" && backlog.recovered > 0 ? Math.floor(backlog.recovered) : 0;
   if (recovered > 0) {
     return `caught up — ${recovered.toLocaleString()} recovered`;
@@ -1623,6 +1638,22 @@ export function deriveFailureSummary(health: RefConnectionHealthSnapshot | null 
       };
     }
     case "blocked": {
+      // §6.2: derive from the SAME verdict synthesizeConnectionVerdict uses.
+      // A source-pressure cooldown whose raw state happens to be `blocked`
+      // is self-resolving — it must never carry a Reconnect CTA that directs
+      // the owner to manual action. Apply the same isSourcePressureCooldown
+      // guard here; its `cooling_off` branch already does this (see L1612).
+      if (isSourcePressureCooldown(health)) {
+        return {
+          triggerLabel: "What's wrong?",
+          prose:
+            "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt.",
+          reasonCode: reason_code,
+          nextAttemptAt: next_attempt_at,
+          lastSuccessAt: last_success_at,
+          cta: "wait",
+        };
+      }
       return {
         triggerLabel: "What's wrong?",
         prose:

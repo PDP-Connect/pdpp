@@ -14,6 +14,7 @@ import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
 import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { classifyRecoveryError, maybeTerminateGap, terminalGapProfileForConnector } from '../server/stores/terminal-gap-classifier.js';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -1805,6 +1806,10 @@ export async function runConnector(opts) {
     // escalation. A run that already recorded a terminal event ignores abort.
     // See openspec/changes/add-owner-run-cancellation-control.
     cancelSignal = null,
+    // SLVP-ideal §4.3: when true, the connector drains pending non-source-pressure
+    // detail gaps then returns before any forward walk / list-phase fetches.
+    // Threaded from the scheduler's recoveryOnly decision into the START message.
+    recoveryOnly = false,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
 
@@ -1824,6 +1829,11 @@ export async function runConnector(opts) {
   const startScope = buildStartScope(manifest, providedScope);
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
+  // §4.3: validate and normalize recoveryOnly — must be a boolean if provided
+  if (recoveryOnly !== false && recoveryOnly !== true) {
+    throw new Error('opts.recoveryOnly must be a boolean');
+  }
+  const startRecoveryOnly = recoveryOnly === true;
   const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
   const detailGapStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
@@ -2134,6 +2144,10 @@ export async function runConnector(opts) {
     state: startState,
     bindings: availableBindings,
     detail_gaps: startDetailGaps,
+    // §4.3 (SLVP-ideal): forward recovery-only mode so the connector suppresses
+    // the forward walk / list-phase fetches while the source-pressure cooldown
+    // is active. Only included when true to keep the wire format backward-compat.
+    ...(startRecoveryOnly ? { recovery_only: true } : {}),
   };
   if (!writeChildStdin(JSON.stringify(startMsg) + '\n', 'start')) {
     onProgress({
@@ -3202,6 +3216,61 @@ export async function runConnector(opts) {
           // Gap was explicitly re-deferred by the connector — it's already pending
           // again via upsert; remove from lease set so cleanup won't double-reset it.
           allServedGapIds.delete(storedGap.gap_id);
+
+          // §10-A: a gap that re-defers with a NON-TRANSIENT error (404/410/
+          // permanent-403/401) and has exhausted its per-provider recovery
+          // budget transitions to `terminal` — removed from the fillable-pending
+          // set (so it neither re-arms the cooldown nor blocks convergence to
+          // 100%) but counted + surfaced, never silently retried forever. The
+          // profile registry has no cross-provider default: a connector with no
+          // declared profile is never terminalized (the gap stays pending).
+          const terminalProfile = terminalGapProfileForConnector(connectorId);
+          if (terminalProfile) {
+            const lastError = msg.last_error ?? storedGap.last_error ?? null;
+            const errorInfo = lastError
+              ? { status: lastError.http_status, errorClass: lastError.class }
+              : null;
+            const outcome = await maybeTerminateGap(detailGapStore, storedGap.gap_id, errorInfo, terminalProfile);
+            if (outcome.terminated && outcome.gap) {
+              // Reflect the terminal transition in the durable gap we surface so
+              // downstream coverage/known-gap projection reads `terminal`, not
+              // `pending`.
+              durableDetailGaps.push(outcome.gap);
+              appendKnownGap(buildKnownGap({
+                kind: 'detail_gap',
+                stream: msg.stream,
+                reason: msg.reason || null,
+                message: 'Required detail is permanently unavailable at the source (terminal); recovered everything still retrievable.',
+                recoveryHint: 'not_retriable',
+                scope: {
+                  parent_stream: msg.parent_stream || null,
+                  record_key: msg.record_key == null ? null : String(msg.record_key),
+                },
+              }));
+              await emitSpineEventTracked({
+                event_type: 'run.detail_gap_terminal',
+                trace_id: traceContext.trace_id,
+                scenario_id: traceContext.scenario_id,
+                actor_type: 'runtime',
+                actor_id: connectorId,
+                object_type: 'run',
+                object_id: runId,
+                status: 'succeeded',
+                run_id: runId,
+                stream_id: msg.stream,
+                data: {
+                  source: runSource,
+                  grant_id: grantId,
+                  gap_id: outcome.gap.gap_id,
+                  stream: outcome.gap.stream,
+                  reason: outcome.gap.reason,
+                  terminal_reason: errorInfo ? classifyRecoveryError(errorInfo).reason : null,
+                },
+              });
+              break;
+            }
+          }
+
           durableDetailGaps.push(storedGap);
           const gap = buildKnownGap({
             kind: 'detail_gap',

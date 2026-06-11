@@ -445,6 +445,15 @@ export interface DetailGapBacklog {
   readonly pending_other: number;
   readonly pending_other_is_floor: boolean;
   readonly recovered: number | null;
+  /**
+   * §10-A/§6.3: count of gaps that are permanently unfillable (404/410/
+   * permanent error, recovery budget exhausted). `null` when not computed.
+   * When `> 0`, "done" requires acknowledging these — the honest UI copy is
+   * "recovered everything still available; N no longer retrievable", never a
+   * bare "100% / caught up". Counted separately so terminal gaps neither
+   * re-arm the cooldown nor block convergence, and are never silently dropped.
+   */
+  readonly terminal: number | null;
 }
 
 /**
@@ -475,6 +484,13 @@ export interface ConnectionDetailGapBacklogEvidence {
    * aggregate. `null`/absent when no such aggregate was run; never fabricated.
    */
   readonly recovered?: number | null;
+  /**
+   * Optional terminal-gap count (§10-A) from a bounded count-by-status
+   * aggregate (`status: 'terminal'`). `null`/absent when not computed; never
+   * fabricated. Surfaces permanently-unfillable work so the UI tells the truth
+   * about 100% (§6.3).
+   */
+  readonly terminal?: number | null;
   /**
    * `true` when the durable gap evidence could not be read. Mirrors the
    * cooldown probe's fail-open stance: an unreadable store yields a `null`
@@ -540,6 +556,10 @@ export function deriveSourcePressureBacklog(
     typeof evidence.recovered === "number" && Number.isFinite(evidence.recovered) && evidence.recovered >= 0
       ? Math.floor(evidence.recovered)
       : null;
+  const terminal =
+    typeof evidence.terminal === "number" && Number.isFinite(evidence.terminal) && evidence.terminal >= 0
+      ? Math.floor(evidence.terminal)
+      : null;
   return {
     pending,
     pending_is_floor: pendingIsFloor,
@@ -548,6 +568,7 @@ export function deriveSourcePressureBacklog(
     max_attempt_count: maxAttemptCount,
     next_attempt_at: nextAttemptAt,
     recovered,
+    terminal,
   };
 }
 

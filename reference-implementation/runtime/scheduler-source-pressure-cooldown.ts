@@ -79,6 +79,27 @@ export const DEFAULT_MAX_COOLDOWN_EXP = 6;
  */
 export const DEFAULT_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+// ─── Provider profiles (§10-B, §3 rule 6) ───────────────────────────────────
+//
+// maxCooldownCycles is a ProviderProfile field — NO cross-provider default.
+// Each connector must declare its own value. ChatGPT's value below is the
+// only concrete exported profile; other connectors must NOT inherit it.
+
+/**
+ * ChatGPT cooldown profile for the §10-B no-progress escalation.
+ *
+ * maxCooldownCycles: after this many consecutive cooldown cycles with zero
+ * forward progress, the connection escalates from `cooling_off` →
+ * `needs_attention`. Derived from ChatGPT's observed recovery curve:
+ * a pressure window that lasts more than ~48h (8 × 6h cooldown cap) has
+ * almost certainly stopped recovering on its own — either the endpoint is
+ * down or the account access needs renewal. 8 cycles gives a full 48h window
+ * before alarming the owner.
+ */
+export const CHATGPT_COOLDOWN_PROFILE = Object.freeze({
+  maxCooldownCycles: 8,
+});
+
 /**
  * One pending pressure gap as the governor needs to see it. This is the
  * minimal projection of a `connector_detail_gaps` row (see
@@ -125,6 +146,24 @@ export interface ComputeCooldownOptions {
   readonly maxCooldownMs?: number;
   /** Floor multiplier on first observation. */
   readonly minMultiplier?: number;
+  /**
+   * §10-B: number of consecutive cooldown cycles (each with ZERO forward
+   * progress and ZERO gap recovery) observed so far. When this reaches
+   * `maxCooldownCycles`, `recommendedHealthState` escalates from `cooling_off`
+   * → `needs_attention` — catching the dead-but-429ing provider that the
+   * "source pressure always recovers" rule would otherwise lie about forever.
+   *
+   * Defaults to 0 (no escalation) when absent — backwards-compatible for
+   * callers that do not yet track cycle counts.
+   */
+  readonly consecutiveCooldownCycles?: number;
+  /**
+   * §10-B: ceiling on consecutive no-progress cooldown cycles before the
+   * connection escalates to `needs_attention`. This is a ProviderProfile field
+   * — each provider must declare its own value; there is NO cross-provider
+   * default (spec §3 rule 6). When absent (or Infinity), escalation never fires.
+   */
+  readonly maxCooldownCycles?: number;
 }
 
 export interface SourcePressureCooldownDecision {
@@ -150,11 +189,18 @@ export interface SourcePressureCooldownDecision {
   /** Count of pending source-pressure gaps that drove the decision. */
   readonly pendingPressureGapCount: number;
   /**
-   * Health-state recommendation for the dashboard pill. Always `cooling_off`
-   * when a cooldown is applied (never `blocked` — source pressure is expected
-   * to recover, unlike a chronic failure streak), else `null`.
+   * Health-state recommendation for the dashboard pill.
+   *   - `"cooling_off"` — source pressure active, expected to recover.
+   *   - `"needs_attention"` — §10-B escalation: maxCooldownCycles consecutive
+   *     cycles with zero forward progress AND zero gap recovery. The provider
+   *     appears dead or the owner's access has expired. Owner action required.
+   *   - `null` — no cooldown applied.
+   *
+   * Source pressure is NEVER `"blocked"` (that is the failure-backoff ladder's
+   * domain). But it CAN escalate to `"needs_attention"` when it never actually
+   * advances — that is the distinct signal this escalation adds.
    */
-  readonly recommendedHealthState: "cooling_off" | null;
+  readonly recommendedHealthState: "cooling_off" | "needs_attention" | null;
 }
 
 // ─── Core helper ────────────────────────────────────────────────────────────
@@ -183,6 +229,19 @@ export function computeSourcePressureCooldown(
   const normalizedBaseIntervalMs = normalizeFiniteNonNegativeMs(baseIntervalMs, 0);
   const normalizedLastRunAtMs = normalizeFiniteNonNegativeMs(lastRunAtMs, 0);
   const force = options.force === true;
+
+  // §10-B: no-progress escalation cycle tracking. Defaults to 0 (no escalation)
+  // when absent — backwards-compatible for callers that do not track cycles yet.
+  const consecutiveCooldownCycles = normalizeNonNegativeInteger(
+    options.consecutiveCooldownCycles ?? undefined,
+    0
+  );
+  const maxCooldownCycles =
+    typeof options.maxCooldownCycles === "number" &&
+    Number.isFinite(options.maxCooldownCycles) &&
+    options.maxCooldownCycles > 0
+      ? Math.floor(options.maxCooldownCycles)
+      : Infinity;
 
   const pressureGaps = (pendingGaps ?? []).filter(
     (gap) => gap && typeof gap.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)
@@ -232,6 +291,18 @@ export function computeSourcePressureCooldown(
 
   const reasonSummary = summarizeReasons(pressureGaps);
 
+  // §10-B: escalate cooling_off → needs_attention when the connection has
+  // completed maxCooldownCycles consecutive cycles with zero forward progress
+  // AND zero gap recovery. This catches the dead-but-429ing provider whose
+  // cooldownApplied is always true but that never actually advances —
+  // the case where "resumes automatically" would be a permanent lie.
+  const escalated =
+    Number.isFinite(maxCooldownCycles) &&
+    consecutiveCooldownCycles >= maxCooldownCycles;
+  const recommendedHealthState: "cooling_off" | "needs_attention" = escalated
+    ? "needs_attention"
+    : "cooling_off";
+
   return {
     cooldownApplied: true,
     pendingPressureGapCount: pressureGaps.length,
@@ -239,7 +310,7 @@ export function computeSourcePressureCooldown(
     effectiveIntervalMs,
     nextRunAt: toIsoTimestamp(nextRunMs),
     identity: `source_pressure:${reasonSummary}:gaps=${pressureGaps.length}:attempt=${maxAttemptCount}`,
-    recommendedHealthState: "cooling_off",
+    recommendedHealthState,
   };
 }
 

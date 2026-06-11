@@ -540,6 +540,18 @@ export interface RefDetailGapBacklog {
   pending_other?: number;
   pending_other_is_floor?: boolean;
   recovered: number | null;
+  /**
+   * Count of gaps that are permanently unfillable (404/410/permanent error,
+   * exhausted recovery budget). Set only when the reference server supports
+   * §10-A terminal-gap tracking; absent/null on older projections — treat
+   * absence as zero for backward compatibility.
+   *
+   * When `terminal > 0`, the honest copy is NOT "caught up" but "recovered
+   * everything still available; N items no longer retrievable at the source"
+   * (spec §6.3 corrected by red-team §10-A). Folding terminal into `pending`
+   * to reach zero would be a silent lie.
+   */
+  terminal?: number | null;
 }
 
 /**

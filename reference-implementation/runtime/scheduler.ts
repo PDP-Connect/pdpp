@@ -233,6 +233,20 @@ export type GetSourcePressureGapsHandler = (
 ) => Promise<readonly PendingPressureGap[] | null | undefined> | readonly PendingPressureGap[] | null | undefined;
 
 /**
+ * Counts durable pending detail gaps whose reason is NOT source pressure
+ * (everything outside `SOURCE_PRESSURE_GAP_REASONS` — e.g. `run_cap_deferred`
+ * / `retry_exhausted`). Drives recovery-only eligibility (SLVP-ideal §4.3): a
+ * source-pressure cooldown defers the forward walk but MUST NOT block recovery
+ * of these non-pressure gaps. Returns a bounded scalar count; never record
+ * bodies. Defaults to a no-op `() => 0` so a host that does not wire it keeps
+ * the legacy (whole-dispatch-gated) behaviour.
+ */
+export type GetNonPressureRecoverableCountHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) => Promise<number> | number;
+
+/**
  * Resolves the connection-scoped static-secret env fragment for one scheduled
  * launch. Mirrors the controller's `resolveStaticSecretRunEnv` contract
  * (controller.ts `CreateControllerOptions`): return the env fragment when the
@@ -249,13 +263,34 @@ export type ResolveStaticSecretRunEnv = (args: {
   connectorInstanceId: string;
 }) => Promise<Record<string, string> | null>;
 
+/**
+ * Called ONCE per transition into a human-required state:
+ *   - 'blocked':          the failure back-off ladder reached gave_up
+ *                         (scheduler stops auto-dispatching; owner must act).
+ *   - 'needs_attention':  the needs-human gate first fired for this connection
+ *                         (automatic runs suppressed until the owner resolves).
+ *
+ * Dedup mirrors the existing announce-once maps (announcedBlockedClass and
+ * notifiedNeedsHumanSkips) so the callback fires exactly once per streak/flag,
+ * not on every tick. Defaults to a no-op so existing callers are unaffected.
+ *
+ * Ref: docs/research/slvp-ideal-whole-system-spec-2026-06-11.md §10-F
+ */
+export type HumanRequiredStateEscalationHandler = (info: {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly reason: "blocked" | "needs_attention";
+}) => void | Promise<void>;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
   getSourcePressureGaps?: GetSourcePressureGapsHandler;
+  getNonPressureRecoverableCount?: GetNonPressureRecoverableCountHandler;
   getState?: GetStateHandler;
   hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
+  onHumanRequiredStateEscalation?: HumanRequiredStateEscalationHandler;
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
   readinessChecker?: SchedulerReadinessChecker;
@@ -1125,6 +1160,15 @@ function buildExhaustedFailureRecord({
 interface RunConnectorCall {
   automationMode?: RunAutomationMode;
   collectionMode: "full_refresh" | "incremental";
+  /**
+   * SLVP-ideal §4.3 recovery-only launch. When true, the connector drains
+   * pending non-source-pressure detail gaps (recovery-before-forward-walk) and
+   * MUST NOT perform the forward walk or new list-phase fetches — the
+   * source-pressure cooldown is deferring new source-touching work. Recovery
+   * still rides the connector's pacer/circuit, so it backs off on 429 and
+   * re-defers. Absent/false = an ordinary full run.
+   */
+  recoveryOnly?: boolean;
   connectorId: string;
   connectorInstanceId?: string;
   connectorPath: string;
@@ -1204,6 +1248,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     rsUrl = process.env.RS_URL || "http://localhost:7663",
     referenceBaseUrl = null,
     onInteraction,
+    onHumanRequiredStateEscalation = () => {
+      // no-op: §10-F escalation is optional; existing callers unaffected
+    },
     onRunComplete = () => {
       // no-op
     },
@@ -1219,6 +1266,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     isNeedsHuman = () => false,
     hasUnresolvedAttention = () => null,
     getSourcePressureGaps = () => [],
+    getNonPressureRecoverableCount = async () => 0,
     resolveStaticSecretRunEnv = null,
   } = opts;
 
@@ -1536,6 +1584,30 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
   }
 
+  // Count durable pending detail gaps whose reason is NOT source pressure
+  // (SLVP-ideal §4.3). These are the `run_cap_deferred`/`retry_exhausted` gaps
+  // the source-pressure cooldown must NOT govern. A non-zero count makes a
+  // cooldown-deferred tick eligible for a recovery-only launch.
+  //
+  // Fail-CLOSED to 0 (no recovery launch) on probe error: unlike the pressure
+  // probe (which fails open so an unreadable store cannot silently pause a
+  // schedule), here a false positive would launch a run INTO an active cooldown
+  // window. When unsure whether recovery work exists, do not bypass the
+  // cooldown — the next clean tick recovers it.
+  async function probeNonPressureRecoverableCount(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<number> {
+    try {
+      const observed = await getNonPressureRecoverableCount(connectorId, connectorInstanceId);
+      return Number.isFinite(observed) && observed > 0 ? observed : 0;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] non-pressure recovery probe failed for ${connectorId}: ${message}`);
+      return 0;
+    }
+  }
+
   // Durable attention is the highest-priority gate. If an equivalent
   // unresolved attention request exists for this connection/source, no other
   // policy result matters: we do not launch another automatic run, we emit at
@@ -1596,6 +1668,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return null;
     }
     runtime.notifiedNeedsHumanSkips.add(key);
+    // §10-F: first transition into needs-human state — emit one push escalation.
+    // Fires in the same once-per-flag-set window as the skip record so no
+    // separate dedup state is needed. Errors swallowed to match scheduler stance.
+    Promise.resolve(
+      onHumanRequiredStateEscalation({
+        connectorId,
+        connectorInstanceId,
+        reason: "needs_attention",
+      })
+    ).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] §10-F needs_attention escalation callback failed for ${connectorId}: ${message}`);
+    });
     return recordAndNotify(buildNeedsHumanSkip(connectorId, connectorInstanceId));
   }
 
@@ -1647,8 +1732,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   async function launchRun(
     schedule: ConnectorSchedule,
     isManual: boolean,
-    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
+    options: { recoveryOnly?: boolean } = {}
   ): Promise<RunRecord> {
+    const recoveryOnly = options.recoveryOnly === true;
     const {
       connectorId,
       connectorInstanceId = connectorId,
@@ -1710,6 +1797,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       manifest,
       state,
       collectionMode,
+      recoveryOnly,
       persistState,
       referenceBaseUrl,
       rsUrl,
@@ -1726,9 +1814,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     });
   }
 
-  async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
+  async function executeRun(
+    schedule: ConnectorSchedule,
+    isManual = false,
+    options: { recoveryOnly?: boolean } = {}
+  ): Promise<RunRecord | null> {
     const { connectorId, connectorInstanceId = connectorId, manifest, grantAccessMode = "continuous" } = schedule;
     const key = connectorInstanceId;
+    const recoveryOnly = options.recoveryOnly === true;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
     const automationPolicy = projectRunAutomationPolicy({
       triggerKind,
@@ -1751,7 +1844,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       if (grantDecision !== "proceed") {
         return grantDecision;
       }
-      return await launchRun(schedule, isManual, automationPolicy);
+      return await launchRun(schedule, isManual, automationPolicy, { recoveryOnly });
     } finally {
       runtime.activeRuns.delete(key);
     }
@@ -1802,6 +1895,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   ): Promise<{
     decision: BackoffDecision;
     eligible: boolean;
+    // True when the run is eligible ONLY to drain non-source-pressure recovery
+    // gaps while a source-pressure cooldown defers the forward walk
+    // (SLVP-ideal §4.3). The connector suppresses the forward walk for such a
+    // launch. False for an ordinary full dispatch.
+    recoveryOnly: boolean;
     eventsToEmit: RunRecord[];
     skipToEmit: RunRecord | null;
   }> {
@@ -1830,7 +1928,36 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
 
     const elapsed = now - lastRun;
-    let eligible = elapsed >= decision.effectiveIntervalMs && !cooldownDefers;
+    const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
+    // Forward-walk eligibility: gated by BOTH the schedule interval AND the
+    // source-pressure cooldown. New source-touching work (the forward walk and
+    // its list-phase fetches) must respect the hot-bucket cooldown.
+    let eligible = intervalElapsed && !cooldownDefers;
+
+    // ─── Recovery-only eligibility (SLVP-ideal §4.3, the cooldown-starves-
+    // recovery fix) ───────────────────────────────────────────────────────
+    // The source-pressure cooldown is reason-discriminated: it reads ONLY
+    // `upstream_pressure`/`rate_limited` gaps (SOURCE_PRESSURE_GAP_REASONS).
+    // Non-source-pressure pending gaps (`run_cap_deferred`/`retry_exhausted`)
+    // are NOT source pressure — the cooldown has no claim over them. But the
+    // legacy single binary gate above skipped the WHOLE dispatch when the
+    // cooldown defers, so a handful of pressure gaps starved the recovery of
+    // hundreds of non-pressure gaps (the live 942-gap head-of-line-blocking
+    // stall). The fix: when the cooldown defers the forward walk but the
+    // schedule interval HAS elapsed and there is non-source-pressure recovery
+    // work pending, launch in RECOVERY-ONLY mode — the connector drains the
+    // non-pressure backlog (recovery-before-forward-walk) and returns BEFORE
+    // touching the hot bucket. Recovery rides the same pacer/circuit, so it
+    // still backs off on 429 and re-defers (it is not a raw-fetch bypass).
+    // This keeps the dispatch work-conserving for the non-congested sub-flow.
+    let recoveryOnly = false;
+    if (!eligible && intervalElapsed && cooldownDefers) {
+      const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
+      if (nonPressureRecoverable > 0) {
+        eligible = true;
+        recoveryOnly = true;
+      }
+    }
 
     let skipToEmit: RunRecord | null = null;
     const eventsToEmit: RunRecord[] = [];
@@ -1868,11 +1995,29 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           eventsToEmit.push(
             buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId)
           );
+          // §10-F: first entry into blocked state — emit one push escalation.
+          // Fires in the same once-per-streak window as the gave_up event so
+          // no separate dedup state is needed. Errors are swallowed to match
+          // the scheduler's stance on observer failures (never block dispatch).
+          Promise.resolve(
+            onHumanRequiredStateEscalation({
+              connectorId,
+              connectorInstanceId: schedule.connectorInstanceId ?? connectorId,
+              reason: "blocked",
+            })
+          ).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[scheduler] §10-F escalation callback failed for ${connectorId}: ${message}`);
+          });
         }
         // Auto-dispatch is suppressed for blocked connectors. Manual
         // `runNow` still works (it bypasses this evaluator entirely via
-        // `controller.ts::runNow` → `executeRun(schedule, true)`).
+        // `controller.ts::runNow` → `executeRun(schedule, true)`). A genuinely
+        // blocked connection is NOT launched even for recovery-only drain
+        // (SLVP-ideal §10-C: a credential/terminal block is not a hot bucket;
+        // there is nothing safe to recover until the owner re-auths).
         eligible = false;
+        recoveryOnly = false;
       }
     } else if (!decision.backoffApplied) {
       // Streak broken (success or different class): clear the announcement
@@ -1886,9 +2031,16 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // identity while the retry is too early, but only when back-off has not
     // already emitted its own skip this tick (back-off is the stronger signal
     // and already explains the quiet; double-emitting would be noise).
-    skipToEmit = resolveCooldownSkip(schedule, key, cooldown, cooldownDefers, skipToEmit);
+    // A recovery-only launch does NOT emit a cooling-off skip: the dispatch is
+    // proceeding (to drain non-pressure work), so a "skipped, cooling off"
+    // audit line would be dishonest. The cooldown skip is only for ticks that
+    // genuinely defer. Forward-walk remains deferred; the skip rationale still
+    // holds when we are NOT launching recovery.
+    if (!recoveryOnly) {
+      skipToEmit = resolveCooldownSkip(schedule, key, cooldown, cooldownDefers, skipToEmit);
+    }
 
-    return { decision, eligible, skipToEmit, eventsToEmit };
+    return { decision, eligible, recoveryOnly, skipToEmit, eventsToEmit };
   }
 
   // Decide whether this tick should emit a one-shot source-pressure cooling-off
@@ -1931,7 +2083,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
         return;
       }
-      const { eligible, skipToEmit, eventsToEmit } = dispatch;
+      const { eligible, recoveryOnly, skipToEmit, eventsToEmit } = dispatch;
       // Emit transition markers (back_off.started, gave_up) before
       // the audit skip so the dashboard sees the lifecycle event
       // ordering: "streak detected → cooling_off pill renders →
@@ -1950,7 +2102,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         return;
       }
       if (eligible) {
-        executeRun(schedule).catch(() => {
+        executeRun(schedule, false, { recoveryOnly }).catch(() => {
           // Errors are already surfaced into the run record via onRunComplete;
           // swallow here so the scheduler loop doesn't bubble an unhandled
           // rejection out of the interval callback.

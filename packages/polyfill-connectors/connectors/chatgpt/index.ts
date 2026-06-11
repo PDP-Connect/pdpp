@@ -468,12 +468,41 @@ function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | 
   return Math.floor(parsed);
 }
 
+/**
+ * Build the ProviderPacing warm-start fields from the raw persisted pacing.
+ * Returns `restoredIntervalMs` when a usable interval was persisted, plus the
+ * §10-E staleness inputs (`restoredAtMs` + the 6h `maxWarmStartAgeMs`) when the
+ * persist also recorded WHEN it was learned — so ProviderPacing cold-starts a
+ * stale interval rather than bursting into a possibly-tightened quota. Returns
+ * an empty object (cold start) when nothing usable was persisted.
+ */
+function chatGptWarmStartPacingFields(
+  persistedPacing?: { intervalMs: number; recordedAtMs?: number } | number | null
+): { restoredIntervalMs?: number; restoredAtMs?: number; maxWarmStartAgeMs?: number } {
+  const persisted = typeof persistedPacing === "number" ? { intervalMs: persistedPacing } : (persistedPacing ?? null);
+  if (persisted == null || !Number.isFinite(persisted.intervalMs) || persisted.intervalMs <= 0) {
+    return {};
+  }
+  const recordedAtMs = persisted.recordedAtMs;
+  if (typeof recordedAtMs !== "number" || !Number.isFinite(recordedAtMs)) {
+    return { restoredIntervalMs: persisted.intervalMs };
+  }
+  return {
+    restoredIntervalMs: persisted.intervalMs,
+    restoredAtMs: recordedAtMs,
+    maxWarmStartAgeMs: CHATGPT_PACING_STATE_STALENESS_MS,
+  };
+}
+
 export function resolveChatGptProviderBudget(
   env: NodeJS.ProcessEnv = process.env,
-  // Warm-start: a learned interval restored from durable connector state (already
-  // staleness-guarded by the caller). Seeds the controller so the AIMD descent
-  // compounds across runs instead of resetting to the cold discovery interval.
-  restoredIntervalMs?: number | null
+  // Warm-start: the RAW persisted pacing from durable connector state
+  // (`{ intervalMs, recordedAtMs }`) or null/a bare interval. The staleness
+  // guard is NOT applied here — it lives in ProviderPacing (§10-E), the shared
+  // primitive, so every connector that warm-starts gets cold re-entry by
+  // construction rather than each re-implementing the check. A bare number is
+  // accepted for back-compat (no timestamp → caller-owned freshness).
+  persistedPacing?: { intervalMs: number; recordedAtMs?: number } | number | null
 ): ProviderBudgetController | null {
   const pacingInitialOverride = env[CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV]?.trim();
   const initialIntervalMs =
@@ -495,9 +524,10 @@ export function resolveChatGptProviderBudget(
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
   // The adaptive lane is the SOLE send governor; pacing rides as a
   // `launchDelayHint` (pacingMode: "signal"). The cold `initialIntervalMs` is a
-  // one-time discovery seed; `restoredIntervalMs` (when fresh) is the warm-start
-  // value so descent compounds across runs (SLVP ideal §5.2).
-  const restored = restoredIntervalMs == null || !Number.isFinite(restoredIntervalMs) ? null : restoredIntervalMs;
+  // one-time discovery seed; the restored interval (warm-start) lets the AIMD
+  // descent compound across runs (SLVP ideal §5.2). ProviderPacing applies the
+  // §10-E staleness guard from the warm-start fields below.
+  const warmStart = chatGptWarmStartPacingFields(persistedPacing);
   return new ProviderBudgetController({
     ...(hasCircuitBreaker
       ? {
@@ -513,7 +543,7 @@ export function resolveChatGptProviderBudget(
             ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
             initialIntervalMs,
             minIntervalMs,
-            ...(restored == null ? {} : { restoredIntervalMs: restored }),
+            ...warmStart,
           },
         }),
     pacingMode: "signal",
@@ -561,25 +591,11 @@ export function readChatGptPersistedPacing(state: CollectContext["state"] | unde
   return { intervalMs, recordedAtMs };
 }
 
-/**
- * Decide the warm-start interval to restore: the persisted learned interval when
- * it is fresh (within the staleness guard), else null (cold start). `now` is
- * injectable for tests.
- */
-export function resolveChatGptWarmStartInterval(
-  state: CollectContext["state"] | undefined,
-  now: () => number = Date.now,
-  stalenessMs: number = CHATGPT_PACING_STATE_STALENESS_MS
-): number | null {
-  const persisted = readChatGptPersistedPacing(state);
-  if (!persisted) {
-    return null;
-  }
-  if (now() - persisted.recordedAtMs > stalenessMs) {
-    return null;
-  }
-  return persisted.intervalMs;
-}
+// NOTE: the warm-start staleness guard (§10-E) is no longer applied here. The
+// raw persisted pacing (`readChatGptPersistedPacing`) is passed straight to
+// `resolveChatGptProviderBudget`, which hands `restoredAtMs` + the 6h
+// `maxWarmStartAgeMs` to ProviderPacing — the shared primitive owns the
+// cold-re-entry decision so every connector inherits it, not just ChatGPT.
 
 /**
  * Build the STATE event fields that persist the controller's final learned
@@ -1521,6 +1537,14 @@ export interface StreamDeps {
   preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
   providerBudget?: ProviderBudgetController | null;
+  /**
+   * SLVP-ideal §4.3: when true, `runConversationsAndMessagesStreams` MUST run
+   * the gap-recovery pass then return before any forward walk / list-phase
+   * fetches. Prevents the recovery lane from re-pressuring the source the
+   * source-pressure cooldown is protecting (§4.4 mandatory sequencing guard).
+   * Threaded from CollectContext.recoveryOnly → collect() → StreamDeps.
+   */
+  recoveryOnly?: boolean;
   requestDetailGapPage?: CollectContext["requestDetailGapPage"];
   requested: CollectContext["requested"];
   // Run-scoped bounded-run cap shared across the gap-recovery pass and the
@@ -2934,7 +2958,10 @@ export async function runMessagesAndConversationsWithDetail(
       throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
     }
     await processConversationDetail(deps, c, detail, emitConversation);
-    providerBudget?.recordSuccess();
+    // §10-D: suppress additive-decrease during the cooldown-exempt recovery
+    // lane so the shared pacer interval is not un-learned. Throttles still
+    // fire (recovery may decelerate, never accelerate the pacer).
+    providerBudget?.recordSuccess(deps.recoveryOnly === true ? { suppressAdditiveIncrease: true } : undefined);
     await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
     lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
       deps.emit,
@@ -3198,6 +3225,21 @@ function persistChatGptPacingStateOnly(deps: StreamDeps, priorMessagesCursor: st
   });
 }
 
+/**
+ * After the gap-recovery pass, decide whether to SKIP the forward walk. Two cases:
+ *   1. §4.3/§4.4 recoveryOnly — the source-pressure cooldown is active, so the
+ *      list phase MUST NOT fire (it would re-pressure the source the cooldown
+ *      protects). Recovery fetches already rode the same pacer/circuit, so they
+ *      backed off on 429s and re-deferred; nothing is lost.
+ *   2. The RUN BUDGET is exhausted — defer the forward walk to the next run
+ *      (drain-within-budget, recovery-early-exit-diagnosis §5).
+ * Otherwise the forward walk proceeds: its list phase advances the cursor and
+ * discovers new conversations even when the detail endpoint is under pressure.
+ */
+function shouldSuppressForwardWalkAfterRecovery(deps: StreamDeps): boolean {
+  return deps.recoveryOnly === true || deps.runBudget?.shouldStop() === true;
+}
+
 export async function runConversationsAndMessagesStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
@@ -3228,16 +3270,10 @@ export async function runConversationsAndMessagesStreams(
   };
 
   await recoverPendingMessageDetailGapsBeforeForwardRun(deps, wantsMessages, emitConversation, options.detailPacing);
-  // Drain-within-budget: recovery stopping short on transient source pressure
-  // does NOT terminate the run (the deferred items stay durable DETAIL_GAPs).
-  // Proceed to the forward walk unless the RUN BUDGET is genuinely exhausted —
-  // the forward walk's list phase still advances the cursor and discovers new
-  // conversations even when the detail endpoint is under pressure
-  // (recovery-early-exit-diagnosis §5).
-  if (deps.runBudget?.shouldStop()) {
-    // Genuine budget exhaustion (not transient source pressure): defer to the
-    // next run, but persist the learned interval first so warm-start survives a
-    // recovery-only, budget-exhausted run.
+  if (shouldSuppressForwardWalkAfterRecovery(deps)) {
+    // Forward walk suppressed; persist the learned interval so warm-start
+    // survives, then return — deferred work stays durable DETAIL_GAPs for the
+    // next run. (See shouldSuppressForwardWalkAfterRecovery for the two cases.)
     persistChatGptPacingStateOnly(deps, priorMessagesCursor);
     return;
   }
@@ -3386,11 +3422,11 @@ if (isMainModule(import.meta.url)) {
         maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
         maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
       });
-      // Warm-start: restore the controller's learned interval from durable state
-      // (staleness-guarded) so the AIMD descent compounds across runs instead of
-      // cold-starting at the discovery seed every boundary.
-      const warmStartIntervalMs = resolveChatGptWarmStartInterval(state);
-      const providerBudget = resolveChatGptProviderBudget(process.env, warmStartIntervalMs);
+      // Warm-start: pass the RAW persisted pacing (interval + when it was
+      // learned) so ProviderPacing can apply the §10-E staleness guard itself —
+      // a stale interval (idle > 6h) cold-starts instead of bursting into a
+      // possibly-tightened quota. The descent compounds across fresh runs.
+      const providerBudget = resolveChatGptProviderBudget(process.env, readChatGptPersistedPacing(state));
 
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
@@ -3417,6 +3453,11 @@ if (isMainModule(import.meta.url)) {
         preDetailPressure,
         progress,
         providerBudget,
+        // §4.3: thread recoveryOnly from the CollectContext (sourced from the
+        // START message's recovery_only field) into the dep bag so
+        // runConversationsAndMessagesStreams can gate the forward walk. Normalize
+        // to a concrete boolean (CollectContext.recoveryOnly is optional).
+        recoveryOnly: ctx.recoveryOnly === true,
         requested,
         requestDetailGapPage: ctx.requestDetailGapPage,
         runBudget,
