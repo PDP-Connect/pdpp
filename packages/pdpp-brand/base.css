@@ -119,6 +119,46 @@
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
 
+  /* ─── Authorship trust tier ─────────────────────────────────────────────────
+     PROVISIONAL — added by the consent-card rebuild lane. The canonical values
+     are owned by a parallel "authorship tokens" lane shipping under the EXACT
+     names below; the names are the contract and the merge reconciles the
+     numbers. Until then these provisional values render the three-class trust
+     model so the consent card (and any surface that mixes authorships) can show
+     the boundary a standards reviewer must be able to point at.
+
+     Three authorships, one temperature each (design-direction decision 1):
+       protocol — cool blue (H254, the primary hue): protocol FACTS, enforced and
+                  verifiable (grant scope, field projections, enforcement state,
+                  durations, token scopes).
+       manifest — warm copper (H45, the --human hue): manifest/owner-authored,
+                  the human consent surface (stream labels/details, connector
+                  display).
+       client   — neutral grey + a DASHED affordance: client-authored claims,
+                  rendered but never trusted (client_display name/logo,
+                  client_claims purpose & commitments).
+
+     Per tier: -fg (eyebrow/label ink), -accent (the vivid marker: dot, rule,
+     border-left), -border (subtle hairline), -wash (low-alpha tint, legend/hover
+     ONLY — restraint: temperature lives in accents/borders/labels, not loud
+     background blocks). The client tier additionally carries -border-style:dashed
+     so "claimed, not enforced" is legible without color alone. */
+  --authorship-protocol-fg: oklch(0.40 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.580 0.172 253.7);
+  --authorship-protocol-border: oklch(0.580 0.172 253.7 / 0.30);
+  --authorship-protocol-wash: oklch(0.580 0.172 253.7 / 0.06);
+
+  --authorship-manifest-fg: oklch(0.46 0.10 45);
+  --authorship-manifest-accent: oklch(0.52 0.12 45);
+  --authorship-manifest-border: oklch(0.52 0.12 45 / 0.35);
+  --authorship-manifest-wash: oklch(0.52 0.12 45 / 0.06);
+
+  --authorship-client-fg: oklch(0.50 0 0);
+  --authorship-client-accent: oklch(0.62 0 0);
+  --authorship-client-border: oklch(0.72 0 0);
+  --authorship-client-wash: oklch(0.62 0 0 / 0.05);
+  --authorship-client-border-style: dashed;
+
   /* Surface tint: the literal "lift toward the page color" used by
      color-mix() expressions across the brand. White in light mode, near-black
      in dark mode so the same `color-mix(in oklab, X 92%, var(--surface-tint))`
@@ -247,6 +287,25 @@
   --human: oklch(0.75 0.14 45);
   --human-wash: oklch(0.75 0.14 45 / 0.10);
 
+  /* Authorship trust tier — dark overrides (PROVISIONAL; see :root block).
+     Lighter ink and accents to clear the charcoal surface; the client tier
+     stays achromatic + dashed so "claimed, not enforced" survives dark mode. */
+  --authorship-protocol-fg: oklch(0.82 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.72 0.16 253.7);
+  --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.40);
+  --authorship-protocol-wash: oklch(0.72 0.16 253.7 / 0.12);
+
+  --authorship-manifest-fg: oklch(0.82 0.12 45);
+  --authorship-manifest-accent: oklch(0.75 0.14 45);
+  --authorship-manifest-border: oklch(0.75 0.14 45 / 0.40);
+  --authorship-manifest-wash: oklch(0.75 0.14 45 / 0.12);
+
+  --authorship-client-fg: oklch(0.70 0.01 260);
+  --authorship-client-accent: oklch(0.62 0.008 260);
+  --authorship-client-border: oklch(0.45 0.006 260);
+  --authorship-client-wash: oklch(0.70 0.01 260 / 0.07);
+  --authorship-client-border-style: dashed;
+
   /* Lift mixers go *down* toward the page surface in dark mode. */
   --surface-tint: oklch(0.10 0.005 260);
 
@@ -336,6 +395,23 @@
        (H75) so a "human" marker never reads as a muted warning. */
     --human: oklch(0.75 0.14 45);
     --human-wash: oklch(0.75 0.14 45 / 0.10);
+
+    /* Authorship trust tier — system-dark overrides (PROVISIONAL; see :root). */
+    --authorship-protocol-fg: oklch(0.82 0.14 253.7);
+    --authorship-protocol-accent: oklch(0.72 0.16 253.7);
+    --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.40);
+    --authorship-protocol-wash: oklch(0.72 0.16 253.7 / 0.12);
+
+    --authorship-manifest-fg: oklch(0.82 0.12 45);
+    --authorship-manifest-accent: oklch(0.75 0.14 45);
+    --authorship-manifest-border: oklch(0.75 0.14 45 / 0.40);
+    --authorship-manifest-wash: oklch(0.75 0.14 45 / 0.12);
+
+    --authorship-client-fg: oklch(0.70 0.01 260);
+    --authorship-client-accent: oklch(0.62 0.008 260);
+    --authorship-client-border: oklch(0.45 0.006 260);
+    --authorship-client-wash: oklch(0.70 0.01 260 / 0.07);
+    --authorship-client-border-style: dashed;
 
     /* Lift mixers go *down* toward the page surface in dark mode. */
     --surface-tint: oklch(0.10 0.005 260);

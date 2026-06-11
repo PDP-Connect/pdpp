@@ -89,6 +89,30 @@
   --color-border-strong: var(--border-strong);
 
   /*
+   * Authorship trust tier — maps the --authorship-{protocol,manifest,client}-*
+   * tokens (base.css) into Tailwind utilities so the consent card (and any
+   * surface that mixes authorships) can write `text-authorship-protocol-fg`,
+   * `border-authorship-manifest-border`, `bg-authorship-client-wash`, etc.
+   * instead of bracket-notation or inline styles. Three authorships, one
+   * temperature each: protocol = cool blue (enforced facts), manifest = warm
+   * copper (owner/manifest-authored consent surface), client = neutral grey +
+   * dashed affordance (client-asserted, never trusted). See design-direction
+   * decision 1.
+   */
+  --color-authorship-protocol-fg: var(--authorship-protocol-fg);
+  --color-authorship-protocol-accent: var(--authorship-protocol-accent);
+  --color-authorship-protocol-border: var(--authorship-protocol-border);
+  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
+  --color-authorship-manifest-fg: var(--authorship-manifest-fg);
+  --color-authorship-manifest-accent: var(--authorship-manifest-accent);
+  --color-authorship-manifest-border: var(--authorship-manifest-border);
+  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
+  --color-authorship-client-fg: var(--authorship-client-fg);
+  --color-authorship-client-accent: var(--authorship-client-accent);
+  --color-authorship-client-border: var(--authorship-client-border);
+  --color-authorship-client-wash: var(--authorship-client-wash);
+
+  /*
    * PDPP radius scale — bridges the brand radius tokens (base.css :root) into
    * Tailwind v4's `--radius-*` theme namespace so `rounded-sm/md/lg` utilities
    * resolve to the intentional per-component scale (sm = inputs/cells, md =

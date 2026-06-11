@@ -5,29 +5,55 @@ import React from "react";
 import { Button } from "../../ui/button.tsx";
 
 // ─── Consent Card ─────────────────────────────────────────────────────────────
-
-// Props contract — provenance of each field (see spec §5 Client Display, Client Claims, §7 Stream Display):
 //
-// FROM resolved client display metadata (entity-scoped):
+// The consent card is the surface where the three-class TRUST MODEL is made
+// visible. Every element on the card carries one of three *authorships*, and
+// the card renders that authorship so a standards reviewer can point at any
+// element and name its provenance (design-direction decision 1):
+//
+//   • PROTOCOL  (cool blue, `--authorship-protocol-*`)
+//       Protocol FACTS — enforced and verifiable by the owner's server.
+//       Grant scope, field projections, enforcement state, access duration,
+//       the verification verdict, and the technical grant identifiers.
+//
+//   • MANIFEST  (warm copper, `--authorship-manifest-*`)
+//       Manifest/owner-authored — the human consent surface the owner's server
+//       trusts. Stream labels and descriptions (display.label / display.detail).
+//
+//   • CLIENT    (neutral grey + DASHED affordance, `--authorship-client-*`)
+//       Client-authored claims — rendered, never trusted. The client_display
+//       name & logo, the purpose_description, and the client_claims commitments.
+//       The dashed rule/underline says "they say this; your server does not
+//       vouch for it" without relying on color alone.
+//
+// Execution is restrained: temperature lives in eyebrow micro-labels, accent
+// rules, dots, and borders — never in loud background fills. A small legend at
+// the foot teaches the coding.
+//
+// Props contract — provenance of each field (see spec §5 Client Display, Client
+// Claims, §7 Stream Display):
+//
+// FROM resolved client display metadata (entity-scoped) → CLIENT authorship:
 //   requester.name, requester.monogram, requester.uri, requester.policyUri,
 //   requester.tosUri, requester.logoSrc
 //   Source may be local registration, trust registry, validated software
 //   statement metadata, or inline client_display.
 //
-// FROM client_claims (request-scoped, attributed with disclaimer):
+// FROM client_claims (request-scoped, attributed with disclaimer) → CLIENT:
 //   commitments[]
 //
-// FROM purpose_description (request-scoped, first-class field):
+// FROM purpose_description (request-scoped, first-class field) → CLIENT:
 //   purpose
 //
-// FROM manifest display metadata (server-trusted):
+// FROM manifest display metadata (server-trusted) → MANIFEST authorship:
 //   streams[].label, streams[].detail
 //
-// FROM server policy / trust registry:
+// FROM server policy / trust registry → PROTOCOL authorship:
 //   requester.verified
 //
-// Server-derived from grant fields (protocol facts):
-//   accessMode, technical.*, retention display text, access mode display text
+// Server-derived from grant fields (protocol facts) → PROTOCOL authorship:
+//   accessMode, technical.*, retention display text, access mode display text,
+//   per-connection grant scope (streams[].connections[])
 //
 // Server-generated generic copy (v0.1):
 //   optional.consequenceOn/Off
@@ -91,6 +117,31 @@ export interface ConsentCardProps {
   };
 }
 
+// ─── Authorship eyebrow ───────────────────────────────────────────────────────
+// The smallest visible unit of the trust coding: a mono micro-label, tinted to
+// its tier, that names whose word an element is. `data-authorship` is the
+// machine-readable hook the tests assert against (one per element class).
+
+type Authorship = "protocol" | "manifest" | "client";
+
+const AUTHORSHIP_FG: Record<Authorship, string> = {
+  client: "text-authorship-client-fg",
+  manifest: "text-authorship-manifest-fg",
+  protocol: "text-authorship-protocol-fg",
+};
+
+function AuthorshipEyebrow({ authorship, children }: { authorship: Authorship; children: React.ReactNode }) {
+  return (
+    <span
+      className={`pdpp-eyebrow text-[10px] ${AUTHORSHIP_FG[authorship]}`}
+      data-authorship={authorship}
+      data-slot="authorship-eyebrow"
+    >
+      {children}
+    </span>
+  );
+}
+
 function DecidedState({
   decided,
   onReset,
@@ -102,33 +153,23 @@ function DecidedState({
 }) {
   const approved = decided === "approved";
   return (
-    <div style={{ maxWidth: "440px" }}>
-      <div
-        className="flex flex-col items-center gap-3 rounded-xl px-6 py-8 text-center"
-        style={{ border: "1px solid var(--border)", backgroundColor: "var(--card)" }}
-      >
+    <div className="max-w-[440px]">
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-6 py-8 text-center">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-full text-sm"
-          style={{
-            backgroundColor: approved ? "var(--success)" : "var(--muted)",
-            color: approved ? "var(--background)" : "var(--muted-foreground)",
-          }}
+          className={`flex h-8 w-8 items-center justify-center rounded-full text-sm ${
+            approved ? "bg-success text-background" : "bg-muted text-muted-foreground"
+          }`}
         >
           {approved ? "✓" : "×"}
         </div>
         <div className="font-medium text-sm">{approved ? "Access granted" : "Access denied"}</div>
-        <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+        <div className="text-muted-foreground text-xs">
           {approved
             ? `${requesterName} may now query your personal server. You can revoke this any time from your server dashboard.`
             : `No grant was issued. ${requesterName} cannot access your data.`}
         </div>
       </div>
-      <button
-        className="mt-2 px-0.5 font-mono text-xs"
-        onClick={onReset}
-        style={{ color: "var(--muted-foreground)" }}
-        type="button"
-      >
+      <button className="mt-2 px-0.5 font-mono text-muted-foreground text-xs" onClick={onReset} type="button">
         ↺ reset
       </button>
     </div>
@@ -136,14 +177,15 @@ function DecidedState({
 }
 
 function RequesterAvatar({ logoSrc, monogram }: { logoSrc?: string; monogram: string }) {
+  // CLIENT authorship — the brand mark the client supplied. When the server has
+  // no approved logo we fall back to a neutral monogram tile so the avatar never
+  // borrows the trusted "human/manifest" warmth for client-supplied art.
   return (
     <div
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-      style={
-        logoSrc
-          ? { backgroundColor: "var(--background)", border: "1px solid var(--border)" }
-          : { backgroundColor: "var(--human)", color: "var(--background)" }
-      }
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-authorship-client-border border-dashed ${
+        logoSrc ? "bg-background" : "bg-authorship-client-wash text-authorship-client-fg"
+      }`}
+      data-authorship="client"
     >
       {logoSrc ? (
         <Image
@@ -163,11 +205,13 @@ function RequesterAvatar({ logoSrc, monogram }: { logoSrc?: string; monogram: st
 }
 
 function VerificationBadge({ verified }: { verified: boolean }) {
+  // PROTOCOL authorship — this is the SERVER's verification verdict, not a
+  // client assertion. Solid (never dashed) chip; success/warning semantics.
   if (verified) {
     return (
       <span
-        className="rounded px-1.5 py-0.5 font-mono text-xs uppercase tracking-wide"
-        style={{ backgroundColor: "oklch(0.52 0.15 150 / 0.1)", color: "var(--success)" }}
+        className="rounded bg-success-wash px-1.5 py-0.5 font-mono text-success text-xs uppercase tracking-wide"
+        data-authorship="protocol"
       >
         verified
       </span>
@@ -175,8 +219,8 @@ function VerificationBadge({ verified }: { verified: boolean }) {
   }
   return (
     <span
-      className="rounded px-1.5 py-0.5 font-mono text-xs uppercase tracking-wide"
-      style={{ backgroundColor: "oklch(0.62 0.15 70 / 0.1)", color: "var(--warning)" }}
+      className="rounded bg-warning-wash px-1.5 py-0.5 font-mono text-warning text-xs uppercase tracking-wide"
+      data-authorship="protocol"
     >
       unverified
     </span>
@@ -188,13 +232,19 @@ function RequesterHeader({ requester }: { requester: ConsentCardProps["requester
     <div className="flex items-start gap-3">
       <RequesterAvatar logoSrc={requester.logoSrc} monogram={requester.monogram} />
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-sm" style={{ color: "var(--foreground)" }}>
+        <AuthorshipEyebrow authorship="client">they say they are</AuthorshipEyebrow>
+        <div className="mt-0.5 flex flex-wrap items-center gap-2">
+          {/* CLIENT authorship — the client_display name. Dashed underline marks
+              it as client-asserted, never server-vouched. */}
+          <span
+            className="border-authorship-client-border border-b border-dashed pb-px font-semibold text-foreground text-sm"
+            data-authorship="client"
+          >
             {requester.name}
           </span>
           <span
-            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide"
-            style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
+            className="rounded border border-authorship-client-border border-dashed px-1.5 py-0.5 font-mono text-[10px] text-authorship-client-fg uppercase tracking-wide"
+            data-authorship="client"
           >
             client app
           </span>
@@ -206,14 +256,14 @@ function RequesterHeader({ requester }: { requester: ConsentCardProps["requester
 }
 
 function AITrainingWarning() {
+  // PROTOCOL authorship — the server's enforcement statement (explicit consent
+  // is required before training-purpose grants issue). Destructive tone, drawn
+  // from the status-danger surface tier (--status-danger-bg is exactly the old
+  // inline destructive-at-8% wash, and brings a real dark-mode re-declaration).
   return (
     <div
-      className="mt-3 rounded-lg px-3 py-2.5 text-xs"
-      style={{
-        backgroundColor: "oklch(0.55 0.20 27 / 0.08)",
-        border: "1px solid oklch(0.55 0.20 27 / 0.2)",
-        color: "var(--destructive)",
-      }}
+      className="mt-3 rounded-lg border border-status-danger-fg/20 bg-status-danger-bg px-3 py-2.5 text-destructive text-xs"
+      data-authorship="protocol"
     >
       This app wants to use your data for AI model training. This requires your explicit consent.
     </div>
@@ -221,17 +271,18 @@ function AITrainingWarning() {
 }
 
 function Commitments({ commitments, requesterName }: { commitments: string[]; requesterName: string }) {
+  // CLIENT authorship — client_claims.commitments. Dashed left rule + explicit
+  // "not enforced" disclaimer: the card renders the claim but the server does
+  // not vouch for it.
   return (
-    <div className="mt-3 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
-      <div className="mb-1" style={{ color: "var(--foreground)" }}>
-        {requesterName} says:
-      </div>
-      <div className="flex flex-col gap-0.5 pl-3" style={{ borderLeft: "2px solid oklch(0.52 0.09 45 / 0.35)" }}>
+    <div className="mt-3 text-muted-foreground text-xs leading-relaxed" data-authorship="client">
+      <AuthorshipEyebrow authorship="client">{requesterName} claims</AuthorshipEyebrow>
+      <div className="mt-1 flex flex-col gap-0.5 border-authorship-client-border border-l border-dashed pl-3">
         {commitments.map((c) => (
           <span key={c}>{c}</span>
         ))}
       </div>
-      <div className="mt-1.5 italic" style={{ opacity: 0.7 }}>
+      <div className="mt-1.5 text-authorship-client-fg italic">
         These are their commitments, not enforced by your server.
       </div>
     </div>
@@ -247,37 +298,29 @@ function TechnicalDetails({
   open: boolean;
   technical: ConsentCardProps["technical"];
 }) {
+  // PROTOCOL authorship — grant facts (client_id, purpose_code, expiry). Cool
+  // blue left rule when expanded.
   return (
     <>
-      <button
-        className="mt-3 flex items-center gap-1 text-xs"
-        onClick={onToggle}
-        style={{ color: "var(--muted-foreground)" }}
-        type="button"
-      >
-        <span
-          className="inline-block text-xs"
-          style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms" }}
-        >
-          &#x203A;
-        </span>
+      <button className="mt-3 flex items-center gap-1 text-muted-foreground text-xs" onClick={onToggle} type="button">
+        <Chevron open={open} />
         Technical details
       </button>
       {open && (
         <div
-          className="mt-1.5 flex flex-col gap-0.5 border-l-2 pl-3"
-          style={{ borderColor: "oklch(0.580 0.172 253.7 / 0.25)" }}
+          className="mt-1.5 flex flex-col gap-0.5 border-authorship-protocol-border border-l-2 pl-3"
+          data-authorship="protocol"
         >
-          <div className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
-            <span style={{ opacity: 0.6 }}>Client ID: </span>
+          <div className="font-mono text-muted-foreground text-xs">
+            <span className="opacity-60">Client ID: </span>
             {technical.clientId}
           </div>
-          <div className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
-            <span style={{ opacity: 0.6 }}>Purpose: </span>
-            <span style={{ color: "var(--edu-fg)" }}>{technical.purposeCode}</span>
+          <div className="font-mono text-muted-foreground text-xs">
+            <span className="opacity-60">Purpose: </span>
+            <span className="text-authorship-protocol-fg">{technical.purposeCode}</span>
           </div>
-          <div className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>
-            <span style={{ opacity: 0.6 }}>Grant expires: </span>
+          <div className="font-mono text-muted-foreground text-xs">
+            <span className="opacity-60">Grant expires: </span>
             {technical.grantExpires}
           </div>
         </div>
@@ -286,17 +329,13 @@ function TechnicalDetails({
   );
 }
 
-function Chevron({ opacity, open }: { opacity?: number; open: boolean }) {
+function Chevron({ dim, open }: { dim?: boolean; open: boolean }) {
   return (
     <span
-      className="shrink-0 text-xs"
-      style={{
-        color: "var(--muted-foreground)",
-        display: "inline-block",
-        transform: open ? "rotate(90deg)" : "rotate(0deg)",
-        transition: "transform 150ms",
-        ...(opacity === undefined ? {} : { opacity }),
-      }}
+      aria-hidden="true"
+      className={`inline-block shrink-0 text-muted-foreground text-xs transition-transform duration-150 ${
+        open ? "rotate-90" : "rotate-0"
+      } ${dim ? "opacity-50" : ""}`}
     >
       &#x203A;
     </span>
@@ -304,23 +343,18 @@ function Chevron({ opacity, open }: { opacity?: number; open: boolean }) {
 }
 
 function ConnectionScopeList({ connections }: { connections: ConsentCardConnection[] }) {
-  // Multi-connection grants surface one sub-row per connection so the owner
-  // can see exactly which accounts/devices/profiles the grant covers. The
-  // `displayName` is the rendered label; the underlying `connection_id` is
-  // intentionally not surfaced — it's opaque telemetry, not a user concept.
+  // PROTOCOL authorship — the per-connection grant scope. These are the
+  // server-resolved connection identities the grant will actually cover; the
+  // owner-meaningful displayName is rendered, the opaque connection_id is not.
   return (
     <ul
       aria-label="Connections covered by this stream"
-      className="mt-1 flex flex-col gap-0.5 pl-3 text-xs"
-      style={{ color: "var(--muted-foreground)" }}
+      className="mt-1.5 flex flex-col gap-0.5 border-authorship-protocol-border border-l pl-3 text-muted-foreground text-xs"
+      data-authorship="protocol"
     >
       {connections.map((connection) => (
         <li className="flex items-center gap-1.5" key={connection.id}>
-          <span
-            aria-hidden="true"
-            className="inline-block h-1 w-1 rounded-full"
-            style={{ backgroundColor: "var(--muted-foreground)", opacity: 0.6 }}
-          />
+          <span aria-hidden="true" className="inline-block h-1 w-1 rounded-full bg-authorship-protocol-accent" />
           <span>{connection.displayName}</span>
         </li>
       ))}
@@ -341,29 +375,30 @@ function RequiredStreamRow({
   label: string;
   onToggle: () => void;
 }) {
+  // MANIFEST authorship — the stream label & detail are manifest display
+  // metadata the owner's server trusts. Copper accent dot marks the warmth.
   const hasMultipleConnections = Array.isArray(connections) && connections.length > 1;
   return (
-    <div style={{ borderBottom: "1px solid var(--border)" }}>
+    <div className="border-border border-b" data-authorship="manifest">
       <button
         aria-expanded={expanded}
         className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
         onClick={onToggle}
         type="button"
       >
-        <span className="flex min-w-0 flex-col">
-          <span className="font-medium text-xs" style={{ color: "var(--foreground)" }}>
-            {label}
+        <span className="flex min-w-0 items-center gap-2">
+          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-authorship-manifest-accent" />
+          <span className="flex min-w-0 flex-col">
+            <span className="font-medium text-foreground text-xs">{label}</span>
+            {hasMultipleConnections && (
+              <span className="text-[10px] text-muted-foreground">{connections.length} connections</span>
+            )}
           </span>
-          {hasMultipleConnections && (
-            <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-              {connections.length} connections
-            </span>
-          )}
         </span>
         <Chevron open={expanded} />
       </button>
       {expanded && (
-        <div className="pb-2.5 pl-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
+        <div className="pb-2.5 pl-3.5 text-muted-foreground text-xs">
           {detail}
           {hasMultipleConnections && <ConnectionScopeList connections={connections} />}
         </div>
@@ -377,23 +412,17 @@ function OptionalToggle({ enabled, label, onToggle }: { enabled: boolean; label:
     <button
       aria-checked={enabled}
       aria-label={label}
-      className="relative h-4 w-7 shrink-0 rounded-full"
+      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors duration-200 ${
+        enabled ? "bg-primary" : "bg-border"
+      }`}
       onClick={onToggle}
       role="switch"
-      style={{
-        backgroundColor: enabled ? "var(--primary)" : "var(--border)",
-        transition: "background-color var(--motion-state)",
-      }}
       type="button"
     >
       <span
-        className="absolute top-0.5 h-3 w-3 rounded-full"
-        style={{
-          backgroundColor: "white",
-          left: "2px",
-          transform: enabled ? "translateX(12px)" : "translateX(0)",
-          transition: "transform var(--motion-state)",
-        }}
+        className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ${
+          enabled ? "translate-x-3" : "translate-x-0"
+        }`}
       />
     </button>
   );
@@ -412,9 +441,10 @@ function OptionalStreamRow({
   onToggleExpand: () => void;
   optional: ConsentCardOptional;
 }) {
-  const inactiveOpacity = enabled ? 1 : 0.5;
+  // MANIFEST authorship — same as required rows; the optional toggle gates
+  // whether this manifest-declared stream is included in the grant.
   return (
-    <div style={{ borderBottom: "1px solid var(--border)" }}>
+    <div className="border-border border-b" data-authorship="manifest">
       <div className="flex items-center gap-3 py-2.5">
         <OptionalToggle enabled={enabled} label={optional.label} onToggle={onToggleEnabled} />
         <button
@@ -423,21 +453,22 @@ function OptionalStreamRow({
           onClick={onToggleExpand}
           type="button"
         >
-          <span className="font-medium text-xs" style={{ color: "var(--foreground)", opacity: inactiveOpacity }}>
-            {optional.label}
-            <span className="ml-1.5 font-normal" style={{ color: "var(--muted-foreground)" }}>
-              optional
+          <span className={`flex min-w-0 items-center gap-2 ${enabled ? "opacity-100" : "opacity-50"}`}>
+            <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-authorship-manifest-accent" />
+            <span className="font-medium text-foreground text-xs">
+              {optional.label}
+              <span className="ml-1.5 font-normal text-muted-foreground">optional</span>
             </span>
           </span>
-          <Chevron opacity={inactiveOpacity} open={expanded} />
+          <Chevron dim={!enabled} open={expanded} />
         </button>
       </div>
       {expanded && (
-        <div className="mb-2 pl-10 text-xs" style={{ color: "var(--muted-foreground)", opacity: enabled ? 1 : 0.4 }}>
+        <div className={`mb-2 pl-10 text-muted-foreground text-xs ${enabled ? "opacity-100" : "opacity-40"}`}>
           {optional.detail}
         </div>
       )}
-      <div className="pb-2.5 pl-10 text-xs" style={{ color: "var(--muted-foreground)" }}>
+      <div className="pb-2.5 pl-10 text-muted-foreground text-xs">
         {enabled ? optional.consequenceOn : optional.consequenceOff}
       </div>
     </div>
@@ -445,19 +476,45 @@ function OptionalStreamRow({
 }
 
 function AccessDuration({ accessMode }: { accessMode: ConsentCardProps["accessMode"] }) {
+  // PROTOCOL authorship — grant.access_mode is enforced by the owner's server.
   const label =
     accessMode === "continuous"
       ? "Ongoing access, active until you revoke it. Your server enforces this."
       : "One-time access. Your server will not allow further queries.";
   return (
-    <div className="flex items-start gap-2 px-5 py-3">
-      <div
-        className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full"
-        style={{ backgroundColor: accessMode === "continuous" ? "var(--warning)" : "var(--success)" }}
-      />
-      <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-        {label}
-      </div>
+    <div className="flex items-start gap-2 px-5 py-3" data-authorship="protocol">
+      <span className="mt-0.5 shrink-0">
+        <AuthorshipEyebrow authorship="protocol">enforced</AuthorshipEyebrow>
+      </span>
+      <div className="text-muted-foreground text-xs">{label}</div>
+    </div>
+  );
+}
+
+function AuthorshipLegend() {
+  // Teaches the trust coding. Three swatches keyed to the three tiers; kept at
+  // the foot, muted, so it informs without competing with the card body.
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-border border-t px-5 py-2.5 text-[10px] text-muted-foreground"
+      data-slot="authorship-legend"
+    >
+      <span className="font-medium">How to read this:</span>
+      <span className="flex items-center gap-1.5">
+        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-authorship-protocol-accent" />
+        <span>your server enforces</span>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-authorship-manifest-accent" />
+        <span>your server describes</span>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span
+          aria-hidden="true"
+          className="h-2 w-2 rounded-full border border-authorship-client-border border-dashed"
+        />
+        <span>they claim</span>
+      </span>
     </div>
   );
 }
@@ -466,12 +523,7 @@ function DecisionButtons({ onAllow, onDeny }: { onAllow: () => void; onDeny: () 
   return (
     <div className="px-5 pt-1 pb-5">
       <div className="flex items-center gap-3">
-        <Button
-          className="flex-1"
-          onClick={onAllow}
-          style={{ borderColor: "var(--primary)", color: "var(--primary)" }}
-          variant="outline"
-        >
+        <Button className="flex-1 border-primary text-primary" onClick={onAllow} variant="outline">
           Allow access
         </Button>
         <Button className="flex-1" onClick={onDeny} variant="outline">
@@ -504,19 +556,26 @@ export function ConsentCard({
   }
 
   return (
-    <div style={{ maxWidth: "440px" }}>
+    <div className="max-w-[440px]">
       <div className="overflow-hidden rounded-xl" data-surface="human">
         <div className="px-5 pt-5 pb-4">
           <RequesterHeader requester={requester} />
-          <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--foreground)" }}>
-            {purpose}
-          </p>
+          {/* CLIENT authorship — purpose_description is client-authored. */}
+          <div className="mt-4" data-authorship="client">
+            <AuthorshipEyebrow authorship="client">they say they want</AuthorshipEyebrow>
+            <p className="mt-1 text-foreground text-sm leading-relaxed">{purpose}</p>
+          </div>
           {technical.purposeCode === "ai_training" && <AITrainingWarning />}
           {commitments.length > 0 && <Commitments commitments={commitments} requesterName={requester.name} />}
           <TechnicalDetails onToggle={() => setTechExpanded((v) => !v)} open={techExpanded} technical={technical} />
         </div>
 
-        <div className="px-5 pb-1" style={{ borderTop: "1px solid var(--border)" }}>
+        <div className="border-border border-t px-5 pb-1">
+          {/* MANIFEST authorship — the streams the owner's server is being asked
+              to project, described by the manifest. */}
+          <div className="pt-2.5 pb-0.5">
+            <AuthorshipEyebrow authorship="manifest">your server will share</AuthorshipEyebrow>
+          </div>
           {streams.map(({ connections, key, label, detail }) => (
             <RequiredStreamRow
               connections={connections}
@@ -550,6 +609,8 @@ export function ConsentCard({
             onDeny?.();
           }}
         />
+
+        <AuthorshipLegend />
       </div>
     </div>
   );
