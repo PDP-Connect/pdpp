@@ -56,3 +56,38 @@ The MCP adapter SHALL treat both `content[]` and `structuredContent` as potentia
 - **WHEN** a controlled ChatGPT retest proves that PDPP read results are truncated despite bounded `content[]` summaries and page-size limits
 - **THEN** a follow-on OpenSpec change SHALL define explicit compact/full model-visible result-detail controls
 - **AND** this footprint change SHALL NOT be treated as having solved that separate result-budget problem
+
+### Requirement: MCP adapter SHALL gate `expand` to streams that advertise it
+
+The MCP adapter SHALL reject `expand` and `expand_limit` arguments at the adapter
+layer — before forwarding to the RS — when the target stream's schema does not
+advertise any `expand_capabilities`. The rejection SHALL be a typed
+`invalid_expand` error with a message that names the stream and points the client
+to `GET /v1/schema` (`expand_capabilities`) as the capability source.
+
+The check SHALL use a live schema fetch scoped to the stream (and `connection_id`
+when supplied) so the enforcement always reflects the current schema document.
+When the schema fetch fails or the stream is unknown, the adapter SHALL defer to
+the RS (fail-open on schema unavailability).
+
+#### Scenario: Client requests expand on a stream with advertised expand_capabilities
+
+- **WHEN** a client calls `query_records` with `expand` on a stream whose
+  `GET /v1/schema` response includes a non-empty `expand_capabilities` array
+- **THEN** the adapter SHALL forward the request to the RS
+- **AND** the RS response SHALL reach the client unchanged
+
+#### Scenario: Client requests expand on a stream with no expand_capabilities
+
+- **WHEN** a client calls `query_records` or `fetch` with `expand` on a stream
+  whose `GET /v1/schema` response has no `expand_capabilities`
+- **THEN** the adapter SHALL return a typed `invalid_expand` error before calling
+  the RS records endpoint
+- **AND** the error message SHALL name the stream
+- **AND** the RS records endpoint SHALL NOT be called
+
+#### Scenario: Schema advertisement matches enforcement
+
+- **WHEN** a stream's `expand_capabilities` is updated in the schema document
+- **THEN** the adapter SHALL enforce the updated capability on the next call
+  without any server restart or configuration change
