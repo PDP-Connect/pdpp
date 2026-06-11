@@ -96,7 +96,10 @@ export function DashboardShell({
             <DesktopSidebar active={active} mode={mode} routes={routes} />
             <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
               <Topbar overviewHref={routes.section.overview} />
-              <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
+              <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">
+                {mode === "mock-owner" ? <SandboxModeBanner /> : null}
+                {children}
+              </main>
             </div>
           </div>
           <MobileDrawer>
@@ -243,6 +246,32 @@ async function EnvFooter() {
         <EndpointRow label="AS" online={asOnline} url={publicOrigin} />
         <EndpointRow label="RS" online={rsOnline} url={publicOrigin} />
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Persistent top-of-content banner rendered on every sandbox page.
+ *
+ * Keeps demo data from ever reading as production data. The banner appears
+ * above each page's own content — inside `<main>` so it scrolls with the
+ * content rather than overlaying it — and is purely informational: no actions,
+ * no destructive affordances. Reset and filter-clear links in individual list
+ * views are scoped to those views and styled as lightweight navigation, not
+ * here as a global reset.
+ */
+function SandboxModeBanner() {
+  return (
+    <div
+      className="mb-6 flex items-center gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/8 px-4 py-2.5"
+      data-testid="sandbox-mode-banner"
+      role="note"
+    >
+      <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full bg-amber-500/80" />
+      <p className="pdpp-caption text-amber-700 dark:text-amber-400">
+        <span className="font-semibold">Sandbox demo — </span>
+        all data is fictional and deterministic. No owner credentials, no live AS/RS, no real records.
+      </p>
     </div>
   );
 }

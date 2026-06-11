@@ -76,7 +76,10 @@ export function DashboardShell({
             <DesktopSidebar active={active} routes={routes} />
             <div className="min-w-0 border-border/80 border-l bg-background md:border-l">
               <Topbar overviewHref={routes.section.overview} />
-              <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">{children}</main>
+              <main className="mx-auto w-full max-w-[1400px] px-6 py-8 sm:px-8 md:px-10">
+                <SandboxModeBanner />
+                {children}
+              </main>
             </div>
           </div>
           <MobileDrawer>
@@ -180,6 +183,29 @@ function SidebarSubnav({
           );
         })}
       </nav>
+    </div>
+  );
+}
+
+/**
+ * Persistent top-of-content banner on every sandbox page.
+ *
+ * Demo data must never read as production data. This banner sits above each
+ * page's own content — inside `<main>` — and is purely informational. The
+ * sandbox only ever renders in mock-owner mode, so there is no mode branch.
+ */
+function SandboxModeBanner() {
+  return (
+    <div
+      className="mb-6 flex items-center gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/8 px-4 py-2.5"
+      data-testid="sandbox-mode-banner"
+      role="note"
+    >
+      <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full bg-amber-500/80" />
+      <p className="pdpp-caption text-amber-700 dark:text-amber-400">
+        <span className="font-semibold">Sandbox demo — </span>
+        all data is fictional and deterministic. No owner credentials, no live AS/RS, no real records.
+      </p>
     </div>
   );
 }
