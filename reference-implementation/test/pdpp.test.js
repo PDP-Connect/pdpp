@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { createCimdDocument, parsePendingConsentRequestUri, revokeCimdClientAccessForSecurityMetadataChange } from '../server/auth.js';
+import { createCimdDocument, issueToken, parsePendingConsentRequestUri, revokeCimdClientAccessForSecurityMetadataChange } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
@@ -7029,6 +7029,103 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(second.status, 200);
       assert.equal(second.body.data.length, 1);
       assert.notEqual(second.body.data[0].id, first.body.data[0].id);
+    });
+  });
+
+  await t.test('single_use grant: second token issuance is rejected with grant_consumed', async () => {
+    // B1 HTTP proof: single_use consumption enforcement.
+    // The grant is marked consumed atomically on first token issuance.
+    // Any subsequent call to issueToken with the same grant_id MUST throw
+    // with code 'grant_consumed' — the grant cannot be re-exchanged.
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, 'u1');
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+
+      // Step 1: issue the single_use grant — first token issuance happens
+      // inside approveGrant (POST /consent/approve) and marks it consumed.
+      const approved = await approveGrant(asUrl, 'u1', {
+        client_id: 'concert_recommendation_app',
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+        purpose_description: 'One-time recommendation bootstrap',
+        access_mode: 'single_use',
+        streams: [{ name: 'top_artists', view: 'basic' }],
+      });
+      assert.ok(approved.token, 'first token was issued');
+      assert.equal(approved.grant.access_mode, 'single_use');
+
+      // Step 2: the issued token is still valid for RS queries (pagination allowed).
+      const rsFirst = await fetchJson(`${rsUrl}/v1/streams/top_artists/records?limit=1`, {
+        headers: { Authorization: `Bearer ${approved.token}` },
+      });
+      assert.equal(rsFirst.status, 200, 'first RS query with the issued token succeeds');
+
+      // Step 3: verify the grant is marked consumed in the DB.
+      const grantRow = getDb().prepare(
+        'SELECT consumed, access_mode FROM grants WHERE grant_id = ?'
+      ).get(approved.grant.grant_id);
+      assert.ok(grantRow, 'grant row exists');
+      assert.equal(grantRow.access_mode, 'single_use');
+      assert.equal(grantRow.consumed, 1, 'grant is marked consumed after first token issuance');
+
+      // Step 4: attempt a second token issuance on the same grant — MUST fail.
+      // This is the enforcement proof: grant_consumed, not a generic error.
+      await assert.rejects(
+        () => issueToken(
+          approved.grant.grant_id,
+          'u1',
+          'concert_recommendation_app',
+          null,
+          { source: 'test_second_issuance' },
+        ),
+        (err) => {
+          assert.equal(err.code, 'grant_consumed', 'error code is grant_consumed');
+          assert.match(err.message, /already been consumed/i);
+          return true;
+        },
+        'second token issuance on a consumed single_use grant must throw grant_consumed',
+      );
+    });
+  });
+
+  await t.test('continuous grant: repeated token issuances succeed (not consumed after first use)', async () => {
+    // B1 control: a continuous grant must NOT be consumed after first token
+    // issuance — repeated issuances must succeed until the grant is explicitly revoked.
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, 'u1');
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+
+      const approved = await approveGrant(asUrl, 'u1', {
+        client_id: 'concert_recommendation_app',
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+        purpose_description: 'Ongoing concert recommendation assistant',
+        access_mode: 'continuous',
+        streams: [{ name: 'top_artists', view: 'basic' }],
+      });
+      assert.equal(approved.grant.access_mode, 'continuous');
+
+      // Verify the grant is NOT marked consumed after the initial issuance.
+      const grantRow = getDb().prepare(
+        'SELECT consumed, access_mode FROM grants WHERE grant_id = ?'
+      ).get(approved.grant.grant_id);
+      assert.equal(grantRow.consumed, 0, 'continuous grant is not consumed after first token issuance');
+
+      // A second token issuance must succeed for a continuous grant.
+      const secondToken = await issueToken(
+        approved.grant.grant_id,
+        'u1',
+        'concert_recommendation_app',
+        null,
+        { source: 'test_second_issuance' },
+      );
+      assert.ok(secondToken, 'second token issuance on a continuous grant succeeds');
+
+      // The second token must work for RS queries.
+      const rsQuery = await fetchJson(`${rsUrl}/v1/streams/top_artists/records?limit=1`, {
+        headers: { Authorization: `Bearer ${secondToken}` },
+      });
+      assert.equal(rsQuery.status, 200, 'RS query with second-issued continuous token succeeds');
     });
   });
 

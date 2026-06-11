@@ -63,6 +63,60 @@ Read like a UI label. One sentence. Concrete subject. Concrete time bound. Concr
 
 If you don't know, pick `single_use`. Current PDPP core keeps grant lifetime (`expires_at`) separate from access pattern (`access_mode`); do not invent a `time_bounded` access mode. A short-lived non-single-use grant is a protocol-candidate feature, not the reference happy path.
 
+#### Replayable proof: single_use consumption
+
+The sequence below is copy-pasteable against a running reference server (`AS_URL`,
+`RS_URL` set to your local ports). It proves consumption enforcement end-to-end.
+
+```bash
+# 1. Stage a PAR request with a single_use grant
+PAR=$(curl -sX POST $AS_URL/oauth/par \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_id": "my_client",
+    "authorization_details": [{
+      "type": "https://pdpp.org/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+      "purpose_code": "assist.summarize",
+      "purpose_description": "One-time playlist digest.",
+      "access_mode": "single_use",
+      "streams": [{ "name": "top_artists" }]
+    }]
+  }')
+REQUEST_URI=$(echo $PAR | jq -r .request_uri)
+
+# 2. Owner approves — this creates the grant AND issues the first (and only) token.
+#    The grant is marked consumed atomically.
+APPROVED=$(curl -sX POST $AS_URL/consent/approve \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+TOKEN=$(echo $APPROVED | jq -r .token)
+GRANT_ID=$(echo $APPROVED | jq -r .grant.grant_id)
+
+# 3. First RS query succeeds — the issued token is valid until expiry.
+curl -s "$RS_URL/v1/streams/top_artists/records?limit=1" \
+  -H "Authorization: Bearer $TOKEN"
+# → HTTP 200  { "data": [...], ... }
+
+# 4. The grant is now consumed. Introspection confirms active=true (token valid)
+#    but a second token issuance attempt for the same grant_id is rejected.
+#    The reference implementation enforces this at the AS layer: any call to
+#    issueToken() with a consumed grant_id throws { code: "grant_consumed" }.
+#    In the standard device-code or PKCE token exchange, the AS returns:
+#      HTTP 400  { "error": "invalid_grant", "error_description": "Grant has already been consumed" }
+
+# 5. Continuous grants are NOT consumed — repeated token issuances succeed.
+#    Run the same flow with "access_mode": "continuous" and the second issuance
+#    returns a fresh token instead of 400.
+```
+
+**What the enforcement looks like:** `POST /consent/approve` calls `issueToken()` internally.
+`issueToken()` runs an atomic `SELECT … FOR UPDATE` / `UPDATE grants SET consumed = TRUE` in a
+single transaction — the check and the mark are one unit. A concurrent second call races on the
+same row and loses; it reads `consumed = 1` and throws `grant_consumed` before any token row is
+written. The HTTP boundary surfaces this as `invalid_grant` (RFC 6749 §5.2) with
+`error_description: "Grant has already been consumed"`.
+
 ### `streams[]`
 
 This is where most agents over-ask. For each stream:
