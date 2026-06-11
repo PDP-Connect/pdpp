@@ -420,3 +420,212 @@ test('retry path: non-2xx transport response increments attempt_count and resche
   assert.equal(attempts[0].ok, 0, 'attempt must be logged as not ok');
   assert.equal(attempts[0].status_code, 503);
 });
+
+// ---------------------------------------------------------------------------
+// 410 Gone auto-disable (P3)
+// ---------------------------------------------------------------------------
+
+test('410 Gone: worker disables subscription immediately and does not reschedule', async (t) => {
+  await setup();
+  t.after(teardown);
+
+  const receiver = await startReceiver();
+  t.after(() => receiver.close());
+
+  const actor = makeActor();
+  const created = await executeCreateSubscription(
+    { actor, callbackUrl: receiver.url },
+    deps(),
+  );
+  await executeVerificationOutcome(created.subscriptionId, 'verified', deps());
+  await executeEnqueueTestEvent(actor, created.subscriptionId, deps());
+
+  const worker = createDeliveryWorker({
+    nowMs: () => Date.now() + 60_000,
+    randomJitterFactor: () => 1,
+    transport: async () => ({ statusCode: 410, bodyText: 'Gone', errorMessage: null, latencyMs: 5 }),
+  });
+
+  const result = await worker.tick();
+  const outcome = result.outcomes.find((o) => o.kind === 'permanent_failure');
+  assert.ok(outcome, '410 response must produce permanent_failure outcome');
+
+  // Subscription must now be disabled_failure — executor called executeRecordDeliveryFailure.
+  const { getDefaultClientEventSubscriptionStore: getStore } = await import(
+    '../server/stores/client-event-subscription-store.ts'
+  );
+  const sub = await getStore().getSubscriptionById(created.subscriptionId);
+  assert.equal(sub?.status, 'disabled_failure', 'subscription must be disabled immediately on 410');
+
+  // The queue row must not appear in a future due scan — it was finalized.
+  const farFuture = new Date(Date.now() + 120_000).toISOString();
+  const due = await claimDueQueue(farFuture);
+  const testRow = due.find((r) => r.event_type === 'pdpp.subscription.test' && r.subscription_id === created.subscriptionId);
+  assert.equal(testRow, undefined, '410 row must not be rescheduled in due queue');
+});
+
+test('410 Gone: attempt_count is NOT incremented (permanent disable consumes no retry slot)', async (t) => {
+  await setup();
+  t.after(teardown);
+
+  const receiver = await startReceiver();
+  t.after(() => receiver.close());
+
+  const actor = makeActor();
+  const created = await executeCreateSubscription(
+    { actor, callbackUrl: receiver.url },
+    deps(),
+  );
+  await executeVerificationOutcome(created.subscriptionId, 'verified', deps());
+  await executeEnqueueTestEvent(actor, created.subscriptionId, deps());
+
+  // Claim the queue to know the initial attempt_count.
+  const preDue = await claimDueQueue(new Date(Date.now() + 60_000).toISOString());
+  const preRow = preDue.find((r) => r.event_type === 'pdpp.subscription.test');
+  assert.ok(preRow, 'test row must be claimable before tick');
+  const initialAttemptCount = preRow.attempt_count;
+
+  const worker = createDeliveryWorker({
+    nowMs: () => Date.now() + 60_000,
+    randomJitterFactor: () => 1,
+    transport: async () => ({ statusCode: 410, bodyText: 'Gone', errorMessage: null, latencyMs: 5 }),
+  });
+
+  const result = await worker.tick();
+  const outcome = result.outcomes.find((o) => o.kind === 'permanent_failure');
+  assert.ok(outcome, '410 must produce permanent_failure');
+  assert.equal(outcome.attemptCount, initialAttemptCount, 'attempt_count must not be incremented on 410');
+});
+
+// ---------------------------------------------------------------------------
+// 429 / 502 / 504 throttle (P3) + Retry-After inspection
+// ---------------------------------------------------------------------------
+
+test('429: worker reschedules without incrementing attempt_count', async (t) => {
+  await setup();
+  t.after(teardown);
+
+  const receiver = await startReceiver();
+  t.after(() => receiver.close());
+
+  const actor = makeActor();
+  const created = await executeCreateSubscription(
+    { actor, callbackUrl: receiver.url },
+    deps(),
+  );
+  await executeVerificationOutcome(created.subscriptionId, 'verified', deps());
+  await executeEnqueueTestEvent(actor, created.subscriptionId, deps());
+
+  const worker = createDeliveryWorker({
+    nowMs: () => Date.now() + 60_000,
+    randomJitterFactor: () => 1,
+    transport: async () => ({
+      statusCode: 429,
+      bodyText: 'Too Many Requests',
+      errorMessage: null,
+      latencyMs: 5,
+      responseHeaders: { 'retry-after': '60' },
+    }),
+  });
+
+  const result = await worker.tick();
+  const outcome = result.outcomes.find((o) => o.kind === 'throttle');
+  assert.ok(outcome, '429 response must produce throttle outcome');
+
+  // attempt_count must still be 0 — throttle does NOT consume a retry slot.
+  const farFuture = new Date(Date.now() + 120_000).toISOString();
+  const due = await claimDueQueue(farFuture);
+  const testRow = due.find((r) => r.event_type === 'pdpp.subscription.test' && r.subscription_id === created.subscriptionId);
+  assert.ok(testRow, '429 row must appear again in due queue after throttle delay');
+  assert.equal(testRow.attempt_count, 0, 'attempt_count must remain 0 after throttle (no retry slot consumed)');
+
+  const attempts = await listAttemptsForQueue(testRow.queue_id);
+  assert.equal(attempts.length, 1, 'one attempt must be logged even for throttle');
+  assert.equal(attempts[0].ok, 0, 'throttle attempt must be logged as not ok');
+  assert.equal(attempts[0].status_code, 429);
+});
+
+test('429 with retry-after header: next_attempt_at respects the header value', async (t) => {
+  await setup();
+  t.after(teardown);
+
+  const receiver = await startReceiver();
+  t.after(() => receiver.close());
+
+  const actor = makeActor();
+  const created = await executeCreateSubscription(
+    { actor, callbackUrl: receiver.url },
+    deps(),
+  );
+  await executeVerificationOutcome(created.subscriptionId, 'verified', deps());
+  await executeEnqueueTestEvent(actor, created.subscriptionId, deps());
+
+  const retryAfterSecs = 300; // 5 minutes
+
+  const worker = createDeliveryWorker({
+    nowMs: () => Date.now() + 60_000, // make all queue rows eligible for claiming
+    randomJitterFactor: () => 1,
+    transport: async () => ({
+      statusCode: 429,
+      bodyText: 'Too Many Requests',
+      errorMessage: null,
+      latencyMs: 5,
+      responseHeaders: { 'retry-after': String(retryAfterSecs) },
+    }),
+  });
+
+  const tickBefore = Date.now();
+  await worker.tick();
+  const tickAfter = Date.now();
+
+  // The row should NOT appear in a claim window that ends before retryAfterSecs from now.
+  // Use tickBefore as the conservative lower bound for the scheduled time.
+  const tooSoon = new Date(tickBefore + (retryAfterSecs - 10) * 1000).toISOString();
+  const dueEarly = await claimDueQueue(tooSoon);
+  const earlyRow = dueEarly.find((r) => r.event_type === 'pdpp.subscription.test' && r.subscription_id === created.subscriptionId);
+  assert.equal(earlyRow, undefined, 'row must not be due before retry-after window expires');
+
+  // But it must appear after the full delay (use tickAfter as upper bound).
+  const afterDelay = new Date(tickAfter + (retryAfterSecs + 10) * 1000).toISOString();
+  const dueAfter = await claimDueQueue(afterDelay);
+  const lateRow = dueAfter.find((r) => r.event_type === 'pdpp.subscription.test' && r.subscription_id === created.subscriptionId);
+  assert.ok(lateRow, 'row must become due after retry-after delay');
+});
+
+test('502 Bad Gateway: worker throttles without incrementing attempt_count', async (t) => {
+  await setup();
+  t.after(teardown);
+
+  const receiver = await startReceiver();
+  t.after(() => receiver.close());
+
+  const actor = makeActor();
+  const created = await executeCreateSubscription(
+    { actor, callbackUrl: receiver.url },
+    deps(),
+  );
+  await executeVerificationOutcome(created.subscriptionId, 'verified', deps());
+  await executeEnqueueTestEvent(actor, created.subscriptionId, deps());
+
+  const worker = createDeliveryWorker({
+    nowMs: () => Date.now() + 60_000,
+    randomJitterFactor: () => 1,
+    transport: async () => ({
+      statusCode: 502,
+      bodyText: 'Bad Gateway',
+      errorMessage: null,
+      latencyMs: 5,
+    }),
+  });
+
+  const result = await worker.tick();
+  const outcome = result.outcomes.find((o) => o.kind === 'throttle');
+  assert.ok(outcome, '502 response must produce throttle outcome');
+  assert.equal(outcome.statusCode, 502);
+
+  const farFuture = new Date(Date.now() + 120_000).toISOString();
+  const due = await claimDueQueue(farFuture);
+  const testRow = due.find((r) => r.event_type === 'pdpp.subscription.test' && r.subscription_id === created.subscriptionId);
+  assert.ok(testRow, '502 row must be rescheduled');
+  assert.equal(testRow.attempt_count, 0, 'attempt_count must remain 0 after 502 throttle');
+});

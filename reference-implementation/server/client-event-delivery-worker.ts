@@ -34,6 +34,7 @@ export type HttpTransport = (req: {
   bodyText: string | null;
   errorMessage: string | null;
   latencyMs: number;
+  responseHeaders?: Readonly<Record<string, string>>;
 }>;
 
 const RESPONSE_WINDOW_MS = 10_000;
@@ -43,11 +44,18 @@ export const defaultHttpTransport: HttpTransport = async ({ url, method, headers
   try {
     const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(RESPONSE_WINDOW_MS) });
     const text = await resp.text();
+    // Capture headers the operation layer needs for throttle scheduling.
+    const responseHeaders: Record<string, string> = {};
+    const retryAfter = resp.headers.get("retry-after");
+    if (retryAfter != null) {
+      responseHeaders["retry-after"] = retryAfter;
+    }
     return {
       statusCode: resp.status,
       bodyText: text,
       errorMessage: null,
       latencyMs: Date.now() - start,
+      responseHeaders,
     };
   } catch (err) {
     return {
@@ -131,6 +139,35 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         outcome.bodyText
       );
       await updateQueueAttempt(row.queue_id, outcome.attemptCount, outcome.nextAttemptIso, "pending", outcome.error);
+    } else if (outcome.kind === "throttle") {
+      // Log the attempt but do NOT increment attempt_count — the delivery slot
+      // is preserved. Reschedule at nextAttemptIso derived from retry-after.
+      await insertAttempt(
+        row.queue_id,
+        attemptedAt,
+        outcome.statusCode,
+        false,
+        outcome.latencyMs,
+        outcome.error,
+        outcome.bodyText
+      );
+      await updateQueueAttempt(row.queue_id, outcome.attemptCount, outcome.nextAttemptIso, "pending", outcome.error);
+    } else if (outcome.kind === "permanent_failure") {
+      // 410 Gone: disable the subscription immediately without consuming retry slots.
+      await insertAttempt(
+        row.queue_id,
+        attemptedAt,
+        outcome.statusCode,
+        false,
+        outcome.latencyMs,
+        outcome.error,
+        outcome.bodyText
+      );
+      await updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
+      await executeRecordDeliveryFailure(row.subscription_id, {
+        store,
+        nowIso: () => attemptedAt,
+      });
     } else {
       await insertAttempt(
         row.queue_id,

@@ -3,9 +3,11 @@ import { createHmac, randomBytes } from 'node:crypto';
 import test from 'node:test';
 
 import {
+  DEFAULT_THROTTLE_SECONDS,
   DELIVERY_CONTENT_TYPE,
   decodeWebhookSecret,
   executeDelivery,
+  parseRetryAfterSeconds,
   signEvent,
   verifySignatureHeader,
 } from '../operations/rs-client-event-deliver/index.ts';
@@ -178,6 +180,241 @@ test('delivery network error → retry with error captured', async () => {
   );
   assert.equal(result.kind, 'retry');
   assert.equal(result.error, 'ECONNREFUSED');
+});
+
+// ---------------------------------------------------------------------------
+// 410 Gone auto-disable (P3)
+// ---------------------------------------------------------------------------
+
+test('delivery 410 Gone → permanent_failure immediately without consuming retry slots', async () => {
+  // Even on the first attempt (attemptCount=0), 410 must produce permanent_failure,
+  // not retry — the receiver has declared the endpoint gone.
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 0,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 410, bodyText: 'Gone', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'permanent_failure');
+  assert.equal(result.statusCode, 410);
+  // attemptCount must NOT be incremented — we disabled on attempt 0.
+  assert.equal(result.attemptCount, 0);
+  assert.match(result.error, /410/);
+});
+
+test('delivery 410 Gone on later attempt → permanent_failure (not final_failure exhaustion)', async () => {
+  // Verify the 410 path fires regardless of attempt depth.
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 3,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 410, bodyText: 'Gone', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'permanent_failure');
+  // attemptCount preserved, not incremented.
+  assert.equal(result.attemptCount, 3);
+});
+
+// ---------------------------------------------------------------------------
+// 429 / 502 / 504 throttle differentiation (P3) + retry-after inspection
+// ---------------------------------------------------------------------------
+
+test('parseRetryAfterSeconds: delay-seconds form', () => {
+  const nowMs = Date.parse('2026-05-27T00:00:00.000Z');
+  assert.equal(parseRetryAfterSeconds('120', nowMs), 120);
+  assert.equal(parseRetryAfterSeconds('0', nowMs), 1);       // clamped to min 1
+  assert.equal(parseRetryAfterSeconds('999999', nowMs), 86400); // clamped to max
+});
+
+test('parseRetryAfterSeconds: HTTP-date form', () => {
+  const nowMs = Date.parse('2026-05-27T00:00:00.000Z');
+  const futureDate = new Date(nowMs + 300_000).toUTCString(); // +5 minutes
+  const secs = parseRetryAfterSeconds(futureDate, nowMs);
+  assert.ok(secs !== null && secs >= 299 && secs <= 301, `expected ~300, got ${secs}`);
+});
+
+test('parseRetryAfterSeconds: absent / garbage → null', () => {
+  const nowMs = Date.parse('2026-05-27T00:00:00.000Z');
+  assert.equal(parseRetryAfterSeconds(null, nowMs), null);
+  assert.equal(parseRetryAfterSeconds('', nowMs), null);
+  assert.equal(parseRetryAfterSeconds('not-a-date', nowMs), null);
+});
+
+test('delivery 429 → throttle outcome, attempt_count unchanged, nextAttemptIso uses retry-after', async () => {
+  const before = Date.now();
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 2,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({
+        statusCode: 429,
+        bodyText: 'Too Many Requests',
+        errorMessage: null,
+        latencyMs: 5,
+        responseHeaders: { 'retry-after': '90' },
+      }),
+    },
+  );
+  const after = Date.now();
+  assert.equal(result.kind, 'throttle');
+  assert.equal(result.statusCode, 429);
+  // Attempt count must NOT be incremented.
+  assert.equal(result.attemptCount, 2);
+  // nextAttemptIso must be ~90 seconds from now (within a generous 2s wall-clock window).
+  const scheduled = Date.parse(result.nextAttemptIso);
+  assert.ok(
+    scheduled >= before + 89_000 && scheduled <= after + 91_000,
+    `expected ~90s from now, got ${scheduled - before}ms from before`,
+  );
+});
+
+test('delivery 429 without retry-after → throttle with DEFAULT_THROTTLE_SECONDS fallback', async () => {
+  const before = Date.now();
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 1,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({
+        statusCode: 429,
+        bodyText: 'Too Many Requests',
+        errorMessage: null,
+        latencyMs: 5,
+      }),
+    },
+  );
+  const after = Date.now();
+  assert.equal(result.kind, 'throttle');
+  assert.equal(result.attemptCount, 1);
+  const scheduled = Date.parse(result.nextAttemptIso);
+  assert.ok(
+    scheduled >= before + (DEFAULT_THROTTLE_SECONDS - 1) * 1000 &&
+    scheduled <= after + (DEFAULT_THROTTLE_SECONDS + 1) * 1000,
+    `expected ~${DEFAULT_THROTTLE_SECONDS}s from now, got ${scheduled - before}ms from before`,
+  );
+});
+
+test('delivery 502 → throttle outcome', async () => {
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 0,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 502, bodyText: 'Bad Gateway', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'throttle');
+  assert.equal(result.statusCode, 502);
+  assert.equal(result.attemptCount, 0);
+});
+
+test('delivery 504 → throttle outcome', async () => {
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 0,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 504, bodyText: 'Gateway Timeout', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'throttle');
+  assert.equal(result.statusCode, 504);
+  assert.equal(result.attemptCount, 0);
+});
+
+test('delivery 500 → retry (not throttle, 5xx other than 502/504 uses standard backoff)', async () => {
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 0,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 500, bodyText: 'Internal Server Error', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'retry');
+  assert.equal(result.attemptCount, 1);
+});
+
+test('delivery 403 → retry (non-410 4xx uses standard backoff)', async () => {
+  const result = await executeDelivery(
+    {
+      queueId: 1,
+      subscriptionId: 'sub_x',
+      eventId: 'evt_x',
+      eventType: 'pdpp.records.changed',
+      payloadJson: '{}',
+      attemptCount: 0,
+      callbackUrl: 'https://callback.example/hook',
+      secret: SECRET,
+    },
+    {
+      ...fixedDeps(),
+      request: async () => ({ statusCode: 403, bodyText: 'Forbidden', errorMessage: null, latencyMs: 5 }),
+    },
+  );
+  assert.equal(result.kind, 'retry');
+  assert.equal(result.attemptCount, 1);
 });
 
 test('default transport attaches a bounded response-window abort signal', async () => {

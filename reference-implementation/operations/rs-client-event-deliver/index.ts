@@ -10,6 +10,12 @@
  * - dead-letter transition after the configured max attempts;
  * - bounded response snippet for the attempt log.
  *
+ * Status classification (Standard Webhooks §retry-disable):
+ * - 2xx         → delivered / verified
+ * - 410 Gone    → permanent_failure (auto-disable, no retry)
+ * - 429 / 502 / 504 → throttle (reschedule via Retry-After, attempt_count unchanged)
+ * - other 4xx / 5xx / network error → retry until exhausted, then final_failure
+ *
  * Boundary rules:
  * - This module SHALL NOT import Fastify, SQLite, Postgres, route/auth, or
  *   `process` / `process.env`. The HTTP transport is injected.
@@ -34,6 +40,11 @@ export const DEFAULT_BACKOFF_SECONDS: ReadonlyArray<number> = [
   21600,
   86400,
 ];
+
+/**
+ * Default delay seconds when a throttle response omits a `retry-after` header.
+ */
+export const DEFAULT_THROTTLE_SECONDS = 60;
 
 export const MAX_RESPONSE_SNIPPET_BYTES = 512;
 
@@ -62,6 +73,8 @@ export interface HttpTransportResponse {
   readonly bodyText: string | null;
   readonly errorMessage: string | null;
   readonly latencyMs: number;
+  /** Selected response headers. Populated by the delivery worker transport. */
+  readonly responseHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface DeliveryDependencies {
@@ -81,6 +94,34 @@ export type DeliveryOutcome =
       attemptCount: number;
       nextAttemptIso: string;
       statusCode: number | null;
+      latencyMs: number;
+      error: string;
+      bodyText: string | null;
+    }
+  | {
+      /**
+       * Throttle outcome: receiver asked us to back off (429/502/504).
+       * `attemptCount` is NOT incremented — the delivery slot is preserved.
+       * `nextAttemptIso` is derived from the `retry-after` response header when
+       * present, otherwise `DEFAULT_THROTTLE_SECONDS`.
+       */
+      kind: "throttle";
+      attemptCount: number;
+      nextAttemptIso: string;
+      statusCode: number;
+      latencyMs: number;
+      error: string;
+      bodyText: string | null;
+    }
+  | {
+      /**
+       * Permanent-failure outcome: receiver responded 410 Gone, signalling its
+       * endpoint is intentionally shut down. The subscription is disabled
+       * immediately without consuming further retry slots.
+       */
+      kind: "permanent_failure";
+      attemptCount: number;
+      statusCode: number;
       latencyMs: number;
       error: string;
       bodyText: string | null;
@@ -170,6 +211,34 @@ function classifyChallenge(event: DeliverableEvent, bodyText: string | null): bo
   }
 }
 
+/**
+ * Parse a `retry-after` header value.
+ *
+ * Accepts both the delay-seconds form (`120`) and the HTTP-date form.
+ * Returns the delay in seconds, clamped to [1, 86400]. Returns `null` if
+ * the header is absent, empty, or unparseable — callers fall back to the
+ * default throttle delay.
+ */
+export function parseRetryAfterSeconds(
+  header: string | undefined | null,
+  nowMs: number,
+): number | null {
+  if (!header) return null;
+  const trimmed = header.trim();
+  // Delay-seconds: a non-negative integer string.
+  if (/^\d+$/.test(trimmed)) {
+    const secs = parseInt(trimmed, 10);
+    return Math.max(1, Math.min(secs, 86400));
+  }
+  // HTTP-date: try Date.parse.
+  const ts = Date.parse(trimmed);
+  if (!Number.isNaN(ts)) {
+    const diffSecs = Math.round((ts - nowMs) / 1000);
+    return Math.max(1, Math.min(diffSecs, 86400));
+  }
+  return null;
+}
+
 export async function executeDelivery(
   event: DeliverableEvent,
   deps: DeliveryDependencies,
@@ -206,6 +275,41 @@ export async function executeDelivery(
 
   const error =
     response.errorMessage ?? (response.statusCode ? `HTTP ${response.statusCode}` : "no response");
+
+  // 410 Gone: receiver has permanently shut down its endpoint — disable immediately.
+  if (response.statusCode === 410) {
+    return {
+      kind: "permanent_failure",
+      attemptCount: event.attemptCount,
+      statusCode: 410,
+      latencyMs: response.latencyMs,
+      error,
+      bodyText,
+    };
+  }
+
+  // 429 / 502 / 504: transient load spike — throttle without consuming a retry slot.
+  if (
+    response.statusCode === 429 ||
+    response.statusCode === 502 ||
+    response.statusCode === 504
+  ) {
+    const nowMs = Date.now();
+    const retryAfterHeader = response.responseHeaders?.["retry-after"];
+    const delaySecs =
+      parseRetryAfterSeconds(retryAfterHeader, nowMs) ?? DEFAULT_THROTTLE_SECONDS;
+    const nextAttemptIso = new Date(nowMs + delaySecs * 1000).toISOString();
+    return {
+      kind: "throttle",
+      attemptCount: event.attemptCount,
+      nextAttemptIso,
+      statusCode: response.statusCode,
+      latencyMs: response.latencyMs,
+      error,
+      bodyText,
+    };
+  }
+
   if (nextAttemptIndex >= backoff.length) {
     return {
       kind: "final_failure",
