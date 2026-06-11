@@ -1598,7 +1598,11 @@ test("runMessagesAndConversationsWithDetail: empty budget leaves a large backlog
   );
 });
 
-test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes ordinary lane launch delay", async () => {
+test("runMessagesAndConversationsWithDetail: lane retains its launch delay (sole send governor; pacing via launchDelayHint)", async () => {
+  // Converged path: pacingMode "signal" — the controller does NOT sleep in
+  // beforeRequest(); the lane is the sole send governor and retains its launch
+  // delay window. The legacy behavior (zeroed launch delay + controller-owned
+  // wait) was removed in the 2026-06-11 calibration commit.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const providerSleeps: number[] = [];
@@ -1611,6 +1615,7 @@ test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes 
         return Promise.resolve();
       },
     },
+    pacingMode: "signal",
   });
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
@@ -1650,11 +1655,15 @@ test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes 
 
   assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
   assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
-  assert.equal(providerSleeps.length >= 2, true, "provider budget admits each conversation through pacing");
+  // Signal mode: controller does NOT sleep in beforeRequest() — pacing hint is
+  // delivered via launchDelayHint to the lane, which does the single wait.
+  assert.equal(providerSleeps.length, 0, "controller does not sleep in signal mode (lane owns the single wait)");
+  // Lane retains its launch delay — at least one launch-window sleep is expected
+  // for the second conversation onward (random=0 → pauseMinMs=1500 ms).
   assert.equal(
     laneSleeps.some((ms) => ms >= 1500),
-    false,
-    "ordinary lane launch delay is neutralized when provider-budget pacing is active"
+    true,
+    "lane retains its launch delay window (sole send governor)"
   );
 });
 

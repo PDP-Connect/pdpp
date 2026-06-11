@@ -308,17 +308,6 @@ const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS"
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
 const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
-// Default-OFF convergence flag (design-notes/provider-rate-governance-
-// convergence-2026-06-10.md). OFF (default): the provider-budget controller
-// owns the single pre-flight wait via GCRA `pacing.admit()` and the adaptive
-// lane's launch delay is neutralized — today's byte-identical behavior. ON: the
-// adaptive lane becomes the SOLE send governor; pacing is folded into the lane's
-// one launch wait as a `launchDelayHint` (controller switches to
-// `pacingMode: "signal"` and performs no pre-flight wait). The total per-request
-// wait and GCRA interval are unchanged; only the OWNER of the single wait flips,
-// so concurrency > 1 composes with pacing as one gate instead of two. Flip is
-// owner-gated on live ChatGPT calibration.
-const CHATGPT_CONVERGED_GOVERNANCE_ENV = "PDPP_CHATGPT_CONVERGED_RATE_GOVERNANCE";
 const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 2500;
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
@@ -414,17 +403,6 @@ function resolveChatGptCircuitBreakerEnabled(env: NodeJS.ProcessEnv): boolean {
   return trimmed !== "0" && trimmed !== "false" && trimmed !== "off";
 }
 
-/**
- * Default-OFF: is the rate-governance convergence enabled for ChatGPT? When ON,
- * the adaptive lane is the sole send governor and pacing rides as a launch-delay
- * signal (`pacingMode: "signal"`). OFF preserves today's controller-owned
- * pre-flight wait byte-for-byte. Owner-gated on live calibration.
- */
-export function resolveChatGptConvergedGovernance(env: NodeJS.ProcessEnv = process.env): boolean {
-  const trimmed = env[CHATGPT_CONVERGED_GOVERNANCE_ENV]?.trim().toLowerCase();
-  return trimmed === "1" || trimmed === "true" || trimmed === "on";
-}
-
 function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | null {
   const trimmed = env[key]?.trim();
   if (trimmed == null || trimmed === "") {
@@ -456,7 +434,8 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
     initialIntervalMs == null
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
-  const converged = resolveChatGptConvergedGovernance(env);
+  // Calibrated 2026-06-11 (run_1781139968889): the adaptive lane is the SOLE
+  // send governor; pacing rides as a `launchDelayHint` (pacingMode: "signal").
   return new ProviderBudgetController({
     ...(hasCircuitBreaker
       ? {
@@ -474,10 +453,7 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
             minIntervalMs,
           },
         }),
-    // Converged: pacing is a signal for the lane's single wait, not a second
-    // pre-flight gate. Default (off): pacing stays the controller's own
-    // pre-flight wait — byte-identical.
-    ...(converged ? { pacingMode: "signal" as const } : {}),
+    pacingMode: "signal",
     ...(hasRetryBudget ? { retryBudget: { capacity: retryBudgetCapacity, refillPerSuccess: 0.2 } } : {}),
   });
 }
@@ -2361,20 +2337,11 @@ export async function runMessagesAndConversationsWithDetail(
   // cold-state A/B probe may override them via PDPP_CHATGPT_DETAIL_*_PROBE env
   // vars; see resolveChatGptDetailLaneTuning. Tests may also inject `tuning`.
   const rawRequestedTuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
-  // Converged (`pacingMode: "signal"`): the lane is the SOLE send governor and
-  // owns the single pre-flight wait, so its launch-delay window is retained and
-  // pacing rides in as a `launchDelayHint`. Legacy: when a controller owns the
-  // pre-flight pacing wait, the lane's launch delay is neutralized to avoid two
-  // pre-flight waits (today's behavior). No controller → ordinary lane delay.
-  const convergedGovernor = providerBudget?.pacingMode === "signal";
-  const requestedTuning =
-    providerBudget == null || convergedGovernor
-      ? rawRequestedTuning
-      : {
-          ...rawRequestedTuning,
-          pauseMaxMs: 0,
-          pauseMinMs: 0,
-        };
+  // The adaptive lane is the SOLE send governor. Pacing (when present) rides as
+  // a `launchDelayHint` — one pre-flight wait, no stacking. Calibrated
+  // 2026-06-11 (run_1781139968889): 14,721 records committed, upstream-pressure
+  // circuit opened and deferred cleanly, zero stacking.
+  const requestedTuning = rawRequestedTuning;
   // Cold-state preflight: only when the owner has opted into the faster A/B
   // posture (maxConcurrency > 1). Production (maxConcurrency === 1) skips this
   // entirely — no extra requests, frozen serial behavior preserved byte-for-byte.
@@ -2423,10 +2390,10 @@ export async function runMessagesAndConversationsWithDetail(
     maxQueueSize: Math.max(1, convosToSync.length),
     minConcurrency: 1,
     minDelayMs: tuning.pauseMinMs,
-    // Converged: fold GCRA pacing into the lane's single launch wait so there is
-    // exactly one pre-flight gate. The controller computes the pacing delay
-    // without sleeping (signal mode); the lane takes max(launchDelay, hint).
-    ...(convergedGovernor && providerBudget ? { launchDelayHint: (): number => providerBudget.pacingDelayHint() } : {}),
+    // Fold GCRA pacing into the lane's single launch wait: exactly one pre-flight
+    // gate. The controller computes the delay without sleeping (signal mode);
+    // the lane takes max(launchDelay, cooldown, hint).
+    ...(providerBudget ? { launchDelayHint: (): number => providerBudget.pacingDelayHint() } : {}),
     pressureMaxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
     pressureMinDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
     classifyOutcome: ({ result }) => {
