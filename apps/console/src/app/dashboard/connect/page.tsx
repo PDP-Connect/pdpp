@@ -311,10 +311,10 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Add a source →
           </Link>
         }
-        surface="human"
         title="Need more data first?"
+        tone="info"
       >
-        <p className="pdpp-caption text-muted-foreground">
+        <p className="pdpp-caption text-callout-info-fg/80">
           Source accounts are managed under Sources. Keep this page for AI app and agent read-access setup.
         </p>
       </Callout>
@@ -347,10 +347,10 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Owner-agent access →
           </Link>
         }
-        surface="human"
         title="Owner credentials stay out of ordinary MCP setup"
+        tone="info"
       >
-        <p className="pdpp-caption text-muted-foreground">
+        <p className="pdpp-caption text-callout-info-fg/80">
           Claude, ChatGPT, Codex, Claude Code, and third-party MCP clients should use the scoped OAuth flow at{" "}
           <code className="font-mono">/mcp</code>. Trusted local owner automation is a separate flow.
         </p>

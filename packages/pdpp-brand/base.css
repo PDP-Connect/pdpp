@@ -116,6 +116,48 @@
   --status-disabled-bg: oklch(0.96 0 0);
   --status-disabled-fg: oklch(0.58 0 0);
 
+  /* ─── Authorship token tier ─────────────────────────────────────────────────
+     Trust-provenance surfaces. The protocol distinguishes three authorship
+     classes; each gets a temperature so a standards reviewer can *see* the
+     authorship boundary without reading the label.
+
+     protocol  — cool blue (H253.7, shares primary hue): facts enforced and
+                 verifiable by the protocol (grants, projections, token scopes,
+                 enforcement results). Derived from the existing --primary /
+                 landing-hero blue (oklch(0.58 0.18 253) per apple-icon.tsx).
+     manifest  — copper/warm (H45, shares --human hue): manifest- and
+                 owner-authored content (stream descriptions, display names,
+                 consent text). Derived from the existing --human copper that
+                 drives the hero cross-border and the site landing temperature.
+     client    — neutral grey (achromatic + dashed-border affordance): client-
+                 claimed content rendered but never trusted (client_display,
+                 client_claims). No hue signal — deliberately the absence of
+                 any temperature endorsement.
+
+     Callout tone → surface type:
+       info     = informational / advisory (no authorship temperature)
+       warning  = requires owner attention (amber, maps to status-warning family) */
+  --authorship-protocol-bg: oklch(0.580 0.172 253.7 / 0.07);
+  --authorship-protocol-fg: oklch(0.35 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.580 0.172 253.7);
+
+  --authorship-manifest-bg: oklch(0.52 0.09 45 / 0.07);
+  --authorship-manifest-fg: oklch(0.35 0.10 45);
+  --authorship-manifest-accent: oklch(0.52 0.09 45);
+
+  --authorship-client-bg: oklch(0.95 0 0);
+  --authorship-client-fg: oklch(0.38 0 0);
+  --authorship-client-accent: oklch(0.60 0 0);
+
+  /* Callout informational / warning tone tokens */
+  --callout-info-bg: oklch(0.580 0.172 253.7 / 0.06);
+  --callout-info-fg: oklch(0.35 0.14 253.7);
+  --callout-info-border: oklch(0.580 0.172 253.7 / 0.22);
+
+  --callout-warning-bg: oklch(0.62 0.15 70 / 0.08);
+  --callout-warning-fg: oklch(0.38 0.12 70);
+  --callout-warning-border: oklch(0.62 0.15 70 / 0.30);
+
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
 
@@ -238,6 +280,28 @@
   --status-disabled-bg: oklch(0.22 0.005 260);
   --status-disabled-fg: oklch(0.55 0.008 260);
 
+  /* Authorship token tier — dark overrides. Higher chroma fills; lighter fg
+     for contrast on the charcoal background. */
+  --authorship-protocol-bg: oklch(0.72 0.16 253.7 / 0.12);
+  --authorship-protocol-fg: oklch(0.82 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.72 0.16 253.7);
+
+  --authorship-manifest-bg: oklch(0.75 0.14 45 / 0.11);
+  --authorship-manifest-fg: oklch(0.82 0.13 45);
+  --authorship-manifest-accent: oklch(0.75 0.14 45);
+
+  --authorship-client-bg: oklch(0.24 0.006 260);
+  --authorship-client-fg: oklch(0.70 0.008 260);
+  --authorship-client-accent: oklch(0.50 0.008 260);
+
+  --callout-info-bg: oklch(0.72 0.16 253.7 / 0.10);
+  --callout-info-fg: oklch(0.82 0.14 253.7);
+  --callout-info-border: oklch(0.72 0.16 253.7 / 0.28);
+
+  --callout-warning-bg: oklch(0.80 0.15 75 / 0.12);
+  --callout-warning-fg: oklch(0.86 0.13 75);
+  --callout-warning-border: oklch(0.80 0.15 75 / 0.32);
+
   /* The warm "human" accent as a true sibling of the blue primary: comparable
      chroma magnitude (0.14 vs primary 0.16) so it carries equal visual weight,
      hue held in the terracotta/warm lane (H45) — the SAME hue as light mode,
@@ -329,6 +393,27 @@
 
     --status-disabled-bg: oklch(0.22 0.005 260);
     --status-disabled-fg: oklch(0.55 0.008 260);
+
+    /* Authorship token tier — dark overrides (mirrors :is(html.dark) block). */
+    --authorship-protocol-bg: oklch(0.72 0.16 253.7 / 0.12);
+    --authorship-protocol-fg: oklch(0.82 0.14 253.7);
+    --authorship-protocol-accent: oklch(0.72 0.16 253.7);
+
+    --authorship-manifest-bg: oklch(0.75 0.14 45 / 0.11);
+    --authorship-manifest-fg: oklch(0.82 0.13 45);
+    --authorship-manifest-accent: oklch(0.75 0.14 45);
+
+    --authorship-client-bg: oklch(0.24 0.006 260);
+    --authorship-client-fg: oklch(0.70 0.008 260);
+    --authorship-client-accent: oklch(0.50 0.008 260);
+
+    --callout-info-bg: oklch(0.72 0.16 253.7 / 0.10);
+    --callout-info-fg: oklch(0.82 0.14 253.7);
+    --callout-info-border: oklch(0.72 0.16 253.7 / 0.28);
+
+    --callout-warning-bg: oklch(0.80 0.15 75 / 0.12);
+    --callout-warning-fg: oklch(0.86 0.13 75);
+    --callout-warning-border: oklch(0.80 0.15 75 / 0.32);
 
     /* The warm "human" accent as a true sibling of the blue primary: comparable
        chroma magnitude (0.14 vs primary 0.16), hue held in the terracotta lane

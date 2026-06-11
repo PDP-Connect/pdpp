@@ -90,8 +90,8 @@ function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnin
           <Callout
             description={warning.message}
             key={warning.code}
-            surface="human"
             title={WARNING_TITLES[warning.code]}
+            tone="warning"
           />
         ))}
       </div>
