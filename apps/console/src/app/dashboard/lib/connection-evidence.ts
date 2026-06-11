@@ -922,6 +922,9 @@ export function resolveRecordCountDisplay(overview: ConnectorOverview): RecordCo
  */
 const SOURCE_PRESSURE_REASON_CODE = "source_pressure";
 
+/** Capitalizes a sentence-leading "caught up" backlog clause for the synthesized verdict. */
+const CAUGHT_UP_LEAD_RE = /^caught up/;
+
 /**
  * Owner-facing pill for the records row.
  *
@@ -1108,7 +1111,7 @@ export function synthesizeConnectionVerdict(health: RefConnectionHealthSnapshot)
   // Source-pressure cooldown (whether the raw state is `cooling_off` or
   // `blocked`): one honest, non-danger "handling it" verdict and one sentence.
   if (sourcePressure) {
-    const backlogClause = backlogScale ? ` ${backlogScale.replace(/^caught up/, "Caught up")};` : "";
+    const backlogClause = backlogScale ? ` ${backlogScale.replace(CAUGHT_UP_LEAD_RE, "Caught up")};` : "";
     const resumeClause = resumeAt
       ? ` The scheduler is spacing out the next attempt (resumes after ${resumeAt}).`
       : " The scheduler is spacing out the next attempt; it resumes on its own.";
