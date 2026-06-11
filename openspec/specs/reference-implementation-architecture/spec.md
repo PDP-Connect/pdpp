@@ -913,23 +913,45 @@ Aggregation requests SHALL use the same exact and declared range filter validati
 - **THEN** the aggregation SHALL apply the same coercion and comparison semantics as record-list filtering
 
 ### Requirement: Grouped aggregation results SHALL be bounded and deterministic
-Grouped aggregation responses SHALL enforce a maximum bucket limit and deterministic ordering. If the request exceeds the allowed limit or requests grouping by an unsupported field, the reference SHALL reject it. A request SHALL carry at most one grouping dimension: `group_by` and `group_by_time` SHALL NOT be combined. Scalar `group_by` results SHALL be ordered by count descending, then key ascending. `group_by_time` results SHALL be ordered by bucket start ascending, with the null/unparseable bucket sorted last.
 
-#### Scenario: Grouped count with limit
+Grouped aggregation responses SHALL enforce a maximum bucket limit and
+deterministic ordering. Grouped responses SHALL include an `other_count` field
+containing the sum of counts for all groups or buckets truncated by `limit`.
+`other_count` SHALL be zero when all groups fit within the limit; it SHALL be
+positive when truncation occurred. `other_count` SHALL be present on every
+grouped response (scalar `group_by` and calendar `group_by_time`) and SHALL be
+absent on ungrouped (scalar) aggregation responses.
+
+#### Scenario: Grouped count returns other_count when truncated
+
 - **WHEN** a client requests `group_by=<field>&limit=N`
-- **AND** `<field>` is declared groupable
-- **THEN** the response SHALL contain at most `N` group buckets
-- **AND** the ordering SHALL be count descending, then key ascending
+- **AND** the stream contains more than N distinct values for that field
+- **THEN** the response SHALL contain exactly N group buckets ordered by count
+  descending, then key ascending
+- **AND** the response SHALL include `other_count` equal to the sum of counts
+  for all groups beyond the limit
+- **AND** `other_count` SHALL be positive
 
-#### Scenario: Two grouping dimensions are rejected
-- **WHEN** a client requests both `group_by` and `group_by_time` in one call
-- **THEN** the reference SHALL reject the request with an `invalid_request` query error
+#### Scenario: Grouped count returns other_count=0 when all groups fit
 
-#### Scenario: Time-bucket grouping returns an ascending series
-- **WHEN** a client requests `group_by_time=<date_field>&granularity=day`
-- **AND** `<date_field>` is declared time-bucketable and authorized
-- **THEN** the response SHALL contain at most `limit` buckets keyed by ISO bucket start
-- **AND** the buckets SHALL be ordered by bucket start ascending
+- **WHEN** a client requests `group_by=<field>&limit=N`
+- **AND** the stream contains N or fewer distinct values for that field
+- **THEN** the response SHALL include all distinct groups
+- **AND** the response SHALL include `other_count` equal to zero
+
+#### Scenario: Time-bucket grouping returns other_count when truncated
+
+- **WHEN** a client requests `group_by_time=<date_field>&granularity=day&limit=N`
+- **AND** the stream contains records in more than N distinct calendar buckets
+- **THEN** the response SHALL return the first N buckets in ascending order
+- **AND** the response SHALL include `other_count` equal to the sum of counts
+  for all buckets beyond the limit
+
+#### Scenario: Ungrouped aggregation does not emit other_count
+
+- **WHEN** a client requests an aggregation with no grouping dimension (no
+  `group_by` or `group_by_time`)
+- **THEN** the response SHALL NOT include an `other_count` field
 
 ### Requirement: The reference SHALL hydrate Gmail attachments as content-addressed blobs
 
@@ -7009,6 +7031,14 @@ The reference Authorization Server's hosted consent UI SHALL render authorizatio
 
 Requests for `purpose_category: "ai_training"` SHALL require explicit affirmative consent. When that consent is missing, the AS SHALL reject the request with a typed PDPP error envelope rather than an untyped internal server error.
 
+The hosted consent UI SHALL keep three authorship classes visually and semantically distinct, so a consumer can point at any rendered element and name its provenance:
+
+- **protocol** — facts the owner's server enforces or verifies: the grant access mode, retention bound, the source binding, and (for clients resolved through a Client ID Metadata Document) the URL-origin client identity.
+- **manifest** — the owner-trusted human descriptions of the requested streams (stream names and descriptions resolved from the manifest).
+- **client** — claims the client itself authored: its self-described display name, its `purpose_description` / `purpose_code`, and any per-stream `client_claims` (request-scoped purpose and commitments).
+
+Each rendered block SHALL carry a machine-readable `data-authorship` attribute whose value is `protocol`, `manifest`, or `client`. Client-authored content SHALL be presented as claims, never as protocol facts: it SHALL NOT be rendered in the same undifferentiated facts list as protocol facts, and the client-claims block SHALL carry an explicit disclaimer that the claims are not enforced by the server. Per-stream `client_claims` SHALL be rendered (not dropped) when present, inside the client authorship class.
+
 #### Scenario: Hosted consent receives a wildcard stream request
 - **WHEN** the AS renders `GET /consent?request_uri=...` for a pending request whose authorization details include a stream selection of `*`
 - **THEN** the HTML SHALL NOT render a bare `*` as the stream name
@@ -7024,6 +7054,13 @@ Requests for `purpose_category: "ai_training"` SHALL require explicit affirmativ
 - **WHEN** a caller submits an authorization request for `purpose_category: "ai_training"` without the reference's explicit affirmative consent marker
 - **THEN** the AS SHALL reject the request with a typed PDPP error envelope
 - **AND** the response SHALL NOT be a generic `500` internal server error
+
+#### Scenario: Hosted consent distinguishes the three authorship classes
+- **WHEN** the AS renders `GET /consent?request_uri=...` for a pending request whose authorization details carry a `purpose_description` and a stream with `client_claims` (a purpose and commitments)
+- **THEN** the HTML SHALL render a protocol-authored block, a manifest-authored block, and a client-authored block, each marked with the corresponding `data-authorship` attribute value
+- **AND** the per-stream `client_claims` purpose and commitments SHALL be rendered inside the client authorship class
+- **AND** the client-authored values (the stated purpose and the `client_claims` content) SHALL NOT appear inside the protocol-authored block
+- **AND** the client-claims block SHALL carry a disclaimer stating the claims are not enforced by the owner's server
 
 ### Requirement: Host-derived AS/RS metadata SHALL be trusted only for local/private or allowlisted hosts
 
