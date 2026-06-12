@@ -83,7 +83,13 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-COPY --from=source /app /app
+# Two-layer copy instead of `COPY --from=source /app /app`: node_modules comes
+# from `deps` (cache key = lockfile + manifests, so it survives source edits)
+# and the source tree is overlaid from the build context (tens of MB). The
+# single-COPY form re-materialized a node_modules-sized layer on every source
+# change — ~1.5GB of builder-cache churn per stage per rebuild.
+COPY --from=deps /app /app
+COPY . .
 
 EXPOSE 7662 7663
 
@@ -129,7 +135,9 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-COPY --from=source /app /app
+# Two-layer copy — see the `reference` stage for rationale.
+COPY --from=deps /app /app
+COPY . .
 
 EXPOSE 7662 7663
 
@@ -184,7 +192,9 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-COPY --from=source /app /app
+# Two-layer copy — see the `reference` stage for rationale.
+COPY --from=deps /app /app
+COPY . .
 COPY --from=console-builder /app/apps/console/.next/standalone /console
 COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
 COPY --from=console-builder /app/apps/console/public /console/apps/console/public
