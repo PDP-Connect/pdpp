@@ -5081,6 +5081,16 @@ test("adaptive retry budget: a healthy account refills tokens so the run never d
     waitOuts.length > 2,
     `adaptive budget sustained ${waitOuts.length} wait-outs (> initialTokens=2) because successful retries refilled consumed tokens`
   );
+  // HONESTY: budget-active wait messages must report the retry budget, NOT the
+  // stale N/8 cycle counter that no longer governs give-up when the budget is active.
+  assert.ok(
+    waitOuts.every((m) => m.message.includes("retry budget:") && m.message.includes("token(s) left")),
+    "budget-active wait messages report retry budget remaining tokens, not the /8 cycle counter"
+  );
+  assert.ok(
+    waitOuts.every((m) => !m.message.includes("/8")),
+    "budget-active wait messages do not display the N/8 cycle cap that no longer governs"
+  );
 });
 
 test("adaptive retry budget: a dead account that never succeeds gives up after ~initialTokens wait-outs (retry-exhausted regime)", async () => {
@@ -5182,6 +5192,16 @@ test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (re
   const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
   assert.ok(gaps.length > 0, "no-budget fallback: fixed-cycle cap triggers the durable lose-nothing defer");
   assert.ok(coverage.gapKeys.length > 0, "no-budget fallback: tail conversations deferred after cycle cap");
+  // HONESTY: no-budget fallback messages must still display the N/8 cycle counter —
+  // that IS the governing bound in this path, so it's honest to show it.
+  assert.ok(
+    waitOuts.every((m) => m.message.includes("/8")),
+    "no-budget fallback wait messages display the N/8 cycle cap that actually governs give-up"
+  );
+  assert.ok(
+    waitOuts.every((m) => !m.message.includes("retry budget:")),
+    "no-budget fallback wait messages do not falsely mention a retry budget"
+  );
 });
 
 test("regression: ProviderBudgetController present but WITHOUT retryBudget terminates via cycle cap (no infinite loop)", async () => {

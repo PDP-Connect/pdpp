@@ -374,6 +374,15 @@ export class ProviderBudgetController implements SendDelayHint {
     return this.retryBudget.consume();
   }
 
+  /**
+   * Returns the number of retry tokens currently remaining, or `null` when no
+   * retry budget is configured. Use this in progress messages to show the
+   * actual governing give-up signal when the budget is active.
+   */
+  retryTokensRemaining(): number | null {
+    return this.retryBudget ? this.retryBudget.remaining : null;
+  }
+
   currentStop(reason: ProviderBudgetDeferReason): ProviderBudgetStop {
     return {
       ...(this.circuitBreaker ? { circuitState: this.circuitBreaker.state } : {}),

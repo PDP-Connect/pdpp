@@ -3052,7 +3052,7 @@ export async function runMessagesAndConversationsWithDetail(
     await deps.emit({
       type: "PROGRESS",
       stream: "messages",
-      message: `ChatGPT conversation-detail lane hot after ${servedCount} served 429s; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming detail collection (wait ${densityWaitCycles}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+      message: `ChatGPT conversation-detail lane hot after ${servedCount} served 429s; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming detail collection (${formatWaitBound(providerBudget, densityWaitCycles)})`,
     });
     await sleep(waitMs);
     // The wait discharged the hot bucket — reset the accumulator so the lane
@@ -3077,6 +3077,12 @@ export async function runMessagesAndConversationsWithDetail(
       message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
     });
     return emitRunCapTailConversationDetailGaps(from, capReason);
+  }
+
+  function formatWaitBound(budget: ProviderBudgetController | null | undefined, cycle: number, label = "wait"): string {
+    return budget?.hasRetryBudget()
+      ? `retry budget: ${budget.retryTokensRemaining()} token(s) left; refills on each successful fetch`
+      : `${label} ${cycle}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES}`;
   }
 
   async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
@@ -3124,7 +3130,7 @@ export async function runMessagesAndConversationsWithDetail(
         await deps.emit({
           type: "PROGRESS",
           stream: "messages",
-          message: `ChatGPT conversation-detail lane hit a recoverable rate limit on this conversation; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming the SAME conversation (wait ${densityWaitCycles}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+          message: `ChatGPT conversation-detail lane hit a recoverable rate limit on this conversation; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming the SAME conversation (${formatWaitBound(providerBudget, densityWaitCycles)})`,
         });
         await sleep(waitMs);
         densityTracker.resetAfterWaitOut();
@@ -3227,7 +3233,7 @@ export async function runMessagesAndConversationsWithDetail(
     await deps.emit({
       type: "PROGRESS",
       stream: "messages",
-      message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (cycle ${circuitWaitCycle + 1}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+      message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (${formatWaitBound(providerBudget, circuitWaitCycle + 1, "cycle")})`,
     });
     await sleep(waitMs);
     return { remainingRunBudgetMs };
