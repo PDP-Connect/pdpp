@@ -177,7 +177,7 @@ const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 // those are bounded transient waits we should respect, not blind hammering.
 const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
 
-// ─── Cumulative 429-density early-stop ───────────────────────────────────
+// ─── Cumulative 429-density wait-resume (bounded-fallback defer) ──────────
 //
 // The existing upstream-pressure circuit (observedRecoverablePressure) only
 // opens when a SINGLE conversation exhausts its retry budget (a thrown
@@ -190,24 +190,39 @@ const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
 // conversation finally exhausts).
 //
 // This density stop counts served 429s ACROSS the run (each one already
-// surfaces to the detail lane as a `rate_limited` cooldown event). Once the
-// cumulative count crosses a conservative threshold, we open the SAME defer
-// circuit the exhaustion path uses: the remaining tail is emitted as resumable
-// DETAIL_GAP records (reason "upstream_pressure"), the cursor still commits the
-// hydrated prefix, and the run exits the hot bucket instead of hammering it for
-// hours. It can only ever make a pressured run defer EARLIER — never retry more
-// — so it is strictly safer than today's behavior.
+// surfaces to the detail lane as a `rate_limited` cooldown event). The count is
+// a SIGNAL that the account is hot — NOT a terminator. SLVP-ideal control-system
+// verdict (docs/research/slvp-ideal-control-system-verdict-2026-06-11.md): the
+// correct RESPONSE to source heat is to WAIT OUT the account's minutes-long
+// cool-down IN-RUN and CONTINUE draining — the throttle is per-account and
+// recovers in minutes while still serving, so stopping is "unnecessary lag." So
+// once the cumulative count crosses the threshold the lane sleeps one bounded
+// cool-down, RESETS this accumulator (the wait discharged the hot bucket), and
+// resumes the SAME conversation — a single run drains the whole backlog instead
+// of leaving a tail for a re-kick. Lose-nothing is preserved exactly: nothing is
+// gapped at the wait; anything still unfetched at a GENUINE run end (work-drained
+// / run-budget / abort) is durably gapped by the existing tail paths.
+//
+// BOUNDED FALLBACK (the lose-nothing guard against a hostile account): the number
+// of cool-down waits in a run is capped by CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES,
+// and each wait is bounded by the remaining run budget. Past that cap — or with
+// no run budget left — the lane falls back to the OLD behavior: it opens the
+// SAME defer circuit the exhaustion path uses and emits the remaining tail as
+// resumable DETAIL_GAP records (reason "upstream_pressure"), so a persistently-hot
+// account converges to a bounded, lossless stop rather than spinning forever.
 //
 // Default 8: at the measured ~30–50s per served 429 that is ~4–7 min of
-// cumulative honored backoff — enough to ride out a brief blip, far short of
-// the multi-hour grind. Owner-tunable via env; set to 0 (or any value < 1) to
-// disable the density stop entirely and fall back to exhaustion-only behavior.
+// cumulative honored backoff between waits — enough that the threshold reflects a
+// genuinely hot account, far short of the multi-hour grind. Owner-tunable via
+// env; set to 0 (or any value < 1) to disable the density stop entirely and fall
+// back to exhaustion-only behavior.
 const CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT = 8;
 const CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV = "PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER";
 
 /**
- * Resolve the cumulative served-429 count after which the detail lane defers
- * the remaining conversation tail as upstream_pressure DETAIL_GAP records.
+ * Resolve the cumulative served-429 count at which the detail lane treats the
+ * account as hot and WAITS OUT a bounded cool-down before resuming (deferring the
+ * tail as upstream_pressure DETAIL_GAP records only on the bounded-wait fallback).
  * Unset/invalid → the conservative default. An explicit value < 1 disables the
  * density stop (returns Infinity), preserving exhaustion-only behavior.
  */
@@ -234,10 +249,11 @@ export function resolveChatGptRateLimitDensityStop(env: NodeJS.ProcessEnv = proc
  * BEFORE the detail lane started — list pagination and the other streams run
  * their fetches OUTSIDE any adaptive lane, so their served 429s never reach the
  * lane's cooldown event. Carrying that pre-detail pressure into the tracker lets
- * the detail phase defer the tail earlier on an account the run has already
- * shown to be hot, instead of resetting to zero and grinding up to `threshold`
- * more served 429s. Strictly safer: a higher starting count can only ever make
- * the lane defer sooner, never launch more requests.
+ * the detail phase wait out the account's cool-down sooner on an account the run
+ * has already shown to be hot, instead of resetting to zero and grinding up to
+ * `threshold` more served 429s before the first wait. Strictly safer: a higher
+ * starting count can only ever make the lane pause-to-cool sooner, never launch
+ * more requests into a hot account.
  */
 export class ChatGptRateLimitDensityTracker {
   private rateLimitedCount: number;
@@ -260,6 +276,16 @@ export class ChatGptRateLimitDensityTracker {
   /** True once cumulative served 429s have reached the stop threshold. */
   shouldStop(): boolean {
     return this.rateLimitedCount >= this.threshold;
+  }
+
+  /**
+   * Discharge the accumulator after the lane has WAITED OUT the account's
+   * cool-down in-run (SLVP-ideal density wait-resume). The wait paid down the
+   * hot bucket, so the lane re-earns its way to the next stop from zero — exactly
+   * as a fresh run would. Does NOT change the threshold.
+   */
+  resetAfterWaitOut(): void {
+    this.rateLimitedCount = 0;
   }
 }
 
@@ -2307,10 +2333,11 @@ export async function applyChatGptColdStatePreflight(
 }
 
 interface ConversationDetailPacingOptions {
-  // Cumulative served-429 count after which the lane defers the remaining tail
-  // as upstream_pressure DETAIL_GAP records. Defaults to
-  // resolveChatGptRateLimitDensityStop(); tests inject a small value to exercise
-  // the trip without standing up real backoff.
+  // Cumulative served-429 count at which the lane treats the account as hot and
+  // waits out a bounded cool-down before resuming (deferring the tail as
+  // upstream_pressure DETAIL_GAP records only on the bounded-wait fallback).
+  // Defaults to resolveChatGptRateLimitDensityStop(); tests inject a small value
+  // to exercise the trip without standing up real backoff.
   densityStopThreshold?: number;
   // Served 429s the run absorbed before this detail pass (list pagination + the
   // non-detail streams). Seeds the density tracker so pre-detail source pressure
@@ -2476,14 +2503,17 @@ function makeDeferredConversationDetailGap(
 
 /**
  * Synthesize the same recoverable-pressure error the per-conversation
- * exhaustion path throws, so a cumulative-429-density trip opens the EXISTING
- * upstream-pressure defer circuit (and emits identical DETAIL_GAP shapes)
- * rather than introducing a parallel deferral mechanism. No HTTP status: the
- * trip is a run-level density signal, not a single bad response.
+ * exhaustion path throws, so the cumulative-429-density BOUNDED-WAIT FALLBACK
+ * (a persistently-hot account that stayed hot across every cool-down wait) opens
+ * the EXISTING upstream-pressure defer circuit and emits identical DETAIL_GAP
+ * shapes rather than introducing a parallel deferral mechanism. NOT the primary
+ * density response — that is wait-out-and-resume; this fires only once the
+ * bounded wait budget is spent. No HTTP status: the trip is a run-level density
+ * signal, not a single bad response.
  */
 function makeRateLimitDensityPressureError(observedRateLimited: number): ChatGptRecoverableRetryExhaustedError {
   return new ChatGptRecoverableRetryExhaustedError(
-    `ChatGPT conversation-detail lane observed ${observedRateLimited} served 429s; deferring remaining details to avoid grinding a pressured account`,
+    `ChatGPT conversation-detail lane stayed hot across the bounded cool-down waits after ${observedRateLimited} served 429s; deferring the remaining details as resumable gaps`,
     {
       class: "upstream_pressure",
       networkPressure: {
@@ -2640,11 +2670,14 @@ export async function runMessagesAndConversationsWithDetail(
   // never fired into a hot bucket.
   const tuning = await applyChatGptColdStatePreflight(deps, convosToSync, requestedTuning);
   const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
-  // Cumulative served-429 early-stop. Each `rate_limited` cooldown the lane
+  // Cumulative served-429 density signal. Each `rate_limited` cooldown the lane
   // surfaces (one per served 429, success-after-backoff included) bumps the
-  // tracker; once it crosses threshold we open the same upstream-pressure
-  // circuit the per-conversation exhaustion path uses. Strictly safer: it can
-  // only defer the tail earlier, never add requests.
+  // tracker; once it crosses threshold the lane WAITS OUT the account's cool-down
+  // in-run and resumes (SLVP-ideal), discharging the tracker so it re-earns its
+  // way to the next wait. It opens the same upstream-pressure defer circuit the
+  // per-conversation exhaustion path uses only on the bounded-wait fallback (a
+  // persistently-hot account). Strictly safer than grinding: it never adds
+  // requests into a hot account.
   //
   // Seed the tracker with served 429s the run already absorbed BEFORE this
   // detail pass — list pagination and the non-detail streams fetch outside any
@@ -2819,19 +2852,71 @@ export async function runMessagesAndConversationsWithDetail(
     return { deferredDueToPressure: true, status: 0, json: null };
   }
 
-  async function maybeDeferForRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+  // Cumulative-429 density: the slow-bleed pressure SIGNAL (the account served
+  // enough 429s that it is now hot). SLVP-ideal control-system verdict
+  // (docs/research/slvp-ideal-control-system-verdict-2026-06-11.md): the correct
+  // RESPONSE to source heat is to WAIT OUT the account's minutes-long cool-down
+  // IN-RUN and CONTINUE — not to terminate the run and defer the whole tail.
+  // ChatGPT throttle is per-account and recovers in minutes while still serving;
+  // stopping is "unnecessary lag." So when density trips we sleep one bounded
+  // cool-down, RESET the density accumulator (the wait discharged the hot
+  // bucket), and return null so the SAME conversation is fetched and the lane
+  // keeps draining. Lose-nothing is preserved exactly as before: nothing is
+  // gapped here — any conversation still unfetched when the run GENUINELY ends
+  // (work-drained or a real run-budget/abort) is durably gapped by the existing
+  // run-cap / forward-walk tail paths.
+  //
+  // Bounds (mirror the circuit wait-out so a genuinely-hostile account cannot
+  // loop forever): each density wait is bounded by the remaining run budget, and
+  // the cumulative number of density waits in a run is capped by
+  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES. Past that cap, OR with no run budget
+  // left, we fall back to the durable defer (the old behavior) so the run still
+  // converges to a bounded, lossless stop rather than spinning.
+  let densityWaitCycles = 0;
+  async function maybeWaitOutRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
     if (!densityTracker.shouldStop()) {
       return null;
     }
-    observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
+    const remainingRunBudgetMs = runBudget.remainingWallClockMs();
+    const exhaustedWaitBudget =
+      densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES || runBudget.shouldStop() || remainingRunBudgetMs <= 0;
+    if (exhaustedWaitBudget) {
+      // Hostile/persistent pressure or genuine budget exhaustion: fall back to the
+      // durable defer so the run stops bounded and lossless (the prior behavior).
+      observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `ChatGPT conversation-detail lane: source still hot after ${densityWaitCycles} cool-down wait(s); deferring remaining conversation details as resumable DETAIL_GAP records`,
+      });
+      return emitTailConversationDetailGaps(from, (item) =>
+        makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
+      );
+    }
+    densityWaitCycles += 1;
+    const servedCount = densityTracker.count;
+    // The cool-down: prefer the provider-budget circuit's measured cool-down when
+    // one is reported; otherwise the default reset timeout. The remaining run
+    // budget is a HARD ceiling — apply it LAST so a tiny positive budget caps the
+    // wait even below the floor tick (the floor only raises a sub-tick desired
+    // wait; it never overrides the budget). `remainingRunBudgetMs > 0` is
+    // guaranteed by the exhaustedWaitBudget check above.
+    const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
+    const desiredWaitMs = Math.max(
+      CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS,
+      cooldownMs > 0 ? cooldownMs : CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS
+    );
+    const waitMs = Math.min(desiredWaitMs, remainingRunBudgetMs);
     await deps.emit({
       type: "PROGRESS",
       stream: "messages",
-      message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
+      message: `ChatGPT conversation-detail lane hot after ${servedCount} served 429s; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming detail collection (wait ${densityWaitCycles}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
     });
-    return emitTailConversationDetailGaps(from, (item) =>
-      makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
-    );
+    await sleep(waitMs);
+    // The wait discharged the hot bucket — reset the accumulator so the lane
+    // re-earns its way to the next stop, exactly as a fresh run would.
+    densityTracker.resetAfterWaitOut();
+    return null;
   }
 
   async function maybeDeferForRunBudget(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
@@ -2951,15 +3036,16 @@ export async function runMessagesAndConversationsWithDetail(
     if (runCapDeferReason) {
       return emitRunCapTailConversationDetailGaps(c, runCapDeferReason as ChatGptRunCapReason);
     }
-    // Cumulative 429-density trip. If the run has already absorbed enough served
-    // 429s, stop launching new detail fetches into the pressured account: open
-    // the upstream-pressure circuit so this and every later conversation defer
-    // as resumable DETAIL_GAP records. Catches the slow-bleed "succeeds after
-    // backoff, over and over, for hours" regime the exhaustion-only circuit
-    // never trips on.
-    const densityDefer = await maybeDeferForRateLimitDensity(c);
-    if (densityDefer) {
-      return densityDefer;
+    // Cumulative 429-density trip (the slow-bleed "succeeds after backoff, over
+    // and over, for hours" regime the exhaustion-only circuit never trips on).
+    // Source-heat is a SIGNAL, not a terminator: wait out the account's cool-down
+    // IN-RUN and continue draining (SLVP-ideal). Only falls back to a durable
+    // defer when the bounded wait budget is exhausted (hostile/persistent
+    // pressure) — see maybeWaitOutRateLimitDensity. A non-null result means we
+    // genuinely deferred the tail; null means we waited and the lane continues.
+    const densityResult = await maybeWaitOutRateLimitDensity(c);
+    if (densityResult) {
+      return densityResult;
     }
     // Bounded-run budget trip. Independent of source pressure: when the run has
     // spent its provider-request budget, or spent its wall-clock budget, stop

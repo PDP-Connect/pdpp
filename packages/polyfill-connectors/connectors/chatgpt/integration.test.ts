@@ -228,7 +228,7 @@ test("resolveChatGptDetailLaneTuning falls back to the frozen default per-knob o
   );
 });
 
-// ─── Cumulative 429-density early-stop ───────────────────────────────────
+// ─── Cumulative 429-density wait-resume (bounded-fallback defer) ──────────
 
 test("resolveChatGptRateLimitDensityStop defaults to the conservative threshold when unset", () => {
   assert.equal(resolveChatGptRateLimitDensityStop({}), 8);
@@ -1008,11 +1008,18 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   );
 });
 
-test("runMessagesAndConversationsWithDetail: cumulative 429 density defers the remaining tail as upstream_pressure DETAIL_GAP", async () => {
+test("runMessagesAndConversationsWithDetail: cumulative 429 density WAITS OUT the account cool-down and continues (SLVP-ideal), losing nothing", async () => {
   // Slow-bleed regime: each fetch is served a 429, honors a Retry-After, then
   // SUCCEEDS — so nothing ever throws and the exhaustion-only circuit never
-  // opens. With a density threshold of 2, after two served 429s the lane must
-  // stop launching new detail fetches and defer the rest as resumable gaps.
+  // opens. With a density threshold of 2, after two served 429s the account is
+  // HOT. SLVP-ideal control-system verdict: the lane does NOT terminate and
+  // defer the tail (the old behavior — "unnecessary lag"); it WAITS OUT the
+  // account's cool-down in-run, resets the density accumulator, and CONTINUES
+  // draining. The account recovers in minutes while still serving, so a single
+  // run drains the whole batch instead of leaving a backlog for a re-kick.
+  // Here the injected sleep is instantaneous and run budget is unbounded, so all
+  // five conversations hydrate and NOTHING is gapped — strictly more data
+  // collected, lose-nothing preserved.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const api: ChatGptApi = {
@@ -1052,47 +1059,61 @@ test("runMessagesAndConversationsWithDetail: cumulative 429 density defers the r
     { random: () => 0, sleep: () => undefined, densityStopThreshold: 2 }
   );
 
-  // Two conversations hydrate (each pays its own served 429); the 3rd launch
-  // sees the tracker at threshold and opens the circuit, so convo-3..5 defer
-  // without a fetch.
+  // SLVP-ideal: after the density threshold trips at convo-2, the lane waits out
+  // the cool-down (instant in-test) and RESUMES — so all five conversations are
+  // fetched and hydrate. Nothing is deferred, because the run never genuinely
+  // ended under pressure; it kept draining. (Lose-nothing: any conversation
+  // still unfetched at a GENUINE run end — work-drained / run-budget / abort —
+  // is durably gapped by the existing tail paths, covered by the run-budget and
+  // recovery tests.)
   assert.deepEqual(
     fetchedIds,
-    ["/conversation/convo-1", "/conversation/convo-2"],
-    "no detail fetch is launched once the density stop trips"
+    [
+      "/conversation/convo-1",
+      "/conversation/convo-2",
+      "/conversation/convo-3",
+      "/conversation/convo-4",
+      "/conversation/convo-5",
+    ],
+    "the lane waits out source heat and continues fetching the whole batch"
   );
-  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
-  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3", "convo-4", "convo-5"]);
+  assert.deepEqual(coverage.gapKeys, []);
 
+  // Wait-resume: the whole batch hydrated, so NOTHING was deferred — no
+  // DETAIL_GAP is emitted while the run keeps draining under available budget.
   const gaps = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
   );
-  assert.deepEqual(
-    gaps.map((g) => g.record_key),
-    ["convo-3", "convo-4", "convo-5"],
-    "every deferred conversation gets a resumable DETAIL_GAP"
-  );
-  assert.equal(
-    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
-    true,
-    "density-deferred gaps reuse the upstream_pressure, retryable, pending contract"
-  );
+  assert.deepEqual(gaps, [], "wait-resume hydrates the batch; nothing is deferred under available budget");
 
-  const densityProgress = harness.protocolMessages.filter(
+  // The density trip surfaces a WAIT progress event (the account cooled, the lane
+  // resumed), not a defer/terminate. It names the served-429 count and leaks no
+  // conversation ids or API paths (the data-hygiene guard the old test pinned).
+  const densityWaitProgress = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
       m.type === "PROGRESS" &&
       m.stream === "messages" &&
-      m.message.includes("opened upstream-pressure circuit after") &&
+      m.message.includes("waiting") &&
+      m.message.includes("cool down") &&
       m.message.includes("served 429s")
   );
+  // Wait-resume re-earns its way to each stop: after a wait, the density
+  // accumulator resets to 0, so the threshold (2) re-trips every two served 429s.
+  // Across five conversations each served one 429, that is two trips: convo-2
+  // (count 1→2, trip+reset) and convo-4 (count 1→2, trip+reset); convo-5 leaves
+  // the bucket at 1, below threshold. The exact count proves the reset-after-wait
+  // contract — the lane neither stops permanently after the first trip nor loops
+  // unbounded.
   assert.equal(
-    densityProgress.length,
-    1,
-    "the density trip names upstream pressure and the served-429 count exactly once"
+    densityWaitProgress.length,
+    2,
+    "the density trip waits out the cool-down and resumes, re-earning each stop (two trips across five 429s at threshold 2)"
   );
   assert.equal(
-    densityProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    densityWaitProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
     false,
-    "the density-trip progress message must not leak conversation ids or API paths"
+    "the density-wait progress message must not leak conversation ids or API paths"
   );
 });
 
@@ -1143,12 +1164,13 @@ test("runMessagesAndConversationsWithDetail: served 429s below the density thres
   );
 });
 
-test("runMessagesAndConversationsWithDetail: pre-detail 429s seed the density stop and defer the tail sooner", async () => {
+test("runMessagesAndConversationsWithDetail: pre-detail 429s seed the density stop and trigger the cool-down WAIT sooner (still hydrating the batch)", async () => {
   // The run already absorbed two served 429s outside the detail lane (list
   // pagination on a hot account). With a threshold of 3, ONE in-lane served 429
   // now trips the stop — the seeded pre-detail pressure carries forward instead
-  // of resetting to zero, so the lane defers the tail an account-pressure cycle
-  // earlier than it would on a fresh budget.
+  // of resetting to zero, so the lane reaches the cool-down WAIT an
+  // account-pressure cycle earlier than it would on a fresh budget (then resumes
+  // and still hydrates the whole batch under available budget).
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const api: ChatGptApi = {
@@ -1184,37 +1206,41 @@ test("runMessagesAndConversationsWithDetail: pre-detail 429s seed the density st
     { random: () => 0, sleep: () => undefined, densityStopThreshold: 3, preDetailRateLimited: 2 }
   );
 
-  // Only convo-1 fetches (its served 429 brings the seeded 2 to 3 = threshold);
-  // convo-2..4 see the tracker tripped and defer without a fetch. Without the
-  // seed this same shape would have hydrated three before tripping.
+  // Wait-resume + seed: the seeded 2 + convo-1's in-lane 429 = 3 = threshold, so
+  // the density WAIT trips after convo-1 (the seed made it trip an account-pressure
+  // cycle EARLIER than a fresh budget would — that is what the seed proves). The
+  // lane then waits out the cool-down, resets, and RESUMES — so convo-2..4 still
+  // hydrate under the unbounded budget. Nothing is deferred. (Without the seed,
+  // the same shape would not trip until 3 in-lane 429s; the seed shifts the WAIT
+  // earlier, not a defer earlier.)
   assert.deepEqual(
     fetchedIds,
-    ["/conversation/convo-1"],
-    "the pre-detail seed makes a single in-lane 429 trip the stop"
+    ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3", "/conversation/convo-4"],
+    "the seed shifts the density WAIT earlier, but the lane resumes and hydrates the whole batch"
   );
-  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
-  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3", "convo-4"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3", "convo-4"]);
+  assert.deepEqual(coverage.gapKeys, []);
 
+  // No gap is deferred — the run kept draining.
   const gaps = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
   );
-  assert.equal(
-    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
-    true,
-    "seeded-defer gaps reuse the same resumable upstream_pressure contract"
-  );
+  assert.deepEqual(gaps, [], "wait-resume defers nothing under available budget, even with a pre-detail seed");
 
-  // The trip message reports the FULL count (seed + in-lane), so the operator
-  // sees the run-level pressure, not just the detail-phase slice.
-  const densityProgress = harness.protocolMessages.filter(
+  // The wait trips exactly once and reports the FULL cumulative count (seed +
+  // in-lane), so the operator sees run-level pressure, not just the detail slice.
+  const densityWaitProgress = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
-      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("opened upstream-pressure circuit after")
+      m.type === "PROGRESS" &&
+      m.stream === "messages" &&
+      m.message.includes("waiting") &&
+      m.message.includes("cool down")
   );
-  assert.equal(densityProgress.length, 1);
+  assert.equal(densityWaitProgress.length, 1, "the seeded density trip waits out the cool-down exactly once");
   assert.equal(
-    densityProgress[0]?.message.includes("after 3 served 429s"),
+    densityWaitProgress[0]?.message.includes("3 served 429s"),
     true,
-    "the trip names the cumulative seed+in-lane count"
+    "the wait names the cumulative seed+in-lane count"
   );
 });
 
@@ -3221,13 +3247,14 @@ test("runConversationsAndMessagesStreams: a GENUINELY budget-exhausted recovery 
   );
 });
 
-test("runConversationsAndMessagesStreams: source-pressure recovery stop with budget remaining PROCEEDS to the forward walk", async () => {
-  // Drain-within-budget (recovery-early-exit-diagnosis §5): a transient
-  // source-pressure circuit tripping during recovery must NOT terminate the run
-  // when budget remains. The forward walk's LIST phase still advances the cursor
-  // and discovers new conversations; un-hydrated recovery items stay durable
-  // DETAIL_GAPs. Force a source-pressure stop (not a budget stop) by pre-tripping
-  // the density stop, with NO run-cap so budget is plentiful.
+test("runConversationsAndMessagesStreams: density during recovery WAITS OUT the cool-down, hydrates the recovery item, and PROCEEDS to the forward walk", async () => {
+  // Drain-within-budget (recovery-early-exit-diagnosis §5), under SLVP-ideal
+  // wait-resume: a density trip during recovery must NOT terminate the run when
+  // budget remains. With the cool-down instant in-test and budget plentiful, the
+  // density trip WAITS OUT and the recovery item HYDRATES (lose-nothing by
+  // collection, not deferral). The forward walk's LIST phase then still advances
+  // the cursor and discovers new conversations. Pre-trip the density stop (not a
+  // budget stop) with NO run-cap so budget is plentiful and the wait resumes.
   const harness = makeRecordingEmit(validateRecord);
   const recItem = makeConvo({ id: "rec-pressured", update_time: 1_700_000_000 });
   const fetchedDetail: string[] = [];
@@ -3270,31 +3297,155 @@ test("runConversationsAndMessagesStreams: source-pressure recovery stop with bud
       detailPacing: {
         random: () => 0,
         sleep: () => undefined,
-        // Pre-trip the density stop so recovery defers its tail as upstream_pressure
-        // immediately — a source-pressure stop with budget still remaining.
+        // Pre-trip the density stop so recovery hits the cool-down WAIT
+        // immediately (budget plentiful → it waits out and resumes, hydrating the
+        // recovery item rather than deferring it).
         densityStopThreshold: 1,
         preDetailRateLimited: 1,
       },
     }
   );
 
-  // The recovery item is deferred as a durable source-pressure DETAIL_GAP (the
-  // lose-nothing invariant holds regardless of the forward walk proceeding).
+  // Wait-resume (SLVP-ideal): the density trip no longer DEFERS the recovery item
+  // — it waits out the cool-down (instant in-test, budget plentiful) and HYDRATES
+  // it. So the lose-nothing invariant holds by COLLECTION, not deferral: the
+  // recovery item is fetched, and NO upstream_pressure gap is left behind. (The
+  // durable-gap path is still exercised when the wait budget is exhausted — see
+  // the bounded-fallback test below.)
   const pressureGaps = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
       m.type === "DETAIL_GAP" && m.reason === "upstream_pressure"
   );
-  assert.ok(pressureGaps.length >= 1, "un-hydrated recovery items remain durable upstream_pressure DETAIL_GAPs");
+  assert.deepEqual(pressureGaps, [], "wait-resume hydrates the pressured recovery item instead of deferring it");
+  assert.ok(
+    fetchedDetail.some((p) => p.includes("rec-pressured")),
+    "the pressured recovery item is fetched (hydrated) after the cool-down wait — lose-nothing by collection"
+  );
 
-  // THE FIX: the forward walk proceeds — the conversation list is fetched
-  // (cursor would advance) instead of the run terminating after recovery.
+  // THE FIX (unchanged): the forward walk proceeds — the conversation list is
+  // fetched (cursor would advance) instead of the run terminating after recovery.
+  // (Under wait-resume, recovery hydrates rather than defers, so there is no
+  // "continues its forward walk while budget remains" defer announcement here;
+  // the list-phase running IS the proof the walk proceeded. The defer-path
+  // announcement is exercised by the bounded-fallback test below, where the wait
+  // budget is exhausted and recovery genuinely stops with pending gaps.)
   assert.ok(listedCursors.length >= 1, "the forward walk's list phase runs (advancing the cursor)");
+});
+
+test("runConversationsAndMessagesStreams: a persistently-hot account EXHAUSTS the bounded density-wait budget and defers the tail as durable upstream_pressure gaps", async () => {
+  // Bounded-fallback (the lose-nothing guard for wait-resume): wait-resume is not
+  // unbounded. A genuinely hostile account that stays hot across every cool-down
+  // wait must converge to a BOUNDED, LOSSLESS stop — not loop forever. After
+  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES waits the lane falls back to the OLD
+  // behavior: it defers the remaining conversation details as durable
+  // upstream_pressure DETAIL_GAP records (resumable next run), recovery reports
+  // stoppedWithPending, and — because budget still remains — the run still
+  // PROCEEDS to its forward walk. Every served-429 here keeps the account hot, so
+  // each post-wait reset is immediately re-armed and all eight cool-down waits are
+  // spent; the ninth trip exhausts the wait budget and defers.
+  const harness = makeRecordingEmit(validateRecord);
+  // More recovery items than wait cycles so the tail is genuinely deferred (some
+  // items are reached only after the wait budget is gone).
+  const recItems = Array.from({ length: 12 }, (_v, i) =>
+    makeConvo({ id: `hot-${i + 1}`, update_time: 1_700_000_000 + i })
+  );
+  const fetchedDetail: string[] = [];
+  const listedCursors: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations")) {
+        listedCursors.push(path);
+        return {
+          status: 200,
+          json: {
+            items: [
+              { id: "fwd-new", title: "f", create_time: 1_700_001_900, update_time: 1_700_001_900, current_node: "a1" },
+            ],
+          } as ChatGptJson,
+        };
+      }
+      fetchedDetail.push(path);
+      // The account is persistently hot: every served detail reports a 429 the
+      // density tracker counts, so each post-wait reset is immediately re-armed
+      // and the density stop keeps re-tripping until the wait budget is spent.
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: recItems.map((c, i) => makeDetailGapFromConvo(`gap-hot-${i + 1}`, c)),
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // Budget is plentiful (default, unbounded): the ONLY reason the lane stops
+    // waiting and defers is the bounded density-wait cycle cap — NOT a run-cap.
+    // This isolates the wait-budget-exhausted fallback from the run-budget defer.
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    {
+      detailPacing: {
+        random: () => 0,
+        sleep: () => undefined,
+        // Threshold 1: a single served 429 re-trips the density stop, so every
+        // post-wait reset is immediately re-armed and the bounded wait budget is
+        // spent in full.
+        densityStopThreshold: 1,
+      },
+    }
+  );
+
+  // The wait budget is bounded: at most CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES (8)
+  // cool-down waits are emitted before the lane gives up and defers — it does NOT
+  // loop forever on a persistently-hot account.
+  const densityWaitProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("waiting") && m.message.includes("cool down")
+  );
+  assert.ok(densityWaitProgress.length >= 1, "the lane DID wait out at least one cool-down before falling back");
+  assert.ok(
+    densityWaitProgress.length <= 8,
+    "the density-wait budget is bounded (≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES cool-down waits)"
+  );
+
+  // Wait budget exhausted → the lane emits the fallback defer announcement and
+  // defers the remaining tail as durable upstream_pressure DETAIL_GAP records.
+  assert.ok(
+    harness.protocolMessages.some(
+      (m) => m.type === "PROGRESS" && /source still hot after .* cool-down wait/.test(m.message)
+    ),
+    "the lane announces it is deferring the tail after exhausting the bounded wait budget"
+  );
+  const pressureGaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      m.type === "DETAIL_GAP" && m.reason === "upstream_pressure"
+  );
+  assert.ok(
+    pressureGaps.length >= 1,
+    "the un-hydratable tail of a persistently-hot account is deferred as durable upstream_pressure gaps (lose-nothing by deferral)"
+  );
+
+  // Recovery stopped with pending items, so it announces the run continues to its
+  // forward walk while budget remains — and the forward walk's list phase runs.
   assert.ok(
     harness.protocolMessages.some(
       (m) => m.type === "PROGRESS" && /run continues its forward walk while budget remains/.test(m.message)
     ),
-    "the run announces it continues to the forward walk despite the recovery stop"
+    "recovery announces it continues to the forward walk despite the bounded-wait defer"
   );
+  assert.ok(listedCursors.length >= 1, "the forward walk's list phase still runs after the bounded-wait defer");
 });
 
 test("runConversationsAndMessagesStreams: warm-start round-trip — a run persists its learned interval; the next run restores it", async () => {
