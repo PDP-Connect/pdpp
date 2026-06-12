@@ -354,7 +354,9 @@ const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
 // PDPP_CHATGPT_PACING_MIN_INTERVAL_MS. Every other pacing constant is a derived
 // horizon or an AIMD shape; this is the only behavioral safety number.
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
-const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
+// The retry budget is PRUNED to default-OFF (SLVP-ideal: not a run terminator).
+// 5 was the prior default-ON capacity — set PDPP_CHATGPT_RETRY_BUDGET_CAPACITY=5 to
+// restore it exactly. See resolveChatGptRetryBudgetCapacity for the rationale.
 const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
 // Forward-progress guard for the wait-out-circuit loop. A `circuit_open` gate is
 // a TRANSIENT back-off, not budget exhaustion: the lane waits out the circuit's
@@ -467,9 +469,20 @@ export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv =
 function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
   const trimmed = env[CHATGPT_RETRY_BUDGET_CAPACITY_ENV]?.trim();
   if (trimmed == null || trimmed === "") {
-    return Number.isFinite(maxRequests)
-      ? retryBudgetCapacityFromRequestCap({ maxRequests })
-      : CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY;
+    // SLVP-ideal prune (docs/research/slvp-ideal-control-system-verdict-2026-06-11.md
+    // §"Bounded ONLY by rate-ceiling + lose-nothing + cooperative-yield"): a per-run
+    // provider retry budget is an INCIDENTAL run-TERMINATOR — it made a run quit
+    // mid-throttle-window ("reached its per-run provider budget (retry_budget)")
+    // instead of waiting out the account's cool-down in-run and resuming. It is the
+    // only default-ON terminator the ideal forbids, so its UNSET default is now OFF
+    // (null = no budget = drain until work-done / rate-ceiling / lose-nothing /
+    // cooperative-yield). An explicit fetch-cap envelope still derives a matching
+    // retry budget (so opting into a run cap stays coherent); only the implicit
+    // always-on default is removed. The per-conversation CHATGPT_RATE_LIMIT_MAX_ATTEMPTS
+    // cap + bare-429 fast-open remain as the surviving per-ID grind backstops.
+    // RE-ENABLE: set PDPP_CHATGPT_RETRY_BUDGET_CAPACITY (e.g. =5 restores the prior
+    // default-ON behavior exactly).
+    return Number.isFinite(maxRequests) ? retryBudgetCapacityFromRequestCap({ maxRequests }) : null;
   }
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0) {

@@ -1397,7 +1397,7 @@ test("resolveChatGptMaxRunWallClockMs: unset/non-positive → no cap; positive m
   );
 });
 
-test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; explicit disables stay available", async () => {
+test("resolveChatGptProviderBudget: defaults enable pacing + circuit breaker; the retry budget is PRUNED to default-off (re-enable via env)", async () => {
   const defaultBudget = resolveChatGptProviderBudget({});
   assert.ok(defaultBudget instanceof ProviderBudgetController);
   assert.ok(defaultBudget.pacing, "ChatGPT default enables adaptive inter-request pacing");
@@ -1406,15 +1406,28 @@ test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; exp
     1000,
     "ChatGPT cold-starts at the discovery seed (lowered from glacial 2500ms); warm-start restores the learned value on later runs"
   );
-  assert.ok(defaultBudget.retryBudget, "ChatGPT default keeps a retry budget even without a request cap");
-  assert.equal(defaultBudget.retryBudget.capacity, 5);
+  // SLVP-ideal prune: the per-run retry budget was the only default-ON run
+  // TERMINATOR, and it made a run quit mid-throttle-window instead of waiting out
+  // the account's cool-down and resuming. It is default-OFF now (the ideal bounds
+  // a run only by rate-ceiling + lose-nothing + cooperative-yield). The per-
+  // conversation attempt cap + circuit breaker remain as the per-ID backstops.
+  assert.equal(
+    defaultBudget.retryBudget,
+    null,
+    "the retry budget is pruned to default-off — no implicit per-run terminator"
+  );
   assert.ok(defaultBudget.circuitBreaker, "ChatGPT default enables a circuit breaker");
 
-  const retryOnlyByPacingDisable = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
-  assert.ok(retryOnlyByPacingDisable instanceof ProviderBudgetController);
-  assert.equal(retryOnlyByPacingDisable.pacing, null, "pacing can be disabled independently");
-  assert.ok(retryOnlyByPacingDisable.retryBudget);
-  assert.ok(retryOnlyByPacingDisable.circuitBreaker);
+  // Re-enable path: setting the env var restores the prior default-ON behavior exactly.
+  const retryBudgetReenabled = resolveChatGptProviderBudget({ PDPP_CHATGPT_RETRY_BUDGET_CAPACITY: "5" });
+  assert.ok(retryBudgetReenabled?.retryBudget, "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY re-enables the retry budget");
+  assert.equal(retryBudgetReenabled.retryBudget.capacity, 5, "re-enabled at the documented prior default capacity");
+
+  const pacingDisabled = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
+  assert.ok(pacingDisabled instanceof ProviderBudgetController);
+  assert.equal(pacingDisabled.pacing, null, "pacing can be disabled independently");
+  assert.equal(pacingDisabled.retryBudget, null, "retry budget stays default-off when only pacing is disabled");
+  assert.ok(pacingDisabled.circuitBreaker);
 
   assert.equal(
     resolveChatGptProviderBudget({
