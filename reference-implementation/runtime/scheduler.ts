@@ -282,6 +282,48 @@ export type HumanRequiredStateEscalationHandler = (info: {
   readonly reason: "blocked" | "needs_attention";
 }) => void | Promise<void>;
 
+/**
+ * Routes a managed-connector scheduled run through `controller.runNow` so it
+ * acquires the managed neko browser-surface lease (with a persistent CF profile)
+ * instead of launching a fresh headless Chromium with an empty profile.
+ *
+ * Called ONLY when the connector is managed (i.e. the controller would call
+ * `acquireManagedBrowserSurfaceForRun`). Non-managed connectors fall through to
+ * the existing `runConnector` path unchanged.
+ *
+ * The function MUST call `controller.runNow(connectorId, opts)` and await it.
+ * Because `runNow` wraps the connector spawn in `.finally(() => finalizeRunCleanup(...))`
+ * the surface lease is released on every exit path — success, failure, and crash.
+ * Do NOT add a separate release call in the scheduler.
+ *
+ * Return value: the run handle enriched with the REAL terminal status.
+ *
+ * The callback is responsible for awaiting the run's actual completion (via
+ * `controller.awaitRun`) before returning, so the status field reflects the
+ * genuine outcome ("succeeded" | "failed") — not the intermediate "started"
+ * handle that `controller.runNow` returns immediately.
+ *
+ * Early-exit statuses (browser_surface_queued, browser_surface_probe_failed,
+ * browser_surface_lost, surface_failed) are returned without awaiting, since
+ * no run was started and there is nothing to await.
+ *
+ * Returning null signals that this connector is not managed; launchRun falls
+ * through to the direct runConnector path unchanged.
+ */
+export type RunManagedConnectorViaController = (
+  connectorId: string,
+  opts: {
+    connectorInstanceId: string;
+    ownerToken: string;
+    priorityClass: "scheduled_refresh";
+    triggerKind: "scheduled";
+    runId?: string;
+    traceContext?: unknown;
+    rsUrl?: string;
+    referenceBaseUrl?: string | null;
+  }
+) => Promise<{ readonly run_id: string; readonly status: string; readonly trace_id: string } | null>;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
   getSourcePressureGaps?: GetSourcePressureGapsHandler;
@@ -296,6 +338,20 @@ export interface SchedulerOptions {
   readinessChecker?: SchedulerReadinessChecker;
   referenceBaseUrl?: string | null;
   resolveStaticSecretRunEnv?: ResolveStaticSecretRunEnv | null;
+  /**
+   * When provided, managed-connector scheduled runs are routed through
+   * `controller.runNow` (which acquires the neko browser-surface lease with
+   * a warm, persistent CF profile) instead of launching a bare headless
+   * Chromium via `runConnector` directly.
+   *
+   * Non-managed connectors are NOT affected — they fall through to the existing
+   * `runConnector` path. The `isManagedConnector` check lives in `launchRun`.
+   *
+   * Injected the same way as `resolveStaticSecretRunEnv`: optional in the
+   * interface so existing callers (tests that don't exercise managed surfaces)
+   * remain unaffected.
+   */
+  runManagedConnectorViaController?: RunManagedConnectorViaController | null;
   rsUrl?: string;
   schedulerStore?: Pick<
     SchedulerStore,
@@ -887,6 +943,36 @@ function buildGaveUpEvent(
   };
 }
 
+/**
+ * One-shot skip emitted when `controller.runNow` returns a
+ * `browser_surface_queued`, `browser_surface_probe_failed`, or
+ * `browser_surface_lost` status for a managed-connector scheduled run.
+ * These statuses mean the neko surface cap is full or the surface is
+ * temporarily unavailable — the scheduler must treat them as a deferred
+ * skip (next tick retries cleanly) rather than a retryable failure (which
+ * would increment the failure streak and eventually drove the connector
+ * into back-off).
+ */
+function buildBrowserSurfaceUnavailableSkip(
+  connectorId: string,
+  status: string,
+  connectorInstanceId?: string
+): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `browser_surface_unavailable: ${status}`,
+    attempt: 0,
+  };
+}
+
 function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
@@ -1268,6 +1354,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getSourcePressureGaps = () => [],
     getNonPressureRecoverableCount = async () => 0,
     resolveStaticSecretRunEnv = null,
+    runManagedConnectorViaController = null,
   } = opts;
 
   const runtime = buildRuntime();
@@ -1788,6 +1875,110 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         })
       );
     };
+
+    // ── Managed-connector scheduled run: route through controller.runNow ──────
+    //
+    // Manual runs already go through controller.runNow (the owner calls the
+    // /_ref/run-now endpoint, which calls controller.runNow directly). For
+    // SCHEDULED runs the scheduler previously called runConnector directly,
+    // bypassing the managed-neko browser-surface lease. That meant:
+    //   - No warm neko surface was acquired.
+    //   - Chromium launched fresh with an EMPTY profile (no cf_clearance cookie).
+    //   - Cloudflare challenged 100% of scheduled runs.
+    //
+    // Fix: route scheduled runs for managed connectors through controller.runNow,
+    // which calls acquireManagedBrowserSurfaceForRun and hands the connector
+    // the warm, persistent neko surface env. The callback embeds the
+    // isManagedConnector check so non-managed connectors fall through unchanged.
+    //
+    // Lease release: controller.runNow wraps the connector spawn in:
+    //   .finally(() => finalizeRunCleanup({...}))
+    // which calls releaseBrowserSurfaceLeaseAfterRun → releaseBrowserSurfaceLease.
+    // This release fires on EVERY exit path (success, failure, crash) so the
+    // scheduler must NOT add a separate release call — that would double-release.
+    //
+    // controller_active_runs mutual exclusion: validateRunNowPreconditions checks
+    // activeRuns.get(key) and throws run_already_active (ControllerError) when a
+    // run is already in-flight for this connector. The scheduler's own
+    // runtime.activeRuns.has(key) guard in executeRun prevents double-dispatch
+    // from within the scheduler. Both guards stay intact.
+    if (runManagedConnectorViaController && !isManual) {
+      const startedAt = nowIso();
+      let runNowResult: { readonly run_id: string; readonly status: string; readonly trace_id: string } | null;
+      try {
+        runNowResult = await runManagedConnectorViaController(connectorId, {
+          connectorInstanceId,
+          ownerToken,
+          priorityClass: "scheduled_refresh",
+          triggerKind: "scheduled",
+          referenceBaseUrl,
+          rsUrl,
+        });
+      } catch (err) {
+        // A throw means controller.runNow itself failed (e.g. run_already_active,
+        // not_found, provider_pressure_cooldown). Map to a retryable failure so
+        // the scheduler's retry/back-off machinery handles it normally.
+        const message = err instanceof Error ? err.message : String(err);
+        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        return recordAndNotify({
+          connectorId,
+          connectorInstanceId: connectorInstanceId ?? null,
+          source: buildScheduledRunSource(connectorId),
+          status: "failed",
+          recordsEmitted: 0,
+          checkpointSummary: null,
+          knownGaps: [],
+          startedAt,
+          completedAt: nowIso(),
+          error: `controller_run_now_failed: ${message}`,
+          attempt: 1,
+        });
+      }
+
+      // Null return means the connector is not managed — fall through to the
+      // existing runConnector path below (non-managed connectors unaffected).
+      if (runNowResult !== null) {
+        // Surface unavailable (cap full, probe failed, surface lost) →
+        // DEFERRED SKIP so the next tick retries cleanly. Must NOT be a
+        // retryable failure (that would increment the failure streak and
+        // eventually drive the connector into back-off for a transient
+        // surface-capacity condition).
+        const surfaceUnavailableStatuses = new Set([
+          "run_browser_surface_queued",
+          "browser_surface_probe_failed",
+          "browser_surface_lost",
+          "surface_failed",
+        ]);
+        if (runNowResult.status && surfaceUnavailableStatuses.has(runNowResult.status)) {
+          return recordAndNotify(
+            buildBrowserSurfaceUnavailableSkip(connectorId, runNowResult.status, connectorInstanceId)
+          );
+        }
+
+        // The callback has already awaited the run's real terminal outcome
+        // (via controller.awaitRun) before returning, so runNowResult.status
+        // is "succeeded" or "failed" — the actual result, not a synthetic
+        // handle. Record it faithfully so the scheduler's consecutiveFailures
+        // streak and back-off machinery fire correctly on genuine failures.
+        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        const terminalStatus: "succeeded" | "failed" =
+          runNowResult.status === "succeeded" ? "succeeded" : "failed";
+        return recordAndNotify({
+          connectorId,
+          connectorInstanceId: connectorInstanceId ?? null,
+          source: buildScheduledRunSource(connectorId),
+          status: terminalStatus,
+          recordsEmitted: 0,
+          checkpointSummary: null,
+          knownGaps: [],
+          startedAt,
+          completedAt: nowIso(),
+          runId: runNowResult.run_id ?? null,
+          traceId: runNowResult.trace_id ?? null,
+          attempt: 1,
+        });
+      }
+    }
 
     return await runWithRetries(schedule, {
       connectorPath,

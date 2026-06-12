@@ -5285,6 +5285,60 @@ function createReferenceSchedulerManager({
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
       resolveStaticSecretRunEnv: resolveScheduledConnectionScopedRunEnv,
+      // Route managed-connector scheduled runs through controller.runNow so
+      // they acquire the neko browser-surface lease (warm persistent profile,
+      // cf_clearance cookie present) instead of launching a fresh headless
+      // Chromium with an empty profile that Cloudflare challenges 100%.
+      //
+      // The callback returns null for non-managed connectors so launchRun
+      // falls through to the existing runConnector path unchanged.
+      //
+      // Lease release is inherited via runNow's own .finally() →
+      // finalizeRunCleanup → releaseBrowserSurfaceLeaseAfterRun chain.
+      // No separate release is added here (double-release risk).
+      //
+      // controller_active_runs mutual exclusion: validateRunNowPreconditions
+      // throws run_already_active when a run is already in-flight; the
+      // scheduler's own runtime.activeRuns guard prevents double-dispatch
+      // from within the scheduler.
+      runManagedConnectorViaController: controller?.browserSurfaceLeaseManager
+        ? async (connectorId, opts) => {
+            if (!controller.browserSurfaceLeaseManager.isManagedConnector(connectorId)) {
+              // Not a managed connector — signal launchRun to use the direct
+              // runConnector path (no lease needed).
+              return null;
+            }
+            const handle = await controller.runNow(connectorId, {
+              connectorInstanceId: opts.connectorInstanceId,
+              ownerToken: opts.ownerToken,
+              priorityClass: opts.priorityClass,
+              triggerKind: opts.triggerKind,
+              rsUrl: opts.rsUrl,
+              referenceBaseUrl: opts.referenceBaseUrl,
+            });
+            // Early-exit statuses (browser_surface_queued, surface_failed, etc.)
+            // mean no run was started — return the handle as-is for the scheduler's
+            // surface-unavailable skip path.
+            const surfaceUnavailableStatuses = new Set([
+              'run_browser_surface_queued',
+              'browser_surface_probe_failed',
+              'browser_surface_lost',
+              'surface_failed',
+            ]);
+            if (handle.status && surfaceUnavailableStatuses.has(handle.status)) {
+              return handle;
+            }
+            // Run was dispatched (status "started"). Await its real terminal
+            // outcome so the scheduler records the true succeeded/failed status
+            // and its failure-streak / back-off machinery fires correctly.
+            // controller.awaitRun waits for activeRunPromises[runId] to settle
+            // (the .finally() cleanup chain), then reads the spine terminal event.
+            // No deadlock risk: the run has its own wall-clock budget; a hung run
+            // is the run's responsibility, matching the old runConnector await.
+            const terminalStatus = await controller.awaitRun(handle.run_id);
+            return { run_id: handle.run_id, trace_id: handle.trace_id, status: terminalStatus };
+          }
+        : null,
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by
         // construction: getSyncState keys storage off its storage-target
