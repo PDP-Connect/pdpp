@@ -3060,6 +3060,37 @@ export async function runMessagesAndConversationsWithDetail(
         providerBudget,
         lastEmittedRateIntervalMs
       );
+
+      // SLVP-ideal: wait out the cooldown in-run and re-fetch the SAME
+      // conversation, exactly like the circuit-open and density regimes —
+      // instead of immediately latching and dumping the tranche. Uses the
+      // SHARED densityWaitCycles counter (no new bound introduced). Only after
+      // the bounded envelope is spent does it fall through to the existing
+      // latch + tail-defer (the lose-nothing fallback).
+      const remainingRunBudgetMs = runBudget.remainingWallClockMs();
+      const waitBudgetExhausted =
+        densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES || runBudget.shouldStop() || remainingRunBudgetMs <= 0;
+      if (!waitBudgetExhausted) {
+        densityWaitCycles += 1;
+        const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
+        const desiredWaitMs = Math.max(
+          CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS,
+          cooldownMs > 0 ? cooldownMs : CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS
+        );
+        const waitMs = Math.min(desiredWaitMs, remainingRunBudgetMs);
+        await deps.emit({
+          type: "PROGRESS",
+          stream: "messages",
+          message: `ChatGPT conversation-detail lane hit a recoverable rate limit on this conversation; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming the SAME conversation (wait ${densityWaitCycles}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+        });
+        await sleep(waitMs);
+        densityTracker.resetAfterWaitOut();
+        // Return null: caller retries fetchConversationDetailWaitingOutCircuit
+        // on the SAME conversation. Do NOT latch; do NOT dump the tranche.
+        return null;
+      }
+
+      // Bounded envelope spent → existing latch + lose-nothing tail defer:
       observedRecoverablePressure = err;
       await deps.emit({
         type: "PROGRESS",
@@ -3072,6 +3103,29 @@ export async function runMessagesAndConversationsWithDetail(
       );
     }
     return null;
+  }
+
+  // Fetch one conversation detail with wait-out-and-resume for recoverable rate
+  // limits (ChatGptRecoverableRetryExhaustedError). Uses the shared
+  // densityWaitCycles envelope via maybeDeferForFetchError: if the error handler
+  // waited and returned null, retry the same conversation; if it returned a
+  // durable-defer result, propagate it. Non-recoverable errors re-throw as usual.
+  async function fetchConversationDetailWithRecoverableRetry(c: ConversationListItem): Promise<ChatGptFetchResult> {
+    for (;;) {
+      try {
+        return await fetchConversationDetailWaitingOutCircuit(c);
+      } catch (err) {
+        const fetchErrorDefer = await maybeDeferForFetchError(c, err);
+        if (fetchErrorDefer) {
+          return fetchErrorDefer;
+        }
+        if (!(err instanceof ChatGptRecoverableRetryExhaustedError)) {
+          throw err;
+        }
+        // null return + ChatGptRecoverableRetryExhaustedError: waited out,
+        // re-fetch the SAME conversation on the next loop iteration.
+      }
+    }
   }
 
   // Fetch one conversation detail, treating a `circuit_open` provider-budget
@@ -3161,15 +3215,11 @@ export async function runMessagesAndConversationsWithDetail(
     if (runBudgetDefer) {
       return runBudgetDefer;
     }
-    let detail: ChatGptFetchResult;
-    try {
-      detail = await fetchConversationDetailWaitingOutCircuit(c);
-    } catch (err) {
-      const fetchErrorDefer = await maybeDeferForFetchError(c, err);
-      if (fetchErrorDefer) {
-        return fetchErrorDefer;
-      }
-      throw err;
+    const detail = await fetchConversationDetailWithRecoverableRetry(c);
+    if (detail.deferredDueToPressure) {
+      // fetchConversationDetailWithRecoverableRetry surfaced a durable-defer
+      // result from maybeDeferForFetchError — propagate it directly.
+      return detail;
     }
     if (detail.status !== 200) {
       providerBudget?.recordFailure();

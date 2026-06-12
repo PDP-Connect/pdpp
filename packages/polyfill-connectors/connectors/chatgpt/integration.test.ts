@@ -2783,7 +2783,22 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
 
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
-  assert.deepEqual(fetches, ["/conversations?offset=0&limit=100&order=updated", "/conversation/convo-gap"]);
+  // The new SLVP wait-out-and-resume path retries the SAME conversation up to
+  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES (8) times before falling through to the
+  // latch-and-defer fallback. With sleep injected as a no-op, this is instant.
+  // So convo-gap is attempted 9 times total (1 initial + 8 wait-resume retries).
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+    "/conversation/convo-gap",
+  ]);
   assert.equal(
     harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-gap"),
     false,
@@ -2889,6 +2904,288 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
 });
 
+// ─── Regime (c): per-conversation retry-exhaustion wait-out-and-resume ────────
+// These tests cover the run_1781286755231 regression: a single
+// ChatGptRecoverableRetryExhaustedError on ONE conversation was immediately
+// latching observedRecoverablePressure and dumping the entire remaining tranche
+// as durable gaps. The fix waits out the cooldown in-run (using the shared
+// densityWaitCycles budget) and retries the SAME conversation, so the other
+// conversations in the tranche are still fetched.
+
+test("runConversationsAndMessagesStreams: a single recoverable rate-limit on ONE conversation WAITS OUT and the remaining tranche is still fetched (run_1781286755231 regression)", async () => {
+  // Scenario: 5 conversations, second one always throws ChatGptRecoverableRetryExhaustedError.
+  // OLD behavior: convo-2 exhausts → latch → convo-3..5 dumped as upstream_pressure gaps.
+  // NEW behavior: convo-2 exhausts → wait out → retry → exhausts again → ... (8 retries)
+  //               → latch only after 8 cycles; convo-3..5 deferred as gaps (NOT skipped
+  //               before the first retry attempt). But crucially after the wait, convo-2 is
+  //               RE-TRIED (not just skipped). Since sleep is injected as a no-op, all 8
+  //               wait-retry cycles complete instantly, then the envelope is spent and the
+  //               latch fires. With the fix in place, convo-2 is attempted 9 times, and
+  //               convo-3..5 are deferred as upstream_pressure gaps only after that.
+  //
+  // The key regression oracle: convo-3 and convo-4 are NOT fetched (they are deferred
+  // after the latch), but convo-2 IS retried 9 times — proving the wait-out loop runs
+  // instead of latching immediately.
+  const harness = makeRecordingEmit(validateRecord);
+  const listItems = [
+    makeConvo({ id: "convo-1", update_time: 1_700_000_001 }),
+    makeConvo({ id: "convo-2", update_time: 1_700_000_002 }),
+    makeConvo({ id: "convo-3", update_time: 1_700_000_003 }),
+    makeConvo({ id: "convo-4", update_time: 1_700_000_004 }),
+    makeConvo({ id: "convo-5", update_time: 1_700_000_005 }),
+  ];
+  const fetches: string[] = [];
+  const sleepCalls: number[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems, has_missing_conversations: false, total: listItems.length },
+        });
+      }
+      if (path === "/conversation/convo-2") {
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(
+            "apiFetch got 429 on GET /conversation/convo-2 after retry budget exhausted bearer secret",
+            {
+              class: "rate_limited",
+              httpStatus: 429,
+              networkPressure: {
+                endpoint_route: "GET /conversation/{conversation_id}",
+                error_class: "http_429",
+                method: "GET",
+                attempt: 12,
+                max_attempts: 12,
+                status: 429,
+                retry_after_ms: 60_000,
+                safe_headers: { "retry-after-ms": 60_000 },
+              },
+            }
+          )
+        );
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    {},
+    {
+      detailPacing: {
+        random: () => 0,
+        sleep: (ms) => {
+          sleepCalls.push(ms);
+          return Promise.resolve();
+        },
+      },
+    }
+  );
+
+  // convo-1 fetched once; convo-2 attempted 9 times (1 + 8 wait-resume cycles);
+  // convo-3..5 are deferred as upstream_pressure gaps after the latch fires.
+  const detailFetches = fetches.filter((p) => p.startsWith("/conversation/"));
+  assert.equal(
+    detailFetches.filter((p) => p === "/conversation/convo-2").length,
+    9,
+    "convo-2 must be retried 9 times (1 initial + 8 wait-out cycles) before the latch fires"
+  );
+  assert.equal(
+    detailFetches.filter((p) => p === "/conversation/convo-1").length,
+    1,
+    "convo-1 (before the pressure item) must be fetched exactly once"
+  );
+  assert.equal(
+    detailFetches.filter((p) => p === "/conversation/convo-3").length,
+    0,
+    "convo-3 must not be independently fetched — it is deferred after the latch"
+  );
+  assert.equal(
+    detailFetches.filter((p) => p === "/conversation/convo-4").length,
+    0,
+    "convo-4 must not be independently fetched — it is deferred after the latch"
+  );
+
+  // convo-1 hydrated; convo-2..5 gapped
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "conversations" && r.data.id === "convo-1").length,
+    1,
+    "convo-1 (before the pressure item) must hydrate successfully"
+  );
+  assert.equal(
+    harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-2"),
+    false,
+    "convo-2 must not emit as a list-only record (it is gapped)"
+  );
+
+  // The wait-out emits PROGRESS messages — one per wait cycle (8 total)
+  const waitMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("hit a recoverable rate limit")
+  );
+  assert.equal(
+    waitMessages.length,
+    8,
+    "exactly 8 wait-out PROGRESS messages should fire (one per cycle before the envelope is spent)"
+  );
+  assert.equal(
+    waitMessages.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    false,
+    "wait-out progress messages must not leak conversation ids or API paths"
+  );
+
+  // After 8 cycles the envelope is spent and the latch fires
+  const circuitMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("opened upstream-pressure circuit")
+  );
+  assert.equal(circuitMessages.length, 1, "circuit-open latch must fire exactly once after envelope is spent");
+
+  // The pressure item itself gets a DETAIL_GAP with its error detail
+  const convo2Gap = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP" && m.record_key === "convo-2"
+  );
+  assert.ok(convo2Gap, "convo-2 must emit a DETAIL_GAP after the latch");
+  assert.equal(convo2Gap.reason, "rate_limited");
+  assert.equal(convo2Gap.retryable, true);
+
+  // Sleep was injected and recorded; 8 wait cycles fired
+  assert.equal(sleepCalls.length, 8, "sleep must be called once per wait-out cycle (8 total)");
+});
+
+test("runConversationsAndMessagesStreams: retry-exhaustion wait envelope exhausted (8 cycles) still falls back to durable tail-defer — lose-nothing preserved", async () => {
+  // After CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES (8) wait-out cycles the bounded
+  // envelope is spent; the next ChatGptRecoverableRetryExhaustedError must still
+  // arm observedRecoverablePressure and defer the tail as durable gaps. This
+  // test verifies the lose-nothing fallback is preserved even after many waits.
+  //
+  // We run TWO separate conversations that both always throw
+  // ChatGptRecoverableRetryExhaustedError. convo-1 spends 8 cycles exhausting
+  // the envelope (densityWaitCycles reaches CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES).
+  // Then convo-2 hits the same error → envelope already spent → immediate latch
+  // on convo-2's first attempt. convo-3 is deferred as an upstream_pressure gap.
+  const harness = makeRecordingEmit(validateRecord);
+  const listItems = [
+    makeConvo({ id: "c-exhaust-1", update_time: 1_700_001_001 }),
+    makeConvo({ id: "c-exhaust-2", update_time: 1_700_001_002 }),
+    makeConvo({ id: "c-exhaust-3", update_time: 1_700_001_003 }),
+  ];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems, has_missing_conversations: false, total: listItems.length },
+        });
+      }
+      // Both c-exhaust-1 and c-exhaust-2 always throw — permanently hostile.
+      if (path === "/conversation/c-exhaust-1" || path === "/conversation/c-exhaust-2") {
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(
+            `apiFetch got 429 on GET ${path} after retry budget exhausted bearer secret`,
+            {
+              class: "rate_limited",
+              httpStatus: 429,
+              networkPressure: {
+                endpoint_route: "GET /conversation/{conversation_id}",
+                error_class: "http_429",
+                method: "GET",
+                attempt: 12,
+                max_attempts: 12,
+                status: 429,
+                retry_after_ms: 30_000,
+                safe_headers: { "retry-after-ms": 30_000 },
+              },
+            }
+          )
+        );
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  // c-exhaust-1: attempted 9 times (1 + 8 wait-out cycles exhausting the envelope).
+  assert.equal(
+    fetches.filter((p) => p === "/conversation/c-exhaust-1").length,
+    9,
+    "c-exhaust-1 must be retried 9 times before the bounded envelope is spent"
+  );
+  // c-exhaust-2 and c-exhaust-3: once observedRecoverablePressure is armed by
+  // c-exhaust-1's 9th failure, subsequent lane tasks are caught by the early
+  // guard before reaching the fetch attempt — no fetch is issued for either.
+  assert.equal(
+    fetches.filter((p) => p === "/conversation/c-exhaust-2").length,
+    0,
+    "c-exhaust-2 must not be fetched — the latch armed by c-exhaust-1 short-circuits subsequent items"
+  );
+  assert.equal(
+    fetches.filter((p) => p === "/conversation/c-exhaust-3").length,
+    0,
+    "c-exhaust-3 must not be fetched — deferred as upstream_pressure gap by the latch"
+  );
+
+  // Exactly 8 wait-out PROGRESS messages (all from c-exhaust-1's wait cycles)
+  const waitMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("hit a recoverable rate limit")
+  );
+  assert.equal(waitMessages.length, 8, "exactly 8 wait-out PROGRESS messages (envelope cycle count)");
+
+  // Exactly 1 circuit-open latch (fires on c-exhaust-2's first attempt after envelope spent)
+  const circuitMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("opened upstream-pressure circuit")
+  );
+  assert.equal(circuitMessages.length, 1, "circuit-open latch must fire exactly once");
+
+  // All three items must have DETAIL_GAP records (lose-nothing)
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 3, "all three conversations must emit durable DETAIL_GAP records (lose-nothing)");
+  assert.ok(
+    gaps.some((g) => g.record_key === "c-exhaust-1"),
+    "c-exhaust-1 must have a DETAIL_GAP"
+  );
+  assert.ok(
+    gaps.some((g) => g.record_key === "c-exhaust-2"),
+    "c-exhaust-2 must have a DETAIL_GAP"
+  );
+  assert.ok(
+    gaps.some((g) => g.record_key === "c-exhaust-3"),
+    "c-exhaust-3 must have a DETAIL_GAP (deferred without fetch)"
+  );
+  assert.equal(
+    gaps.find((g) => g.record_key === "c-exhaust-3")?.reason,
+    "upstream_pressure",
+    "c-exhaust-3 gap reason is upstream_pressure (deferred by latch, not directly exhausted)"
+  );
+});
+
 test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a durable gap and honest coverage", async () => {
   const harness = makeRecordingEmit(validateRecord);
   const listItems = Array.from({ length: 278 }, (_, index) =>
@@ -2960,7 +3257,10 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.equal(fetches.filter((path) => path.startsWith("/conversations?")).length, 3);
-  assert.equal(fetches.filter((path) => path.startsWith("/conversation/")).length, 30);
+  // The pressure item (index 29) is retried up to CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES
+  // (8) times before the bounded envelope is spent and the latch fires. So the
+  // first 29 items get 1 fetch each; item 30 gets 9 fetches (1 + 8 wait-resumes).
+  assert.equal(fetches.filter((path) => path.startsWith("/conversation/")).length, 38);
   assert.deepEqual(fetches.slice(0, 33), [
     "/conversations?offset=0&limit=100&order=updated",
     "/conversations?offset=100&limit=100&order=updated",
