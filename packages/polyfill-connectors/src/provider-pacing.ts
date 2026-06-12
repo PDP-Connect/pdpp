@@ -82,6 +82,13 @@ export interface PacingBackoff {
  * ceiling; `lastBackoff` makes the most recent slow-down visible.
  */
 export interface PacingSnapshot {
+  /**
+   * The cold-start baseline interval (the conservative one-time AIMD entry
+   * point). Exposed so callers persisting a warm-start interval can cap it at the
+   * cold-start floor — a run that ended deep in throttle must not persist an
+   * interval SLOWER than a cold start, which would poison the next run's seed.
+   */
+  initialIntervalMs: number;
   intervalMs: number;
   lastBackoff: PacingBackoff | null;
   minIntervalMs: number;
@@ -283,6 +290,7 @@ export class ProviderPacing {
       intervalMs: this._currentIntervalMs,
       lastBackoff: this._lastBackoff,
       minIntervalMs: this.minIntervalMs,
+      initialIntervalMs: this.initialIntervalMs,
     };
   }
 }

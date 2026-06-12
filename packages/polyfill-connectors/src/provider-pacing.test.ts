@@ -312,7 +312,12 @@ test("ProviderPacing: snapshot() exposes interval, ceiling, and last back-off fo
     now: () => 0,
     sleep: () => Promise.resolve(),
   });
-  assert.deepEqual(pacing.snapshot(), { intervalMs: 1000, lastBackoff: null, minIntervalMs: 250 });
+  assert.deepEqual(pacing.snapshot(), {
+    intervalMs: 1000,
+    lastBackoff: null,
+    minIntervalMs: 250,
+    initialIntervalMs: 1000,
+  });
 
   pacing.recordSuccess();
   pacing.recordThrottle();

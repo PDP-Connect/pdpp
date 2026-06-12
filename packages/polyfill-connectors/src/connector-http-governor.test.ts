@@ -346,6 +346,37 @@ test("warm-start seam: round-trip — a run persists its learned interval; the n
   );
 });
 
+test("warm-start seam: a throttle-inflated interval is CAPPED at cold-start on persist (no seed poisoning)", () => {
+  // A run that ended deep in throttle holds an interval SLOWER than the cold-start
+  // baseline (e.g. AIMD backed off, or a provider Retry-After spike). Persisting
+  // that verbatim would make the NEXT run cold-start from an interval worse than a
+  // fresh cold start, and crawl back toward the ceiling at additive-increase pace
+  // — the descent compounding across runs we observed live (a ~14s seed needing
+  // ~140 successful fetches just to re-reach the ceiling). The persist guard caps
+  // the seed at the cold-start baseline.
+  const throttled = createConnectorHttpGovernorWithInterval("seed-poison", 14_300);
+  assert.ok(
+    (throttled.snapshot()?.intervalMs ?? 0) > DEFAULT_PACING_INITIAL_INTERVAL_MS,
+    "precondition: the run ended SLOWER than the cold-start baseline (deep in throttle)"
+  );
+  const fields = buildPacingStateFields(throttled, { now: () => 1_000_000 });
+  assert.equal(
+    fields.pacing_interval_ms,
+    DEFAULT_PACING_INITIAL_INTERVAL_MS,
+    "the persisted seed is floored at cold-start — a throttled run never poisons the next run's start"
+  );
+
+  // A run that ended FASTER than cold-start (a healthy learned rate) still persists
+  // its fast interval verbatim — the cap only floors poison, never the gains.
+  const healthy = createConnectorHttpGovernorWithInterval("seed-healthy", 400);
+  assert.ok((healthy.snapshot()?.intervalMs ?? 0) < DEFAULT_PACING_INITIAL_INTERVAL_MS);
+  assert.equal(
+    buildPacingStateFields(healthy, { now: () => 1_000_000 }).pacing_interval_ms,
+    400,
+    "a healthy learned interval is persisted verbatim so the next run starts faster"
+  );
+});
+
 test("warm-start seam: a stale persisted interval is discarded (cold start against a possibly-reset quota)", () => {
   const now = 1_000_000;
   const persistedSlice = buildPacingStateFields(createConnectorHttpGovernorWithInterval("oura", 500), {

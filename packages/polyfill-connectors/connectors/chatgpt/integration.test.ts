@@ -3621,6 +3621,45 @@ test("runConversationsAndMessagesStreams: warm-start round-trip — a run persis
   );
 });
 
+test("buildChatGptPacingStateFields: a throttle-inflated interval is CAPPED at cold-start on persist (no seed poisoning)", () => {
+  // The live failure mode: a run ends deep in throttle (its interval backed off
+  // far past the cold-start seed — e.g. honoring a multi-second provider
+  // Retry-After). Persisting that verbatim made the NEXT run warm-start from a
+  // ~14s interval and crawl back at additive-increase pace (≈140 successful
+  // fetches to re-reach the ceiling). The persist guard caps the seed at the
+  // cold-start baseline so a throttled run never poisons the next run's start.
+  const coldStart = resolveChatGptProviderBudget({});
+  const coldInterval = coldStart?.pacing?.currentIntervalMs ?? 0;
+  assert.ok(coldInterval > 0);
+
+  // Warm-start a budget at a deeply throttled interval, fresh (within staleness),
+  // and confirm the controller really is slower than the cold seed.
+  const throttled = resolveChatGptProviderBudget({}, { intervalMs: 14_300, recordedAtMs: Date.now() });
+  assert.ok(
+    (throttled?.pacing?.currentIntervalMs ?? 0) > coldInterval,
+    "precondition: the run ended SLOWER than the cold-start baseline"
+  );
+  const persisted = buildChatGptPacingStateFields(throttled, () => 1_000_000);
+  assert.equal(
+    persisted.pacing_interval_ms,
+    coldInterval,
+    "the persisted seed is floored at cold-start — a throttled run never poisons the next run"
+  );
+
+  // A healthy (faster-than-cold) learned interval is still persisted verbatim.
+  const healthy = resolveChatGptProviderBudget({});
+  for (let i = 0; i < 3; i++) {
+    healthy?.pacing?.recordSuccess();
+  }
+  const healthyInterval = healthy?.pacing?.currentIntervalMs ?? 0;
+  assert.ok(healthyInterval < coldInterval, "the healthy run learned a faster-than-cold interval");
+  assert.equal(
+    buildChatGptPacingStateFields(healthy, () => 1_000_000).pacing_interval_ms,
+    healthyInterval,
+    "a healthy learned interval is persisted verbatim so the next run starts faster"
+  );
+});
+
 test("buildChatGptCollectionRateProgress: legible rate state carries no account content", () => {
   const providerBudget = resolveChatGptProviderBudget({});
   assert.ok(providerBudget?.pacing);

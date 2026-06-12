@@ -27,13 +27,21 @@ const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
 before(() => {
   // Fire the callback on the next microtask (async, but no real delay) so the
   // pacing `await sleep(...)` resolves immediately without re-entrant stack risk.
-  const instantSetTimeout = (handler: TimerHandler, _ms?: number, ...args: unknown[]) => {
-    if (typeof handler === "function") {
-      queueMicrotask(() => (handler as (...a: unknown[]) => void)(...args));
-    }
-    return 0 as unknown as ReturnType<typeof ORIGINAL_SET_TIMEOUT>;
-  };
-  globalThis.setTimeout = instantSetTimeout as unknown as typeof globalThis.setTimeout;
+  // Patch `globalThis.setTimeout` in place: keep the original's identity (so its
+  // full `typeof setTimeout` shape — `__promisify__` and all — is preserved) and
+  // only override the call behaviour via a Proxy `apply` trap. No type assertion
+  // is needed because the Proxy is the original function's type.
+  globalThis.setTimeout = new Proxy(ORIGINAL_SET_TIMEOUT, {
+    apply: (_target, _thisArg, callArgs: unknown[]) => {
+      const [handler, , ...args] = callArgs as [TimerHandler, number?, ...unknown[]];
+      if (typeof handler === "function") {
+        queueMicrotask(() => (handler as (...a: unknown[]) => void)(...args));
+      }
+      const handle = ORIGINAL_SET_TIMEOUT(() => undefined, 0);
+      clearTimeout(handle);
+      return handle;
+    },
+  });
 });
 
 afterEach(() => {
@@ -179,7 +187,7 @@ test("warm-start: pacing fields merged onto the user cursor round-trip through r
     fetched_at: "2026-06-10T00:00:00Z",
     fingerprints: { someKey: "fp" },
     ...buildPacingStateFields(
-      { snapshot: () => ({ intervalMs: 480, minIntervalMs: 250, lastBackoff: null }) },
+      { snapshot: () => ({ intervalMs: 480, minIntervalMs: 250, initialIntervalMs: 1000, lastBackoff: null }) },
       {
         now: () => now,
       }
