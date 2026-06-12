@@ -58,7 +58,9 @@ test("ProviderPacing: additive increase reduces currentIntervalMs toward minInte
   assert.equal(pacing.currentIntervalMs, 100, "capped at minIntervalMs");
 });
 
-test("ProviderPacing: multiplicative decrease increases currentIntervalMs, floored at initialIntervalMs", () => {
+test("ProviderPacing: soft throttle increases currentIntervalMs by 1.5×, floored at initialIntervalMs", () => {
+  // Old behavior: ÷multiplicativeDecreaseFactor (×2). New behavior: ×(1+softThrottleGain)
+  // default = ×1.5. Updated to reflect the bounded soft-throttle step (Fix 2).
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,
     minIntervalMs: 100,
@@ -70,12 +72,12 @@ test("ProviderPacing: multiplicative decrease increases currentIntervalMs, floor
   // Increase fill rate first
   pacing.recordSuccess();
   assert.equal(pacing.currentIntervalMs, 800);
-  // Throttle: multiply interval by 1/0.5 = 2
+  // Throttle: multiply interval by (1 + 0.5) = 1.5
   pacing.recordThrottle();
-  assert.equal(pacing.currentIntervalMs, 1600);
-  // Throttle again
+  assert.equal(pacing.currentIntervalMs, 1200); // 800 × 1.5 = 1200
+  // Throttle again: 1200 × 1.5 = 1800
   pacing.recordThrottle();
-  assert.equal(pacing.currentIntervalMs, 3200);
+  assert.equal(pacing.currentIntervalMs, 1800);
 });
 
 test("ProviderPacing: throttle from initial never goes below initialIntervalMs", () => {
@@ -187,18 +189,19 @@ test("ProviderPacing Part B: a Retry-After is a one-shot wait, NOT a steady-stat
   assert.equal(pacing.snapshot().lastBackoff?.reason, "retry_after", "retry-after back-off reason recorded");
 });
 
-test("ProviderPacing Part B: a plain throttle (no Retry-After) still multiplicatively decreases", () => {
+test("ProviderPacing Part B: a plain throttle (no Retry-After) still increases the interval (soft 1.5× step)", () => {
   // Guardrail: Part B only changes the retryAfterMs branch. A bare throttle —
-  // the AIMD signal for an unquantified slow-down — must still do its normal
-  // ×(1/multiplicativeDecreaseFactor) interval increase.
+  // the MAIMD signal for an unquantified slow-down — now uses the bounded
+  // softThrottleGain (×1.5 default) instead of the old ×2. Updated to reflect
+  // Fix 2 (bounded soft-throttle replaces the ÷multiplicativeDecreaseFactor path).
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,
     multiplicativeDecreaseFactor: 0.5,
     now: () => 0,
     sleep: () => Promise.resolve(),
   });
-  pacing.recordThrottle(); // plain: 1000 → 2000
-  assert.equal(pacing.currentIntervalMs, 2000, "plain throttle still multiplies the interval by 2");
+  pacing.recordThrottle(); // plain: 1000 × 1.5 = 1500
+  assert.equal(pacing.currentIntervalMs, 1500, "plain throttle multiplies the interval by 1.5 (soft step)");
   assert.equal(pacing.snapshot().lastBackoff?.reason, "throttle", "plain throttle reason recorded");
 });
 
@@ -251,7 +254,7 @@ test("ProviderPacing: provider isolation — two instances throttled independent
   });
 
   pacingA.recordThrottle();
-  assert.equal(pacingA.currentIntervalMs, 2000, "A throttled");
+  assert.equal(pacingA.currentIntervalMs, 1500, "A throttled (1000 × 1.5 = 1500)");
   assert.equal(pacingB.currentIntervalMs, 1000, "B unaffected by A throttle");
 });
 
@@ -732,4 +735,271 @@ test("ProviderPacing §10-E: warm-start exactly AT the staleness boundary is sti
     sleep: () => Promise.resolve(),
   });
   assert.equal(boundary.currentIntervalMs, 320, "warm-start exactly at the age boundary is still treated as fresh");
+});
+
+// ─── Fix 1: elapsed-time-weighted recovery (red-team-corrected) ──────────────
+
+test("ProviderPacing Fix1: elapsed weighting — deep interval recovers MUCH faster with large elapsed gap", () => {
+  // From a deep interval (~51s), a second success with elapsed ~= that interval
+  // should recover ~elapsedRecoveryCap× more than the un-weighted over-backoff
+  // term alone would. Base additiveIncreaseMs stays flat (weight doesn't touch it).
+  //
+  // Key: the first success primes lastSuccessAtMs (null→weight=1, backward-compat).
+  // The SECOND success, with a large elapsed gap, demonstrates the weighting.
+  const initialIntervalMs = 1000;
+  const additiveIncreaseMs = 100;
+  const recoveryGain = 0.1;
+  const elapsedRecoveryCap = 8;
+  // Start deep enough that after the first success we're still well above initial.
+  const startIntervalMs = 55_000;
+
+  let nowMs = 0;
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: 250,
+    additiveIncreaseMs,
+    recoveryGain,
+    elapsedRecoveryCap,
+    restoredIntervalMs: startIntervalMs,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+
+  // First success at t=0: null lastSuccessAtMs → elapsed treated as initialIntervalMs → weight=1
+  // step = floor(100 + 0.1 * (55000-1000) * 1) = floor(100 + 5400) = 5500
+  pacing.recordSuccess();
+  // lastSuccessAtMs is now 0. Interval is now startIntervalMs - 5500 = 49500.
+  const intervalAfterFirst = pacing.currentIntervalMs;
+  assert.ok(intervalAfterFirst > initialIntervalMs, "still deep above initial after first success");
+
+  // Advance clock by ~49s (simulating one throttled-cadence fetch taking the full interval)
+  const bigElapsedMs = 49_000;
+  nowMs += bigElapsedMs;
+
+  // Un-weighted step for this interval: floor(100 + 0.1 * (intervalAfterFirst - 1000) * 1)
+  const overBackoff = intervalAfterFirst - initialIntervalMs;
+  const unweightedStep = Math.floor(additiveIncreaseMs + recoveryGain * overBackoff * 1);
+  // Weighted step: weight = clamp(49000/1000, 1, 8) = 8
+  const weight = Math.min(elapsedRecoveryCap, Math.max(1, bigElapsedMs / initialIntervalMs));
+  const weightedStep = Math.floor(additiveIncreaseMs + recoveryGain * overBackoff * weight);
+
+  pacing.recordSuccess();
+  const actualStep = intervalAfterFirst - pacing.currentIntervalMs;
+
+  assert.equal(actualStep, weightedStep, `step = floor(base + gain*overBackoff*weight) = ${weightedStep}`);
+  assert.ok(
+    weightedStep > unweightedStep * 4,
+    `elapsed-weighted recovery (${weightedStep}) is >4× the un-weighted step (${unweightedStep})`
+  );
+  // Base (additiveIncreaseMs=100) is NOT multiplied — only the over-backoff term is
+  const baseContribution = additiveIncreaseMs;
+  const overBackoffContribution = weightedStep - baseContribution;
+  assert.ok(overBackoffContribution > 0, "over-backoff term contributes positively to the step");
+});
+
+test("ProviderPacing Fix1: gentle-near-ceiling PRESERVED — huge elapsed gap at tiny overBackoff does NOT collapse to floor", () => {
+  // Red-team's key check: the base additiveIncreaseMs is NOT elapsed-weighted.
+  // Near the ceiling (overBackoffMs tiny) even a huge elapsed gap must NOT
+  // collapse the interval straight to minIntervalMs in one step.
+  //
+  // Setup: prime lastSuccessAtMs with a first success, then advance clock hugely.
+  const initialIntervalMs = 1000;
+  const justAboveInitial = 1100; // overBackoff = 100ms (tiny)
+  const minIntervalMs = 100;
+
+  const nowMs = 0;
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs,
+    additiveIncreaseMs: 100,
+    recoveryGain: 0.1,
+    elapsedRecoveryCap: 8,
+    restoredIntervalMs: justAboveInitial,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(pacing.currentIntervalMs, justAboveInitial);
+
+  // First success at t=0: null lastSuccessAtMs → weight=1.
+  // overBackoff = 1100-1000=100, step = floor(100 + 0.1*100*1) = 110. Interval → 990.
+  pacing.recordSuccess();
+  // lastSuccessAtMs is now 0. interval is 990 (below initial, so overBackoff=0 hereafter).
+
+  // Now restore back above initial to re-demonstrate the ceiling check.
+  // We re-create a fresh instance seeded just above initial, but this time we
+  // prime lastSuccessAtMs via a helper first-success at the same nowMs, then throttle back up.
+  // Simpler: use a fresh instance with an initial success that sets lastSuccessAtMs,
+  // then apply a throttle to push back above initial, then check one more success.
+  const nowMs2 = { v: 0 };
+  const pacing2 = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs,
+    additiveIncreaseMs: 100,
+    recoveryGain: 0.1,
+    elapsedRecoveryCap: 8,
+    now: () => nowMs2.v,
+    sleep: () => Promise.resolve(),
+  });
+  // Prime lastSuccessAtMs at t=0
+  pacing2.recordSuccess(); // 1000 → 900, lastSuccessAtMs=0
+  // Push back above initial via throttle: 900 × 1.5 = 1350 (just above initial)
+  pacing2.recordThrottle(); // → 1350
+  assert.ok(pacing2.currentIntervalMs > initialIntervalMs, "pushed above initial");
+  const intervalAboveInitial = pacing2.currentIntervalMs; // 1350, overBackoff=350
+
+  // Advance clock by a huge elapsed gap
+  nowMs2.v += 500_000; // weight = clamp(500000/1000, 1, 8) = 8
+
+  pacing2.recordSuccess();
+  // overBackoff = 1350 - 1000 = 350. weighted step = floor(100 + 0.1*350*8) = floor(100+280) = 380.
+  // After: 1350 - 380 = 970ms — well above minIntervalMs (100ms).
+  const expectedStep = Math.floor(100 + 0.1 * (intervalAboveInitial - initialIntervalMs) * 8);
+  const actualStep = intervalAboveInitial - pacing2.currentIntervalMs;
+  assert.equal(actualStep, expectedStep, `step is bounded to base + weighted-overBackoff: ${expectedStep}`);
+  assert.notEqual(
+    pacing2.currentIntervalMs,
+    minIntervalMs,
+    "huge elapsed gap near the ceiling must NOT collapse interval to minIntervalMs in one step"
+  );
+  assert.ok(
+    pacing2.currentIntervalMs > minIntervalMs,
+    `interval (${pacing2.currentIntervalMs}) stays well above minIntervalMs (${minIntervalMs})`
+  );
+});
+
+test("ProviderPacing Fix1: cooldown suppression still wins — suppressed success leaves interval AND lastSuccessAtMs unchanged", () => {
+  // §10-D: suppressAdditiveIncrease=true must leave both interval and
+  // lastSuccessAtMs unchanged. A suppressed success is not a real recovery tick.
+  let nowMs = 1000;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    restoredIntervalMs: 5000,
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(pacing.currentIntervalMs, 5000);
+
+  // First real success to set lastSuccessAtMs
+  pacing.recordSuccess();
+  const intervalAfterReal = pacing.currentIntervalMs;
+  assert.ok(intervalAfterReal < 5000, "real success decreased interval");
+  // lastSuccessAtMs is now set to nowMs=1000
+
+  // Advance clock
+  nowMs = 60_000;
+
+  // Suppressed success: interval must not change
+  const intervalBefore = pacing.currentIntervalMs;
+  pacing.recordSuccess({ suppressAdditiveIncrease: true });
+  assert.equal(pacing.currentIntervalMs, intervalBefore, "suppressed success does not change interval");
+
+  // Verify lastSuccessAtMs was NOT updated: a real success now should use the old
+  // timestamp (elapsed = 60000 - 1000 = 59000ms → weight = min(8, max(1, 59)) = 8)
+  // If lastSuccessAtMs HAD been updated to 60000, elapsed would be 0 → weight = 1.
+  const intervalBeforeReal2 = pacing.currentIntervalMs;
+  pacing.recordSuccess();
+  const step2 = intervalBeforeReal2 - pacing.currentIntervalMs;
+  // With elapsed=59000ms, weight=8; overBackoff=interval-1000 (positive since we're above initial)
+  // If lastSuccessAtMs was NOT updated (correctly), weight=8 and step is large
+  // If lastSuccessAtMs WAS updated (incorrectly), weight=1 and step is small
+  const overBackoff = Math.max(0, intervalBeforeReal2 - 1000);
+  const expectedStepWeighted = Math.floor(100 + 0.1 * overBackoff * 8);
+  const expectedStepUnweighted = Math.floor(100 + 0.1 * overBackoff * 1);
+  assert.equal(
+    step2,
+    expectedStepWeighted,
+    `suppression preserved lastSuccessAtMs — step uses large elapsed weight (${expectedStepWeighted} not ${expectedStepUnweighted})`
+  );
+});
+
+test("ProviderPacing Fix1: backward-compat at operating point — normal-cadence success recovers at weight=1", () => {
+  // A success with elapsed ≈ initialIntervalMs gives weight = clamp(1, 1, 8) = 1.
+  // The step must equal the old un-weighted formula exactly — no behavior change
+  // for callers operating at normal cadence.
+  const initialIntervalMs = 1000;
+  let nowMs = 0;
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    recoveryGain: 0.1,
+    restoredIntervalMs: 5000, // deep — so overBackoff is non-zero
+    now: () => nowMs,
+    sleep: () => Promise.resolve(),
+  });
+  // First success: lastSuccessAtMs is null → elapsed treated as initialIntervalMs → weight=1
+  const beforeFirst = pacing.currentIntervalMs;
+  pacing.recordSuccess();
+  const stepFirst = beforeFirst - pacing.currentIntervalMs;
+  const expectedUnweighted = Math.floor(100 + 0.1 * (beforeFirst - initialIntervalMs));
+  assert.equal(
+    stepFirst,
+    expectedUnweighted,
+    "first success (null lastSuccessAtMs) uses weight=1, matches old formula"
+  );
+
+  // Second success: advance by exactly initialIntervalMs → weight = clamp(1000/1000, 1, 8) = 1
+  nowMs += initialIntervalMs;
+  const beforeSecond = pacing.currentIntervalMs;
+  pacing.recordSuccess();
+  const stepSecond = beforeSecond - pacing.currentIntervalMs;
+  const expectedSecond = Math.floor(100 + 0.1 * (beforeSecond - initialIntervalMs));
+  assert.equal(stepSecond, expectedSecond, "normal-cadence elapsed=initialIntervalMs → weight=1 → old formula exactly");
+});
+
+// ─── Fix 2: bounded throttle (softThrottleGain + maxIntervalMs) ──────────────
+
+test("ProviderPacing Fix2: plain recordThrottle multiplies by 1.5 (1000 → 1500), not ×2", () => {
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 100,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(pacing.currentIntervalMs, 1000);
+  pacing.recordThrottle();
+  assert.equal(pacing.currentIntervalMs, 1500, "default softThrottleGain=0.5 → 1000 × 1.5 = 1500");
+});
+
+test("ProviderPacing Fix2: repeated throttles are clamped at maxIntervalMs", () => {
+  const maxIntervalMs = 3000;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 100,
+    maxIntervalMs,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  // Throttle many times — must never exceed maxIntervalMs
+  for (let i = 0; i < 20; i++) {
+    pacing.recordThrottle();
+    assert.ok(
+      pacing.currentIntervalMs <= maxIntervalMs,
+      `interval must never exceed maxIntervalMs=${maxIntervalMs} at throttle ${i + 1}, got ${pacing.currentIntervalMs}`
+    );
+  }
+  assert.equal(pacing.currentIntervalMs, maxIntervalMs, "interval rests exactly at maxIntervalMs after saturation");
+});
+
+test("ProviderPacing Fix2: maxIntervalMs does not affect retry-after one-shot (retry-after path unchanged)", async () => {
+  // maxIntervalMs ONLY clamps plain-throttle sustained interval.
+  // retry-after is a one-shot wait and must be honored exactly, even if > maxIntervalMs.
+  const spy = makeSpy();
+  let nowMs = 0;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    maxIntervalMs: 2000, // well below the retry-after
+    now: () => nowMs,
+    sleep: spy.sleep,
+  });
+  await pacing.admit(); // anchor TAT
+  nowMs = 1000;
+  pacing.recordThrottle({ retryAfterMs: 90_000 }); // retry-after >> maxIntervalMs
+  await pacing.admit();
+  assert.equal(spy.calls.at(-1), 90_000, "retry-after one-shot honored exactly even when > maxIntervalMs");
+  // Sustained interval must NOT have been inflated to 90000 (or clamped to 2000)
+  // — the retry-after path leaves _currentIntervalMs untouched entirely.
+  assert.equal(pacing.currentIntervalMs, 1000, "retry-after does not change the sustained interval");
 });

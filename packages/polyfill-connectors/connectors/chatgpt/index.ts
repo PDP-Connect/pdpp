@@ -336,6 +336,7 @@ const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTE
 const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
 const CHATGPT_PACING_RECOVERY_GAIN_ENV = "PDPP_CHATGPT_PACING_RECOVERY_GAIN";
+const CHATGPT_PACING_MAX_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MAX_INTERVAL_MS";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
 const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
 // Cold-start DISCOVERY seed (ms), used ONLY when no fresh learned interval is
@@ -354,6 +355,11 @@ const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
 // PDPP_CHATGPT_PACING_MIN_INTERVAL_MS. Every other pacing constant is a derived
 // horizon or an AIMD shape; this is the only behavioral safety number.
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
+// Hard ceiling on how far plain throttle can push the inter-request interval.
+// Bounds the blast radius of a burst of 429s to ~30s max, keeping recovery
+// time bounded (from 30s back to operating point) without crossing the safety
+// ceiling (minIntervalMs). Tune via PDPP_CHATGPT_PACING_MAX_INTERVAL_MS.
+const CHATGPT_DEFAULT_PACING_MAX_INTERVAL_MS = 30_000;
 // The retry budget is PRUNED to default-OFF (SLVP-ideal: not a run terminator).
 // 5 was the prior default-ON capacity — set PDPP_CHATGPT_RETRY_BUDGET_CAPACITY=5 to
 // restore it exactly. See resolveChatGptRetryBudgetCapacity for the rationale.
@@ -530,6 +536,17 @@ function resolveChatGptPacingRecoveryGain(env: NodeJS.ProcessEnv): number | null
 }
 
 /**
+ * Resolve the hard ceiling on plain-throttle blast radius (see
+ * PacingOptions.maxIntervalMs). Unset → CHATGPT_DEFAULT_PACING_MAX_INTERVAL_MS
+ * (30s). An env override wins when it is a valid positive finite ms value; an
+ * invalid value falls back to the default.
+ */
+function resolveChatGptPacingMaxIntervalMs(env: NodeJS.ProcessEnv): number {
+  const override = resolvePositiveFiniteMs(env, CHATGPT_PACING_MAX_INTERVAL_MS_ENV);
+  return override ?? CHATGPT_DEFAULT_PACING_MAX_INTERVAL_MS;
+}
+
+/**
  * Build the ProviderPacing warm-start fields from the raw persisted pacing.
  * Returns `restoredIntervalMs` when a usable interval was persisted, plus the
  * §10-E staleness inputs (`restoredAtMs` + the 6h `maxWarmStartAgeMs`) when the
@@ -584,6 +601,7 @@ export function resolveChatGptProviderBudget(
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
   const recoveryGain = resolveChatGptPacingRecoveryGain(env);
+  const maxIntervalMs = resolveChatGptPacingMaxIntervalMs(env);
   // The adaptive lane is the SOLE send governor; pacing rides as a
   // `launchDelayHint` (pacingMode: "signal"). The cold `initialIntervalMs` is a
   // one-time discovery seed; the restored interval (warm-start) lets the AIMD
@@ -605,6 +623,7 @@ export function resolveChatGptProviderBudget(
             ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
             initialIntervalMs,
             minIntervalMs,
+            maxIntervalMs,
             ...(recoveryGain == null ? {} : { recoveryGain }),
             ...warmStart,
           },

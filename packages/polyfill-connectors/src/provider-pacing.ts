@@ -14,10 +14,30 @@ export interface PacingOptions {
    */
   burstToleranceMs?: number;
   /**
+   * Cap on the elapsed-time weight applied to the over-backoff recovery term.
+   * When the pacer has been throttled and fetches are slow (one per ~51s), the
+   * time between successes is large. The elapsed-weight multiplies ONLY the
+   * `recoveryGain × overBackoffMs` term (NOT the base `additiveIncreaseMs`), so
+   * a long inflated wait recovers faster while the gentle base step is preserved
+   * near the ceiling (overBackoffMs ≈ 0 → elapsed weight doesn't matter there).
+   * Mirrors EIP-1559's 1/8 saturation step: at 8× elapsed the over-backoff
+   * term is credited 8× — a pacer at 51s between successes unwinds ~8× faster
+   * than the un-weighted gain. Default: 8.
+   */
+  elapsedRecoveryCap?: number;
+  /**
    * Inter-request interval (ms) at the initial conservative rate.
    * The AIMD fill rate starts here and adjusts from this baseline.
    */
   initialIntervalMs?: number;
+  /**
+   * Hard ceiling on how far plain throttle signals can push the interval (ms).
+   * Bounds the blast radius of a burst of 429s so recovery time is bounded even
+   * at extreme back-off depths. Does NOT affect retry-after one-shot waits (those
+   * are honored exactly and are not the sustained interval). Default: Infinity
+   * (no clamp), keeping non-ChatGPT callers unaffected.
+   */
+  maxIntervalMs?: number;
   /**
    * §10-E (SLVP-ideal): the maximum age (ms) at which a warm-start interval is
    * still considered valid. If `now() - restoredAtMs > maxWarmStartAgeMs` the
@@ -39,33 +59,32 @@ export interface PacingOptions {
    * reach via additive increase. Defaults to 0 (no floor below initial).
    */
   minIntervalMs?: number;
-  /** Multiplicative decrease factor on each throttle signal. E.g. 0.5 = halve fill rate (double interval). Default: 0.5. */
+  /** Multiplicative decrease factor on each throttle signal. Retained for the retry-after/hard path and backward compat; the plain-throttle path now uses `softThrottleGain` instead. Default: 0.5. */
   multiplicativeDecreaseFactor?: number;
   /** Injectable clock for tests. Default: Date.now. */
   now?: () => number;
   /**
    * Distance-proportional recovery gain for the additive step ABOVE the
-   * operating point. The per-success step is:
+   * operating point. The per-success step is elapsed-weighted on the over-backoff
+   * term only:
    *
-   *   step = additiveIncreaseMs + recoveryGain × max(0, interval − initialIntervalMs)
+   *   overBackoffMs = max(0, interval − initialIntervalMs)
+   *   recoverWeight = clamp(elapsedMs / initialIntervalMs, 1, elapsedRecoveryCap)
+   *   step = additiveIncreaseMs + recoveryGain × overBackoffMs × recoverWeight
    *
-   * This makes recovery fast when the interval is far above `initialIntervalMs`
-   * (a transient over-backoff from a burst of real 429s — NOT ceiling discovery,
-   * and ban-safe to unwind because every step keeps us SLOWER than the rate that
-   * already succeeded), while decaying continuously to the gentle base step at
-   * and below the operating point (where caution is mandatory). It is the direct
-   * analogue of AWS adaptive-mode CUBIC: "faster growth far below the ceiling,
-   * slow linear growth near it" (prior-art §1).
+   * The base `additiveIncreaseMs` is FLAT — elapsed time does NOT multiply it.
+   * This preserves gentle ceiling discovery (overBackoffMs ≈ 0 near the operating
+   * point, so the weight cancels out) while allowing fast unwinding from deep
+   * transient spikes: when fetches are slow (~51s each), the large elapsed gap
+   * provides up to `elapsedRecoveryCap`× credit on the over-backoff term.
    *
-   * THEORY CONSTRAINT (do not violate): this remains ADDITIVE in the Chiu-Jain
-   * sense — each success applies a FIXED increment determined by the current
-   * state, never a multiplication of the controlled variable toward the ceiling.
-   * Recovery is therefore convergent and the probe near the operating point
-   * stays the base step. Default: 0.1 (≈0% boost at the operating point, growing
-   * to a ~10% fraction of the over-backoff distance per success — e.g. a 29s
-   * spike recovers in ~40 successes vs ~290 at the flat base step, while the
-   * region from `initialIntervalMs` down to `minIntervalMs` is still walked at
-   * exactly the gentle base step). Set to 0 to restore the legacy flat step.
+   * THEORY CONSTRAINT (do not violate): this remains ADDITIVE in the Chiu-Jain /
+   * MAIMD N=1 sense — each success applies a FIXED increment determined by the
+   * current state and elapsed time, never a multiplication toward the ceiling.
+   * N=1 has no fairness line so convergence is safe, and the minIntervalMs floor
+   * is a hard ceiling that is never crossed. Recovery is therefore convergent and
+   * the probe near the operating point stays the base step. Default: 0.1. Set to
+   * 0 to restore the legacy flat step (no over-backoff boost).
    *
    * Tunable via PDPP_CHATGPT_PACING_RECOVERY_GAIN at the ChatGPT call site.
    */
@@ -93,6 +112,14 @@ export interface PacingOptions {
   restoredIntervalMs?: number;
   /** Injectable sleep for tests. Default: real setTimeout. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Gain on plain (non-retry-after) throttle signals. The interval is multiplied
+   * by `(1 + softThrottleGain)` instead of the old ÷0.5 (×2). Default 0.5 gives
+   * a 1.5× step, which sits inside the Leonardos stable band (< 2×) and roughly
+   * halves the blast radius vs the prior ×2 step. Combined with `maxIntervalMs`
+   * this bounds how deep back-off can go. Default: 0.5.
+   */
+  softThrottleGain?: number;
 }
 
 export interface ThrottleSignal {
@@ -112,7 +139,9 @@ export interface PacingBackoff {
 /**
  * Operator-legible snapshot of the controller's live rate state. `intervalMs` is
  * the durable value to persist for warm-start; `minIntervalMs` is the rate
- * ceiling; `lastBackoff` makes the most recent slow-down visible.
+ * ceiling; `lastBackoff` makes the most recent slow-down visible. Recovery is
+ * elapsed-weighted on the over-backoff term (see PacingOptions.recoveryGain +
+ * elapsedRecoveryCap); throttle is bounded by softThrottleGain + maxIntervalMs.
  */
 export interface PacingSnapshot {
   /**
@@ -136,13 +165,36 @@ const DEFAULT_ADDITIVE_INCREASE_MS = 100;
  * operating point — the AWS-CUBIC-shaped fast-far / gentle-near asymmetry.
  */
 const DEFAULT_RECOVERY_GAIN = 0.1;
+/**
+ * Default elapsed-time recovery cap (see PacingOptions.elapsedRecoveryCap).
+ * Mirrors EIP-1559's 1/8 saturation step: at 8× the normal cadence elapsed, the
+ * over-backoff recovery term is credited 8× — a pacer at 51s between successes
+ * unwinds ~8× faster than the un-weighted gain would allow.
+ */
+const DEFAULT_ELAPSED_RECOVERY_CAP = 8;
+/**
+ * Default soft-throttle gain (see PacingOptions.softThrottleGain).
+ * A 1.5× step sits inside the Leonardos stable band (< 2×) and halves the
+ * blast radius of the old ×2 multiplicative decrease.
+ */
+const DEFAULT_SOFT_THROTTLE_GAIN = 0.5;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * GCRA-compatible token-bucket pacing with rate-based AIMD fill-rate adjustment.
+ * GCRA-compatible token-bucket pacing with elapsed-weighted MAIMD fill-rate
+ * adjustment (Multiplicative-decrease / Additive-increase, N=1 single flow).
+ *
+ * Recovery (additive increase) is elapsed-time-weighted on the over-backoff term
+ * only — the base `additiveIncreaseMs` stays flat so ceiling discovery remains
+ * gentle, while deep transient spikes unwind faster when fetches are slow.
+ * Throttle (multiplicative decrease) is bounded via `softThrottleGain` (1.5×
+ * default, inside the Leonardos stable band) and clamped to `maxIntervalMs`.
+ *
+ * N=1 has no fairness line so convergence is safe; the `minIntervalMs` floor is
+ * a hard ceiling that is never crossed.
  *
  * The bucket tracks a Theoretical Arrival Time (TAT): the earliest moment the
  * next request may be admitted. On idle gap the TAT is reset to
@@ -152,10 +204,12 @@ function defaultSleep(ms: number): Promise<void> {
 export class ProviderPacing {
   private readonly initialIntervalMs: number;
   private readonly minIntervalMs: number;
+  private readonly maxIntervalMs: number;
   private readonly burstToleranceMs: number;
   private readonly additiveIncreaseMs: number;
   private readonly recoveryGain: number;
-  private readonly multiplicativeDecreaseFactor: number;
+  private readonly elapsedRecoveryCap: number;
+  private readonly softThrottleGain: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -166,6 +220,8 @@ export class ProviderPacing {
   private nextRetryAfterMs: number | null = null;
   /** Most recent back-off event, for operator-legible rate state. */
   private _lastBackoff: PacingBackoff | null = null;
+  /** Timestamp of the last non-suppressed recordSuccess() call, for elapsed-time weighting. */
+  private lastSuccessAtMs: number | null = null;
 
   constructor(options: PacingOptions) {
     this.initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
@@ -179,7 +235,29 @@ export class ProviderPacing {
       typeof options.recoveryGain === "number" && Number.isFinite(options.recoveryGain) && options.recoveryGain >= 0
         ? options.recoveryGain
         : DEFAULT_RECOVERY_GAIN;
-    this.multiplicativeDecreaseFactor = options.multiplicativeDecreaseFactor ?? 0.5;
+    // Elapsed recovery cap must be finite and >= 1 (weight < 1 would invert the
+    // elapsed correction and slow recovery below the un-weighted gain).
+    this.elapsedRecoveryCap =
+      typeof options.elapsedRecoveryCap === "number" &&
+      Number.isFinite(options.elapsedRecoveryCap) &&
+      options.elapsedRecoveryCap >= 1
+        ? options.elapsedRecoveryCap
+        : DEFAULT_ELAPSED_RECOVERY_CAP;
+    // Soft-throttle gain must be non-negative and finite.
+    this.softThrottleGain =
+      typeof options.softThrottleGain === "number" &&
+      Number.isFinite(options.softThrottleGain) &&
+      options.softThrottleGain >= 0
+        ? options.softThrottleGain
+        : DEFAULT_SOFT_THROTTLE_GAIN;
+    // maxIntervalMs defaults to Infinity so non-ChatGPT callers are unaffected.
+    this.maxIntervalMs =
+      typeof options.maxIntervalMs === "number" && Number.isFinite(options.maxIntervalMs) && options.maxIntervalMs > 0
+        ? options.maxIntervalMs
+        : Number.POSITIVE_INFINITY;
+    // multiplicativeDecreaseFactor: the option is retained for backward compat
+    // (callers may pass it; it is simply no longer used internally since the plain
+    // throttle path now uses softThrottleGain). Not stored — no runtime need.
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     // Warm-start: seed from the prior run's learned interval when supplied,
@@ -313,26 +391,43 @@ export class ProviderPacing {
    */
   recordSuccess(opts?: { suppressAdditiveIncrease?: boolean }): void {
     if (opts?.suppressAdditiveIncrease === true) {
-      // §10-D: cooldown-exempt recovery lane — leave interval unchanged.
+      // §10-D: cooldown-exempt recovery lane — leave interval AND lastSuccessAtMs
+      // unchanged. A suppressed success is not a real recovery tick and must not
+      // advance the elapsed-time baseline (which would compress future real ticks).
       return;
     }
-    this._currentIntervalMs = Math.max(this.minIntervalMs, this._currentIntervalMs - this.additiveStepMs());
+    // Read the elapsed-based step BEFORE updating lastSuccessAtMs (additiveStepMs
+    // reads lastSuccessAtMs; updating first would collapse elapsed to 0).
+    const step = this.additiveStepMs();
+    this._currentIntervalMs = Math.max(this.minIntervalMs, this._currentIntervalMs - step);
+    this.lastSuccessAtMs = this.now();
   }
 
   /**
-   * The additive-increase step (ms) to apply for the current interval. Gentle
-   * base step in the ceiling-discovery region (interval ≤ initialIntervalMs),
-   * growing linearly with the over-backoff distance above it (transient-spike
-   * unwinding). PURE: reads only, mutates nothing.
+   * The additive-increase step (ms) to apply for the current interval. The base
+   * `additiveIncreaseMs` is FLAT regardless of elapsed time — this preserves
+   * gentle ceiling discovery (overBackoffMs ≈ 0 near the operating point). The
+   * elapsed-time weight multiplies ONLY the `recoveryGain × overBackoffMs` term,
+   * so a long inflated wait accelerates unwinding from deep transient spikes
+   * without collapsing a near-ceiling interval to the floor in one step.
+   * PURE: reads only, mutates nothing.
    */
   private additiveStepMs(): number {
     const overBackoffMs = Math.max(0, this._currentIntervalMs - this.initialIntervalMs);
+    // Elapsed since the last real success tick. On the very first success (null)
+    // treat elapsed as one normal-cadence interval (weight = 1, backward-compat).
+    const elapsedMs =
+      this.lastSuccessAtMs == null ? this.initialIntervalMs : Math.max(0, this.now() - this.lastSuccessAtMs);
+    // Normalize by initialIntervalMs: one normal-cadence success → weight 1.
+    // A long throttled wait → up to elapsedRecoveryCap× the over-backoff term.
+    // The base step is NOT multiplied — it stays flat near the ceiling.
+    const recoverWeight = Math.min(this.elapsedRecoveryCap, Math.max(1, elapsedMs / this.initialIntervalMs));
     // Floor to whole ms so intervals stay integer-valued (operator-legible logs
     // and an integer warm-start persisted value, matching the legacy flat step)
-    // and no IEEE-754 drift accumulates. At/below the operating point the
-    // overshoot is 0, so this is exactly `additiveIncreaseMs` — the gentle base
-    // step — preserving cautious ceiling discovery.
-    return Math.floor(this.additiveIncreaseMs + this.recoveryGain * overBackoffMs);
+    // and no IEEE-754 drift accumulates. At/below the operating point
+    // overBackoffMs is 0, so this is exactly `additiveIncreaseMs` — the gentle
+    // base step — preserving cautious ceiling discovery regardless of elapsed time.
+    return Math.floor(this.additiveIncreaseMs + this.recoveryGain * overBackoffMs * recoverWeight);
   }
 
   /**
@@ -346,9 +441,10 @@ export class ProviderPacing {
    * double-penalize: a ~100s Retry-After would also become the ongoing
    * inter-request interval and take ~1000 successes (~hours) of additive
    * recovery to undo. So a `retry_after` signal sets the one-shot wait WITHOUT
-   * multiplicatively decreasing the sustained interval. A plain throttle (no
-   * retryAfterMs) still does its normal ×(1/multiplicativeDecreaseFactor)
-   * decrease — that is the AIMD signal for an unquantified slow-down.
+   * changing the sustained interval. A plain throttle (no retryAfterMs) applies
+   * a bounded ×(1 + softThrottleGain) step (default 1.5×, inside the Leonardos
+   * stable band) clamped to `maxIntervalMs` — that is the MAIMD signal for an
+   * unquantified slow-down with bounded blast radius.
    */
   recordThrottle(signal?: ThrottleSignal): void {
     const hasRetryAfter = signal?.retryAfterMs != null;
@@ -360,12 +456,12 @@ export class ProviderPacing {
       this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
       return;
     }
-    // Plain throttle: multiplicative decrease (divide fill rate → multiply
-    // interval). Never decreases the interval below initialIntervalMs (the
-    // conservative baseline), so a single throttle bounces the rate back toward
-    // the cold floor even when warm-start had restored a faster learned interval.
-    const decreased = this._currentIntervalMs / this.multiplicativeDecreaseFactor;
-    this._currentIntervalMs = Math.max(this.initialIntervalMs, decreased);
+    // Plain throttle: bounded multiplicative step. Multiply by (1 + softThrottleGain)
+    // instead of the old ÷multiplicativeDecreaseFactor (×2). Default softThrottleGain=0.5
+    // gives a 1.5× step, inside the Leonardos stable band. Clamped to maxIntervalMs
+    // to bound the blast radius of a burst of 429s. Never goes below initialIntervalMs.
+    const increased = this._currentIntervalMs * (1 + this.softThrottleGain);
+    this._currentIntervalMs = Math.min(this.maxIntervalMs, Math.max(this.initialIntervalMs, increased));
     this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
   }
 

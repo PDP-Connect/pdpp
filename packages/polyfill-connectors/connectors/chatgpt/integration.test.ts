@@ -180,8 +180,8 @@ test("Part A: one HTTP request that retries N times causes ONE pacing backoff, n
   // REAL connector path (createChatGptApi → fetchWithRetry → retryHttp → onRetry)
   // with a fake Page that serves two 429s (with Retry-After, so the full retry
   // budget is kept — bare 429 would fast-open and exhaust) then a 200. The
-  // interval must back off EXACTLY ONCE (×2), regardless of how many attempts
-  // the single request took.
+  // interval must back off EXACTLY ONCE (×1.5 soft step), regardless of how many
+  // attempts the single request took.
   // No-op sleep so the per-attempt pacing admit() does not wait on a real clock.
   const providerBudget = new ProviderBudgetController({
     pacing: {
@@ -229,12 +229,14 @@ test("Part A: one HTTP request that retries N times causes ONE pacing backoff, n
   assert.equal(result.status, 200, "the request ultimately succeeds after retrying");
   assert.equal(fetchCallIndex, 3, "the single request made 3 backend fetches (2 retries + success)");
 
-  // ONE multiplicative decrease: 1000 → 2000. NOT ×4 (4000) or ×8 (8000).
+  // ONE soft throttle step: 1000 × 1.5 = 1500. NOT ×4 (4000) or ×8 (8000).
+  // Updated from ×2 to ×1.5 to reflect Fix 2 (bounded soft-throttle replaces
+  // the old ÷multiplicativeDecreaseFactor plain-throttle path).
   const intervalAfter = providerBudget.snapshotPacing()?.intervalMs;
   assert.equal(
     intervalAfter,
-    2000,
-    "two retry attempts for ONE request caused ONE ×2 backoff (1000→2000), not ×4 per-attempt double-count"
+    1500,
+    "two retry attempts for ONE request caused ONE soft-throttle backoff (1000→1500), not ×4 per-attempt double-count"
   );
 });
 
