@@ -3139,18 +3139,63 @@ async function recoverPendingConversationDetailGaps(
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
 ): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  // CONTINUOUS DRAIN (SLVP-ideal "run = worker session draining a durable
+  // work-list, NOT a completeness boundary"): keep requesting fresh pending-gap
+  // pages and recovering them IN THIS RUN until the work-list is genuinely empty
+  // — re-attacking the still-pending tail across pages instead of ending the run
+  // the first time a page only partially hydrates.
+  //
+  // A page's `stoppedWithPending` is the NORMAL mid-drain state (a wait/defer
+  // happened: density waited out, or the circuit/bounded-wait fallback durably
+  // re-deferred some items as fresh `pending` gaps). It is NOT a terminator on
+  // its own. The runtime re-reads fresh `pending` rows on every
+  // requestDetailGapPage call, and `recovered`/`terminal` statuses are sticky, so
+  // each loop either RECOVERS gaps (monotonic progress toward empty) or durably
+  // RE-DEFERS them — the work-list strictly shrinks or churns the same hostile
+  // tail. We stop on a GENUINE bound only:
+  //   1. work-list empty (page.length === 0) — the drain is complete;
+  //   2. run budget exhausted (runBudget.shouldStop()) — leave the rest durable
+  //      for the next run (an explicit owner-set envelope, off by default);
+  //   3. single-pass mode (no requestDetailGapPage) — can't re-page;
+  //   4. ZERO-PROGRESS round — a full page recovered nothing new, meaning every
+  //      remaining item is durably deferred by the bounded-wait fallback (a
+  //      persistently-hot account). Re-attacking would spin, so we stop and leave
+  //      them as durable `pending` gaps. Lose-nothing holds: nothing recovered is
+  //      ever lost (records persisted, gap marked recovered); nothing un-recovered
+  //      is dropped (it stays a durable pending gap).
   let recovered = 0;
   let page = deps.detailGaps ?? [];
+  let stoppedWithPending = false;
 
   while (page.length > 0) {
     const result = await recoverPendingConversationDetailGapPage(deps, page, emitConversation, pacing);
     recovered += result.recovered;
-    if (result.stoppedWithPending || !deps.requestDetailGapPage) {
-      return { recovered, stoppedWithPending: result.stoppedWithPending };
+    stoppedWithPending = result.stoppedWithPending;
+
+    // Bound 3: single-pass mode — honor the page's own stop signal verbatim.
+    if (!deps.requestDetailGapPage) {
+      return { recovered, stoppedWithPending };
     }
+    // Bound 2: a genuine run-budget envelope tripped — stop and leave the rest
+    // durable for the next run (the un-recovered tail is already pending gaps).
+    if (deps.runBudget?.shouldStop()) {
+      return { recovered, stoppedWithPending };
+    }
+    // Bound 4: a stopped page that recovered NOTHING means the remaining work is
+    // all durably deferred (hostile account exhausted the bounded wait) — further
+    // re-paging would spin on the same tail. Stop; the tail stays durable pending.
+    if (result.stoppedWithPending && result.recovered === 0) {
+      return { recovered, stoppedWithPending: true };
+    }
+
+    // Otherwise keep draining: re-read the fresh pending work-list. The page that
+    // partially hydrated made progress, so its un-hydrated tail (now re-written as
+    // `pending`) comes back here to be re-attacked in the SAME run.
     page = await deps.requestDetailGapPage({ streams: ["messages"] });
   }
 
+  // Bound 1: the work-list drained to empty — the run recovered everything it
+  // could reach. `stoppedWithPending` is false: nothing is owed.
   return { recovered, stoppedWithPending: false };
 }
 

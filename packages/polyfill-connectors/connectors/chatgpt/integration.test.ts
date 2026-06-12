@@ -3195,6 +3195,103 @@ test("runConversationsAndMessagesStreams: drains paged pending message gaps beyo
   );
 });
 
+test("runConversationsAndMessagesStreams: CONTINUOUS DRAIN — a partially-hydrated page does NOT end the run; the deferred tail is re-attacked and drained to zero in ONE run", async () => {
+  // The SLVP-ideal worker-session contract: a run is NOT a completeness boundary.
+  // When a recovery page only partially hydrates (a wait/defer happened and the
+  // un-hydrated tail was re-written as fresh `pending` gaps), the run must NOT
+  // terminate — it must re-request the pending work-list and KEEP DRAINING in the
+  // SAME run until the work-list is empty. This is the bug the live run exposed:
+  // the old driver returned the moment a page reported stoppedWithPending, so one
+  // forced run only ever drained a single page and left the rest for a re-kick.
+  const harness = makeRecordingEmit(validateRecord);
+  const convoA = makeConvo({ id: "drain-a", update_time: 1_700_000_001 });
+  const convoB = makeConvo({ id: "drain-b", update_time: 1_700_000_002 });
+  const convoC = makeConvo({ id: "drain-c", update_time: 1_700_000_003 });
+
+  // Page 1 = {A, B} on a HOT account (every fetch serves a 429, threshold 1): the
+  // density bounded-wait fallback eventually defers the un-hydrated tail of page 1
+  // as durable upstream_pressure gaps — a partial page (stoppedWithPending=true)
+  // that recovered at least one item. This is exactly the partial page the old
+  // driver terminated on. The account COOLS for the subsequent pages (the fetch
+  // stops serving 429s once `hot` flips off), so the re-attacked tail hydrates.
+  let hot = true;
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return { status: 200, json: { items: [], has_missing_conversations: false, total: 0 } };
+      }
+      if (hot) {
+        // Served-429 pressure keeps the density tracker hot so page 1 trips the
+        // bounded-wait fallback and defers its tail durably.
+        await currentAdaptiveLaneRunContext()?.reportPressure({
+          absorbedByRequestWait: true,
+          delayMs: 30_000,
+          kind: "rate_limited",
+          retryAfterMs: 30_000,
+        });
+      }
+      return makeDetailOk();
+    },
+  };
+
+  // The runtime re-reads fresh pending rows each call. Page 2 = {B} (the tail
+  // page 1 deferred, now cool → hydrates); page 3 = {C} (a gap that appeared
+  // while the run was draining — proving the run keeps pulling NEW work too);
+  // then empty. The OLD driver would stop after page 1.
+  const pages: CollectContext["detailGaps"][] = [
+    [makeDetailGapFromConvo("gap_b_redeferred", convoB)],
+    [makeDetailGapFromConvo("gap_c_fresh", convoC)],
+    [],
+  ];
+  const requestedPages: number[] = [];
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [makeDetailGapFromConvo("gap_a", convoA), makeDetailGapFromConvo("gap_b", convoB)],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    requestDetailGapPage: () => {
+      requestedPages.push(requestedPages.length + 1);
+      hot = false; // the account cools once page 1's hot drain is done
+      return Promise.resolve(pages.shift() ?? []);
+    },
+    // No run-cap → the ONLY reason to stop is the work-list emptying.
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    {},
+    { detailPacing: { random: () => 0, sleep: () => undefined, densityStopThreshold: 1 } }
+  );
+
+  // Every conversation hydrated in ONE run — including B (re-attacked after page 1
+  // deferred it) and C (a gap discovered mid-drain). The run kept pulling the
+  // work-list until empty instead of stopping after the first partial page.
+  const recoveredKeys = Array.from(
+    new Set(
+      harness.protocolMessages
+        .filter(
+          (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }> => m.type === "DETAIL_GAP_RECOVERED"
+        )
+        .map((m) => m.record_key)
+    )
+  ).sort();
+  assert.deepEqual(
+    recoveredKeys,
+    ["drain-a", "drain-b", "drain-c"],
+    "all gaps — including the re-deferred tail and a mid-drain discovery — recover in one run"
+  );
+  assert.ok(
+    requestedPages.length >= 3,
+    "the run keeps requesting the work-list across the partial page until it drains to empty"
+  );
+});
+
 test("runConversationsAndMessagesStreams: a GENUINELY budget-exhausted recovery still defers (no forward walk)", async () => {
   // Drain-within-budget keeps the "defer" path for the RIGHT reason: when the run
   // budget is genuinely exhausted by recovery, the forward walk is still skipped
