@@ -335,6 +335,7 @@ const CHATGPT_DERIVED_TAIL_DEFERRAL_GAPS_FLOOR = 50;
 const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS";
 const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
+const CHATGPT_PACING_RECOVERY_GAIN_ENV = "PDPP_CHATGPT_PACING_RECOVERY_GAIN";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
 const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
 // Cold-start DISCOVERY seed (ms), used ONLY when no fresh learned interval is
@@ -495,6 +496,27 @@ function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | 
 }
 
 /**
+ * Resolve the distance-proportional pacing recovery gain (see
+ * ProviderPacing.recoveryGain). Unset → `null` so ProviderPacing applies its own
+ * theory-tuned default (0.1). A finite, non-negative override wins; an invalid
+ * value falls back to `null` (the default). The gain shapes how fast a transient
+ * over-backoff unwinds toward the operating point WITHOUT changing the gentle
+ * base step near the rate ceiling — it is an AIMD-shape tunable, never the
+ * safety ceiling (that stays PDPP_CHATGPT_PACING_MIN_INTERVAL_MS).
+ */
+function resolveChatGptPacingRecoveryGain(env: NodeJS.ProcessEnv): number | null {
+  const trimmed = env[CHATGPT_PACING_RECOVERY_GAIN_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
  * Build the ProviderPacing warm-start fields from the raw persisted pacing.
  * Returns `restoredIntervalMs` when a usable interval was persisted, plus the
  * §10-E staleness inputs (`restoredAtMs` + the 6h `maxWarmStartAgeMs`) when the
@@ -548,6 +570,7 @@ export function resolveChatGptProviderBudget(
     initialIntervalMs == null
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
+  const recoveryGain = resolveChatGptPacingRecoveryGain(env);
   // The adaptive lane is the SOLE send governor; pacing rides as a
   // `launchDelayHint` (pacingMode: "signal"). The cold `initialIntervalMs` is a
   // one-time discovery seed; the restored interval (warm-start) lets the AIMD
@@ -569,6 +592,7 @@ export function resolveChatGptProviderBudget(
             ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
             initialIntervalMs,
             minIntervalMs,
+            ...(recoveryGain == null ? {} : { recoveryGain }),
             ...warmStart,
           },
         }),

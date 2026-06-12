@@ -1,5 +1,11 @@
 export interface PacingOptions {
-  /** Additive increase step (ms) per successful response. Default: 100ms. */
+  /**
+   * Base additive-increase step (ms) per successful response — the GENTLE step
+   * applied in the ceiling-discovery region (interval at or below
+   * `initialIntervalMs`). This is the step Chiu & Jain's AIMD proof requires
+   * near the operating point: a small, conservative linear increase so the probe
+   * toward the rate ceiling never overshoots into a ban. Default: 100ms.
+   */
   additiveIncreaseMs?: number;
   /**
    * Maximum credit (ms of pacing head-room) the bucket may accumulate while
@@ -37,6 +43,33 @@ export interface PacingOptions {
   multiplicativeDecreaseFactor?: number;
   /** Injectable clock for tests. Default: Date.now. */
   now?: () => number;
+  /**
+   * Distance-proportional recovery gain for the additive step ABOVE the
+   * operating point. The per-success step is:
+   *
+   *   step = additiveIncreaseMs + recoveryGain × max(0, interval − initialIntervalMs)
+   *
+   * This makes recovery fast when the interval is far above `initialIntervalMs`
+   * (a transient over-backoff from a burst of real 429s — NOT ceiling discovery,
+   * and ban-safe to unwind because every step keeps us SLOWER than the rate that
+   * already succeeded), while decaying continuously to the gentle base step at
+   * and below the operating point (where caution is mandatory). It is the direct
+   * analogue of AWS adaptive-mode CUBIC: "faster growth far below the ceiling,
+   * slow linear growth near it" (prior-art §1).
+   *
+   * THEORY CONSTRAINT (do not violate): this remains ADDITIVE in the Chiu-Jain
+   * sense — each success applies a FIXED increment determined by the current
+   * state, never a multiplication of the controlled variable toward the ceiling.
+   * Recovery is therefore convergent and the probe near the operating point
+   * stays the base step. Default: 0.1 (≈0% boost at the operating point, growing
+   * to a ~10% fraction of the over-backoff distance per success — e.g. a 29s
+   * spike recovers in ~40 successes vs ~290 at the flat base step, while the
+   * region from `initialIntervalMs` down to `minIntervalMs` is still walked at
+   * exactly the gentle base step). Set to 0 to restore the legacy flat step.
+   *
+   * Tunable via PDPP_CHATGPT_PACING_RECOVERY_GAIN at the ChatGPT call site.
+   */
+  recoveryGain?: number;
   /**
    * Timestamp (ms since epoch, e.g. Date.now()) when `restoredIntervalMs` was
    * persisted. Used together with `maxWarmStartAgeMs` to enforce the §10-E
@@ -95,6 +128,14 @@ export interface PacingSnapshot {
 }
 
 const DEFAULT_INITIAL_INTERVAL_MS = 1000;
+const DEFAULT_ADDITIVE_INCREASE_MS = 100;
+/**
+ * Default distance-proportional recovery gain (see PacingOptions.recoveryGain).
+ * 0.1 unwinds a deep transient back-off in tens of successes while keeping the
+ * step within ~10% of the base step in the discovery region just above the
+ * operating point — the AWS-CUBIC-shaped fast-far / gentle-near asymmetry.
+ */
+const DEFAULT_RECOVERY_GAIN = 0.1;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -113,6 +154,7 @@ export class ProviderPacing {
   private readonly minIntervalMs: number;
   private readonly burstToleranceMs: number;
   private readonly additiveIncreaseMs: number;
+  private readonly recoveryGain: number;
   private readonly multiplicativeDecreaseFactor: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -129,7 +171,14 @@ export class ProviderPacing {
     this.initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
     this.minIntervalMs = options.minIntervalMs ?? 0;
     this.burstToleranceMs = options.burstToleranceMs ?? 2 * this.initialIntervalMs;
-    this.additiveIncreaseMs = options.additiveIncreaseMs ?? 100;
+    this.additiveIncreaseMs = options.additiveIncreaseMs ?? DEFAULT_ADDITIVE_INCREASE_MS;
+    // Clamp the recovery gain to a non-negative, finite value. A negative or
+    // NaN gain would invert/poison the additive step; 0 restores the legacy
+    // flat-step behaviour.
+    this.recoveryGain =
+      typeof options.recoveryGain === "number" && Number.isFinite(options.recoveryGain) && options.recoveryGain >= 0
+        ? options.recoveryGain
+        : DEFAULT_RECOVERY_GAIN;
     this.multiplicativeDecreaseFactor = options.multiplicativeDecreaseFactor ?? 0.5;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
@@ -242,6 +291,20 @@ export class ProviderPacing {
   /**
    * Record a successful response — additive increase (reduce interval toward minIntervalMs).
    *
+   * The per-success step is distance-proportional but bounded and ADDITIVE
+   * (Chiu-Jain): a fixed increment per success that is the gentle base step in
+   * the ceiling-discovery region (interval at or below `initialIntervalMs`) and
+   * grows with the over-backoff distance above it. This unwinds a transient
+   * spike (a burst of real 429s pushed the interval far above the operating
+   * point) in tens of successes instead of hundreds, while keeping the probe
+   * toward the rate ceiling gentle — recovering fast above the operating point
+   * is ban-safe because every intermediate interval is still SLOWER than the
+   * rate that already succeeded; only near `initialIntervalMs`/`minIntervalMs`
+   * are we discovering the true ceiling, and there the step stays the base step.
+   * See {@link PacingOptions.recoveryGain} for the theory constraint. The step
+   * is never multiplicative, so convergence is preserved, and the result is
+   * always floored at `minIntervalMs` — the ceiling is never crossed.
+   *
    * §10-D (SLVP-ideal): pass `{ suppressAdditiveIncrease: true }` to suppress
    * the decrease while a source-pressure cooldown is active. The recovery lane
    * calls this so its successes do NOT un-learn the back-off the cooldown is
@@ -253,7 +316,23 @@ export class ProviderPacing {
       // §10-D: cooldown-exempt recovery lane — leave interval unchanged.
       return;
     }
-    this._currentIntervalMs = Math.max(this.minIntervalMs, this._currentIntervalMs - this.additiveIncreaseMs);
+    this._currentIntervalMs = Math.max(this.minIntervalMs, this._currentIntervalMs - this.additiveStepMs());
+  }
+
+  /**
+   * The additive-increase step (ms) to apply for the current interval. Gentle
+   * base step in the ceiling-discovery region (interval ≤ initialIntervalMs),
+   * growing linearly with the over-backoff distance above it (transient-spike
+   * unwinding). PURE: reads only, mutates nothing.
+   */
+  private additiveStepMs(): number {
+    const overBackoffMs = Math.max(0, this._currentIntervalMs - this.initialIntervalMs);
+    // Floor to whole ms so intervals stay integer-valued (operator-legible logs
+    // and an integer warm-start persisted value, matching the legacy flat step)
+    // and no IEEE-754 drift accumulates. At/below the operating point the
+    // overshoot is 0, so this is exactly `additiveIncreaseMs` — the gentle base
+    // step — preserving cautious ceiling discovery.
+    return Math.floor(this.additiveIncreaseMs + this.recoveryGain * overBackoffMs);
   }
 
   /**

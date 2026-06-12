@@ -390,6 +390,177 @@ test("ProviderPacing: snapshot() exposes interval, ceiling, and last back-off fo
   assert.equal(pacing.snapshot().lastBackoff?.reason, "retry_after", "retry-after back-off reason recorded");
 });
 
+// ─── Faster additive recovery from transient back-off (gentle ceiling preserved) ──
+
+test("ProviderPacing: deep transient back-off recovers to the ceiling in FAR fewer successes than the flat base step", () => {
+  // The fix: after a burst of real 429s the interval correctly backs off deep
+  // (e.g. 16000ms). With the legacy flat 100ms step that tail is ~158 successes.
+  // The distance-proportional step (recoveryGain) unwinds the over-backoff in
+  // tens of successes — quantified below — WITHOUT being multiplicative.
+  const deepIntervalMs = 16_000;
+  const ceilingMs = 250;
+  const initialIntervalMs = 1000;
+  const baseStep = 100;
+
+  function successesToCeiling(recoveryGain: number): number {
+    const pacing = new ProviderPacing({
+      initialIntervalMs,
+      minIntervalMs: ceilingMs,
+      additiveIncreaseMs: baseStep,
+      recoveryGain,
+      restoredIntervalMs: deepIntervalMs, // enter directly at the deep back-off
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+    let n = 0;
+    while (pacing.currentIntervalMs > ceilingMs && n < 100_000) {
+      pacing.recordSuccess();
+      n += 1;
+    }
+    return n;
+  }
+
+  const oldFlat = successesToCeiling(0); // legacy flat 100ms step
+  const fast = successesToCeiling(0.1); // new default gain
+
+  // Quantified improvement: the flat step needs ~158, the new gain ~34.
+  assert.ok(oldFlat >= 150, `sanity: flat-step recovery is the slow tail (${oldFlat})`);
+  assert.ok(fast <= 40, `distance-proportional recovery reaches the ceiling in ≤40 successes, got ${fast}`);
+  assert.ok(
+    fast * 4 < oldFlat,
+    `recovery is >4x faster than the flat step: fast=${fast}, old=${oldFlat} (ratio ${(oldFlat / fast).toFixed(1)}x)`
+  );
+});
+
+test("ProviderPacing: near the operating point the step is STILL the gentle base step (ceiling discovery stays cautious)", () => {
+  // The theory constraint: the additive increase in the discovery region
+  // (interval at or below initialIntervalMs) MUST remain the gentle base step.
+  // recoveryGain only boosts the step ABOVE the operating point.
+  const initialIntervalMs = 1000;
+  const ceilingMs = 250;
+  const baseStep = 100;
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: ceilingMs,
+    additiveIncreaseMs: baseStep,
+    recoveryGain: 0.1,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  // Walk down from the operating point. Every step in this region must be the
+  // base step exactly (no boost), so the discovery toward the ceiling is gentle.
+  let prev = pacing.currentIntervalMs;
+  assert.equal(prev, initialIntervalMs);
+  while (pacing.currentIntervalMs > ceilingMs) {
+    pacing.recordSuccess();
+    const step = prev - pacing.currentIntervalMs;
+    // At the last sub-base step the floor clamps it; otherwise it is exactly base.
+    assert.ok(
+      step === baseStep || pacing.currentIntervalMs === ceilingMs,
+      `near operating point the step must be the gentle base step (${baseStep}), got ${step}`
+    );
+    prev = pacing.currentIntervalMs;
+  }
+  // And the count from operating point to ceiling is identical to the flat step:
+  // (1000-250)/100 = 7.5 → 8.
+  const flatPacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: ceilingMs,
+    additiveIncreaseMs: baseStep,
+    recoveryGain: 0,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  let flatN = 0;
+  while (flatPacing.currentIntervalMs > ceilingMs) {
+    flatPacing.recordSuccess();
+    flatN += 1;
+  }
+  assert.equal(
+    flatN,
+    8,
+    "from the operating point the gentle base step takes the same successes as the legacy flat step"
+  );
+});
+
+test("ProviderPacing: distance-proportional recovery still NEVER crosses the ceiling", () => {
+  // The owner safety number (minIntervalMs) must hold under any recovery shape.
+  const ceilingMs = 250;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: ceilingMs,
+    additiveIncreaseMs: 100,
+    recoveryGain: 0.1,
+    restoredIntervalMs: 30_000, // start deep
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  for (let i = 0; i < 2000; i += 1) {
+    pacing.recordSuccess();
+    assert.ok(
+      pacing.currentIntervalMs >= ceilingMs,
+      `interval never crosses the ceiling under boosted recovery (i=${i}, interval=${pacing.currentIntervalMs})`
+    );
+  }
+  assert.equal(pacing.currentIntervalMs, ceilingMs, "rests exactly at the ceiling, never below");
+});
+
+test("ProviderPacing: the boosted step is ADDITIVE, not multiplicative — each step is a bounded fixed increment of the current state", () => {
+  // Guardrail against a future refactor turning this into a geometric/multiplicative
+  // increase (which would break Chiu-Jain convergence and risk overshooting the ceiling).
+  // For a multiplicative law the ratio interval[n+1]/interval[n] would be ~constant;
+  // for the additive law the per-step DELTA is a deterministic function of the interval
+  // (baseStep + gain*(interval-initial)) and the interval shrinks super-linearly but each
+  // step is a fixed subtraction, never a multiplication toward zero.
+  const initialIntervalMs = 1000;
+  const baseStep = 100;
+  const gain = 0.1;
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: 250,
+    additiveIncreaseMs: baseStep,
+    recoveryGain: gain,
+    restoredIntervalMs: 8000,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  let prev = pacing.currentIntervalMs;
+  for (let i = 0; i < 5; i += 1) {
+    pacing.recordSuccess();
+    const observedDelta = prev - pacing.currentIntervalMs;
+    // The step is floored to whole ms so intervals stay integer-valued.
+    const expectedDelta = Math.floor(baseStep + gain * Math.max(0, prev - initialIntervalMs));
+    assert.equal(
+      observedDelta,
+      expectedDelta,
+      `step is exactly the additive fixed increment floor(baseStep + gain*overshoot), not a multiplication (i=${i})`
+    );
+    assert.ok(Number.isInteger(pacing.currentIntervalMs), `interval stays integer-valued (i=${i})`);
+    prev = pacing.currentIntervalMs;
+  }
+});
+
+test("ProviderPacing: recoveryGain=0 restores the exact legacy flat-step behaviour", () => {
+  // Backward-compat escape hatch: gain 0 must reproduce the old constant 100ms step
+  // at every interval, including deep above the operating point.
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    recoveryGain: 0,
+    restoredIntervalMs: 5000,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  assert.equal(pacing.currentIntervalMs, 5000);
+  pacing.recordSuccess();
+  assert.equal(
+    pacing.currentIntervalMs,
+    4900,
+    "gain=0 is the legacy flat 100ms step even deep above the operating point"
+  );
+});
+
 // ─── SLVP-ideal §10-D: pacer pollution suppression ──────────────────────────
 
 test("ProviderPacing: recordSuccess with suppressAdditiveIncrease=true leaves interval unchanged", () => {
