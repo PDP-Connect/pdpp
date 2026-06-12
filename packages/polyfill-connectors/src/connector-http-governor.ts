@@ -338,6 +338,18 @@ export function readPersistedPacingInterval(
  * the next run's warm-start. Spread the result into the connector's STATE cursor
  * alongside its own cursor fields. Returns `{}` when pacing is disabled (nothing
  * to persist).
+ *
+ * SEED-POISONING GUARD: the persisted interval is CAPPED at the cold-start
+ * baseline (`initialIntervalMs`). Warm-start exists only to let the next run START
+ * FASTER than a cold start by reusing a learned healthy operating rate — it must
+ * never make the next run start SLOWER than cold. A run that ended deep in
+ * throttle (an interval the AIMD backed off to, or a provider Retry-After spike)
+ * would otherwise persist that transient backoff as the seed, so the next run
+ * would crawl back toward the ceiling from an interval worse than cold-start (the
+ * descent compounding across runs). Capping at cold-start means a healthy run
+ * persists its fast learned interval while a throttled run persists at most the
+ * cold-start baseline (a clean cold re-entry). Within-run backoff still protects
+ * the live account; only the CROSS-run seed is floored.
  */
 export function buildPacingStateFields(
   governor: Pick<ConnectorHttpGovernor, "snapshot"> | null | undefined,
@@ -351,7 +363,7 @@ export function buildPacingStateFields(
   const recordedAtKey = options.recordedAtKey ?? PACING_STATE_RECORDED_AT_KEY;
   const now = options.now ?? Date.now;
   return {
-    [intervalKey]: snapshot.intervalMs,
+    [intervalKey]: Math.min(snapshot.intervalMs, snapshot.initialIntervalMs),
     [recordedAtKey]: now(),
   };
 }

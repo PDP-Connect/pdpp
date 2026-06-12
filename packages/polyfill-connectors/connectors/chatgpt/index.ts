@@ -627,6 +627,20 @@ export function readChatGptPersistedPacing(state: CollectContext["state"] | unde
  * Build the STATE event fields that persist the controller's final learned
  * interval alongside the messages cursor, so the next run warm-starts from it.
  * Returns an empty object when there is nothing to persist (no pacing).
+ *
+ * SEED-POISONING GUARD: the persisted interval is CAPPED at the cold-start
+ * baseline (`initialIntervalMs`). Warm-start exists only to let the next run
+ * START FASTER than a cold start by reusing a learned healthy operating rate — it
+ * must never make the next run start SLOWER than cold. A run that ended deep in
+ * throttle (e.g. a multi-second interval the AIMD backed off to, or a provider
+ * Retry-After spike) would otherwise persist that transient backoff as the seed,
+ * and the next run would crawl back toward the ceiling from an interval worse than
+ * cold-start — the descent compounding across runs we observed live (a 14.3s seed
+ * needing ~140 successful fetches just to re-reach the ceiling). Capping at
+ * cold-start means a healthy run persists its fast learned interval (faster next
+ * start) while a throttled run persists at most the cold-start baseline (a clean
+ * cold re-entry, no poisoning). The within-run backoff still protects the live
+ * account; only the CROSS-run seed is floored.
  */
 export function buildChatGptPacingStateFields(
   providerBudget: ProviderBudgetController | null | undefined,
@@ -636,8 +650,9 @@ export function buildChatGptPacingStateFields(
   if (!snapshot) {
     return {};
   }
+  const persistedIntervalMs = Math.min(snapshot.intervalMs, snapshot.initialIntervalMs);
   return {
-    [CHATGPT_PACING_STATE_INTERVAL_KEY]: snapshot.intervalMs,
+    [CHATGPT_PACING_STATE_INTERVAL_KEY]: persistedIntervalMs,
     [CHATGPT_PACING_STATE_RECORDED_AT_KEY]: now(),
   };
 }
