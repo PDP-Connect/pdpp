@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { runConnector } from '../runtime/index.js';
 import { startServer } from '../server/index.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { listSpineEventsPage } from '../lib/spine.ts';
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -132,4 +133,73 @@ test('a recovered detail gap re-deferred with the same identity must not fail th
   assert.equal(thrown, null);
   assert.equal(result.status, 'succeeded');
   assert.equal(result.checkpoint_summary.state_streams_committed, 2);
+});
+
+// SLVP-ideal audit logging (docs/research/slvp-ideal-audit-logging-2026-06-12.md):
+// run.detail_gap_recorded is a first-sighting lifecycle FACT, emitted ONCE per
+// gap identity — NOT a per-run re-observation breadcrumb. A run that re-defers a
+// gap first discovered in a PRIOR run must NOT append a fresh recorded event
+// (that was the ~6000 rows/day bloat + a dishonest "something happened" signal);
+// a brand-new gap this run emits exactly one. The durable row's attempt_count /
+// last_run_id carry the "worked across runs" story.
+test('run.detail_gap_recorded fires once at first sighting, NOT on a prior-run re-defer', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(MANIFEST) });
+  const ownerToken = await issueOwnerToken(asUrl);
+  const connectorId = MANIFEST.connector_id;
+  const store = getDefaultConnectorDetailGapStore();
+
+  // Gap OLD: discovered in a PRIOR run, still pending. This run re-defers it with
+  // the same identity — the spine must stay silent (discovered_run_id !== runId).
+  const OLD_LOCATOR = { kind: 'chatgpt.conversation', conversation_id: 'OLD' };
+  await store.upsertPendingGap({
+    connectorId, grantId: null,
+    source: { kind: 'connector', id: connectorId }, stream: 'messages', parentStream: null, recordKey: 'OLD',
+    detailLocator: OLD_LOCATOR, listCursor: null, scope: null, reason: 'retry_exhausted',
+    lastError: null, discoveredRunId: 'prior', lastRunId: 'prior',
+  });
+
+  // This run emits a DETAIL_GAP for OLD (a re-defer) and for NEW (first sighting).
+  const messages = [
+    { type: 'DETAIL_GAP', stream: 'messages', record_key: 'OLD', reason: 'retry_exhausted', retryable: true, detail_locator: OLD_LOCATOR },
+    { type: 'DETAIL_GAP', stream: 'messages', record_key: 'NEW', reason: 'retry_exhausted', retryable: true, detail_locator: { kind: 'chatgpt.conversation', conversation_id: 'NEW' } },
+    { type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'conversations', stream: 'messages',
+      required_keys: ['OLD', 'NEW'], hydrated_keys: [], gap_keys: ['OLD', 'NEW'] },
+    { type: 'STATE', stream: 'messages', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'STATE', stream: 'conversations', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ];
+  const { connectorPath, cleanup } = createCannedConnector(messages);
+
+  let result = null;
+  try {
+    result = await runConnector({
+      connectorPath, connectorId, ownerToken, manifest: MANIFEST,
+      scope: { streams: [{ name: 'conversations' }, { name: 'messages' }] },
+      state: null, collectionMode: 'full_refresh', persistState: true,
+      rsUrl: `http://localhost:${rsPort}`, onInteraction: async () => ({}),
+      detailGapStore: store,
+    });
+  } finally {
+    cleanup();
+  }
+
+  // Both gaps are durably pending (lose-nothing intact) — the gate touches only
+  // the spine emit, never the durable substrate.
+  const durableKeys = result.detail_gaps.map((g) => g.gap_id).sort();
+  assert.equal(durableKeys.length, 2, 'both gaps are durably recorded (lose-nothing)');
+
+  // The spine carries exactly ONE run.detail_gap_recorded for THIS run — the NEW
+  // gap's first sighting. The OLD re-defer is suppressed.
+  const page = listSpineEventsPage('run', result.run_id, { limit: 500 });
+  const recordedEvents = page.events.filter((e) => e.event_type === 'run.detail_gap_recorded');
+  await closeServer(server);
+
+  assert.equal(recordedEvents.length, 1, 'exactly one recorded event this run — the new gap, not the prior-run re-defer');
+  assert.equal(recordedEvents[0].data.record_key, 'NEW', 'the single recorded event is the first-sighting NEW gap');
+  // Self-describing first-sighting payload (the discriminating fields an auditor needs).
+  assert.equal(recordedEvents[0].data.discovered_run_id, result.run_id, 'recorded event names the discovering run');
+  assert.equal(typeof recordedEvents[0].data.attempt_count, 'number', 'recorded event carries attempt_count');
 });
