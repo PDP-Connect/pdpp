@@ -27,7 +27,7 @@ import {
   projectBrowserSurfaceLease,
 } from "@opendatalabs/remote-surface/leases";
 import { getOne, referenceQueries } from "../lib/db.ts";
-import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../lib/spine.ts";
+import { createTraceContext, emitSpineEvent, getRunTerminalStatus, type SpineTraceContext } from "../lib/spine.ts";
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
@@ -233,7 +233,7 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
-  triggerKind?: Extract<RunTriggerKind, "manual" | "webhook">;
+  triggerKind?: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">;
 }
 
 export interface ConnectorInstanceOptions {
@@ -252,7 +252,7 @@ export interface RunNowResult {
 
 function runAutomationMetadata(
   policy: RefreshPolicy | null,
-  triggerKind: Extract<RunTriggerKind, "manual" | "webhook">
+  triggerKind: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">
 ): Pick<RunNowResult, "automation_mode" | "automation_summary" | "trigger_kind"> {
   const projection = projectRunAutomationPolicy({
     triggerKind,
@@ -413,6 +413,31 @@ export type StaticSecretRunEnvResolver = (args: {
 }) => Promise<Record<string, string> | null> | Record<string, string> | null;
 
 export interface Controller {
+  /**
+   * Run-id-keyed lookup over the in-process active-run bookkeeping.
+   * Returns the active-run projection while the run is in flight
+   * (registered before the run-now 202 handle is returned, cleared by
+   * `finalizeRunCleanup` when the run settles), or `null` when no active
+   * run carries that id. Used by the `GET /_ref/runs/:runId` run-handle
+   * status route; terminal runs resolve via the spine instead.
+   */
+  /**
+   * Await a run's real terminal outcome by run_id.
+   *
+   * Waits for the in-flight `activeRunPromises` entry for this run to settle
+   * (meaning the controller's `.finally()` cleanup chain has completed), then
+   * reads the authoritative terminal status from the spine.
+   *
+   * Returns `"succeeded"` when the run completed successfully, `"failed"` for
+   * any other terminal state (failed, cancelled, abandoned) or when the run
+   * is unknown / has no spine terminal event.
+   *
+   * Used by the `runManagedConnectorViaController` scheduler callback to
+   * record the REAL outcome of a scheduled managed-connector run instead of
+   * a synthetic "succeeded" — so the scheduler's failure-streak / back-off
+   * machinery fires correctly when the run actually fails.
+   */
+  awaitRun(runId: string): Promise<"succeeded" | "failed">;
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
   /**
    * Owner-only single-run cancellation. Aborts only the targeted run's
@@ -443,14 +468,6 @@ export interface Controller {
    */
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
-  /**
-   * Run-id-keyed lookup over the in-process active-run bookkeeping.
-   * Returns the active-run projection while the run is in flight
-   * (registered before the run-now 202 handle is returned, cleared by
-   * `finalizeRunCleanup` when the run settles), or `null` when no active
-   * run carries that id. Used by the `GET /_ref/runs/:runId` run-handle
-   * status route; terminal runs resolve via the spine instead.
-   */
   findActiveRunByRunId(runId: string): ActiveRun | null;
   getActiveRun(connectorId: string, options?: ConnectorInstanceOptions): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
@@ -3617,6 +3634,29 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return drainPromisesWithDeadline(activeRunPromises, timeoutMs);
   }
 
+  // Await a managed-connector run's real terminal outcome.
+  //
+  // Waits for `activeRunPromises.get(runId)` to settle (the promise resolves
+  // after `finalizeRunCleanup` completes, which fires in the `.finally()` of
+  // the connector run — so by the time we get here, the spine terminal event
+  // is guaranteed to have been emitted). Then reads that terminal status from
+  // the spine and maps it to "succeeded" | "failed".
+  //
+  // If the run is not in `activeRunPromises` (already completed before we look,
+  // or unknown), we skip the await and go straight to the spine read — this is
+  // safe because the terminal event is already there.
+  async function awaitRun(runId: string): Promise<"succeeded" | "failed"> {
+    const runPromise = activeRunPromises.get(runId);
+    if (runPromise) {
+      // Suppress any rejection — we care about the terminal status from the
+      // spine, not about whether the promise itself threw (the catch handler
+      // in runNow already emits a terminal spine event for throws).
+      await runPromise.catch(() => undefined);
+    }
+    const terminalStatus = await getRunTerminalStatus(runId);
+    return terminalStatus === "completed" ? "succeeded" : "failed";
+  }
+
   function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
     const entry = activeRunInteractions.get(runId);
     if (!entry) {
@@ -3716,6 +3756,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     upsertSchedule,
     setScheduleEnabled,
     deleteSchedule,
+    awaitRun,
     drainActiveRuns,
     expireBrowserSurfaceWaits,
     findActiveRunByRunId,
