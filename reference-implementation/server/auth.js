@@ -1258,7 +1258,7 @@ async function getPendingConsentRow(deviceCode) {
       `SELECT device_code, user_code, params_json::text AS params_json, status,
               subject_id, grant_id, token_id, ai_training_consented,
               request_id, trace_id, scenario_id, created_at, expires_at,
-              approved_at, denied_at, approval_id
+              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
        FROM pending_consents
        WHERE device_code = $1`,
       [deviceCode],
@@ -1314,7 +1314,7 @@ export async function getPendingConsentRowByApprovalId(approvalId) {
       `SELECT device_code, user_code, params_json::text AS params_json, status,
               subject_id, grant_id, token_id, ai_training_consented,
               request_id, trace_id, scenario_id, created_at, expires_at,
-              approved_at, denied_at, approval_id
+              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
        FROM pending_consents
        WHERE approval_id = $1`,
       [approvalId],
@@ -1370,6 +1370,18 @@ async function markPendingConsentExpired(deviceCode) {
     return;
   }
   exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
+}
+
+async function updatePendingConsentLastPolled(deviceCode) {
+  const polledAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      "UPDATE pending_consents SET last_polled_at = $1 WHERE device_code = $2",
+      [polledAt, deviceCode],
+    );
+    return;
+  }
+  exec(referenceQueries.authPendingConsentsUpdateLastPolled, [polledAt, deviceCode]);
 }
 
 async function getOwnerDeviceAuthRow(deviceCode) {
@@ -4082,6 +4094,16 @@ export async function exchangeGrantScopedDeviceCode({ clientId, deviceCode }) {
   }
 
   if (row.status === 'pending') {
+    if (row.last_polled_at) {
+      const intervalSeconds = Number.isFinite(Number(row.interval_seconds)) && Number(row.interval_seconds) > 0
+        ? Number(row.interval_seconds)
+        : 2;
+      const sinceLastPollMs = Date.now() - new Date(row.last_polled_at).getTime();
+      if (sinceLastPollMs < intervalSeconds * 1000) {
+        throw buildGrantScopedDeviceExchangeError('slow_down', 'Polling too quickly', row);
+      }
+    }
+    await updatePendingConsentLastPolled(deviceCode);
     throw buildGrantScopedDeviceExchangeError('authorization_pending', 'Authorization still pending', row);
   }
 

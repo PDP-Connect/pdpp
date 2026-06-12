@@ -1245,6 +1245,7 @@ export interface AuthorizationServerMetadataInput {
   codeChallengeMethodsSupported?: readonly string[] | null;
   cimdEnabled?: boolean | null;
   deviceAuthorizationEndpoint?: string | null;
+  deviceAuthorizationProfilesSupported?: readonly Record<string, unknown>[] | null;
   grantTypesSupported?: readonly string[] | null;
   introspectionEndpoint: string;
   issuer: string;
@@ -1272,6 +1273,7 @@ export interface AuthorizationServerMetadata {
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
+  pdpp_device_authorization_profiles_supported?: readonly Record<string, unknown>[];
   issuer: string;
   pdpp_authorization_details_types_supported?: readonly string[];
   pdpp_pre_registered_public_clients?: readonly AuthorizationServerPublicClient[];
@@ -1299,6 +1301,7 @@ export function buildAuthorizationServerMetadata({
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
+  deviceAuthorizationProfilesSupported,
   agentConnectEndpoint,
   grantTypesSupported,
   responseTypesSupported,
@@ -1349,6 +1352,9 @@ export function buildAuthorizationServerMetadata({
   }
   if (deviceAuthorizationEndpoint) {
     metadata.device_authorization_endpoint = deviceAuthorizationEndpoint;
+  }
+  if (deviceAuthorizationProfilesSupported?.length) {
+    metadata.pdpp_device_authorization_profiles_supported = deviceAuthorizationProfilesSupported;
   }
   if (agentConnectEndpoint) {
     metadata.agent_connect_endpoint = agentConnectEndpoint;

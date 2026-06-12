@@ -45,9 +45,10 @@ which is the Vana development deployment and only serves data collected there.
 7. Return to ChatGPT and finish connecting the connector.
 
 The reference authorization server supports dynamic client registration for
-public OAuth clients using `authorization_code` with PKCE and `refresh_token`.
-The refresh token is bound to the approved PDPP grant; it does not expose owner
-dashboard credentials or operator/admin control.
+public OAuth clients using `authorization_code` with PKCE, `refresh_token`, and
+RFC 8628 device authorization for headless clients. The issued tokens are bound
+to the approved PDPP grant; they do not expose owner dashboard credentials or
+operator/admin control.
 
 ## Claude Code
 
@@ -71,10 +72,37 @@ codex mcp add pdpp --url <PDPP_REFERENCE_ORIGIN>/mcp
 When Codex starts OAuth, approve the PDPP source in the browser. Do not add a
 bearer-token environment variable for normal MCP setup.
 
+## Headless or sandboxed MCP clients
+
+Browser-capable MCP clients should use the authorization-code + PKCE flow above.
+If an MCP client runs in a sandbox, SSH session, container, or other environment
+where its loopback callback cannot be reached, use the grant-scoped device-code
+path instead. This is still normal MCP setup: it issues a scoped client token for
+`/mcp`, not an owner bearer.
+
+The client starts `POST /oauth/device_authorization` with:
+
+- `client_id`: a pre-registered, CIMD-backed, or dynamically registered public
+  client id.
+- `resource`: `<PDPP_REFERENCE_ORIGIN>/mcp`.
+- `authorization_details`: the same PDPP data-access request shape used by the
+  hosted MCP authorization-code flow.
+
+The response includes `device_code`, `user_code`, `verification_uri`,
+`verification_uri_complete`, `expires_in`, and `interval`. Show the owner the
+verification URL/code, show the expiry, poll `/oauth/token` no faster than the
+advertised interval, and handle `authorization_pending`, `slow_down`,
+`access_denied`, `expired_token`, `invalid_grant`, and `invalid_client` as
+retryable or terminal OAuth outcomes. If approval expires or is denied, show a
+fresh retry command instead of asking for an owner bearer. Do not wait forever
+on a loopback callback that cannot arrive.
+
 ## Security Model
 
 - `/mcp` accepts only PDPP client bearer tokens tied to an approved grant.
 - Owner dashboard/session tokens are rejected by `/mcp`.
+- Owner-agent device authorization creates owner-level REST/control-plane
+  credentials, not normal MCP credentials.
 - Refresh tokens are accepted only at `/oauth/token`.
 - Revoking the PDPP grant invalidates its access tokens and refresh tokens.
 - The hosted MCP surface is read-only and does not run connectors, schedules,

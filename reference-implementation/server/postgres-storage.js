@@ -631,10 +631,16 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         expires_at TEXT NOT NULL,
         approved_at TEXT,
         denied_at TEXT,
+        interval_seconds INTEGER NOT NULL DEFAULT 2,
+        last_polled_at TEXT,
         approval_id TEXT UNIQUE
       );
       CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
         ON pending_consents(status, expires_at);
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS interval_seconds INTEGER NOT NULL DEFAULT 2;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS last_polled_at TEXT;
 
       ALTER TABLE tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;

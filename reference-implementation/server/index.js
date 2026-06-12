@@ -3818,7 +3818,7 @@ function buildAsApp(opts = {}) {
 // omitted entirely rather than rebased onto an origin that would 404. Defaults
 // to `origin` so callers whose `origin` already IS the docs origin (the plain
 // protected-resource metadata in composed mode) need not pass it twice.
-function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin = origin } = {}) {
+function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin = origin, mcpAuthorization = null } = {}) {
   if (!origin) {
     return null;
   }
@@ -3856,6 +3856,7 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin =
       setup_intent: 'grant_scoped_read',
       tool_surface: 'profile_free_normal_read',
       no_owner_token: true,
+      ...(mcpAuthorization ? { authorization: mcpAuthorization } : {}),
     },
     ...(docs
       ? {

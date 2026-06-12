@@ -26,6 +26,8 @@ const CODEX_COMMAND_RE = /codex mcp add pdpp --url/;
 const CODEX_CIMD_COMMAND_RE = /--oauth-client-id \$\{clientId\}/;
 const CHATGPT_RE = /ChatGPT/;
 const CLAUDE_AI_RE = /Claude\.ai/;
+const HEADLESS_MCP_DEVICE_CODE_RE = /sandboxed clients can use the advertised device-code flow/;
+const HEADLESS_MCP_CLIENT_TOKEN_RE = /Headless MCP setup still returns a scoped client token/;
 const PDPP_CLI_CONNECT_RE = /npx -y @pdpp\/cli connect/;
 const AGENT_ENTRYPOINT_RE = /\/llms\.txt/;
 const OWNER_AGENT_LINK_RE = /href="\/dashboard\/deployment\/tokens"/;
@@ -59,6 +61,8 @@ test("connect page includes copy-paste setup for target MCP hosts", async () => 
   assert.match(src, CODEX_CIMD_COMMAND_RE);
   assert.match(src, CHATGPT_RE);
   assert.match(src, CLAUDE_AI_RE);
+  assert.match(src, HEADLESS_MCP_DEVICE_CODE_RE);
+  assert.match(src, HEADLESS_MCP_CLIENT_TOKEN_RE);
 });
 
 test("connect page manages stable CIMD identities in the setup flow", async () => {

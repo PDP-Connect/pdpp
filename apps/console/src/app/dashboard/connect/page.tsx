@@ -244,7 +244,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const primaryEntries: SetupEntry[] = [
     {
       title: "MCP URL",
-      body: "Use this for ChatGPT, Claude.ai, and any remote MCP custom connector flow.",
+      body: "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; sandboxed clients can use the advertised device-code flow.",
       label: "MCP server URL",
       value: targets.mcpUrl,
     },
@@ -352,7 +352,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       >
         <p className="pdpp-caption text-callout-info-fg/80">
           Claude, ChatGPT, Codex, Claude Code, and third-party MCP clients should use the scoped OAuth flow at{" "}
-          <code className="font-mono">/mcp</code>. Trusted local owner automation is a separate flow.
+          <code className="font-mono">/mcp</code>. Headless MCP setup still returns a scoped client token, not an owner
+          bearer. Trusted local owner automation is a separate flow.
         </p>
       </Callout>
     </DashboardShell>

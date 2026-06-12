@@ -6,23 +6,23 @@
 
 ## 2. Metadata Honesty
 
-- [ ] 2.1 Add AS metadata tests proving device authorization advertisement is token-kind honest and does not imply owner-agent device codes are normal MCP setup.
-- [ ] 2.2 Update protected-resource metadata so owner-agent onboarding and grant-scoped MCP setup remain visibly distinct.
-- [ ] 2.3 Update docs/skills to say headless MCP device authorization issues grant-scoped client tokens; owner-agent device authorization issues owner tokens and `/mcp` rejects them.
+- [x] 2.1 Add AS metadata tests proving device authorization advertisement is token-kind honest and does not imply owner-agent device codes are normal MCP setup.
+- [x] 2.2 Update protected-resource metadata so owner-agent onboarding and grant-scoped MCP setup remain visibly distinct.
+- [x] 2.3 Update docs/skills to say headless MCP device authorization issues grant-scoped client tokens; owner-agent device authorization issues owner tokens and `/mcp` rejects them.
 
 ## 3. Grant-Scoped MCP Device Authorization
 
 - [x] 3.1 Add a persisted device authorization request kind for owner-agent versus grant-scoped MCP requests.
 - [x] 3.2 Implement MCP device authorization initiation for `client_id`, MCP `resource`, and PDPP `authorization_details`, reusing the existing client registration and pending-consent validation machinery.
 - [x] 3.3 Implement token polling so approved MCP device requests return `pdpp_token_kind=client` access tokens bound to the approved grant/package and resource.
-- [ ] 3.4 Preserve RFC 8628 error behavior: `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, `invalid_grant`, and `invalid_client`.
+- [x] 3.4 Preserve RFC 8628 error behavior: `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, `invalid_grant`, and `invalid_client`.
 - [x] 3.5 Preserve owner-agent device authorization and prove owner tokens still fail against `/mcp`.
 
 ## 4. Client And Setup UX
 
-- [ ] 4.1 Update CLI/adapter setup guidance to show verification URL, user code, expiry, polling state, denial/expiry errors, and retry command for headless MCP setup.
-- [ ] 4.2 Add bounded timeout behavior to repo-owned setup clients that poll device authorization.
-- [ ] 4.3 Update hosted MCP setup docs and console connect guidance to recommend authorization-code + PKCE for browser-capable clients and grant-scoped device authorization for headless clients.
+- [x] 4.1 Update CLI/adapter setup guidance to show verification URL, user code, expiry, polling state, denial/expiry errors, and retry command for headless MCP setup.
+- [x] 4.2 Add bounded timeout behavior to repo-owned setup clients that poll device authorization.
+- [x] 4.3 Update hosted MCP setup docs and console connect guidance to recommend authorization-code + PKCE for browser-capable clients and grant-scoped device authorization for headless clients.
 
 ## 5. Verification
 

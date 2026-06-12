@@ -67,6 +67,62 @@ function assertCimdRegistrationModes(metadata, baseModes = ['dynamic', 'pre_regi
   assert.equal(metadata.client_id_metadata_document_supported, true);
 }
 
+function expectedDeviceAuthorizationProfiles() {
+  return [
+    {
+      profile: 'grant_scoped_mcp',
+      pdpp_token_kind: 'client',
+      normal_mcp_setup: true,
+      required_parameters: ['client_id', 'resource', 'authorization_details'],
+      authorization_details_type: 'https://pdpp.org/data-access',
+    },
+    {
+      profile: 'trusted_owner_agent',
+      pdpp_token_kind: 'owner',
+      normal_mcp_setup: false,
+      advertised_in: 'pdpp_owner_agent_onboarding',
+      mcp_owner_bearer_rejected: true,
+    },
+  ];
+}
+
+function assertDeviceAuthorizationProfiles(metadata) {
+  assert.deepEqual(
+    metadata.pdpp_device_authorization_profiles_supported,
+    expectedDeviceAuthorizationProfiles(),
+  );
+}
+
+function expectedMcpAuthorization({ resource, issuer }) {
+  return {
+    authorization_code_pkce: {
+      flow: 'authorization_code_pkce',
+      pdpp_token_kind: 'client',
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      resource,
+      resource_parameter: 'required',
+    },
+    device_code: {
+      flow: 'device_code',
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      pdpp_token_kind: 'client',
+      device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
+      token_endpoint: `${issuer}/oauth/token`,
+      resource,
+      required_parameters: ['client_id', 'resource', 'authorization_details'],
+      authorization_details_type: 'https://pdpp.org/data-access',
+      owner_bearer_accepted: false,
+    },
+    owner_agent_device_code: {
+      flow: 'device_code',
+      pdpp_token_kind: 'owner',
+      normal_mcp_setup: false,
+      advertised_in: 'pdpp_owner_agent_onboarding',
+      mcp_owner_bearer_rejected: true,
+    },
+  };
+}
+
 async function fetchJsonResponse(url, opts = {}) {
   const resp = await fetch(url, opts);
   const body = await resp.json();
@@ -205,6 +261,10 @@ test('composed mode env drives browser-facing metadata when explicit public urls
         setup_intent: 'grant_scoped_read',
         tool_surface: 'profile_free_normal_read',
         no_owner_token: true,
+        authorization: expectedMcpAuthorization({
+          resource: 'http://localhost:3200/mcp',
+          issuer: 'http://localhost:3200',
+        }),
       },
       llms_txt: 'http://localhost:3200/llms.txt',
       llms_full_txt: 'http://localhost:3200/llms-full.txt',
@@ -217,6 +277,7 @@ test('composed mode env drives browser-facing metadata when explicit public urls
       authorizationServer.body.device_authorization_endpoint,
       'http://localhost:3200/oauth/device_authorization',
     );
+    assertDeviceAuthorizationProfiles(authorizationServer.body);
     assert.equal(
       authorizationServer.body.pushed_authorization_request_endpoint,
       'http://localhost:3200/oauth/par',
@@ -593,6 +654,7 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
+    assertDeviceAuthorizationProfiles(authorizationServer.body);
   } finally {
     await closeServer(server);
   }
@@ -945,6 +1007,7 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.equal(authorizationServer.body.token_endpoint, `${asUrl}/oauth/token`);
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
+    assertDeviceAuthorizationProfiles(authorizationServer.body);
     assert.equal(authorizationServer.body.agent_connect_endpoint, `${asUrl}/agent-connect`);
     assert.deepEqual(authorizationServer.body.grant_types_supported, [
       'urn:ietf:params:oauth:grant-type:device_code',
@@ -1021,6 +1084,7 @@ test('explicit browser-facing public urls drive metadata, device verification, a
       authorizationServer.body.device_authorization_endpoint,
       `${publicOrigin}/oauth/device_authorization`,
     );
+    assertDeviceAuthorizationProfiles(authorizationServer.body);
     assert.equal(
       authorizationServer.body.pushed_authorization_request_endpoint,
       `${publicOrigin}/oauth/par`,

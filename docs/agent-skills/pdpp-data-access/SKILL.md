@@ -26,7 +26,7 @@ If you fetched this skill over HTTP from `/.well-known/skills/pdpp-data-access/S
 
 If you need **push delivery** (the PDPP server calls your endpoint when new records arrive) rather than polling, jump to §9 (event subscriptions). The grant and token steps are the same; subscriptions are an add-on, not a replacement.
 
-The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for owner/admin sign-in outside routine agent data access), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
+The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used for headless grant-scoped MCP setup when advertised and separately for trusted owner-agent onboarding), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
 
 ## Hard rules
 
@@ -187,6 +187,19 @@ canonical wire contract, and `pdpp read` is the CLI adapter over that same
 contract. MCP should be chosen for host ergonomics, not because it has stronger
 read semantics. If `@pdpp/mcp-server` is not yet published to npm, consume it
 from the in-repo workspace package or use raw HTTP / `pdpp read`.
+
+**Headless hosted MCP setup.** Browser-capable hosted MCP clients use
+authorization-code + PKCE. If the client runs in a sandbox, container, SSH
+session, or other environment where its loopback callback cannot be reached,
+use grant-scoped MCP device authorization only when `pdpp_agent_discovery.mcp`
+advertises it. That flow posts `client_id`, the `/mcp` `resource`, and PDPP
+`authorization_details` to `/oauth/device_authorization`; it returns a scoped
+client token for `/mcp`. Show the verification URL/code, expiry, polling state,
+and retry path; honor `authorization_pending`, `slow_down`, `access_denied`,
+`expired_token`, `invalid_grant`, and `invalid_client` instead of waiting
+forever on a loopback callback. It is not the trusted owner-agent device flow,
+which returns an owner bearer for REST/control-plane use and is rejected by
+`/mcp`.
 
 **Stale hosted-MCP tool surface.** External MCP hosts (ChatGPT, Claude, etc.)
 cache the tool surface at registration time. If the tool list is not exactly

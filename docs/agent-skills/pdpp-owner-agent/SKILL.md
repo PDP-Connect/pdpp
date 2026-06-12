@@ -115,6 +115,11 @@ After the operator approves, poll the `token_endpoint` with
 write it to the local credential target (see §3) and surface only non-secret status.
 `pdpp owner-agent onboard <entrypoint>` performs all of this without printing the bearer.
 
+This is separate from grant-scoped MCP device authorization. MCP device setup includes
+the `/mcp` `resource` and PDPP `authorization_details`, then redeems a client token.
+Owner-agent onboarding does not produce an MCP credential, and `/mcp` rejects the owner
+bearer by design.
+
 **Do not ask the operator to copy a bearer string out of the dashboard and paste it to
 you.** A dashboard bearer-copy path may exist for low-level debugging; it is not the
 onboarding path for this profile.

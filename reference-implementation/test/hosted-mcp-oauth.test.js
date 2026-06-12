@@ -770,6 +770,18 @@ test('grant-scoped MCP device authorization issues a client token usable at /mcp
     assert.equal(pending.status, 400);
     assert.equal(pending.body.error, 'authorization_pending');
 
+    const tooFast = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: device.body.device_code,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(tooFast.status, 400);
+    assert.equal(tooFast.body.error, 'slow_down');
+
     const approveResp = await fetch(`${asUrl}/consent/approve`, {
       method: 'POST',
       redirect: 'manual',
@@ -838,6 +850,24 @@ test('/mcp rejects missing and owner bearers', async () => {
     assert.equal(mcpMetadata.resource, `${rsUrl}/mcp`);
     assert.deepEqual(mcpMetadata.pdpp_token_kinds_supported, ['client', 'mcp_package']);
     assert.equal(mcpMetadata.pdpp_agent_discovery.mcp.endpoint, `${rsUrl}/mcp`);
+    assert.deepEqual(mcpMetadata.pdpp_agent_discovery.mcp.authorization.device_code, {
+      flow: 'device_code',
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      pdpp_token_kind: 'client',
+      device_authorization_endpoint: `${asUrl}/oauth/device_authorization`,
+      token_endpoint: `${asUrl}/oauth/token`,
+      resource: `${rsUrl}/mcp`,
+      required_parameters: ['client_id', 'resource', 'authorization_details'],
+      authorization_details_type: 'https://pdpp.org/data-access',
+      owner_bearer_accepted: false,
+    });
+    assert.deepEqual(mcpMetadata.pdpp_agent_discovery.mcp.authorization.owner_agent_device_code, {
+      flow: 'device_code',
+      pdpp_token_kind: 'owner',
+      normal_mcp_setup: false,
+      advertised_in: 'pdpp_owner_agent_onboarding',
+      mcp_owner_bearer_rejected: true,
+    });
     assert.equal(
       Object.prototype.hasOwnProperty.call(mcpMetadata, 'logo_uri'),
       false,

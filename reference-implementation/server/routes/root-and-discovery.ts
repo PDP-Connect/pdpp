@@ -250,7 +250,7 @@ export interface MountRsProtectedResourceMetadataContext {
   asPort: number;
   buildAgentDiscoveryMetadata(
     origin: string | null,
-    opts?: { noOwnerToken?: boolean; docsOrigin?: string | null }
+    opts?: { noOwnerToken?: boolean; docsOrigin?: string | null; mcpAuthorization?: unknown }
   ): unknown;
   buildDefaultHybridCapability(args: {
     lexicalAvailable: true;
@@ -354,7 +354,10 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
         discoveryHints,
         agentDiscovery: ctx.buildAgentDiscoveryMetadata(
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
-          { noOwnerToken: ctx.nativeMode }
+          {
+            noOwnerToken: ctx.nativeMode,
+            mcpAuthorization: buildMcpAuthorizationDiscovery({ issuer, resource: `${resource}/mcp` }),
+          }
         ),
         // Advisory owner-agent onboarding block. The approval origin is the
         // composed-mode browser origin rebased to the caller-visible trusted
@@ -421,9 +424,40 @@ export function mountRsMcpProtectedResourceMetadata(
           {
             noOwnerToken: true,
             docsOrigin: ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
+            mcpAuthorization: buildMcpAuthorizationDiscovery({ issuer, resource }),
           }
         ),
       })
     );
   });
+}
+
+function buildMcpAuthorizationDiscovery({ issuer, resource }: { issuer: string; resource: string }): unknown {
+  return {
+    authorization_code_pkce: {
+      flow: "authorization_code_pkce",
+      pdpp_token_kind: "client",
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      resource,
+      resource_parameter: "required",
+    },
+    device_code: {
+      flow: "device_code",
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      pdpp_token_kind: "client",
+      device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
+      token_endpoint: `${issuer}/oauth/token`,
+      resource,
+      required_parameters: ["client_id", "resource", "authorization_details"],
+      authorization_details_type: "https://pdpp.org/data-access",
+      owner_bearer_accepted: false,
+    },
+    owner_agent_device_code: {
+      flow: "device_code",
+      pdpp_token_kind: "owner",
+      normal_mcp_setup: false,
+      advertised_in: "pdpp_owner_agent_onboarding",
+      mcp_owner_bearer_rejected: true,
+    },
+  };
 }

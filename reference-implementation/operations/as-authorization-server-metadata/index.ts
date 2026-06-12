@@ -43,6 +43,7 @@ export interface AsAuthorizationServerMetadataBuilderInput {
   readonly tokenEndpoint: string;
   readonly tokenEndpointAuthMethodsSupported: readonly string[];
   readonly deviceAuthorizationEndpoint: string;
+  readonly deviceAuthorizationProfilesSupported: readonly Record<string, unknown>[];
   readonly agentConnectEndpoint: string;
   readonly grantTypesSupported: readonly string[];
   readonly responseTypesSupported: readonly string[];
@@ -88,6 +89,22 @@ export function executeAsAuthorizationServerMetadata(
     tokenEndpoint: `${issuer}/oauth/token`,
     tokenEndpointAuthMethodsSupported: ["none"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
+    deviceAuthorizationProfilesSupported: [
+      {
+        profile: "grant_scoped_mcp",
+        pdpp_token_kind: "client",
+        normal_mcp_setup: true,
+        required_parameters: ["client_id", "resource", "authorization_details"],
+        authorization_details_type: "https://pdpp.org/data-access",
+      },
+      {
+        profile: "trusted_owner_agent",
+        pdpp_token_kind: "owner",
+        normal_mcp_setup: false,
+        advertised_in: "pdpp_owner_agent_onboarding",
+        mcp_owner_bearer_rejected: true,
+      },
+    ],
     agentConnectEndpoint: `${issuer}/agent-connect`,
     grantTypesSupported: [
       "urn:ietf:params:oauth:grant-type:device_code",
