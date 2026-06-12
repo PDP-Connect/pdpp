@@ -46,7 +46,7 @@ import {
   createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
   getCumulativeClientAccessForPackage,
   listGrantPackagesForOwner, getGrantPackageIdForGrant,
-  createCimdDocument, deleteCimdDocument, deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
+  createCimdDocument, deleteCimdDocument, deleteRegisteredClient, exchangeGrantScopedDeviceCode, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
   getCimdDocument,
   issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
   listCimdDocuments, listOwnerIssuedClients, listRegisteredConnectorIds,
@@ -2941,6 +2941,47 @@ function buildAsApp(opts = {}) {
       return resolvePublicUrl(req, explicitBaseUrl);
     },
     initiateDeviceAuth: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
+    initiateMcpDeviceAuth: async ({ clientId, resource, authorizationDetails }, opts2) => {
+      let resourceUrl;
+      try {
+        resourceUrl = new URL(resource);
+      } catch {
+        const err = new Error('resource must be an absolute MCP protected-resource URL');
+        err.code = 'invalid_request';
+        throw err;
+      }
+      if (resourceUrl.pathname !== '/mcp') {
+        const err = new Error('resource must identify the hosted MCP protected resource');
+        err.code = 'invalid_request';
+        throw err;
+      }
+
+      const initiated = await consentStore.initiateGrant(
+        {
+          client_id: clientId,
+          authorization_details: authorizationDetails,
+        },
+        {
+          baseUrl: opts2.baseUrl,
+          nativeManifest: resolveNativeManifest(opts),
+        },
+      );
+      const deviceCode = consentStore.parseRequestUri(initiated.request_uri);
+      if (!deviceCode || !initiated.user_code) {
+        const err = new Error('Grant-scoped device authorization could not be created');
+        err.code = 'server_error';
+        throw err;
+      }
+      return {
+        device_code: deviceCode,
+        user_code: initiated.user_code,
+        verification_uri: `${opts2.baseUrl}/consent`,
+        verification_uri_complete: initiated.authorization_url,
+        expires_in: initiated.expires_in,
+        interval: 2,
+        trace_context: initiated.trace_context,
+      };
+    },
     setReferenceTraceId,
     oauthError,
   };
@@ -2949,7 +2990,11 @@ function buildAsApp(opts = {}) {
   const asTokenContext = {
     exchangeOAuthAuthorizationCode,
     exchangeOAuthRefreshToken,
-    exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
+    exchangeDeviceCode: (args) => (
+      typeof args.deviceCode === 'string' && args.deviceCode.startsWith('dc_owner_')
+        ? ownerDeviceAuthStore.exchangeDeviceCode(args)
+        : exchangeGrantScopedDeviceCode(args)
+    ),
     resolveBaseUrl: (req) => {
       const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
       return resolvePublicUrl(req, explicitBaseUrl);

@@ -72,10 +72,23 @@ function bodyString(value: unknown): string | null | undefined {
 export interface MountAsDeviceAuthorizationContext {
   /**
    * Initiates a new RFC 8628 device-code flow.
-   * Delegated to `ownerDeviceAuthStore.initiate`.
+   * Bare owner-agent requests delegate to `ownerDeviceAuthStore.initiate`.
    */
   initiateDeviceAuth(
     clientId: string,
+    opts: { baseUrl: string }
+  ): Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
+  /**
+   * Initiates grant-scoped MCP device authorization. This is distinct from
+   * owner-agent onboarding: it stages a normal pending-consent request and
+   * eventually redeems to a scoped client token, not an owner bearer.
+   */
+  initiateMcpDeviceAuth(
+    args: {
+      clientId: string;
+      resource: string;
+      authorizationDetails: unknown;
+    },
     opts: { baseUrl: string }
   ): Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
   oauthError: PdppErrorFn;
@@ -84,12 +97,94 @@ export interface MountAsDeviceAuthorizationContext {
   setReferenceTraceId(res: unknown, traceId: string): void;
 }
 
+function isMcpDeviceAuthorizationRequest(body: Record<string, unknown> | undefined): boolean {
+  return body?.resource !== undefined || body?.authorization_details !== undefined;
+}
+
+function parseAuthorizationDetails(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    const err = new Error("authorization_details must be valid JSON when form encoded");
+    (err as { code?: string }).code = "invalid_request";
+    throw err;
+  }
+}
+
+async function handleMcpDeviceAuthorization(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: MountAsDeviceAuthorizationContext
+): Promise<unknown> {
+  const baseUrl = ctx.resolveBaseUrl(req);
+  const clientId = bodyString(req.body?.client_id);
+  const resource = bodyString(req.body?.resource);
+  if (!clientId) {
+    return ctx.oauthError(res, 400, "invalid_request", "client_id is required");
+  }
+  if (!resource) {
+    return ctx.oauthError(res, 400, "invalid_request", "resource is required for MCP device authorization");
+  }
+  if (req.body?.authorization_details === undefined) {
+    return ctx.oauthError(
+      res,
+      400,
+      "invalid_request",
+      "authorization_details is required for MCP device authorization"
+    );
+  }
+
+  let authorizationDetails: unknown;
+  try {
+    authorizationDetails = parseAuthorizationDetails(req.body.authorization_details);
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    return ctx.oauthError(res, 400, e.code ?? "invalid_request", e.message ?? "Invalid authorization_details");
+  }
+
+  try {
+    const result = await ctx.initiateMcpDeviceAuth(
+      { clientId, resource, authorizationDetails },
+      { baseUrl }
+    );
+    const traceContext = result.trace_context ?? null;
+    const { trace_context: _ignored, ...publicResult } = result as Record<string, unknown>;
+    if (traceContext && typeof traceContext === "object") {
+      const requestId = (traceContext as { request_id?: string | null }).request_id;
+      const traceId = (traceContext as { trace_id?: string | null }).trace_id;
+      if (requestId) {
+        res.setHeader("Request-Id", String(requestId));
+      }
+      if (traceId) {
+        ctx.setReferenceTraceId(res, String(traceId));
+      }
+    }
+    return res.status(200).json(publicResult);
+  } catch (err) {
+    const e = err as { code?: string; message?: string; request_id?: string; trace_id?: string };
+    if (e.request_id) {
+      res.setHeader("Request-Id", String(e.request_id));
+    }
+    if (e.trace_id) {
+      ctx.setReferenceTraceId(res, String(e.trace_id));
+    }
+    return ctx.oauthError(res, 400, e.code ?? "invalid_request", e.message ?? "Device authorization rejected");
+  }
+}
+
 export function mountAsDeviceAuthorization(app: AppLike, ctx: MountAsDeviceAuthorizationContext): void {
   // Device-authorization initiation semantics (client_id presence
   // validation, store call, trace_context-stripped public envelope) live
   // in the canonical `as.device.authorization.init` operation
   // (operations/as-device-authorization-init).
   const handler: RouteHandler = async (req, res) => {
+    if (isMcpDeviceAuthorizationRequest(req.body)) {
+      return handleMcpDeviceAuthorization(req, res, ctx);
+    }
+
     const outcome = await executeAsDeviceAuthInit(
       {
         clientId: bodyString(req.body?.client_id),
@@ -133,7 +228,8 @@ export function mountAsDeviceAuthorization(app: AppLike, ctx: MountAsDeviceAutho
 export interface MountAsTokenContext {
   /**
    * Exchanges a device-code for an access token.
-   * Delegated to `ownerDeviceAuthStore.exchangeDeviceCode`.
+   * The composition root routes owner-agent and grant-scoped MCP device
+   * codes to their separate lifecycle stores.
    */
   exchangeDeviceCode(args: {
     clientId: string | null | undefined;

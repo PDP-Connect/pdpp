@@ -3080,6 +3080,7 @@ export async function initiateGrant(input, opts = {}) {
     return {
       request_uri: requestUri,
       authorization_url: buildPendingConsentAuthorizationUrl(requestUri, { baseUrl: verificationBaseUrl }),
+      user_code: userCode,
       expires_in: 300,
       trace_context: traceContext,
     };
@@ -3193,6 +3194,7 @@ async function initiateStagedGrantBatch(input, opts = {}) {
     return {
       request_uri: requestUri,
       authorization_url: buildPendingConsentAuthorizationUrl(requestUri, { baseUrl: verificationBaseUrl }),
+      user_code: userCode,
       expires_in: 300,
       trace_context: traceContext,
     };
@@ -4029,6 +4031,96 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
   });
 
   return { grant, token };
+}
+
+function buildGrantScopedDeviceExchangeError(code, message, row = null) {
+  const err = new Error(message);
+  err.code = code;
+  if (row) {
+    attachTraceContext(err, getPersistedPendingTraceContext(row));
+  }
+  return err;
+}
+
+function parsePendingConsentParams(row) {
+  try {
+    return JSON.parse(row.params_json);
+  } catch {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Pending consent request is malformed', row);
+  }
+}
+
+/**
+ * Redeem an approved pending-consent device code as a grant-scoped MCP
+ * client token. This intentionally uses the existing pending-consent grant
+ * machinery: device authorization is only a headless transport into the same
+ * approval path, not a parallel grant engine.
+ */
+export async function exchangeGrantScopedDeviceCode({ clientId, deviceCode }) {
+  if (!clientId || !deviceCode) {
+    throw buildGrantScopedDeviceExchangeError('invalid_request', 'client_id and device_code are required');
+  }
+
+  const row = await getPendingConsentRow(deviceCode);
+  if (!row) {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Unknown or invalid device_code');
+  }
+
+  const request = parsePendingConsentParams(row);
+  const requestClientId = request?.client?.client_id;
+  if (requestClientId !== clientId) {
+    throw buildGrantScopedDeviceExchangeError('invalid_client', 'device_code is not bound to this client_id', row);
+  }
+
+  if (row.status === 'pending' && isExpired(row)) {
+    await markPendingConsentExpired(deviceCode);
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Device code has expired', row);
+  }
+
+  if (row.status === 'pending') {
+    throw buildGrantScopedDeviceExchangeError('authorization_pending', 'Authorization still pending', row);
+  }
+
+  if (row.status === 'denied') {
+    throw buildGrantScopedDeviceExchangeError('access_denied', 'The resource owner denied the request', row);
+  }
+
+  if (row.status === 'expired') {
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Device code has expired', row);
+  }
+
+  if (row.status !== 'approved' || !row.token_id) {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Device code is not redeemable', row);
+  }
+
+  const tokenInfo = await introspect(row.token_id);
+  if (!tokenInfo.active) {
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Client token is no longer active', row);
+  }
+  if (tokenInfo.pdpp_token_kind !== 'client' && tokenInfo.pdpp_token_kind !== 'mcp_package') {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Device code did not redeem to a grant-scoped MCP client token', row);
+  }
+  if (tokenInfo.client_id !== clientId) {
+    throw buildGrantScopedDeviceExchangeError('invalid_client', 'Client token is not bound to this client_id', row);
+  }
+
+  const exp = Number.isFinite(tokenInfo.exp) && tokenInfo.exp
+    ? tokenInfo.exp
+    : Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+  const payload = {
+    access_token: row.token_id,
+    token_type: 'Bearer',
+    expires_in: Math.max(exp - Math.floor(Date.now() / 1000), 0),
+    trace_context: getPersistedPendingTraceContext(row),
+  };
+
+  if (tokenInfo.pdpp_token_kind === 'mcp_package') {
+    payload.grant_package_id = tokenInfo.grant_package_id || row.grant_id || null;
+  } else {
+    payload.grant_id = tokenInfo.grant_id || row.grant_id || null;
+  }
+
+  return payload;
 }
 
 function base64UrlSha256(value) {

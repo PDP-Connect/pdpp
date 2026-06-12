@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { getDb } from '../server/db.js';
-import { getGrantPackageAccess, revokeGrant, revokeGrantPackage } from '../server/auth.js';
+import { buildPendingConsentRequestUri, getGrantPackageAccess, revokeGrant, revokeGrantPackage } from '../server/auth.js';
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import {
   encodeHostedMcpSelection,
@@ -253,6 +253,31 @@ async function completeOauthCodeFlow({ asUrl, client, manifest }) {
     grantId: body.grant_id,
     code,
   };
+}
+
+function hostedMcpAuthorizationDetails(manifest) {
+  return [
+    {
+      type: 'https://pdpp.org/data-access',
+      source: { kind: 'connector', id: manifest.connector_id },
+      purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
+      purpose_description: 'Use PDPP data through hosted MCP.',
+      access_mode: 'continuous',
+      streams: [{ name: '*' }],
+    },
+  ];
+}
+
+async function startMcpDeviceAuthorization({ asUrl, rsUrl, client, manifest }) {
+  return fetchJson(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: client.client_id,
+      resource: `${rsUrl}/mcp`,
+      authorization_details: JSON.stringify(hostedMcpAuthorizationDetails(manifest)),
+    }).toString(),
+  });
 }
 
 // Drive the multi-source hosted-MCP picker end-to-end:
@@ -673,6 +698,126 @@ test('hosted MCP source selection uses hosted-ui option styles', async () => {
     const css = await cssResp.text();
     assert.match(css, /\.hosted-ui-option-group/);
     assert.match(css, /\.hosted-ui-option\b/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('grant-scoped MCP device authorization requires resource and authorization_details', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const manifest = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const missingDetails = await fetchJson(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        resource: `${rsUrl}/mcp`,
+      }).toString(),
+    });
+    assert.equal(missingDetails.status, 400);
+    assert.equal(missingDetails.body.error, 'invalid_request');
+    assert.match(missingDetails.body.error_description, /authorization_details is required/);
+
+    const missingResource = await fetchJson(`${asUrl}/oauth/device_authorization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        authorization_details: JSON.stringify(hostedMcpAuthorizationDetails(manifest)),
+      }).toString(),
+    });
+    assert.equal(missingResource.status, 400);
+    assert.equal(missingResource.body.error, 'invalid_request');
+    assert.match(missingResource.body.error_description, /resource is required/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('grant-scoped MCP device authorization issues a client token usable at /mcp', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const manifest = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const device = await startMcpDeviceAuthorization({ asUrl, rsUrl, client, manifest });
+    assert.equal(device.status, 200);
+    assert.equal(device.body.device_code.startsWith('dc_'), true);
+    assert.equal(device.body.device_code.startsWith('dc_owner_'), false);
+    assert.ok(device.body.user_code);
+    assert.equal(device.body.verification_uri, `${asUrl}/consent`);
+    assert.match(device.body.verification_uri_complete, /^http:\/\/localhost:\d+\/consent\?request_uri=/);
+    assert.equal(device.body.interval, 2);
+
+    const pending = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: device.body.device_code,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(pending.status, 400);
+    assert.equal(pending.body.error, 'authorization_pending');
+
+    const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        request_uri: buildPendingConsentRequestUri(device.body.device_code),
+        subject_id: 'owner_local',
+      }).toString(),
+    });
+    assert.equal(approveResp.status, 200);
+
+    const token = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: device.body.device_code,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(token.status, 200);
+    assert.equal(token.body.token_type, 'Bearer');
+    assert.ok(token.body.access_token);
+    assert.ok(token.body.grant_id);
+    assert.equal(token.body.grant_package_id, undefined);
+
+    const introspected = await fetchJson(`${asUrl}/introspect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: token.body.access_token }).toString(),
+    });
+    assert.equal(introspected.status, 200);
+    assert.equal(introspected.body.active, true);
+    assert.equal(introspected.body.pdpp_token_kind, 'client');
+    assert.equal(introspected.body.client_id, client.client_id);
+    assert.equal(introspected.body.grant_id, token.body.grant_id);
+
+    const tools = await postMcpJson(rsUrl, token.body.access_token, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: {},
+    });
+    assert.equal(tools.status, 200);
+    assert.deepEqual(
+      tools.body.result.tools.map((tool) => tool.name).sort(),
+      ['aggregate', 'fetch', 'query_records', 'schema', 'search'],
+    );
   } finally {
     await closeServer(server);
   }
