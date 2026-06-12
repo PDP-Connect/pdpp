@@ -81,7 +81,11 @@ const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
 ]);
 const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
 const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
-const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set(['authorization_code', 'refresh_token']);
+const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set([
+  'authorization_code',
+  'refresh_token',
+  'urn:ietf:params:oauth:grant-type:device_code',
+]);
 const SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES = new Set(['code']);
 const SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES = new Set(['web', 'native']);
 const SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS = new Set(['S256']);

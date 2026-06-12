@@ -861,7 +861,7 @@ test('/mcp rejects missing and owner bearers', async () => {
   }
 });
 
-test('dynamic registration accepts only public authorization-code and refresh-token metadata', async () => {
+test('dynamic registration accepts only public authorization-code, refresh-token, and device-code metadata', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -869,6 +869,20 @@ test('dynamic registration accepts only public authorization-code and refresh-to
     await registerAuthCodeClient(asUrl);
     const noRefresh = await registerAuthCodeClient(asUrl, { refreshToken: false });
     assert.deepEqual(noRefresh.grant_types, ['authorization_code']);
+
+    const deviceOnly = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Device-code client',
+        grant_types: ['urn:ietf:params:oauth:grant-type:device_code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(deviceOnly.status, 201);
+    assert.deepEqual(deviceOnly.body.grant_types, ['urn:ietf:params:oauth:grant-type:device_code']);
+    assert.equal(Object.prototype.hasOwnProperty.call(deviceOnly.body, 'redirect_uris'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(deviceOnly.body, 'response_types'), false);
 
     const refreshWithoutCode = await fetchJson(`${asUrl}/oauth/register`, {
       method: 'POST',
