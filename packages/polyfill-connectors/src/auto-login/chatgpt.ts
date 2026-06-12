@@ -21,6 +21,7 @@ import type {
   InteractionResponse,
 } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
+import { detectCloudflareChallenge } from "../platform-probes.ts";
 
 interface EnsureChatGptSessionArgs {
   assist?: (req: AssistanceRequest) => Promise<string>;
@@ -226,12 +227,20 @@ async function fallbackForUnexpectedLoginUi({
   page,
   sendInteraction,
 }: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
+  // EARN the diagnosis instead of guessing. We only reach this branch because
+  // the expected login inputs were absent — historically we blindly blamed
+  // "possibly Cloudflare challenge", which was right by luck at best. Consult the
+  // shared connector-agnostic detector so the operator-facing message and the
+  // interaction reason reflect what the page ACTUALLY is.
+  const cf = await detectCloudflareChallenge(page);
+  const message = cf.isChallenge
+    ? `Cloudflare challenge confirmed (signals: ${cf.signals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.`
+    : "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.";
   await manualAction(
     {
       ...(capture ? { capture } : {}),
       page,
-      message:
-        "ChatGPT auto-login UI is unexpected (possibly Cloudflare challenge). Use the streaming companion to complete login, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.",
+      message,
       reason: "captcha",
       timeoutSeconds: 1800,
     },

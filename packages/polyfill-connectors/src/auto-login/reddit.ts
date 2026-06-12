@@ -21,6 +21,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
+import { detectCloudflareChallenge } from "../platform-probes.ts";
 
 const LOGIN_URL = "https://www.reddit.com/login/";
 const HOME_URL = "https://www.reddit.com/";
@@ -135,6 +136,13 @@ async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
   return false;
 }
 
+function loginBlockedMessage(cfSignals: string[]): string {
+  if (cfSignals.length > 0) {
+    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the browser window and re-run.`;
+  }
+  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
+}
+
 export async function ensureRedditSession({
   capture,
   context,
@@ -157,12 +165,15 @@ export async function ensureRedditSession({
   const userIn = page.locator(USERNAME_SELECTOR).first();
   if (!(await userIn.count().catch(() => 0))) {
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
+    // Earn the diagnosis via the shared detector instead of guessing "possible
+    // Cloudflare challenge" from absence of inputs alone.
+    const cf = await detectCloudflareChallenge(page);
+    const message = loginBlockedMessage(cf.signals);
     await manualAction(
       {
         page,
         reason: "captcha",
-        message:
-          "Reddit login page did not render expected inputs (possible Cloudflare challenge). Log in to reddit.com in the browser window and re-run.",
+        message,
         timeoutSeconds: 1800,
         ...(capture === undefined ? {} : { capture }),
       },
