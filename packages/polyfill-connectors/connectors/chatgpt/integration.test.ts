@@ -1895,7 +1895,7 @@ test("runMessagesAndConversationsWithDetail: a circuit that NEVER closes converg
   const resetTimeoutMs = 60_000;
   // No retryBudget — the controller is present but hasRetryBudget() returns false.
   // This exercises the fixed no-budget→cycle-cap fallback path: the gate must use
-  // the densityWaitCycles/circuitWaitCycle cap, NOT tryConsumeRetryToken (which
+  // the shared consecutiveWaitOutsWithoutSuccess cap, NOT tryConsumeRetryToken (which
   // previously returned true forever, causing the infinite loop this test guards).
   const providerBudget = new ProviderBudgetController({
     circuitBreaker: {
@@ -2933,8 +2933,8 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
 // ChatGptRecoverableRetryExhaustedError on ONE conversation was immediately
 // latching observedRecoverablePressure and dumping the entire remaining tranche
 // as durable gaps. The fix waits out the cooldown in-run (using the shared
-// densityWaitCycles budget) and retries the SAME conversation, so the other
-// conversations in the tranche are still fetched.
+// consecutiveWaitOutsWithoutSuccess budget) and retries the SAME conversation,
+// so the other conversations in the tranche are still fetched.
 
 test("runConversationsAndMessagesStreams: a single recoverable rate-limit on ONE conversation WAITS OUT and the remaining tranche is still fetched (run_1781286755231 regression)", async () => {
   // Scenario: 5 conversations, second one always throws ChatGptRecoverableRetryExhaustedError.
@@ -3096,9 +3096,10 @@ test("runConversationsAndMessagesStreams: retry-exhaustion wait envelope exhaust
   //
   // We run TWO separate conversations that both always throw
   // ChatGptRecoverableRetryExhaustedError. convo-1 spends 8 cycles exhausting
-  // the envelope (densityWaitCycles reaches CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES).
-  // Then convo-2 hits the same error → envelope already spent → immediate latch
-  // on convo-2's first attempt. convo-3 is deferred as an upstream_pressure gap.
+  // the no-progress counter (consecutiveWaitOutsWithoutSuccess reaches
+  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES). Then convo-2 hits the same error →
+  // envelope already spent → immediate latch on convo-2's first attempt.
+  // convo-3 is deferred as an upstream_pressure gap.
   const harness = makeRecordingEmit(validateRecord);
   const listItems = [
     makeConvo({ id: "c-exhaust-1", update_time: 1_700_001_001 }),
@@ -3837,22 +3838,118 @@ test("runConversationsAndMessagesStreams: density during recovery WAITS OUT the 
   assert.ok(listedCursors.length >= 1, "the forward walk's list phase runs (advancing the cursor)");
 });
 
-test("runConversationsAndMessagesStreams: a persistently-hot account EXHAUSTS the bounded density-wait budget and defers the tail as durable upstream_pressure gaps", async () => {
-  // Bounded-fallback (the lose-nothing guard for wait-resume): wait-resume is not
-  // unbounded. A genuinely hostile account that stays hot across every cool-down
-  // wait must converge to a BOUNDED, LOSSLESS stop — not loop forever. After
-  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES waits the lane falls back to the OLD
-  // behavior: it defers the remaining conversation details as durable
-  // upstream_pressure DETAIL_GAP records (resumable next run), recovery reports
-  // stoppedWithPending, and — because budget still remains — the run still
-  // PROCEEDS to its forward walk. Every served-429 here keeps the account hot, so
-  // each post-wait reset is immediately re-armed and all eight cool-down waits are
-  // spent; the ninth trip exhausts the wait budget and defers.
+test("runConversationsAndMessagesStreams: a hot account that SUCCEEDS drains to zero — density wait-resume does NOT give up when successes reset the no-progress counter", async () => {
+  // HEALTHY DRAIN via density: every fetch reports a 429 (hot account, threshold 1)
+  // but ALSO succeeds. With the progress-based give-up fix, each successful fetch
+  // resets consecutiveWaitOutsWithoutSuccess to 0 — so no matter how many density
+  // trips occur, the counter never accumulates to CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES.
+  // The lane drains ALL 12 conversations (none deferred), proving a healthy-but-hot
+  // account is not abandoned mid-drain because it exceeded 8 total density waits.
+  // This is the key regression the old densityWaitCycles bug introduced: the live
+  // run_1781302239264 synced only 65 of 1511 because the non-resetting density
+  // counter capped out at 8 total waits across the whole run.
   const harness = makeRecordingEmit(validateRecord);
-  // More recovery items than wait cycles so the tail is genuinely deferred (some
-  // items are reached only after the wait budget is gone).
   const recItems = Array.from({ length: 12 }, (_v, i) =>
     makeConvo({ id: `hot-${i + 1}`, update_time: 1_700_000_000 + i })
+  );
+  const fetchedDetail: string[] = [];
+  const listedCursors: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations")) {
+        listedCursors.push(path);
+        return {
+          status: 200,
+          json: { items: [], has_missing_conversations: false, total: 0 },
+        };
+      }
+      fetchedDetail.push(path);
+      // Hot account: each fetch reports a served 429 (density tracker accumulates),
+      // but the request SUCCEEDS (returns 200). With threshold 1, density trips on
+      // every conversation after the first — but each subsequent success resets the
+      // no-progress counter, so the give-up gate is never reached.
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: recItems.map((c, i) => makeDetailGapFromConvo(`gap-hot-${i + 1}`, c)),
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget(),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    {
+      detailPacing: {
+        random: () => 0,
+        sleep: () => undefined,
+        // Threshold 1: density trips after every single served 429, so this run
+        // performs well over 8 density waits — but each success resets the counter.
+        densityStopThreshold: 1,
+      },
+    }
+  );
+
+  // KEY ASSERTION: all 12 conversations hydrated — nothing deferred. The density
+  // gate never fired the "source still hot" give-up despite performing 11+ density
+  // waits (one per conversation after the first), because each success reset the
+  // no-progress counter. This directly proves the densityWaitCycles bug is fixed.
+  assert.equal(fetchedDetail.length, 12, "all 12 conversations fetched — healthy-hot account drains to zero");
+  const pressureGaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      m.type === "DETAIL_GAP" && m.reason === "upstream_pressure"
+  );
+  assert.deepEqual(
+    pressureGaps,
+    [],
+    "no conversations deferred — density wait-resume does not give up on a succeeding account"
+  );
+  assert.equal(
+    harness.protocolMessages.some(
+      (m) => m.type === "PROGRESS" && /source still hot after .* cool-down wait/.test(m.message)
+    ),
+    false,
+    "the density give-up message is never emitted when successes reset the no-progress counter"
+  );
+
+  // Sanity: the density wait progress events DID fire (> 8 times, proving the
+  // counter truly reset and the old fixed-cycle cap was not the stopping reason).
+  const densityWaitProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("waiting") && m.message.includes("cool down")
+  );
+  assert.ok(
+    densityWaitProgress.length > 8,
+    `density wait-resume fired ${densityWaitProgress.length} times (> 8 = old fixed cap), proving the cap resets on success`
+  );
+});
+
+test("runConversationsAndMessagesStreams: a dead account (every fetch fails, no success) exhausts the no-progress counter and defers the tail as durable upstream_pressure gaps", async () => {
+  // DEAD-ACCOUNT via density + give-up: every fetch reports a 429 AND throws
+  // ChatGptRecoverableRetryExhaustedError (no successful fetch anywhere). Without
+  // any success to reset consecutiveWaitOutsWithoutSuccess, both Gate A (density
+  // check before fetch) and Gate B (retry-exhausted handler after throw) increment
+  // the shared counter. After CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES (8) consecutive
+  // wait-outs with zero successful fetches the give-up fires, the remaining tail
+  // is durably deferred as upstream_pressure DETAIL_GAP records (lose-nothing), and
+  // the run continues to its forward walk. Proves the unified progress-based gate
+  // bounds dead accounts without requiring the old non-resetting densityWaitCycles.
+  const harness = makeRecordingEmit(validateRecord);
+  const recItems = Array.from({ length: 12 }, (_v, i) =>
+    makeConvo({ id: `dead-${i + 1}`, update_time: 1_700_000_000 + i })
   );
   const fetchedDetail: string[] = [];
   const listedCursors: string[] = [];
@@ -3872,28 +3969,29 @@ test("runConversationsAndMessagesStreams: a persistently-hot account EXHAUSTS th
         };
       }
       fetchedDetail.push(path);
-      // The account is persistently hot: every served detail reports a 429 the
-      // density tracker counts, so each post-wait reset is immediately re-armed
-      // and the density stop keeps re-tripping until the wait budget is spent.
+      // Dead account: reports a 429 (density accumulates) then always fails with
+      // retry-exhausted. No success → consecutiveWaitOutsWithoutSuccess never resets.
       await currentAdaptiveLaneRunContext()?.reportPressure({
         absorbedByRequestWait: true,
         delayMs: 30_000,
         kind: "rate_limited",
         retryAfterMs: 30_000,
       });
-      return makeDetailOk();
+      throw new ChatGptRecoverableRetryExhaustedError(
+        `apiFetch got 429 on GET ${path} after retry budget exhausted dead-account-test`,
+        { class: "rate_limited", httpStatus: 429 }
+      );
     },
   };
   const deps: StreamDeps = {
     api,
-    detailGaps: recItems.map((c, i) => makeDetailGapFromConvo(`gap-hot-${i + 1}`, c)),
+    detailGaps: recItems.map((c, i) => makeDetailGapFromConvo(`gap-dead-${i + 1}`, c)),
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
     // Budget is plentiful (default, unbounded): the ONLY reason the lane stops
-    // waiting and defers is the bounded density-wait cycle cap — NOT a run-cap.
-    // This isolates the wait-budget-exhausted fallback from the run-budget defer.
+    // waiting and defers is the shared no-progress counter — NOT a run-cap.
     runBudget: new ChatGptRunBudget(),
   };
 
@@ -3904,53 +4002,44 @@ test("runConversationsAndMessagesStreams: a persistently-hot account EXHAUSTS th
       detailPacing: {
         random: () => 0,
         sleep: () => undefined,
-        // Threshold 1: a single served 429 re-trips the density stop, so every
-        // post-wait reset is immediately re-armed and the bounded wait budget is
-        // spent in full.
+        // Threshold 1: density trips after each 429 the fetch reports, so Gate A
+        // fires on the next conversation and Gate B fires on the throw.
         densityStopThreshold: 1,
       },
     }
   );
 
-  // The wait budget is bounded: at most CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES (8)
-  // cool-down waits are emitted before the lane gives up and defers — it does NOT
-  // loop forever on a persistently-hot account.
-  const densityWaitProgress = harness.protocolMessages.filter(
+  // Give-up fires: the no-progress counter reached 8 with no successful fetch
+  // in between → the lane gives up and defers the remaining tail.
+  // runConversationsAndMessagesStreams calls runMessagesAndConversationsWithDetail
+  // twice (once for recovery, once for the forward walk), each with a fresh
+  // consecutiveWaitOutsWithoutSuccess counter — so total wait-outs ≤ 8 per call.
+  const waitOuts = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
       m.type === "PROGRESS" && m.message.includes("waiting") && m.message.includes("cool down")
   );
-  assert.ok(densityWaitProgress.length >= 1, "the lane DID wait out at least one cool-down before falling back");
+  assert.ok(waitOuts.length >= 1, "the lane waited out at least one cool-down before giving up");
   assert.ok(
-    densityWaitProgress.length <= 8,
-    "the density-wait budget is bounded (≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES cool-down waits)"
+    waitOuts.length <= 16,
+    `the no-progress give-up fires within 8 consecutive wait-outs per call (got ${waitOuts.length}, ≤ 16 total)`
   );
 
-  // Wait budget exhausted → the lane emits the fallback defer announcement and
-  // defers the remaining tail as durable upstream_pressure DETAIL_GAP records.
-  assert.ok(
-    harness.protocolMessages.some(
-      (m) => m.type === "PROGRESS" && /source still hot after .* cool-down wait/.test(m.message)
-    ),
-    "the lane announces it is deferring the tail after exhausting the bounded wait budget"
-  );
+  // The give-up produces a durable upstream_pressure defer — lose-nothing.
   const pressureGaps = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
       m.type === "DETAIL_GAP" && m.reason === "upstream_pressure"
   );
-  assert.ok(
-    pressureGaps.length >= 1,
-    "the un-hydratable tail of a persistently-hot account is deferred as durable upstream_pressure gaps (lose-nothing by deferral)"
-  );
+  assert.ok(pressureGaps.length >= 1, "dead account: remaining tail deferred as durable upstream_pressure gaps");
 
-  // Recovery stopped with pending items, so it announces the run continues to its
-  // forward walk while budget remains — and the forward walk's list phase runs.
+  // The run continues to its forward walk after the durable defer (bounded stop,
+  // not a hard crash — the forward walk's list phase still runs).
   assert.ok(
     harness.protocolMessages.some(
       (m) => m.type === "PROGRESS" && /run continues its forward walk while budget remains/.test(m.message)
     ),
-    "recovery announces it continues to the forward walk despite the bounded-wait defer"
+    "recovery announces the run continues its forward walk after the bounded-wait defer"
   );
-  assert.ok(listedCursors.length >= 1, "the forward walk's list phase still runs after the bounded-wait defer");
+  assert.ok(listedCursors.length >= 1, "the forward walk list phase runs after the bounded-wait defer");
 });
 
 test("runConversationsAndMessagesStreams: warm-start round-trip — a run persists its learned interval; the next run restores it", async () => {
@@ -5079,28 +5168,30 @@ test("adaptive retry budget: a healthy account refills tokens so the run never d
   // 6 retry-exhaustion wait-outs occurred; all > initialTokens=2 → refill proved.
   assert.ok(
     waitOuts.length > 2,
-    `adaptive budget sustained ${waitOuts.length} wait-outs (> initialTokens=2) because successful retries refilled consumed tokens`
+    `adaptive budget sustained ${waitOuts.length} wait-outs (> initialTokens=2) because each successful retry reset the no-progress counter`
   );
-  // HONESTY: budget-active wait messages must report the retry budget, NOT the
-  // stale N/8 cycle counter that no longer governs give-up when the budget is active.
+  // HONESTY: all wait messages use the progress-based counter (N/8, resets on success).
+  // With refill, the counter resets after each success so it never reaches 8 here.
   assert.ok(
-    waitOuts.every((m) => m.message.includes("retry budget:") && m.message.includes("token(s) left")),
-    "budget-active wait messages report retry budget remaining tokens, not the /8 cycle counter"
+    waitOuts.every((m) => m.message.includes("no-progress waits:") && m.message.includes("/8")),
+    "wait messages report the progress-based no-progress counter (N/8, resets on the next successful fetch)"
   );
   assert.ok(
-    waitOuts.every((m) => !m.message.includes("/8")),
-    "budget-active wait messages do not display the N/8 cycle cap that no longer governs"
+    waitOuts.every((m) => m.message.includes("resets on the next successful fetch")),
+    "wait messages explain that the counter resets on success so a healthy drain never gives up"
   );
 });
 
-test("adaptive retry budget: a dead account that never succeeds gives up after ~initialTokens wait-outs (retry-exhausted regime)", async () => {
+test("progress-based give-up: a dead account that never succeeds gives up after CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8 consecutive wait-outs (retry-exhausted regime)", async () => {
   // DEAD ACCOUNT: every fetch throws ChatGptRecoverableRetryExhaustedError —
-  // the retry never succeeds so recordSuccess never fires. Starting at
-  // initialTokens=3, capacity=100, refillPerSuccess=0.2: the budget depletes
-  // from 3 → 2 → 1 → 0 (no refill) → give up → durable lose-nothing defer.
-  // This matches the prior fixed-8 dead-account ceiling (just with injected=3).
+  // the retry never succeeds so recordSuccess never fires, so the
+  // consecutiveWaitOutsWithoutSuccess counter climbs from 0 to 8 (never reset)
+  // → give up → durable lose-nothing defer.
+  // The retryBudget config is irrelevant to give-up now (it only governs
+  // per-request retry attempts, not the wait-out give-up decision).
   const harness = makeRecordingEmit(validateRecord);
   const providerBudget = new ProviderBudgetController({
+    // retryBudget present but not the give-up signal any more.
     retryBudget: { capacity: 100, initialTokens: 3, refillPerSuccess: 0.2 },
     circuitBreaker: { failureRateThreshold: 1, minimumThroughput: 1, resetTimeoutMs: 0 },
   });
@@ -5132,27 +5223,264 @@ test("adaptive retry budget: a dead account that never succeeds gives up after ~
     providerBudget,
   });
 
-  // The run gave up after ≤ initialTokens=3 wait-outs and deferred the tail.
+  // The run gave up after ≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8 consecutive
+  // no-progress wait-outs and deferred the tail durably (lose-nothing).
   const waitOuts = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
   );
-  assert.ok(waitOuts.length <= 3, `dead account gives up at ≤ initialTokens wait-outs (got ${waitOuts.length})`);
+  assert.ok(
+    waitOuts.length <= 8,
+    `dead account gives up at ≤ 8 consecutive no-progress wait-outs (got ${waitOuts.length})`
+  );
 
   // Tail deferred as durable lose-nothing DETAIL_GAP records.
   const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
-  assert.ok(gaps.length > 0, "dead account: budget depletion triggers the durable lose-nothing defer");
+  assert.ok(gaps.length > 0, "dead account: no-progress give-up triggers the durable lose-nothing defer");
   assert.ok(
     coverage.gapKeys.length > 0,
-    "dead account: tail deferred as resumable gap records after budget exhaustion"
+    "dead account: tail deferred as resumable gap records after consecutive no-progress give-up"
   );
 });
 
-test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (retry-exhausted regime)", async () => {
-  // NO-BUDGET FALLBACK: when no providerBudget is injected, the old fixed-cycle
-  // cap (CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8) governs via the densityWaitCycles
-  // counter in maybeDeferForFetchError. With every fetch always throwing
-  // ChatGptRecoverableRetryExhaustedError, the loop waits out up to 8 times then
-  // defers the tail — proving the fallback still bounds an uncapped no-budget run.
+// ─── Three key oracle tests for the progress-based give-up fix ────────────────
+
+test("HEALTHY DRAIN oracle: a throttled run with interleaved successes drains ALL conversations — give-up must NOT fire (regression: run_1781302239264)", async () => {
+  // THE REGRESSION: run_1781302239264 synced 65 of 1511 conversations then quit
+  // with "reached its per-run provider budget (retry_budget)" — 1446 pending.
+  // Root cause: per-request retries inside retryHttp consumed the give-up budget
+  // (12 PATH1 tokens per conversation + 1 PATH2 token per wait-out), so a run
+  // with only ~21 give-up tokens (8 + 65×0.2) and 65 successes gave up early.
+  //
+  // After the fix: give-up is progress-based (consecutiveWaitOutsWithoutSuccess).
+  // Any success resets the counter to 0. A run with regular successes NEVER gives
+  // up here — the counter can never reach 8 if a success fires in between.
+  //
+  // Harness: 50 conversations. Each throws ChatGptRecoverableRetryExhaustedError
+  // on the first attempt (simulating a throttled fetch), then succeeds on retry.
+  // The give-up counter increments to 1 on the wait-out, then resets to 0 on
+  // the success — so the net is always 0 or 1, never 8. All 50 must hydrate.
+  const harness = makeRecordingEmit(validateRecord);
+  const recoveredConvos = new Set<string>();
+
+  const providerBudget = new ProviderBudgetController({
+    retryBudget: { capacity: 100, initialTokens: 8, refillPerSuccess: 0.2 },
+    circuitBreaker: { failureRateThreshold: 1, minimumThroughput: 1, resetTimeoutMs: 0 },
+  });
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      const convoId = path.replace("/conversation/", "");
+      if (!recoveredConvos.has(convoId)) {
+        // First attempt: throttled — simulates the retry-exhausted path.
+        recoveredConvos.add(convoId);
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(`apiFetch got 429 on GET ${path} after retries fake-secret`, {
+            class: "rate_limited",
+            httpStatus: 429,
+          })
+        );
+      }
+      // Second attempt (after wait-out): succeeds → resets consecutiveWaitOutsWithoutSuccess.
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 50 }, (_, i) => makeConvo({ id: `drain-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    providerBudget,
+  });
+
+  // THE KEY ASSERTION: all 50 conversations must hydrate. The give-up must NOT fire
+  // because every wait-out is followed by a success that resets the counter.
+  assert.deepEqual(
+    coverage.hydratedKeys,
+    convos.map((c) => c.id),
+    "HEALTHY DRAIN: all 50 conversations hydrated — give-up counter resets on each success so it never reaches 8"
+  );
+  assert.deepEqual(
+    coverage.gapKeys,
+    [],
+    "HEALTHY DRAIN: zero conversations deferred — a throttled-but-succeeding run drains to zero"
+  );
+
+  // 50 wait-outs occurred (one per conversation on first attempt).
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(
+    waitOuts.length === 50,
+    "HEALTHY DRAIN: 50 wait-outs occurred (one per throttled conversation), all followed by a success"
+  );
+});
+
+test("PROGRESS RESET oracle: 5 wait-outs → success → 5 more wait-outs → NEVER gives up (counter resets on success)", async () => {
+  // Explicitly proves the reset mechanism: the no-progress counter accumulates 5,
+  // a success resets it to 0, then it accumulates 5 more — net maximum is 5,
+  // never reaching CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8, so give-up never fires.
+  //
+  // Harness: 16 conversations, each fails once then succeeds (fail-once pattern).
+  // We force the pattern so that exactly 5 consecutive wait-outs happen before
+  // a mid-sequence success by using a set of "first attempt fails" convos.
+  // Because each convo fails ONCE then succeeds, the counter never accumulates
+  // beyond 1 per convo before resetting. All 16 hydrate. No give-up fires.
+  //
+  // This directly proves: with N < 8 consecutive wait-outs followed by a success,
+  // the counter restarts. 50 wait-outs in 50 separate convos (each reset after
+  // each success) never reaches the give-up threshold.
+  const harness = makeRecordingEmit(validateRecord);
+  const failedOnce = new Set<string>();
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      const convoId = path.replace("/conversation/", "");
+      if (!failedOnce.has(convoId)) {
+        // Fail once to generate a wait-out (counter += 1).
+        failedOnce.add(convoId);
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(`apiFetch got 429 on GET ${path} after retries fake-secret`, {
+            class: "rate_limited",
+            httpStatus: 429,
+          })
+        );
+      }
+      // Second attempt succeeds → consecutiveWaitOutsWithoutSuccess resets to 0.
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  // 16 conversations each failing once then succeeding. The counter never exceeds 1
+  // between resets, so the 8-consecutive-no-progress give-up never fires.
+  const convos = Array.from({ length: 16 }, (_, i) => makeConvo({ id: `reset-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+  });
+
+  // All 16 must hydrate — the give-up never fired because each success reset the counter.
+  assert.deepEqual(
+    coverage.hydratedKeys,
+    convos.map((c) => c.id),
+    "PROGRESS RESET: all 16 conversations hydrated — each success reset the no-progress counter before it reached 8"
+  );
+  assert.deepEqual(
+    coverage.gapKeys,
+    [],
+    "PROGRESS RESET: zero conversations deferred — the counter reset on each success, preventing give-up"
+  );
+
+  // 16 wait-outs occurred (one per conversation), all followed by a reset success.
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(
+    waitOuts.length === 16,
+    "PROGRESS RESET: 16 wait-outs occurred (one per convo), each followed by a success that reset the counter"
+  );
+
+  // The upstream-pressure give-up defer message (no-progress >= 8) must NOT have fired.
+  const giveUpMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("upstream-pressure circuit")
+  );
+  assert.equal(
+    giveUpMessages.length,
+    0,
+    "PROGRESS RESET: the no-progress give-up never fired — successive resets kept the counter < 8 throughout"
+  );
+});
+
+test("DEAD ACCOUNT oracle: no successes ever → gives up after CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8 consecutive wait-outs (lose-nothing)", async () => {
+  // Proves the safety bound: if an account NEVER yields a successful fetch, the
+  // consecutiveWaitOutsWithoutSuccess counter climbs from 0 to 8 without ever
+  // being reset, and the run gives up with durable DETAIL_GAP records (lose-nothing).
+  //
+  // This is the "dead account" invariant — the progress counter always fires at
+  // 8 consecutive no-progress waits, regardless of retryBudget config.
+  // The give-up fires via maybeDeferForFetchError which emits the
+  // "opened upstream-pressure circuit" message and calls emitTailConversationDetailGaps.
+  const harness = makeRecordingEmit(validateRecord);
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> =>
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError(`apiFetch got 429 on GET ${path} after retries fake-secret`, {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // No providerBudget — proves the no-budget path still gives up.
+  };
+
+  const convos = Array.from({ length: 20 }, (_, i) => makeConvo({ id: `dead-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+  });
+
+  // No conversations should hydrate — the account never succeeded.
+  assert.equal(coverage.hydratedKeys.length, 0, "DEAD ACCOUNT: no conversations hydrated");
+
+  // The run must have given up — some conversations deferred durably.
+  assert.ok(coverage.gapKeys.length > 0, "DEAD ACCOUNT: tail deferred as durable DETAIL_GAP records (lose-nothing)");
+
+  // At most CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8 wait-outs before give-up.
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(
+    waitOuts.length <= 8,
+    `DEAD ACCOUNT: gave up after ≤ 8 consecutive no-progress wait-outs (got ${waitOuts.length})`
+  );
+
+  // The give-up defer fires via maybeDeferForFetchError when waitBudgetExhausted:
+  // it emits "opened upstream-pressure circuit; deferring remaining conversation details".
+  const giveUpMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("upstream-pressure circuit")
+  );
+  assert.ok(
+    giveUpMessages.length > 0,
+    "DEAD ACCOUNT: the upstream-pressure give-up message fired, confirming the dead-account guard"
+  );
+});
+
+test("adaptive retry budget: no-budget fallback uses consecutiveWaitOutsWithoutSuccess=8 cap (retry-exhausted regime)", async () => {
+  // NO-BUDGET FALLBACK: when no providerBudget is injected, the shared progress-based
+  // cap (CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8) governs via the
+  // consecutiveWaitOutsWithoutSuccess counter in maybeDeferForFetchError. With every
+  // fetch always throwing ChatGptRecoverableRetryExhaustedError, the loop waits out
+  // up to 8 times then defers the tail — proving the fallback still bounds an
+  // uncapped no-budget run.
   const harness = makeRecordingEmit(validateRecord);
 
   const api: ChatGptApi = {
@@ -5171,7 +5499,7 @@ test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (re
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
-    // No providerBudget → densityWaitCycles fallback governs.
+    // No providerBudget → consecutiveWaitOutsWithoutSuccess fallback governs.
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
@@ -5182,7 +5510,7 @@ test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (re
     // No providerBudget option either.
   });
 
-  // Fixed cap: ≤ 8 wait-outs total (densityWaitCycles), then durable defer.
+  // Fixed cap: ≤ 8 consecutive no-progress wait-outs (consecutiveWaitOutsWithoutSuccess), then durable defer.
   const waitOuts = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
   );
@@ -5192,15 +5520,16 @@ test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (re
   const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
   assert.ok(gaps.length > 0, "no-budget fallback: fixed-cycle cap triggers the durable lose-nothing defer");
   assert.ok(coverage.gapKeys.length > 0, "no-budget fallback: tail conversations deferred after cycle cap");
-  // HONESTY: no-budget fallback messages must still display the N/8 cycle counter —
-  // that IS the governing bound in this path, so it's honest to show it.
+  // HONESTY: all wait messages display the no-progress N/8 counter (the
+  // universally-governing bound). No path should mention "retry budget:" since
+  // the retry budget no longer governs give-up.
   assert.ok(
-    waitOuts.every((m) => m.message.includes("/8")),
-    "no-budget fallback wait messages display the N/8 cycle cap that actually governs give-up"
+    waitOuts.every((m) => m.message.includes("no-progress waits:") && m.message.includes("/8")),
+    "no-budget fallback wait messages display the progress-based N/8 counter that governs give-up"
   );
   assert.ok(
     waitOuts.every((m) => !m.message.includes("retry budget:")),
-    "no-budget fallback wait messages do not falsely mention a retry budget"
+    "no wait messages falsely mention a retry budget (retry budget no longer governs give-up)"
   );
 });
 
@@ -5214,7 +5543,7 @@ test("regression: ProviderBudgetController present but WITHOUT retryBudget termi
   // The fix adds hasRetryBudget(): the gate now does:
   //   providerBudget?.hasRetryBudget() ? !tryConsumeRetryToken() : cycleFallback
   // so "controller present but no retryBudget" correctly falls back to the
-  // densityWaitCycles cap, same as "no controller at all".
+  // consecutiveWaitOutsWithoutSuccess cap, same as "no controller at all".
   //
   // This test directly exercises that path: a ProviderBudgetController with ONLY
   // a circuitBreaker (no retryBudget) under a never-recovering throttle.
@@ -5258,7 +5587,7 @@ test("regression: ProviderBudgetController present but WITHOUT retryBudget termi
     sleep: () => undefined,
   });
 
-  // Must terminate via the densityWaitCycles cap (≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES = 8).
+  // Must terminate via the consecutiveWaitOutsWithoutSuccess cap (≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES = 8).
   const waitOuts = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
   );

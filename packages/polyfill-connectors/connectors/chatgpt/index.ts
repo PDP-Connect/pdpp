@@ -1354,13 +1354,11 @@ export function createChatGptApi({
       // a few short attempts, then exhaust so the lane defers the rest as
       // resumable DETAIL_GAP instead of burning the full 12-attempt budget
       // (~23–70 min of backoff) against an already-throttled account.
-      shouldKeepRetrying: (input) => {
-        if (!shouldKeepRetryingChatGptDetail(input)) {
-          return false;
-        }
-        plannedProviderBudgetDefer = consumeChatGptProviderRetryBudget(providerBudget);
-        return plannedProviderBudgetDefer == null;
-      },
+      // NOTE: we do NOT consume the give-up budget here. Per-request retries are
+      // normal backoff — consuming the give-up budget on every retry attempt
+      // depleted it during healthy throttled drains (the run_1781302239264 bug).
+      // The give-up signal is now progress-based (consecutiveWaitOutsWithoutSuccess).
+      shouldKeepRetrying: (input) => shouldKeepRetryingChatGptDetail(input),
       onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
         // retryHttp sleeps `delayMs` itself immediately after this callback,
         // inside the same (serialized) detail attempt. Route the pressure to
@@ -2999,43 +2997,58 @@ export async function runMessagesAndConversationsWithDetail(
   //
   // Bounds (mirror the circuit wait-out so a genuinely-hostile account cannot
   // loop forever): each density wait is bounded by the remaining run budget, and
-  // the cumulative number of density waits in a run is capped by
-  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES. Past that cap, OR with no run budget
-  // left, we fall back to the durable defer (the old behavior) so the run still
-  // converges to a bounded, lossless stop rather than spinning.
+  // the give-up is PROGRESS-BASED — a density wait only counts toward the cap
+  // when there is no successful fetch between it and the previous wait. A healthy
+  // account that succeeds between density trips keeps draining; each success resets
+  // the shared progress counter. Past the cap, OR with no run budget left, we fall
+  // back to the durable defer (the old behavior) so the run converges bounded.
+  // `densityWaitCycles` is a per-density-path display counter only (for the
+  // progress message); it does NOT govern give-up and is never reset on success.
   let densityWaitCycles = 0;
+  // Progress-based give-up counter: increments on each wait-out across ALL three
+  // wait-out regimes (density, retry-exhausted, circuit-open); resets to 0 on
+  // each successful conversation-detail fetch. Give-up fires when this reaches
+  // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES consecutive wait-outs with no success
+  // in between — meaning a genuinely-dead account, not a healthy throttled drain.
+  // A run that alternates throttle→success→throttle→success never gives up here
+  // because each success resets the counter, regardless of how many retries
+  // happened inside retryHttp (those are per-request backoff, not account-death
+  // evidence). This is the fix for run_1781302239264: 65 successes should drain
+  // to zero, not quit after ~21 give-up tokens were spent by per-request retries.
+  // Safe for density: density trips only on 429s (recordRateLimited), not on
+  // successes; after resetAfterWaitOut() the tracker must re-accumulate real 429s
+  // to trip again, so a success-reset cannot cause an infinite loop.
+  let consecutiveWaitOutsWithoutSuccess = 0;
   async function maybeWaitOutRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
     if (!densityTracker.shouldStop()) {
       return null;
     }
     const remainingRunBudgetMs = runBudget.remainingWallClockMs();
-    // PRIMARY give-up: retry budget depleted (adaptive — a healthy account refills
-    // via recordSuccess and can wait out many more than the initial 8 tokens;
-    // a dead account depletes from initialTokens=8 and gives up gracefully).
-    // FALLBACK when no retry budget is configured (controller absent OR present
-    // without a retryBudget): densityWaitCycles fixed-cycle cap. The hasRetryBudget()
-    // guard is critical — without it a controller present but without a retryBudget
-    // would let tryConsumeRetryToken return true forever → infinite loop.
+    // Density give-up uses the SAME progress-based bound as Gates B and C: N
+    // consecutive wait-outs with no successful fetch in between → dead account.
+    // A healthy account that earns a success between density trips resets the
+    // counter and keeps draining — density can only re-trip via new 429s, not
+    // through successes, so progress-reset is safe and never causes an infinite
+    // loop (verified: shouldStop() is driven solely by recordRateLimited() calls).
     const exhaustedWaitBudget =
       runBudget.shouldStop() ||
       remainingRunBudgetMs <= 0 ||
-      (providerBudget?.hasRetryBudget()
-        ? !providerBudget.tryConsumeRetryToken()
-        : densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES);
+      consecutiveWaitOutsWithoutSuccess >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES;
     if (exhaustedWaitBudget) {
-      // Hostile/persistent pressure or genuine budget exhaustion: fall back to the
+      // Hostile/persistent density pressure or run budget gone: fall back to the
       // durable defer so the run stops bounded and lossless (the prior behavior).
       observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
       await deps.emit({
         type: "PROGRESS",
         stream: "messages",
-        message: `ChatGPT conversation-detail lane: source still hot after ${densityWaitCycles} cool-down wait(s); deferring remaining conversation details as resumable DETAIL_GAP records`,
+        message: `ChatGPT conversation-detail lane: source still hot after ${densityWaitCycles} cool-down wait(s); deferring remaining conversation details as resumable DETAIL_GAP records (${formatWaitBound(consecutiveWaitOutsWithoutSuccess)})`,
       });
       return emitTailConversationDetailGaps(from, (item) =>
         makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
       );
     }
     densityWaitCycles += 1;
+    consecutiveWaitOutsWithoutSuccess += 1;
     const servedCount = densityTracker.count;
     // The cool-down: prefer the provider-budget circuit's measured cool-down when
     // one is reported; otherwise the default reset timeout. The remaining run
@@ -3052,7 +3065,7 @@ export async function runMessagesAndConversationsWithDetail(
     await deps.emit({
       type: "PROGRESS",
       stream: "messages",
-      message: `ChatGPT conversation-detail lane hot after ${servedCount} served 429s; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming detail collection (${formatWaitBound(providerBudget, densityWaitCycles)})`,
+      message: `ChatGPT conversation-detail lane hot after ${servedCount} served 429s; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming detail collection (${formatWaitBound(consecutiveWaitOutsWithoutSuccess)})`,
     });
     await sleep(waitMs);
     // The wait discharged the hot bucket — reset the accumulator so the lane
@@ -3079,10 +3092,8 @@ export async function runMessagesAndConversationsWithDetail(
     return emitRunCapTailConversationDetailGaps(from, capReason);
   }
 
-  function formatWaitBound(budget: ProviderBudgetController | null | undefined, cycle: number, label = "wait"): string {
-    return budget?.hasRetryBudget()
-      ? `retry budget: ${budget.retryTokensRemaining()} token(s) left; refills on each successful fetch`
-      : `${label} ${cycle}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES}`;
+  function formatWaitBound(noProgressCount: number): string {
+    return `no-progress waits: ${noProgressCount}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES} (resets on the next successful fetch)`;
   }
 
   async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
@@ -3107,20 +3118,16 @@ export async function runMessagesAndConversationsWithDetail(
 
       // SLVP-ideal: wait out the cooldown in-run and re-fetch the SAME
       // conversation, exactly like the circuit-open and density regimes —
-      // instead of immediately latching and dumping the tranche. PRIMARY bound:
-      // retry budget token (adaptive — healthy account refills via recordSuccess;
-      // dead account depletes and gives up). FALLBACK when no retry budget is
-      // configured (controller absent OR present without a retryBudget): shared
-      // densityWaitCycles fixed-cycle cap (keeps the no-budget path bounded).
+      // instead of immediately latching and dumping the tranche.
+      // Progress-based give-up: N consecutive wait-outs with no successful
+      // fetch in between → account is genuinely dead → durable defer.
       const remainingRunBudgetMs = runBudget.remainingWallClockMs();
       const waitBudgetExhausted =
         runBudget.shouldStop() ||
         remainingRunBudgetMs <= 0 ||
-        (providerBudget?.hasRetryBudget()
-          ? !providerBudget.tryConsumeRetryToken()
-          : densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES);
+        consecutiveWaitOutsWithoutSuccess >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES;
       if (!waitBudgetExhausted) {
-        densityWaitCycles += 1;
+        consecutiveWaitOutsWithoutSuccess += 1;
         const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
         const desiredWaitMs = Math.max(
           CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS,
@@ -3130,7 +3137,7 @@ export async function runMessagesAndConversationsWithDetail(
         await deps.emit({
           type: "PROGRESS",
           stream: "messages",
-          message: `ChatGPT conversation-detail lane hit a recoverable rate limit on this conversation; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming the SAME conversation (${formatWaitBound(providerBudget, densityWaitCycles)})`,
+          message: `ChatGPT conversation-detail lane hit a recoverable rate limit on this conversation; waiting ${formatSleepDuration(waitMs)} for the account to cool down, then resuming the SAME conversation (${formatWaitBound(consecutiveWaitOutsWithoutSuccess)})`,
         });
         await sleep(waitMs);
         densityTracker.resetAfterWaitOut();
@@ -3156,9 +3163,9 @@ export async function runMessagesAndConversationsWithDetail(
 
   // Fetch one conversation detail with wait-out-and-resume for recoverable rate
   // limits (ChatGptRecoverableRetryExhaustedError). Uses the shared
-  // densityWaitCycles envelope via maybeDeferForFetchError: if the error handler
-  // waited and returned null, retry the same conversation; if it returned a
-  // durable-defer result, propagate it. Non-recoverable errors re-throw as usual.
+  // consecutiveWaitOutsWithoutSuccess counter via maybeDeferForFetchError: if the
+  // error handler waited and returned null, retry the same conversation; if it
+  // returned a durable-defer result, propagate it. Non-recoverable errors re-throw.
   async function fetchConversationDetailWithRecoverableRetry(c: ConversationListItem): Promise<ChatGptFetchResult> {
     for (;;) {
       try {
@@ -3195,10 +3202,7 @@ export async function runMessagesAndConversationsWithDetail(
   // Returns the computed `remainingRunBudgetMs` when the wait was performed
   // (caller should continue the loop), or re-throws `err` when the wait is not
   // allowed (budget depleted / run budget exhausted / non-transient error).
-  async function handleCircuitOpenForWaitOut(
-    err: unknown,
-    circuitWaitCycle: number
-  ): Promise<{ remainingRunBudgetMs: number }> {
+  async function handleCircuitOpenForWaitOut(err: unknown): Promise<{ remainingRunBudgetMs: number }> {
     if (!isChatGptTransientCircuitDefer(err)) {
       throw err;
     }
@@ -3212,19 +3216,14 @@ export async function runMessagesAndConversationsWithDetail(
     if (remainingRunBudgetMs <= 0) {
       throw err;
     }
-    // Adaptive give-up: retry budget present → consume a token; no retry budget
-    // (controller absent OR present without a retryBudget) → fixed cycle cap.
-    // hasRetryBudget() is required: without it, a controller present but without
-    // a retryBudget would let tryConsumeRetryToken return true forever → infinite loop.
-    const waitAllowed = providerBudget?.hasRetryBudget()
-      ? providerBudget.tryConsumeRetryToken()
-      : circuitWaitCycle < CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES;
+    // Progress-based give-up: N consecutive wait-outs with no successful fetch
+    // in between → genuinely dead account → re-throw so the outer caller
+    // (maybeDeferForFetchError) produces the durable lose-nothing defer.
+    const waitAllowed = consecutiveWaitOutsWithoutSuccess < CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES;
     if (!waitAllowed) {
-      // Budget depleted / cycle cap reached: re-throw so the outer caller
-      // (maybeDeferForFetchError) produces the durable lose-nothing defer.
       throw err;
     }
-    densityWaitCycles += 1;
+    consecutiveWaitOutsWithoutSuccess += 1;
     const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
     // Sleep the circuit's exact cool-down, never past the remaining run
     // budget, and at least one floor tick so a cool-down already near zero
@@ -3233,24 +3232,22 @@ export async function runMessagesAndConversationsWithDetail(
     await deps.emit({
       type: "PROGRESS",
       stream: "messages",
-      message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (${formatWaitBound(providerBudget, circuitWaitCycle + 1, "cycle")})`,
+      message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (${formatWaitBound(consecutiveWaitOutsWithoutSuccess)})`,
     });
     await sleep(waitMs);
     return { remainingRunBudgetMs };
   }
 
   async function fetchConversationDetailWaitingOutCircuit(c: ConversationListItem): Promise<ChatGptFetchResult> {
-    // PRIMARY give-up guard: retry budget token (adaptive — healthy accounts
-    // refill and wait out many more than the initial 8; dead accounts deplete
-    // and give up gracefully). FALLBACK when no budget configured: the
-    // fixed densityWaitCycles cycle cap keeps an uncapped run bounded.
-    let circuitWaitCycle = 0;
+    // Progress-based give-up: the shared consecutiveWaitOutsWithoutSuccess
+    // counter (incremented in handleCircuitOpenForWaitOut, reset on each
+    // successful fetch) bounds this loop. A dead account gives up after
+    // CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES consecutive waits with no success.
     for (;;) {
       try {
         return await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
       } catch (err) {
-        await handleCircuitOpenForWaitOut(err, circuitWaitCycle);
-        circuitWaitCycle += 1;
+        await handleCircuitOpenForWaitOut(err);
       }
     }
   }
@@ -3307,6 +3304,9 @@ export async function runMessagesAndConversationsWithDetail(
     // lane so the shared pacer interval is not un-learned. Throttles still
     // fire (recovery may decelerate, never accelerate the pacer).
     providerBudget?.recordSuccess(deps.recoveryOnly === true ? { suppressAdditiveIncrease: true } : undefined);
+    // Reset the progress-based give-up counter: any successful fetch proves the
+    // account is alive, so N consecutive no-progress waits restarts from 0.
+    consecutiveWaitOutsWithoutSuccess = 0;
     await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
     lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
       deps.emit,
