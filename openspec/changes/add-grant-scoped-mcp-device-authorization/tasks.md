@@ -30,4 +30,4 @@
 - [x] 5.2 Add integration smoke: device request → owner approval → token polling → `/mcp` `tools/list` succeeds with a client token.
 - [x] 5.3 Add negative smoke: owner-agent device token → `/mcp` rejects with the existing owner-token error.
 - [x] 5.4 Run focused AS/MCP/CLI tests.
-- [ ] 5.5 Deploy only under the live-stack mutex and verify the live AS metadata, protected-resource metadata, device-flow smoke, and owner-token rejection.
+- [x] 5.5 Deploy only under the live-stack mutex and verify the live AS metadata, protected-resource metadata, device-flow smoke, and owner-token rejection.
