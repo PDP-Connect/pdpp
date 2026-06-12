@@ -259,17 +259,33 @@ export class ProviderPacing {
   /**
    * Record a throttle signal — multiplicative decrease (increase interval, never below initialIntervalMs).
    * If `signal.retryAfterMs` is set, the next admit() will honor it exactly.
+   *
+   * Part B (steady-state honesty): a Retry-After is a ONE-SHOT instruction —
+   * "wait exactly this long THIS time" — not a statement about the sustained
+   * rate. The wait is already enforced via `nextRetryAfterMs` (consumed by the
+   * very next admit()). Baking that same delay into `_currentIntervalMs` would
+   * double-penalize: a ~100s Retry-After would also become the ongoing
+   * inter-request interval and take ~1000 successes (~hours) of additive
+   * recovery to undo. So a `retry_after` signal sets the one-shot wait WITHOUT
+   * multiplicatively decreasing the sustained interval. A plain throttle (no
+   * retryAfterMs) still does its normal ×(1/multiplicativeDecreaseFactor)
+   * decrease — that is the AIMD signal for an unquantified slow-down.
    */
   recordThrottle(signal?: ThrottleSignal): void {
-    const reason: PacingBackoffReason = signal?.retryAfterMs == null ? "throttle" : "retry_after";
-    if (signal?.retryAfterMs != null) {
-      this.nextRetryAfterMs = signal.retryAfterMs;
+    const hasRetryAfter = signal?.retryAfterMs != null;
+    const reason: PacingBackoffReason = hasRetryAfter ? "retry_after" : "throttle";
+    if (hasRetryAfter) {
+      // One-shot wait only: honor it exactly on the next admit(), but do NOT
+      // adopt it as the sustained interval (see method doc, Part B).
+      this.nextRetryAfterMs = signal?.retryAfterMs ?? null;
+      this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
+      return;
     }
-    // Multiplicative decrease: divide fill rate (multiply interval).
-    const decreased = this._currentIntervalMs / this.multiplicativeDecreaseFactor;
-    // Throttle never decreases the interval below initialIntervalMs (the
+    // Plain throttle: multiplicative decrease (divide fill rate → multiply
+    // interval). Never decreases the interval below initialIntervalMs (the
     // conservative baseline), so a single throttle bounces the rate back toward
     // the cold floor even when warm-start had restored a faster learned interval.
+    const decreased = this._currentIntervalMs / this.multiplicativeDecreaseFactor;
     this._currentIntervalMs = Math.max(this.initialIntervalMs, decreased);
     this._lastBackoff = { atIntervalMs: this._currentIntervalMs, reason };
   }

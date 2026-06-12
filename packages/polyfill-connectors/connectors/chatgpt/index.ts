@@ -1116,12 +1116,26 @@ function makeChatGptNetworkPressureDiagnostic({
  * lane's cooldown event; 429s OUTSIDE any lane (list pagination, non-detail
  * streams) are surfaced to the run-scoped accumulator so the detail phase can
  * inherit pressure the run already absorbed. Extracted to keep `onRetry` simple.
+ *
+ * Part A (one backoff per pressure event): `onRetry` fires once PER RETRY
+ * ATTEMPT, but a single logical pressure event is ONE HTTP request that ended
+ * up throttled — regardless of how many internal attempts it took to clear.
+ * `providerBudget.recordThrottle` multiplies the pacing interval by
+ * 1/multiplicativeDecreaseFactor (×2) on every call, so recording it per
+ * attempt makes ONE 429 that retried 3× inflate the interval ×8. The caller
+ * passes `recordPacingThrottle: true` for only the FIRST report of a given
+ * request and `false` thereafter, so the interval-affecting throttle is
+ * recorded AT MOST ONCE per request. The per-attempt density signal
+ * (`laneContext.reportPressure`), the unlaned-429 accumulator, and the
+ * circuit-transition emit stay PER ATTEMPT — only the multiplicative pacing
+ * decrease is coalesced.
  */
 async function reportChatGptRetryPressure({
   delayMs,
   emit,
   onUnlanedRateLimited,
   providerBudget,
+  recordPacingThrottle,
   response,
   retryAfterMs,
 }: {
@@ -1129,10 +1143,11 @@ async function reportChatGptRetryPressure({
   emit?: CollectContext["emit"] | undefined;
   onUnlanedRateLimited?: (() => void) | undefined;
   providerBudget?: ProviderBudgetController | null | undefined;
+  recordPacingThrottle: boolean;
   response?: { status?: number } | undefined;
   retryAfterMs?: number | undefined;
 }): Promise<void> {
-  if (isChatGptRetryableStatus(response?.status)) {
+  if (recordPacingThrottle && isChatGptRetryableStatus(response?.status)) {
     providerBudget?.recordThrottle({
       retryAfterAlreadySlept: true,
       ...(retryAfterMs == null ? {} : { retryAfterMs }),
@@ -1151,7 +1166,7 @@ async function reportChatGptRetryPressure({
   }
 }
 
-function createChatGptApi({
+export function createChatGptApi({
   capture,
   emit,
   onUnlanedRateLimited,
@@ -1234,6 +1249,12 @@ function createChatGptApi({
     }: { body?: unknown; captureResult: boolean; method: string; parseJson: boolean }
   ): Promise<ChatGptFetchResult> {
     let plannedProviderBudgetDefer: ChatGptPlannedProviderBudgetDeferredError | null = null;
+    // Part A: a single fetchWithRetry call is ONE logical pressure event. Record
+    // the interval-affecting pacing throttle at most once across all of this
+    // request's retry attempts (the first retryable report), so a 429 that
+    // retries N times causes ONE ×2 backoff, not N. Reset per request because
+    // this closure is fresh each call.
+    let pacingThrottleRecordedForThisRequest = false;
     return retryHttp({
       baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
       beforeAttempt: async () => {
@@ -1262,11 +1283,23 @@ function createChatGptApi({
         // inside the same (serialized) detail attempt. Route the pressure to
         // either the active detail lane or the run-scoped accumulator (extracted
         // so this callback stays simple); see reportChatGptRetryPressure.
+        //
+        // Part A: only the FIRST retryable report for this request applies the
+        // multiplicative pacing backoff (one logical pressure event = one ×2
+        // decrease). Consume the once-token only when the status is actually
+        // retryable, so a leading network error doesn't waste the token before
+        // the real 429 arrives.
+        const recordPacingThrottle =
+          !pacingThrottleRecordedForThisRequest && isChatGptRetryableStatus(response?.status);
+        if (recordPacingThrottle) {
+          pacingThrottleRecordedForThisRequest = true;
+        }
         await reportChatGptRetryPressure({
           delayMs,
           emit,
           onUnlanedRateLimited,
           providerBudget,
+          recordPacingThrottle,
           response,
           retryAfterMs,
         });

@@ -142,6 +142,66 @@ test("ProviderPacing: Retry-After honored exactly on next admit()", async () => 
   assert.equal(spy.calls.at(-1), 5000, "Retry-After honored exactly");
 });
 
+test("ProviderPacing Part B: a Retry-After is a one-shot wait, NOT a steady-state interval", async () => {
+  // Part B — the live failure mode: `recordThrottle({ retryAfterMs })` used to
+  // ALSO multiplicatively decrease the sustained interval. A ~100s Retry-After
+  // would then become the ongoing inter-request rate and take ~hours of additive
+  // recovery to undo — even though the provider only asked us to wait once. The
+  // fix: a Retry-After sets the one-shot `nextRetryAfterMs` (honored by the very
+  // next admit) but leaves `_currentIntervalMs` untouched.
+  const spy = makeSpy();
+  let nowMs = 0;
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    minIntervalMs: 250,
+    additiveIncreaseMs: 100,
+    multiplicativeDecreaseFactor: 0.5,
+    now: () => nowMs,
+    sleep: spy.sleep,
+  });
+  // Warm the learned interval down so we can see it stay put.
+  pacing.recordSuccess(); // 900
+  pacing.recordSuccess(); // 800
+  const learnedInterval = pacing.currentIntervalMs;
+  assert.equal(learnedInterval, 800, "warmed to a faster learned interval");
+
+  // A large Retry-After arrives.
+  pacing.recordThrottle({ retryAfterMs: 100_000 });
+
+  // The sustained interval is UNCHANGED — the 100s is not adopted as the rate,
+  // nor even multiplicatively inflated (which would have made it 1600).
+  assert.equal(pacing.currentIntervalMs, learnedInterval, "Retry-After does NOT inflate the steady-state interval");
+  // The next admit honors the one-shot wait exactly...
+  nowMs = 800;
+  await pacing.admit();
+  assert.equal(spy.calls.at(-1), 100_000, "one-shot wait honored exactly on next admit");
+  // ...and the admit AFTER that returns to the learned interval, not 100s.
+  nowMs += 100_000;
+  await pacing.admit();
+  assert.equal(
+    spy.calls.at(-1),
+    learnedInterval,
+    "after the one-shot wait, the sustained rate is the learned interval, not the Retry-After"
+  );
+  // The back-off reason is still surfaced as retry_after for legibility.
+  assert.equal(pacing.snapshot().lastBackoff?.reason, "retry_after", "retry-after back-off reason recorded");
+});
+
+test("ProviderPacing Part B: a plain throttle (no Retry-After) still multiplicatively decreases", () => {
+  // Guardrail: Part B only changes the retryAfterMs branch. A bare throttle —
+  // the AIMD signal for an unquantified slow-down — must still do its normal
+  // ×(1/multiplicativeDecreaseFactor) interval increase.
+  const pacing = new ProviderPacing({
+    initialIntervalMs: 1000,
+    multiplicativeDecreaseFactor: 0.5,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  pacing.recordThrottle(); // plain: 1000 → 2000
+  assert.equal(pacing.currentIntervalMs, 2000, "plain throttle still multiplies the interval by 2");
+  assert.equal(pacing.snapshot().lastBackoff?.reason, "throttle", "plain throttle reason recorded");
+});
+
 test("ProviderPacing: idle-credit cap — long idle gap does not accumulate unbounded credit", async () => {
   const sleepCalls: number[] = [];
   let nowMs = 0;
