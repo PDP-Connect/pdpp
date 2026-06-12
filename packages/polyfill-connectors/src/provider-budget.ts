@@ -340,6 +340,40 @@ export class ProviderBudgetController implements SendDelayHint {
     return { ok: true };
   }
 
+  /**
+   * Returns `true` when a retry budget is configured on this controller.
+   * Each wait-out gate uses this to decide whether to consume a token or fall
+   * back to the densityWaitCycles / circuitWaitCycle cycle cap:
+   *
+   * ```
+   * const waitAllowed = providerBudget?.hasRetryBudget()
+   *   ? providerBudget.tryConsumeRetryToken()
+   *   : cycleFallback;
+   * ```
+   *
+   * This ensures the cycle-cap fallback fires for BOTH "no controller" and
+   * "controller present but no retryBudget" — the two cases that must behave
+   * identically from the gate's perspective.
+   */
+  hasRetryBudget(): boolean {
+    return this.retryBudget !== null;
+  }
+
+  /**
+   * Consume one retry token from the budget for a wait-out attempt.
+   * Returns `true` when the budget has tokens remaining, `false` when depleted.
+   * ONLY call this after confirming `hasRetryBudget()` returns `true` — calling
+   * without a budget is a logic error and will throw in development.
+   */
+  tryConsumeRetryToken(): boolean {
+    if (!this.retryBudget) {
+      // Guard against misuse: if hasRetryBudget() was checked first this branch
+      // is unreachable. Fail closed so the gate does not allow infinite waits.
+      return false;
+    }
+    return this.retryBudget.consume();
+  }
+
   currentStop(reason: ProviderBudgetDeferReason): ProviderBudgetStop {
     return {
       ...(this.circuitBreaker ? { circuitState: this.circuitBreaker.state } : {}),

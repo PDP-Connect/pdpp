@@ -338,6 +338,7 @@ const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERAN
 const CHATGPT_PACING_RECOVERY_GAIN_ENV = "PDPP_CHATGPT_PACING_RECOVERY_GAIN";
 const CHATGPT_PACING_MAX_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MAX_INTERVAL_MS";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
+const CHATGPT_RETRY_BUDGET_INITIAL_TOKENS_ENV = "PDPP_CHATGPT_RETRY_BUDGET_INITIAL_TOKENS";
 const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
 // Cold-start DISCOVERY seed (ms), used ONLY when no fresh learned interval is
 // restored from durable state (see warm-start below). It is a one-time entry to
@@ -360,9 +361,20 @@ const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 // time bounded (from 30s back to operating point) without crossing the safety
 // ceiling (minIntervalMs). Tune via PDPP_CHATGPT_PACING_MAX_INTERVAL_MS.
 const CHATGPT_DEFAULT_PACING_MAX_INTERVAL_MS = 30_000;
-// The retry budget is PRUNED to default-OFF (SLVP-ideal: not a run terminator).
-// 5 was the prior default-ON capacity — set PDPP_CHATGPT_RETRY_BUDGET_CAPACITY=5 to
-// restore it exactly. See resolveChatGptRetryBudgetCapacity for the rationale.
+// Retry-budget defaults (adaptive give-up for the three wait-out regimes).
+// capacity=100  — how much a healthy account can bank. A run that keeps
+//                 succeeding refills toward 100 and is never artificially
+//                 limited: 5 successes earn back 1 token (refillPerSuccess=0.2),
+//                 so 500 successes bank the full ceiling. A healthy, busy account
+//                 effectively drains forever.
+// initialTokens=8 — how many wait-outs a COLD/DEAD account gets before depletion.
+//                  Matches the old fixed densityWaitCycles=8 dead-account ceiling
+//                  exactly: a dead account never succeeds, never refills, depletes
+//                  from 8, and gives up gracefully (the lose-nothing durable defer).
+// refillPerSuccess=0.2 — Finagle-validated ratio: 5 successes repair 1 retry.
+// Override via PDPP_CHATGPT_RETRY_BUDGET_CAPACITY / PDPP_CHATGPT_RETRY_BUDGET_INITIAL_TOKENS.
+const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 100;
+const CHATGPT_DEFAULT_RETRY_BUDGET_INITIAL_TOKENS = 8;
 const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
 // Forward-progress guard for the wait-out-circuit loop. A `circuit_open` gate is
 // a TRANSIENT back-off, not budget exhaustion: the lane waits out the circuit's
@@ -475,26 +487,32 @@ export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv =
 function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
   const trimmed = env[CHATGPT_RETRY_BUDGET_CAPACITY_ENV]?.trim();
   if (trimmed == null || trimmed === "") {
-    // SLVP-ideal prune (docs/research/slvp-ideal-control-system-verdict-2026-06-11.md
-    // §"Bounded ONLY by rate-ceiling + lose-nothing + cooperative-yield"): a per-run
-    // provider retry budget is an INCIDENTAL run-TERMINATOR — it made a run quit
-    // mid-throttle-window ("reached its per-run provider budget (retry_budget)")
-    // instead of waiting out the account's cool-down in-run and resuming. It is the
-    // only default-ON terminator the ideal forbids, so its UNSET default is now OFF
-    // (null = no budget = drain until work-done / rate-ceiling / lose-nothing /
-    // cooperative-yield). An explicit fetch-cap envelope still derives a matching
-    // retry budget (so opting into a run cap stays coherent); only the implicit
-    // always-on default is removed. The per-conversation CHATGPT_RATE_LIMIT_MAX_ATTEMPTS
-    // cap + bare-429 fast-open remain as the surviving per-ID grind backstops.
-    // RE-ENABLE: set PDPP_CHATGPT_RETRY_BUDGET_CAPACITY (e.g. =5 restores the prior
-    // default-ON behavior exactly).
-    return Number.isFinite(maxRequests) ? retryBudgetCapacityFromRequestCap({ maxRequests }) : null;
+    // Default ON with capacity=100. A healthy account banks tokens up to this ceiling
+    // (5 successes refill 1 token via refillPerSuccess=0.2) so it can sustain
+    // CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY wait-outs before depletion — effectively
+    // unlimited for a live account. A dead/heavily-throttled account that never
+    // succeeds starts at initialTokens=8 (CHATGPT_DEFAULT_RETRY_BUDGET_INITIAL_TOKENS)
+    // and gives up gracefully after 8 wait-outs (matches the prior fixed
+    // densityWaitCycles=8 ceiling). Override via PDPP_CHATGPT_RETRY_BUDGET_CAPACITY.
+    // An explicit fetch-cap overrides the ceiling with a proportionally derived cap.
+    return Number.isFinite(maxRequests)
+      ? retryBudgetCapacityFromRequestCap({ maxRequests })
+      : CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY;
   }
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return null;
   }
   return Math.floor(parsed);
+}
+
+function resolveChatGptRetryBudgetInitialTokens(env: NodeJS.ProcessEnv): number {
+  const trimmed = env[CHATGPT_RETRY_BUDGET_INITIAL_TOKENS_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return CHATGPT_DEFAULT_RETRY_BUDGET_INITIAL_TOKENS;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : CHATGPT_DEFAULT_RETRY_BUDGET_INITIAL_TOKENS;
 }
 
 function resolveChatGptCircuitBreakerEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -590,6 +608,7 @@ export function resolveChatGptProviderBudget(
   const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
   const retryBudgetCapacity = resolveChatGptRetryBudgetCapacity(env, maxRequests);
   const hasRetryBudget = retryBudgetCapacity != null;
+  const retryBudgetInitialTokens = resolveChatGptRetryBudgetInitialTokens(env);
   const hasCircuitBreaker = resolveChatGptCircuitBreakerEnabled(env);
   if (initialIntervalMs == null && !hasRetryBudget && !hasCircuitBreaker) {
     return null;
@@ -629,7 +648,15 @@ export function resolveChatGptProviderBudget(
           },
         }),
     pacingMode: "signal",
-    ...(hasRetryBudget ? { retryBudget: { capacity: retryBudgetCapacity, refillPerSuccess: 0.2 } } : {}),
+    ...(hasRetryBudget
+      ? {
+          retryBudget: {
+            capacity: retryBudgetCapacity,
+            initialTokens: retryBudgetInitialTokens,
+            refillPerSuccess: 0.2,
+          },
+        }
+      : {}),
   });
 }
 
@@ -2982,8 +3009,19 @@ export async function runMessagesAndConversationsWithDetail(
       return null;
     }
     const remainingRunBudgetMs = runBudget.remainingWallClockMs();
+    // PRIMARY give-up: retry budget depleted (adaptive — a healthy account refills
+    // via recordSuccess and can wait out many more than the initial 8 tokens;
+    // a dead account depletes from initialTokens=8 and gives up gracefully).
+    // FALLBACK when no retry budget is configured (controller absent OR present
+    // without a retryBudget): densityWaitCycles fixed-cycle cap. The hasRetryBudget()
+    // guard is critical — without it a controller present but without a retryBudget
+    // would let tryConsumeRetryToken return true forever → infinite loop.
     const exhaustedWaitBudget =
-      densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES || runBudget.shouldStop() || remainingRunBudgetMs <= 0;
+      runBudget.shouldStop() ||
+      remainingRunBudgetMs <= 0 ||
+      (providerBudget?.hasRetryBudget()
+        ? !providerBudget.tryConsumeRetryToken()
+        : densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES);
     if (exhaustedWaitBudget) {
       // Hostile/persistent pressure or genuine budget exhaustion: fall back to the
       // durable defer so the run stops bounded and lossless (the prior behavior).
@@ -3063,13 +3101,18 @@ export async function runMessagesAndConversationsWithDetail(
 
       // SLVP-ideal: wait out the cooldown in-run and re-fetch the SAME
       // conversation, exactly like the circuit-open and density regimes —
-      // instead of immediately latching and dumping the tranche. Uses the
-      // SHARED densityWaitCycles counter (no new bound introduced). Only after
-      // the bounded envelope is spent does it fall through to the existing
-      // latch + tail-defer (the lose-nothing fallback).
+      // instead of immediately latching and dumping the tranche. PRIMARY bound:
+      // retry budget token (adaptive — healthy account refills via recordSuccess;
+      // dead account depletes and gives up). FALLBACK when no retry budget is
+      // configured (controller absent OR present without a retryBudget): shared
+      // densityWaitCycles fixed-cycle cap (keeps the no-budget path bounded).
       const remainingRunBudgetMs = runBudget.remainingWallClockMs();
       const waitBudgetExhausted =
-        densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES || runBudget.shouldStop() || remainingRunBudgetMs <= 0;
+        runBudget.shouldStop() ||
+        remainingRunBudgetMs <= 0 ||
+        (providerBudget?.hasRetryBudget()
+          ? !providerBudget.tryConsumeRetryToken()
+          : densityWaitCycles >= CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES);
       if (!waitBudgetExhausted) {
         densityWaitCycles += 1;
         const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
@@ -3142,41 +3185,68 @@ export async function runMessagesAndConversationsWithDetail(
   // that planned defer propagates immediately to the run-cap tail path. This is
   // "adapt down fast, up slow, inside a fixed envelope you never probe" — the
   // circuit already dropped the rate; one half-open success resumes it.
+  // Handle a single transient circuit-open error inside the wait-out loop.
+  // Returns the computed `remainingRunBudgetMs` when the wait was performed
+  // (caller should continue the loop), or re-throws `err` when the wait is not
+  // allowed (budget depleted / run budget exhausted / non-transient error).
+  async function handleCircuitOpenForWaitOut(
+    err: unknown,
+    circuitWaitCycle: number
+  ): Promise<{ remainingRunBudgetMs: number }> {
+    if (!isChatGptTransientCircuitDefer(err)) {
+      throw err;
+    }
+    // Genuine budget exhaustion takes precedence over a transient circuit:
+    // if the run is genuinely out of wall-clock/detail budget, stop waiting
+    // and let the run-cap tail path defer the remainder durably.
+    if (runBudget.shouldStop()) {
+      throw err;
+    }
+    const remainingRunBudgetMs = runBudget.remainingWallClockMs();
+    if (remainingRunBudgetMs <= 0) {
+      throw err;
+    }
+    // Adaptive give-up: retry budget present → consume a token; no retry budget
+    // (controller absent OR present without a retryBudget) → fixed cycle cap.
+    // hasRetryBudget() is required: without it, a controller present but without
+    // a retryBudget would let tryConsumeRetryToken return true forever → infinite loop.
+    const waitAllowed = providerBudget?.hasRetryBudget()
+      ? providerBudget.tryConsumeRetryToken()
+      : circuitWaitCycle < CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES;
+    if (!waitAllowed) {
+      // Budget depleted / cycle cap reached: re-throw so the outer caller
+      // (maybeDeferForFetchError) produces the durable lose-nothing defer.
+      throw err;
+    }
+    densityWaitCycles += 1;
+    const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
+    // Sleep the circuit's exact cool-down, never past the remaining run
+    // budget, and at least one floor tick so a cool-down already near zero
+    // still yields and re-probes (half-opening the circuit on the next try).
+    const waitMs = Math.max(CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS, Math.min(cooldownMs, remainingRunBudgetMs));
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (cycle ${circuitWaitCycle + 1}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
+    });
+    await sleep(waitMs);
+    return { remainingRunBudgetMs };
+  }
+
   async function fetchConversationDetailWaitingOutCircuit(c: ConversationListItem): Promise<ChatGptFetchResult> {
-    for (let cycle = 0; cycle < CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES; cycle += 1) {
+    // PRIMARY give-up guard: retry budget token (adaptive — healthy accounts
+    // refill and wait out many more than the initial 8; dead accounts deplete
+    // and give up gracefully). FALLBACK when no budget configured: the
+    // fixed densityWaitCycles cycle cap keeps an uncapped run bounded.
+    let circuitWaitCycle = 0;
+    for (;;) {
       try {
         return await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
       } catch (err) {
-        if (!isChatGptTransientCircuitDefer(err)) {
-          throw err;
-        }
-        // Genuine budget exhaustion takes precedence over a transient circuit:
-        // if the run is genuinely out of wall-clock/detail budget, stop waiting
-        // and let the run-cap tail path defer the remainder durably.
-        if (runBudget.shouldStop()) {
-          throw err;
-        }
-        const remainingRunBudgetMs = runBudget.remainingWallClockMs();
-        if (remainingRunBudgetMs <= 0) {
-          throw err;
-        }
-        const cooldownMs = providerBudget?.circuitCooldownMs() ?? 0;
-        // Sleep the circuit's exact cool-down, never past the remaining run
-        // budget, and at least one floor tick so a cool-down already near zero
-        // still yields and re-probes (half-opening the circuit on the next try).
-        const waitMs = Math.max(CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS, Math.min(cooldownMs, remainingRunBudgetMs));
-        await deps.emit({
-          type: "PROGRESS",
-          stream: "messages",
-          message: `ChatGPT upstream-pressure circuit open; waiting ${formatSleepDuration(waitMs)} for the provider to cool down, then resuming conversation-detail collection within the remaining run budget (cycle ${cycle + 1}/${CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES})`,
-        });
-        await sleep(waitMs);
+        await handleCircuitOpenForWaitOut(err, circuitWaitCycle);
+        circuitWaitCycle += 1;
       }
     }
-    // The circuit stayed open across every bounded wait cycle. One last attempt;
-    // if it still defers, the run-cap tail path takes over (durable defer, no
-    // infinite loop).
-    return await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
   }
 
   await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {

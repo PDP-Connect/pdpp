@@ -1399,7 +1399,7 @@ test("resolveChatGptMaxRunWallClockMs: unset/non-positive → no cap; positive m
   );
 });
 
-test("resolveChatGptProviderBudget: defaults enable pacing + circuit breaker; the retry budget is PRUNED to default-off (re-enable via env)", async () => {
+test("resolveChatGptProviderBudget: defaults enable pacing + circuit breaker + adaptive retry budget", async () => {
   const defaultBudget = resolveChatGptProviderBudget({});
   assert.ok(defaultBudget instanceof ProviderBudgetController);
   assert.ok(defaultBudget.pacing, "ChatGPT default enables adaptive inter-request pacing");
@@ -1408,27 +1408,42 @@ test("resolveChatGptProviderBudget: defaults enable pacing + circuit breaker; th
     1000,
     "ChatGPT cold-starts at the discovery seed (lowered from glacial 2500ms); warm-start restores the learned value on later runs"
   );
-  // SLVP-ideal prune: the per-run retry budget was the only default-ON run
-  // TERMINATOR, and it made a run quit mid-throttle-window instead of waiting out
-  // the account's cool-down and resuming. It is default-OFF now (the ideal bounds
-  // a run only by rate-ceiling + lose-nothing + cooperative-yield). The per-
-  // conversation attempt cap + circuit breaker remain as the per-ID backstops.
+  // Adaptive retry budget: ON by default. capacity=100 banks many wait-outs for a
+  // healthy account (5 successes refill 1 token); initialTokens=8 gives a dead
+  // account the same 8-wait ceiling as the prior fixed densityWaitCycles cap.
+  // This replaces the old fixed-cycle cap as the PRIMARY give-up bound so that
+  // healthy accounts drain effectively forever while dead accounts converge fast.
+  assert.ok(defaultBudget.retryBudget, "retry budget is ON by default — adaptive give-up for wait-out regimes");
   assert.equal(
-    defaultBudget.retryBudget,
-    null,
-    "the retry budget is pruned to default-off — no implicit per-run terminator"
+    defaultBudget.retryBudget.capacity,
+    100,
+    "default capacity=100 lets a healthy account bank many wait-outs"
+  );
+  assert.equal(
+    defaultBudget.retryBudget.remaining,
+    8,
+    "cold start at initialTokens=8 — matches old dead-account ceiling"
   );
   assert.ok(defaultBudget.circuitBreaker, "ChatGPT default enables a circuit breaker");
 
-  // Re-enable path: setting the env var restores the prior default-ON behavior exactly.
+  // Explicit env override: capacity=5 restores the prior default-ON capacity exactly.
   const retryBudgetReenabled = resolveChatGptProviderBudget({ PDPP_CHATGPT_RETRY_BUDGET_CAPACITY: "5" });
-  assert.ok(retryBudgetReenabled?.retryBudget, "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY re-enables the retry budget");
-  assert.equal(retryBudgetReenabled.retryBudget.capacity, 5, "re-enabled at the documented prior default capacity");
+  assert.ok(retryBudgetReenabled?.retryBudget, "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY overrides capacity");
+  assert.equal(retryBudgetReenabled.retryBudget.capacity, 5, "capacity overridden to the specified value");
+
+  // initialTokens override via env.
+  const customInitial = resolveChatGptProviderBudget({ PDPP_CHATGPT_RETRY_BUDGET_INITIAL_TOKENS: "3" });
+  assert.ok(customInitial?.retryBudget, "retry budget present with custom initialTokens");
+  assert.equal(
+    customInitial.retryBudget.remaining,
+    3,
+    "PDPP_CHATGPT_RETRY_BUDGET_INITIAL_TOKENS overrides cold-start tokens"
+  );
 
   const pacingDisabled = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
   assert.ok(pacingDisabled instanceof ProviderBudgetController);
   assert.equal(pacingDisabled.pacing, null, "pacing can be disabled independently");
-  assert.equal(pacingDisabled.retryBudget, null, "retry budget stays default-off when only pacing is disabled");
+  assert.ok(pacingDisabled.retryBudget, "retry budget stays ON when only pacing is disabled");
   assert.ok(pacingDisabled.circuitBreaker);
 
   assert.equal(
@@ -1878,6 +1893,10 @@ test("runMessagesAndConversationsWithDetail: a circuit that NEVER closes converg
   const harness = makeRecordingEmit(validateRecord);
   let nowMs = 0;
   const resetTimeoutMs = 60_000;
+  // No retryBudget — the controller is present but hasRetryBudget() returns false.
+  // This exercises the fixed no-budget→cycle-cap fallback path: the gate must use
+  // the densityWaitCycles/circuitWaitCycle cap, NOT tryConsumeRetryToken (which
+  // previously returned true forever, causing the infinite loop this test guards).
   const providerBudget = new ProviderBudgetController({
     circuitBreaker: {
       failureRateThreshold: 1,
@@ -1934,8 +1953,13 @@ test("runMessagesAndConversationsWithDetail: a circuit that NEVER closes converg
   );
 
   // Bounded: the wait loop ran a finite number of cycles, then deferred the tail.
+  // With no retryBudget the cycle-cap (CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8) governs,
+  // so the loop must terminate in at most 8 waits — not spin forever.
   assert.ok(waitSleeps.length > 0, "the run does wait out the circuit while it can");
-  assert.ok(waitSleeps.length <= 32, "the wait loop is bounded (does not spin) even with no wall-clock cap");
+  assert.ok(
+    waitSleeps.length <= 8,
+    "no-retry-budget controller: cycle cap (≤8) bounds the wait loop, not an infinite spin"
+  );
   assert.equal(coverage.hydratedKeys.length, 0, "a never-closing circuit hydrates nothing");
   assert.deepEqual(coverage.gapKeys, ["convo-1", "convo-2"], "the tail defers durably after the bounded waits");
   const gaps = harness.protocolMessages.filter(
@@ -4972,4 +4996,259 @@ test("runConversationsAndMessagesStreams: recoveryOnly=false (default) performs 
     fetchedPaths.some((p) => p.startsWith("/conversations?")),
     "list-phase fetch fires on a normal (non-recoveryOnly) run"
   );
+});
+
+// ─── Adaptive retry-budget wait-out tests ────────────────────────────────────
+
+test("adaptive retry budget: a healthy account refills tokens so the run never depletes (retry-exhausted regime)", async () => {
+  // ADAPTIVE: a run that succeeds after each throttle earns tokens back and can
+  // sustain many more wait-outs than initialTokens. Proof via the
+  // maybeDeferForFetchError path (ChatGptRecoverableRetryExhaustedError):
+  //
+  // Harness: initialTokens=2, capacity=20, refillPerSuccess=1. Each conversation
+  // throws ChatGptRecoverableRetryExhaustedError on the FIRST attempt (simulating
+  // retry exhaustion), then succeeds on the retry. Each trip: consume 1 token;
+  // each successful retry: refill 1 token via recordSuccess. Net per conversation:
+  // 0 — the budget stays at 2 forever and all conversations hydrate. A fixed
+  // ceiling of 2 with no refill would defer everything past the 2nd conversation.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  // Track which conversations have already "recovered" (second attempt).
+  const recoveredConvos = new Set<string>();
+
+  const providerBudget = new ProviderBudgetController({
+    retryBudget: { capacity: 20, initialTokens: 2, refillPerSuccess: 1 },
+    // Circuit breaker required for ChatGptRecoverableRetryExhaustedError path:
+    // the path calls recordThrottle which triggers the circuit.
+    circuitBreaker: { failureRateThreshold: 1, minimumThroughput: 1, resetTimeoutMs: 0 },
+  });
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      const convoId = path.replace("/conversation/", "");
+      if (!recoveredConvos.has(convoId)) {
+        // First attempt: simulate retry exhaustion (the path maybeDeferForFetchError handles).
+        recoveredConvos.add(convoId);
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(
+            `apiFetch got 429 on GET ${path} after retry budget exhausted fake-secret`,
+            { class: "rate_limited", httpStatus: 429 }
+          )
+        );
+      }
+      // Second attempt (after wait-out): succeeds → recordSuccess → refill.
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  // 6 conversations: 6 retry-exhaustion wait-outs, all followed by a successful
+  // retry. With a fixed budget of 2 only 2 would succeed; adaptive refill lets
+  // all 6 hydrate. Budget stays at ~2 throughout (consume then refill each time).
+  const convos = Array.from({ length: 6 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    providerBudget,
+  });
+
+  // All 6 hydrated — adaptive refill kept the budget alive across 6 wait-outs.
+  assert.deepEqual(
+    coverage.hydratedKeys,
+    convos.map((c) => c.id),
+    "adaptive budget: healthy account hydrates full batch because each successful retry refills the consumed token"
+  );
+  assert.deepEqual(
+    coverage.gapKeys,
+    [],
+    "no conversations deferred — adaptive replenishment kept the lane alive beyond the initial-token ceiling"
+  );
+
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  // 6 retry-exhaustion wait-outs occurred; all > initialTokens=2 → refill proved.
+  assert.ok(
+    waitOuts.length > 2,
+    `adaptive budget sustained ${waitOuts.length} wait-outs (> initialTokens=2) because successful retries refilled consumed tokens`
+  );
+});
+
+test("adaptive retry budget: a dead account that never succeeds gives up after ~initialTokens wait-outs (retry-exhausted regime)", async () => {
+  // DEAD ACCOUNT: every fetch throws ChatGptRecoverableRetryExhaustedError —
+  // the retry never succeeds so recordSuccess never fires. Starting at
+  // initialTokens=3, capacity=100, refillPerSuccess=0.2: the budget depletes
+  // from 3 → 2 → 1 → 0 (no refill) → give up → durable lose-nothing defer.
+  // This matches the prior fixed-8 dead-account ceiling (just with injected=3).
+  const harness = makeRecordingEmit(validateRecord);
+  const providerBudget = new ProviderBudgetController({
+    retryBudget: { capacity: 100, initialTokens: 3, refillPerSuccess: 0.2 },
+    circuitBreaker: { failureRateThreshold: 1, minimumThroughput: 1, resetTimeoutMs: 0 },
+  });
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> =>
+      // Always rejects — account is permanently dead, never succeeds.
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError(
+          `apiFetch got 429 on GET ${path} after retry budget exhausted fake-secret`,
+          { class: "rate_limited", httpStatus: 429 }
+        )
+      ),
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 10 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    providerBudget,
+  });
+
+  // The run gave up after ≤ initialTokens=3 wait-outs and deferred the tail.
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(waitOuts.length <= 3, `dead account gives up at ≤ initialTokens wait-outs (got ${waitOuts.length})`);
+
+  // Tail deferred as durable lose-nothing DETAIL_GAP records.
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.ok(gaps.length > 0, "dead account: budget depletion triggers the durable lose-nothing defer");
+  assert.ok(
+    coverage.gapKeys.length > 0,
+    "dead account: tail deferred as resumable gap records after budget exhaustion"
+  );
+});
+
+test("adaptive retry budget: no-budget fallback uses densityWaitCycles=8 cap (retry-exhausted regime)", async () => {
+  // NO-BUDGET FALLBACK: when no providerBudget is injected, the old fixed-cycle
+  // cap (CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES=8) governs via the densityWaitCycles
+  // counter in maybeDeferForFetchError. With every fetch always throwing
+  // ChatGptRecoverableRetryExhaustedError, the loop waits out up to 8 times then
+  // defers the tail — proving the fallback still bounds an uncapped no-budget run.
+  const harness = makeRecordingEmit(validateRecord);
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> =>
+      // Always rejects — simulates a permanently throttled account with no budget.
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError(
+          `apiFetch got 429 on GET ${path} after retry budget exhausted fake-secret`,
+          { class: "rate_limited", httpStatus: 429 }
+        )
+      ),
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    // No providerBudget → densityWaitCycles fallback governs.
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 20 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    // No providerBudget option either.
+  });
+
+  // Fixed cap: ≤ 8 wait-outs total (densityWaitCycles), then durable defer.
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(waitOuts.length <= 8, `no-budget fallback: ≤ 8 wait-outs (got ${waitOuts.length})`);
+
+  // Some conversations deferred after the cap.
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.ok(gaps.length > 0, "no-budget fallback: fixed-cycle cap triggers the durable lose-nothing defer");
+  assert.ok(coverage.gapKeys.length > 0, "no-budget fallback: tail conversations deferred after cycle cap");
+});
+
+test("regression: ProviderBudgetController present but WITHOUT retryBudget terminates via cycle cap (no infinite loop)", async () => {
+  // THE LATENT BUG (now fixed): when a ProviderBudgetController is present but
+  // has no retryBudget, the old gate did:
+  //   providerBudget ? !providerBudget.tryConsumeRetryToken() : cycleFallback
+  // tryConsumeRetryToken() returned true unconditionally (no budget → "allow"),
+  // so exhaustedWaitBudget was always false → infinite loop.
+  //
+  // The fix adds hasRetryBudget(): the gate now does:
+  //   providerBudget?.hasRetryBudget() ? !tryConsumeRetryToken() : cycleFallback
+  // so "controller present but no retryBudget" correctly falls back to the
+  // densityWaitCycles cap, same as "no controller at all".
+  //
+  // This test directly exercises that path: a ProviderBudgetController with ONLY
+  // a circuitBreaker (no retryBudget) under a never-recovering throttle.
+  // If the bug regresses the test will hang (the suite has a 30s timeout).
+  const harness = makeRecordingEmit(validateRecord);
+
+  // Controller present — but NO retryBudget. hasRetryBudget() must return false.
+  const providerBudget = new ProviderBudgetController({
+    circuitBreaker: {
+      failureRateThreshold: 1,
+      minimumThroughput: 1,
+      windowSize: 1,
+    },
+  });
+  assert.equal(providerBudget.hasRetryBudget(), false, "precondition: no retryBudget on this controller");
+
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (path: string): Promise<ChatGptFetchResult> =>
+      // Always throttled — simulates a permanently hot account.
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError(`apiFetch got 429 on GET ${path} fake-secret`, {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget, // controller IS present — the bug only fires with a controller
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 20 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  // No wall-clock cap — ONLY the cycle cap can stop the loop.
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+  });
+
+  // Must terminate via the densityWaitCycles cap (≤ CHATGPT_CIRCUIT_WAIT_OUT_MAX_CYCLES = 8).
+  const waitOuts = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.message.includes("cool down")
+  );
+  assert.ok(
+    waitOuts.length <= 8,
+    `controller-present-no-retryBudget: cycle cap must bound the loop (got ${waitOuts.length} wait-outs, expected ≤ 8)`
+  );
+
+  // Tail deferred durably — not silently dropped, not an infinite spin.
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.ok(gaps.length > 0, "controller-present-no-retryBudget: tail deferred as DETAIL_GAP after cycle cap");
+  assert.ok(coverage.gapKeys.length > 0, "controller-present-no-retryBudget: gapKeys populated after cycle cap");
 });
