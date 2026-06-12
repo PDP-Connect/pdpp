@@ -47,6 +47,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Page } from "playwright";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
@@ -65,6 +66,7 @@ import {
   chatGptBackendFetchInBrowser,
   classifyChatGptSourcePressure,
   consumeChatGptProviderRetryBudget,
+  createChatGptApi,
   processConversationDetail,
   readChatGptPersistedPacing,
   resolveChatGptBackendFetchTimeoutMs,
@@ -167,6 +169,73 @@ test("ChatGPT detail fetch fast-opens on bare 429 after the configured attempts,
   // Only the two pre-fast-open backoffs (2s, 4s) are paid — seconds, not the
   // ~23–70 min the 11-sleep full budget would burn against a hot account.
   assert.deepEqual(sleeps, [2000, 4000]);
+});
+
+test("Part A: one HTTP request that retries N times causes ONE pacing backoff, not N", async () => {
+  // The live ×8 explosion: createChatGptApi.fetchWithRetry routes EVERY retry
+  // attempt's pressure through onRetry, which used to call
+  // providerBudget.recordThrottle (a ×2 interval inflate) per attempt. So ONE
+  // 429 that retried 2× inflated the pacing interval ×4 (and a 3-attempt clear,
+  // ×8 — matching the live 1900→15200 and 14600→116800 jumps). This drives the
+  // REAL connector path (createChatGptApi → fetchWithRetry → retryHttp → onRetry)
+  // with a fake Page that serves two 429s (with Retry-After, so the full retry
+  // budget is kept — bare 429 would fast-open and exhaust) then a 200. The
+  // interval must back off EXACTLY ONCE (×2), regardless of how many attempts
+  // the single request took.
+  // No-op sleep so the per-attempt pacing admit() does not wait on a real clock.
+  const providerBudget = new ProviderBudgetController({
+    pacing: {
+      initialIntervalMs: 1000,
+      minIntervalMs: 250,
+      multiplicativeDecreaseFactor: 0.5,
+      sleep: () => Promise.resolve(),
+    },
+  });
+  const intervalBefore = providerBudget.snapshotPacing()?.intervalMs;
+  assert.equal(intervalBefore, 1000, "starts at the cold interval");
+
+  // Serve: 429+Retry-After, 429+Retry-After, then 200. retryHttp honors the
+  // Retry-After wait itself; the fake page resolves instantly so the test is
+  // fast. A 429 WITH Retry-After keeps the full retry budget (a bare 429 would
+  // fast-open and exhaust), so the request retries before succeeding.
+  const fetchResults: ChatGptFetchResult[] = [
+    { status: 429, json: null, headers: { "retry-after": "0" } },
+    { status: 429, json: null, headers: { "retry-after": "0" } },
+    { status: 200, json: { conversation_id: "c1" } as ChatGptJson },
+  ];
+  let fetchCallIndex = 0;
+  // Minimal Page shim: only the three methods getAuthFromPage + fetchOnce touch.
+  // The first evaluate (no 2nd arg) extracts auth; subsequent ones are the
+  // backend fetch (2nd arg carries `{ path, ... }`). `evaluate` is single-cast
+  // to Page's overloaded signature; `waitForFunction` rejects (getAuthFromPage
+  // swallows it via `.catch(() => undefined)`), so a Promise<never> satisfies
+  // every overload without a double-cast.
+  const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {
+    evaluate: ((_fn: unknown, arg?: unknown): Promise<unknown> => {
+      if (arg === undefined) {
+        return Promise.resolve({ accessToken: "fake-token", deviceId: "fake-device" });
+      }
+      const result = fetchResults[Math.min(fetchCallIndex, fetchResults.length - 1)];
+      fetchCallIndex += 1;
+      return Promise.resolve(result);
+    }) as Page["evaluate"],
+    goto: () => Promise.resolve(null),
+    waitForFunction: () => Promise.reject(new Error("fake page: no client-bootstrap")),
+  };
+
+  const api = createChatGptApi({ capture: null, page: fakePage as Page, providerBudget });
+  const result = await api.fetch("/conversation/c1");
+
+  assert.equal(result.status, 200, "the request ultimately succeeds after retrying");
+  assert.equal(fetchCallIndex, 3, "the single request made 3 backend fetches (2 retries + success)");
+
+  // ONE multiplicative decrease: 1000 → 2000. NOT ×4 (4000) or ×8 (8000).
+  const intervalAfter = providerBudget.snapshotPacing()?.intervalMs;
+  assert.equal(
+    intervalAfter,
+    2000,
+    "two retry attempts for ONE request caused ONE ×2 backoff (1000→2000), not ×4 per-attempt double-count"
+  );
 });
 
 test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => {
