@@ -2315,6 +2315,13 @@ export async function runConnector(opts) {
   let ownerCancelForced = false;
   const knownGaps = [];
   const durableDetailGaps = [];
+  // First-sighting idempotency for run.detail_gap_recorded: gap_ids already
+  // emitted as `recorded` THIS run. Closes the resumed-run-stdout-replay edge
+  // where a brand-new gap's DETAIL_GAP message could be re-processed and emit a
+  // duplicate first-sighting event. In-memory per-run guard (same pattern as the
+  // attention-writer's open/byRequestId Maps) — no schema change on the hot spine
+  // append path. The cross-run re-defer suppression is the discovered_run_id gate.
+  const detailGapRecordedThisRun = new Set();
   const detailCoverageByStateStream = new Map();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
@@ -3284,33 +3291,55 @@ export async function runConnector(opts) {
             },
           });
           appendKnownGap(gap);
-          await emitSpineEventTracked({
-            event_type: 'run.detail_gap_recorded',
-            trace_id: traceContext.trace_id,
-            scenario_id: traceContext.scenario_id,
-            actor_type: 'runtime',
-            actor_id: connectorId,
-            object_type: 'run',
-            object_id: runId,
-            status: 'succeeded',
-            run_id: runId,
-            stream_id: msg.stream,
-            data: {
-              reference_only: true,
-              source: runSource,
-              grant_id: grantId,
-              gap_id: storedGap.gap_id,
-              stream: storedGap.stream,
-              parent_stream: storedGap.parent_stream,
-              record_key: storedGap.record_key,
-              reason: storedGap.reason,
-              status: storedGap.status,
-              detail_locator: storedGap.detail_locator,
-              list_cursor: storedGap.list_cursor,
-              last_error: storedGap.last_error,
-              known_gap: gap,
-            },
-          });
+          // Spine = append-only audit log of lifecycle TRANSITIONS, not a per-run
+          // re-observation breadcrumb (SLVP-ideal audit-logging design, >=95%
+          // red-teamed: see docs/research/slvp-ideal-audit-logging). Emit
+          // `run.detail_gap_recorded` exactly ONCE per gap identity — at first
+          // sighting — never when a later run merely re-defers an unchanged,
+          // already-pending gap. `discovered_run_id` is set only by the store's
+          // INSERT path and NEVER touched by either ON CONFLICT clause, so it
+          // equals THIS run iff this run first recorded the gap. Re-emitting an
+          // unchanged gap is dishonest-by-volume: the rows are indistinguishable
+          // (no attempt_count/discovered_run_id to tell "newly found" from
+          // "re-seen unchanged for the 7th time") and manufacture fake activity.
+          // The "worked across N runs" story lives in the durable row's monotonic
+          // attempt_count/last_run_id (Temporal/Kafka transition-vs-state split).
+          // durableDetailGaps.push + appendKnownGap + onProgress above stay
+          // OUTSIDE this gate — they feed the commit-coverage gate every run.
+          if (storedGap.discovered_run_id === runId && !detailGapRecordedThisRun.has(storedGap.gap_id)) {
+            detailGapRecordedThisRun.add(storedGap.gap_id);
+            await emitSpineEventTracked({
+              event_type: 'run.detail_gap_recorded',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'succeeded',
+              run_id: runId,
+              stream_id: msg.stream,
+              data: {
+                reference_only: true,
+                source: runSource,
+                grant_id: grantId,
+                gap_id: storedGap.gap_id,
+                stream: storedGap.stream,
+                parent_stream: storedGap.parent_stream,
+                record_key: storedGap.record_key,
+                reason: storedGap.reason,
+                status: storedGap.status,
+                // Self-describing first-sighting event: the discriminating fields
+                // an auditor needs so the single row is unambiguous.
+                attempt_count: storedGap.attempt_count,
+                discovered_run_id: storedGap.discovered_run_id,
+                detail_locator: storedGap.detail_locator,
+                list_cursor: storedGap.list_cursor,
+                last_error: storedGap.last_error,
+                known_gap: gap,
+              },
+            });
+          }
           onProgress({ ...msg, gap_id: storedGap.gap_id });
           break;
         }
