@@ -635,16 +635,20 @@
   border: 1px solid var(--border);
 }
 
-/* The health stat band carries an extra reassurance note cell. The Band
-   component owns the stat cells (pdpp-band); the note is a plain cell. */
-.rr-sync-health .rr-sync-health__note {
+/* The health band holds only real stats (a balanced 2-up of numbers). The
+   reassurance note reads as a caption BELOW the band — prose no longer crammed
+   into a stat slot, so the band keeps its number rhythm. */
+.rr-sync-health {
   display: flex;
-  align-items: center;
-  padding: 14px 18px;
-  border-left: 1px solid var(--border);
-  font-size: 0.72rem;
+  flex-direction: column;
+  gap: 8px;
+}
+.rr-sync-health__note {
+  margin: 0;
+  font-size: 0.74rem;
   line-height: 1.5;
   color: var(--muted-foreground);
+  max-width: 80ch;
 }
 .rr-sync-health .pdpp-band__cell.is-warn .pdpp-band__v { color: var(--warning); }
 
@@ -664,7 +668,19 @@
 .rr-fix__expl { font-size: 0.8rem; line-height: 1.55; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
 .rr-fix__meta { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted-foreground); margin: 0; }
 .rr-fix__act { align-self: center; display: flex; align-items: center; }
-.rr-fix__waiting { white-space: nowrap; }
+/* The `wait` branch has no button — the status is a quiet eyebrow anchored to
+   the top of the card (aligned with the title), not floating mid-card. */
+.rr-fix[data-cta="wait"] .rr-fix__act { align-self: start; }
+.rr-fix__waiting {
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  padding: 3px 8px;
+}
 
 /* Per-connection group. */
 .rr-sync-group { display: flex; flex-direction: column; gap: 8px; }
@@ -1593,23 +1609,68 @@
 
 /* ─── Empty state ─── */
 .rr-x-empty {
-  padding: 28px 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   align-items: flex-start;
+}
+.rr-x-empty__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
 }
 .rr-x-empty__line {
   font-size: 13px;
   color: var(--muted-foreground);
   max-width: 50ch;
   line-height: 1.55;
+  margin: 0;
+}
+/* A hairline preview of the three inspector sections — the column reads as an
+   intentional empty state that teaches what a selected record will show, not a
+   void. Mirrors the real inspector's label/value rhythm. */
+.rr-x-empty__preview {
+  margin: 2px 0 0;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-empty__preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-empty__preview-k {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-empty__preview-v {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: color-mix(in oklab, var(--muted-foreground) 80%, var(--foreground));
 }
 
 /* ─── Record inspector (right column) ─── */
 .rr-inspector {
   position: sticky;
   top: 8px;
+}
+/* The empty inspector is not sticky — it stands as a full panel at the top of
+   the column rather than a thin card floating over a void. */
+.rr-inspector--empty {
+  position: static;
+  background: color-mix(in oklab, var(--card) 60%, transparent);
 }
 .rr-x-foldnote {
   margin: 10px 0 0;
