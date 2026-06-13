@@ -1,5 +1,31 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   IMPORT ORDER MATTERS. CSS requires every @import to precede all other rules
+   (Lightning CSS / Tailwind v4 DROP any @import that follows a non-@import rule
+   such as @source). So ALL imports live here at the very top, and @source /
+   @custom-variant / @theme follow below.
+
+   Within the import block, @pdpp/brand comes first and the Ink Carbon token
+   layer comes LAST so its :root / dark redeclarations win the cascade over the
+   brand defaults (both brand/app.css and brand/docs.css redeclare :root tokens).
+   ──────────────────────────────────────────────────────────────────────────── */
 @import "@pdpp/brand/app.css";
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "@demodesk/neko/dist/neko.css";
+@import "@pdpp/brand/docs.css";
+/* ─── Ink Carbon token layer (imported LAST → wins) ──────────────────────────
+   Overrides the @pdpp/brand color/geometry/motion token VALUES with the Ink
+   Carbon palette. The @theme inline mapping below continues to resolve correctly
+   because the token NAMES are unchanged; only values shift.
+   See: src/components/ink-carbon/tokens.css for editing instructions. */
+@import "../components/ink-carbon/tokens.css";
+/* Ink Carbon component classes: .pdpp-sheet / .pdpp-carbon / .pdpp-table /
+   .pdpp-endorse etc. Used by the React components in src/components/ink-carbon/. */
+@import "../components/ink-carbon/components.css";
+
 /*
  * The operator console renders most of its surfaces from the @pdpp/operator-ui
  * package (overview hero, run/grant/trace lists, primitives), but Tailwind v4's
@@ -11,12 +37,6 @@
  * resolve relative to this CSS file.
  */
 @source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
-@import "fumadocs-ui/css/neutral.css";
-@import "fumadocs-ui/css/preset.css";
-@import "@demodesk/neko/dist/neko.css";
-@import "@pdpp/brand/docs.css";
 
 @custom-variant dark (&:where(.dark, .dark *, [data-theme=dark], [data-theme=dark] *));
 
@@ -76,8 +96,17 @@
   --color-warning-badge-foreground: var(--warning-badge-foreground);
   --color-danger-badge-foreground: var(--danger-badge-foreground);
   --color-human: var(--human);
+  --color-human-foreground: var(--human-foreground);
+  --color-human-tint: var(--human-tint);
   --color-human-wash: var(--human-wash);
+  --color-primary-tint: var(--primary-tint);
   --color-primary-wash: var(--primary-wash);
+  /* ─── Ink Carbon additional tokens ──────────────────────────────
+     --success-tint / --destructive-tint for tinted state backgrounds;
+     --carbon-* for the duplicate wrapper. */
+  --color-success-tint: var(--success-tint);
+  --color-warning-tint: var(--warning-tint);
+  --color-destructive-tint: var(--destructive-tint);
   --color-success-wash: var(--success-wash);
   --color-success-wash-strong: var(--success-wash-strong);
   --color-warning-wash: var(--warning-wash);

@@ -1,0 +1,102 @@
+<!doctype html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8" />
+<meta content="width=device-width, initial-scale=1" name="viewport" />
+<title>What Longview can see — PDPP</title>
+<link href="colors_and_type.css" rel="stylesheet" />
+<link href="ui_kits/web/kit.css" rel="stylesheet" />
+<link href="recordroom/watcher.css" rel="stylesheet" />
+<style> html, body { margin: 0; padding: 0; } </style>
+</head>
+<body>
+<button class="wp-theme" id="theme" type="button" title="Toggle theme">◐</button>
+<div class="wp">
+
+  <aside class="wp-who">
+    <button class="wp-back" type="button">← all watchers</button>
+    <div class="wp-mono-tile">LP</div>
+    <div>
+      <h1 class="wp-who__name">Longview Planning</h1>
+      <span class="wp-who__role">financial planner · you hired them</span>
+    </div>
+    <div class="wp-facts">
+      <div class="wp-fact"><span class="wp-fact__k">watching since</span><span class="wp-fact__v">Oct 2025</span></div>
+      <div class="wp-fact"><span class="wp-fact__k">access mode</span><span class="wp-fact__v">continuous</span></div>
+      <div class="wp-fact"><span class="wp-fact__k">grant</span><span class="wp-fact__v">grt_lngvw_01</span></div>
+      <div class="wp-fact"><span class="wp-fact__k">expires</span><span class="wp-fact__v">2026-12-14</span></div>
+    </div>
+    <div class="wp-who__spacer"></div>
+    <div class="wp-pulse">
+      <span class="wp-pulse__label">How often they look</span>
+      <div class="wp-spark">
+        <span class="wp-spark__bar" style="height: 30%;"></span>
+        <span class="wp-spark__bar" style="height: 55%;"></span>
+        <span class="wp-spark__bar" style="height: 40%;"></span>
+        <span class="wp-spark__bar" style="height: 70%;"></span>
+        <span class="wp-spark__bar" style="height: 45%;"></span>
+        <span class="wp-spark__bar" style="height: 85%;"></span>
+        <span class="wp-spark__bar" style="height: 60%;"></span>
+        <span class="wp-spark__bar is-now" style="height: 50%;"></span>
+      </div>
+      <span class="wp-pulse__note">14 reads this quarter · last looked at your pay 3 h ago</span>
+    </div>
+    <button class="wp-revoke" type="button">Stop sharing with Longview</button>
+  </aside>
+
+  <main class="wp-body">
+    <span class="wp-eyebrow">The picture they can paint</span>
+    <h2 class="wp-thesis">From two streams, Longview can assemble <em>this</em> about you.</h2>
+
+    <section class="wp-section">
+      <div class="wp-section__head">
+        <h3 class="wp-section__title">What Longview knows</h3>
+        <span class="wp-section__count">3 inferences · 2 streams</span>
+      </div>
+      <div class="wp-know">
+        <div class="wp-infer">
+          <span class="wp-infer__claim">You earn about <b>$5,210 gross</b>, $3,508 take-home, every month.</span>
+          <span class="wp-infer__from">pay_statements.read</span>
+          <span class="wp-infer__src">employer · period · gross_pay · net_pay</span>
+        </div>
+        <div class="wp-infer">
+          <span class="wp-infer__claim">You've worked at <b>Acme Co since April 2023</b> — about 3 years.</span>
+          <span class="wp-infer__from">employment.read</span>
+          <span class="wp-infer__src">employer · start_date · end_date</span>
+        </div>
+        <div class="wp-infer">
+          <span class="wp-infer__claim">Your income has been <b>steady for 14 months</b> — no gaps, no dips.</span>
+          <span class="wp-infer__from">derived · pay history</span>
+          <span class="wp-infer__src">a pattern across 14 statements, not a field you gave</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="wp-section wp-section--keep">
+      <div class="wp-section__head">
+        <h3 class="wp-section__title">What stays yours</h3>
+        <span class="wp-section__count">never crossed</span>
+      </div>
+      <div class="wp-keep">
+        <div class="wp-kept"><span class="wp-kept__what">What you spend it on</span><span class="wp-kept__why">transactions · never granted to Longview</span></div>
+        <div class="wp-kept"><span class="wp-kept__what">What you owe in taxes</span><span class="wp-kept__why">tax_docs · you declined this at consent</span></div>
+        <div class="wp-kept"><span class="wp-kept__what">Where your money is held</span><span class="wp-kept__why">bank_routing · projected out of every response</span></div>
+        <div class="wp-kept"><span class="wp-kept__what">What you listen to, where you go</span><span class="wp-kept__why">other streams · outside this purpose</span></div>
+      </div>
+      <p class="wp-keepline"><b>This is the product.</b> Longview hired a planner's view of your income — and got exactly that, nothing adjacent. The boundary isn't a promise in a privacy policy; the server enforces it on every read.</p>
+    </section>
+
+    <div class="wp-foot">
+      <span class="wp-copyline">Carbon — this portrait is your copy of the relationship</span>
+      <span class="wp-fact__v" style="font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground);">5 of 13 fields cross</span>
+    </div>
+  </main>
+</div>
+
+<script>
+  document.getElementById("theme").addEventListener("click", function () {
+    document.documentElement.classList.toggle("dark");
+  });
+</script>
+</body>
+</html>

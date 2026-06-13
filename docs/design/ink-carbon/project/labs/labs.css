@@ -1,0 +1,239 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   PDPP // LABS — Reimagined visual language
+   "The spec as a living document"
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+
+:root {
+  /* Typography */
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* The thermal axis — copper (human) to blue (protocol) as a real gradient */
+  --human: oklch(0.52 0.11 45);
+  --human-deep: oklch(0.38 0.09 40);
+  --human-wash: oklch(0.52 0.11 45 / 0.08);
+  --human-glow: oklch(0.68 0.14 45);
+
+  --protocol: oklch(0.58 0.18 253);
+  --protocol-deep: oklch(0.42 0.14 253);
+  --protocol-wash: oklch(0.58 0.18 253 / 0.08);
+  --protocol-glow: oklch(0.72 0.16 253);
+
+  /* The thermal gradient — human to protocol across temperature */
+  --thermal: linear-gradient(90deg, var(--human) 0%, oklch(0.55 0.1 180) 50%, var(--protocol) 100%);
+
+  /* Paper / ink — the ledger aesthetic */
+  --paper: oklch(0.985 0.005 85);
+  --paper-warm: oklch(0.98 0.008 75);
+  --ink: oklch(0.16 0.01 60);
+  --ink-soft: oklch(0.35 0.01 60);
+  --ink-faint: oklch(0.55 0.01 60);
+  --ink-whisper: oklch(0.72 0.01 60);
+  --rule: oklch(0.88 0.01 60);
+  --rule-deep: oklch(0.78 0.01 60);
+
+  /* Semantic — muted, printed-ink tones */
+  --live: oklch(0.55 0.13 145);
+  --waning: oklch(0.64 0.14 65);
+  --voided: oklch(0.5 0.16 25);
+  --teach: oklch(0.48 0.1 280);
+
+  /* Motion */
+  --ease-read: cubic-bezier(0.2, 0, 0, 1); /* @kind other */
+  --ease-settle: cubic-bezier(0.34, 1.2, 0.64, 1); /* @kind other */
+}
+
+/* Night view — not an inversion, a reading-at-2am mode */
+:root[data-view="night"] {
+  --paper: oklch(0.14 0.012 255);
+  --paper-warm: oklch(0.17 0.015 255);
+  --ink: oklch(0.94 0.008 85);
+  --ink-soft: oklch(0.78 0.008 85);
+  --ink-faint: oklch(0.58 0.008 85);
+  --ink-whisper: oklch(0.38 0.008 85);
+  --rule: oklch(0.26 0.012 255);
+  --rule-deep: oklch(0.34 0.012 255);
+
+  --human: oklch(0.72 0.12 45);
+  --human-wash: oklch(0.72 0.12 45 / 0.1);
+  --human-glow: oklch(0.82 0.15 45);
+  --protocol: oklch(0.74 0.16 253);
+  --protocol-wash: oklch(0.74 0.16 253 / 0.1);
+  --protocol-glow: oklch(0.85 0.18 253);
+  --live: oklch(0.72 0.15 145);
+}
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11";
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 15% 0%, var(--human-wash), transparent 45%),
+    radial-gradient(ellipse at 85% 10%, var(--protocol-wash), transparent 50%),
+    var(--paper);
+  min-height: 100vh;
+  transition: background 400ms var(--ease-read), color 200ms;
+}
+
+/* Scrollbar — like a page edge */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: var(--rule-deep); border-radius: 999px; }
+
+/* Selection — copper ink */
+::selection { background: var(--human-wash); color: var(--ink); }
+
+/* ═══ Type — serif display, sans body, mono machine ═══ */
+
+.t-display {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: clamp(48px, 7vw, 96px);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+  font-variation-settings: "opsz" 144;
+}
+
+.t-display em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--ink-soft);
+}
+
+.t-section {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: clamp(32px, 4vw, 52px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variation-settings: "opsz" 72;
+}
+
+.t-lede {
+  font-family: var(--font-serif);
+  font-weight: 300;
+  font-size: 22px;
+  line-height: 1.45;
+  font-variation-settings: "opsz" 36;
+  color: var(--ink-soft);
+}
+
+.t-body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+}
+
+.t-small {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-faint);
+}
+
+.t-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+
+/* Gutter annotations — like printed RFC margin notes */
+.gutter {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-feature-settings: "tnum";
+}
+
+/* A numeric mono for tabular figures */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "cv02";
+}
+
+/* ═══ Structural elements ═══ */
+
+.hair { height: 1px; background: var(--rule); }
+.hair-deep { height: 1px; background: var(--rule-deep); }
+
+/* The thermal rule — copper to blue, used for major section dividers */
+.hair-thermal { height: 1px; background: var(--thermal); opacity: 0.55; }
+
+/* Buttons — flat, inked, no shadows, press-feedback only */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 18px;
+  font-family: var(--font-sans); font-size: 14px; font-weight: 500;
+  border-radius: 2px; border: 1px solid transparent; cursor: pointer;
+  transition: all 150ms var(--ease-read);
+  letter-spacing: 0.01em;
+}
+.btn-ink { background: var(--ink); color: var(--paper); }
+.btn-ink:hover { background: var(--ink-soft); }
+.btn-ink:active { transform: translateY(1px); }
+.btn-paper { background: transparent; color: var(--ink); border-color: var(--rule-deep); }
+.btn-paper:hover { background: var(--paper-warm); border-color: var(--ink-faint); }
+.btn-ghost { background: transparent; color: var(--ink-soft); }
+.btn-ghost:hover { color: var(--ink); }
+
+/* Chips — the pill-in-prose */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px; border-radius: 2px;
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--paper-warm); color: var(--ink-soft);
+  border: 1px solid var(--rule);
+}
+.chip-human { color: var(--human); border-color: oklch(from var(--human) l c h / 0.25); background: var(--human-wash); }
+.chip-protocol { color: var(--protocol); border-color: oklch(from var(--protocol) l c h / 0.25); background: var(--protocol-wash); }
+.chip-live { color: var(--live); border-color: oklch(from var(--live) l c h / 0.3); background: oklch(from var(--live) l c h / 0.08); }
+
+/* ═══ Animations ═══ */
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.5; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes stream-flow {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes reveal-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glyph-cycle {
+  0%, 20% { opacity: 1; }
+  25%, 45% { opacity: 0; }
+  50%, 70% { opacity: 1; }
+  75%, 95% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

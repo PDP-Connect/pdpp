@@ -8,7 +8,10 @@ const PAGE_FILE = fileURLToPath(new URL("page.tsx", import.meta.url));
 const REDIRECT_IMPORT_RE = /import\s+\{\s*redirect\s*\}\s+from\s+["']next\/navigation["']/;
 const PEEK_REDIRECT_RE =
   /if\s*\(\s*params\.peek\s*\)\s*\{[\s\S]*redirect\(dashboardRoutes\.run\(params\.peek\)\);[\s\S]*\}/;
-const LIST_RUNS_RE = /\bresult\s*=\s*await\s+listRuns\(/;
+// The Syncs reskin fetches the runs feed inside a `Promise.all`, so the
+// invariant is "the first `listRuns(` call appears after the peek redirect",
+// not the old `result = await listRuns(` assignment shape.
+const LIST_RUNS_RE = /\blistRuns\(/;
 const RUN_TIMELINE_FETCH_RE = /\bgetRunTimeline\(/;
 
 test("run list peek query opens the full run detail route instead of inline details", async () => {

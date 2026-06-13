@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- @dsCard group="Brand" name="Glyphs, not icons" subtitle="The system draws no pictures — status is typed" viewport="700x200" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Glyphs</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px; background: var(--background); font-family: var(--font-sans); }
+.row { display: flex; gap: 26px; margin-bottom: 16px; }
+.g { display: flex; flex-direction: column; gap: 3px; align-items: center; }
+.glyph { font-family: var(--font-mono); font-size: 20px; line-height: 1; }
+.name { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); }
+.rule { font-size: 12.5px; color: var(--muted-foreground); max-width: 58ch; margin: 0; }
+.rule b { color: var(--foreground); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="row">
+  <div class="g"><span class="glyph">●</span><span class="name">active</span></div>
+  <div class="g"><span class="glyph">○</span><span class="name">pending</span></div>
+  <div class="g"><span class="glyph">◐</span><span class="name">expiring</span></div>
+  <div class="g"><span class="glyph">⊘</span><span class="name">revoked</span></div>
+  <div class="g"><span class="glyph">→</span><span class="name">crosses</span></div>
+  <div class="g"><span class="glyph">×</span><span class="name">declined</span></div>
+</div>
+<p class="rule"><b>The rule:</b> PDPP uses no pictographic icon set. Meaning is carried by words, glyphs from the typeface, and structure. If a label needs a picture to be understood, fix the label.</p>
+</body>
+</html>

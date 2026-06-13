@@ -1,0 +1,179 @@
+/* ═══════════════════════════════════════════════════════════════════
+   RECORDROOM — mobile layer.
+   ≤860px: the rack folds into a drawer; tables restack as two-line
+   records (same axis discipline, one column); the ceremony becomes a
+   bottom sheet. Desktop is untouched above this width.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Mobile-only chrome, hidden on desktop */
+.rr-head__brand, .rr-menu-btn { display: none; }
+.rr-head__brand {
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+/* ─── Nav drawer ─── */
+.rr-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 0.5);
+  z-index: 70;
+  animation: fade-in var(--duration-fast) var(--ease-enter) both;
+}
+.rr-drawer {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: min(300px, 84vw);
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border-strong);
+  padding: 18px 0 14px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-drawer { animation: rr-drawer-in var(--duration-base) var(--ease-enter) both; }
+}
+@keyframes rr-drawer-in {
+  from { transform: translateX(-14px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.rr-drawer__nav { display: flex; flex-direction: column; padding: 10px; gap: 2px; }
+.rr-drawer .rr-nav-item { padding: 12px 12px; font-size: 15px; }
+.rr-drawer .rr-side__group { padding: 16px 12px 5px; }
+.rr-drawer .rr-side__foot { margin-top: auto; }
+
+/* ─── ≤860px — the phone grammar ─── */
+@media (max-width: 860px) {
+  .rr-app { grid-template-columns: 1fr; height: 100dvh; }
+  .rr-side { display: none; }
+
+  /* No sideways worlds: anything wider than the phone wraps or hides */
+  .rr-content { overflow-x: hidden; }
+  .rr-content :is(.pdpp-sheet__serial, .rr-attn__meta, .pdpp-typed-sm) { white-space: normal; overflow-wrap: anywhere; }
+  .rr-hero__meta { white-space: normal; }
+
+  .rr-head { padding: 10px 16px; }
+  .rr-head__crumb { display: none; }
+  .rr-head__brand { display: flex; }
+  .rr-menu-btn { display: inline-flex; }
+  .rr-kbd { display: none; }
+
+  .rr-content { padding: 20px 16px 56px; }
+  .rr-page-head { flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 18px; }
+  .rr-page-head__s { white-space: normal; }
+
+  /* ── Tables restack: headers off, two-line records on the one axis ── */
+  .pdpp-table__hrow { display: none; }
+  .pdpp-table { border-top: 1px solid var(--border-strong); }
+
+  /* Grants: monogram · client+endorse / scopes */
+  .rr-cols-grants .pdpp-data-row {
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    gap: 3px 12px;
+    padding: 12px 0;
+  }
+  .rr-cols-grants .pdpp-data-row__detail { grid-column: 2 / -1; white-space: normal; }
+  .rr-cols-grants .pdpp-data-row__meta { display: none; }
+
+  /* Runs & Schedules: connector+status / result */
+  .rr-cols-runs .pdpp-data-row,
+  .rr-cols-schedules .pdpp-data-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 3px 12px;
+    padding: 12px 0;
+  }
+  .rr-cols-runs .pdpp-data-row__detail,
+  .rr-cols-schedules .pdpp-data-row__detail {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+  .rr-cols-runs .pdpp-data-row__meta { display: none; }
+  .rr-cols-schedules .pdpp-data-row__meta {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    text-align: left;
+  }
+
+  /* Traces: client+ruling / request+time */
+  .rr-trace-row { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 11px 0; }
+  .rr-trace-row__who { grid-row: 1; grid-column: 1; }
+  .rr-decide { grid-row: 1; grid-column: 2; text-align: right; }
+  .rr-trace-row__what { grid-row: 2; grid-column: 1; }
+  .rr-trace-row__t { grid-row: 2; grid-column: 2; text-align: right; }
+  .rr-trace-row__n { display: none; }
+
+  /* Feed: stream+time / record */
+  .rr-cols-feed .rr-feed-row { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 11px 0; }
+  .rr-feed-row__stream { grid-row: 1; grid-column: 1; }
+  .rr-feed-row__t { grid-row: 1; grid-column: 2; text-align: right; }
+  .rr-feed-row__body { grid-row: 2; grid-column: 1 / -1; white-space: normal; }
+  .rr-feed-row__id { display: none; }
+
+  /* Readiness checks: glyph · name / detail */
+  .rr-check { grid-template-columns: 20px minmax(0, 1fr); }
+  .rr-check__detail { grid-column: 2; }
+
+  /* Enforcement path: key above value, rail preserved */
+  .rr-step { grid-template-columns: 1fr; gap: 2px; }
+
+  /* Attention rows: side column folds under on narrow screens */
+  .rr-attn__row { grid-template-columns: minmax(0, 1fr); }
+  .rr-attn__side { grid-row: auto; grid-column: 1; flex-direction: row; align-items: center; justify-content: flex-start; }
+
+  /* kv rows: label above value */
+  .pdpp-kv__row { grid-template-columns: 1fr; gap: 1px; padding: 7px 0; }
+
+  /* ── Stat band: 2-up grid ── */
+  .pdpp-band { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+  .pdpp-band__cell { border-left: 0; }
+  .pdpp-band__cell:nth-child(even) { border-left: 1px solid var(--border); }
+  .pdpp-band__cell:nth-child(n+3) { border-top: 1px solid var(--border); }
+
+  /* ── Overview ── */
+  .rr-ov__grid { grid-template-columns: 1fr; gap: 24px; }
+  .rr-hero__sheet { flex-direction: column; align-items: stretch; gap: 14px; padding: 16px 18px; }
+  .rr-hero__sheet .pdpp-btn { align-self: flex-start; }
+  .rr-hero__title { font-size: 19px; }
+  .rr-hero__meta { white-space: normal; }
+
+  /* ── Sheets: heads wrap (stream lenses), inspector flows below ── */
+  .pdpp-sheet__head { flex-wrap: wrap; }
+  .rr-inspector { margin-top: 8px; }
+
+  /* ── The ceremony becomes a bottom sheet ── */
+  .rr-overlay { padding: 10px; align-items: flex-end; }
+  .rr-ceremony { width: 100%; }
+  .rr-ceremony .pdpp-sheet { max-height: 86dvh; overflow-y: auto; }
+  .rr-ceremony__kicker-row { flex-wrap: wrap; }
+  .rr-scope-decide { grid-template-columns: minmax(0, 1fr) auto; }
+  .rr-scope-decide__terms { grid-row: 2; grid-column: 1; }
+  .rr-scope-decide__desc { grid-row: 3; grid-column: 1; }
+  .rr-allow { grid-row: 1 / span 3; grid-column: 2; padding: 9px 13px; }
+  .rr-ceremony__foot { flex-wrap: wrap; gap: 10px; }
+
+  /* ── Palette ── */
+  .rr-palette-overlay { padding-top: 8dvh; }
+  .rr-palette { width: min(540px, 94vw); }
+
+  /* Incoming banner stacks like the hero */
+  .rr-incoming__sheet { flex-direction: column; align-items: stretch; gap: 10px; }
+  .rr-incoming__sheet .pdpp-btn--sm { align-self: flex-start; }
+  .rr-incoming__meta { white-space: normal; }
+
+  /* ── Touch targets ── */
+  .pdpp-btn--sm { padding: 9px 14px; }
+  .rr-lens { padding: 8px 12px; }
+  .rr-chrome-btn { padding: 8px 12px; }
+
+  /* ── Stream sheets: field chips wrap inside the box ── */
+  .rr-stream__fields { padding: 12px 16px 14px; }
+  .pdpp-sheet__head { padding: 13px 16px; }
+  .pdpp-sheet__body { padding: 14px 16px; }
+  .pdpp-sheet__foot { padding: 11px 16px; flex-wrap: wrap; }
+}

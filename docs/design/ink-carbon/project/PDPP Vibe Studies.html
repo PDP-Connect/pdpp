@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1" name="viewport" />
+  <title>PDPP — Vibe Studies (Round 2)</title>
+
+  <link href="reinvention/round2.css" rel="stylesheet" />
+  <link href="reinvention/round2-real.css" rel="stylesheet" />
+
+  <script crossorigin="anonymous" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin="anonymous" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script crossorigin="anonymous" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+
+  <script src="reinvention/design-canvas.jsx" type="text/babel"></script>
+  <script src="reinvention/boards-round2.jsx" type="text/babel"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const {
+      DesignCanvas, DCSection, DCArtboard,
+      VCarbon, VRibbon, VClarendon, VPunch, VCivic, VGreenbar,
+    } = window;
+
+    function App() {
+      return (
+        <DesignCanvas>
+          <DCSection
+            id="round2"
+            subtitle="Six personalities on A's temperament — paper, ink, typed data, official hardware. Rank them; mix and match welcome."
+            title="Round 2 — pick what you like"
+          >
+            <DCArtboard id="carbon" label="1 · Carbon Copy" width={520} height={565}>
+              <VCarbon />
+            </DCArtboard>
+            <DCArtboard id="ribbon" label="2 · Two-Color Ribbon" width={520} height={610}>
+              <VRibbon />
+            </DCArtboard>
+            <DCArtboard id="clarendon" label="3 · Clarendon Ledger" width={520} height={600}>
+              <VClarendon />
+            </DCArtboard>
+            <DCArtboard id="punch" label="4 · Punch Column" width={520} height={580}>
+              <VPunch />
+            </DCArtboard>
+            <DCArtboard id="civic" label="5 · Civic Bold" width={520} height={600}>
+              <VCivic />
+            </DCArtboard>
+            <DCArtboard id="greenbar" label="6 · Greenbar" width={520} height={600}>
+              <VGreenbar />
+            </DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

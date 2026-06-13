@@ -1,0 +1,210 @@
+/* ═══════════════════════════════════════════════════════════════════
+   DIRECTION C — "STRIP BAY"
+   Reference: air-traffic flight progress strips — the most battle-tested
+   paper UI ever designed. One strip per flight; fixed columns; color-coded
+   bays; a strip cocked sideways demands attention; revocation is
+   physically pulling the strip. Type is B612, the typeface commissioned
+   for Airbus cockpit displays.
+   Grammar:  grant/record = strip · feed = bay · expiring = cocked strip
+             revoked = pulled strip · amber = holder, blue = machine
+   ═══════════════════════════════════════════════════════════════════ */
+@import url('https://fonts.googleapis.com/css2?family=B612:ital,wght@0,400;0,700;1,400&family=B612+Mono:wght@400;700&display=swap');
+
+.str {
+  --str-rack: oklch(0.27 0.012 255);
+  --str-rack-deep: oklch(0.22 0.012 255);
+  --str-rail: oklch(0.38 0.015 255);
+  --str-strip: oklch(0.92 0.022 95);          /* buff paper strip */
+  --str-strip-blue: oklch(0.88 0.035 245);    /* machine strip */
+  --str-ink: oklch(0.25 0.015 255);
+  --str-faint: oklch(0.48 0.015 255);
+  --str-amber: oklch(0.74 0.13 75);           /* holder/consent */
+  --str-blue: oklch(0.62 0.11 245);           /* protocol/machine */
+  --str-red: oklch(0.58 0.18 28);             /* time-critical */
+  --str-light: oklch(0.88 0.015 95);          /* text on rack */
+  --str-dim: oklch(0.60 0.015 255);           /* faint text on rack */
+  --str-sans: "B612", system-ui, sans-serif;
+  --str-mono: "B612 Mono", ui-monospace, monospace;
+
+  background: var(--str-rack);
+  color: var(--str-light);
+  font-family: var(--str-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 40px 44px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+.str * { box-sizing: border-box; }
+
+/* ─── Designator lockup ─── */
+.str-lockup { display: flex; align-items: stretch; width: max-content; }
+.str-lockup__band { width: 10px; background: var(--str-amber); }
+.str-lockup__body {
+  background: var(--str-strip);
+  color: var(--str-ink);
+  padding: 10px 18px 9px;
+  display: flex; flex-direction: column; gap: 0;
+}
+.str-lockup__name {
+  font-family: var(--str-mono);
+  font-size: 26px; font-weight: 700; letter-spacing: 0.12em;
+  line-height: 1.15;
+  margin: 0;
+}
+.str-lockup__sub {
+  font-family: var(--str-mono);
+  font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--str-faint);
+}
+
+/* ─── Display statement ─── */
+.str-statement {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.16;
+  letter-spacing: -0.01em;
+  margin: 0;
+  max-width: 20ch;
+  text-wrap: balance;
+}
+.str-statement .a { color: var(--str-amber); }
+.str-body { font-size: 14px; max-width: 56ch; margin: 0; color: var(--str-dim); }
+.str-body b { color: var(--str-light); font-weight: 700; }
+
+/* ─── Section caption ─── */
+.str-cap {
+  display: flex; align-items: baseline; gap: 12px;
+  border-top: 1px solid var(--str-rail);
+  padding-top: 9px;
+}
+.str-cap__name {
+  font-family: var(--str-mono);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+  margin: 0;
+}
+.str-cap__sub { font-family: var(--str-mono); font-size: 10.5px; color: var(--str-dim); white-space: nowrap; }
+
+/* ─── Palette ─── */
+.str-palette { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+.str-swatch { display: flex; flex-direction: column; gap: 7px; }
+.str-swatch__chip { height: 52px; }
+.str-swatch__name { font-family: var(--str-mono); font-size: 10px; color: var(--str-dim); }
+
+/* ─── Strip anatomy & strips ─── */
+.str-bay { display: flex; flex-direction: column; gap: 5px; }
+.str-bay__rail {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 14px;
+  padding: 4px 2px 6px;
+}
+.str-bay__sector { font-family: var(--str-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--str-dim); }
+.str-bay__count { font-family: var(--str-mono); font-size: 11px; color: var(--str-dim); }
+
+.str-strip {
+  display: grid;
+  grid-template-columns: 9px 130px 1fr auto 120px;
+  align-items: stretch;
+  background: var(--str-strip);
+  color: var(--str-ink);
+  min-height: 58px;
+  box-shadow: 0 1px 0 var(--str-rack-deep);
+}
+.str-strip--blue { background: var(--str-strip-blue); }
+.str-strip--cocked { transform: translateX(16px); }
+.str-strip__band { background: var(--str-blue); }
+.str-strip__band.is-amber { background: var(--str-amber); }
+.str-strip__band.is-red { background: var(--str-red); }
+.str-strip__cell {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  padding: 7px 12px;
+  border-left: 1px solid oklch(0.25 0.015 255 / 0.25);
+}
+.str-strip__cell:nth-child(2) { border-left: 0; }
+.str-strip__cell--time { align-items: flex-end; text-align: right; }
+.str-strip__designator { font-family: var(--str-mono); font-size: 15px; font-weight: 700; letter-spacing: 0.04em; }
+.str-strip__type { font-family: var(--str-mono); font-size: 9.5px; color: var(--str-faint); letter-spacing: 0.08em; text-transform: uppercase; }
+.str-strip__main { font-size: 14px; font-weight: 700; line-height: 1.3; }
+.str-strip__sub { font-family: var(--str-mono); font-size: 10.5px; color: var(--str-faint); }
+.str-strip__terms { font-family: var(--str-mono); font-size: 10.5px; color: var(--str-faint); display: flex; flex-direction: column; justify-content: center; gap: 2px; text-align: right; }
+.str-strip__clock { font-family: var(--str-mono); font-size: 15px; font-weight: 700; }
+.str-strip__clock.is-red { color: var(--str-red); }
+.str-strip__date { font-family: var(--str-mono); font-size: 9.5px; color: var(--str-faint); }
+
+/* Pulled (revoked) strip */
+.str-pulled { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.str-pulled .str-strip {
+  transform: rotate(-1.2deg);
+  width: 100%;
+  opacity: 0.85;
+}
+.str-pulled .str-strip__designator,
+.str-pulled .str-strip__main { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.str-pulled__caption { font-family: var(--str-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--str-dim); padding-left: 2px; }
+
+/* Bay separator */
+.str-bay__gap {
+  height: 10px;
+  border-bottom: 1px dashed var(--str-rail);
+  margin-bottom: 5px;
+}
+
+/* ─── Anatomy callouts (identity board) ─── */
+.str-anatomy { display: flex; flex-direction: column; gap: 8px; }
+.str-anatomy__labels {
+  display: grid;
+  grid-template-columns: 9px 130px 1fr auto 120px;
+  gap: 0;
+}
+.str-anatomy__label {
+  font-family: var(--str-mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--str-dim);
+  padding: 0 12px 2px;
+  border-left: 1px solid var(--str-rail);
+}
+.str-anatomy__label:first-child { border-left: 0; padding: 0; }
+
+/* ─── Status chips ─── */
+.str-tags { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.str-tag {
+  font-family: var(--str-mono);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 10px;
+  background: var(--str-strip); color: var(--str-ink);
+  display: inline-flex; align-items: center; gap: 7px;
+  white-space: nowrap;
+}
+.str-tag__dot { width: 7px; height: 7px; border-radius: 0; }
+.str-tag--active .str-tag__dot { background: var(--str-amber); }
+.str-tag--cont .str-tag__dot { background: var(--str-blue); }
+.str-tag--exp { color: var(--str-red); }
+.str-tag--exp .str-tag__dot { background: var(--str-red); }
+.str-tag--pulled { background: transparent; color: var(--str-dim); box-shadow: inset 0 0 0 1px var(--str-rail); }
+.str-tag--pulled .str-tag__dot { background: var(--str-dim); }
+
+/* ─── Buttons ─── */
+.str-actions { display: flex; gap: 12px; align-items: center; }
+.str-btn {
+  font-family: var(--str-mono);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  background: var(--str-strip); color: var(--str-ink);
+  border: 0;
+  padding: 10px 18px;
+  cursor: pointer;
+  box-shadow: 0 1.5px 0 var(--str-rack-deep);
+  white-space: nowrap;
+}
+.str-btn--ghost { background: transparent; color: var(--str-light); box-shadow: inset 0 0 0 1px var(--str-rail); }
+.str-btn--pull { background: transparent; color: var(--str-red); box-shadow: inset 0 0 0 1.5px var(--str-red); }
+
+/* ─── Type ramp ─── */
+.str-ramp { display: flex; flex-direction: column; }
+.str-ramp__row {
+  display: grid; grid-template-columns: 150px 1fr; gap: 18px; align-items: baseline;
+  padding: 8px 0; border-bottom: 1px solid var(--str-rail);
+}
+.str-ramp__row:last-child { border-bottom: 0; }
+.str-ramp__tag { font-family: var(--str-mono); font-size: 10px; color: var(--str-dim); }
+
+.str-note { font-family: var(--str-mono); font-size: 10.5px; color: var(--str-dim); margin: 0; }

@@ -111,6 +111,131 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
+// ─── Fan-in failure classification ────────────────────────────────
+//
+// A per-stream read can fail for two very different reasons:
+//
+//   • EXPECTED-PERMANENT — the connection is revoked/inactive, the grant
+//     doesn't cover the stream, or the stream was dropped from the manifest
+//     (404). A revoked connection simply has no live records to read; this is
+//     a normal steady state, not an error the owner must act on. These are
+//     summarized into ONE humane "partial view" warning — never spilled as
+//     raw RS envelopes into the reading room.
+//
+//   • UNEXPECTED — a real server fault (5xx) or anything we can't recognize.
+//     These keep a terse diagnostic so a genuine outage stays visible, but
+//     still never dump the raw JSON envelope.
+//
+// Classification is duck-typed off the error MESSAGE so this package stays
+// decoupled from the console's ResourceServerHttpError class. The live RS
+// error message embeds the JSON envelope (`{"error":{"code":...}}`) plus an
+// HTTP status (`failed (4xx)`), which is the honest signal we match on.
+
+export interface FanInFailure {
+  connectionName: string;
+  /** True for revoked/inactive/not-granted/manifest-dropped reads. */
+  expected: boolean;
+  /** Short, owner-safe reason ("revoked", "no longer granted", …). */
+  reason: string;
+  stream: string;
+}
+
+const ENVELOPE_CODE_RE = /"code"\s*:\s*"([^"]+)"/;
+const HTTP_STATUS_RE = /failed \((\d{3})\)/;
+
+/** Parse an `error.code` out of an embedded RS JSON envelope, if present. */
+function envelopeErrorCode(message: string): string | null {
+  const match = message.match(ENVELOPE_CODE_RE);
+  return match?.[1] ?? null;
+}
+
+/** Parse the HTTP status out of a `… failed (404): …` message, if present. */
+function httpStatusFromMessage(message: string): number | null {
+  const match = message.match(HTTP_STATUS_RE);
+  return match?.[1] ? Number.parseInt(match[1], 10) : null;
+}
+
+const EXPECTED_PERMANENT_CODES = new Set([
+  "connector_instance_inactive",
+  "connection_revoked",
+  "grant_not_found",
+  "stream_not_granted",
+  "not_granted",
+  "stream_not_found",
+]);
+
+/**
+ * Classify a per-stream read failure as expected-permanent (revoked / inactive
+ * / not-granted / manifest-dropped) vs unexpected, and derive an owner-safe
+ * reason. Never returns the raw envelope.
+ */
+export function classifyFanInFailure(err: unknown): { expected: boolean; reason: string } {
+  const message = describeError(err);
+  const code = envelopeErrorCode(message);
+  const status = httpStatusFromMessage(message);
+  const lower = message.toLowerCase();
+
+  if (code === "connector_instance_inactive" || lower.includes("not active") || lower.includes("is 'revoked'")) {
+    return { expected: true, reason: "revoked or inactive" };
+  }
+  if (code === "stream_not_found" || (status === 404 && !code)) {
+    return { expected: true, reason: "no longer available" };
+  }
+  if (
+    (code && EXPECTED_PERMANENT_CODES.has(code)) ||
+    status === 403 ||
+    lower.includes("not granted") ||
+    lower.includes("forbidden")
+  ) {
+    return { expected: true, reason: "not granted" };
+  }
+  // Unexpected: keep a terse, envelope-free diagnostic.
+  let codePart = "read failed";
+  if (code) {
+    codePart = code;
+  } else if (status) {
+    codePart = `HTTP ${status}`;
+  }
+  return { expected: false, reason: codePart };
+}
+
+/**
+ * Fold per-stream fan-in failures into at most two warnings — one humane
+ * "partial view" summary for expected-permanent failures (revoked/inactive/
+ * not-granted) and one terse diagnostic for unexpected faults — instead of one
+ * raw-envelope row per failed stream. Stable, deduped `partial_fan_in` codes
+ * keep the renderer free of duplicate React keys.
+ */
+export function summarizeFanInFailures(failures: readonly FanInFailure[]): ExplorerWarning[] {
+  if (failures.length === 0) {
+    return [];
+  }
+  const warnings: ExplorerWarning[] = [];
+  const expected = failures.filter((f) => f.expected);
+  const unexpected = failures.filter((f) => !f.expected);
+
+  if (expected.length > 0) {
+    const connections = uniqueStrings(expected.map((f) => f.connectionName));
+    const streamWord = expected.length === 1 ? "stream" : "streams";
+    const connWord = connections.length === 1 ? "source" : "sources";
+    warnings.push({
+      code: "partial_fan_in",
+      message: `Partial view — ${expected.length} ${streamWord} from ${connections.length} revoked or inactive ${connWord} can't be read (${connections.join(", ")}). Manage them in Sources.`,
+    });
+  }
+
+  if (unexpected.length > 0) {
+    const connections = uniqueStrings(unexpected.map((f) => f.connectionName));
+    const streamWord = unexpected.length === 1 ? "stream" : "streams";
+    warnings.push({
+      code: "partial_fan_in_error",
+      message: `Partial view — ${unexpected.length} ${streamWord} from ${connections.join(", ")} didn't answer (${uniqueStrings(unexpected.map((f) => f.reason)).join(", ")}).`,
+    });
+  }
+
+  return warnings;
+}
+
 function parseRecordTimestamp(raw: unknown): number | null {
   if (raw === null || raw === undefined) {
     return null;
@@ -279,7 +404,7 @@ async function loadEmptyQueryFeed(
         exactWindow: RecordsWindowMeta | null;
         warning: ExplorerWarning | null;
       }
-    | { ok: false; failure: ExplorerWarning };
+    | { ok: false; failure: FanInFailure };
 
   const fetches: Promise<StreamFetchResult>[] = [];
   for (const summary of connections) {
@@ -330,15 +455,18 @@ async function loadEmptyQueryFeed(
             exactWindow: exactWindowFromPage(page),
             warning,
           };
-        })().catch(
-          (err): StreamFetchResult => ({
+        })().catch((err): StreamFetchResult => {
+          const { expected, reason } = classifyFanInFailure(err);
+          return {
             ok: false,
             failure: {
-              code: "partial_fan_in",
-              message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
+              connectionName: connectorSummaryDisplayName(summary),
+              expected,
+              reason,
+              stream: streamName,
             },
-          })
-        )
+          };
+        })
       );
     }
   }
@@ -347,6 +475,7 @@ async function loadEmptyQueryFeed(
   const flat: ExplorerFeedEntry[] = [];
   const exactWindows: RecordsWindowMeta[] = [];
   const warnings: ExplorerWarning[] = [];
+  const failures: FanInFailure[] = [];
   let okCount = 0;
   for (const r of results) {
     if (r.ok) {
@@ -359,9 +488,10 @@ async function loadEmptyQueryFeed(
         warnings.push(r.warning);
       }
     } else {
-      warnings.push(r.failure);
+      failures.push(r.failure);
     }
   }
+  warnings.push(...summarizeFanInFailures(failures));
   flat.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
   const truncated = flat.length > FEED_TOTAL_CAP;
   return {
@@ -458,7 +588,7 @@ async function loadTimeRangeFeed(
         exactWindow: RecordsWindowMeta | null;
         warning: ExplorerWarning | null;
       }
-    | { ok: false; failure: ExplorerWarning };
+    | { ok: false; failure: FanInFailure };
   const fetches: Promise<StreamFetchResult>[] = [];
 
   for (const summary of filteredSummaries) {
@@ -500,15 +630,18 @@ async function loadTimeRangeFeed(
             exactWindow: exactWindowFromPage(page),
             warning,
           };
-        })().catch(
-          (err): StreamFetchResult => ({
+        })().catch((err): StreamFetchResult => {
+          const { expected, reason } = classifyFanInFailure(err);
+          return {
             ok: false,
             failure: {
-              code: "partial_fan_in",
-              message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
+              connectionName: connectorSummaryDisplayName(summary),
+              expected,
+              reason,
+              stream: streamName,
             },
-          })
-        )
+          };
+        })
       );
     }
   }
@@ -517,6 +650,7 @@ async function loadTimeRangeFeed(
   const entries: ExplorerFeedEntry[] = [];
   const exactWindows: RecordsWindowMeta[] = [];
   const warnings: ExplorerWarning[] = [];
+  const failures: FanInFailure[] = [];
   let okCount = 0;
   for (const result of results) {
     if (result.ok) {
@@ -529,9 +663,10 @@ async function loadTimeRangeFeed(
         warnings.push(result.warning);
       }
     } else {
-      warnings.push(result.failure);
+      failures.push(result.failure);
     }
   }
+  warnings.push(...summarizeFanInFailures(failures));
   entries.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
   const truncated = entries.length > TIME_RANGE_TOTAL_CAP;
   return {
@@ -714,6 +849,14 @@ interface ManifestMetadata {
   declaredFieldTypes: Map<string, DeclaredFieldTypes>;
   /** Field names from manifest schema.properties, keyed by connector::stream. */
   manifestFieldNames: Map<string, readonly string[]>;
+  /**
+   * Declared exact-filterable scalar field names per connector::stream — the
+   * fields a `field:value` operator may push to the server as `filter[field]=`.
+   * A field qualifies when it is declared in the manifest schema and its
+   * declared presentation type is a scalar/exact type (not a blob or a nested
+   * object/array), mirroring how the records list page filters declared fields.
+   */
+  serverFilterableFields: Map<string, Set<string>>;
   timestampMetadata: Map<string, SearchTimestampMetadata>;
 }
 
@@ -789,28 +932,101 @@ function extractDeclaredFieldTypes(stream: ManifestStream): DeclaredFieldTypes |
   return Object.keys(out).length > 0 ? out : null;
 }
 
-async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<ManifestMetadata> {
-  const timestampMetadata = new Map<string, SearchTimestampMetadata>();
-  const manifestFieldNames = new Map<string, readonly string[]>();
-  const declaredFieldTypes = new Map<string, DeclaredFieldTypes>();
-  for (const manifest of await dataSource.listConnectorManifests()) {
-    for (const stream of (manifest.streams ?? []) as ManifestStream[]) {
-      const key = searchTimestampMetadataKey(manifest.connector_id, stream.name);
-      timestampMetadata.set(key, {
-        consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
-        cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
-      });
-      const props = stream.schema?.properties;
-      if (props && typeof props === "object") {
-        manifestFieldNames.set(key, Object.keys(props));
+// Declared presentation types that are NOT server exact-filterable scalars: a
+// blob is a binary affordance and nested object/array shapes are not top-level
+// scalar filter keys.
+const NON_FILTERABLE_DECLARED_TYPES = new Set(["blob", "object", "array", "json"]);
+
+/**
+ * The declared scalar field names a `field:value` operator may push to the
+ * server as `filter[field]=`. A field qualifies when it is declared in the
+ * manifest schema and (if it carries a declared presentation type) that type is
+ * a scalar/exact type — never a blob or a nested object/array.
+ */
+function serverFilterableFieldsForStream(
+  fieldNames: readonly string[] | undefined,
+  declaredTypes: DeclaredFieldTypes | undefined
+): Set<string> {
+  const out = new Set<string>();
+  for (const name of fieldNames ?? []) {
+    const declaredType = declaredTypes?.[name]?.toLowerCase();
+    if (declaredType && NON_FILTERABLE_DECLARED_TYPES.has(declaredType)) {
+      continue;
+    }
+    out.add(name);
+  }
+  return out;
+}
+
+/**
+ * Union the declared exact-filterable field names across the in-scope feed
+ * streams (filtered connections × selected streams). Extracted from
+ * `assembleExplorerData` to keep that function within its complexity budget.
+ */
+function unionServerFilterableFields(
+  filteredSummaries: readonly RefConnectorSummary[],
+  filterStreamSet: ReadonlySet<string>,
+  serverFilterableFields: ReadonlyMap<string, Set<string>>
+): Set<string> {
+  const union = new Set<string>();
+  for (const summary of filteredSummaries) {
+    for (const streamName of summary.streams ?? []) {
+      if (filterStreamSet.size > 0 && !filterStreamSet.has(streamName)) {
+        continue;
       }
-      const declared = extractDeclaredFieldTypes(stream);
-      if (declared) {
-        declaredFieldTypes.set(key, declared);
+      const key = searchTimestampMetadataKey(summary.connector_id, streamName);
+      for (const field of serverFilterableFields.get(key) ?? []) {
+        union.add(field);
       }
     }
   }
-  return { timestampMetadata, manifestFieldNames, declaredFieldTypes };
+  return union;
+}
+
+/** Build the per-stream metadata for one manifest stream, mutating the maps. */
+function indexManifestStream(
+  connectorId: string,
+  stream: ManifestStream,
+  maps: {
+    declaredFieldTypes: Map<string, DeclaredFieldTypes>;
+    manifestFieldNames: Map<string, readonly string[]>;
+    serverFilterableFields: Map<string, Set<string>>;
+    timestampMetadata: Map<string, SearchTimestampMetadata>;
+  }
+): void {
+  const key = searchTimestampMetadataKey(connectorId, stream.name);
+  maps.timestampMetadata.set(key, {
+    consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
+    cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
+  });
+  const props = stream.schema?.properties;
+  const fieldNames = props && typeof props === "object" ? Object.keys(props) : undefined;
+  if (fieldNames) {
+    maps.manifestFieldNames.set(key, fieldNames);
+  }
+  const declared = extractDeclaredFieldTypes(stream);
+  if (declared) {
+    maps.declaredFieldTypes.set(key, declared);
+  }
+  const filterable = serverFilterableFieldsForStream(fieldNames, declared ?? undefined);
+  if (filterable.size > 0) {
+    maps.serverFilterableFields.set(key, filterable);
+  }
+}
+
+async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<ManifestMetadata> {
+  const maps = {
+    timestampMetadata: new Map<string, SearchTimestampMetadata>(),
+    manifestFieldNames: new Map<string, readonly string[]>(),
+    declaredFieldTypes: new Map<string, DeclaredFieldTypes>(),
+    serverFilterableFields: new Map<string, Set<string>>(),
+  };
+  for (const manifest of await dataSource.listConnectorManifests()) {
+    for (const stream of (manifest.streams ?? []) as ManifestStream[]) {
+      indexManifestStream(manifest.connector_id, stream, maps);
+    }
+  }
+  return maps;
 }
 
 function resolvePeekConnection(
@@ -941,7 +1157,16 @@ export async function assembleExplorerData(
     filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
 
   const filterStreamSet = new Set(selectedStreams);
-  const { timestampMetadata, manifestFieldNames, declaredFieldTypes } = await buildManifestMetadata(dataSource);
+  const { timestampMetadata, manifestFieldNames, declaredFieldTypes, serverFilterableFields } =
+    await buildManifestMetadata(dataSource);
+
+  // Union the declared exact-filterable field names across the in-scope feed
+  // streams. Search mode loads no per-stream metadata into this set (search hits
+  // carry no stream capabilities), so a search-driven feed honestly reports an
+  // empty set and every `field:value` stays client-side.
+  const filterableFieldUnion = query
+    ? new Set<string>()
+    : unionServerFilterableFields(filteredSummaries, filterStreamSet, serverFilterableFields);
 
   const { feed: feedResult, lens } = await dispatchFeed({
     query,
@@ -972,6 +1197,7 @@ export async function assembleExplorerData(
     connections,
     selectedConnectionIds,
     selectedStreams,
+    serverFilterableFields: [...filterableFieldUnion].sort(),
     since,
     until,
     lens,

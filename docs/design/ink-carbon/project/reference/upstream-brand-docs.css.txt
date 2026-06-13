@@ -1,0 +1,397 @@
+@import "./base.css";
+
+:root {
+  /* Max docs layout width. Large value disables the side-margin cap
+     so the sidebar flushes to the viewport edge, matching /design.
+     TOC right-edge breathing room is handled via padding on the TOC
+     container directly (see below) instead of side-margin columns. */
+  --fd-layout-width: 200rem;
+}
+
+#nd-docs-layout {
+  background: transparent;
+  /* Docs grid sits under the site header (h-12 = 3rem, matching / and /design).
+     --fd-banner-height feeds into Fumadocs's --fd-docs-row-1 which controls
+     sticky offsets for sidebar, TOC, and mobile popover. Setting it here
+     guarantees sticky elements park below the site header, not under it.
+     --fd-docs-height shrinks the grid so sticky panes use the remaining
+     viewport height. */
+  --fd-banner-height: 3rem;
+  --fd-docs-height: calc(100dvh - 3rem);
+}
+
+@media (min-width: 1024px) {
+  #nd-docs-layout {
+    --fd-sidebar-width: var(--pdpp-sidebar-width);
+  }
+}
+
+/* TOC is hidden until 1440 — delay Fumadocs's xl (1280) TOC threshold. */
+@media (min-width: 1280px) and (max-width: 1439.98px) {
+  #nd-docs-layout {
+    --fd-toc-width: 0px;
+  }
+  #nd-docs-layout aside[class*="[grid-area:toc]"] {
+    display: none;
+  }
+}
+
+@media (min-width: 1440px) {
+  #nd-docs-layout {
+    /* TOC width includes its right-edge breathing room so the active
+       nav items don't touch the viewport edge. Fumadocs's internal
+       padding inside the TOC is pe-4 (16px); we pair that with an
+       outer right margin via extra grid column width. */
+    --fd-toc-width: 18rem;
+  }
+
+  /* Push the TOC content inward from the grid column edge so the
+     active indicator line and labels have breathing room from the
+     viewport edge. */
+  #nd-docs-layout aside[class*="[grid-area:toc]"] {
+    padding-right: 2.5rem;
+  }
+}
+
+#nd-subnav {
+  height: 3rem;
+  background: color-mix(in oklab, var(--background) 92%, var(--surface-tint) / 78%);
+  border-bottom-color: var(--border);
+  backdrop-filter: blur(10px);
+}
+
+@media (min-width: 768px) {
+  #nd-subnav button[aria-label='Open Sidebar'] {
+    display: none;
+  }
+
+  #nd-sidebar button[aria-label='Open Sidebar'] {
+    display: none;
+  }
+}
+
+.pdpp-docs-navtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.pdpp-docs-navtitle__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.25rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pdpp-docs-navtitle__brand {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.pdpp-docs-navtitle__slash {
+  color: color-mix(in oklab, var(--muted-foreground) 58%, transparent);
+}
+
+.pdpp-docs-navtitle__label,
+.pdpp-docs-version {
+  color: var(--muted-foreground);
+}
+
+.pdpp-docs-version {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+#nd-sidebar {
+  background:
+    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%),
+    color-mix(in oklab, var(--background) 97%, var(--surface-tint));
+  border-right-color: var(--border);
+  box-shadow: none;
+}
+
+#nd-sidebar [data-sidebar-placeholder] {
+  top: 0;
+}
+
+#nd-sidebar .fd-scroll-container {
+  scrollbar-width: thin;
+}
+
+#nd-sidebar a,
+#nd-sidebar button,
+#nd-sidebar summary,
+#nd-sidebar [role='button'] {
+  border-radius: 0.5rem;
+}
+
+#nd-sidebar a[data-active='true'],
+#nd-sidebar button[data-active='true'] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+#nd-sidebar [data-active='true']::before {
+  background: var(--human);
+}
+
+#nd-sidebar .text-fd-muted-foreground {
+  color: var(--muted-foreground);
+}
+
+#nd-sidebar [data-radix-collection-item],
+#nd-sidebar .group {
+  font-size: 0.8125rem;
+}
+
+#nd-sidebar [class*='mb-1 px-2 mt-6'] {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+#nd-page.pdpp-docs-page {
+  --pdpp-docs-gutter: 1rem;
+  gap: 0;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  padding-top: 1.25rem;
+}
+
+@media (min-width: 768px) {
+  #nd-page.pdpp-docs-page {
+    --pdpp-docs-gutter: 1.5rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  #nd-page.pdpp-docs-page {
+    --pdpp-docs-gutter: 2rem;
+    padding-top: 0;
+  }
+}
+
+.pdpp-docs-hero {
+  margin-bottom: 2.75rem;
+  margin-inline: calc(var(--pdpp-docs-gutter) * -1);
+  border-left: 1px solid var(--human);
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(to right, var(--human-wash), transparent 70%);
+}
+
+.pdpp-docs-hero__content {
+  padding: 1.5rem var(--pdpp-docs-gutter) 1.4rem;
+}
+
+@media (min-width: 768px) {
+  .pdpp-docs-hero {
+    margin-bottom: 3.5rem;
+  }
+
+  .pdpp-docs-hero__content {
+    padding-top: 2.25rem;
+    padding-bottom: 2rem;
+  }
+}
+
+/* Hero title uses the canonical .pdpp-display class from base.css.
+   Only hero-specific spacing lives here. */
+.pdpp-docs-title {
+  margin-top: 0.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.pdpp-docs-description {
+  max-width: 56ch;
+  margin-bottom: 0;
+  font-size: clamp(0.96rem, 1.8vw, 1.05rem);
+  line-height: 1.7;
+  color: var(--muted-foreground);
+}
+
+.pdpp-docs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+}
+
+.pdpp-docs-actions a,
+.pdpp-docs-actions button {
+  border-radius: 999px;
+}
+
+.pdpp-docs-body {
+  max-width: 54rem;
+}
+
+.pdpp-docs-body.prose {
+  color: color-mix(in oklab, var(--foreground) 84%, var(--surface-tint));
+  font-size: 1rem;
+  line-height: 1.8;
+}
+
+.pdpp-docs-body :where(h2, h3, h4) {
+  color: var(--foreground);
+  letter-spacing: -0.04em;
+}
+
+.pdpp-docs-body h2 {
+  margin-top: 3.25rem;
+  margin-bottom: 1rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+  font-size: clamp(1.45rem, 2vw, 1.82rem);
+  line-height: 1.08;
+}
+
+/* First heading in a doc has no prior section to separate from.
+   Reset the divider + top spacing that h2 inherits from the section rule. */
+.pdpp-docs-body > h2:first-child,
+.pdpp-docs-body > :first-child h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.pdpp-docs-body h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.12rem;
+  line-height: 1.2;
+}
+
+.pdpp-docs-body p,
+.pdpp-docs-body li {
+  color: color-mix(in oklab, var(--foreground) 82%, var(--surface-tint));
+}
+
+.pdpp-docs-body a {
+  color: var(--primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.pdpp-docs-body blockquote {
+  margin: 1.75rem 0;
+  padding: 1rem 1.1rem;
+  border-left: 2px solid var(--human);
+  background: color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint));
+  color: var(--foreground);
+}
+
+.pdpp-docs-body :not(pre) > code {
+  padding: 0.18rem 0.42rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted) 84%, var(--surface-tint));
+  font-size: 0.9em;
+}
+
+/* Code blocks: style ONLY the outer Shiki figure container.
+   Fumadocs renders <figure class="shiki">…<pre>…</pre></figure>; styling
+   both creates a double border. Inner pre is transparent. */
+.pdpp-docs-body figure.shiki {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--muted) !important;
+  color: var(--muted-foreground) !important;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
+}
+
+.pdpp-docs-body figure.shiki pre,
+.pdpp-docs-body figure.shiki code,
+.pdpp-docs-body figure.shiki span {
+  background: transparent !important;
+  color: inherit !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.pdpp-docs-body pre code {
+  color: inherit;
+}
+
+.pdpp-docs-body table {
+  width: 100%;
+  margin: 1.75rem 0;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+.pdpp-docs-body thead {
+  background: color-mix(in oklab, var(--muted) 92%, var(--surface-tint));
+}
+
+.pdpp-docs-body tbody,
+.pdpp-docs-body tr,
+.pdpp-docs-body td {
+  background: var(--background);
+  color: color-mix(in oklab, var(--foreground) 82%, var(--surface-tint));
+}
+
+.pdpp-docs-body th {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.pdpp-docs-body th,
+.pdpp-docs-body td {
+  padding: 0.8rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.pdpp-docs-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+#nd-toc {
+  padding-top: 6.5rem;
+  color: var(--muted-foreground);
+}
+
+#nd-toc h3 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+#nd-toc a[data-active='true'] {
+  color: var(--foreground);
+}
+
+[data-toc-popover] header {
+  border-bottom-color: var(--border);
+  background: color-mix(in oklab, var(--background) 90%, var(--surface-tint) / 78%);
+}

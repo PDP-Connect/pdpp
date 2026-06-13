@@ -1,0 +1,308 @@
+/**
+ * Sources view model — pure projection of the live connector summaries into
+ * the serializable shape the Recordroom "loading dock" presentation consumes.
+ *
+ * This module is the data-source seam for the redesigned Sources view. The
+ * server page fetches `RefConnectorSummary[]` through the existing
+ * `liveDashboardDataSource.listConnectorSummaries()` and maps it here into
+ * `SourceInstanceView`s. We bind directly to `RefConnectorSummary` (not the
+ * lossy `ConnectorOverview` projection) because that envelope carries the
+ * schedule, connection health, next action, and retained-bytes the passport
+ * needs — exactly the documented Sources data contract.
+ *
+ * Keeping the mapping pure means:
+ *   - the client presentation receives only serializable, non-secret data,
+ *   - the health→status, schedule, and account derivations are unit-testable
+ *     without rendering, and
+ *   - the real fetch path stays untouched — this is presentation projection,
+ *     not a new read.
+ *
+ * Voice rule honored throughout: protocol values (ids, timestamps, intervals)
+ * stay verbatim; human copy is derived. Nothing here fabricates a value the
+ * spine did not supply — absent fields render as honest "unknown"/null, never
+ * a false zero or green.
+ */
+
+import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { type FormattedNextAction, formatNextAction } from "../lib/next-action.ts";
+import type {
+  RefConnectionHealthSnapshot,
+  RefConnectorRunSummary,
+  RefConnectorSummary,
+  RefSchedule,
+} from "../lib/ref-client.ts";
+
+/**
+ * The status flag rendered against each instance in the list and the passport.
+ * Derived ONLY from the connection-health `state` (plus the durable revoked
+ * lifecycle flag), so the dot, the Endorse badge, and the headline all read
+ * from one source of truth.
+ *
+ *   ● healthy    — green dot       (state: healthy | idle)
+ *   ◐ degraded   — amber half-dot  (state: degraded | cooling_off | needs_attention)
+ *   ⊘ blocked    — red interdict   (state: blocked)
+ *   ○ unknown    — muted ring      (state: unknown, or no health projection)
+ *   ⊘ revoked    — struck          (revoked lifecycle, overrides health)
+ */
+export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "revoked" | "unknown";
+
+/** The achromatic→token tone for a status (maps to a CSS var class). */
+export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
+
+/** The glyph + tone pairing for a status. Color is carried by a token class. */
+export interface SourceStatusFlag {
+  /** Single-glyph dot for the dense list (color via `tone` token class). */
+  dot: string;
+  kind: SourceStatusKind;
+  /** Short human label (e.g. "Healthy", "Needs attention"). */
+  label: string;
+  tone: SourceStatusTone;
+}
+
+/** One row in the passport's stream manifest table. */
+export interface SourceStreamManifestRow {
+  /** Cursor/checkpoint hint, or null when none is exposed at the index level. */
+  cursor: string | null;
+  /** Deep-link into Explore for this connection + stream. */
+  exploreHref: string;
+  name: string;
+  /** Server-retained record count for the stream, or null when unknown. */
+  recordCount: number | null;
+  /**
+   * Whether the stream's records are lexically searchable. `null` when the
+   * manifest does not declare it — we render "unknown" rather than guess
+   * "sealed", which would imply a determination the data did not make.
+   */
+  searchable: boolean | null;
+}
+
+/** A row in the passport KV block — a typed key/value pair. */
+export interface SourcePassportField {
+  k: string;
+  /** Render in the mono protocol voice (ids, timestamps, intervals). */
+  mono?: boolean;
+  /** Already-formatted, non-secret value. Null renders an em dash. */
+  value: string | null;
+}
+
+/** The fully-projected, serializable view of one source instance. */
+export interface SourceInstanceView {
+  /** Human account/identity line for the list (display name vs. type). */
+  accountLine: string;
+  /** Stable connection selector for routing + revoke (connection_id). */
+  connectionId: string | null;
+  /** Connector type id (e.g. "gmail"), used for sync + add-source. */
+  connectorId: string;
+  /** The instance-scoped selector the sync action prefers. */
+  connectorInstanceId: string | null;
+  /** Deep link to the in-app connection detail page (the always-safe target). */
+  detailHref: string;
+  /** Owner-facing display name (passport + list title). */
+  displayName: string;
+  /** Stable React key + route id. */
+  id: string;
+  /** True when this connection's data arrives by device push (sync is inert). */
+  isLocalDevicePush: boolean;
+  /** Connector type label (mono kind line in the list). */
+  kind: string;
+  /** Owner CTA derived from health.next_action, or null. */
+  nextAction: FormattedNextAction | null;
+  /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
+  passportFields: SourcePassportField[];
+  revoked: boolean;
+  /** Status flag (dot + Endorse) derived from health state. */
+  status: SourceStatusFlag;
+  /** Stream manifest rows for the passport table. */
+  streams: SourceStreamManifestRow[];
+  /** Total retained records across all streams. */
+  totalRecords: number;
+}
+
+const HEALTHY_STATES = new Set(["healthy", "idle"]);
+const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
+
+/**
+ * Map the connection-health `state` (and the durable revoked flag) to the
+ * single status flag the list dot, the Endorse badge, and the headline share.
+ * Revoked is a lifecycle fact that overrides any health verdict — a revoked
+ * connection reads "struck, not erased" regardless of its last health snapshot.
+ */
+export function deriveSourceStatus(
+  health: RefConnectionHealthSnapshot | undefined,
+  revoked: boolean
+): SourceStatusFlag {
+  if (revoked) {
+    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked" };
+  }
+  const state = health?.state;
+  if (state && HEALTHY_STATES.has(state)) {
+    return { kind: "healthy", dot: "●", tone: "success", label: "Healthy" };
+  }
+  if (state === "blocked") {
+    return { kind: "blocked", dot: "⊘", tone: "destructive", label: "Blocked" };
+  }
+  if (state && DEGRADED_STATES.has(state)) {
+    return {
+      kind: "degraded",
+      dot: "◐",
+      tone: "warning",
+      label: state === "needs_attention" ? "Needs attention" : "Degraded",
+    };
+  }
+  // state === "unknown", or no projection at all → honest unknown, never green.
+  return { kind: "unknown", dot: "○", tone: "muted", label: "Unknown" };
+}
+
+const SECONDS_PER_DAY = 86_400;
+const SECONDS_PER_HOUR = 3600;
+const SECONDS_PER_MINUTE = 60;
+
+/** Humanize a schedule interval in seconds (e.g. 86400 → "1d"). */
+function formatInterval(seconds: number): string {
+  if (!(Number.isFinite(seconds) && seconds > 0)) {
+    return "—";
+  }
+  if (seconds % SECONDS_PER_DAY === 0) {
+    return `${seconds / SECONDS_PER_DAY}d`;
+  }
+  if (seconds % SECONDS_PER_HOUR === 0) {
+    return `${seconds / SECONDS_PER_HOUR}h`;
+  }
+  if (seconds % SECONDS_PER_MINUTE === 0) {
+    return `${seconds / SECONDS_PER_MINUTE}m`;
+  }
+  return `${seconds}s`;
+}
+
+/**
+ * One-line schedule summary from the effective mode + interval. Honest about
+ * "enabled but ineligible" (the scheduler will not run it) so the passport
+ * never implies a paused-by-policy schedule is running.
+ */
+export function formatSchedule(schedule: RefSchedule | null): string {
+  if (!schedule) {
+    return "manual — no schedule";
+  }
+  if (schedule.effective_mode === "paused" || !schedule.enabled) {
+    return "paused";
+  }
+  if (schedule.ineligibility_reason) {
+    return `every ${formatInterval(schedule.interval_seconds)} · paused by policy`;
+  }
+  if (schedule.effective_mode === "automatic") {
+    return `every ${formatInterval(schedule.interval_seconds)} · automatic`;
+  }
+  return `every ${formatInterval(schedule.interval_seconds)} · manual`;
+}
+
+/**
+ * A non-fabricating auth descriptor. The connector summary does not carry a
+ * credential surface, so we describe the interaction the next action implies,
+ * falling back to a neutral "session / stored credential" line. Never prints a
+ * secret or invents a method name.
+ */
+function deriveAuthLine(next: FormattedNextAction | null, isLocalDevicePush: boolean): string {
+  if (isLocalDevicePush) {
+    return "local device push";
+  }
+  if (next && next.variant === "structured" && next.label) {
+    return "owner action required";
+  }
+  return "session / stored credential";
+}
+
+/** Format a run summary as a short "status · when" line. */
+function formatLastRun(run: RefConnectorRunSummary | null): string | null {
+  if (!run) {
+    return null;
+  }
+  const status = run.status.replace(/_/g, " ");
+  // `last_at` is the most recent event timestamp on the run summary.
+  return `${status} · ${run.last_at}`;
+}
+
+const EXPLORE_BASE = "/dashboard/explore";
+
+/** Build the Explore deep-link for one connection + stream. */
+export function exploreHrefFor(connectionId: string, streamName: string): string {
+  const params = new URLSearchParams({ connection: connectionId, stream: streamName });
+  return `${EXPLORE_BASE}?${params.toString()}`;
+}
+
+/** True when the durable lifecycle says this connection is revoked. */
+function isRevoked(summary: RefConnectorSummary): boolean {
+  return summary.status === "revoked" || Boolean(summary.revoked_at);
+}
+
+/**
+ * Project one `RefConnectorSummary` into a `SourceInstanceView`. Pure; takes no
+ * I/O. The per-stream record counts are not pre-hydrated at the index level
+ * (the summary carries only stream names + the connection total), so each row's
+ * count is null and the manifest links into Explore for the authoritative read.
+ */
+export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstanceView {
+  const connectorId = summary.connector_id;
+  const connectionId = summary.connection_id ?? null;
+  const connectorInstanceId = summary.connector_instance_id ?? null;
+  const routeId = connectionId ?? connectorInstanceId ?? connectorId;
+  const revoked = isRevoked(summary);
+  const isLocalDevicePush = Boolean(summary.local_device_progress);
+
+  const displayName = formatConnectorNameForDisplay({
+    connectorId,
+    displayName: summary.display_name,
+    name: summary.connector_display_name,
+  });
+  const kind = formatConnectorNameForDisplay({
+    connectorId,
+    displayName: summary.connector_display_name,
+    name: summary.connector_display_name,
+  });
+
+  const nextAction = formatNextAction(summary.connection_health?.next_action ?? summary.next_action ?? null);
+  const status = deriveSourceStatus(summary.connection_health, revoked);
+
+  const streams: SourceStreamManifestRow[] = summary.streams.map((name) => ({
+    name,
+    recordCount: null,
+    // The index summary exposes no cursor or searchable flag per stream; render
+    // them as unknown rather than guessing. The detail page hydrates these.
+    cursor: null,
+    searchable: null,
+    exploreHref: exploreHrefFor(routeId, name),
+  }));
+
+  const passportFields: SourcePassportField[] = [
+    { k: "kind", value: kind, mono: true },
+    { k: "account", value: displayName },
+    { k: "config", value: `${summary.stream_count ?? summary.streams.length} streams`, mono: true },
+    { k: "auth", value: deriveAuthLine(nextAction, isLocalDevicePush) },
+    { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
+    { k: "last run", value: formatLastRun(summary.last_run), mono: true },
+    { k: "records", value: summary.total_records.toLocaleString(), mono: true },
+    { k: "added", value: summary.last_successful_run?.first_at ?? null, mono: true },
+  ];
+
+  return {
+    id: routeId,
+    connectorId,
+    connectionId,
+    connectorInstanceId,
+    detailHref: `/dashboard/records/${encodeURIComponent(routeId)}`,
+    displayName,
+    kind,
+    accountLine: displayName === kind ? kind : `${kind} · ${displayName}`,
+    revoked,
+    isLocalDevicePush,
+    status,
+    nextAction,
+    streams,
+    totalRecords: summary.total_records,
+    passportFields,
+  };
+}
+
+/** Map a list of summaries into the Sources view, preserving input order. */
+export function toSourcesView(summaries: RefConnectorSummary[]): SourceInstanceView[] {
+  return summaries.map(toSourceInstanceView);
+}

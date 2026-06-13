@@ -100,7 +100,7 @@ export interface ExplorerActivitySummary {
 
 export interface ExplorerWarning {
   /** Stable code for tests + future structured `meta.warnings` mapping. */
-  code: "partial_fan_in" | "hybrid_unavailable" | "peek_unreachable" | "search_meta_warning";
+  code: "partial_fan_in" | "partial_fan_in_error" | "hybrid_unavailable" | "peek_unreachable" | "search_meta_warning";
   message: string;
 }
 
@@ -122,6 +122,14 @@ export interface RecordsExplorerData {
   selectedConnectionIds: string[];
   /** Stream names currently selected. */
   selectedStreams: string[];
+  /**
+   * Field names declared exact-filterable (`field_capabilities`, granted scalar
+   * fields) across the loaded feed streams. A `field:value` operator over one of
+   * these is a real server `filter[]` param; everything else is an honest
+   * client-side fallback. Empty when no stream metadata was loaded (e.g. search
+   * hits, which carry no per-stream capabilities), so those ops stay client-side.
+   */
+  serverFilterableFields: string[];
   /** ISO date (yyyy-mm-dd) for the `since` filter, or empty when unset. */
   since: string;
   /** True when the feed was truncated to the explorer's fan-out cap. */

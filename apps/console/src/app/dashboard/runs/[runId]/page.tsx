@@ -1,9 +1,10 @@
-import { Callout, MetaPill, PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { Callout, MetaPill, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { RecordroomShell } from "@/components/ink-carbon";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
 import {
@@ -64,10 +65,9 @@ export default async function RunDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="runs">
-          <PageHeader title="Run" />
+        <RecordroomShell>
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
@@ -163,7 +163,7 @@ export default async function RunDetailPage({
   );
 
   return (
-    <DashboardShell active="runs">
+    <RecordroomShell>
       <RunDetailPoller enabled={active} />
       <TimelineDetailView
         beforeTimelineContent={beforeTimeline}
@@ -178,7 +178,7 @@ export default async function RunDetailPage({
         routes={dashboardRoutes}
         subject="run"
       />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 

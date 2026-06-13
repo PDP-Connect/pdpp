@@ -1,10 +1,23 @@
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { Schibsted_Grotesk } from "next/font/google";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import "./globals.css";
+
+// Ink Carbon human voice: Schibsted Grotesk. Loaded via next/font/google
+// for optimal preloading and self-hosting. Variable font with full weight
+// range and italic support. The CSS variable --ink-carbon-sans is injected
+// on <html> and tokens.css picks it up via --font-sans override.
+const schibstedGrotesk = Schibsted_Grotesk({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800", "900"],
+  style: ["normal", "italic"],
+  variable: "--ink-carbon-sans",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "PDPP — Personal Data Portability Protocol",
@@ -51,7 +64,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const htmlClassName = choice === "dark" ? "dark" : undefined;
 
   return (
-    <html className={htmlClassName} data-theme={choice} lang="en">
+    <html className={[schibstedGrotesk.variable, htmlClassName].filter(Boolean).join(" ")} data-theme={choice} lang="en">
       <body>
         <ThemeProvider>
           <RootProvider theme={{ enabled: false }}>

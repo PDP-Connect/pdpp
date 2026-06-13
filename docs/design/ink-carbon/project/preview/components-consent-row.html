@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Consent scopes" subtitle="Scope rows — granted typed, declined struck" viewport="700x230" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Scope rows</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px; background: var(--background); }
+</style>
+</head>
+<body>
+<div class="pdpp-sheet">
+  <div class="pdpp-scope">
+    <span class="pdpp-scope__name">pay_statements.read</span>
+    <span class="pdpp-scope__terms">append only · 2 yrs</span>
+    <span class="pdpp-scope__desc">Employer, pay period, gross and net pay — 5 of 8 fields</span>
+  </div>
+  <div class="pdpp-scope">
+    <span class="pdpp-scope__name">employment.read</span>
+    <span class="pdpp-scope__terms">current + 5 yrs</span>
+    <span class="pdpp-scope__desc">Employers and dates. No salary history.</span>
+  </div>
+  <div class="pdpp-scope pdpp-scope--off">
+    <span class="pdpp-scope__name">tax_docs.read</span>
+    <span class="pdpp-scope__terms">declined by you</span>
+    <span class="pdpp-scope__desc">Struck, not hidden — the request is part of the record.</span>
+  </div>
+</div>
+</body>
+</html>

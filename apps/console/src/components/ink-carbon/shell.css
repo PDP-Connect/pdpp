@@ -1,0 +1,333 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   INK CARBON — Shell frame
+   apps/console/src/components/ink-carbon/shell.css
+
+   The owner-console frame: left sidebar (the rack), main column (the paper),
+   sticky header, and the mobile drawer. Token-driven; no hard-coded colors.
+   Adapted from the Recordroom design's console.css + mobile.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Frame ───────────────────────────────────────────────────────── */
+.rr-app {
+  display: grid;
+  grid-template-columns: var(--pdpp-sidebar-width) 1fr;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* ─── Sidebar — the rack ──────────────────────────────────────────── */
+.rr-side {
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 0 14px;
+  min-height: 0;
+}
+.rr-side__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 18px 16px;
+  border-bottom: 1px solid var(--border);
+}
+/* the mark is the doctrine: a sheet casting its carbon */
+.rr-side__mark {
+  width: 18px;
+  height: 18px;
+  position: relative;
+  flex-shrink: 0;
+}
+.rr-side__mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translate(4px, 4px);
+  background: var(--carbon-fill);
+  border: 1px solid var(--carbon-outline);
+}
+.rr-side__mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--foreground);
+}
+.rr-side__name {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.rr-side__nav {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.rr-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rr-side__group {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  padding: 14px 10px 4px;
+}
+.rr-nav-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  /* Left padding leaves room for the 2px active accent bar so text never
+     shifts between resting/hover/active states (the bar paints in the gutter). */
+  padding: 9px 10px 9px 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-control);
+  text-align: left;
+  text-decoration: none;
+  transition: color var(--motion-state), background var(--motion-state), box-shadow var(--motion-state);
+}
+/* Hover is a QUIET neutral lift — distinct from the protocol-blue active state. */
+.rr-nav-item:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+/* Active = the current location, in the protocol-blue temperature: a 2px
+   left accent bar (radius 0, painted as an inset box-shadow so it hugs the
+   square edge), a subtle --primary tint fill, and lifted text weight +
+   foreground. Reads clearly as "you are here" in both dark and light. */
+.rr-nav-item.is-active {
+  color: var(--foreground);
+  background: var(--primary-tint);
+  font-weight: 700;
+  box-shadow: inset 2px 0 0 0 var(--primary);
+}
+/* Keep the active item legible (not pulled to the quieter neutral) on hover,
+   while still nudging the tint a touch warmer so it stays interactive. */
+.rr-nav-item.is-active:hover {
+  background: color-mix(in oklab, var(--primary-tint) 70%, var(--muted));
+}
+.rr-side__spacer {
+  flex: 1;
+}
+.rr-side__foot {
+  padding: 12px 18px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rr-side__host {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rr-side__motto {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--primary);
+  letter-spacing: 0.06em;
+  padding-top: 3px;
+}
+
+/* ─── Main column ─────────────────────────────────────────────────── */
+.rr-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.rr-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 32px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--background);
+}
+.rr-head__brand {
+  display: none; /* mobile-only; shown ≤860px */
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.rr-head__crumb {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: auto;
+}
+.rr-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.rr-chrome-btn {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  padding: 6px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  transition: color var(--motion-state), border-color var(--motion-state), background var(--motion-state);
+}
+.rr-chrome-btn:hover {
+  color: var(--foreground);
+  border-color: var(--border-strong);
+  background: var(--muted);
+}
+.rr-kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 1px 4px;
+}
+.rr-menu-btn {
+  display: none; /* mobile-only */
+}
+.rr-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px 56px;
+  min-height: 0;
+}
+
+/* ─── Mobile drawer ───────────────────────────────────────────────── */
+.rr-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+/* The backdrop is a real button (focusable close affordance), filling the
+   overlay behind the drawer. */
+.rr-drawer-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: oklch(0 0 0 / 0.5);
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-drawer-scrim {
+    animation: rr-fade-in var(--duration-fast) ease both;
+  }
+}
+.rr-drawer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(300px, 84vw);
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border-strong);
+  padding: 18px 0 14px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-drawer {
+    animation: rr-drawer-in var(--duration-base) ease both;
+  }
+}
+.rr-drawer__nav {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 2px;
+  flex: 1;
+}
+.rr-drawer .rr-nav-item {
+  padding: 12px;
+  font-size: 15px;
+}
+.rr-drawer .rr-side__group {
+  padding: 16px 12px 5px;
+}
+.rr-drawer .rr-side__foot {
+  margin-top: auto;
+}
+
+@keyframes rr-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes rr-drawer-in {
+  from {
+    transform: translateX(-14px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ─── Phone grammar (≤860px) — rack folds into the drawer ─────────── */
+@media (max-width: 860px) {
+  .rr-app {
+    grid-template-columns: 1fr;
+  }
+  .rr-side {
+    display: none;
+  }
+  .rr-content {
+    overflow-x: hidden;
+    padding: 20px 16px 56px;
+  }
+  .rr-head {
+    padding: 10px 16px;
+  }
+  .rr-head__crumb {
+    display: none;
+  }
+  .rr-head__brand {
+    display: flex;
+  }
+  .rr-menu-btn {
+    display: inline-flex;
+  }
+  .rr-kbd {
+    display: none;
+  }
+}

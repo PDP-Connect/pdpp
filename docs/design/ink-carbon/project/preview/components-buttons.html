@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Buttons" subtitle="Ink, human act, ghost, destructive" viewport="700x150" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Buttons</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px; background: var(--background); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="lbl">the human variant is reserved for the owner's act of consent</div>
+<div class="row">
+  <button class="pdpp-btn" type="button">Record grant</button>
+  <button class="pdpp-btn pdpp-btn--human" type="button">Approve 2 streams</button>
+  <button class="pdpp-btn pdpp-btn--ghost" type="button">Inspect</button>
+  <button class="pdpp-btn pdpp-btn--destructive" type="button">Revoke</button>
+  <button class="pdpp-btn pdpp-btn--sm" type="button">Run now</button>
+</div>
+</body>
+</html>
