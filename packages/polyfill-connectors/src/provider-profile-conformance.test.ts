@@ -4,11 +4,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createConnectorHttpGovernor } from "./connector-http-governor.ts";
-import {
-  type ProviderPacingProfile,
-  UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS,
-  unauditedConservativePacingProfile,
-} from "./provider-profile.ts";
+import type { ProviderPacingProfile } from "./provider-profile.ts";
 
 /**
  * ProviderProfile conformance (SLVP-ideal spec §3, §9-C5).
@@ -18,6 +14,15 @@ import {
  * ERROR, not a silent borrow of ChatGPT's number." This suite PINS that bar for
  * the governor-using (API) connectors. It is the test that fails if the
  * requirement is ever weakened back to an optional field with a shared default.
+ *
+ * WI-1b status: all six governor-using connectors are now AUDITED — each declares
+ * a per-connector pacing ceiling derived from its provider's documented limit
+ * (src/provider-profile.ts, doc-cited; derivations in
+ * docs/research/per-connector-rate-profiles-2026-06-13.md). The unaudited 1000ms
+ * placeholder helper and its GAP-3 forcing function (which existed only to keep
+ * the placeholder from ossifying) have been RETIRED now that the audit is
+ * complete. The structural conformance below — required `profile`, no 250 borrow,
+ * no roster drift — is permanent and outlives the audit.
  *
  * Two enforcement layers are proven here:
  *   1. COMPILE-TIME (the primary mechanism): `profile` is a required field on
@@ -74,34 +79,6 @@ function deriveGovernorUsingConnectors(): string[] {
   }
   return names.sort();
 }
-
-/**
- * Connectors still pointing at the UNAUDITED 1000ms conservative pacing
- * placeholder (`unauditedConservativePacingProfile()` /
- * `UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS`). Derived from source so the
- * list cannot ossify silently. This is the GAP 3 forcing function's input.
- */
-function deriveUnauditedPlaceholderConnectors(): string[] {
-  const names: string[] = [];
-  for (const name of deriveGovernorUsingConnectors()) {
-    const source = readFileSync(join(CONNECTORS_DIR, name, "index.ts"), "utf8");
-    if (/unauditedConservativePacingProfile\s*\(|UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS/.test(source)) {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
-// GAP 3 forcing function: the connectors KNOWN to still be on the unaudited
-// 1000ms placeholder, pending the per-connector behavioral audit
-// (generalize-adaptive-collection-governor task 7b — §9-C5 / §3 pressureSignal +
-// servedBackoffCostMs). This roster is the forcing function: when a connector is
-// audited and its placeholder is replaced with a real per-provider ceiling, the
-// derived set below stops matching this list and the test goes RED — forcing the
-// author to remove the connector from this roster (a conscious "this one is
-// audited now" acknowledgement) and re-read task 7b. The placeholder therefore
-// cannot silently become permanent.
-const STILL_ON_UNAUDITED_PLACEHOLDER = ["github", "notion", "oura", "spotify", "strava", "ynab"] as const;
 
 // ─── 1. Compile-time: missing profile is a BUILD ERROR ───────────────────────
 
@@ -174,14 +151,30 @@ for (const name of GOVERNOR_USING_CONNECTORS) {
   });
 }
 
-// ─── 4. The conservative placeholder is a real, declared, non-ChatGPT value ──
+// ─── 4. WI-1b: the shared unaudited placeholder is RETIRED (every connector audited) ──
+//
+// The 1000ms `unauditedConservativePacingProfile()` helper existed only as a
+// deliberate-but-unaudited stopgap. WI-1b audited all six connectors against
+// their documented provider limits, so the shared placeholder is gone. This test
+// pins that retirement: no connector references the old placeholder helper, and
+// the helper/constant no longer exist in `provider-profile.ts` (its absence is
+// what makes the import at the top of this file impossible to restore silently).
 
-test("the unaudited conservative profile is a deliberate declaration, slower than ChatGPT's audited 250ms (no borrow)", () => {
-  const profile = unauditedConservativePacingProfile();
-  assert.equal(typeof profile.pacingMinIntervalMs, "number");
-  assert.ok(
-    profile.pacingMinIntervalMs > 250,
-    "the unaudited placeholder must be SLOWER than ChatGPT's account-tuned 250ms — a polite default, not a borrow (§9-C5)"
+test("WI-1b: no connector references the retired unaudited placeholder helper (every connector is audited)", () => {
+  for (const name of GOVERNOR_USING_CONNECTORS) {
+    const source = readFileSync(join(CONNECTORS_DIR, name, "index.ts"), "utf8");
+    assert.doesNotMatch(
+      source,
+      /unauditedConservativePacingProfile|UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS/,
+      `${name} still references the retired unaudited placeholder — it must declare an AUDITED per-provider profile (WI-1b / §9-C5)`
+    );
+  }
+  // The helper/constant must be gone from the profile module too (no silent revival).
+  const profileSource = readFileSync(join(THIS_DIR, "provider-profile.ts"), "utf8");
+  assert.doesNotMatch(
+    profileSource,
+    /unauditedConservativePacingProfile|UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS/,
+    "the unaudited placeholder helper/constant must be retired from provider-profile.ts now that every connector is audited (WI-1b)"
   );
 });
 
@@ -205,48 +198,26 @@ test("the hand-maintained GOVERNOR_USING_CONNECTORS roster matches the filesyste
   );
 });
 
-// ─── 6. GAP 3 forcing function: the 1000ms placeholder cannot ossify silently ──
+// ─── 6. WI-1b complete: every governor-using connector declares an audited ceiling ──
 //
-// The unaudited 1000ms shared placeholder is acceptable PENDING the per-connector
-// audit (task 7b), but nothing forced it to be replaced — it could ossify. This
-// test makes the placeholder VISIBLE and un-ossifiable: it pins exactly which
-// connectors are still on it. When a connector is audited (its placeholder
-// replaced by a real per-provider ceiling), this test goes RED until the author
-// removes it from STILL_ON_UNAUDITED_PLACEHOLDER — a forced, conscious update.
+// The GAP-3 forcing function (which tracked the connectors still on the 1000ms
+// placeholder, going RED as each was audited) has done its job and is retired now
+// that all six are audited. This replaces it with the steady-state invariant: a
+// governor-using connector's index.ts must declare a positive `pacingMinIntervalMs`
+// — either inline or via an imported per-connector profile factory — so the
+// declaration is always present and grep-able. A new connector added on the old
+// placeholder would fail §4 above (the helper no longer exists to import).
 
-test("GAP 3 forcing function: connectors still on the 1000ms unaudited placeholder are explicitly tracked (task 7b)", () => {
-  const derived = deriveUnauditedPlaceholderConnectors().sort();
-  const tracked = [...STILL_ON_UNAUDITED_PLACEHOLDER].sort();
-  assert.deepEqual(
-    derived,
-    tracked,
-    `The set of connectors still on the unaudited ${UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS}ms placeholder drifted.\n` +
-      `  derived from source: ${JSON.stringify(derived)}\n` +
-      `  tracked roster:      ${JSON.stringify(tracked)}\n` +
-      "This is the forcing function for the per-connector behavioral audit\n" +
-      "(generalize-adaptive-collection-governor task 7b — §9-C5). If you AUDITED a\n" +
-      "connector and replaced its placeholder, REMOVE it from STILL_ON_UNAUDITED_PLACEHOLDER.\n" +
-      "If you added a new governor-using connector still on the placeholder, ADD it.\n" +
-      "The placeholder must never silently become permanent."
-  );
-  // Sanity: every tracked connector is also a governor-using connector.
-  for (const name of tracked) {
-    assert.ok(
-      (GOVERNOR_USING_CONNECTORS as readonly string[]).includes(name),
-      `${name} is tracked as placeholder-using but is not a governor-using connector`
+test("WI-1b complete: every governor-using connector declares a per-provider pacing profile factory", () => {
+  for (const name of GOVERNOR_USING_CONNECTORS) {
+    const source = readFileSync(join(CONNECTORS_DIR, name, "index.ts"), "utf8");
+    // Each connector imports a named `<name>PacingProfile` factory from the
+    // profile module (the audited per-connector declaration). This pins that the
+    // profile is sourced from the ONE declared home, not hand-rolled inline.
+    assert.match(
+      source,
+      new RegExp(`${name}PacingProfile`),
+      `${name} must import and use its audited ${name}PacingProfile from provider-profile.ts (WI-1b — §3, §9-C5)`
     );
   }
-});
-
-test("GAP 3 forcing function is non-empty until task 7b lands (visibility that work remains)", () => {
-  // A green-but-empty forcing function would be invisible. Until task 7b audits
-  // every connector, this asserts there is still placeholder work to do — so the
-  // forcing function is alive, not a no-op. When the LAST connector is audited,
-  // this assertion flips and the author removes both this test and the roster
-  // (the placeholder mechanism itself can then be deleted).
-  const derived = deriveUnauditedPlaceholderConnectors();
-  assert.ok(
-    derived.length > 0,
-    "expected at least one connector still on the unaudited placeholder; if task 7b is fully done, retire this forcing function + the placeholder helper"
-  );
 });

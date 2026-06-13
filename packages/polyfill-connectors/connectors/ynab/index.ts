@@ -39,7 +39,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
+import { ynabPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
@@ -47,13 +47,15 @@ const API_BASE = "https://api.ynab.com/v1";
 // Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
 // 429 throw byte-identical to the prior hand-rolled path (cross-run cooldown via
 // `retryablePattern`); raising it activates the wired Retry-After honor.
-// §3 ProviderProfile: ynab declares its own pacing ceiling — a conservative,
-// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with ynab's
-// real observed flagging threshold once audited (task 1b).
+// §3 ProviderProfile: ynab declares its own AUDITED pacing ceiling (20000ms ≈
+// 3 req/min, set BELOW the 200-req/hour rolling sustained rate so even a long run
+// stays under budget at the ceiling; a typical run is only tens of requests;
+// WI-1b). NOT a borrow of ChatGPT's 250ms. See src/provider-profile.ts →
+// ynabPacingProfile and docs/research/per-connector-rate-profiles-2026-06-13.md.
 const httpGovernor = createConnectorHttpGovernor({
   name: "ynab",
   maxAttempts: 1,
-  profile: unauditedConservativePacingProfile(),
+  profile: ynabPacingProfile(),
 });
 
 interface YnabFetchOptions {

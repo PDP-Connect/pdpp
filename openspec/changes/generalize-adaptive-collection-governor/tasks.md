@@ -113,14 +113,31 @@
   cooldown-recovery-eligibility 4, escalation-l5 12, push-escalation-l8 5,
   provider-pacing 35); ultracite clean on all changed files.
 
-### 7b. OUT OF SCOPE here — per-connector behavioral audit (the §9-C5 follow-up)
+### 7b. Per-connector behavioral audit (the §9-C5 follow-up) — WI-1b
 
-- [ ] 7b.1 Audit each of the six governor-using connectors' REAL 429 semantics
-  (is a bare 429 whole-account-hot? fast-open attempts?) and binding-quota axis,
-  and replace `unauditedConservativePacingProfile()` with that provider's observed
-  ceiling. Tracks the spec §3 `pressureSignal` / `servedBackoffCostMs` fields.
-- [ ] 7b.2 Where a provider warrants it, declare its terminal-gap
-  `maxRecoveryAttempts` and cooldown `maxCooldownCycles` from observed non-transient
-  -error and recovery-window behavior (today only ChatGPT declares these).
-- [ ] 7b.3 Each new/updated profile validated by a supervised live run (owner-run;
-  no live calibration in the interface change).
+> Landed on branch `slvp-wi1b-per-connector-profiles`. Research +
+> derivations: `docs/research/per-connector-rate-profiles-2026-06-13.md`.
+
+- [x] 7b.1 Audited each of the six governor-using connectors against its
+  provider's DOCUMENTED rate limit (official doc URLs cited per connector) and
+  replaced `unauditedConservativePacingProfile()` with a per-connector AUDITED
+  ceiling, set AT OR BELOW the documented sustained rate (a safety prior, §3):
+  github 1000ms (5000/hr), notion 500ms (3 req/s avg), oura 250ms (5000/5min),
+  spotify 500ms (~180/min, rolling 30s, undisclosed exact), strava 10000ms
+  (100/15min non-upload), ynab 20000ms (200/hr). Each value lives in a named
+  factory in `src/provider-profile.ts` with its doc URL. The 1000ms placeholder
+  helper + its GAP-3 forcing function are RETIRED now that all six are audited.
+- [x] 7b.2 No connector warrants a terminal-gap (§10-A) or cooldown (§10-B)
+  override: all six emit ZERO detail gaps (verified by source scan — a 429 throws
+  a run-level `<connector>_rate_limited` retryable, never a `DETAIL_GAP`), so the
+  terminal classifier and source-pressure cooldown never run for them. They
+  legitimately use the safe shared defaults (`DEFAULT_TERMINAL_GAP_PROFILE` 5 /
+  `DEFAULT_COOLDOWN_PROFILE` 12). Declaring a terminal/cooldown policy for a
+  gap-free connector would be inventing one — the honest call is the default.
+  (The trigger to add one later: a connector grows a detail-hydration phase that
+  emits `DETAIL_GAP` records under pressure.)
+- [ ] 7b.3 Each new ceiling validated by a supervised live run (owner-run). The
+  values are derived from documented limits below the provider's flagging
+  threshold (conservative starting point: the AIMD only approaches the ceiling
+  under sustained success), so they are safe to ship ahead of the live
+  confirmation. OPEN: owner gate.

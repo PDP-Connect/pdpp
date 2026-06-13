@@ -12,18 +12,19 @@
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { politeDelay, runConnector } from "../../src/connector-runtime.ts";
-import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
+import { notionPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
 // 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
-// §3 ProviderProfile: notion declares its own pacing ceiling — a conservative,
-// UNAUDITED placeholder (1s ≈ 1 req/s, well under Notion's documented 3 req/s
-// average). NOT a borrow of ChatGPT's 250ms; tighten once audited (task 1b).
+// §3 ProviderProfile: notion declares its own AUDITED pacing ceiling (500ms ≈
+// 2 req/s, ~67% of Notion's documented 3 req/s average; WI-1b). NOT a borrow of
+// ChatGPT's 250ms. See src/provider-profile.ts → notionPacingProfile and
+// docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
 const httpGovernor = createConnectorHttpGovernor({
   name: "notion",
   maxAttempts: 1,
-  profile: unauditedConservativePacingProfile(),
+  profile: notionPacingProfile(),
 });
 
 const API = "https://api.notion.com/v1";

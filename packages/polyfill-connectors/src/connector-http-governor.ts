@@ -84,9 +84,10 @@ export interface ConnectorHttpGovernorOptions {
    * quantity (`pacingMinIntervalMs`, the rate ceiling). NO cross-provider default
    * (SLVP-ideal spec §3): a connector must declare its own ceiling from its own
    * provider's observed behavior — omitting it is a build error, not a silent
-   * borrow of ChatGPT's account-tuned 250ms. Construct from
-   * {@link unauditedConservativePacingProfile} until the provider is audited (1b),
-   * or author the ceiling explicitly once its real flagging threshold is known.
+   * borrow of ChatGPT's account-tuned 250ms. Construct from this provider's
+   * audited per-connector profile factory in `provider-profile.ts` (e.g.
+   * `githubPacingProfile()`), each derived from the provider's documented rate
+   * limit (WI-1b; see docs/research/per-connector-rate-profiles-2026-06-13.md).
    *
    * @see ProviderPacingProfile
    */
@@ -169,8 +170,9 @@ export const DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
  * every governor-using connector declares its own ceiling via the required
  * `profile.pacingMinIntervalMs` (spec §3 rule 6). This export survives only as
  * documentation of ChatGPT's audited number and for tests that pin it; a new
- * connector author must NOT reach for it (use a conservative profile instead —
- * see {@link unauditedConservativePacingProfile}).
+ * connector author must NOT reach for it (author a per-connector profile factory
+ * in `provider-profile.ts` derived from the provider's documented limit instead —
+ * see the WI-1b factories, e.g. `githubPacingProfile()`).
  */
 export const DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 
