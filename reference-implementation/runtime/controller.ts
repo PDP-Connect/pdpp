@@ -1592,10 +1592,22 @@ function buildSchedulerBackoffApi(
     return null;
   }
   const intervalMs = Math.max(1, schedule.interval_seconds) * 1000;
+  // Cross-path success recovery: surface the most recent genuine success so the
+  // back-off gate clears a stale streak even when that success was recorded by
+  // a path whose record has rolled off the bounded `recentRuns` window (or, on
+  // a fresh boot, before the scheduler re-appended it). `latestSuccessfulAt`
+  // already accounts for every success in `scheduler_run_history`; passing it
+  // explicitly keeps this read-model's `consecutive_failures` honest with the
+  // same semantic the runtime scheduler now applies. `null` → legacy behaviour.
+  const lastSuccessAtMs =
+    facts.latestSuccessfulAt && Number.isFinite(Date.parse(facts.latestSuccessfulAt))
+      ? Date.parse(facts.latestSuccessfulAt)
+      : null;
   const decision: BackoffDecision = computeNextRunWithBackoff(
     facts.recentRuns.map(toBackoffRunRecord),
     intervalMs,
-    lastRunTimeMs
+    lastRunTimeMs,
+    { lastSuccessAtMs }
   );
 
   // Blend in the cross-run source-pressure cooldown. A connection can have no

@@ -247,6 +247,37 @@ export type GetNonPressureRecoverableCountHandler = (
 ) => Promise<number> | number;
 
 /**
+ * Returns the epoch ms of the most recent GENUINELY-SUCCESSFUL run for this
+ * connection from a durable cross-path projection (the spine run timeline),
+ * regardless of which path dispatched it. The scheduler's own `runtime.history`
+ * only contains runs it dispatched, so a manual/owner `controller.runNow`
+ * success is invisible to it; this probe lets the back-off gate recognize such
+ * a success and clear a stale failure streak. `null` when no successful run is
+ * known. A probe failure is treated as "no evidence" (return `null`) — the same
+ * fail-open stance as the attention/pressure probes: it must never *fabricate*
+ * a success (which would suppress a legitimate back-off), only surface a real
+ * one to break a wedge.
+ */
+export type GetLastSuccessfulRunAtHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) => Promise<number | null> | number | null;
+
+/**
+ * Returns true when the connector is a managed (browser-surface-leased)
+ * connector. The scheduler uses this to DEFER a scheduled tick when the
+ * managed-routing seam (`runManagedConnectorViaController`) is not currently
+ * wired, rather than cold-dispatching the connector through the bare
+ * `runConnector` path. A cold dispatch launches a fresh headless browser with
+ * an empty profile (no warm Cloudflare clearance), which a bot-detecting
+ * provider challenges and fails — and each such failure deepens the failure
+ * back-off. Deferring (skip this tick, retry next) mirrors the existing
+ * surface-unavailable defer. Defaults to "not managed" so non-managed hosts
+ * and tests are unaffected.
+ */
+export type IsManagedConnectorHandler = (connectorId: string) => boolean;
+
+/**
  * Resolves the connection-scoped static-secret env fragment for one scheduled
  * launch. Mirrors the controller's `resolveStaticSecretRunEnv` contract
  * (controller.ts `CreateControllerOptions`): return the env fragment when the
@@ -326,10 +357,24 @@ export type RunManagedConnectorViaController = (
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
-  getSourcePressureGaps?: GetSourcePressureGapsHandler;
+  /**
+   * Durable cross-path "latest successful run at" projection. Lets the back-off
+   * gate clear a stale failure streak when a genuine success (any trigger,
+   * including manual `controller.runNow`) has occurred since the streak's newest
+   * failure. Optional: defaults to "no external success known" (legacy
+   * in-history-only streak walk).
+   */
+  getLastSuccessfulRunAt?: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount?: GetNonPressureRecoverableCountHandler;
+  getSourcePressureGaps?: GetSourcePressureGapsHandler;
   getState?: GetStateHandler;
   hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
+  /**
+   * Predicate: is this connector managed (browser-surface-leased)? Used to DEFER
+   * a managed connector's scheduled tick when the managed-routing seam is not
+   * wired, instead of cold-dispatching it. Optional: defaults to "not managed".
+   */
+  isManagedConnector?: IsManagedConnectorHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
   onHumanRequiredStateEscalation?: HumanRequiredStateEscalationHandler;
@@ -338,6 +383,7 @@ export interface SchedulerOptions {
   readinessChecker?: SchedulerReadinessChecker;
   referenceBaseUrl?: string | null;
   resolveStaticSecretRunEnv?: ResolveStaticSecretRunEnv | null;
+  rsUrl?: string;
   /**
    * When provided, managed-connector scheduled runs are routed through
    * `controller.runNow` (which acquires the neko browser-surface lease with
@@ -352,7 +398,6 @@ export interface SchedulerOptions {
    * remain unaffected.
    */
   runManagedConnectorViaController?: RunManagedConnectorViaController | null;
-  rsUrl?: string;
   schedulerStore?: Pick<
     SchedulerStore,
     "appendRunHistory" | "listLastRunTimes" | "listRunHistory" | "upsertLastRunTime"
@@ -1353,6 +1398,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     hasUnresolvedAttention = () => null,
     getSourcePressureGaps = () => [],
     getNonPressureRecoverableCount = async () => 0,
+    getLastSuccessfulRunAt = async () => null,
+    isManagedConnector = () => false,
     resolveStaticSecretRunEnv = null,
     runManagedConnectorViaController = null,
   } = opts;
@@ -1653,6 +1700,24 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
   }
 
+  // Read the durable cross-path "latest successful run at" projection so the
+  // back-off gate can clear a stale failure streak when a genuine success has
+  // occurred since (on ANY trigger, including a manual `controller.runNow` the
+  // scheduler never recorded in its own history). A probe failure returns
+  // `null` (no evidence) — this probe may only ever SURFACE a real success to
+  // break a wedge, never fabricate one (which would suppress a legitimate
+  // back-off).
+  async function probeLastSuccessfulRunAt(connectorId: string, connectorInstanceId: string): Promise<number | null> {
+    try {
+      const observed = await getLastSuccessfulRunAt(connectorId, connectorInstanceId);
+      return typeof observed === "number" && Number.isFinite(observed) ? observed : null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] last-success probe failed for ${connectorId}: ${message}`);
+      return null;
+    }
+  }
+
   // Read durable pending source-pressure gaps for the cross-run cooldown.
   // A probe failure is treated as "no pressure" — the same fail-open stance as
   // the attention probe: silently suppressing launches when the durable store
@@ -1875,6 +1940,30 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         })
       );
     };
+
+    // ── Restart-race guard: managed connector with no routing seam → DEFER ────
+    //
+    // A managed (browser-surface-leased) connector MUST run through
+    // `controller.runNow` so it acquires the warm neko surface (persistent
+    // profile with a valid Cloudflare clearance cookie). If the managed-routing
+    // seam (`runManagedConnectorViaController`) is not wired — e.g. the
+    // controller's `browserSurfaceLeaseManager` was not yet available when
+    // `createScheduler` ran, so the callback was constructed as `null` — a
+    // SCHEDULED run would otherwise fall through to the cold `runConnector`
+    // path below: fresh headless Chromium, empty profile, no clearance cookie →
+    // a bot-detecting provider challenges and fails it, and every such cold
+    // failure deepens the failure back-off (the live wedge's failure streak).
+    //
+    // Treat a missing seam exactly like a surface-capacity shortfall: a
+    // DEFERRED SKIP (skip this tick, retry the next) rather than a cold launch.
+    // The next tick — once the seam is wired — routes warm. Manual runs are
+    // unaffected: the owner explicitly asked to retry now and bypasses this
+    // gate entirely (and the manual path has its own surface acquisition).
+    if (!isManual && !runManagedConnectorViaController && isManagedConnector(connectorId)) {
+      return recordAndNotify(
+        buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
+      );
+    }
 
     // ── Managed-connector scheduled run: route through controller.runNow ──────
     //
@@ -2106,7 +2195,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // `completedAt` so the next-attempt math has a real anchor.
     const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(key), history);
     const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
-    const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
+    // Durable cross-path success: a manual/owner `controller.runNow` success is
+    // invisible to `history` (only the scheduler's own dispatches land there).
+    // Threading it into the back-off math lets a genuine recent success clear an
+    // otherwise-immortal failure streak so automation resumes — the live wedge.
+    const lastSuccessAtMs = await probeLastSuccessfulRunAt(connectorId, key);
+    const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun, { lastSuccessAtMs });
 
     // Cross-run source-pressure cooldown. Independent of failure back-off: a
     // connection that *succeeded* but deferred work under upstream pressure

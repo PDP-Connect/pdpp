@@ -417,3 +417,120 @@ test('T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
     rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ── T8: restart-race — managed connector with NO routing seam DEFERS ─────────
+//
+// The live ChatGPT wedge's failure origin: when the managed-routing seam
+// (runManagedConnectorViaController) is not wired — e.g. the controller's
+// browserSurfaceLeaseManager was not yet available when createScheduler ran —
+// a managed connector must DEFER its scheduled tick (a skipped RunRecord that
+// does NOT feed the failure streak), not cold-dispatch a fresh headless browser
+// that Cloudflare challenges and fails. `isManagedConnector` lets the scheduler
+// recognize the managed connector independent of whether the callback is wired.
+
+test('T8: managed connector with an unwired routing seam DEFERS (skip), not a cold runConnector dispatch', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
+  try {
+    // This connector, if cold-dispatched, would hit the RS server at an
+    // invalid URL and FAIL. The defer must prevent that: we assert the record
+    // is a surface skip, never a failure.
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns = [];
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId: 'chatgpt',
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      }],
+      rsUrl: 'http://localhost.invalid',
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      // The routing seam is NOT wired (boot race) ...
+      runManagedConnectorViaController: null,
+      // ... but the scheduler still knows chatgpt is a managed connector.
+      isManagedConnector: (id) => id === 'chatgpt',
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      // Give a couple more ticks a chance to (incorrectly) cold-dispatch.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      scheduler.stop();
+
+      for (const record of completedRuns) {
+        assert.equal(record.status, 'skipped', 'unwired managed seam must DEFER (skip), never cold-dispatch');
+        assert.ok(
+          typeof record.error === 'string' && record.error.includes('browser_surface_unavailable'),
+          `defer record must be a surface-unavailable skip, got: ${record.error}`,
+        );
+        assert.ok(
+          record.error.includes('surface_routing_unavailable'),
+          `defer reason should name the missing routing seam, got: ${record.error}`,
+        );
+      }
+      // Crucially: no failed records (a cold dispatch would have failed and fed
+      // the back-off streak — the exact deepening that produced the live wedge).
+      assert.equal(
+        completedRuns.filter((r) => r.status === 'failed').length,
+        0,
+        'a deferred managed tick must NEVER produce a failure that deepens back-off',
+      );
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ── T9: the defer guard must NOT over-fire for non-managed connectors ────────
+//
+// A non-managed connector with no routing seam must still cold-run through
+// runConnector (its normal path) — the defer guard is scoped to managed
+// connectors only. Mirrors T4 but with the seam fully absent (null).
+
+test('T9: non-managed connector with no routing seam still uses runConnector (defer guard does not over-fire)', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns = [];
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId: 'filesystem-connector',
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      }],
+      rsUrl: 'http://localhost.invalid',
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      runManagedConnectorViaController: null,
+      // Default isManagedConnector (returns false) — filesystem-connector is not managed.
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      for (const record of completedRuns) {
+        assert.ok(
+          !record.error?.includes('surface_routing_unavailable'),
+          `non-managed connector must NOT be deferred by the managed-seam guard; got: ${record.error}`,
+        );
+      }
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

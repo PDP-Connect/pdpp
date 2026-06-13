@@ -57,6 +57,24 @@ export const DEFAULT_MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 export interface ComputeBackoffOptions {
   /** Threshold N: consecutive failures before back-off engages. */
   readonly backoffThreshold?: number;
+  /**
+   * Epoch ms of the most recent GENUINELY-SUCCESSFUL run for this connector,
+   * sourced from a durable cross-path projection (the spine run timeline), NOT
+   * just from the records present in the `history` argument. A scheduled run
+   * dispatched by the scheduler appends a `succeeded` record to its own history
+   * (so the in-history walk already resets the streak), but a manual or
+   * owner-triggered `controller.runNow` success bypasses the scheduler and is
+   * invisible to `history`. Without this signal a connection whose only
+   * successes arrive off the scheduler's own dispatch path stays pinned at a
+   * stale failure streak forever (`consecutive_failures` never decrements,
+   * `last_successful_at` stays null) — the live ChatGPT wedge. When this
+   * timestamp is at or after the newest failure in the trailing streak, the
+   * streak is broken: a genuine success has occurred since, so automation must
+   * resume on the base interval rather than the inflated back-off curve.
+   * `null`/`undefined`/non-finite → no external success known (legacy
+   * behaviour: trust the in-history walk alone).
+   */
+  readonly lastSuccessAtMs?: number | null;
   /** Owner-triggered run: bypass back-off entirely. */
   readonly manual?: boolean;
   /** Max exponent applied to the base interval. */
@@ -182,7 +200,28 @@ export function computeNextRunWithBackoff(
     };
   }
 
-  const { consecutiveFailures, reasonClass } = countConsecutiveSameClassFailures(history);
+  const { consecutiveFailures, reasonClass, newestFailureAtMs } = countConsecutiveSameClassFailures(history);
+
+  // Cross-path success recovery: a genuine success recorded on a path the
+  // `history` argument cannot see (manual/owner `controller.runNow`) breaks the
+  // streak when it is at or after the newest failure in that streak. This is
+  // the same semantic as a `succeeded` record appearing in `history` (which the
+  // walk above already honours), extended to successes the scheduler did not
+  // itself dispatch. Without it, a connection whose only successes are manual
+  // stays wedged on an inflated back-off curve forever.
+  const externalSuccessAtMs = normalizeOptionalEpochMs(options.lastSuccessAtMs);
+  const externalSuccessBreaksStreak =
+    externalSuccessAtMs !== null && (newestFailureAtMs === null || externalSuccessAtMs >= newestFailureAtMs);
+  if (externalSuccessBreaksStreak) {
+    return {
+      backoffApplied: false,
+      consecutiveFailures: 0,
+      effectiveIntervalMs: normalizedBaseIntervalMs,
+      nextRunAt: toIsoTimestamp(normalizedLastRunAtMs + normalizedBaseIntervalMs),
+      reasonClass: null,
+      recommendedHealthState: null,
+    };
+  }
 
   if (consecutiveFailures < threshold || reasonClass === null) {
     return {
@@ -249,9 +288,17 @@ function toIsoTimestamp(epochMs: number): string {
 function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
   consecutiveFailures: number;
   reasonClass: string | null;
+  /**
+   * Epoch ms of the NEWEST failure in the trailing streak (the first failure
+   * encountered when walking newest→oldest), or `null` when there is no streak.
+   * Lets the caller compare an out-of-history success timestamp against the
+   * streak to decide whether a genuine success has occurred since.
+   */
+  newestFailureAtMs: number | null;
 } {
   let consecutiveFailures = 0;
   let reasonClass: string | null = null;
+  let newestFailureAtMs: number | null = null;
 
   // Walk newest -> oldest until we hit a non-failure or a different class.
   for (let i = history.length - 1; i >= 0; i--) {
@@ -279,10 +326,40 @@ function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
     } else if (candidate !== reasonClass) {
       break;
     }
+    if (newestFailureAtMs === null) {
+      // First (newest) failure of the streak anchors the recovery comparison.
+      newestFailureAtMs = recordTimestampMs(record);
+    }
     consecutiveFailures++;
   }
 
-  return { consecutiveFailures, reasonClass };
+  return { consecutiveFailures, reasonClass, newestFailureAtMs };
+}
+
+/**
+ * Best-effort epoch-ms timestamp for a run record, preferring `completedAt`
+ * (when the run settled) and falling back to `startedAt`. Returns `null` when
+ * neither parses to a finite epoch.
+ */
+function recordTimestampMs(record: RunRecord): number | null {
+  const completed = Date.parse(record.completedAt ?? "");
+  if (Number.isFinite(completed)) {
+    return completed;
+  }
+  const started = Date.parse(record.startedAt ?? "");
+  return Number.isFinite(started) ? started : null;
+}
+
+/**
+ * Normalize an optional epoch-ms input to a finite non-negative number or
+ * `null`. Mirrors the defensive timing normalization used elsewhere in this
+ * module so a malformed projection can never throw or invert the comparison.
+ */
+function normalizeOptionalEpochMs(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return value;
 }
 
 // ─── Run-status helper ─────────────────────────────────────────────────────

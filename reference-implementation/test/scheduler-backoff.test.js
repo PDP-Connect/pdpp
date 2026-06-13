@@ -294,3 +294,91 @@ test('malformed tunables fall back to safe defaults', () => {
   assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS);
   assert.equal(decision.nextRunAt, new Date(T0 + BASE_INTERVAL_MS).toISOString());
 });
+
+// ─── lastSuccessAtMs: cross-path success recovery ──────────────────────────
+//
+// The live ChatGPT wedge: the scheduler's own `runtime.history` only contains
+// runs IT dispatched, so a manual/owner `controller.runNow` success is
+// invisible and the failure streak (and the inflated back-off) never clears.
+// `lastSuccessAtMs` injects the durable cross-path success timestamp so a
+// genuine recent success breaks the streak even when no `succeeded` record
+// sits in `history`.
+
+const FAIL_AT_MS = Date.parse('2026-06-12T22:45:00.000Z'); // newest failure of the streak
+
+function streakFailure() {
+  // A failed record whose completedAt anchors the recovery comparison.
+  return failedRun({
+    terminalReason: 'connector_reported_failed',
+    startedAt: '2026-06-12T22:44:59.000Z',
+    completedAt: '2026-06-12T22:45:00.000Z',
+  });
+}
+
+test('lastSuccessAtMs AFTER the newest streak failure clears the back-off (the live wedge)', () => {
+  // 5 same-class failures => without recovery this is a 4x back-off (2^(5-3)).
+  const history = Array.from({ length: 5 }, () => streakFailure());
+  const baseline = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0);
+  assert.equal(baseline.backoffApplied, true, 'precondition: streak engages back-off');
+  assert.equal(baseline.consecutiveFailures, 5);
+
+  // A genuine success one hour after the newest failure (a manual run the
+  // scheduler never recorded) must break the streak.
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, {
+    lastSuccessAtMs: FAIL_AT_MS + 3_600_000,
+  });
+  assert.equal(decision.backoffApplied, false, 'recent cross-path success clears the streak');
+  assert.equal(decision.consecutiveFailures, 0);
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS, 'back to base interval, not the inflated curve');
+  assert.equal(decision.reasonClass, null);
+  assert.equal(decision.recommendedHealthState, null);
+});
+
+test('lastSuccessAtMs EQUAL to the newest streak failure clears the back-off (boundary)', () => {
+  const history = Array.from({ length: 5 }, () => streakFailure());
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, {
+    lastSuccessAtMs: FAIL_AT_MS,
+  });
+  assert.equal(decision.backoffApplied, false, 'a success at the same instant as the failure still resets (>=)');
+  assert.equal(decision.consecutiveFailures, 0);
+});
+
+test('lastSuccessAtMs BEFORE the newest streak failure does NOT clear the back-off (stale success)', () => {
+  const history = Array.from({ length: 5 }, () => streakFailure());
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, {
+    lastSuccessAtMs: FAIL_AT_MS - 3_600_000, // success was an hour BEFORE the streak's newest failure
+  });
+  assert.equal(decision.backoffApplied, true, 'a success older than the streak is not recovery evidence');
+  assert.equal(decision.consecutiveFailures, 5);
+});
+
+test('lastSuccessAtMs null/undefined/non-finite is a no-op (legacy behaviour)', () => {
+  const history = Array.from({ length: 5 }, () => streakFailure());
+  for (const lastSuccessAtMs of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, { lastSuccessAtMs });
+    assert.equal(decision.backoffApplied, true, `lastSuccessAtMs=${String(lastSuccessAtMs)} must not clear the streak`);
+    assert.equal(decision.consecutiveFailures, 5);
+  }
+});
+
+test('lastSuccessAtMs does not fabricate recovery when there is no streak', () => {
+  // No failures at all: a success timestamp must not invent a non-existent
+  // streak reset or otherwise change the no-back-off baseline.
+  const decision = computeNextRunWithBackoff([], BASE_INTERVAL_MS, T0, {
+    lastSuccessAtMs: FAIL_AT_MS + 3_600_000,
+  });
+  assert.equal(decision.backoffApplied, false);
+  assert.equal(decision.consecutiveFailures, 0);
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS);
+});
+
+test('lastSuccessAtMs after a streak that is UNDER threshold stays no-back-off and consistent', () => {
+  // 2 failures (under threshold of 3): no back-off either way. The recovery
+  // path must not change the consecutiveFailures report in a confusing way.
+  const history = Array.from({ length: 2 }, () => streakFailure());
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, {
+    lastSuccessAtMs: FAIL_AT_MS + 1000,
+  });
+  assert.equal(decision.backoffApplied, false);
+  assert.equal(decision.consecutiveFailures, 0, 'recovery reports a cleared streak');
+});

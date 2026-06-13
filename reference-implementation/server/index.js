@@ -5339,6 +5339,33 @@ function createReferenceSchedulerManager({
             return { run_id: handle.run_id, trace_id: handle.trace_id, status: terminalStatus };
           }
         : null,
+      // Recognize managed (browser-surface-leased) connectors so the scheduler
+      // can DEFER a scheduled tick when the managed-routing seam above is not
+      // wired yet (controller boot race), instead of cold-dispatching a fresh
+      // headless browser that Cloudflare challenges and fails — each cold
+      // failure deepening the back-off (the live wedge). Mirrors the predicate
+      // controller.runNow uses to decide whether to acquire a managed surface.
+      isManagedConnector: (connectorId) =>
+        Boolean(controller?.browserSurfaceLeaseManager?.isManagedConnector?.(connectorId)),
+      // Durable cross-path "latest successful run at" probe, read from the spine
+      // run timeline so it sees EVERY success — including manual/owner
+      // `controller.runNow` runs that never touch `scheduler_run_history`. Lets
+      // the back-off gate clear a stale failure streak when a genuine success
+      // has occurred since, so automation resumes. Returns null on no success or
+      // probe error (never fabricates a success that would suppress back-off).
+      getLastSuccessfulRunAt: async (connectorId) => {
+        try {
+          const summary = await getLatestConnectorRunSummary(connectorId, 'succeeded');
+          const at = summary?.last_at ? Date.parse(summary.last_at) : Number.NaN;
+          return Number.isFinite(at) ? at : null;
+        } catch (err) {
+          logger.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            `[scheduler] last-success spine probe failed for ${connectorId}`,
+          );
+          return null;
+        }
+      },
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by
         // construction: getSyncState keys storage off its storage-target
