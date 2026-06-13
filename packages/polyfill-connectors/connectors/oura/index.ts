@@ -7,12 +7,13 @@
  *
  * Streams: sleep, readiness, activity. Incremental via day cursor.
  * API: https://api.ouraring.com/v2/usercollection/*
- * Rate limit: 5000/day for personal tokens.
+ * Rate limit: 5000 requests per 5-minute window (V1+V2 API).
+ *   Doc: https://cloud.ouraring.com/docs/error-handling
  */
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
-import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
+import { ouraPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.ouraring.com/v2/usercollection";
@@ -24,13 +25,15 @@ const MAX_PAGES = 100;
 // `retryablePattern` cross-run source-pressure deferral/cooldown contract is
 // unchanged. Raising `maxAttempts` (an owner knob) activates the now-wired
 // inline Retry-After honor + bounded backoff without touching this call site.
-// §3 ProviderProfile: oura declares its own pacing ceiling — a conservative,
-// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with oura's
-// real observed flagging threshold once audited (task 1b).
+// §3 ProviderProfile: oura declares its own AUDITED pacing ceiling (250ms ≈
+// 4 req/s, ~24% of Oura's documented 5000-req/5-min ceiling — a deliberate 4×
+// margin; WI-1b). NOT a borrow of ChatGPT's 250ms (same number, independently
+// derived from Oura's limit). See src/provider-profile.ts → ouraPacingProfile and
+// docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
 const httpGovernor = createConnectorHttpGovernor({
   name: "oura",
   maxAttempts: 1,
-  profile: unauditedConservativePacingProfile(),
+  profile: ouraPacingProfile(),
 });
 
 interface OuraSleepSession {

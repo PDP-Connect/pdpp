@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConnectorRateLimitedError, createConnectorHttpGovernor } from "./connector-http-governor.ts";
-import { unauditedConservativePacingProfile } from "./provider-profile.ts";
+import type { ProviderPacingProfile } from "./provider-profile.ts";
 
-// §3 ProviderProfile: the governor now REQUIRES a per-provider profile. These
-// adopted connectors each ship `unauditedConservativePacingProfile()`, so the
-// adoption smoke uses the exact same profile to stay byte-faithful to what the
-// six connectors construct.
-const ADOPTED_PROFILE = unauditedConservativePacingProfile();
+// §3 ProviderProfile: the governor now REQUIRES a per-provider profile. Post-WI-1b
+// each connector ships its OWN audited ceiling (no shared placeholder), so this
+// adoption smoke supplies a minimal valid profile of its own — the specific
+// pacing value is immaterial to what this test pins (the cross-run rate-limit
+// error contract), only that a valid `pacingMinIntervalMs` is present.
+const ADOPTED_PROFILE: ProviderPacingProfile = { pacingMinIntervalMs: 1000 };
 
 /**
  * Adoption smoke: every connector that migrated onto the shared send governor

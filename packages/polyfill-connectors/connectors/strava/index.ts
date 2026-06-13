@@ -7,23 +7,27 @@
  * with scopes: read, activity:read_all.
  *
  * API: https://www.strava.com/api/v3/athlete/activities?after=<unix>
- * Rate limits: 100 req / 15 min, 1000 req / day.
+ * Rate limits (non-upload, read endpoints): 100 req / 15 min, 1000 req / day.
+ *   Doc: https://developers.strava.com/docs/rate-limits/
  */
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
-import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
+import { stravaPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
 // 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
-// §3 ProviderProfile: strava declares its own pacing ceiling — a conservative,
-// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with strava's
-// real observed flagging threshold once audited (task 1b).
+// §3 ProviderProfile: strava declares its own AUDITED pacing ceiling (10000ms ≈
+// 6 req/min, set BELOW the 100-req/15-min non-upload sustained rate so the AIMD
+// can never drain the window budget; the tightest of the six by design — Strava's
+// short window + explicit ban warning; WI-1b). NOT a borrow of ChatGPT's 250ms.
+// See src/provider-profile.ts → stravaPacingProfile and
+// docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
 const httpGovernor = createConnectorHttpGovernor({
   name: "strava",
   maxAttempts: 1,
-  profile: unauditedConservativePacingProfile(),
+  profile: stravaPacingProfile(),
 });
 
 interface StravaActivity {

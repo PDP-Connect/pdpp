@@ -23,12 +23,17 @@
  *
  * Audit status (§9-C5): the FIELD SET and ChatGPT's values are
  * observation-backed (live ChatGPT probes 2026-06). The other six governor-using
- * connectors carry CONSERVATIVE, UNAUDITED placeholder profiles — deliberate
- * declarations, slower than ChatGPT, that do NOT borrow ChatGPT's account-tuned
- * numbers. The per-connector behavioral audit (real 429 semantics, binding-quota
- * axis) is the open follow-up (task 1b, out of scope here).
+ * connectors (github/notion/oura/spotify/strava/ynab) now each carry an AUDITED
+ * pacing ceiling derived from THAT provider's documented rate limit — the WI-1b
+ * per-connector behavioral audit. Each value traces to a provider doc URL in its
+ * factory below; the derivation (documented sustained rate → chosen ceiling +
+ * safety margin) is recorded in
+ * docs/research/per-connector-rate-profiles-2026-06-13.md. None of the six emit
+ * detail gaps, so none declares a terminal-gap (§10-A) or cooldown (§10-B)
+ * profile — they legitimately use the safe shared defaults (see that doc).
  *
  * Ref: docs/research/slvp-ideal-whole-system-spec-2026-06-11.md §3, §9-C5, §10
+ *      docs/research/per-connector-rate-profiles-2026-06-13.md (WI-1b derivations)
  */
 
 /**
@@ -96,36 +101,89 @@ export interface ProviderCooldownProfile {
  */
 export interface ProviderProfile extends ProviderPacingProfile, ProviderTerminalGapProfile, ProviderCooldownProfile {}
 
-// ─── Conservative, UNAUDITED profiles for the governor-using API connectors ──
+// ─── Audited per-connector pacing profiles (WI-1b, §3 / §9-C5) ───────────────
 //
-// §9-C5: these are DELIBERATE conservative placeholders, NOT borrows of
-// ChatGPT's numbers. The pacing ceiling is intentionally SLOWER than ChatGPT's
-// account-tuned 250ms (a connector with an unknown quota should pace politely
-// until its real behavior is audited). Terminal/cooldown values are NOT declared
-// for these connectors — they opt OUT of those loops (terminalization skipped,
-// cooldown escalation disabled) rather than inheriting ChatGPT's budgets, which
-// is the honest default for an unaudited provider.
-//
-// TODO(1b — per-connector behavioral audit, OUT OF SCOPE here): replace each
-// placeholder with the provider's REAL observed values (429 semantics, binding
-// quota axis, recovery-window length). Until then these are conservative.
+// Each value below is a DECLARED ceiling derived from THAT provider's documented
+// rate limit — never a borrow of ChatGPT's 250ms, never a shared default. The
+// ceiling is the FASTEST inter-request interval the AIMD may reach; per spec §3
+// it is set AT OR BELOW the provider's documented sustained rate (a safety prior:
+// even a fully-accelerated controller stays under the provider's budget). The
+// derivation (documented limit → chosen ceiling + margin) for every connector is
+// recorded in docs/research/per-connector-rate-profiles-2026-06-13.md. All six
+// connectors are single-threaded (concurrency 1) and read-only, so the read/
+// primary limit — not upload/content-creation secondary limits — is the binding
+// axis. None of the six emits detail gaps, so none declares a terminal-gap
+// (§10-A) or cooldown (§10-B) profile; they use the safe shared defaults.
 
 /**
- * Conservative shared pacing ceiling (ms) for an UNAUDITED API connector: 1s
- * inter-request interval (~60 req/min). Deliberately ~4× slower than ChatGPT's
- * audited 250ms so an unknown-quota provider paces politely until its real
- * behavioral threshold is observed (task 1b). This is NOT a cross-provider
- * default in the loop — it is an explicit value each connector's profile points
- * at, so the declaration is intentional and grep-able, never an omission.
+ * GitHub — 1000ms (60 req/min). Documented primary limit: 5,000 requests/hour for
+ * authenticated users (=720ms / ~83 req/min at the limit); 1000ms is ~72% of that
+ * ceiling. Read-only, single-threaded, so the secondary content-creation /
+ * concurrency limits do not bind.
+ * Doc: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
  */
-export const UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS = 1000;
+export function githubPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 1000 };
+}
 
 /**
- * Build a conservative pacing profile for an unaudited API connector. Each
- * connector calls this EXPLICITLY (it does not inherit by omission), so the
- * value is a declared choice. Override `pacingMinIntervalMs` once the provider's
- * real flagging threshold is audited (1b).
+ * Notion — 500ms (120 req/min). Documented limit: an average of 3 requests/second
+ * per integration, bursts allowed (=333ms / 180 req/min at the average); 500ms is
+ * 2 req/s = ~67% of the documented average, sitting under the average (not just
+ * the burst peak).
+ * Doc: https://developers.notion.com/reference/request-limits
  */
-export function unauditedConservativePacingProfile(): ProviderPacingProfile {
-  return { pacingMinIntervalMs: UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS };
+export function notionPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 500 };
+}
+
+/**
+ * Oura — 250ms (240 req/min). Documented limit: 5,000 requests per 5-minute window
+ * (=16.67 req/s, 60ms / ~1000 req/min at the limit); 250ms is 4 req/s = ~24% of
+ * that ceiling — a deliberate 4× margin (we do not push to the 60ms hardware
+ * ceiling: daily-grain wellness data does not need 1000 req/min and the wide
+ * margin guards an undocumented per-account throttle).
+ * Doc: https://cloud.ouraring.com/docs/error-handling
+ */
+export function ouraPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 250 };
+}
+
+/**
+ * Spotify — 500ms (120 req/min). Spotify computes its limit over a rolling 30s
+ * window and does NOT publish the exact request count (it differs by app mode);
+ * the commonly-observed development-mode figure is ~180 req/min (=333ms at the
+ * cited rate). 500ms is ~67% of that — margin-heavy on purpose because the true
+ * limit is undisclosed; the connector honors Retry-After on 429.
+ * Doc: https://developer.spotify.com/documentation/web-api/concepts/rate-limits
+ */
+export function spotifyPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 500 };
+}
+
+/**
+ * Strava — 10000ms (6 req/min). The connector reads only NON-UPLOAD endpoints,
+ * whose default limit is 100 requests / 15 min + 1,000 / day (=0.111 req/s,
+ * 9000ms / ~6.67 req/min sustained on the binding 15-min window). 10000ms is set
+ * BELOW that sustained rate so a fully-accelerated controller can never drain the
+ * 100-req window faster than it refills — the most conservative of the six by
+ * design (tightest window + explicit ban warning). A real owner sync is a handful
+ * of paginated requests, so the slow ceiling costs nothing on the real workload.
+ * Doc: https://developers.strava.com/docs/rate-limits/
+ */
+export function stravaPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 10_000 };
+}
+
+/**
+ * YNAB — 20000ms (3 req/min). Documented limit: 200 requests per hour per access
+ * token over a rolling 1-hour window (=0.0556 req/s, 18000ms / ~3.33 req/min
+ * sustained). 20000ms is set BELOW that sustained rate so even a long run stays
+ * under the 200/hr budget at the ceiling. A typical YNAB run is only tens of
+ * requests (~7×budgets + one per walked month), so it finishes in a minute or two
+ * far under budget; the conservative ceiling only binds a pathological run.
+ * Doc: https://api.ynab.com/ (Usage → Rate Limiting)
+ */
+export function ynabPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 20_000 };
 }
