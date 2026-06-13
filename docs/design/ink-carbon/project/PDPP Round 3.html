@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1" name="viewport" />
+  <title>PDPP — Round 3, on the real surfaces</title>
+
+  <link href="reinvention/round3.css" rel="stylesheet" />
+
+  <script crossorigin="anonymous" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin="anonymous" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script crossorigin="anonymous" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+
+  <script src="reinvention/design-canvas.jsx" type="text/babel"></script>
+  <script src="reinvention/boards-round3.jsx" type="text/babel"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { DesignCanvas, DCSection, DCArtboard, R3Consent, R3Console } = window;
+
+    function App() {
+      return (
+        <DesignCanvas>
+          <DCSection
+            id="t1"
+            subtitle="Schibsted Grotesk + JetBrains Mono. Protocol ink blue, human terracotta. The carbon duplicate marks what the server keeps."
+            title="1 — Ink Carbon"
+          >
+            <DCArtboard id="t1-console" label="1a · Operator console (dark)" width={880} height={475}>
+              <R3Console t="t1" />
+            </DCArtboard>
+            <DCArtboard id="t1-consent" label="1b · Hosted consent (light)" width={560} height={655}>
+              <R3Consent t="t1" />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="t2"
+            subtitle="Mono-led: the protocol types. Ink + verdigris, bracketed [ENDORSEMENTS], duplicate retained — owner's file."
+            title="2 — Typed Record"
+          >
+            <DCArtboard id="t2-console" label="2a · Operator console (dark)" width={880} height={475}>
+              <R3Console t="t2" />
+            </DCArtboard>
+            <DCArtboard id="t2-consent" label="2b · Hosted consent (light)" width={560} height={655}>
+              <R3Consent t="t2" />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="t3"
+            subtitle="Hanken Grotesk, near-monochrome. One working blue, spent only on actions. Statuses are ink glyphs — ● ◐ ⊘."
+            title="3 — Civic Ink"
+          >
+            <DCArtboard id="t3-console" label="3a · Operator console (dark)" width={880} height={475}>
+              <R3Console t="t3" />
+            </DCArtboard>
+            <DCArtboard id="t3-consent" label="3b · Hosted consent (light)" width={560} height={655}>
+              <R3Consent t="t3" />
+            </DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

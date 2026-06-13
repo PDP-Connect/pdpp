@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>PDPP — Ink Carbon, the system sheet</title>
+<link href="colors_and_type.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 34px 38px 46px; background: var(--background); }
+header { margin-bottom: 26px; max-width: 760px; }
+h1 { font-family: var(--font-sans); font-size: 30px; font-weight: 800; letter-spacing: -0.022em; margin: 0; }
+.lede { font-family: var(--font-sans); font-size: 14.5px; color: var(--muted-foreground); margin: 10px 0 0; line-height: 1.6; }
+.lede b { color: var(--foreground); font-weight: 600; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 1480px; }
+figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+figcaption { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-foreground); }
+iframe { width: 100%; border: 1px solid var(--border-strong); background: var(--card); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ink Carbon</h1>
+  <p class="lede">The committed PDPP design system. <b>The carbon duplicate</b> marks what the server retains for you; <b>the typed voice</b> separates what the protocol writes from what humans read; <b>color is spent</b>, never sprayed; <b>paper is square</b>. Full doctrine in README.md — these are the live cards.</p>
+</header>
+<div class="grid">
+  <figure><figcaption>Brand</figcaption><iframe src="preview/brand-logo.html" style="height: 230px;" title="Brand"></iframe></figure>
+  <figure><figcaption>Sheets &amp; carbon</figcaption><iframe src="preview/components-cards.html" style="height: 260px;" title="Sheets"></iframe></figure>
+  <figure><figcaption>Grant record</figcaption><iframe src="preview/components-grant-card.html" style="height: 330px;" title="Grant record"></iframe></figure>
+  <figure><figcaption>Data list</figcaption><iframe src="preview/components-dataflow.html" style="height: 250px;" title="Data list"></iframe></figure>
+  <figure><figcaption>Consent scopes</figcaption><iframe src="preview/components-consent-row.html" style="height: 230px;" title="Consent scopes"></iframe></figure>
+  <figure><figcaption>Endorsements</figcaption><iframe src="preview/components-badges.html" style="height: 190px;" title="Endorsements"></iframe></figure>
+  <figure><figcaption>Buttons</figcaption><iframe src="preview/components-buttons.html" style="height: 150px;" title="Buttons"></iframe></figure>
+  <figure><figcaption>Inputs</figcaption><iframe src="preview/components-inputs.html" style="height: 200px;" title="Inputs"></iframe></figure>
+  <figure><figcaption>Type · display</figcaption><iframe src="preview/type-display.html" style="height: 230px;" title="Type display"></iframe></figure>
+  <figure><figcaption>Type · typed voice</figcaption><iframe src="preview/type-mono.html" style="height: 230px;" title="Typed voice"></iframe></figure>
+  <figure><figcaption>Type · body</figcaption><iframe src="preview/type-body.html" style="height: 220px;" title="Type body"></iframe></figure>
+  <figure><figcaption>Colors · core</figcaption><iframe src="preview/colors-primary.html" style="height: 170px;" title="Colors core"></iframe></figure>
+  <figure><figcaption>Colors · state</figcaption><iframe src="preview/colors-semantic.html" style="height: 170px;" title="Colors state"></iframe></figure>
+  <figure><figcaption>Spent color</figcaption><iframe src="preview/colors-washes.html" style="height: 230px;" title="Spent color"></iframe></figure>
+  <figure><figcaption>Elevation = carbon</figcaption><iframe src="preview/shadows.html" style="height: 230px;" title="Elevation"></iframe></figure>
+  <figure><figcaption>Corners</figcaption><iframe src="preview/radii.html" style="height: 190px;" title="Corners"></iframe></figure>
+  <figure><figcaption>Glyphs, not icons</figcaption><iframe src="preview/iconography.html" style="height: 200px;" title="Glyphs"></iframe></figure>
+  <figure><figcaption>Layout</figcaption><iframe src="preview/layout-grid.html" style="height: 220px;" title="Layout"></iframe></figure>
+  <figure><figcaption>Code</figcaption><iframe src="preview/components-code.html" style="height: 230px;" title="Code"></iframe></figure>
+  <figure><figcaption>Spacing</figcaption><iframe src="preview/spacing-scale.html" style="height: 170px;" title="Spacing"></iframe></figure>
+</div>
+</body>
+</html>

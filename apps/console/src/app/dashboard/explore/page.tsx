@@ -33,13 +33,28 @@
  * second surface ever needs them.
  */
 
-import { buildExplorerHref, RecordsExplorerView } from "@pdpp/operator-ui/components/views/records-explorer-view";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShell } from "@/components/ink-carbon/index.ts";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
+import { ExploreCanvas } from "./explore-canvas.tsx";
+import { buildPeekRelationships, type PeekRelationships } from "./explore-peek-relationships.ts";
+
+/** Parse the peek body JSON the assembler attached, for child → parent links. */
+function parsePeekData(bodyJson: string | null): Record<string, unknown> {
+  if (!bodyJson) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(bodyJson) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +68,9 @@ export default async function RecordsExplorerPage({
     peek?: string;
     since?: string;
     until?: string;
+    // Display sort order. Consumed by ExploreCanvas only — the live fetch is
+    // always recency-desc; "oldest" reverses the loaded window client-side.
+    order?: string;
   }>;
 }) {
   // Empty-query loads still need the DAL gate; verifying once up front keeps
@@ -64,22 +82,43 @@ export default async function RecordsExplorerPage({
   await getOwnerToken();
 
   const params = await searchParams;
+  const order = params.order === "oldest" ? "oldest" : "newest";
 
   try {
     const data = await assembleExplorerData(params, liveDashboardDataSource, getRsInternalUrl());
+    // Relationships for the inspected record come from declared metadata via the
+    // SAME `records/lib/relationships.ts` helpers the records detail page uses —
+    // resolved server-side here (links are plain serializable data) and passed
+    // to the client inspector. Only resolved when a readable record is open.
+    let peekRelationships: PeekRelationships | null = null;
+    if (data.peek && !data.peek.error && data.peek.connectionId) {
+      peekRelationships = await buildPeekRelationships(
+        {
+          connectorId: data.peek.connectorId,
+          connectionId: data.peek.connectionId,
+          stream: data.peek.stream,
+          recordId: data.peek.recordId,
+          data: parsePeekData(data.peek.bodyJson),
+        },
+        liveDashboardDataSource
+      );
+    }
     return (
-      <DashboardShell active="explore">
-        <RecordsExplorerView data={data} routes={dashboardRoutes} />
-        {/* Anchor for `buildExplorerHref` smoke during typecheck. */}
-        <span aria-hidden className="hidden" data-explorer-href={buildExplorerHref(dashboardRoutes, {})} />
-      </DashboardShell>
+      <RecordroomShell build="pdpp 0.1.0" host="this server">
+        <ExploreCanvas
+          data={data}
+          explorePath={dashboardRoutes.section.explore}
+          order={order}
+          peekRelationships={peekRelationships}
+        />
+      </RecordroomShell>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="explore">
+        <RecordroomShell build="pdpp 0.1.0" host="this server">
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;

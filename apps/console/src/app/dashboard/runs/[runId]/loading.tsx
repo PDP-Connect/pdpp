@@ -1,17 +1,18 @@
+import { RecordroomShell } from "@/components/ink-carbon/index.ts";
 import { DetailLoadingSkeleton } from "../../components/route-loading.tsx";
-import { DashboardShell } from "../../components/shell.tsx";
 
 /**
  * Route-level loading state for a single run's detail page.
  *
  * The run detail page resolves the run timeline (and, for live runs, sets up
- * polling), which can lag on a long or browser-bound run. Keep the shell
- * stable and animate a detail skeleton while it resolves.
+ * polling), which can lag on a long or browser-bound run. Show a stable Ink
+ * Carbon shell plus an animated detail skeleton while it resolves — the same
+ * frame the resolved detail renders, so there is no shell flash.
  */
 export default function RunDetailLoading() {
   return (
-    <DashboardShell active="runs">
+    <RecordroomShell>
       <DetailLoadingSkeleton label="this run" />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

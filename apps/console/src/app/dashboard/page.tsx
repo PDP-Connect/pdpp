@@ -1,138 +1,138 @@
-import { OverviewHero, OverviewHeroError, OverviewHeroPlaceholder } from "@pdpp/operator-ui/components/overview-hero";
-import { PageHeader } from "@pdpp/operator-ui/components/primitives";
-import {
-  AttentionOverview,
-  type AttentionOverviewData,
-  AttentionOverviewError,
-  AttentionOverviewPlaceholder,
-  RecentActivityError,
-  RecentActivityOverview,
-  type RecentActivityOverviewData,
-  RecentActivityPlaceholder,
-} from "@pdpp/operator-ui/components/views/overview-view";
+/**
+ * Dashboard home — the Ink Carbon "Standing" (Overview) view.
+ *
+ * Reskinned per docs/design/ink-carbon: a computed hero (one truth, calm |
+ * alarm | decide) over the owner's three questions — what can act as you, who
+ * can read parts of you, what's been read — plus "anything wrong".
+ *
+ * Data path is REAL: every section binds to the live owner-token data source
+ * (`liveDashboardDataSource`) plus `listOwnerIssuedClients` for the bearer tier.
+ * Each sub-fetch is fault-isolated so one failing surface degrades to empty
+ * rather than blanking the whole page; the hero still computes from what loaded.
+ *
+ * A DEV-ONLY seeded demo (`?demo=calm|alarm|decide`, blocked in production)
+ * lets a reviewer screenshot every hero tone without mutating real data. The
+ * live path never imports the fixtures when `demo` is absent.
+ */
+
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import { Suspense } from "react";
-import { DashboardShell } from "./components/shell.tsx";
-import { WebPushSettings } from "./components/web-push-settings.tsx";
+import { RecordroomShell } from "@/components/ink-carbon/index.ts";
+import { StandingOverview } from "./components/views/standing-overview.tsx";
+import { buildStandingData, type StandingHrefs, type StandingInputs } from "./components/views/standing-view-model.ts";
 import { rethrowControlFlow } from "./lib/control-flow.ts";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
-import { getWebPushConfig, listWebPushSubscriptions } from "./lib/ref-client.ts";
+import { getReferencePublicOrigin } from "./lib/owner-token.ts";
+import {
+  type GrantSummary,
+  listOwnerIssuedClients,
+  type OwnerIssuedClient,
+  type PendingApproval,
+  type RunSummary,
+  type TraceSummary,
+} from "./lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 
-function loadDashboardSummary() {
-  return liveDashboardDataSource.getDatasetSummary();
+const SCHEME_RE = /^https?:\/\//;
+
+const HREFS: StandingHrefs = {
+  grants: dashboardRoutes.section.grants,
+  traces: dashboardRoutes.section.traces,
+  deployment: dashboardRoutes.section.deployment,
+  deploymentTokens: dashboardRoutes.section.deploymentTokens,
+  grant: (id) => dashboardRoutes.grant(id),
+  run: (id) => dashboardRoutes.run(id),
+  trace: (id) => dashboardRoutes.trace(id),
+};
+
+/** Run a read, re-throwing control flow (redirects) but swallowing data errors. */
+async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    rethrowControlFlow(err);
+    return fallback;
+  }
 }
 
-async function loadAttentionSummary(): Promise<AttentionOverviewData> {
+async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [failedTraces, failedRuns] = await Promise.all([
-    ds.listTraces({ status: "failed", limit: 5 }),
-    ds.listRuns({ status: "failed", limit: 5 }),
+  const [summary, grantsRes, tracesRes, failedTracesRes, failedRunsRes, pendingRes, clientsRes] = await Promise.all([
+    safe(() => ds.getDatasetSummary(), null),
+    safe(() => ds.listGrants({ limit: 12 }), { data: [] as GrantSummary[], has_more: false, object: "list" as const }),
+    safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
+    safe(() => ds.listTraces({ status: "failed", limit: 5 }), {
+      data: [] as TraceSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safe(() => ds.listRuns({ status: "failed", limit: 5 }), {
+      data: [] as RunSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safe(() => ds.listPendingApprovals(), {
+      data: [] as PendingApproval[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safe(() => listOwnerIssuedClients(), {
+      data: [] as OwnerIssuedClient[],
+      has_more: false,
+      object: "list" as const,
+    }),
   ]);
+
   return {
-    failedTraces: failedTraces.data,
-    failedRuns: failedRuns.data,
-    actionNeeded: failedTraces.data.length + failedRuns.data.length,
+    now: new Date(),
+    hrefs: HREFS,
+    summary,
+    grants: grantsRes.data,
+    traces: tracesRes.data,
+    failedTraces: failedTracesRes.data,
+    failedRuns: failedRunsRes.data,
+    pendingApprovals: pendingRes.data,
+    bearerClients: clientsRes.data,
+    attentionCount: failedTracesRes.data.length + failedRunsRes.data.length,
   };
 }
 
-async function loadRecentActivity(): Promise<RecentActivityOverviewData> {
-  const ds = liveDashboardDataSource;
-  const [revokedGrants, deniedGrants, issuedGrants, recentRuns] = await Promise.all([
-    ds.listGrants({ status: "revoked", limit: 5 }),
-    ds.listGrants({ status: "denied", limit: 5 }),
-    ds.listGrants({ status: "issued", limit: 5 }),
-    ds.listRuns({ limit: 8 }),
-  ]);
-
-  const recentDecisions = [...revokedGrants.data, ...deniedGrants.data, ...issuedGrants.data]
-    .sort((a, b) => {
-      if (a.last_at < b.last_at) {
-        return 1;
-      }
-      if (a.last_at > b.last_at) {
-        return -1;
-      }
-      return 0;
-    })
-    .slice(0, 6);
-
-  return {
-    recentDecisions,
-    recentRuns: recentRuns.data,
-  };
+function stripScheme(url: string): string {
+  return url.replace(SCHEME_RE, "");
 }
 
-async function DatasetSummarySection() {
-  try {
-    const summary = await loadDashboardSummary();
-    return (
-      <OverviewHero
-        addSourceHref={dashboardRoutes.section.addSource}
-        exploreHref={dashboardRoutes.section.explore}
-        recordsHref={dashboardRoutes.section.records}
-        summary={summary}
-      />
-    );
-  } catch (err) {
-    // A redirect (e.g. owner-session re-auth) thrown by the read path is control
-    // flow, not a data error: re-throw it so the navigation runs instead of
-    // surfacing its `NEXT_REDIRECT` digest as the hero's error message.
-    rethrowControlFlow(err);
-    return <OverviewHeroError message={err instanceof Error ? err.message : undefined} />;
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const demoParam = typeof params.demo === "string" ? params.demo : undefined;
+  const demoAllowed = process.env.NODE_ENV !== "production";
+
+  let inputs: StandingInputs;
+  let notice: string | undefined;
+  if (demoAllowed && demoParam) {
+    const { buildDemoInputs, isDemoScenario } = await import("./components/views/standing-demo-data.ts");
+    const scenario = isDemoScenario(demoParam) ? demoParam : "calm";
+    inputs = buildDemoInputs(scenario, HREFS);
+    notice = `Seeded demo · ${scenario} state · fictional data`;
+  } else {
+    inputs = await loadStandingInputs();
   }
-}
 
-async function AttentionSection() {
-  try {
-    const data = await loadAttentionSummary();
-    return <AttentionOverview data={data} routes={dashboardRoutes} />;
-  } catch (err) {
-    rethrowControlFlow(err);
-    return <AttentionOverviewError />;
-  }
-}
+  const data = buildStandingData(inputs);
+  const host = stripScheme(await safe(() => getReferencePublicOrigin(), "this server"));
 
-async function RecentActivitySection() {
-  try {
-    const data = await loadRecentActivity();
-    return <RecentActivityOverview data={data} routes={dashboardRoutes} />;
-  } catch (err) {
-    rethrowControlFlow(err);
-    return <RecentActivityError />;
-  }
-}
-
-async function WebPushSettingsSection() {
-  try {
-    const [webPush, subscriptions] = await Promise.all([getWebPushConfig(), listWebPushSubscriptions()]);
-    return <WebPushSettings config={webPush} subscriptions={subscriptions.data} />;
-  } catch (err) {
-    rethrowControlFlow(err);
-    return null;
-  }
-}
-
-export default function DashboardPage() {
   return (
-    <DashboardShell active="overview">
-      <PageHeader
-        description="A local-first operator console for the PDPP reference stack. Inspect traces, grants, runs, and retained records."
-        title="Overview"
+    <RecordroomShell build="pdpp 0.1.0" host={host}>
+      <StandingOverview
+        data={data}
+        grantsHref={HREFS.grants}
+        notice={notice}
+        tokensHref={HREFS.deploymentTokens}
+        tracesHref={HREFS.traces}
       />
-      <Suspense fallback={<OverviewHeroPlaceholder />}>
-        <DatasetSummarySection />
-      </Suspense>
-      <Suspense fallback={<AttentionOverviewPlaceholder />}>
-        <AttentionSection />
-      </Suspense>
-      <Suspense fallback={<RecentActivityPlaceholder />}>
-        <RecentActivitySection />
-      </Suspense>
-      <Suspense fallback={null}>
-        <WebPushSettingsSection />
-      </Suspense>
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

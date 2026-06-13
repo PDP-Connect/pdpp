@@ -1,0 +1,217 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   INK CARBON — Token Layer
+   apps/console/src/components/ink-carbon/tokens.css
+
+   HOW TO EDIT A TOKEN
+   ──────────────────
+   Every visual property of the Ink Carbon system flows from CSS custom
+   properties defined here. To change a value, edit it in the :root block
+   (light mode) and in the .dark / [data-theme="dark"] block (dark mode).
+   The change propagates to every component that uses that token — no
+   component source needs to be touched.
+
+   ARCHITECTURE
+   ────────────
+   This file replaces the color/typography/geometry VALUES inside the
+   existing @pdpp/brand token namespace so that the console's @theme inline
+   mapping (globals.css) continues to resolve correctly. The NAMES stay
+   the same (--primary, --foreground, --card, --border, etc.). Only the
+   VALUES shift to the Ink Carbon palette.
+
+   Ink Carbon adds tokens the brand system did not have:
+     --human / --human-foreground / --human-tint
+     --carbon-outline / --carbon-fill / --carbon-offset
+     --border-strong
+     --primary-tint
+     --radius-control (2px — the ONLY non-zero radius in the system)
+     --radius (0px — sheets/paper are square)
+     --motion-state (shorthand for button/surface transitions)
+     --pdpp-sidebar-width
+
+   FONT STRATEGY
+   ─────────────
+   The brand package loads Geist + JetBrains Mono via @fontsource-variable.
+   Ink Carbon uses Schibsted Grotesk (sans) + JetBrains Mono (mono).
+   We override --font-sans here. Schibsted Grotesk is loaded via Google Fonts
+   in the layout (apps/console/src/app/layout.tsx — see font.ts next to this
+   file). JetBrains Mono is already provided by the brand package.
+
+   TWO TEMPERATURE RULE
+   ────────────────────
+   --primary (cool blue)  = the machine/protocol voice. IDs, scopes, times.
+   --human   (copper)     = the owner's acts. Consent buttons, warm surfaces.
+   Never mix them on the same surface. The font enforces it: mono=protocol,
+   grotesk=human.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Schibsted Grotesk fallback via Google Fonts CDN ────────────────
+   next/font/google is the primary loader (injected as --ink-carbon-sans).
+   This import provides the fallback for contexts where the Next.js font
+   variable is not available (static exports, storybook, jest).
+   The @import is ignored if the variable font is already loaded. */
+@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&display=swap');
+
+/* ─── Light mode (paper) ──────────────────────────────────────────── */
+:root {
+  /* ─── Fonts: the two voices ──────────────────────────────────────
+     --ink-carbon-sans is injected by next/font/google (Schibsted Grotesk)
+     in apps/console/src/app/layout.tsx. It falls back to the Google Fonts
+     CDN import in tokens.css if the font variable is not present (e.g. in
+     static export or test environments). */
+  --font-sans: var(--ink-carbon-sans, "Schibsted Grotesk"), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, monospace;
+
+  /* ─── Paper + ink ────────────────────────────────────────────── */
+  --background: oklch(0.985 0.004 90);
+  --foreground: oklch(0.18 0.005 270);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.005 270);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.005 270);
+
+  /* ─── Protocol ink (primary) — what the machine writes ──────── */
+  --primary: oklch(0.46 0.11 255);
+  --primary-foreground: oklch(0.99 0.002 90);
+  --primary-tint: oklch(0.46 0.11 255 / 0.08);
+
+  /* ─── Human warmth — where the owner acts ────────────────────── */
+  --human: oklch(0.55 0.11 45);
+  --human-foreground: oklch(0.99 0.005 90);
+  --human-tint: oklch(0.55 0.11 45 / 0.08);
+
+  /* ─── Carbon — the duplicate the server keeps ────────────────── */
+  --carbon-outline: oklch(0.46 0.11 255 / 0.40);
+  --carbon-fill: oklch(0.46 0.11 255 / 0.09);
+  --carbon-offset: 9px;
+
+  /* ─── Neutrals ──────────────────────────────────────────────── */
+  --secondary: oklch(0.955 0.004 270);
+  --secondary-foreground: oklch(0.22 0.005 270);
+  --muted: oklch(0.955 0.004 270);
+  --muted-foreground: oklch(0.47 0.008 270);
+  --accent: oklch(0.955 0.004 270);
+  --accent-foreground: oklch(0.22 0.005 270);
+  --border: oklch(0.905 0.005 270);
+  --border-strong: oklch(0.79 0.006 270);
+  --input: oklch(0.79 0.006 270);
+  --ring: oklch(0.46 0.11 255);
+
+  /* ─── State (spent, never sprayed) ──────────────────────────── */
+  --success: oklch(0.50 0.11 158);          /* recorded / active */
+  --success-tint: oklch(0.50 0.11 158 / 0.10);
+  --warning: oklch(0.58 0.13 70);           /* expiring */
+  --warning-tint: oklch(0.58 0.13 70 / 0.10);
+  --destructive: oklch(0.52 0.16 27);       /* destructive acts only */
+  --destructive-foreground: oklch(0.99 0.002 90);
+  --destructive-tint: oklch(0.52 0.16 27 / 0.08);
+
+  /* ─── Geometry — square paper ────────────────────────────────── */
+  --radius: 0px;             /* sheets, cards, panels = no rounding */
+  --radius-sm: 0px;          /* override brand sm */
+  --radius-md: 0px;          /* override brand md */
+  --radius-lg: 0px;          /* override brand lg */
+  --radius-control: 2px;     /* the ONLY rounding: inputs, buttons */
+
+  /* ─── Motion ─────────────────────────────────────────────────── */
+  --duration-instant: 0ms;
+  --duration-fast: 100ms;
+  --duration-base: 200ms;
+  --duration-moderate: 300ms;
+  --duration-slow: 500ms;
+  --motion-state: var(--duration-fast) ease;  /* button/badge state transitions */
+
+  /* ─── Layout ─────────────────────────────────────────────────── */
+  --pdpp-sidebar-width: 220px;
+
+  /* ─── Legacy aliases (explorer/labs compatibility) ──────────── */
+  --primary-wash: var(--primary-tint);
+  --human-wash: var(--human-tint);
+  --success-wash: var(--success-tint);
+  --success-wash-strong: oklch(0.50 0.11 158 / 0.16);
+  --warning-wash: var(--warning-tint);
+  --verified-wash: var(--success-tint);
+  --edu-fg: oklch(0.45 0.06 210);
+
+  /* ─── Surface tier (bridge to existing Tailwind utilities) ───── */
+  --surface-page: var(--background);
+  --surface-card: var(--card);
+  --surface-raised: var(--card);
+  --surface-overlay: var(--popover);
+}
+
+@media (min-width: 64rem) {
+  :root { --pdpp-sidebar-width: 240px; }
+}
+
+/* ─── Reduced motion ─────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-moderate: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+}
+
+/* ─── Dark mode — the operator's console ─────────────────────────
+   Charcoal with a cool cast; same semantics, lifted lightness.
+   The console is DARK-FIRST: this is the primary rendering context.
+
+   Selector matches `.dark` / `[data-theme="dark"]` on ANY element (not just
+   <html>), mirroring the @custom-variant dark in globals.css. This lets a
+   nested subtree opt into dark independently — the /design-system showcase
+   renders dark and light panels side by side — while the real app's
+   html.dark / html[data-theme="dark"] still match.
+
+   NOTE: a bare class/attribute list (specificity 0,1,0) is used deliberately —
+   it must out-rank the light :root block (specificity 0,0,1), otherwise the
+   light values would win on <html> and dark mode would never apply. */
+.dark,
+[data-theme="dark"] {
+  --background: oklch(0.17 0.006 262);
+  --foreground: oklch(0.95 0.005 262);
+  --card: oklch(0.21 0.007 262);
+  --card-foreground: oklch(0.95 0.005 262);
+  --popover: oklch(0.24 0.007 262);
+  --popover-foreground: oklch(0.95 0.005 262);
+
+  --primary: oklch(0.74 0.13 255);
+  --primary-foreground: oklch(0.15 0.01 262);
+  --primary-tint: oklch(0.74 0.13 255 / 0.13);
+
+  --human: oklch(0.76 0.12 45);
+  --human-foreground: oklch(0.16 0.01 45);
+  --human-tint: oklch(0.76 0.12 45 / 0.11);
+
+  --carbon-outline: oklch(0.74 0.13 255 / 0.62);
+  --carbon-fill: oklch(0.74 0.13 255 / 0.22);
+
+  --secondary: oklch(0.26 0.007 262);
+  --secondary-foreground: oklch(0.95 0.005 262);
+  --muted: oklch(0.24 0.007 262);
+  --muted-foreground: oklch(0.72 0.01 262);
+  --accent: oklch(0.26 0.007 262);
+  --accent-foreground: oklch(0.95 0.005 262);
+  --border: oklch(0.29 0.008 262);
+  --border-strong: oklch(0.40 0.008 262);
+  --input: oklch(0.34 0.008 262);
+  --ring: oklch(0.74 0.13 255);
+
+  --success: oklch(0.76 0.13 158);
+  --success-tint: oklch(0.76 0.13 158 / 0.14);
+  --warning: oklch(0.80 0.14 75);
+  --warning-tint: oklch(0.80 0.14 75 / 0.13);
+  --destructive: oklch(0.70 0.16 27);
+  --destructive-foreground: oklch(0.15 0.01 262);
+  --destructive-tint: oklch(0.70 0.16 27 / 0.12);
+
+  --primary-wash: var(--primary-tint);
+  --human-wash: var(--human-tint);
+  --success-wash: var(--success-tint);
+  --success-wash-strong: oklch(0.76 0.13 158 / 0.20);
+  --warning-wash: var(--warning-tint);
+  --verified-wash: var(--success-tint);
+  --edu-fg: oklch(0.78 0.06 210);
+
+  color-scheme: dark;
+}

@@ -1,0 +1,322 @@
+/* Recordroom — Sources (the loading dock). Master-detail layout for the
+ * redesigned console. Ported from docs/design/ink-carbon/project/recordroom/
+ * sources.css and rebound to the real records surface. Token-driven only:
+ * every color/length references a CSS var from ink-carbon/tokens.css. The kit
+ * primitives (.pdpp-sheet, .pdpp-kv, .pdpp-table, .pdpp-endorse, .pdpp-btn)
+ * carry their own styling — this file only does the page-level grid + the
+ * Sources-specific list/dot/manifest chrome the kit does not provide. */
+
+.rr-s {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .rr-s {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+
+/* ── Instance list ── */
+.rr-s-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-strong);
+  min-width: 0;
+}
+
+.rr-s-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 12px;
+  padding: 10px 0 11px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-state, 0.12s ease);
+  min-width: 0;
+}
+
+.rr-s-item:hover {
+  background: var(--muted);
+}
+
+.rr-s-item.is-on {
+  background: var(--primary-tint);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.rr-s-item__name {
+  /* The bold human name is the clear primary identity on row 1. */
+  grid-row: 1;
+  grid-column: 1;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rr-s-item.is-revoked .rr-s-item__name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--muted-foreground);
+}
+
+/* Account line — row 2, the muted metadata line under the name. The kind label
+   is folded in at the end (an inline trailing segment), so it can never clip the
+   card edge or collide with the row-1 health dot. */
+.rr-s-item__line {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  grid-row: 2;
+  grid-column: 1 / -1;
+}
+
+/* Connector kind — quiet secondary metadata, inline at the end of the account
+   line. Small, muted, low-emphasis protocol mono; a leading separator dot keeps
+   it distinct from the account text without competing. */
+.rr-s-item__kind {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+}
+.rr-s-item__kind::before {
+  content: " · ";
+  opacity: 0.6;
+}
+
+/* Health dot — pinned top-right on row 1, aligned with the name, so the
+   identity + health pair is the clean primary scan line and the dot is never
+   crowded by the kind label. */
+.rr-s-item__flag {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+  align-self: center;
+}
+
+/* Status dot — color is the ONE place state color is spent in the list. */
+.rr-s-dot {
+  font-size: 10px;
+  line-height: 1;
+}
+.rr-s-dot[data-tone="success"] {
+  color: var(--success);
+}
+.rr-s-dot[data-tone="warning"] {
+  color: var(--warning);
+}
+.rr-s-dot[data-tone="destructive"] {
+  color: var(--destructive);
+}
+.rr-s-dot[data-tone="muted"] {
+  color: var(--muted-foreground);
+}
+
+/* ── Add-a-source footer ── */
+.rr-s-end {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 0 0;
+}
+.rr-s-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--primary);
+  text-align: left;
+  cursor: pointer;
+  width: fit-content;
+}
+.rr-s-link:hover {
+  text-decoration: underline;
+}
+.rr-s-end__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+/* ── Detail column ── */
+.rr-s-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+
+.rr-s-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Next-action CTA pill — surfaces the formatted next_action honestly. */
+.rr-s-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-tint);
+  padding: 8px 12px;
+}
+.rr-s-cta__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.rr-s-cta__label:hover {
+  text-decoration: underline;
+}
+.rr-s-cta__caveat,
+.rr-s-cta__hint {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+/* Revoke confirmation ceremony row. */
+.rr-s-revoke {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--destructive);
+  background: var(--destructive-tint);
+  padding: 12px;
+  margin-top: 4px;
+}
+.rr-s-revoke__copy {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+.rr-s-revoke__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+.rr-s-revoke__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Inline action result / error banner. */
+.rr-s-toast {
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-left: 2px solid var(--muted-foreground);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.rr-s-toast[data-tone="error"] {
+  border-left-color: var(--destructive);
+  background: var(--destructive-tint);
+  color: var(--destructive);
+}
+.rr-s-toast[data-tone="ok"] {
+  border-left-color: var(--success);
+  background: var(--success-tint);
+  color: var(--foreground);
+}
+
+/* Revoked passport note (standing fact). */
+.rr-s-revoked-note {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  border-left: 2px solid var(--muted-foreground);
+  background: var(--muted);
+  padding: 8px 12px;
+}
+
+/* ── Stream manifest ── */
+.rr-s-manifest {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.rr-s-mini-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 6px;
+}
+.rr-s-mini-head__t {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin: 0;
+}
+.rr-s-mini-head__n {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.rr-s-cols {
+  --cols: minmax(0, 1.1fr) 76px 110px 64px minmax(0, 1fr);
+}
+
+.rr-s-stream {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--primary);
+}
+.rr-s-cursor {
+  font-family: var(--font-mono);
+  font-size: 0.69rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-s-readby {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  max-width: 62ch;
+}
+
+/* Empty state. */
+.rr-s-empty {
+  border: 1px dashed var(--border-strong);
+  padding: 32px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}

@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- @dsCard group="Brand" name="Brand" subtitle="Mark, wordmark, and the carbon signature" viewport="700x230" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Brand</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 24px 26px; background: var(--background); display: flex; align-items: center; gap: 34px; }
+.lockup { display: flex; align-items: center; gap: 12px; }
+.mark { width: 26px; height: 26px; position: relative; }
+.mark::before { content: ""; position: absolute; inset: 0; transform: translate(6px, 6px); background: var(--carbon-fill); border: 1px solid var(--carbon-outline); }
+.mark::after { content: ""; position: absolute; inset: 0; background: var(--foreground); }
+.word { font-family: var(--font-sans); font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.sub { font-family: var(--font-mono); font-size: 10px; color: var(--muted-foreground); letter-spacing: 0.1em; text-transform: uppercase; }
+.col { display: flex; flex-direction: column; gap: 4px; }
+.sig { flex: 1; max-width: 300px; }
+.claim { font-family: var(--font-sans); font-size: 13px; font-weight: 600; padding: 14px 16px; }
+.cap { font-family: var(--font-mono); font-size: 9.5px; color: var(--primary); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="col">
+  <div class="lockup">
+    <span class="mark"></span>
+    <span class="word">PDPP</span>
+  </div>
+  <span class="sub">The sheet casting its carbon — the mark is the doctrine</span>
+</div>
+<div class="sig">
+  <div class="pdpp-carbon">
+    <div class="pdpp-sheet">
+      <p class="claim">The protocol that always leaves you your copy.</p>
+    </div>
+  </div>
+  <p class="cap">The carbon — the brand's one signature move</p>
+</div>
+</body>
+</html>

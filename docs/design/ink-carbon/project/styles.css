@@ -1,0 +1,9 @@
+/* PDPP Design System — root stylesheet.
+   Single entry point for consumers: tokens + semantic type classes first,
+   then the component kit. App-specific chrome (explorer, labs) is layered
+   last and is safe to omit if you only need the core system. */
+
+@import url("colors_and_type.css");
+@import url("ui_kits/web/kit.css");
+@import url("explorer/explorer.css");
+@import url("labs/labs.css");

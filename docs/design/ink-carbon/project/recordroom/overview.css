@@ -1,0 +1,215 @@
+/* RECORDROOM — "Standing" home. Strong hierarchy, one warm moment. */
+
+.rr-stand { display: flex; flex-direction: column; gap: 34px; max-width: 1080px; }
+
+/* ─── The hero: the one truth, set large ─── */
+.rr-stand-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 30px 32px 28px;
+  border: 1px solid var(--border-strong);
+  position: relative;
+}
+.rr-stand-hero__kicker {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-stand-hero__line {
+  font-family: var(--font-sans);
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin: 0;
+  max-width: 22ch;
+  text-wrap: balance;
+}
+.rr-stand-hero__line em { font-style: normal; }
+.rr-stand-hero__sub {
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  margin: 2px 0 0;
+  max-width: 60ch;
+}
+.rr-stand-hero__foot { display: flex; align-items: center; gap: 16px; margin-top: 8px; flex-wrap: wrap; }
+
+/* Tone: calm — the one place warmth is spent */
+.rr-stand-hero.is-calm {
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-stand-hero.is-calm .rr-stand-hero__line em { color: var(--human); }
+.rr-stand-hero__seal {
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--human);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.rr-stand-hero__seal::before {
+  content: "";
+  width: 9px; height: 9px;
+  background: var(--human);
+  border-radius: 50%;
+}
+
+/* Tone: decide — a request awaits */
+.rr-stand-hero.is-decide { box-shadow: inset 3px 0 0 var(--human); }
+.rr-stand-hero.is-decide .rr-stand-hero__line em { color: var(--human); font-weight: 700; }
+
+/* Tone: alarm — something needs you */
+.rr-stand-hero.is-alarm {
+  border-color: var(--warning);
+  box-shadow: inset 3px 0 0 var(--warning);
+  background: var(--warning-tint);
+}
+.rr-stand-hero.is-alarm .rr-stand-hero__line em { color: var(--warning); font-weight: 700; }
+
+/* ─── What can act as you — the bearer tier, weightier on purpose ─── */
+.rr-bearer {
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-bearer__row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.rr-bearer__who { font-size: 0.95rem; font-weight: 700; }
+.rr-bearer__tag {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--human);
+  padding: 2px 7px;
+  box-shadow: inset 0 0 0 1px var(--human);
+  white-space: nowrap;
+}
+.rr-bearer__how {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  grid-column: 1 / 4;
+  grid-row: 2;
+}
+.rr-bearer__row .rr-rel__revoke { grid-row: 1 / span 2; grid-column: 4; opacity: 1; align-self: center; }
+.rr-bearer__note {
+  margin: 0;
+  padding: 11px 16px 13px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+/* ─── Two-question grid ─── */
+.rr-stand-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+}
+.rr-stand-block { display: flex; flex-direction: column; gap: 12px; }
+.rr-stand-block__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 8px;
+}
+.rr-stand-block__title {
+  font-family: var(--font-sans);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+/* Who can read you — relationships, not scope IDs */
+.rr-rel-list { display: flex; flex-direction: column; }
+.rr-rel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.rr-rel:last-child { border-bottom: 0; }
+.rr-rel__who { font-size: 0.95rem; font-weight: 600; }
+.rr-rel__reads {
+  grid-column: 1;
+  font-size: 0.84rem;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+.rr-rel__revoke {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--destructive);
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-state);
+}
+.rr-rel:hover .rr-rel__revoke, .rr-rel:focus-within .rr-rel__revoke { opacity: 1; }
+.rr-rel__revoke:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* What's crossed lately */
+.rr-lately { display: flex; flex-direction: column; }
+.rr-lately__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.rr-lately__row:last-child { border-bottom: 0; }
+.rr-lately__row.is-deny { box-shadow: inset 2px 0 0 var(--warning); padding-left: 10px; }
+.rr-lately__text { font-size: 0.84rem; line-height: 1.45; }
+.rr-lately__when {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* All clear */
+.rr-allclear {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-allclear__text { font-size: 0.88rem; color: var(--foreground); }
+.rr-stand-empty { font-size: 0.84rem; color: var(--muted-foreground); margin: 8px 0 0; }
+
+/* ─── Responsive ─── */
+@media (max-width: 900px) {
+  .rr-stand-grid { grid-template-columns: 1fr; gap: 26px; }
+  .rr-stand-hero__line { font-size: 2rem; }
+}
+@media (max-width: 560px) {
+  .rr-stand-hero { padding: 22px 18px; }
+  .rr-stand-hero__line { font-size: 1.6rem; }
+}

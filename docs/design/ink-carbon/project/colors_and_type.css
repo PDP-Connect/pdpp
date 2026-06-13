@@ -1,0 +1,336 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   PDPP Design System — INK CARBON
+   Tokens, type, motion, surfaces.
+
+   The premise: PDPP is the protocol that always leaves you your copy.
+   The system renders that promise literally —
+     · the carbon duplicate: pending/held objects cast an offset copy
+     · the typed voice: everything the protocol writes is mono;
+       everything addressed to a human is grotesk
+     · spent color: hue marks authorship and state, never decoration
+     · paper geometry: sheets are square; only controls get a 2px ease
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+:root {
+  /* ─── Fonts — the two voices ─────────────────────────────────── */
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* ─── Paper + ink ────────────────────────────────────────────── */
+  --background: oklch(0.985 0.004 90);
+  --foreground: oklch(0.18 0.005 270);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.005 270);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.005 270);
+
+  /* ─── Protocol ink (primary) — what the machine writes ──────── */
+  --primary: oklch(0.46 0.11 255);
+  --primary-foreground: oklch(0.99 0.002 90);
+  --primary-tint: oklch(0.46 0.11 255 / 0.08);
+
+  /* ─── Human warmth — where the owner acts ────────────────────── */
+  --human: oklch(0.55 0.11 45);
+  --human-foreground: oklch(0.99 0.005 90);
+  --human-tint: oklch(0.55 0.11 45 / 0.08);
+
+  /* ─── Carbon — the duplicate the server keeps ────────────────── */
+  --carbon-outline: oklch(0.46 0.11 255 / 0.40);
+  --carbon-fill: oklch(0.46 0.11 255 / 0.09);
+  --carbon-offset: 9px;
+
+  /* ─── Neutrals ──────────────────────────────────────────────── */
+  --secondary: oklch(0.955 0.004 270);
+  --secondary-foreground: oklch(0.22 0.005 270);
+  --muted: oklch(0.955 0.004 270);
+  --muted-foreground: oklch(0.47 0.008 270);
+  --accent: oklch(0.955 0.004 270);
+  --accent-foreground: oklch(0.22 0.005 270);
+  --border: oklch(0.905 0.005 270);
+  --border-strong: oklch(0.79 0.006 270);
+  --input: oklch(0.79 0.006 270);
+  --ring: oklch(0.46 0.11 255);
+
+  /* ─── State (spent, never sprayed) ──────────────────────────── */
+  --success: oklch(0.50 0.11 158);          /* recorded / active */
+  --success-tint: oklch(0.50 0.11 158 / 0.10);
+  --warning: oklch(0.58 0.13 70);           /* expiring */
+  --warning-tint: oklch(0.58 0.13 70 / 0.10);
+  --destructive: oklch(0.52 0.16 27);       /* destructive acts only */
+  --destructive-foreground: oklch(0.99 0.002 90);
+  --destructive-tint: oklch(0.52 0.16 27 / 0.08);
+
+  /* ─── Legacy aliases (explorer/labs compatibility) ──────────── */
+  --primary-wash: var(--primary-tint);
+  --human-wash: var(--human-tint);
+  --success-wash: var(--success-tint);
+  --success-wash-strong: oklch(0.50 0.11 158 / 0.16);
+  --warning-wash: var(--warning-tint);
+  --verified-wash: var(--success-tint);
+  --edu-fg: oklch(0.50 0.06 210);
+
+  /* ─── Geometry — paper is square, controls get a 2px ease ───── */
+  --radius: 0px;
+  --radius-control: 2px;
+
+  /* ─── Motion ────────────────────────────────────────────────── */
+  --duration-instant: 0ms; /* @kind other */
+  --duration-fast: 100ms; /* @kind other */
+  --duration-base: 200ms; /* @kind other */
+  --duration-moderate: 300ms; /* @kind other */
+  --duration-slow: 500ms; /* @kind other */
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1); /* @kind other */
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1); /* @kind other */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --motion-enter: var(--duration-moderate) var(--ease-enter); /* @kind other */
+  --motion-exit: var(--duration-fast) var(--ease-exit); /* @kind other */
+  --motion-state: var(--duration-base) var(--ease-standard); /* @kind other */
+  --stagger-fast: 30ms; /* @kind other */
+  --stagger-base: 50ms; /* @kind other */
+
+  /* ─── Layout ────────────────────────────────────────────────── */
+  --content-width: 760px;
+  --content-wide-width: 1200px;
+  --chrome-height: 3.5rem;
+  --pdpp-sidebar-width: 240px;
+}
+
+@media (min-width: 1440px) {
+  :root { --pdpp-sidebar-width: 280px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms; /* @kind other */
+    --duration-base: 0.01ms; /* @kind other */
+    --duration-moderate: 0.01ms; /* @kind other */
+    --duration-slow: 0.01ms; /* @kind other */
+  }
+}
+
+/* ─── Dark — the operator's console ───────────────────────────────
+   Charcoal with a cool cast; same semantics, lifted lightness. */
+:is(html.dark, html[data-theme="dark"]) {
+  --background: oklch(0.17 0.006 262);
+  --foreground: oklch(0.95 0.005 262);
+  --card: oklch(0.21 0.007 262);
+  --card-foreground: oklch(0.95 0.005 262);
+  --popover: oklch(0.24 0.007 262);
+  --popover-foreground: oklch(0.95 0.005 262);
+
+  --primary: oklch(0.74 0.13 255);
+  --primary-foreground: oklch(0.15 0.01 262);
+  --primary-tint: oklch(0.74 0.13 255 / 0.13);
+
+  --human: oklch(0.76 0.12 45);
+  --human-foreground: oklch(0.16 0.01 45);
+  --human-tint: oklch(0.76 0.12 45 / 0.11);
+
+  --carbon-outline: oklch(0.74 0.13 255 / 0.62);
+  --carbon-fill: oklch(0.74 0.13 255 / 0.22);
+
+  --secondary: oklch(0.26 0.007 262);
+  --secondary-foreground: oklch(0.95 0.005 262);
+  --muted: oklch(0.24 0.007 262);
+  --muted-foreground: oklch(0.72 0.01 262);
+  --accent: oklch(0.26 0.007 262);
+  --accent-foreground: oklch(0.95 0.005 262);
+  --border: oklch(0.29 0.008 262);
+  --border-strong: oklch(0.40 0.008 262);
+  --input: oklch(0.34 0.008 262);
+  --ring: oklch(0.74 0.13 255);
+
+  --success: oklch(0.76 0.13 158);
+  --success-tint: oklch(0.76 0.13 158 / 0.14);
+  --warning: oklch(0.80 0.14 75);
+  --warning-tint: oklch(0.80 0.14 75 / 0.13);
+  --destructive: oklch(0.70 0.16 27);
+  --destructive-foreground: oklch(0.15 0.01 262);
+  --destructive-tint: oklch(0.70 0.16 27 / 0.12);
+
+  --primary-wash: var(--primary-tint);
+  --human-wash: var(--human-tint);
+  --success-wash: var(--success-tint);
+  --success-wash-strong: oklch(0.76 0.13 158 / 0.20);
+  --warning-wash: var(--warning-tint);
+  --verified-wash: var(--success-tint);
+  --edu-fg: oklch(0.78 0.06 210);
+
+  color-scheme: dark;
+}
+
+/* ─── Base ────────────────────────────────────────────────────── */
+
+html {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  scrollbar-gutter: stable;
+}
+
+body {
+  margin: 0;
+  /* Flat paper. No corner washes, no top-of-page gradient — the page is a
+     document, and documents do not glow. */
+  background: var(--background);
+  color: var(--foreground);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+button, [role="button"] { cursor: pointer; }
+
+a { color: inherit; }
+
+code, pre, kbd, samp { font-family: var(--font-mono); }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: oklch(0 0 0 / 0.14); }
+::-webkit-scrollbar-thumb:hover { background: oklch(0 0 0 / 0.22); }
+:is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 0.14); }
+
+/* ─── Surfaces — flat tints, no accent stripe, no gradient ────────
+   The temperature system survives, rendered honestly: a protocol-authored
+   surface is a flat ink tint behind a hairline; a human surface is a flat
+   warm tint. The author shows in the VOICE (mono vs grotesk), not in a
+   colored fingernail. */
+
+[data-surface="human"] {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+}
+
+[data-surface="protocol"] {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+}
+
+[data-surface="stage"] {
+  background-color: var(--muted);
+  background-image: radial-gradient(circle, oklch(0 0 0 / 0.06) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* ─── The carbon duplicate ────────────────────────────────────────
+   The signature. Wrap a sheet in .pdpp-carbon and the server's copy shows
+   behind it, offset down-right. Use ONLY on objects the server retains on
+   the owner's behalf: a staged consent request, a held grant, an export
+   in flight. Never decoration; if nothing is retained, no carbon. */
+
+.pdpp-carbon { position: relative; }
+.pdpp-carbon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translate(var(--carbon-offset), var(--carbon-offset));
+  background: var(--carbon-fill);
+  border: 1px solid var(--carbon-outline);
+  pointer-events: none;
+}
+.pdpp-carbon > * { position: relative; }
+
+/* ─── Type scale ──────────────────────────────────────────────── */
+
+.pdpp-display-lg {
+  font-family: var(--font-sans);
+  font-size: 3.75rem;   /* 60px */
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.028em;
+}
+
+.pdpp-display {
+  font-family: var(--font-sans);
+  font-size: 2.5rem;    /* 40px */
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.022em;
+}
+
+.pdpp-heading {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;   /* 20px */
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.012em;
+}
+
+.pdpp-title {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;  /* 14px */
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.pdpp-body-lg {
+  font-family: var(--font-sans);
+  font-size: 1.125rem;  /* 18px */
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.pdpp-body {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;  /* 14px */
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.pdpp-label {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;   /* 12px */
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.pdpp-caption {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;   /* 12px */
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+/* The protocol's own voice — IDs, scopes, timestamps, terms. */
+.pdpp-typed {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem; /* 13px */
+  font-weight: 500;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.pdpp-typed-sm {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem; /* 11px */
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.pdpp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+/* ─── Helpers ─────────────────────────────────────────────────── */
+
+.pdpp-rules {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

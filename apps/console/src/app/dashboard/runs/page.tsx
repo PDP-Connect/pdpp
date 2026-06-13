@@ -1,32 +1,48 @@
-import { PageHeader } from "@pdpp/operator-ui/components/primitives";
-import { RunRow } from "@pdpp/operator-ui/components/run-row";
-import { isAwaitingInteraction } from "@pdpp/operator-ui/components/run-row-helpers";
-import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
+/**
+ * Syncs — the Recordroom reskin of the Runs route.
+ *
+ * Health-first: this surface answers "what was recently collected, and what (in
+ * plain English) needs my hand?" It fuses three real reference contracts:
+ *   - `_ref/runs`       → the runs feed, for per-connection Rhythm + last result
+ *   - `_ref/connectors` → per-connection health + schedule + stream list
+ * via the pure {@link buildSyncsViewModel}, then renders the {@link SyncsView}
+ * (Ink Carbon kit) inside the {@link RecordroomShell}.
+ *
+ * The route, its `?peek=` deep-link redirect, and the `listRuns` fetch are
+ * preserved (a held invariant: the peek redirect must run before any fetch and
+ * the page must never pull an inline run timeline).
+ */
+
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { redirect } from "next/navigation";
+import { RecordroomShell } from "@/components/ink-carbon";
 import { LivePoller } from "../components/live-poller.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { type ListResponse, listRuns, type RunSummary } from "../lib/ref-client.ts";
+import {
+  type ListResponse,
+  listConnectorSummaries,
+  listRuns,
+  type RefConnectorSummary,
+  type RunSummary,
+} from "../lib/ref-client.ts";
+import { DEMO_SYNCS_MODEL } from "./syncs-demo.ts";
+import { buildSyncsViewModel } from "./syncs-model.ts";
+import { SyncsView } from "./syncs-view.tsx";
 
 export const dynamic = "force-dynamic";
 
 interface Params {
   connector_id?: string;
   cursor?: string;
+  demo?: string;
   peek?: string;
   q?: string;
   status?: string;
 }
 
-function listHref(params: Params, overrides: Record<string, string | undefined> = {}): string {
-  const merged: Record<string, string | undefined> = { ...params, ...overrides };
-  const qs = Object.entries(merged)
-    .flatMap(([k, v]) =>
-      v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`]
-    )
-    .join("&");
-  return qs ? `/dashboard/runs?${qs}` : "/dashboard/runs";
+function isLiveRun(run: RunSummary): boolean {
+  return !["cancelled", "failed", "rejected", "succeeded"].includes(run.status);
 }
 
 export default async function RunsPage({ searchParams }: { searchParams: Promise<Params> }) {
@@ -35,118 +51,44 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     redirect(dashboardRoutes.run(params.peek));
   }
 
-  const filters = {
-    cursor: params.cursor,
-    status: params.status,
-    connector_id: params.connector_id,
-    q: params.q,
-    limit: 50,
-  };
+  // Dev/screenshot affordance: `?demo=...` renders a deterministic seeded model
+  // (incl. a source-pressure WAIT card and a genuine reconnect card) so the
+  // honesty of the copy is reviewable without a live throttled connection. The
+  // real data path is never touched when `demo` is absent.
+  if (params.demo) {
+    return (
+      <RecordroomShell>
+        <SyncsView model={DEMO_SYNCS_MODEL} seeded />
+      </RecordroomShell>
+    );
+  }
 
-  let result: ListResponse<RunSummary>;
+  let runsResult: ListResponse<RunSummary>;
+  let connectorsResult: ListResponse<RefConnectorSummary>;
   try {
-    result = await listRuns(filters);
+    [runsResult, connectorsResult] = await Promise.all([listRuns({ limit: 100 }), listConnectorSummaries()]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="runs">
-          <PageHeader title="Runs" />
+        <RecordroomShell>
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
   }
 
-  const activeFilters = [
-    params.status ? { label: "status", value: params.status } : null,
-    params.connector_id ? { label: "connector", value: params.connector_id } : null,
-    params.q ? { label: "query", value: params.q } : null,
-  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  const model = buildSyncsViewModel({
+    connectors: connectorsResult.data,
+    runs: runsResult.data,
+  });
 
-  // Auto-refresh this list whenever a run is still running or waiting on
-  // operator input. The reference summary computes `needs_input` from
-  // interaction ids; `kinds` is only an event-type vocabulary and is too lossy
-  // for pending-interaction state.
-  const liveRunCount = result.data.filter(isLiveRun).length;
-  const viewParams: ListWithPeekParams<RunSummary> = {
-    active: "runs",
-    routes: dashboardRoutes,
-    subject: "run",
-    title: "Runs",
-    description: "Connector runs and their lifecycle: staging, advance, progress, and failures.",
-    result,
-    rowKey: (run) => run.run_id,
-    renderRow: (run, { peeked, href }) => <RunRow chips href={href} peeked={peeked} run={run} />,
-    dateGroupKey: (run) => runDateGroup(run.last_at),
-    filters: {
-      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
-      connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },
-      status: {
-        name: "status",
-        defaultValue: params.status ?? "",
-        options: [
-          { value: "failed", label: "failed" },
-          { value: "succeeded", label: "succeeded" },
-          { value: "cancelled", label: "cancelled" },
-          { value: "started", label: "started" },
-          { value: "waiting_for_browser_surface", label: "waiting for browser" },
-          { value: "deferred", label: "deferred" },
-        ],
-      },
-    },
-    activeFilterChips: activeFilters,
-    resetHref: "/dashboard/runs",
-    buildListHref: (overrides) => listHref(params, overrides),
-    peekId: undefined,
-    peekEnvelope: null,
-    peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
-    emptyTitle: "No runs yet",
-    emptyHint: "Run artifacts appear after connector runs stage, advance, or fail.",
-  };
+  const liveRunCount = runsResult.data.filter(isLiveRun).length;
 
   return (
-    <DashboardShell active="runs">
+    <RecordroomShell>
       <LivePoller enabled={liveRunCount > 0} />
-      <ListWithPeekView params={viewParams} />
-    </DashboardShell>
+      <SyncsView model={model} />
+    </RecordroomShell>
   );
-}
-
-// A run is "live" (worth auto-polling) if it is non-terminal OR is waiting
-// on operator input.
-function isLiveRun(run: RunSummary): boolean {
-  if (!isTerminalRunStatus(run.status)) {
-    return true;
-  }
-  return isAwaitingInteraction(run);
-}
-
-function isTerminalRunStatus(status: string): boolean {
-  return ["cancelled", "failed", "rejected", "succeeded"].includes(status);
-}
-
-/**
- * Map an ISO timestamp to a human-readable date group label for the runs list.
- * "Today" / "Yesterday" for the two most recent days; a locale date string
- * (e.g. "Jun 8, 2026") for older entries. The comparison uses the local
- * calendar day of the JS runtime (the server), which is fine for an operator
- * console — precision to the exact viewer timezone is not required.
- */
-function runDateGroup(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown date";
-  }
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-  const itemDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  if (itemDay.getTime() === today.getTime()) {
-    return "Today";
-  }
-  if (itemDay.getTime() === yesterday.getTime()) {
-    return "Yesterday";
-  }
-  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }

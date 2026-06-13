@@ -95,7 +95,13 @@
         "src/components/pdpp/*.tsx",
         "src/components/theme/*.ts",
         "src/components/theme/*.tsx",
-        "src/components/pdpp-logo.tsx"
+        "src/components/pdpp-logo.tsx",
+        // Ink Carbon design-system barrel — a single index.ts that re-exports
+        // every component in the library. This is intentional: the barrel is
+        // the public API surface of a bounded component library, not the
+        // anti-pattern (re-exporting an entire feature directory). Tree-shaking
+        // and the Next.js bundler handle this correctly.
+        "src/components/ink-carbon/index.ts"
       ],
       "linter": {
         "rules": {

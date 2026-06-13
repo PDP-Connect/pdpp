@@ -1,0 +1,88 @@
+/* RECORDROOM — fixture data for the full console surface (window.RR2). */
+window.RR2 = {
+  traces: [
+    { id: "trc_9f2k0419", t: "2026-06-11 07:58:12Z", client: "Longview Planning", grant: "grt_lngvw_01", stream: "pay_statements", op: "records.query", records: 12, fields: "5/8", dur: "42 ms", decision: "allow",
+      steps: [
+        ["token", "DPoP verified · client longview_planning_v1"],
+        ["grant", "grt_lngvw_01 active · purpose long_term_financial_planning"],
+        ["projection", "8 fields requested → 5 allowed by grant"],
+        ["response", "12 records · append-only cursor advanced · 42 ms"],
+      ] },
+    { id: "trc_3km1180a", t: "2026-06-11 06:02:44Z", client: "Concert Recommendations", grant: "grt_cncrt_02", stream: "listening_history", op: "records.query", records: 214, fields: "3/5", dur: "61 ms", decision: "allow",
+      steps: [
+        ["token", "DPoP verified · client concert_recs_v2"],
+        ["grant", "grt_cncrt_02 continuous · rolling 12 mo window"],
+        ["projection", "5 fields requested → 3 allowed by grant"],
+        ["response", "214 records · 61 ms"],
+      ] },
+    { id: "trc_77fe2c01", t: "2026-06-10 22:17:09Z", client: "Longview Planning", grant: "grt_lngvw_01", stream: "employment", op: "records.query", records: 4, fields: "3/5", dur: "12 ms", decision: "allow",
+      steps: [
+        ["token", "DPoP verified · client longview_planning_v1"],
+        ["grant", "grt_lngvw_01 active · purpose long_term_financial_planning"],
+        ["projection", "5 fields requested → 3 allowed by grant"],
+        ["response", "4 records · 12 ms"],
+      ] },
+    { id: "trc_b2d90377", t: "2026-06-10 22:17:08Z", client: "Longview Planning", grant: "grt_lngvw_01", stream: "tax_docs", op: "records.query", records: 0, fields: "—", dur: "4 ms", decision: "deny", reason: "scope not granted",
+      steps: [
+        ["token", "DPoP verified · client longview_planning_v1"],
+        ["grant", "tax_docs.read not in grant — declined by owner at consent"],
+        ["deny", "request refused · nothing crossed · 4 ms"],
+      ] },
+    { id: "trc_8d114b2e", t: "2026-05-02 14:39:51Z", client: "Crosswise Ads", grant: "grt_xwise_09", stream: "transactions", op: "records.query", records: 0, fields: "—", dur: "6 ms", decision: "deny", reason: "grant revoked",
+      steps: [
+        ["token", "DPoP verified · client crosswise_ads_v1"],
+        ["grant", "grt_xwise_09 revoked 2026-05-02 14:40Z · by owner"],
+        ["deny", "request refused · revocation authoritative at server · 6 ms"],
+      ] },
+  ],
+  runs: [
+    { id: "run_a6e201", connector: "Northstar HR", stream: "pay_statements", started: "2026-06-11 06:00Z", dur: "18 s", upserts: 2, cursor: "→ 2026-06-01", status: "ok" },
+    { id: "run_a6e1f4", connector: "Tonal", stream: "listening_history", started: "2026-06-11 05:45Z", dur: "7 s", upserts: 96, cursor: "→ 05:45Z", status: "ok" },
+    { id: "run_a6df02", connector: "First Meridian", stream: "transactions", started: "2026-06-11 05:00Z", dur: "31 s", upserts: 41, cursor: "→ 06-10", status: "ok" },
+    { id: "run_a6d0c8", connector: "First Meridian", stream: "transactions", started: "2026-06-10 05:00Z", dur: "2 s", upserts: 0, cursor: "held", status: "failed", note: "OFX session expired — reauthorize connector" },
+    { id: "run_a6cf11", connector: "Northstar HR", stream: "employment", started: "2026-06-10 06:00Z", dur: "4 s", upserts: 0, cursor: "—", status: "ok" },
+  ],
+  schedules: [
+    { connector: "Northstar HR", stream: "pay_statements", cadence: "daily · 06:00Z", next: "2026-06-12 06:00Z", last: "ok" },
+    { connector: "Northstar HR", stream: "employment", cadence: "daily · 06:00Z", next: "2026-06-12 06:00Z", last: "ok" },
+    { connector: "First Meridian", stream: "transactions", cadence: "daily · 05:00Z", next: "2026-06-12 05:00Z", last: "failed" },
+    { connector: "Tonal", stream: "listening_history", cadence: "every 15 min", next: "06:00Z", last: "ok" },
+    { connector: "Northstar HR", stream: "tax_docs", cadence: "yearly · Feb 01", next: "2027-02-01", last: "ok" },
+  ],
+  sources: [
+    { name: "Northstar HR", kind: "employer payroll", streams: "pay_statements · employment · tax_docs", auth: "service token", authOk: true, last: "2026-06-11 06:00Z" },
+    { name: "First Meridian", kind: "bank · OFX", streams: "transactions", auth: "session expired", authOk: false, last: "2026-06-11 05:00Z" },
+    { name: "Tonal", kind: "music service", streams: "listening_history", auth: "oauth refresh", authOk: true, last: "2026-06-11 05:45Z" },
+  ],
+  feed: [
+    { t: "06-11 06:00Z", stream: "pay_statements", body: "Acme Co · 2026-05 · gross $5,210.00 · net $3,508.12", id: "rec_ps_0312" },
+    { t: "06-11 05:45Z", stream: "listening_history", body: "96 plays upserted · Tonal", id: "rec_lh_6597" },
+    { t: "06-11 05:00Z", stream: "transactions", body: "41 records · First Meridian · 06-10 cursor", id: "rec_tx_41203" },
+    { t: "06-10 06:00Z", stream: "pay_statements", body: "Acme Co · 2026-05 · correction · taxes_withheld", id: "rec_ps_0311" },
+    { t: "06-09 11:38Z", stream: "tax_docs", body: "W-2 · 2025 · Acme Co · document_blob 218 KB", id: "rec_td_0012" },
+    { t: "06-08 06:00Z", stream: "employment", body: "Acme Co · senior analyst · 2023-04 → present", id: "rec_em_0004" },
+  ],
+  apps: [
+    { name: "Claude Desktop", via: "MCP · stdio bridge", status: "connected", detail: "reads via grants only · no owner token", added: "2026-03-02" },
+    { name: "Cursor", via: "MCP · device code", status: "pending", detail: "code KZT-44Q · expires in 9 min", added: "—" },
+  ],
+  checks: [
+    { name: "AS discovery", detail: "/.well-known/oauth-authorization-server · 200", ok: true },
+    { name: "RS discovery", detail: "/.well-known/oauth-protected-resource · 200", ok: true },
+    { name: "TLS certificate", detail: "rs.okafor.recordroom.net · expires 2026-09-01", ok: true },
+    { name: "Owner password", detail: "set · gates consent, devices, console", ok: true },
+    { name: "Version", detail: "pdpp 0.1.0 · reference implementation · current", ok: true },
+    { name: "Backups", detail: "no snapshot target configured", ok: false },
+  ],
+  tokens: [
+    { id: "tok_owner_01", label: "CLI on framework", created: "2026-04-18", last: "2026-06-10 21:12Z" },
+  ],
+  exporters: [
+    { device: "iPhone 15 · Photos exporter", last: "2026-06-10 21:12Z", records: "1,204", status: "ok" },
+    { device: "MacBook · Browser history", last: "paused by owner", records: "—", status: "paused" },
+  ],
+  subscriptions: [
+    { url: "https://hooks.okafor.net/pdpp", events: "grant.created · grant.revoked", status: "active" },
+    { url: "ntfy.sh/okafor-recordroom", events: "run.failed", status: "active" },
+  ],
+};

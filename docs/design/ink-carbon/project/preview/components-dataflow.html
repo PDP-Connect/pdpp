@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Table" subtitle="The aligned list — shared column axis, mandatory headers" viewport="700x270" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Data list</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px; background: var(--background); }
+</style>
+</head>
+<body>
+<div class="pdpp-table" style="--cols: minmax(150px, 1.1fr) minmax(0, 1.5fr) 104px 96px;">
+  <div class="pdpp-table__hrow">
+    <span class="pdpp-table__h">client</span>
+    <span class="pdpp-table__h">scopes</span>
+    <span class="pdpp-table__h">status</span>
+    <span class="pdpp-table__h u-r">expires</span>
+  </div>
+  <div class="pdpp-data-row">
+    <span class="pdpp-data-row__who">
+      <span class="pdpp-data-row__title">Longview Planning</span>
+      <span class="pdpp-data-row__id">grt_lngvw_01</span>
+    </span>
+    <span class="pdpp-data-row__detail">pay_statements.read · employment.read</span>
+    <span><span class="pdpp-endorse pdpp-endorse--active">active</span></span>
+    <span class="pdpp-data-row__meta">exp 12-14</span>
+  </div>
+  <div class="pdpp-data-row">
+    <span class="pdpp-data-row__who">
+      <span class="pdpp-data-row__title">Concert Recommendations</span>
+      <span class="pdpp-data-row__id">grt_cncrt_02</span>
+    </span>
+    <span class="pdpp-data-row__detail">listening_history.read</span>
+    <span><span class="pdpp-endorse pdpp-endorse--continuous">continuous</span></span>
+    <span class="pdpp-data-row__meta">renews</span>
+  </div>
+  <div class="pdpp-data-row pdpp-data-row--revoked">
+    <span class="pdpp-data-row__who">
+      <span class="pdpp-data-row__title">Crosswise Ads</span>
+      <span class="pdpp-data-row__id">grt_xwise_09</span>
+    </span>
+    <span class="pdpp-data-row__detail">browsing.read</span>
+    <span><span class="pdpp-endorse pdpp-endorse--revoked">revoked</span></span>
+    <span class="pdpp-data-row__meta">05-02</span>
+  </div>
+</div>
+</body>
+</html>

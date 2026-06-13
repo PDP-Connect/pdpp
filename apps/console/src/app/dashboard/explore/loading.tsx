@@ -1,5 +1,5 @@
+import { RecordroomShell } from "@/components/ink-carbon/index.ts";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for the Records Explorer.
@@ -7,13 +7,13 @@ import { DashboardShell } from "../components/shell.tsx";
  * `/dashboard/explore` is `force-dynamic` and, before it can paint, fans out to
  * connector summaries, connector manifests, and either a hybrid/lexical search
  * or an empty-query recency read — one of the heavier dashboard surfaces. Show a
- * stable shell plus an animated list skeleton instead of a blank frame while it
- * resolves.
+ * stable Ink Carbon shell plus an animated list skeleton instead of a blank
+ * frame while it resolves.
  */
 export default function ExploreLoading() {
   return (
-    <DashboardShell active="explore">
+    <RecordroomShell build="pdpp 0.1.0" host="this server">
       <ListLoadingSkeleton label="records" rows={8} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

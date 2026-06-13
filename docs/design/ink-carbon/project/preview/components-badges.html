@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Endorsements" subtitle="Status, typed by the protocol — and neutral tags" viewport="700x190" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Endorsements</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 20px 24px; background: var(--background); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div class="lbl">endorsements — state color is spent here and only here</div>
+<div class="row">
+  <span class="pdpp-endorse pdpp-endorse--active">active</span>
+  <span class="pdpp-endorse pdpp-endorse--continuous">continuous</span>
+  <span class="pdpp-endorse pdpp-endorse--expiring">expiring 26h</span>
+  <span class="pdpp-endorse pdpp-endorse--revoked">revoked</span>
+  <span class="pdpp-endorse pdpp-endorse--denied">denied</span>
+</div>
+<div class="lbl">taxonomy tags — typed, no color spent</div>
+<div class="row">
+  <span class="pdpp-tag">append only</span>
+  <span class="pdpp-tag">owner device flow</span>
+  <span class="pdpp-tag">v0.1.0</span>
+  <span class="pdpp-tag">draft</span>
+</div>
+</body>
+</html>

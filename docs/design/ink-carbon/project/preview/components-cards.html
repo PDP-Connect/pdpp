@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Sheets & carbon" subtitle="The paper artifact — and the duplicate the server keeps" viewport="700x260" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Sheets</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px 30px; background: var(--background); display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: start; }
+.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); margin-bottom: 8px; }
+.demo-body { font-family: var(--font-sans); font-size: 12.5px; color: var(--muted-foreground); margin: 0; }
+</style>
+</head>
+<body>
+<div>
+  <div class="lbl">pdpp-sheet — plain</div>
+  <div class="pdpp-sheet">
+    <div class="pdpp-sheet__head">
+      <h3 class="pdpp-sheet__title">Grant record</h3>
+      <span class="pdpp-sheet__serial">grt_lngvw_01</span>
+    </div>
+    <div class="pdpp-sheet__body">
+      <p class="demo-body">A sheet is square paper behind a hairline. No shadow, no rounding, no stripe.</p>
+    </div>
+  </div>
+</div>
+<div>
+  <div class="lbl">pdpp-carbon — only when the server retains a copy</div>
+  <div class="pdpp-carbon">
+    <div class="pdpp-sheet">
+      <div class="pdpp-sheet__head">
+        <h3 class="pdpp-sheet__title">Access request</h3>
+        <span class="pdpp-sheet__serial">staged · PAR</span>
+      </div>
+      <div class="pdpp-sheet__foot">
+        <span class="pdpp-copyline">Carbon — your copy stays here</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
