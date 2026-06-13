@@ -122,3 +122,13 @@ warnings, not as generic protocol failures.
 - **THEN** the batch SHALL carry a safe missing-media coverage gap
 - **AND** accepted text or metadata records SHALL remain valid if their stream
   schema permits missing media.
+
+#### Scenario: Export includes media that is not yet attachable to records
+
+- **WHEN** an owner-provided artifact includes media files in a provider export
+  variant that the connector can safely validate
+- **THEN** the runtime SHALL NOT reject otherwise valid text or metadata records
+  solely because media attachment is a separate acquisition or merge path
+- **AND** the batch SHALL represent included media as coverage evidence, not as
+  completed record-level media attachment unless connector evidence proves that
+  relationship.

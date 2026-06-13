@@ -75,6 +75,7 @@ export default async function ManualUploadConnectPage({
   });
   const resolvedSearchParams = await searchParams;
   const error = firstValue(resolvedSearchParams.error);
+  const targetConnectionId = firstValue(resolvedSearchParams.connection_id) ?? null;
 
   // Primary acquisition methods lead; advanced/secondary paths sit behind one
   // disclosure so the recommended path is obvious and the page stays low-noise.
@@ -90,8 +91,8 @@ export default async function ManualUploadConnectPage({
           </Link>
         }
         breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: `Import ${setup.display_name}` }]}
-        description="Bring your exported data in. Pick the file you exported, PDPP validates it before anything is committed, then imports it and shows a durable coverage receipt you can revisit."
-        title={`Import ${setup.display_name}`}
+        description="Bring your exported data in. Pick the supported file you have. PDPP validates it before anything is committed, then imports it and shows a durable coverage receipt you can revisit."
+        title={targetConnectionId ? `Import another ${setup.display_name} file` : `Import ${setup.display_name}`}
       />
 
       <div className="mb-5 grid gap-2">{error ? <InlineNotice message={error} /> : null}</div>
@@ -122,7 +123,7 @@ export default async function ManualUploadConnectPage({
             </div>
           </details>
         ) : null}
-        <ManualUploadForm setup={setup} />
+        <ManualUploadForm setup={setup} targetConnectionId={targetConnectionId} />
         {setup.large_file_fallback ? (
           <p className="pdpp-caption mt-3 max-w-2xl text-muted-foreground">{setup.large_file_fallback}</p>
         ) : null}
@@ -130,7 +131,7 @@ export default async function ManualUploadConnectPage({
 
       <Callout
         className="mt-5"
-        description="After this import, revisit the source from its status page to import another export. Each import keeps the same source identity and records its own coverage provenance."
+        description="After the first import, revisit the source from its status page to import another export into the same source. Use Add source again only for a different account, profile, device, or source identity."
         surface="human"
         title="This is a file import"
       >

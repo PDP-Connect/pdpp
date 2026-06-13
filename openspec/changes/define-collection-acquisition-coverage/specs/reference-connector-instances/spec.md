@@ -29,6 +29,15 @@ connection when the owner is strengthening coverage for the same logical source.
   source-instance identity rather than merging it into an existing connection by
   connector type alone.
 
+#### Scenario: Owner adds another artifact to the same source
+
+- **WHEN** an owner imports another supported artifact for the same account,
+  profile, device, local binding, or source identity
+- **THEN** the reference SHALL allow that artifact to target the existing
+  manual/upload connection
+- **AND** it SHALL preserve a distinct acquisition-batch receipt for the new
+  artifact.
+
 ### Requirement: Same-stream writes from multiple acquisition paths SHALL be explicit and non-destructive
 
 When multiple acquisition paths write to the same stream for one connection, the reference SHALL preserve record identity, acquisition provenance, and coverage claim attribution.

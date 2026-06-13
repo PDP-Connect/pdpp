@@ -4,8 +4,8 @@
  * PDPP WhatsApp Connector (v0.1.0)
  *
  * Auth: none (file-based). User exports chats from the WhatsApp app
- * ("Chat" → menu → Export Chat → Without Media) and drops .txt files
- * (or .zip containing .txt) into WHATSAPP_EXPORT_DIR.
+ * ("Chat" → menu → Export Chat → With or Without Media) and drops .txt
+ * files or WhatsApp export .zip files into WHATSAPP_EXPORT_DIR.
  *
  * Uses the community-standard WhatsApp chat-export format. We parse
  * directly (no external dep for v1) — supports iPhone + Android formats.
@@ -18,13 +18,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { nowIso, type ParsedWhatsAppChat, parseWhatsAppChatFile } from "./parsers.ts";
+import { extractWhatsAppChatArtifact, nowIso, type ParsedWhatsAppChat, parseWhatsAppChatFile } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 
 // ─── Fingerprinted record emission ───────────────────────────────────────────
 
 type EmitRecord = (stream: string, record: Record<string, unknown>) => Promise<void>;
+type EmitEvent = (event: { message: string; type: "PROGRESS" }) => Promise<void>;
 type FingerprintCursor = ReturnType<typeof openFingerprintCursor>;
+const SUPPORTED_EXPORT_EXTENSIONS = [".txt", ".zip"] as const;
+
+function isSupportedExportFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return SUPPORTED_EXPORT_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
 
 async function emitChatRecord(
   parsed: ParsedWhatsAppChat,
@@ -70,6 +77,26 @@ async function emitMessageRecords(
   }
 }
 
+async function parseExportFile(
+  importDir: string,
+  fileName: string,
+  emit: EmitEvent
+): Promise<ParsedWhatsAppChat | null> {
+  const content = await readFile(join(importDir, fileName)).catch((): Buffer => Buffer.alloc(0));
+  if (content.length === 0) {
+    return null;
+  }
+  const artifact = extractWhatsAppChatArtifact(fileName, content);
+  if (!artifact) {
+    await emit({
+      type: "PROGRESS",
+      message: `Skipped ${fileName}: not a supported WhatsApp chat export`,
+    });
+    return null;
+  }
+  return parseWhatsAppChatFile(artifact.chatFileName, artifact.text);
+}
+
 runConnector({
   name: "whatsapp",
   validateRecord,
@@ -88,7 +115,7 @@ runConnector({
 
     let files: string[];
     try {
-      files = (await readdir(importDir)).filter((f) => f.toLowerCase().endsWith(".txt"));
+      files = (await readdir(importDir)).filter(isSupportedExportFile);
     } catch {
       throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`);
     }
@@ -97,17 +124,16 @@ runConnector({
         type: "SKIP_RESULT",
         stream: "chats",
         reason: "no_exports_found",
-        message: `No .txt exports in ${importDir}. Export chats from WhatsApp and drop files here.`,
+        message: `No .txt or .zip exports in ${importDir}. Export chats from WhatsApp and drop files here.`,
       });
       return;
     }
 
     for (const f of files) {
-      const content = await readFile(join(importDir, f), "utf8").catch((): string => "");
-      if (!content) {
+      const parsed = await parseExportFile(importDir, f, emit);
+      if (!parsed) {
         continue;
       }
-      const parsed = parseWhatsAppChatFile(f, content);
       const first = parsed.messages[0]?.sent_at || null;
       const last = parsed.messages.at(-1)?.sent_at || null;
 

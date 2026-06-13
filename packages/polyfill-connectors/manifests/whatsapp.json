@@ -19,36 +19,37 @@
     "modality": "manual_or_upload",
     "manual_or_upload": {
       "label": "WhatsApp chat export",
-      "description": "Export one WhatsApp chat as a text file, then import it. Repeat for each chat you want PDPP to cover.",
+      "description": "Export one WhatsApp chat, then import the .txt file or the .zip from 'with media'. Repeat for each chat you want this WhatsApp source to cover.",
       "acquisition_methods": [
         {
           "label": "Export one chat from WhatsApp",
           "platform": "mobile",
           "posture": "primary",
-          "detail": "Open the chat in WhatsApp, use Export chat, choose without media for the first import, then upload the .txt file here.",
+          "detail": "Open the chat in WhatsApp, use Export chat, choose with or without media, then upload the .txt or .zip here.",
           "help_url": "https://faq.whatsapp.com/1180414079177245"
         },
         {
-          "label": "Add another chat later",
+          "label": "Add another chat to the same source later",
           "platform": "mobile",
           "posture": "secondary",
-          "detail": "WhatsApp exports are per-chat. Import more .txt exports in any order; repeated exports are safe and keep their own coverage receipt.",
+          "detail": "WhatsApp exports are per-chat. Import more .txt or .zip exports in any order from the same source page; repeated exports are safe and keep their own coverage receipt.",
           "help_url": "https://faq.whatsapp.com/1180414079177245"
         },
         {
           "label": "Media folder sync",
           "platform": "device",
           "posture": "advanced",
-          "detail": "Text exports can reference media, but this first flow does not import media files. A future device-sync path should attach media coverage separately."
+          "detail": "Zip exports can include media files. This flow records media as present, but attaching media files to message records remains a separate future device-sync path."
         }
       ],
       "accepted_file_extensions": [
-        ".txt"
+        ".txt",
+        ".zip"
       ],
       "import_dir_env_var": "WHATSAPP_EXPORT_DIR",
       "help_url": "https://faq.whatsapp.com/1180414079177245",
-      "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export text files.",
-      "large_file_fallback": "Start with one chat export. If a chat is too large for browser upload, use the server import-folder handoff for the .txt file.",
+      "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export files.",
+      "large_file_fallback": "Start with one chat export. If a chat is too large for browser upload, use the server import-folder handoff for the .txt or .zip file.",
       "validation": {
         "kind": "whatsapp_chat_export",
         "max_file_bytes": 52428800
@@ -58,7 +59,7 @@
         "Estimated messages and participants",
         "Detected message date range",
         "Duplicate, empty, unsupported, or too-large file status",
-        "Media references that are not included in the text import"
+        "Whether media files are absent, present in the zip, or not yet attached to records"
       ]
     }
   },

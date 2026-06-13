@@ -151,8 +151,15 @@ The concrete screen choreography is:
 The critical edge states are part of the ideal UI, not polish:
 
 - repeated upload of an already-known artifact returns the previous receipt;
+- repeated exports for the same logical source can be added to the existing
+  connection, while a different account, profile, device, or source identity
+  uses a distinct connection;
 - stale manual export is shown as stale coverage, not a failed sync;
-- missing media is shown as incomplete media coverage, not a broken connector;
+- provider-supported export variants such as "with media" and "without media"
+  are accepted when the parser can safely validate them, with media coverage
+  represented honestly;
+- missing or included-but-not-yet-attached media is shown as coverage evidence,
+  not a broken connector;
 - partial chat exports and out-of-order uploads remain importable;
 - unsupported, encrypted, malformed, or wrong-account artifacts fail before
   commit with source-specific recovery instructions from the manifest;

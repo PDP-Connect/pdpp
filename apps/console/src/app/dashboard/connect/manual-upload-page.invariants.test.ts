@@ -11,7 +11,7 @@ const GET_SETUP = /getManualUploadSetup\(connectorId\)/;
 const FORM_COMPONENT = /<ManualUploadForm setup=\{setup\}/;
 const FORM_ACTION = /action=\{formAction\}/;
 const PREVIEW_ACTION = /manualUploadConnectionFormAction/;
-const VALIDATE_PREVIEW = /validateManualUploadArtifact\(connectorId, fileEntry\)/;
+const VALIDATE_PREVIEW = /validateManualUploadArtifact\(connectorId, fileEntry, \{ connectionId, displayName \}\)/;
 const FILE_INPUT = /type="file"/;
 const ACCEPT_ATTR = /accepted_file_names/;
 const ACCEPT_EXTENSIONS = /accepted_file_extensions/;
@@ -24,7 +24,7 @@ const NO_PROVIDER_COPY = /\bGoogle\b|\bTimeline\b|\bMaps\b/i;
 
 const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
-const CREATE_DRAFT = /createManualUploadDraftConnection\(connectorId, fileEntry\)/;
+const CREATE_DRAFT = /createManualUploadDraftConnection\(connectorId, fileEntry, \{ connectionId, displayName \}\)/;
 const RUN_NOW = /runConnectionNow\(draft\.connection_id\)/;
 const STATUS_SURFACE_PATH = /\/dashboard\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;

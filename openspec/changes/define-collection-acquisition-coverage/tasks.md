@@ -36,6 +36,8 @@
   - [x] 2.11a Fixture-backed tests now cover duplicate artifact upload, unsupported/parser-failure artifacts, WhatsApp missing-media warning facts, and Google Timeline stale/empty/too-large validation.
   - [x] 2.11b Wrong-source/account-report artifacts with accepted filenames now fail before commit and create no draft; true same-account matching remains explicitly impossible unless a future connector declares a verifiable identity extractor.
   - [x] 2.11c Same-stream historical-plus-current acquisition is covered by the owner-artifact plus provider-API fixture that preserves record-level acquisition provenance.
+- [x] 2.12 Support owner-artifact variant parity for WhatsApp chat exports: `.txt` without media and `.zip` with media both validate through the connector parser, with media presence recorded as coverage evidence rather than overclaimed attachment.
+- [x] 2.13 Allow repeat owner-artifact imports to target an existing manual/upload source while new account/profile/device/source identities create distinct owner-facing connections.
 
 ## 3. Connector Pilots
 
@@ -61,3 +63,4 @@
   - [x] 5.4b MCP canonical mirror regression now proves `query_records` returns grant-scoped records without adapter-added owner-only acquisition diagnostics.
 - [x] 5.5 Review the implemented UI against the SLVP screen choreography in `design.md`, including cognitive-load, progressive-disclosure, copy, responsive behavior, and no developer-only instructions.
 - [x] 5.6 Run fixture-backed UI checks for Google Timeline and WhatsApp-style owner artifacts before declaring the UX owner-accepted.
+- [x] 5.7 Re-run focused WhatsApp text/zip validation and manual-upload route tests for media variants, malformed zip rejection, and existing-source repeat import.

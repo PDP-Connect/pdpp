@@ -8,6 +8,7 @@ interface ManualUploadSetupForForm {
   accepted_file_extensions: string[];
   accepted_file_names: string[];
   connector_id: string;
+  display_name: string;
   help_text?: string | null;
   help_url?: string | null;
   validation_expectations: string[];
@@ -100,7 +101,13 @@ function reviewButtonLabel(pending: boolean, hasValidator: boolean): string {
   return hasValidator ? "Review file" : "Check file";
 }
 
-export function ManualUploadForm({ setup }: { setup: ManualUploadSetupForForm }) {
+export function ManualUploadForm({
+  setup,
+  targetConnectionId,
+}: {
+  setup: ManualUploadSetupForForm;
+  targetConnectionId?: string | null;
+}) {
   const [state, formAction, pending] = useActionState(manualUploadConnectionFormAction, {
     ok: null,
   });
@@ -120,6 +127,29 @@ export function ManualUploadForm({ setup }: { setup: ManualUploadSetupForForm })
       encType="multipart/form-data"
     >
       <input name="connector_id" type="hidden" value={setup.connector_id} />
+      {targetConnectionId ? <input name="connection_id" type="hidden" value={targetConnectionId} /> : null}
+      {targetConnectionId ? (
+        <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
+          This import will be added to the existing source you came from. Use the Add source page only when this export
+          belongs to a different account, profile, device, or source identity.
+        </div>
+      ) : (
+        <label className="grid gap-1" htmlFor="manual-upload-display-name">
+          <span className="pdpp-eyebrow">Source name</span>
+          <input
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            defaultValue={setup.display_name}
+            id="manual-upload-display-name"
+            maxLength={120}
+            name="display_name"
+            type="text"
+          />
+          <span className="pdpp-caption text-muted-foreground">
+            Use one source per account, profile, device, or source identity. Import related exports into that same
+            source.
+          </span>
+        </label>
+      )}
       <label className="grid gap-1" htmlFor="manual-upload-file">
         <span className="pdpp-eyebrow">Export file</span>
         <input

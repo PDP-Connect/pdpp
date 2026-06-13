@@ -92,6 +92,8 @@ export async function manualUploadConnectionFormAction(
   formData: FormData
 ): Promise<ManualUploadFormState> {
   const connectorId = asString(formData.get("connector_id"));
+  const connectionId = asString(formData.get("connection_id")) || null;
+  const displayName = asString(formData.get("display_name")) || null;
   await requireDashboardAccess(`/dashboard/connect/manual-upload/${encodeURIComponent(connectorId)}`);
 
   const setup = await getManualUploadSetup(connectorId).catch((err) => {
@@ -125,7 +127,7 @@ export async function manualUploadConnectionFormAction(
   const intent = asString(formData.get("intent")) || "preview";
   if (intent === "preview") {
     try {
-      return previewState(await validateManualUploadArtifact(connectorId, fileEntry));
+      return previewState(await validateManualUploadArtifact(connectorId, fileEntry, { connectionId, displayName }));
     } catch (err) {
       return fileErrorState(errorMessage(err));
     }
@@ -134,7 +136,7 @@ export async function manualUploadConnectionFormAction(
   let draftConnectionId: string | null = null;
   let target: string;
   try {
-    const draft = await createManualUploadDraftConnection(connectorId, fileEntry);
+    const draft = await createManualUploadDraftConnection(connectorId, fileEntry, { connectionId, displayName });
     draftConnectionId = draft.connection_id;
     if (draft.next_step.kind === "show_status") {
       revalidatePath("/dashboard/records");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseWhatsAppChatFile } from "./parsers.ts";
+import { extractWhatsAppChatArtifact, parseWhatsAppChatFile } from "./parsers.ts";
 
 export type WhatsAppChatExportValidationStatus = "valid" | "duplicate" | "empty" | "unsupported" | "too_large";
 
@@ -11,7 +11,7 @@ export interface WhatsAppChatExportValidationOptions {
 
 export interface WhatsAppChatExportValidation {
   readonly date_range: { readonly end: string | null; readonly start: string | null };
-  readonly detected_format: "whatsapp_chat_export" | "unsupported";
+  readonly detected_format: "whatsapp_chat_export" | "whatsapp_chat_export_zip" | "unsupported";
   readonly estimated_attachments: number;
   readonly estimated_chats: number;
   readonly estimated_messages: number;
@@ -21,14 +21,12 @@ export interface WhatsAppChatExportValidation {
   readonly media_coverage: {
     readonly attached_media_files: number;
     readonly referenced_media_files: number;
-    readonly status: "none_referenced" | "not_included";
+    readonly status: "included_not_imported" | "none_referenced" | "not_included";
   };
   readonly remediation: string | null;
   readonly status: WhatsAppChatExportValidationStatus;
   readonly warnings: readonly string[];
 }
-
-const WHATSAPP_EXPORT_LINE_RE = /\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}.*(?:-|]).*?:/;
 
 function minMax(values: readonly string[]): { end: string | null; start: string | null } {
   const sorted = values.filter(Boolean).sort();
@@ -44,7 +42,7 @@ function remediationFor(status: WhatsAppChatExportValidationStatus): string | nu
     case "too_large":
       return "This chat export is larger than the upload limit. Import a smaller chat export first.";
     case "unsupported":
-      return "Choose a WhatsApp chat export text file. Account reports, screenshots, and encrypted backups are not chat exports.";
+      return "Choose a WhatsApp chat export .txt file or the .zip created by Export chat with media. Account reports, screenshots, and encrypted backups are not chat exports.";
     case "valid":
       return null;
     default:
@@ -52,8 +50,17 @@ function remediationFor(status: WhatsAppChatExportValidationStatus): string | nu
   }
 }
 
-function looksLikeWhatsAppExport(text: string): boolean {
-  return WHATSAPP_EXPORT_LINE_RE.test(text);
+function mediaCoverageStatus(
+  attachedMediaFiles: number,
+  referencedMediaFiles: number
+): WhatsAppChatExportValidation["media_coverage"]["status"] {
+  if (attachedMediaFiles > 0) {
+    return "included_not_imported";
+  }
+  if (referencedMediaFiles > 0) {
+    return "not_included";
+  }
+  return "none_referenced";
 }
 
 export function validateWhatsAppChatExportArtifact(
@@ -83,12 +90,12 @@ export function validateWhatsAppChatExportArtifact(
     return { ...base, remediation: remediationFor("too_large"), status: "too_large" };
   }
 
-  const text = bytes.toString("utf8");
-  if (!looksLikeWhatsAppExport(text)) {
+  const artifact = extractWhatsAppChatArtifact(options.fileName ?? "WhatsApp Chat.txt", bytes);
+  if (!artifact) {
     return { ...base, remediation: remediationFor("unsupported"), status: "unsupported" };
   }
 
-  const parsed = parseWhatsAppChatFile(options.fileName ?? "WhatsApp Chat.txt", text);
+  const parsed = parseWhatsAppChatFile(artifact.chatFileName, artifact.text);
   const dateRange = minMax(parsed.messages.map((message) => message.sent_at));
   const attachmentCount = parsed.messages.filter((message) => message.has_attachment).length;
   let status: WhatsAppChatExportValidationStatus = "valid";
@@ -98,14 +105,22 @@ export function validateWhatsAppChatExportArtifact(
     status = "empty";
   }
 
-  const warnings =
-    attachmentCount > 0
-      ? ["This text export references media, but the media files are not included in this import."]
-      : [];
+  const warnings: string[] = [];
+  if (attachmentCount > 0 && artifact.mediaFileCount > 0) {
+    warnings.push(
+      "This export includes media files. PDPP imports messages now and records media as present, but does not attach media files to records in this tranche."
+    );
+  } else if (attachmentCount > 0) {
+    warnings.push("This text export references media, but the media files are not included in this import.");
+  } else if (artifact.mediaFileCount > 0) {
+    warnings.push(
+      "This zip includes media-like files, but the parsed chat text did not reference them. PDPP records them as present but not attached."
+    );
+  }
 
   return {
     date_range: dateRange,
-    detected_format: "whatsapp_chat_export",
+    detected_format: artifact.format,
     estimated_attachments: attachmentCount,
     estimated_chats: parsed.messages.length > 0 ? 1 : 0,
     estimated_messages: parsed.messages.length,
@@ -113,9 +128,9 @@ export function validateWhatsAppChatExportArtifact(
     estimated_records: parsed.messages.length + (parsed.messages.length > 0 ? 1 : 0),
     file_sha256: fileSha256,
     media_coverage: {
-      attached_media_files: 0,
+      attached_media_files: artifact.mediaFileCount,
       referenced_media_files: attachmentCount,
-      status: attachmentCount > 0 ? "not_included" : "none_referenced",
+      status: mediaCoverageStatus(artifact.mediaFileCount, attachmentCount),
     },
     remediation: remediationFor(status),
     status,

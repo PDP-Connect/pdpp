@@ -21,6 +21,7 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract
 
 const PATH_SEP_RE = /[\\/]/;
 const UNSAFE_FILENAME_CHARS_RE = /[^\w.-]/g;
+const CONNECTION_ID_RE = /^cin_[A-Za-z0-9_-]+$/;
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -53,10 +54,15 @@ interface ConnectorInstance {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly displayName?: string | null;
+  readonly ownerSubjectId?: string | null;
+  readonly sourceBinding?: Record<string, unknown> | null;
+  readonly sourceBindingKey?: string | null;
+  readonly sourceKind?: string | null;
   readonly status: string;
 }
 
 interface ConnectorInstanceStore {
+  get(connectorInstanceId: string): Promise<ConnectorInstance | null> | ConnectorInstance | null;
   upsert(record: {
     ownerSubjectId: string;
     connectorId: string;
@@ -181,6 +187,17 @@ async function emitManualUploadAudit(
 
 function errorWithCode(code: string): { code: string } {
   return { code };
+}
+
+function optionalConnectionId(req: RouteRequest): string | null {
+  const raw = firstQueryValue(req.query?.connection_id);
+  return raw && CONNECTION_ID_RE.test(raw) ? raw : null;
+}
+
+function requestedDisplayName(req: RouteRequest, fallback: string): string {
+  const raw = firstQueryValue(req.query?.display_name);
+  const clean = typeof raw === "string" ? raw.trim().replace(/\s+/g, " ") : "";
+  return clean.length > 0 && clean.length <= 120 ? clean : fallback;
 }
 
 async function rejectManualUploadRequest(
@@ -434,41 +451,63 @@ async function createAndSendDraftResponse(
     manifest: ConnectorManifestLike;
     ownerSubjectId: string;
     setup: NonNullable<ReturnType<typeof manualUploadSetupFromManifest>>;
+    targetConnectionId?: string | null;
     validation: ManualUploadValidationResult | null;
   }
 ): Promise<void> {
-  const sourceBindingKey = `manual_upload_draft_${randomBytes(24).toString("hex")}`;
-  const importDir = join(ctx.importBaseDir, safePathSegment(args.connectorId), sourceBindingKey);
+  const store = ctx.createRequestConnectorInstanceStore();
+  const targetConnection = args.targetConnectionId
+    ? await resolveManualUploadTargetConnection(ctx, req, res, {
+        connectorId: args.connectorId,
+        ownerSubjectId: args.ownerSubjectId,
+        operation: "create",
+        store,
+        targetConnectionId: args.targetConnectionId,
+      })
+    : null;
+  if (args.targetConnectionId && !targetConnection) {
+    return;
+  }
+  const sourceBindingKey =
+    targetConnection?.sourceBindingKey ?? `manual_upload_draft_${randomBytes(24).toString("hex")}`;
+  const importDir =
+    readImportDirFromConnection(targetConnection) ??
+    join(ctx.importBaseDir, safePathSegment(args.connectorId), sourceBindingKey);
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   await mkdir(importDir, { recursive: true });
   await writeFile(join(importDir, args.fileName), args.fileBytes);
 
   let instance: ConnectorInstance;
-  try {
-    instance = await ctx.createRequestConnectorInstanceStore().upsert({
-      ownerSubjectId: args.ownerSubjectId,
-      connectorId: args.connectorId,
-      displayName: args.displayName,
-      status: "draft",
-      sourceKind: "manual",
-      sourceBindingKey,
-      sourceBinding: {
-        kind: "manual_upload_draft",
-        import_dir: importDir,
-        import_dir_env_var: args.setup.importDirEnvVar,
-        import_validation: args.validation,
-        acquisition_method: "owner_artifact",
-        uploaded_file_name: args.fileName,
-      },
-      createdAt: now,
-      updatedAt: now,
-    });
-  } catch (err) {
-    await rm(importDir, { force: true, recursive: true }).catch(() => undefined);
-    throw err;
+  if (targetConnection) {
+    instance = targetConnection;
+  } else {
+    try {
+      instance = await store.upsert({
+        ownerSubjectId: args.ownerSubjectId,
+        connectorId: args.connectorId,
+        displayName: args.displayName,
+        status: "draft",
+        sourceKind: "manual",
+        sourceBindingKey,
+        sourceBinding: {
+          kind: "manual_upload_draft",
+          import_dir: importDir,
+          import_dir_env_var: args.setup.importDirEnvVar,
+          import_validation: args.validation,
+          acquisition_method: "owner_artifact",
+          uploaded_file_name: args.fileName,
+        },
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (err) {
+      await rm(importDir, { force: true, recursive: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   const connectionId = instance.connectorInstanceId;
+  const responseDisplayName = targetConnection?.displayName ?? args.displayName;
   const acquisitionBatch = args.validation?.file_sha256
     ? await args.acquisitionStore.insertOwnerArtifactBatch({
         acquisitionMethod: "owner_artifact",
@@ -501,8 +540,8 @@ async function createAndSendDraftResponse(
     connection_id: connectionId,
     connector_instance_id: connectionId,
     connector_id: args.connectorId,
-    display_name: args.displayName,
-    status: "draft",
+    display_name: responseDisplayName,
+    status: instance.status,
     batch_id: acquisitionBatch?.batchId ?? null,
     validation: args.validation,
     uploaded_file_name: args.fileName,
@@ -510,10 +549,79 @@ async function createAndSendDraftResponse(
       kind: "run_connection",
       method: "POST",
       url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
-      reason:
-        "Start the first sync for this manual-upload connection. The connection stays invisible until its first successful ingest.",
+      reason: targetConnection
+        ? "Run this import for the existing manual-upload connection."
+        : "Start the first sync for this manual-upload connection. The connection stays invisible until its first successful ingest.",
     },
   });
+}
+
+function readImportDirFromConnection(instance: ConnectorInstance | null): string | null {
+  const binding = instance?.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  return typeof binding.import_dir === "string" && binding.import_dir.length > 0 ? binding.import_dir : null;
+}
+
+async function resolveManualUploadTargetConnection(
+  ctx: MountRefManualUploadDraftConnectionContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: {
+    connectorId: string;
+    ownerSubjectId: string;
+    operation?: "create" | "validate" | undefined;
+    store: ConnectorInstanceStore;
+    targetConnectionId: string;
+  }
+): Promise<ConnectorInstance | null> {
+  const instance = await args.store.get(args.targetConnectionId);
+  if (!instance || instance.ownerSubjectId !== args.ownerSubjectId) {
+    return await rejectManualUploadRequest(ctx, req, res, {
+      connectorId: args.connectorId,
+      errorCode: "connector_instance_not_found",
+      httpStatus: 404,
+      message: `Connection '${args.targetConnectionId}' does not exist for this owner.`,
+      operation: args.operation,
+      ownerSubjectId: args.ownerSubjectId,
+      param: "connection_id",
+    });
+  }
+  if (instance.connectorId !== args.connectorId) {
+    return await rejectManualUploadRequest(ctx, req, res, {
+      connectorId: args.connectorId,
+      errorCode: "connector_instance_connector_mismatch",
+      httpStatus: 409,
+      message: `Connection '${args.targetConnectionId}' belongs to '${instance.connectorId}', not '${args.connectorId}'.`,
+      operation: args.operation,
+      ownerSubjectId: args.ownerSubjectId,
+      param: "connection_id",
+    });
+  }
+  if (!new Set(["active", "draft"]).has(instance.status)) {
+    return await rejectManualUploadRequest(ctx, req, res, {
+      connectorId: args.connectorId,
+      errorCode: "connector_instance_inactive",
+      httpStatus: 409,
+      message: `Connection '${args.targetConnectionId}' is '${instance.status}', not active.`,
+      operation: args.operation,
+      ownerSubjectId: args.ownerSubjectId,
+      param: "connection_id",
+    });
+  }
+  if (instance.sourceKind !== "manual" || !readImportDirFromConnection(instance)) {
+    return await rejectManualUploadRequest(ctx, req, res, {
+      connectorId: args.connectorId,
+      errorCode: "manual_upload_connection_required",
+      httpStatus: 409,
+      message: `Connection '${args.targetConnectionId}' is not a manual-upload connection.`,
+      operation: args.operation,
+      ownerSubjectId: args.ownerSubjectId,
+      param: "connection_id",
+    });
+  }
+  return instance;
 }
 
 function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
@@ -591,10 +699,23 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         if (!upload) {
           return;
         }
+        const targetConnectionId = optionalConnectionId(req);
+        if (targetConnectionId) {
+          const targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
+            connectorId,
+            ownerSubjectId,
+            operation: "validate",
+            store: ctx.createRequestConnectorInstanceStore(),
+            targetConnectionId,
+          });
+          if (!targetConnection) {
+            return;
+          }
+        }
         await sendValidationPreviewResponse(ctx, req, res, {
           acquisitionStore: ctx.createRequestAcquisitionBatchStore(),
           connectorId,
-          displayName: displayNameForConnector(connectorId, manifest),
+          displayName: requestedDisplayName(req, displayNameForConnector(connectorId, manifest)),
           fileName: upload.fileName,
           ownerSubjectId,
           validation: upload.validation,
@@ -630,7 +751,7 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           return;
         }
 
-        const displayName = displayNameForConnector(connectorId, manifest);
+        const displayName = requestedDisplayName(req, displayNameForConnector(connectorId, manifest));
         const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
         const known = await maybeSendKnownArtifactResponse(ctx, req, res, {
           acquisitionStore,
@@ -652,6 +773,7 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           manifest,
           ownerSubjectId,
           setup,
+          targetConnectionId: optionalConnectionId(req),
           validation: upload.validation,
         });
       } catch (err) {

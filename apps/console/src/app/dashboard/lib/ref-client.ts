@@ -1508,9 +1508,20 @@ export async function getManualUploadSetup(connectorId: string): Promise<ManualU
   )) as ManualUploadSetup;
 }
 
-async function postManualUploadFile(path: string, file: File, errorPrefix: string): Promise<unknown> {
+async function postManualUploadFile(
+  path: string,
+  file: File,
+  errorPrefix: string,
+  options: { connectionId?: string | null; displayName?: string | null } = {}
+): Promise<unknown> {
   const url = new URL(`${getAsInternalUrl()}${path}`);
   url.searchParams.set("file_name", file.name);
+  if (options.connectionId) {
+    url.searchParams.set("connection_id", options.connectionId);
+  }
+  if (options.displayName) {
+    url.searchParams.set("display_name", options.displayName);
+  }
   const init = await withOwnerSessionCookie({
     method: "POST",
     body: file,
@@ -1534,23 +1545,27 @@ async function postManualUploadFile(path: string, file: File, errorPrefix: strin
 
 export async function validateManualUploadArtifact(
   connectorId: string,
-  file: File
+  file: File,
+  options: { connectionId?: string | null; displayName?: string | null } = {}
 ): Promise<ManualUploadValidationPreview> {
   return (await postManualUploadFile(
     `/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-validation-preview`,
     file,
-    "manual upload validation failed"
+    "manual upload validation failed",
+    options
   )) as ManualUploadValidationPreview;
 }
 
 export async function createManualUploadDraftConnection(
   connectorId: string,
-  file: File
+  file: File,
+  options: { connectionId?: string | null; displayName?: string | null } = {}
 ): Promise<ManualUploadDraftConnection> {
   return (await postManualUploadFile(
     `/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`,
     file,
-    "manual upload failed"
+    "manual upload failed",
+    options
   )) as ManualUploadDraftConnection;
 }
 

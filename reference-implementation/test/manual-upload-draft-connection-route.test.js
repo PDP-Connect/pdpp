@@ -129,9 +129,22 @@ const VALID_TIMELINE_BODY = JSON.stringify({
   ],
 });
 
-async function createDraft(asUrl, cookie, connectorId, fileName = 'Timeline.json', body = VALID_TIMELINE_BODY) {
+async function createDraft(
+  asUrl,
+  cookie,
+  connectorId,
+  fileName = 'Timeline.json',
+  body = VALID_TIMELINE_BODY,
+  options = {},
+) {
   const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`);
   url.searchParams.set('file_name', fileName);
+  if (options.connectionId) {
+    url.searchParams.set('connection_id', options.connectionId);
+  }
+  if (options.displayName) {
+    url.searchParams.set('display_name', options.displayName);
+  }
   return fetchJson(url, {
     method: 'POST',
     headers: {
@@ -143,9 +156,22 @@ async function createDraft(asUrl, cookie, connectorId, fileName = 'Timeline.json
   });
 }
 
-async function validateUpload(asUrl, cookie, connectorId, fileName = 'Timeline.json', body = VALID_TIMELINE_BODY) {
+async function validateUpload(
+  asUrl,
+  cookie,
+  connectorId,
+  fileName = 'Timeline.json',
+  body = VALID_TIMELINE_BODY,
+  options = {},
+) {
   const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-validation-preview`);
   url.searchParams.set('file_name', fileName);
+  if (options.connectionId) {
+    url.searchParams.set('connection_id', options.connectionId);
+  }
+  if (options.displayName) {
+    url.searchParams.set('display_name', options.displayName);
+  }
   return fetchJson(url, {
     method: 'POST',
     headers: {
@@ -155,6 +181,43 @@ async function validateUpload(asUrl, cookie, connectorId, fileName = 'Timeline.j
     },
     body,
   });
+}
+
+function makeStoredZip(entries) {
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, 'utf8');
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    chunks.push(local, name, data);
+    const directory = Buffer.alloc(46);
+    directory.writeUInt32LE(0x02014b50, 0);
+    directory.writeUInt16LE(20, 4);
+    directory.writeUInt16LE(20, 6);
+    directory.writeUInt16LE(0x0800, 8);
+    directory.writeUInt32LE(data.length, 20);
+    directory.writeUInt32LE(data.length, 24);
+    directory.writeUInt16LE(name.length, 28);
+    directory.writeUInt32LE(offset, 42);
+    central.push(directory, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralStart = offset;
+  const centralBytes = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBytes.length, 12);
+  end.writeUInt32LE(centralStart, 16);
+  return Buffer.concat([...chunks, centralBytes, end]);
 }
 
 async function listConnections(asUrl, cookie) {
@@ -322,7 +385,7 @@ test('WhatsApp chat export is manifest-driven and accepts owner .txt artifacts',
 
     const setup = await getSetup(asUrl, cookie, 'whatsapp');
     assert.equal(setup.status, 200, setup.text);
-    assert.deepEqual(setup.body.accepted_file_extensions, ['.txt']);
+    assert.deepEqual(setup.body.accepted_file_extensions, ['.txt', '.zip']);
     assert.ok(setup.body.validation_expectations.some((item) => /messages/i.test(item)));
 
     const created = await createDraft(
@@ -351,6 +414,88 @@ test('WhatsApp chat export is manifest-driven and accepts owner .txt artifacts',
     assert.equal(batch.parsed_count, 3);
     assert.equal(JSON.parse(batch.media_coverage_json).status, 'not_included');
     assert.match(JSON.parse(batch.warnings_json)[0], /media files are not included/i);
+  });
+});
+
+test('WhatsApp zip export with media attaches to an existing manual-upload connection', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const first = await createDraft(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Ghazal.txt',
+      '[6/5/24, 9:15:22 AM] Alice: Hello',
+      { displayName: 'the owner WhatsApp' },
+    );
+    assert.equal(first.status, 201, first.text);
+    assert.equal(first.body.display_name, 'the owner WhatsApp');
+
+    const zip = makeStoredZip([
+      {
+        name: 'WhatsApp Chat - Ghazal.txt',
+        data: '[6/6/24, 10:15:22 AM] Alice: <attached: IMG-20240606-WA0001.jpg>',
+      },
+      { name: 'IMG-20240606-WA0001.jpg', data: Buffer.from([1, 2, 3]) },
+    ]);
+    const second = await createDraft(asUrl, cookie, 'whatsapp', 'WhatsApp Chat - Ghazal.zip', zip, {
+      connectionId: first.body.connection_id,
+    });
+    assert.equal(second.status, 201, second.text);
+    assert.equal(second.body.connection_id, first.body.connection_id);
+    assert.equal(second.body.validation.detected_format, 'whatsapp_chat_export_zip');
+    assert.equal(second.body.validation.media_coverage.status, 'included_not_imported');
+    assert.equal(second.body.validation.media_coverage.attached_media_files, 1);
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 1, 'adding another export to the same WhatsApp source must not create another connection');
+    const batchCount = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
+    assert.equal(batchCount, 2, 'each accepted export keeps its own acquisition-batch receipt');
+  });
+});
+
+test('manual upload preview rejects an incompatible target connection before import', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const timeline = await createDraft(asUrl, cookie, 'google-maps');
+    assert.equal(timeline.status, 201, timeline.text);
+
+    const preview = await validateUpload(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Ghazal.txt',
+      '[6/5/24, 9:15:22 AM] Alice: Hello',
+      { connectionId: timeline.body.connection_id },
+    );
+    assert.equal(preview.status, 409, preview.text);
+    assert.equal(preview.body?.error?.code, 'connector_instance_connector_mismatch');
+    assert.equal(preview.body?.error?.param, 'connection_id');
+
+    const whatsappRows = getDb()
+      .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'whatsapp'")
+      .get().count;
+    assert.equal(whatsappRows, 0, 'incompatible preview target must not create a WhatsApp draft');
+  });
+});
+
+test('WhatsApp malformed zip is rejected before commit', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const malformed = Buffer.concat([Buffer.from('PK\u0003\u0004', 'binary'), Buffer.from('not a usable zip')]);
+    const created = await createDraft(asUrl, cookie, 'whatsapp', 'WhatsApp Chat - Broken.zip', malformed);
+    assert.equal(created.status, 400, created.text);
+    assert.equal(created.body?.error?.code, 'import_file_unsupported');
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 0, 'malformed zip validation must not create a draft');
   });
 });
 
@@ -440,7 +585,7 @@ test('wrong-source account-report artifacts are rejected before commit instead o
     );
     assert.equal(whatsappAccountReport.status, 400);
     assert.equal(whatsappAccountReport.body?.error?.code, 'import_file_unsupported');
-    assert.match(whatsappAccountReport.body?.error?.message ?? '', /chat export text file/);
+    assert.match(whatsappAccountReport.body?.error?.message ?? '', /chat export .*\.txt.*\.zip/i);
 
     const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
     assert.equal(rowCount, 0, 'wrong-source artifacts must not create a draft or infer account identity');

@@ -126,7 +126,7 @@ function describeState(status: ConnectionSetupStatus): StatusDescription {
 function setupHref(status: ConnectionSetupStatus): string {
   const encoded = encodeURIComponent(status.connector_id);
   if (status.setup_kind === "manual_upload") {
-    return `/dashboard/connect/manual-upload/${encoded}`;
+    return `/dashboard/connect/manual-upload/${encoded}?connection_id=${encodeURIComponent(status.connection_id)}`;
   }
   return `/dashboard/connect/static-secret/${encoded}`;
 }
@@ -517,6 +517,11 @@ export default async function ConnectionSetupStatusPage({
               href={`/dashboard/records/${encodeURIComponent(status.connector_id)}`}
             >
               View records
+            </Link>
+          ) : null}
+          {status.setup_kind === "manual_upload" && described.tone === "active" ? (
+            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={setupHref(status)}>
+              Import another file
             </Link>
           ) : null}
           {described.tone === "failed" || status.setup_state === "awaiting_credential" ? (
