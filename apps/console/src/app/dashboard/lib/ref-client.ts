@@ -1327,6 +1327,19 @@ export interface ConnectionSetupStatus {
   };
   display_name: string | null;
   health_state: string;
+  import_receipt: {
+    acquisition_method: string | null;
+    date_range: {
+      end: string | null;
+      start: string | null;
+    } | null;
+    detected_format: string | null;
+    estimated_points: number | null;
+    estimated_segments: number | null;
+    remediation: string | null;
+    status: string | null;
+    uploaded_file_name: string | null;
+  } | null;
   last_error: {
     reason: string;
     remediation: string;
@@ -1376,6 +1389,7 @@ export function getStaticSecretSetupStatus(
 // ---------------------------------------------------------------------------
 
 export interface ManualUploadSetup {
+  accepted_file_names: string[];
   acquisition_methods: {
     detail: string | null;
     help_url: string | null;
@@ -1383,7 +1397,6 @@ export interface ManualUploadSetup {
     platform: string | null;
     posture: string | null;
   }[];
-  accepted_file_names: string[];
   connector_id: string;
   description: string | null;
   display_name: string;

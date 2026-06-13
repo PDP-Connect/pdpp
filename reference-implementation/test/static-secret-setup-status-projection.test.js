@@ -35,6 +35,7 @@ test('draft without a credential projects awaiting_credential -> idle', () => {
   assert.equal(status.setup_material.label, 'Provider credential');
   assert.equal(status.setup_material.present, false);
   assert.equal(status.credential.present, false);
+  assert.equal(status.import_receipt, null);
   assert.equal(status.last_error, null);
 });
 
@@ -139,6 +140,15 @@ test('manual/upload draft projects captured import file without credential seman
       present: true,
       capturedAt: null,
     },
+    importReceipt: {
+      acquisitionMethod: 'owner_upload',
+      dateRange: { start: '2024-06-05T13:45:22.000Z', end: '2024-06-05T13:45:22.000Z' },
+      detectedFormat: 'legacy_records',
+      estimatedPoints: 1,
+      estimatedSegments: 0,
+      status: 'valid',
+      uploadedFileName: 'Timeline.json',
+    },
   });
   assert.equal(status.object, 'connection_setup_status');
   assert.equal(status.setup_kind, 'manual_upload');
@@ -146,4 +156,11 @@ test('manual/upload draft projects captured import file without credential seman
   assert.equal(status.setup_material.label, 'Import file (Timeline.json)');
   assert.equal(status.setup_material.present, true);
   assert.equal(status.credential.present, false);
+  assert.equal(status.import_receipt.status, 'valid');
+  assert.equal(status.import_receipt.detected_format, 'legacy_records');
+  assert.equal(status.import_receipt.estimated_points, 1);
+  assert.equal(status.import_receipt.estimated_segments, 0);
+  assert.equal(status.import_receipt.date_range.start, '2024-06-05T13:45:22.000Z');
+  assert.equal(status.import_receipt.uploaded_file_name, 'Timeline.json');
+  assert.equal(status.import_receipt.acquisition_method, 'owner_upload');
 });

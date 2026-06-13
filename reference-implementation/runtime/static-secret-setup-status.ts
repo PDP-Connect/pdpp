@@ -77,6 +77,21 @@ export interface SetupStatusMaterialMetadata {
   readonly present: boolean;
 }
 
+// Non-secret manual-upload validation evidence produced before durable commit.
+// This is the first acquisition/coverage tranche: a preview/receipt from the
+// connector parser, not the full future acquisition-batch ledger with accepted,
+// duplicate, skipped, or failed committed counts.
+export interface SetupStatusImportReceipt {
+  readonly acquisitionMethod?: string | null;
+  readonly dateRange?: { readonly end: string | null; readonly start: string | null } | null;
+  readonly detectedFormat?: string | null;
+  readonly estimatedPoints?: number | null;
+  readonly estimatedSegments?: number | null;
+  readonly remediation?: string | null;
+  readonly status?: string | null;
+  readonly uploadedFileName?: string | null;
+}
+
 // A non-secret view of a run. `status` is the spine run status
 // (started/in_progress/succeeded/failed/...). `failureReason` is the terminal
 // failure reason when the run failed.
@@ -113,6 +128,8 @@ export interface ProjectConnectionSetupStatusInput {
   // The most recent run for this connection (terminal or otherwise), if known.
   // Used to surface a failed first sync after the run leaves the active table.
   readonly lastRun: SetupStatusRun | null;
+  // Manual-upload validation receipt. Only projected for manual_upload setup.
+  readonly importReceipt?: SetupStatusImportReceipt | null;
   readonly setupKind?: ConnectionSetupKind;
   readonly setupMaterial?: SetupStatusMaterialMetadata | null;
 }
@@ -138,6 +155,18 @@ export interface ConnectionSetupStatus {
   readonly last_error: {
     readonly reason: string;
     readonly remediation: string;
+  } | null;
+  // Non-secret manual-upload validation/import-preview receipt. Present only
+  // for manual_upload setups with connector-provided validation evidence.
+  readonly import_receipt: {
+    readonly acquisition_method: string | null;
+    readonly date_range: { readonly end: string | null; readonly start: string | null } | null;
+    readonly detected_format: string | null;
+    readonly estimated_points: number | null;
+    readonly estimated_segments: number | null;
+    readonly remediation: string | null;
+    readonly status: string | null;
+    readonly uploaded_file_name: string | null;
   } | null;
   readonly object: "connection_setup_status";
   // True while the connection is not yet a working connection (draft) and the
@@ -256,6 +285,29 @@ function defaultSetupMaterial(
   return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
 }
 
+function projectImportReceipt(
+  setupKind: ConnectionSetupKind,
+  receipt: SetupStatusImportReceipt | null | undefined
+): ConnectionSetupStatus["import_receipt"] {
+  if (setupKind !== "manual_upload" || !receipt) {
+    return null;
+  }
+  const dateRange =
+    receipt.dateRange && (receipt.dateRange.start != null || receipt.dateRange.end != null)
+      ? { start: receipt.dateRange.start ?? null, end: receipt.dateRange.end ?? null }
+      : null;
+  return {
+    acquisition_method: receipt.acquisitionMethod ?? null,
+    date_range: dateRange,
+    detected_format: receipt.detectedFormat ?? null,
+    estimated_points: receipt.estimatedPoints ?? null,
+    estimated_segments: receipt.estimatedSegments ?? null,
+    remediation: receipt.remediation ?? null,
+    status: receipt.status ?? null,
+    uploaded_file_name: receipt.uploadedFileName ?? null,
+  };
+}
+
 export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatusInput): ConnectionSetupStatus {
   const setupKind = input.setupKind ?? "static_secret";
   const material = input.setupMaterial ?? defaultSetupMaterial(setupKind, input.credential);
@@ -306,6 +358,7 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
         }
       : null,
     last_error: lastError,
+    import_receipt: projectImportReceipt(setupKind, input.importReceipt),
     created_at: input.instance.createdAt,
     updated_at: input.instance.updatedAt,
   };

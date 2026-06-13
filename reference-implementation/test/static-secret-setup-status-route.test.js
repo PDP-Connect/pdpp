@@ -164,6 +164,16 @@ function loadManifest(name) {
   );
 }
 
+const VALID_TIMELINE_BODY = JSON.stringify({
+  locations: [
+    {
+      timestampMs: '1717595122000',
+      latitudeE7: 377_749_000,
+      longitudeE7: -1_224_194_000,
+    },
+  ],
+});
+
 async function registerConnector(asUrl, name) {
   const resp = await fetch(`${asUrl}/connectors`, {
     method: 'POST',
@@ -187,7 +197,7 @@ async function createManualUploadDraft(asUrl, cookie, connectorId) {
   return fetchJson(url, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream', Cookie: cookie },
-    body: '{"timelineObjects":[]}',
+    body: VALID_TIMELINE_BODY,
   });
 }
 
@@ -352,7 +362,18 @@ test('pending manual/upload setup is visible without credential semantics', asyn
     assert.equal(pending.body.setup_material.label, 'Import file (Timeline.json)');
     assert.equal(pending.body.setup_material.present, true);
     assert.equal(pending.body.credential.present, false);
-    assert.ok(!pending.text.includes('timelineObjects'), 'status must not echo uploaded file contents');
+    assert.equal(pending.body.import_receipt.status, 'valid');
+    assert.equal(pending.body.import_receipt.detected_format, 'legacy_records');
+    assert.equal(pending.body.import_receipt.estimated_points, 1);
+    assert.equal(pending.body.import_receipt.estimated_segments, 0);
+    assert.equal(pending.body.import_receipt.date_range.start, '2024-06-05T13:45:22.000Z');
+    assert.equal(pending.body.import_receipt.date_range.end, '2024-06-05T13:45:22.000Z');
+    assert.equal(pending.body.import_receipt.uploaded_file_name, 'Timeline.json');
+    assert.equal(pending.body.import_receipt.acquisition_method, 'owner_upload');
+    assert.ok(!pending.text.includes('locations'), 'status must not echo uploaded file contents');
+    assert.ok(!pending.text.includes('import_dir'), 'status must not leak import_dir');
+    assert.ok(!pending.text.includes('GOOGLE_MAPS_TIMELINE_DIR'), 'status must not expose env-var plumbing');
+    assert.ok(!pending.text.includes('file_sha256'), 'status must not expose artifact hashes');
   });
 });
 

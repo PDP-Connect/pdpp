@@ -23,6 +23,7 @@
 import {
   type ConnectionSetupKind,
   projectConnectionSetupStatus,
+  type SetupStatusImportReceipt,
   type SetupStatusMaterialMetadata,
   type SetupStatusRun,
 } from "../../runtime/static-secret-setup-status.ts";
@@ -179,6 +180,59 @@ function setupMaterialFromBinding(
   return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
 }
 
+function asStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asFiniteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function importDateRange(value: unknown): { end: string | null; start: string | null } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const range = value as { end?: unknown; start?: unknown };
+  const start = asStringOrNull(range.start);
+  const end = asStringOrNull(range.end);
+  return start === null && end === null ? null : { end, start };
+}
+
+// Build the owner-safe validation receipt from the manual-upload binding.
+// The route deliberately copies only non-secret parser evidence plus the
+// uploaded file name/acquisition method. It never returns import_dir,
+// import_dir_env_var, file hashes, local paths, or uploaded contents.
+function importReceiptFromBinding(
+  setupKind: ConnectionSetupKind,
+  sourceBinding: unknown
+): SetupStatusImportReceipt | null {
+  if (setupKind !== "manual_upload" || !sourceBinding || typeof sourceBinding !== "object") {
+    return null;
+  }
+  const binding = sourceBinding as {
+    acquisition_method?: unknown;
+    import_validation?: unknown;
+    uploaded_file_name?: unknown;
+  };
+  const validation =
+    binding.import_validation && typeof binding.import_validation === "object" && !Array.isArray(binding.import_validation)
+      ? (binding.import_validation as Record<string, unknown>)
+      : null;
+  if (!validation) {
+    return null;
+  }
+  return {
+    acquisitionMethod: asStringOrNull(binding.acquisition_method),
+    dateRange: importDateRange(validation.date_range),
+    detectedFormat: asStringOrNull(validation.detected_format),
+    estimatedPoints: asFiniteNumberOrNull(validation.estimated_points),
+    estimatedSegments: asFiniteNumberOrNull(validation.estimated_segments),
+    remediation: asStringOrNull(validation.remediation),
+    status: asStringOrNull(validation.status),
+    uploadedFileName: asStringOrNull(binding.uploaded_file_name),
+  };
+}
+
 const TERMINAL_FAILURE = new Set(["failed", "cancelled", "abandoned"]);
 
 // Resolve the run evidence for the setup-status projection.
@@ -292,6 +346,7 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
             : null,
           activeRun,
           lastRun,
+          importReceipt: importReceiptFromBinding(setupKind, instance.sourceBinding),
           identityFieldName: identityFieldName(manifest),
           setupKind,
           setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
