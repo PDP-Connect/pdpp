@@ -18,13 +18,21 @@
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
+import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.spotify.com/v1";
 
 // Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
 // 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
-const httpGovernor = createConnectorHttpGovernor({ name: "spotify", maxAttempts: 1 });
+// §3 ProviderProfile: spotify declares its own pacing ceiling — a conservative,
+// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with spotify's
+// real observed flagging threshold once audited (task 1b).
+const httpGovernor = createConnectorHttpGovernor({
+  name: "spotify",
+  maxAttempts: 1,
+  profile: unauditedConservativePacingProfile(),
+});
 const MAX_PAGES = 200;
 
 interface ProgressExtra {

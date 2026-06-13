@@ -12,11 +12,19 @@
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
 // 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
-const httpGovernor = createConnectorHttpGovernor({ name: "strava", maxAttempts: 1 });
+// §3 ProviderProfile: strava declares its own pacing ceiling — a conservative,
+// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with strava's
+// real observed flagging threshold once audited (task 1b).
+const httpGovernor = createConnectorHttpGovernor({
+  name: "strava",
+  maxAttempts: 1,
+  profile: unauditedConservativePacingProfile(),
+});
 
 interface StravaActivity {
   achievement_count?: number | null;

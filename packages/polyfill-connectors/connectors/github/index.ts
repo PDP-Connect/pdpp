@@ -29,6 +29,7 @@ import {
 import { buildDetailCoverageMessage, type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
 import {
   API_BASE as BASE,
   gistRecord,
@@ -75,7 +76,14 @@ const USER_AGENT = "pdpp-connector-github/0.1";
 // the `user` entity stream, which github collects whenever `user`/`user_stats` is
 // requested) — never a synthetic one. When `user` is not in scope this run simply
 // does not persist a learned rate; the next run cold-starts.
-let httpGovernor = createConnectorHttpGovernor({ name: "github", maxAttempts: 1 });
+// §3 ProviderProfile: github declares its own pacing ceiling — a conservative,
+// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with github's
+// real observed flagging threshold once audited (task 1b).
+let httpGovernor = createConnectorHttpGovernor({
+  name: "github",
+  maxAttempts: 1,
+  profile: unauditedConservativePacingProfile(),
+});
 
 /**
  * Re-seed the module governor warm-started from the prior run's learned rate,
@@ -88,6 +96,7 @@ function restoreGithubPacing(state: Record<string, unknown>): void {
   httpGovernor = createConnectorHttpGovernor({
     name: "github",
     maxAttempts: 1,
+    profile: unauditedConservativePacingProfile(),
     ...(restoredIntervalMs == null ? {} : { restoredIntervalMs }),
   });
 }

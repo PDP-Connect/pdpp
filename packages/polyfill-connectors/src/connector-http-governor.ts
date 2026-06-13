@@ -7,6 +7,7 @@ import {
   TerminalHttpStatusError,
 } from "./http-retry.js";
 import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.js";
+import type { ProviderPacingProfile } from "./provider-profile.js";
 import type { SendGovernor } from "./send-governor.js";
 
 /**
@@ -79,12 +80,17 @@ export interface ConnectorHttpGovernorOptions {
    */
   pacingInitialIntervalMs?: number;
   /**
-   * The rate ceiling: the fastest inter-request interval (= maximum sustained
-   * rate) the AIMD additive-increase loop may ever reach. THE ONE owner-authored
-   * safety number — set below the provider's behavioral flagging threshold.
-   * Default: {@link DEFAULT_PACING_MIN_INTERVAL_MS}.
+   * REQUIRED per-provider profile carrying the safety-/pressure-shaped pacing
+   * quantity (`pacingMinIntervalMs`, the rate ceiling). NO cross-provider default
+   * (SLVP-ideal spec §3): a connector must declare its own ceiling from its own
+   * provider's observed behavior — omitting it is a build error, not a silent
+   * borrow of ChatGPT's account-tuned 250ms. Construct from
+   * {@link unauditedConservativePacingProfile} until the provider is audited (1b),
+   * or author the ceiling explicitly once its real flagging threshold is known.
+   *
+   * @see ProviderPacingProfile
    */
-  pacingMinIntervalMs?: number;
+  profile: ProviderPacingProfile;
   /** Injectable RNG for jitter (tests). */
   random?: () => number;
   /**
@@ -157,21 +163,43 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 5 * 60_000;
  */
 export const DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000;
 /**
- * THE ONE OWNER NUMBER: the rate ceiling. The fastest inter-request interval
- * (= maximum sustained rate) additive-increase may ever reach — the operator's
- * risk tolerance, set below the provider's behavioral flagging threshold. Every
- * other pacing constant is a derived horizon or AIMD shape; this is the only
- * behavioral safety number. Live-calibrated default; override per connector via
- * `pacingMinIntervalMs` when a provider's quota warrants a more conservative cap.
+ * ChatGPT's live-calibrated rate ceiling (ms), retained as a NAMED, AUDITED
+ * reference value — NOT a silent cross-provider default. As of the §3
+ * ProviderProfile generalization the governor no longer falls back to this:
+ * every governor-using connector declares its own ceiling via the required
+ * `profile.pacingMinIntervalMs` (spec §3 rule 6). This export survives only as
+ * documentation of ChatGPT's audited number and for tests that pin it; a new
+ * connector author must NOT reach for it (use a conservative profile instead —
+ * see {@link unauditedConservativePacingProfile}).
  */
 export const DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 
 export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOptions): ConnectorHttpGovernor {
-  // Adaptive collection is ON by default: a bare `{ name }` yields slow-start
-  // discovery + AIMD accelerate-under-success + ceiling-bounded back-off. Pass
-  // `pacingInitialIntervalMs: 0` to opt out of pacing entirely.
+  // Belt-and-braces for the spec §3 "missing field = build error" rule: the type
+  // makes `profile.pacingMinIntervalMs` required, but a JS caller (no tsc) could
+  // still omit it. Fail LOUD rather than silently borrowing a shared default —
+  // an omitted safety ceiling must never pass quietly.
+  if (
+    !options.profile ||
+    typeof options.profile.pacingMinIntervalMs !== "number" ||
+    !Number.isFinite(options.profile.pacingMinIntervalMs) ||
+    options.profile.pacingMinIntervalMs <= 0
+  ) {
+    throw new Error(
+      `createConnectorHttpGovernor({ name: "${options.name}" }) requires a per-provider ` +
+        "profile.pacingMinIntervalMs (the rate ceiling). Declare one from this provider's " +
+        "observed behavior — there is NO cross-provider default (SLVP-ideal spec §3 rule 6)."
+    );
+  }
+  // Adaptive collection is ON by default: a `{ name, profile }` call yields
+  // slow-start discovery + AIMD accelerate-under-success + ceiling-bounded
+  // back-off. Pass `pacingInitialIntervalMs: 0` to opt out of pacing entirely.
   const pacingInitialIntervalMs = options.pacingInitialIntervalMs ?? DEFAULT_PACING_INITIAL_INTERVAL_MS;
-  const pacingMinIntervalMs = options.pacingMinIntervalMs ?? DEFAULT_PACING_MIN_INTERVAL_MS;
+  // The rate ceiling comes from the REQUIRED per-provider profile — never a
+  // shared fallback (spec §3). A missing profile is a compile-time error on the
+  // options type, so by the time we are here `pacingMinIntervalMs` is always a
+  // declared, per-provider value.
+  const pacingMinIntervalMs = options.profile.pacingMinIntervalMs;
   const pacingEnabled = pacingInitialIntervalMs > 0;
   // Warm-start: seed from the prior run's learned interval when the connector
   // restored one (already staleness-guarded by readPersistedPacingInterval).

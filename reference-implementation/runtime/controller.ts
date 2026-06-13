@@ -64,7 +64,7 @@ import {
 import type { RunRecord } from "./scheduler.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 import {
-  computeSourcePressureCooldown,
+  computeConnectionSourcePressureCooldown,
   isSourcePressureCooldownDeferring,
   type PendingPressureGap,
   SOURCE_PRESSURE_GAP_REASONS,
@@ -1590,6 +1590,24 @@ function toBackoffRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
   return record.error === undefined ? runRecord : { ...runRecord, error: record.error };
 }
 
+/**
+ * §10-B: consecutive no-progress cooldown-cycle count for a connection, from the
+ * max recovery attempt_count across its pending source-pressure gaps. The
+ * attempt_count increments once per cooldown cycle that fails to recover the gap
+ * and resets to 0 when the gap recovers (the pressure set empties), so it equals
+ * "consecutive cycles with zero gap recovery" — the §10-B escalation trigger.
+ */
+function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number {
+  let max = 0;
+  for (const gap of gaps ?? []) {
+    const attempt = typeof gap?.attemptCount === "number" && Number.isFinite(gap.attemptCount) ? gap.attemptCount : 0;
+    if (attempt > max) {
+      max = attempt;
+    }
+  }
+  return max;
+}
+
 function buildSchedulerBackoffApi(
   schedule: Schedule,
   facts: ScheduleHistoryFacts,
@@ -1632,10 +1650,21 @@ function buildSchedulerBackoffApi(
   // combined conservatively: take whichever defers the next run further, and
   // never downgrade a `blocked` failure state (a chronic failure is stronger
   // than a recoverable cooldown).
-  const cooldown: SourcePressureCooldownDecision = computeSourcePressureCooldown(
+  // §10-B no-progress escalation is now WIRED into the dashboard projection
+  // (was dead before — neither call site passed the profile). Resolve the
+  // connector's cooldown profile (never null) and feed the consecutive
+  // no-progress cycle count, derived from the pending pressure gaps' max
+  // recovery attempt_count (it increments once per unrecovered cooldown cycle
+  // and resets when the gap recovers). This threads ADDITIVELY: it only sharpens
+  // `recommended_health_state` (cooling_off → needs_attention for a dead-but-
+  // 429ing provider), never the dispatch decision.
+  const consecutiveCooldownCycles = maxPressureGapAttemptCount(facts.pendingPressureGaps);
+  const cooldown: SourcePressureCooldownDecision = computeConnectionSourcePressureCooldown(
+    schedule.connector_id,
     facts.pendingPressureGaps,
     intervalMs,
-    lastRunTimeMs
+    lastRunTimeMs,
+    { consecutiveCooldownCycles }
   );
 
   return mergeBackoffAndCooldown(decision, cooldown);
@@ -3429,7 +3458,18 @@ export function createController(opts: ControllerOptions = {}): Controller {
         const schedule = await Promise.resolve(schedulerStore.getSchedule(connectorInstanceId)).catch(() => null);
         const baseIntervalMs = schedule ? Math.max(1, schedule.interval_seconds) * 1000 : 0;
         const lastRunTimeMs = await getLastRunTimeMs(connectorId, connectorInstanceId);
-        const cooldown = computeSourcePressureCooldown(pendingPressureGaps, baseIntervalMs, lastRunTimeMs);
+        // Route through the connection variant so the profile is resolved +
+        // asserted (no bare cooldown call can bypass §10-B). This gate only
+        // reads `isSourcePressureCooldownDeferring`, so the escalation health
+        // state is unused here — but using one production entry keeps the seam
+        // uniform.
+        const cooldown = computeConnectionSourcePressureCooldown(
+          connectorId,
+          pendingPressureGaps,
+          baseIntervalMs,
+          lastRunTimeMs,
+          { consecutiveCooldownCycles: maxPressureGapAttemptCount(pendingPressureGaps) }
+        );
         if (isSourcePressureCooldownDeferring(cooldown)) {
           throw new ControllerError(
             `Provider pressure cooldown active — next eligible retry at ${cooldown.nextRunAt}. ` +

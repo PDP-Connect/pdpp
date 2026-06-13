@@ -34,11 +34,30 @@ import {
 } from "./run-automation-policy.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 import {
-  computeSourcePressureCooldown,
+  computeConnectionSourcePressureCooldown,
   isSourcePressureCooldownDeferring,
   type PendingPressureGap,
   type SourcePressureCooldownDecision,
 } from "./scheduler-source-pressure-cooldown.ts";
+
+/**
+ * §10-B: the consecutive no-progress cooldown-cycle count for a connection,
+ * derived from the max recovery attempt_count across its pending source-pressure
+ * gaps. attempt_count increments once per cooldown cycle that fails to recover
+ * the gap and resets to 0 when the gap recovers (the pressure set empties), so
+ * it is exactly "consecutive cycles with zero gap recovery" — the §10-B
+ * escalation trigger. Pure; no dispatch state.
+ */
+function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number {
+  let max = 0;
+  for (const gap of gaps ?? []) {
+    const attempt = typeof gap?.attemptCount === "number" && Number.isFinite(gap.attemptCount) ? gap.attemptCount : 0;
+    if (attempt > max) {
+      max = attempt;
+    }
+  }
+  return max;
+}
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -594,8 +613,8 @@ interface SchedulerRuntime {
   // clears the entry so the next observed suppression emits a new skip.
   readonly notifiedAttentionSkips: Map<string, string>;
   // Tracks the source-pressure cooldown identity (from
-  // `computeSourcePressureCooldown`) for which we last emitted a cooling-off
-  // skip record. Keyed by connector_instance_id. A different identity means
+  // `computeConnectionSourcePressureCooldown`) for which we last emitted a
+  // cooling-off skip record. Keyed by connector_instance_id. A different identity means
   // the pressure picture changed (gap count or persistence) and re-arms the
   // emitter; an absent identity (pressure recovered) clears the entry so the
   // next observed cooldown emits a fresh skip.
@@ -2209,7 +2228,22 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // pending pressure gaps and defers the next automatic dispatch on its own
     // capped curve. We take whichever governor defers the run further.
     const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
-    const cooldown = computeSourcePressureCooldown(pendingPressureGaps, scheduleIntervalMs, lastRun);
+    // §10-B no-progress escalation is now WIRED (was dead before): resolve the
+    // connector's cooldown profile (never null) and feed the consecutive
+    // no-progress cycle count. A pending pressure gap's recovery attempt_count IS
+    // the per-cycle counter — it increments once per cooldown cycle that fails to
+    // recover the gap, and resets when the gap recovers (the pressure set empties
+    // and the cooldown relaxes), so it equals "consecutive cycles with zero gap
+    // recovery". This threads ADDITIVELY: it only sharpens the health-state
+    // recommendation, never the dispatch/drain decision below.
+    const consecutiveCooldownCycles = maxPressureGapAttemptCount(pendingPressureGaps);
+    const cooldown = computeConnectionSourcePressureCooldown(
+      connectorId,
+      pendingPressureGaps,
+      scheduleIntervalMs,
+      lastRun,
+      { consecutiveCooldownCycles },
+    );
     const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
 
     const elapsed = now - lastRun;

@@ -12,6 +12,7 @@
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { unauditedConservativePacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.ouraring.com/v2/usercollection";
@@ -23,7 +24,14 @@ const MAX_PAGES = 100;
 // `retryablePattern` cross-run source-pressure deferral/cooldown contract is
 // unchanged. Raising `maxAttempts` (an owner knob) activates the now-wired
 // inline Retry-After honor + bounded backoff without touching this call site.
-const httpGovernor = createConnectorHttpGovernor({ name: "oura", maxAttempts: 1 });
+// §3 ProviderProfile: oura declares its own pacing ceiling — a conservative,
+// UNAUDITED placeholder (NOT a borrow of ChatGPT's 250ms). Replace with oura's
+// real observed flagging threshold once audited (task 1b).
+const httpGovernor = createConnectorHttpGovernor({
+  name: "oura",
+  maxAttempts: 1,
+  profile: unauditedConservativePacingProfile(),
+});
 
 interface OuraSleepSession {
   average_heart_rate?: number | null;
