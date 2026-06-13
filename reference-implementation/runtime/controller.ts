@@ -438,6 +438,21 @@ export interface Controller {
    * machinery fires correctly when the run actually fails.
    */
   awaitRun(runId: string): Promise<"succeeded" | "failed">;
+  /**
+   * The managed browser-surface lease manager the controller was built with
+   * (or `undefined` when browser surfaces are disabled). Re-exported so the
+   * SCHEDULER can route managed-connector runs through the warm neko lease the
+   * way `runNow` does: the scheduler wiring in server/index.js keys both its
+   * managed-routing seam (`runManagedConnectorViaController`) and its
+   * `isManagedConnector` predicate off `controller.browserSurfaceLeaseManager`.
+   * Without this re-export the property is `undefined`, the seam is wired to
+   * `null`, and `isManagedConnector` is hardwired to `false` — so scheduled
+   * managed-connector runs fall through to the COLD `runConnector` path
+   * (empty profile, no cf_clearance) and fail the provider's bot challenge,
+   * while manual `runNow` (which reads the same lease manager from its own
+   * closure) succeeds. Exposing it makes scheduled runs lease the warm surface.
+   */
+  browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager | undefined;
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
   /**
    * Owner-only single-run cancellation. Aborts only the targeted run's
@@ -3785,6 +3800,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     runNow,
     markNeedsHuman,
     clearNeedsHuman,
+    // Re-exported so the scheduler can route managed-connector runs through the
+    // warm browser-surface lease (see the Controller interface doc above). This
+    // is the in-scope const from createController's options; exposing it makes
+    // server/index.js's scheduler seam + isManagedConnector predicate live.
+    browserSurfaceLeaseManager,
     // Approval + connector inventory live in `auth.js`
     // (`listPendingApprovals`, `listConnectors`, `getConnectorManifest`).
     // Route handlers call those helpers directly; the controller does not
