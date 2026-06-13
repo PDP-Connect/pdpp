@@ -396,6 +396,22 @@ export class ProviderPacing {
       // advance the elapsed-time baseline (which would compress future real ticks).
       return;
     }
+    // §9-C2 (slvp-ideal, CLOSED as acceptable): the additive step is subtracted in
+    // INTERVAL space, not RATE space. Since rate = 60000/interval is convex, a
+    // constant −step interval decrement makes the per-success RATE gain climb
+    // super-linearly as the interval nears the floor (measured up to ~7.5× a matched
+    // rate-space AIMD step at the 400→300 ms step, for ChatGPT's 1000/250/100). This
+    // is NOT behaviorally harmful and was deliberately NOT rewritten: the binding
+    // safety constraint is the hard `minIntervalMs` floor (§7), not the control-law
+    // space. The acceleration runs toward a hard clamp it never crosses — both this
+    // law and a rate-space AIMD rest at the SAME floor and the SAME max sustained
+    // rate. The only difference is a ~7.7s-less-conservative COLD-START ramp
+    // (8 successes vs ~27), once per cold run, entirely inside the floor-bounded
+    // zone; warm-start usually skips it and steady state is at the floor regardless.
+    // Converting to rate-space would slow the cold ramp without changing the rate
+    // the provider actually sees — a behavior change, not a safety win. Pinned by the
+    // two "ProviderPacing §9-C2" tests (floor binds identically + rate-gain band).
+    //
     // Read the elapsed-based step BEFORE updating lastSuccessAtMs (additiveStepMs
     // reads lastSuccessAtMs; updating first would collapse elapsed to 0).
     const step = this.additiveStepMs();

@@ -1003,3 +1003,127 @@ test("ProviderPacing Fix2: maxIntervalMs does not affect retry-after one-shot (r
   // — the retry-after path leaves _currentIntervalMs untouched entirely.
   assert.equal(pacing.currentIntervalMs, 1000, "retry-after does not change the sustained interval");
 });
+
+// ─── SLVP-ideal §9-C2: interval-space additive-increase vs true rate-space AIMD ──
+
+test("ProviderPacing §9-C2: the hard floor binds the rate identically under both laws — interval-space super-acceleration is floor-bounded, not a ceiling overshoot", () => {
+  // §9-C2 (slvp-ideal-whole-system-spec-2026-06-11.md): `recordSuccess` subtracts
+  // a FIXED `additiveIncreaseMs` from the INTERVAL, but textbook AIMD prescribes
+  // additive increase of the RATE. Because rate = 60000/interval is convex, a
+  // constant −Δms interval step makes the RATE climb super-linearly as the interval
+  // nears the floor — "the probe accelerates fastest exactly where it is riskiest."
+  //
+  // DECISION (close C2, do NOT rewrite): the divergence is real in the rate
+  // DERIVATIVE (quantified below: up to ~7.5× the matched rate-space step at the
+  // 400→300 step) but it is NOT behaviorally harmful, because the binding safety
+  // constraint is the HARD `minIntervalMs` floor (THE one authored behavioral-safety
+  // prior, §7), not the control-law space. You cannot OVERSHOOT a hard clamp: both
+  // the interval-space law and a matched rate-space AIMD REST at exactly the floor
+  // and the same max sustained rate. The only behavioral difference is that the
+  // cold-start ramp 1000→250 takes 8 successes (~5.2s) under the interval law vs 27
+  // (~12.9s) under rate-space — a ~7.7s-less-conservative ramp ONCE per COLD run,
+  // entirely inside the floor-bounded zone. A run spends the overwhelming majority
+  // of its wall-clock AT the floor, and warm-start usually skips the ramp entirely.
+  // Converting to rate-space would slow the cold-start descent without changing the
+  // steady-state rate the provider actually sees — a behavior change, not a safety
+  // win. So C2 is closed as acceptable, and THIS test pins the two load-bearing
+  // facts so a future regression that breaks either is caught:
+  //   (1) both laws rest identically at the floor (the floor binds, not the law);
+  //   (2) the interval-space descent never crosses the floor and the per-success
+  //       rate gain stays within a declared band of the matched rate-space step.
+  const initialIntervalMs = 1000; // ChatGPT operating point (chatgpt/index.ts)
+  const floorMs = 250; // ChatGPT minIntervalMs — THE rate ceiling (authored prior)
+  const baseStep = 100; // ChatGPT additiveIncreaseMs
+  const ratePerMin = (ms: number): number => 60_000 / ms;
+
+  // Matched rate-space step: choose the constant rate increment so the FIRST step
+  // off the operating point is identical to the interval law (live behavior at the
+  // typical operating point is preserved either way).
+  const rateStep = ratePerMin(initialIntervalMs - baseStep) - ratePerMin(initialIntervalMs); // 6.667/min
+
+  // Walk the interval-space law from a COLD start down to the floor and record the
+  // per-success rate gain at each step (the §9-C2 super-linear quantity).
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: floorMs,
+    additiveIncreaseMs: baseStep,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  let prevInterval = pacing.currentIntervalMs;
+  let maxOvershootRatio = 0;
+  let steps = 0;
+  while (pacing.currentIntervalMs > floorMs) {
+    pacing.recordSuccess();
+    const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
+    maxOvershootRatio = Math.max(maxOvershootRatio, dRate / rateStep);
+    prevInterval = pacing.currentIntervalMs;
+    steps += 1;
+  }
+
+  // FACT (1): the interval law REACHES and RESTS at exactly the floor (the binding
+  // constraint), in the expected 8 cold-start successes — identical terminal rate
+  // to any rate-space law.
+  assert.equal(
+    pacing.currentIntervalMs,
+    floorMs,
+    "interval-space law rests at exactly the floor (the binding rate ceiling)"
+  );
+  assert.equal(steps, 8, "cold-start ramp 1000→250 is 8 successes (= ceil((1000-250)/100))");
+
+  // The §9-C2 super-linear divergence is REAL: the per-success rate gain peaks well
+  // above the matched rate-space step. Pin the measured magnitude so the rationale
+  // stays honest (this number is NOT a defect — it is the quantity the floor bounds).
+  assert.ok(
+    maxOvershootRatio > 3 && maxOvershootRatio < 10,
+    `§9-C2 rate-derivative overshoot is real and bounded (measured ${maxOvershootRatio.toFixed(2)}×, expected ~7.5× at 400→300)`
+  );
+
+  // FACT (2): the floor is the SAFETY MECHANISM — the law cannot push the rate past
+  // it no matter the success volume. This is what makes the super-acceleration
+  // harmless: it accelerates toward a HARD WALL, not toward an unbounded rate.
+  for (let i = 0; i < 500; i += 1) {
+    pacing.recordSuccess();
+    assert.ok(
+      pacing.currentIntervalMs >= floorMs,
+      `interval-space super-acceleration never crosses the floor (i=${i}, interval=${pacing.currentIntervalMs})`
+    );
+  }
+  assert.equal(pacing.currentIntervalMs, floorMs, "rests exactly at the floor under unbounded success");
+});
+
+test("ProviderPacing §9-C2: at and below the operating point the rate gain stays inside an acceptable band of rate-space AIMD (regression guard)", () => {
+  // The companion pin: across the ENTIRE floor-bounded operating range [floor,
+  // initial] the interval-space per-success rate gain must stay within a declared
+  // multiple of the matched rate-space step. If a future change makes the
+  // super-acceleration materially WORSE near the floor (e.g. a bigger base step, or
+  // — the real hazard — a LOWERED/REMOVED floor that lets the convex blow-up run),
+  // this band is exceeded and the §9-C2 close-as-acceptable rationale no longer
+  // holds. The band (10×) is generous on purpose: it passes the measured ~7.5× peak
+  // for ChatGPT's 1000/250/100 parameters but fails a floor removal (rate→∞).
+  const initialIntervalMs = 1000;
+  const floorMs = 250;
+  const baseStep = 100;
+  const acceptableBandMultiple = 10; // headroom over the measured ~7.5× peak
+  const ratePerMin = (ms: number): number => 60_000 / ms;
+  const rateStep = ratePerMin(initialIntervalMs - baseStep) - ratePerMin(initialIntervalMs);
+
+  const pacing = new ProviderPacing({
+    initialIntervalMs,
+    minIntervalMs: floorMs,
+    additiveIncreaseMs: baseStep,
+    now: () => 0,
+    sleep: () => Promise.resolve(),
+  });
+  let prevInterval = pacing.currentIntervalMs;
+  while (pacing.currentIntervalMs > floorMs) {
+    pacing.recordSuccess();
+    const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
+    assert.ok(
+      dRate <= rateStep * acceptableBandMultiple,
+      `per-success rate gain (${dRate.toFixed(2)}/min) within ${acceptableBandMultiple}× the matched rate-space step (${rateStep.toFixed(2)}/min) — ` +
+        "§9-C2: super-acceleration must stay floor-bounded; exceeding this band means the floor stopped binding (e.g. it was lowered/removed)"
+    );
+    prevInterval = pacing.currentIntervalMs;
+  }
+});
