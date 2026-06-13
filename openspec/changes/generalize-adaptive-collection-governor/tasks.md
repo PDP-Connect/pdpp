@@ -62,3 +62,65 @@
   with the adaptive-parity tests proving accelerate-under-success.
 - [x] 6.4 `tsc --noEmit` clean; biome/ultracite clean on changed files.
 - [x] 6.5 openspec change validates `--strict`.
+
+## 7. ProviderProfile: the safety/pressure quantity is a REQUIRED declaration (spec §3, §9-C5)
+
+> Closes the §3/§9-C5 architectural gap: §1.2 above hoisted ChatGPT's
+> `pacingMinIntervalMs=250` as a *shared default*; the spec's bar is the opposite
+> — "no shared default for a safety- or pressure-shaped quantity; a missing field
+> is a BUILD ERROR, not a silent borrow of ChatGPT's number." This section makes
+> the pacing ceiling a REQUIRED per-provider declaration and SUPERSEDES the
+> default-fallback in §1.2. (The terminal-gap `maxRecoveryAttempts` and cooldown
+> `maxCooldownCycles` slices were already lifted into required per-provider
+> profiles in commit 753012ab — §10-A/§10-B; this section completes the set by
+> doing the same for the pacing ceiling.)
+
+- [x] 7.1 Add `packages/polyfill-connectors/src/provider-profile.ts` — the ONE
+  declared home for the profile field set: `ProviderPacingProfile`
+  (`pacingMinIntervalMs`, compile-time required on the governor),
+  `ProviderTerminalGapProfile` (`maxRecoveryAttempts`),
+  `ProviderCooldownProfile` (`maxCooldownCycles`), and the union `ProviderProfile`.
+  These are the safety-/pressure-/terminal-shaped quantities (getting them wrong
+  off the wrong provider's numbers risks a ban, a stall, or a dishonest health
+  verdict); discovery seeds / AIMD horizons stay derived defaults, NOT forced here.
+- [x] 7.2 Make the pacing ceiling REQUIRED at the type level: replace the optional
+  `pacingMinIntervalMs?: number` on `ConnectorHttpGovernorOptions` with a
+  non-optional `profile: ProviderPacingProfile`. A bare
+  `createConnectorHttpGovernor({ name })` is now a `tsc` error (the spec's
+  build-error bar). Add a loud startup throw as the JS-caller backstop (no silent
+  shared default). `DEFAULT_PACING_MIN_INTERVAL_MS` survives only as a NAMED,
+  AUDITED reference for tests — the governor no longer falls back to it.
+- [x] 7.3 ChatGPT is unchanged (pure refactor): ChatGPT runs on
+  `ProviderBudgetController`, not this factory, and keeps
+  `CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250`. Terminal `maxRecoveryAttempts=3`
+  and cooldown `maxCooldownCycles=8` are unchanged. No live-behavior change.
+- [x] 7.4 The six governor-using connectors (github/notion/oura/spotify/strava/
+  ynab) each declare `unauditedConservativePacingProfile()` (a DELIBERATE 1000ms
+  conservative placeholder, ~4× slower than ChatGPT's audited 250ms — NOT a borrow).
+  Terminal/cooldown slices are NOT declared for them: they opt OUT of those loops
+  (terminalization skipped via `terminalGapProfileForConnector` → null; cooldown
+  escalation disabled) rather than inheriting ChatGPT's budgets.
+- [x] 7.5 Conformance test `src/provider-profile-conformance.test.ts` PINS the
+  build-error bar: a `@ts-expect-error` on the bare governor call (unused
+  suppression ⇒ tsc fails if the field is ever made optional again), the runtime
+  backstop throw, a static source scan proving every governor-using connector
+  declares a `profile` and never hard-codes 250, and that the conservative
+  placeholder is slower than ChatGPT's number. Verified to FAIL when a connector's
+  profile is removed (both the conformance test and `tsc` go red).
+- [x] 7.6 Gates: `tsc --noEmit` clean in polyfill-connectors (RI clean except the
+  pre-existing unrelated `google-data-portability.ts` error); full
+  polyfill-connectors suite 2086/2086; the 5 SLVP suites green (terminal-gap 18,
+  cooldown-recovery-eligibility 4, escalation-l5 12, push-escalation-l8 5,
+  provider-pacing 35); ultracite clean on all changed files.
+
+### 7b. OUT OF SCOPE here — per-connector behavioral audit (the §9-C5 follow-up)
+
+- [ ] 7b.1 Audit each of the six governor-using connectors' REAL 429 semantics
+  (is a bare 429 whole-account-hot? fast-open attempts?) and binding-quota axis,
+  and replace `unauditedConservativePacingProfile()` with that provider's observed
+  ceiling. Tracks the spec §3 `pressureSignal` / `servedBackoffCostMs` fields.
+- [ ] 7b.2 Where a provider warrants it, declare its terminal-gap
+  `maxRecoveryAttempts` and cooldown `maxCooldownCycles` from observed non-transient
+  -error and recovery-window behavior (today only ChatGPT declares these).
+- [ ] 7b.3 Each new/updated profile validated by a supervised live run (owner-run;
+  no live calibration in the interface change).

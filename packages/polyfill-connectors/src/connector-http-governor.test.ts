@@ -26,11 +26,20 @@ function classify(raw: RawResponse): { status: number; headers?: Record<string, 
     : { status: raw.status, value: raw.body };
 }
 
+// §3 ProviderProfile: the governor now REQUIRES a per-provider pacing profile —
+// there is no shared default ceiling to fall back on. These tests pin the
+// existing 250ms-ceiling behavior, so the test profile declares exactly that
+// (= the ChatGPT-audited DEFAULT_PACING_MIN_INTERVAL_MS), keeping every
+// ceiling/snapshot assertion below meaningful while proving the ceiling now flows
+// from the DECLARED profile rather than an implicit default.
+const TEST_PROFILE = { pacingMinIntervalMs: DEFAULT_PACING_MIN_INTERVAL_MS } as const;
+
 test("connector governor: recovers a 429-then-200 and returns the parsed value", async () => {
   const slept: number[] = [];
   const statuses = [429, 200];
   const g = createConnectorHttpGovernor({
     name: "oura",
+    profile: TEST_PROFILE,
     maxAttempts: 4,
     baseDelayMs: 1000,
     maxDelayMs: 10_000,
@@ -59,6 +68,7 @@ test("connector governor: Retry-After double-pay guard — the server interval i
   const statuses = [429, 200];
   const g = createConnectorHttpGovernor({
     name: "strava",
+    profile: TEST_PROFILE,
     maxAttempts: 4,
     baseDelayMs: 2000,
     maxDelayMs: 60_000,
@@ -78,6 +88,7 @@ test("connector governor: Retry-After double-pay guard — the server interval i
 test("connector governor: terminal 429 exhaustion throws <name>_rate_limited (cross-run contract preserved)", async () => {
   const g = createConnectorHttpGovernor({
     name: "github",
+    profile: TEST_PROFILE,
     maxAttempts: 3,
     baseDelayMs: 1,
     maxDelayMs: 2,
@@ -102,6 +113,7 @@ test("connector governor: ratio-based retry budget caps retry volume across requ
   const retryBudget = new RetryBudget({ capacity: 1, refillPerSuccess: 0 });
   const g = createConnectorHttpGovernor({
     name: "ynab",
+    profile: TEST_PROFILE,
     maxAttempts: 10,
     baseDelayMs: 1,
     maxDelayMs: 2,
@@ -129,6 +141,7 @@ test("connector governor: ratio-based retry budget caps retry volume across requ
 test("connector governor: non-429 retryable exhaustion rethrows RetryExhaustedError (not rate_limited)", async () => {
   const g = createConnectorHttpGovernor({
     name: "notion",
+    profile: TEST_PROFILE,
     maxAttempts: 2,
     baseDelayMs: 1,
     maxDelayMs: 2,
@@ -152,6 +165,7 @@ test("connector governor: per-provider isolation — two governors throttle inde
   const now = () => 0;
   const a = createConnectorHttpGovernor({
     name: "spotify",
+    profile: TEST_PROFILE,
     pacingInitialIntervalMs: 1000,
     maxAttempts: 1,
     sleep: () => {
@@ -161,6 +175,7 @@ test("connector governor: per-provider isolation — two governors throttle inde
   });
   const b = createConnectorHttpGovernor({
     name: "oura",
+    profile: TEST_PROFILE,
     pacingInitialIntervalMs: 1000,
     maxAttempts: 1,
     sleep: () => {
@@ -182,6 +197,7 @@ test("connector governor: pacing is the single pre-flight gate (one wait source 
   const probe = new PreflightWaitProbe();
   const g = createConnectorHttpGovernor({
     name: "oura",
+    profile: TEST_PROFILE,
     pacingInitialIntervalMs: 800,
     maxAttempts: 1,
     now: () => 0,
@@ -196,6 +212,7 @@ test("connector governor: pacing is the single pre-flight gate (one wait source 
 test("connector governor: terminal abort status surfaces without rate_limited mislabel", async () => {
   const g = createConnectorHttpGovernor({
     name: "github",
+    profile: TEST_PROFILE,
     maxAttempts: 3,
     baseDelayMs: 1,
     maxDelayMs: 2,
@@ -221,8 +238,9 @@ test("connector governor: terminal abort status surfaces without rate_limited mi
 // generalization deliverable.
 
 test("adaptive default: a bare governor cold-starts at the shared discovery seed and exposes a snapshot", () => {
-  // The exact call the six connectors ship — no pacing args.
-  const g = createConnectorHttpGovernor({ name: "oura", maxAttempts: 1 });
+  // The exact shape the six connectors ship — no pacing args beyond the
+  // required profile (which each connector declares; here the test profile).
+  const g = createConnectorHttpGovernor({ name: "oura", maxAttempts: 1, profile: TEST_PROFILE });
   const snap = g.snapshot();
   assert.ok(snap, "a bare governor has live rate state by default (pacing is on)");
   assert.equal(
@@ -243,6 +261,7 @@ test("adaptive default: sustained success ACCELERATES the bare governor toward t
   // Bare call — the shape the six connectors ship. No pacing config.
   const g = createConnectorHttpGovernor({
     name: "github",
+    profile: TEST_PROFILE,
     maxAttempts: 1,
     now: () => 0,
     sleep: (ms) => {
@@ -263,6 +282,7 @@ test("adaptive default: sustained success ACCELERATES the bare governor toward t
 test("adaptive default: a throttle BACKS OFF the bare governor and the back-off is legible in the snapshot", async () => {
   const g = createConnectorHttpGovernor({
     name: "spotify",
+    profile: TEST_PROFILE,
     // maxAttempts 2 so a 429-then-200 drives one onRetry (throttle) then success.
     maxAttempts: 2,
     baseDelayMs: 1,
@@ -293,6 +313,7 @@ test("adaptive default: pacingInitialIntervalMs:0 opts OUT (no snapshot, byte-id
   const probe = new PreflightWaitProbe();
   const g = createConnectorHttpGovernor({
     name: "notion",
+    profile: TEST_PROFILE,
     maxAttempts: 1,
     pacingInitialIntervalMs: 0,
     now: () => 0,
@@ -312,6 +333,7 @@ test("warm-start seam: round-trip — a run persists its learned interval; the n
   // Run 1: bare governor, accelerate under success, then persist.
   const g1 = createConnectorHttpGovernor({
     name: "strava",
+    profile: TEST_PROFILE,
     maxAttempts: 1,
     now: () => 0,
     sleep: () => {
@@ -332,6 +354,7 @@ test("warm-start seam: round-trip — a run persists its learned interval; the n
   assert.equal(restored, learned, "warm-start restores the learned interval, not the cold seed");
   const g2 = createConnectorHttpGovernor({
     name: "strava",
+    profile: TEST_PROFILE,
     maxAttempts: 1,
     restoredIntervalMs: restored,
     now: () => 0,
@@ -441,7 +464,7 @@ test("warm-start staleness window: a learned interval persisted 7h ago is discar
 // ─── collection_rate observability (legible rate for ALL governor connectors) ─
 
 test("observability: buildCollectionRateProgress turns a bare governor's snapshot into legible rate state carrying no account content", () => {
-  const g = createConnectorHttpGovernor({ name: "ynab", maxAttempts: 1 });
+  const g = createConnectorHttpGovernor({ name: "ynab", maxAttempts: 1, profile: TEST_PROFILE });
   const rate = buildCollectionRateProgress(g);
   assert.ok(rate, "any governor-using connector can surface collection_rate");
   assert.equal(rate.object, "collection_rate");
@@ -465,7 +488,12 @@ test("observability: buildCollectionRateProgress turns a bare governor's snapsho
 });
 
 test("observability: buildCollectionRateProgress returns null when pacing is opted out (honest absence, not a false zero)", () => {
-  const g = createConnectorHttpGovernor({ name: "github", maxAttempts: 1, pacingInitialIntervalMs: 0 });
+  const g = createConnectorHttpGovernor({
+    name: "github",
+    maxAttempts: 1,
+    pacingInitialIntervalMs: 0,
+    profile: TEST_PROFILE,
+  });
   assert.equal(buildCollectionRateProgress(g), null);
   assert.deepEqual(buildPacingStateFields(g), {}, "nothing to persist when pacing is off");
 });
@@ -475,6 +503,7 @@ function createConnectorHttpGovernorWithInterval(name: string, intervalMs: numbe
   // restoredIntervalMs seeds the controller to a known interval for the test.
   return createConnectorHttpGovernor({
     name,
+    profile: TEST_PROFILE,
     maxAttempts: 1,
     restoredIntervalMs: intervalMs,
     now: () => 0,

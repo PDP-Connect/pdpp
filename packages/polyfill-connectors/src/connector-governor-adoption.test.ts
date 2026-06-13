@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConnectorRateLimitedError, createConnectorHttpGovernor } from "./connector-http-governor.ts";
+import { unauditedConservativePacingProfile } from "./provider-profile.ts";
+
+// §3 ProviderProfile: the governor now REQUIRES a per-provider profile. These
+// adopted connectors each ship `unauditedConservativePacingProfile()`, so the
+// adoption smoke uses the exact same profile to stay byte-faithful to what the
+// six connectors construct.
+const ADOPTED_PROFILE = unauditedConservativePacingProfile();
 
 /**
  * Adoption smoke: every connector that migrated onto the shared send governor
@@ -26,6 +33,7 @@ for (const { name, retryablePattern } of ADOPTED) {
   test(`adoption: ${name} terminal rate-limit throws an error matching its retryablePattern`, async () => {
     const governor = createConnectorHttpGovernor({
       name,
+      profile: ADOPTED_PROFILE,
       maxAttempts: 1, // the byte-identical default these connectors ship
       baseDelayMs: 1,
       maxDelayMs: 2,
@@ -55,6 +63,7 @@ for (const { name, retryablePattern } of ADOPTED) {
   test(`adoption: ${name} with maxAttempts:1 makes exactly ONE provider call on a 429 (byte-identical, no inline retry)`, async () => {
     const governor = createConnectorHttpGovernor({
       name,
+      profile: ADOPTED_PROFILE,
       maxAttempts: 1,
       now: () => 0,
       sleep: () => {
