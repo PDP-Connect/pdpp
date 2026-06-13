@@ -23,13 +23,30 @@ import { RecordroomShell } from "@/components/ink-carbon";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import { listRecordVersionStats, type RefConnectorSummary } from "../lib/ref-client.ts";
 import { revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 import { SourcesView } from "./sources-view.tsx";
-import { toSourcesView } from "./sources-view-model.ts";
+import { buildSourcesChurnAdvisory, type SourcesChurnAdvisory, toSourcesView } from "./sources-view-model.ts";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Defensively fetch the version-churn advisory for the Sources surface. The
+ * signal comes from `/_ref/records/version-stats` (metadata only — no record
+ * payloads). A failed or older route degrades to no advisory rather than
+ * breaking the page, exactly as the prior records-page `VersionChurnSection`
+ * did. Mirrors that fetch shape (`limit: 8`); the non-`normal` risk filter and
+ * the honest disposition headline live in `buildSourcesChurnAdvisory`.
+ */
+async function resolveChurnAdvisory(): Promise<SourcesChurnAdvisory | null> {
+  try {
+    const churn = await listRecordVersionStats({ limit: 8 });
+    return buildSourcesChurnAdvisory(churn.data);
+  } catch {
+    return null;
+  }
+}
 
 const SCHEME_RE = /^https?:\/\//;
 
@@ -56,15 +73,20 @@ export default async function RecordsIndexPage({
   // DEV-ONLY seeded demo. Gated by NODE_ENV so production never reads fixtures.
   const demoParam = typeof params.demo === "string" ? params.demo : undefined;
   if (process.env.NODE_ENV !== "production" && demoParam) {
-    const { buildSourcesDemoSummaries, isSourcesDemoScenario } = await import("./sources-demo-data.ts");
+    const { buildSourcesDemoSummaries, buildSourcesDemoChurnRows, isSourcesDemoScenario } = await import(
+      "./sources-demo-data.ts"
+    );
     const scenario = isSourcesDemoScenario(demoParam) ? demoParam : "mixed";
     const instances = toSourcesView(buildSourcesDemoSummaries(scenario));
+    // Seed a churn advisory for the demo so the protocol-toned notice is
+    // screenshot-able without a live version-stats route.
+    const churnAdvisory = buildSourcesChurnAdvisory(buildSourcesDemoChurnRows(scenario));
     return (
       <RecordroomShell build="pdpp 0.1.0" host={host}>
         <SourcesHeader notice={`Seeded demo · ${scenario} · fictional data`} />
         {/* interactive=false: the demo never reaches a live server, so the
             mutating Sync/Revoke controls are read-only here. */}
-        <SourcesView instances={instances} interactive={false} />
+        <SourcesView churnAdvisory={churnAdvisory} instances={instances} interactive={false} />
       </RecordroomShell>
     );
   }
@@ -86,6 +108,7 @@ export default async function RecordsIndexPage({
   }
 
   const instances = toSourcesView(summaries);
+  const churnAdvisory = await resolveChurnAdvisory();
   // The poller is mounted unconditionally; `running` (derived from any active
   // run) only selects the fast vs. idle cadence. Named `runningCount` to match
   // the records-poller mount invariant.
@@ -96,7 +119,12 @@ export default async function RecordsIndexPage({
   return (
     <RecordroomShell build="pdpp 0.1.0" host={host}>
       <SourcesHeader error={params.error} message={params.message} />
-      <SourcesView instances={instances} interactive={true} revokeAction={revokeConnectionAction} />
+      <SourcesView
+        churnAdvisory={churnAdvisory}
+        instances={instances}
+        interactive={true}
+        revokeAction={revokeConnectionAction}
+      />
       <RecordsPagePoller running={runningCount > 0} />
     </RecordroomShell>
   );
