@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createConnectorHttpGovernor } from "./connector-http-governor.ts";
-import { type ProviderPacingProfile, unauditedConservativePacingProfile } from "./provider-profile.ts";
+import {
+  type ProviderPacingProfile,
+  UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS,
+  unauditedConservativePacingProfile,
+} from "./provider-profile.ts";
 
 /**
  * ProviderProfile conformance (SLVP-ideal spec §3, §9-C5).
@@ -37,9 +41,67 @@ import { type ProviderPacingProfile, unauditedConservativePacingProfile } from "
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const CONNECTORS_DIR = join(THIS_DIR, "..", "connectors");
 
-// Every connector that constructs the shared HTTP governor at module load. Each
-// MUST declare a ProviderProfile; this list is the conformance roster.
+// Hand-maintained roster of governor-using (API) connectors. Each MUST declare a
+// ProviderProfile. This list is NOT the source of truth — it is cross-checked
+// against the FILESYSTEM-DERIVED set below, so a new governor-using connector
+// added without updating this list FAILS the conformance suite (roster hardening
+// from the adversarial review: the static scan was foolable + the roster was
+// hand-maintained; this closes the "added but unlisted" hole).
 const GOVERNOR_USING_CONNECTORS = ["github", "notion", "oura", "spotify", "strava", "ynab"] as const;
+
+/**
+ * Derive the set of connectors that construct the shared HTTP governor by
+ * scanning each connector's `index.ts` source for a `createConnectorHttpGovernor`
+ * call. This is the source of truth the hand-maintained roster is checked
+ * against — so the roster can never silently drift from reality.
+ */
+function deriveGovernorUsingConnectors(): string[] {
+  const names: string[] = [];
+  for (const entry of readdirSync(CONNECTORS_DIR)) {
+    const indexPath = join(CONNECTORS_DIR, entry, "index.ts");
+    let source: string;
+    try {
+      if (!statSync(indexPath).isFile()) {
+        continue;
+      }
+      source = readFileSync(indexPath, "utf8");
+    } catch {
+      continue; // no index.ts (e.g. a fixtures-only dir) — not a governor-using connector
+    }
+    if (/createConnectorHttpGovernor\s*\(/.test(source)) {
+      names.push(entry);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * Connectors still pointing at the UNAUDITED 1000ms conservative pacing
+ * placeholder (`unauditedConservativePacingProfile()` /
+ * `UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS`). Derived from source so the
+ * list cannot ossify silently. This is the GAP 3 forcing function's input.
+ */
+function deriveUnauditedPlaceholderConnectors(): string[] {
+  const names: string[] = [];
+  for (const name of deriveGovernorUsingConnectors()) {
+    const source = readFileSync(join(CONNECTORS_DIR, name, "index.ts"), "utf8");
+    if (/unauditedConservativePacingProfile\s*\(|UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS/.test(source)) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+// GAP 3 forcing function: the connectors KNOWN to still be on the unaudited
+// 1000ms placeholder, pending the per-connector behavioral audit
+// (generalize-adaptive-collection-governor task 7b — §9-C5 / §3 pressureSignal +
+// servedBackoffCostMs). This roster is the forcing function: when a connector is
+// audited and its placeholder is replaced with a real per-provider ceiling, the
+// derived set below stops matching this list and the test goes RED — forcing the
+// author to remove the connector from this roster (a conscious "this one is
+// audited now" acknowledgement) and re-read task 7b. The placeholder therefore
+// cannot silently become permanent.
+const STILL_ON_UNAUDITED_PLACEHOLDER = ["github", "notion", "oura", "spotify", "strava", "ynab"] as const;
 
 // ─── 1. Compile-time: missing profile is a BUILD ERROR ───────────────────────
 
@@ -120,5 +182,71 @@ test("the unaudited conservative profile is a deliberate declaration, slower tha
   assert.ok(
     profile.pacingMinIntervalMs > 250,
     "the unaudited placeholder must be SLOWER than ChatGPT's account-tuned 250ms — a polite default, not a borrow (§9-C5)"
+  );
+});
+
+// ─── 5. Roster hardening: the hand-maintained list cannot drift from reality ──
+//
+// The adversarial review flagged the hand-maintained roster as foolable. This
+// derives the governor-using set from source and fails if it diverges — so a new
+// governor-using connector added without being listed (or a connector that drops
+// the governor) is caught immediately.
+
+test("the hand-maintained GOVERNOR_USING_CONNECTORS roster matches the filesystem-derived set (no silent drift)", () => {
+  const derived = deriveGovernorUsingConnectors();
+  const declared = [...GOVERNOR_USING_CONNECTORS].sort();
+  assert.deepEqual(
+    derived,
+    declared,
+    "a connector that constructs createConnectorHttpGovernor must be in GOVERNOR_USING_CONNECTORS.\n" +
+      `  derived from source: ${JSON.stringify(derived)}\n` +
+      `  hand-maintained:     ${JSON.stringify(declared)}\n` +
+      "If you added a governor-using connector, add it to GOVERNOR_USING_CONNECTORS (and give it a ProviderProfile)."
+  );
+});
+
+// ─── 6. GAP 3 forcing function: the 1000ms placeholder cannot ossify silently ──
+//
+// The unaudited 1000ms shared placeholder is acceptable PENDING the per-connector
+// audit (task 7b), but nothing forced it to be replaced — it could ossify. This
+// test makes the placeholder VISIBLE and un-ossifiable: it pins exactly which
+// connectors are still on it. When a connector is audited (its placeholder
+// replaced by a real per-provider ceiling), this test goes RED until the author
+// removes it from STILL_ON_UNAUDITED_PLACEHOLDER — a forced, conscious update.
+
+test("GAP 3 forcing function: connectors still on the 1000ms unaudited placeholder are explicitly tracked (task 7b)", () => {
+  const derived = deriveUnauditedPlaceholderConnectors().sort();
+  const tracked = [...STILL_ON_UNAUDITED_PLACEHOLDER].sort();
+  assert.deepEqual(
+    derived,
+    tracked,
+    `The set of connectors still on the unaudited ${UNAUDITED_CONSERVATIVE_PACING_MIN_INTERVAL_MS}ms placeholder drifted.\n` +
+      `  derived from source: ${JSON.stringify(derived)}\n` +
+      `  tracked roster:      ${JSON.stringify(tracked)}\n` +
+      "This is the forcing function for the per-connector behavioral audit\n" +
+      "(generalize-adaptive-collection-governor task 7b — §9-C5). If you AUDITED a\n" +
+      "connector and replaced its placeholder, REMOVE it from STILL_ON_UNAUDITED_PLACEHOLDER.\n" +
+      "If you added a new governor-using connector still on the placeholder, ADD it.\n" +
+      "The placeholder must never silently become permanent."
+  );
+  // Sanity: every tracked connector is also a governor-using connector.
+  for (const name of tracked) {
+    assert.ok(
+      (GOVERNOR_USING_CONNECTORS as readonly string[]).includes(name),
+      `${name} is tracked as placeholder-using but is not a governor-using connector`
+    );
+  }
+});
+
+test("GAP 3 forcing function is non-empty until task 7b lands (visibility that work remains)", () => {
+  // A green-but-empty forcing function would be invisible. Until task 7b audits
+  // every connector, this asserts there is still placeholder work to do — so the
+  // forcing function is alive, not a no-op. When the LAST connector is audited,
+  // this assertion flips and the author removes both this test and the roster
+  // (the placeholder mechanism itself can then be deleted).
+  const derived = deriveUnauditedPlaceholderConnectors();
+  assert.ok(
+    derived.length > 0,
+    "expected at least one connector still on the unaudited placeholder; if task 7b is fully done, retire this forcing function + the placeholder helper"
   );
 });

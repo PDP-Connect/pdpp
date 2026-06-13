@@ -81,9 +81,15 @@ export const DEFAULT_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 // ─── Provider profiles (§10-B, §3 rule 6) ───────────────────────────────────
 //
-// maxCooldownCycles is a ProviderProfile field — NO cross-provider default.
-// Each connector must declare its own value. ChatGPT's value below is the
-// only concrete exported profile; other connectors must NOT inherit it.
+// maxCooldownCycles is a ProviderProfile field. A connector MAY declare its own
+// value (ChatGPT does — the registry override below), but it can NEVER opt OUT of
+// the §10-B no-progress escalation: `cooldownProfileForConnector` falls every
+// unregistered connector back to a conservative `DEFAULT_COOLDOWN_PROFILE`
+// (spec §10-A/§10-B "impossible by construction"). This is distinct from the §3
+// rule-6 *safety/ban prior* (`pacingMinIntervalMs`, strictly per-provider, no
+// default): maxCooldownCycles is a no-progress escalation budget, not a rate
+// prior — so a safe shared default is correct, and a SILENT "never escalate"
+// (the pre-fix absent → Infinity) is the §10-B bug being closed.
 
 /**
  * ChatGPT cooldown profile for the §10-B no-progress escalation.
@@ -99,6 +105,109 @@ export const DEFAULT_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export const CHATGPT_COOLDOWN_PROFILE = Object.freeze({
   maxCooldownCycles: 8,
 });
+
+/**
+ * §10-B "impossible by construction" default cooldown profile.
+ *
+ * The silent-disable hole (GAP 1, cooldown half): `maxCooldownCycles` used to be
+ * an OPTIONAL `ComputeCooldownOptions` field, and the two production call sites
+ * (the dashboard projection in controller.ts and the scheduler dispatch in
+ * scheduler.ts) passed NOTHING — so the no-progress escalation (§10-B) was never
+ * wired at all. A dead-but-429ing provider would render `cooling_off` forever,
+ * the exact permanent lie §10-B exists to prevent.
+ *
+ * The fix mirrors §10-A: the production path ALWAYS resolves a real cooldown
+ * profile via `cooldownProfileForConnector` (explicit registry override OR this
+ * safe default — never null, never Infinity). A connector can NEVER be on the
+ * cooldown path with escalation silently disabled. An unaudited connector
+ * escalates after a CONSERVATIVE number of no-progress cycles (more generous
+ * than ChatGPT's audited 8, since its real recovery window is unknown) rather
+ * than never escalating.
+ */
+export const DEFAULT_COOLDOWN_PROFILE = Object.freeze({
+  maxCooldownCycles: 12,
+});
+
+// Per-connector cooldown profile registry. An EXPLICIT entry overrides the
+// default cycle budget with the provider's observed recovery-window length. A
+// connector NOT listed here does NOT opt out of §10-B escalation — it falls back
+// to DEFAULT_COOLDOWN_PROFILE via `cooldownProfileForConnector`. The registry
+// value is an override, never a gate (spec §10-B, §3 rule 6).
+const COOLDOWN_PROFILES: Readonly<Record<string, { maxCooldownCycles: number }>> = Object.freeze({
+  chatgpt: CHATGPT_COOLDOWN_PROFILE,
+});
+
+/**
+ * Resolve the cooldown profile the production path MUST use. ALWAYS returns a
+ * real profile — the explicit per-connector profile when registered, otherwise
+ * the safe `DEFAULT_COOLDOWN_PROFILE`. There is no null/Infinity return: a
+ * connection can never sit on the cooldown path with §10-B escalation silently
+ * off. Matches on the canonical connector key prefix so instance-scoped ids
+ * (`chatgpt:default`) resolve to the `chatgpt` profile.
+ */
+export function cooldownProfileForConnector(connectorId: string | null | undefined): {
+  maxCooldownCycles: number;
+} {
+  if (typeof connectorId === "string" && connectorId) {
+    const base = connectorId.split(":")[0]?.split("@")[0];
+    const explicit = base ? COOLDOWN_PROFILES[base] : undefined;
+    if (explicit) {
+      return explicit;
+    }
+  }
+  return DEFAULT_COOLDOWN_PROFILE;
+}
+
+/**
+ * Loud assertion for the §10-B cooldown profile: a resolved profile MUST carry a
+ * finite positive-integer `maxCooldownCycles`. This is the JS-seam equivalent of
+ * a build error (the .ts `ProviderCooldownProfile` already types it non-optional)
+ * — a caller that reaches the cooldown consumption path with no usable cycle
+ * budget fails LOUD here rather than silently defaulting to "never escalate"
+ * (the §10-B silent-disable GAP 1 closed).
+ */
+export function assertCooldownProfile(profile: { maxCooldownCycles?: number } | null | undefined): {
+  maxCooldownCycles: number;
+} {
+  if (
+    !profile ||
+    typeof profile.maxCooldownCycles !== "number" ||
+    !Number.isFinite(profile.maxCooldownCycles) ||
+    profile.maxCooldownCycles <= 0
+  ) {
+    throw new Error(
+      "source-pressure cooldown requires a per-provider profile.maxCooldownCycles (finite positive integer); " +
+        "resolve it via cooldownProfileForConnector — no silent 'never escalate' (spec §10-B, §3 rule 6)",
+    );
+  }
+  return { maxCooldownCycles: profile.maxCooldownCycles };
+}
+
+/**
+ * Production entry point for the cross-run source-pressure cooldown: resolves the
+ * connector's cooldown profile (never null), asserts it loudly, and computes the
+ * decision with §10-B escalation WIRED. The two dashboard/scheduler call sites
+ * use this instead of calling `computeSourcePressureCooldown` bare, so a
+ * connection on the cooldown path can never have escalation silently disabled.
+ *
+ * `consecutiveCooldownCycles` is the connection's running count of consecutive
+ * no-progress cooldown cycles (0 when not tracked yet); it threads ADDITIVELY —
+ * it does not alter the dispatch/drain decision, only the health-state
+ * recommendation.
+ */
+export function computeConnectionSourcePressureCooldown(
+  connectorId: string | null | undefined,
+  pendingGaps: readonly PendingPressureGap[],
+  baseIntervalMs: number,
+  lastRunAtMs: number,
+  options: ComputeCooldownOptions = {},
+): SourcePressureCooldownDecision {
+  const { maxCooldownCycles } = assertCooldownProfile(cooldownProfileForConnector(connectorId));
+  return computeSourcePressureCooldown(pendingGaps, baseIntervalMs, lastRunAtMs, {
+    ...options,
+    maxCooldownCycles,
+  });
+}
 
 /**
  * One pending pressure gap as the governor needs to see it. This is the

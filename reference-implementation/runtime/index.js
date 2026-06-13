@@ -14,7 +14,7 @@ import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
 import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
-import { classifyRecoveryError, maybeTerminateGap, terminalGapProfileForConnector } from '../server/stores/terminal-gap-classifier.js';
+import { classifyRecoveryError, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.js';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -3225,14 +3225,20 @@ export async function runConnector(opts) {
           allServedGapIds.delete(storedGap.gap_id);
 
           // §10-A: a gap that re-defers with a NON-TRANSIENT error (404/410/
-          // permanent-403/401) and has exhausted its per-provider recovery
-          // budget transitions to `terminal` — removed from the fillable-pending
-          // set (so it neither re-arms the cooldown nor blocks convergence to
-          // 100%) but counted + surfaced, never silently retried forever. The
-          // profile registry has no cross-provider default: a connector with no
-          // declared profile is never terminalized (the gap stays pending).
-          const terminalProfile = terminalGapProfileForConnector(connectorId);
-          if (terminalProfile) {
+          // permanent-403/401) and has exhausted its recovery budget transitions
+          // to `terminal` — removed from the fillable-pending set (so it neither
+          // re-arms the cooldown nor blocks convergence to 100%) but counted +
+          // surfaced, never silently retried forever.
+          //
+          // `resolveTerminalGapPolicy` ALWAYS returns a real policy: the
+          // explicit per-connector profile when registered, otherwise the safe
+          // DEFAULT_TERMINAL_GAP_PROFILE. There is NO `if (profile)` null-skip
+          // here — gap CREATION is connector-agnostic (this handler) so gap
+          // TERMINALIZATION must be too. This is the seam that makes "a connector
+          // emits a 404/410/permanent gap that can never go terminal" impossible
+          // by construction (spec §10-A option (b) — GAP 1 + GAP 2).
+          {
+            const terminalProfile = resolveTerminalGapPolicy(connectorId);
             const lastError = msg.last_error ?? storedGap.last_error ?? null;
             const errorInfo = lastError
               ? { status: lastError.http_status, errorClass: lastError.class }
