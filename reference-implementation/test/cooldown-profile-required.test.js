@@ -24,8 +24,11 @@
  * Ref: docs/research/slvp-ideal-whole-system-spec-2026-06-11.md §10-B, §3 rule 6
  */
 
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
 import {
   CHATGPT_COOLDOWN_PROFILE,
@@ -126,4 +129,46 @@ test('computeConnectionSourcePressureCooldown: an UNAUDITED connector still esca
 
 test('CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles is unchanged at 8 (live-number preservation)', () => {
   assert.equal(CHATGPT_COOLDOWN_PROFILE.maxCooldownCycles, 8, 'ChatGPT cooldown cycle budget must stay 8');
+});
+
+// ─── Convention guard: production must use the GUARDED wrapper, not the bare fn ──
+//
+// The low-level `computeSourcePressureCooldown` tolerates an absent
+// maxCooldownCycles (→ Infinity = no escalation) so unit tests can exercise the
+// pure math. The latent foot-gun: a future production caller could use the bare
+// function and silently disable §10-B escalation. This test makes the
+// "production uses computeConnectionSourcePressureCooldown only" contract
+// enforced-by-test, not enforced-by-hope — it fails red if any runtime/ or
+// server/ source file references the bare function.
+test('no production source calls the bare computeSourcePressureCooldown (only the guarded wrapper)', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = join(here, '..');
+  const offenders = [];
+  const BARE = /\bcomputeSourcePressureCooldown\b/;
+  const WRAPPED = /\bcomputeConnectionSourcePressureCooldown\b/;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'test') continue;
+        walk(full);
+        continue;
+      }
+      if (!/\.(ts|js)$/.test(entry.name)) continue;
+      // The definition file legitimately names the bare fn; skip it.
+      if (entry.name === 'scheduler-source-pressure-cooldown.ts') continue;
+      const src = readFileSync(full, 'utf8');
+      // A reference is an offense only if it's the BARE name, not a substring
+      // of the wrapped name. Strip wrapped references, then test for bare.
+      const stripped = src.replace(new RegExp(WRAPPED.source, 'g'), '');
+      if (BARE.test(stripped)) offenders.push(full.slice(root.length + 1));
+    }
+  };
+  walk(join(root, 'runtime'));
+  walk(join(root, 'server'));
+  assert.deepEqual(
+    offenders,
+    [],
+    `production files must call computeConnectionSourcePressureCooldown (guarded), not the bare computeSourcePressureCooldown — offenders: ${offenders.join(', ')}`
+  );
 });

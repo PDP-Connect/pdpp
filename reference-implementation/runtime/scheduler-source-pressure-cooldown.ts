@@ -345,6 +345,13 @@ export function computeSourcePressureCooldown(
     options.consecutiveCooldownCycles ?? undefined,
     0
   );
+  // NOTE: this is the low-level PURE computation. It tolerates an absent
+  // `maxCooldownCycles` (→ Infinity = no escalation) ONLY so unit tests can
+  // exercise the cooldown math in isolation. PRODUCTION CALLERS MUST NOT use
+  // this function directly — they must go through `computeConnectionSourcePressureCooldown`,
+  // which resolves a required per-provider profile via `assertCooldownProfile`
+  // (throws loud on an absent/Infinity ceiling) so §10-B escalation can never be
+  // silently disabled. `cooldown-profile-required.test.js` pins that contract.
   const maxCooldownCycles =
     typeof options.maxCooldownCycles === "number" &&
     Number.isFinite(options.maxCooldownCycles) &&
