@@ -532,11 +532,26 @@ function Inspector({
 }) {
   if (!peek) {
     return (
-      <Sheet className="rr-inspector">
-        <SheetBody>
+      <Sheet className="rr-inspector rr-inspector--empty">
+        <SheetBody className="rr-x-empty">
+          <span className="rr-x-empty__eyebrow">The reading room</span>
           <p className="rr-x-empty__line">
             Pick a record to read it in full — every field, the call that reads it, and what stays withheld.
           </p>
+          <dl className="rr-x-empty__preview">
+            <div className="rr-x-empty__preview-row">
+              <dt className="rr-x-empty__preview-k">Fields</dt>
+              <dd className="rr-x-empty__preview-v">label + the wire key a client receives</dd>
+            </div>
+            <div className="rr-x-empty__preview-row">
+              <dt className="rr-x-empty__preview-k">The call</dt>
+              <dd className="rr-x-empty__preview-v">the exact request that reads this record</dd>
+            </div>
+            <div className="rr-x-empty__preview-row">
+              <dt className="rr-x-empty__preview-k">Withheld</dt>
+              <dd className="rr-x-empty__preview-v">what stays with you, never shared</dd>
+            </div>
+          </dl>
         </SheetBody>
       </Sheet>
     );
