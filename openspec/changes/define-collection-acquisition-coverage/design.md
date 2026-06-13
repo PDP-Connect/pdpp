@@ -213,6 +213,7 @@ until proven necessary.
 - Requirements allow same-stream multi-acquisition while requiring provenance
   and explicit identity rules.
 - Requirements keep PDPP Core out of scope.
-- Tasks defer runtime implementation and identify the first narrow tranche.
+- Tasks track the first narrow reference-implementation tranche and keep
+  remaining owner-acceptance work explicit.
 - UI implementation can be tested against the screen choreography above with
   real Google Timeline, WhatsApp, Gmail, and browser-polyfill style fixtures.

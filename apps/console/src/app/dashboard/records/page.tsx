@@ -37,6 +37,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
   const lastRun = toConnectorRunRef(summary.last_run);
   const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
   return {
+    acquisitionCoverage: summary.acquisition_coverage ?? null,
     collectionReport: summary.collection_report ?? null,
     connectionHealth: summary.connection_health,
     connectionId: summary.connection_id,
@@ -147,7 +148,7 @@ export default async function RecordsIndexPage({
 }
 
 function RecordsActionBanner({ error, message }: { error?: string; message?: string }) {
-  if (!error && !message) {
+  if (!(error || message)) {
     return null;
   }
   return (

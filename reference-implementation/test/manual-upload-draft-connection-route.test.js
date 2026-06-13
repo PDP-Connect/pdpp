@@ -143,20 +143,34 @@ async function createDraft(asUrl, cookie, connectorId, fileName = 'Timeline.json
   });
 }
 
+async function validateUpload(asUrl, cookie, connectorId, fileName = 'Timeline.json', body = VALID_TIMELINE_BODY) {
+  const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-validation-preview`);
+  url.searchParams.set('file_name', fileName);
+  return fetchJson(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/octet-stream',
+      Cookie: cookie,
+    },
+    body,
+  });
+}
+
 async function listConnections(asUrl, cookie) {
   return fetchJson(`${asUrl}/_ref/connections`, {
     headers: { Accept: 'application/json', Cookie: cookie },
   });
 }
 
-function findManualUploadAudit(resp, outcome) {
+function findManualUploadAudit(resp, outcome, operation = 'create') {
   const traceId = resp.headers.get('PDPP-Reference-Trace-Id');
   assert.ok(traceId?.startsWith('trc_'), 'manual-upload response should carry a trace id');
   const page = listSpineEventsPage('trace', traceId, { limit: 20 });
   const event = page.events.find(
-    (entry) => entry.event_type === 'owner.connection.manual_upload_draft.create' && entry.status === outcome,
+    (entry) => entry.event_type === `owner.connection.manual_upload_draft.${operation}` && entry.status === outcome,
   );
-  assert.ok(event, `expected manual_upload_draft.create audit (${outcome})`);
+  assert.ok(event, `expected manual_upload_draft.${operation} audit (${outcome})`);
   return event;
 }
 
@@ -226,13 +240,117 @@ test('owner upload creates an invisible draft with connection-scoped import bind
     const binding = JSON.parse(row.source_binding_json);
     assert.equal(binding.kind, 'manual_upload_draft');
     assert.equal(binding.import_dir_env_var, 'GOOGLE_MAPS_TIMELINE_DIR');
-    assert.equal(binding.acquisition_method, 'owner_upload');
+    assert.equal(binding.acquisition_method, 'owner_artifact');
     assert.equal(binding.import_validation.status, 'valid');
     assert.equal(binding.import_validation.detected_format, 'legacy_records');
     assert.equal(binding.import_validation.estimated_points, 1);
     assert.equal(binding.uploaded_file_name, 'Timeline.json');
     assert.ok(binding.import_dir.startsWith(join(tmp, 'imports', 'google-maps')), binding.import_dir);
     assert.equal(readFileSync(join(binding.import_dir, 'Timeline.json'), 'utf8'), VALID_TIMELINE_BODY);
+
+    const batch = getDb()
+      .prepare(
+        `SELECT acquisition_method, artifact_sha256, connector_instance_id, parsed_count, accepted_count, status
+           FROM acquisition_batches
+          WHERE connector_instance_id = ?`,
+      )
+      .get(connectionId);
+    assert.equal(batch.acquisition_method, 'owner_artifact');
+    assert.equal(batch.connector_instance_id, connectionId);
+    assert.match(batch.artifact_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(batch.parsed_count, 1);
+    assert.equal(batch.accepted_count, 0);
+    assert.equal(batch.status, 'validated');
+  });
+});
+
+test('owner upload preview validates without creating a draft or writing acquisition state', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const preview = await validateUpload(asUrl, cookie, 'google-maps');
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.body.object, 'manual_upload_validation_preview');
+    assert.equal(preview.body.connector_id, 'google-maps');
+    assert.equal(preview.body.uploaded_file_name, 'Timeline.json');
+    assert.equal(preview.body.validation.status, 'valid');
+    assert.equal(preview.body.validation.estimated_points, 1);
+    assert.equal(preview.body.duplicate, null);
+    assert.equal(preview.body.next_step.kind, 'confirm_import');
+
+    const connectionRows = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(connectionRows, 0, 'validation preview must not create a draft connection');
+    const batchRows = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
+    assert.equal(batchRows, 0, 'validation preview must not create an acquisition batch');
+    findManualUploadAudit(preview.resp, 'succeeded', 'validate');
+  });
+});
+
+test('repeated owner artifact returns the existing receipt without creating another draft', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+    const first = await createDraft(asUrl, cookie, 'google-maps');
+    assert.equal(first.status, 201, first.text);
+
+    const second = await createDraft(asUrl, cookie, 'google-maps');
+    assert.equal(second.status, 200, second.text);
+    assert.equal(second.body.object, 'manual_upload_known_artifact');
+    assert.equal(second.body.connection_id, first.body.connection_id);
+    assert.equal(second.body.next_step.kind, 'show_status');
+    assert.equal(second.body.validation.status, 'duplicate');
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 1, 'duplicate artifact must not create a second draft connection');
+    const batchCount = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
+    assert.equal(batchCount, 1, 'duplicate artifact must reuse the existing acquisition batch');
+
+    const previewDuplicate = await validateUpload(asUrl, cookie, 'google-maps');
+    assert.equal(previewDuplicate.status, 200, previewDuplicate.text);
+    assert.equal(previewDuplicate.body.object, 'manual_upload_validation_preview');
+    assert.equal(previewDuplicate.body.validation.status, 'duplicate');
+    assert.equal(previewDuplicate.body.duplicate.connection_id, first.body.connection_id);
+    assert.equal(previewDuplicate.body.next_step.kind, 'show_status');
+  });
+});
+
+test('WhatsApp chat export is manifest-driven and accepts owner .txt artifacts', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const setup = await getSetup(asUrl, cookie, 'whatsapp');
+    assert.equal(setup.status, 200, setup.text);
+    assert.deepEqual(setup.body.accepted_file_extensions, ['.txt']);
+    assert.ok(setup.body.validation_expectations.some((item) => /messages/i.test(item)));
+
+    const created = await createDraft(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Ghazal.txt',
+      '[6/5/24, 9:15:22 AM] Alice: Hello\n[6/5/24, 9:16:00 AM] Bob: <Media omitted>',
+    );
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.body.connector_id, 'whatsapp');
+    assert.equal(created.body.validation.status, 'valid');
+    assert.equal(created.body.validation.detected_format, 'whatsapp_chat_export');
+    assert.equal(created.body.validation.estimated_messages, 2);
+    assert.equal(created.body.validation.estimated_attachments, 1);
+
+    const batch = getDb()
+      .prepare(
+        `SELECT acquisition_method, source_format, parsed_count, media_coverage_json, warnings_json
+           FROM acquisition_batches
+          WHERE connector_instance_id = ?`,
+      )
+      .get(created.body.connection_id);
+    assert.equal(batch.acquisition_method, 'owner_artifact');
+    assert.equal(batch.source_format, 'whatsapp_chat_export');
+    assert.equal(batch.parsed_count, 3);
+    assert.equal(JSON.parse(batch.media_coverage_json).status, 'not_included');
+    assert.match(JSON.parse(batch.warnings_json)[0], /media files are not included/i);
   });
 });
 
@@ -295,6 +413,37 @@ test('Timeline validation rejects unsupported and empty files before a draft row
 
     const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
     assert.equal(rowCount, 0, 'validation failures must not create a draft');
+  });
+});
+
+test('wrong-source account-report artifacts are rejected before commit instead of inferred as an account match', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const accountReportJson = JSON.stringify({
+      account: { email: 'not-the-owner@example.com' },
+      exportType: 'google_account_report',
+    });
+    const timelineWrongSource = await createDraft(asUrl, cookie, 'google-maps', 'Timeline.json', accountReportJson);
+    assert.equal(timelineWrongSource.status, 400);
+    assert.equal(timelineWrongSource.body?.error?.code, 'import_file_unsupported');
+    assert.match(timelineWrongSource.body?.error?.message ?? '', /Timeline JSON export/);
+
+    const whatsappAccountReport = await createDraft(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Account report.txt',
+      'WhatsApp account information report\nPhone number: +1 555 0100',
+    );
+    assert.equal(whatsappAccountReport.status, 400);
+    assert.equal(whatsappAccountReport.body?.error?.code, 'import_file_unsupported');
+    assert.match(whatsappAccountReport.body?.error?.message ?? '', /chat export text file/);
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 0, 'wrong-source artifacts must not create a draft or infer account identity');
   });
 });
 

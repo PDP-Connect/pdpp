@@ -33,6 +33,8 @@ import {
   getConnectorSchedule,
   listDeviceExporterSourceInstances,
   listRuns,
+  type RefAcquisitionBatchSummary,
+  type RefAcquisitionCoverageSummary,
   type RefConnectionHealthSnapshot,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
@@ -114,6 +116,7 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
   const lastRun = toConnectorRunRef(summary.last_run);
   const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
   return {
+    acquisitionCoverage: summary.acquisition_coverage ?? null,
     collectionReport: summary.collection_report ?? null,
     connectionHealth: summary.connection_health,
     connectionId: summary.connection_id,
@@ -341,54 +344,18 @@ function ConnectorPageView({
     <DashboardShell active="records">
       <PageHeader
         actions={
-          <>
-            {running && overview?.lastRun ? (
-              <Link
-                className={buttonVariants({ variant: "outline", size: "sm" })}
-                href={`/dashboard/runs/${encodeURIComponent(overview.lastRun.run_id)}`}
-              >
-                Active run →
-              </Link>
-            ) : null}
-            <Link
-              className={buttonVariants({ variant: "outline", size: "sm" })}
-              href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
-            >
-              All runs →
-            </Link>
-            {revoked ? (
-              <Link
-                className={buttonVariants({ variant: "default", size: "sm" })}
-                href={addSourceHrefForConnector(connectorId)}
-                title="This connection is revoked. Reconnect starts the supported setup path for this source."
-              >
-                Reconnect
-              </Link>
-            ) : primaryAction.kind === "sync" ? (
-              <SyncNowButton
-                connectionId={connectorInstanceId}
-                connectorId={connectorId}
-                displayName={displayName}
-                idleLabel={syncIdleLabel}
-                initialRunning={running}
-              />
-            ) : primaryAction.kind === "cooldown_wait" ? (
-              <CooldownPrimaryAction
-                action={primaryAction}
-                connectionId={connectorInstanceId}
-                connectorId={connectorId}
-                displayName={displayName}
-                running={running}
-              />
-            ) : (
-              <PrimaryActionNotice action={primaryAction} />
-            )}
-            <RenameConnection
-              connectionId={renameSelector}
-              currentLabel={connectionLabelSeed}
-              typeName={formatConnectorKeyForDisplay(connectorId)}
-            />
-          </>
+          <ConnectorHeaderActions
+            connectionId={connectorInstanceId}
+            connectionLabelSeed={connectionLabelSeed}
+            connectorId={connectorId}
+            displayName={displayName}
+            overview={overview}
+            primaryAction={primaryAction}
+            renameSelector={renameSelector}
+            revoked={revoked}
+            running={running}
+            syncIdleLabel={syncIdleLabel}
+          />
         }
         breadcrumbs={[{ label: "Sources", href: "/dashboard/records" }, { label: displayName }]}
         count={headerCount}
@@ -417,6 +384,11 @@ function ConnectorPageView({
         scheduleError={scheduleError}
         sourceInstances={sourceInstances}
         sourceInstancesError={sourceInstancesError}
+      />
+
+      <AcquisitionCoverageSection
+        connectionId={connectorInstanceId ?? connectionId}
+        coverage={overview.acquisitionCoverage ?? null}
       />
 
       <Section
@@ -473,6 +445,239 @@ function ConnectorPageView({
       />
     </DashboardShell>
   );
+}
+
+function ConnectorHeaderActions({
+  connectionId,
+  connectionLabelSeed,
+  connectorId,
+  displayName,
+  overview,
+  primaryAction,
+  renameSelector,
+  revoked,
+  running,
+  syncIdleLabel,
+}: {
+  connectionId: string | null;
+  connectionLabelSeed: string;
+  connectorId: string;
+  displayName: string;
+  overview: ConnectorOverview;
+  primaryAction: PrimaryRowAction;
+  renameSelector: string;
+  revoked: boolean;
+  running: boolean;
+  syncIdleLabel: string;
+}) {
+  return (
+    <>
+      {running && overview.lastRun ? (
+        <Link
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+          href={`/dashboard/runs/${encodeURIComponent(overview.lastRun.run_id)}`}
+        >
+          Active run →
+        </Link>
+      ) : null}
+      <Link
+        className={buttonVariants({ variant: "outline", size: "sm" })}
+        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+      >
+        All runs →
+      </Link>
+      <ConnectorPrimaryHeaderAction
+        connectionId={connectionId}
+        connectorId={connectorId}
+        displayName={displayName}
+        primaryAction={primaryAction}
+        revoked={revoked}
+        running={running}
+        syncIdleLabel={syncIdleLabel}
+      />
+      <RenameConnection
+        connectionId={renameSelector}
+        currentLabel={connectionLabelSeed}
+        typeName={formatConnectorKeyForDisplay(connectorId)}
+      />
+    </>
+  );
+}
+
+function ConnectorPrimaryHeaderAction({
+  connectionId,
+  connectorId,
+  displayName,
+  primaryAction,
+  revoked,
+  running,
+  syncIdleLabel,
+}: {
+  connectionId: string | null;
+  connectorId: string;
+  displayName: string;
+  primaryAction: PrimaryRowAction;
+  revoked: boolean;
+  running: boolean;
+  syncIdleLabel: string;
+}) {
+  if (revoked) {
+    return (
+      <Link
+        className={buttonVariants({ variant: "default", size: "sm" })}
+        href={addSourceHrefForConnector(connectorId)}
+        title="This connection is revoked. Reconnect starts the supported setup path for this source."
+      >
+        Reconnect
+      </Link>
+    );
+  }
+  if (primaryAction.kind === "sync") {
+    return (
+      <SyncNowButton
+        connectionId={connectionId}
+        connectorId={connectorId}
+        displayName={displayName}
+        idleLabel={syncIdleLabel}
+        initialRunning={running}
+      />
+    );
+  }
+  if (primaryAction.kind === "cooldown_wait") {
+    return (
+      <CooldownPrimaryAction
+        action={primaryAction}
+        connectionId={connectionId}
+        connectorId={connectorId}
+        displayName={displayName}
+        running={running}
+      />
+    );
+  }
+  return <PrimaryActionNotice action={primaryAction} />;
+}
+
+function AcquisitionCoverageSection({
+  connectionId,
+  coverage,
+}: {
+  connectionId: string;
+  coverage: RefAcquisitionCoverageSummary | null;
+}) {
+  const batches = coverage?.recent_batches ?? [];
+  if (batches.length === 0) {
+    return null;
+  }
+  return (
+    <Section
+      description="Recent acquisition batches for this source. These are coverage receipts, not generic sync status: repeated files, stale exports, and missing optional media stay visible as import facts."
+      title="Acquisition coverage"
+    >
+      <DataList ariaLabel="Acquisition coverage batches">
+        {batches.map((batch, index) => (
+          <AcquisitionBatchRow batch={batch} connectionId={connectionId} key={batch.batch_id} latest={index === 0} />
+        ))}
+      </DataList>
+    </Section>
+  );
+}
+
+function AcquisitionBatchRow({
+  batch,
+  connectionId,
+  latest,
+}: {
+  batch: RefAcquisitionBatchSummary;
+  connectionId: string;
+  latest: boolean;
+}) {
+  const lane = acquisitionMethodLabel(batch.acquisition_method);
+  const countLabel = acquisitionBatchCountLabel(batch);
+  const rangeLabel = acquisitionBatchRangeLabel(batch);
+  const mediaLabel = acquisitionMediaCoverageLabel(batch.media_coverage);
+  return (
+    <li className="px-3 py-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <p className="pdpp-body font-medium text-foreground">
+            {lane}
+            {latest ? <span className="pdpp-caption ml-2 text-muted-foreground">Latest</span> : null}
+          </p>
+          <p className="pdpp-caption mt-0.5 break-words text-muted-foreground">
+            {[batch.uploaded_file_name, batch.detected_format, rangeLabel].filter(Boolean).join(" · ")}
+          </p>
+          <p className="pdpp-caption mt-1 text-muted-foreground">
+            {[batch.status, countLabel, mediaLabel].filter(Boolean).join(" · ")}
+          </p>
+          {batch.warnings.length > 0 ? (
+            <ul className="pdpp-caption mt-2 list-disc space-y-1 pl-4 text-[color:var(--warning)]">
+              {batch.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <Link
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+          href={`/dashboard/connect/status/${encodeURIComponent(connectionId)}`}
+        >
+          Open receipt
+        </Link>
+      </div>
+    </li>
+  );
+}
+
+function acquisitionMethodLabel(method: string | null): string {
+  switch (method) {
+    case "owner_artifact":
+      return "Imported export";
+    case "device_sync":
+      return "Device sync";
+    case "device_backup":
+      return "Device backup import";
+    case "browser_polyfill":
+      return "Browser collection";
+    case "provider_api":
+      return "Provider API window";
+    default:
+      return method ? method.replaceAll("_", " ") : "Acquisition batch";
+  }
+}
+
+function acquisitionBatchCountLabel(batch: RefAcquisitionBatchSummary): string | null {
+  const parts = [
+    countPart(batch.accepted_count, "accepted"),
+    countPart(batch.duplicate_count, "duplicate"),
+    countPart(batch.skipped_count, "skipped"),
+    countPart(batch.failed_count, "failed"),
+  ].filter((part): part is string => part !== null);
+  if (parts.length > 0) {
+    return parts.join(" · ");
+  }
+  return countPart(batch.parsed_count, "parsed");
+}
+
+function countPart(count: number | null, label: string): string | null {
+  if (typeof count !== "number" || count <= 0) {
+    return null;
+  }
+  return `${count.toLocaleString()} ${label}`;
+}
+
+function acquisitionBatchRangeLabel(batch: RefAcquisitionBatchSummary): string | null {
+  if (!(batch.date_range.start || batch.date_range.end)) {
+    return null;
+  }
+  return `${batch.date_range.start ?? "unknown"} to ${batch.date_range.end ?? "unknown"}`;
+}
+
+function acquisitionMediaCoverageLabel(mediaCoverage: unknown): string | null {
+  if (!mediaCoverage || typeof mediaCoverage !== "object") {
+    return null;
+  }
+  const status = (mediaCoverage as { status?: unknown }).status;
+  return typeof status === "string" && status.length > 0 ? `media ${status.replaceAll("_", " ")}` : null;
 }
 
 /**

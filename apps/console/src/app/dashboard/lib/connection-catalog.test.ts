@@ -140,7 +140,7 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
 function staticSecretManifestKeys(manifests: readonly CatalogManifestLike[]): string[] {
   return manifests
     .filter((manifest) => {
-      const setup = manifest.setup as ({ credential_capture?: unknown } | null | undefined);
+      const setup = manifest.setup as { credential_capture?: unknown } | null | undefined;
       return typeof setup?.credential_capture === "object" && setup.credential_capture !== null;
     })
     .map((manifest) => manifest.connector_key ?? manifest.connector_id)
@@ -163,6 +163,21 @@ function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
     setup: {
       modality: "manual_or_upload",
       manual_or_upload: {
+        acquisition_methods: [
+          {
+            detail: "Use the phone export and upload the JSON file.",
+            help_url: "https://example.com/timeline",
+            label: "Export from phone",
+            platform: "mobile",
+            posture: "primary",
+          },
+          {
+            detail: "Use a server-side import folder for large files.",
+            label: "Import-folder handoff",
+            platform: "server",
+            posture: "advanced",
+          },
+        ],
         accepted_file_names: ["Timeline.json"],
         import_dir_env_var: "GOOGLE_MAPS_TIMELINE_DIR",
         label: "Timeline export",
@@ -217,9 +232,47 @@ test("manual/upload manifests with import env bindings are self-service import e
   assert.equal(entry.nextStepKind, "provide_import_file");
   assert.equal(entry.proofGate, null);
   assert.equal(entry.enrollmentKey, undefined);
+  assert.deepEqual(entry.acquisitionPaths, [
+    {
+      detail: "Use the phone export and upload the JSON file.",
+      helpUrl: "https://example.com/timeline",
+      label: "Export from phone",
+      platform: "mobile",
+      posture: "primary",
+    },
+    {
+      detail: "Use a server-side import folder for large files.",
+      helpUrl: null,
+      label: "Import-folder handoff",
+      platform: "server",
+      posture: "advanced",
+    },
+  ]);
   assert.deepEqual(manualUploadConnectEntries(catalog), [entry]);
   assert.deepEqual(manualUploadPendingEntries(catalog), []);
   assert.deepEqual(localCollectorUnprovenEntries(catalog), []);
+});
+
+test("committed owner-artifact sources expose manifest-authored acquisition paths", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const googleTimeline = catalog.find((e) => e.connectorKey === "google-maps");
+  const whatsapp = catalog.find((e) => e.connectorKey === "whatsapp");
+  assert.ok(googleTimeline, "Google Timeline import must be in the catalog");
+  assert.ok(whatsapp, "WhatsApp chat export must be in the catalog");
+  assert.ok(
+    googleTimeline.acquisitionPaths.some((path) => path.label === "Export from Android" && path.posture === "primary"),
+    "Google Timeline must expose phone export as a primary acquisition path"
+  );
+  assert.ok(
+    whatsapp.acquisitionPaths.some(
+      (path) => path.label === "Export one chat from WhatsApp" && path.posture === "primary"
+    ),
+    "WhatsApp must expose per-chat export as a primary acquisition path"
+  );
+  assert.ok(
+    whatsapp.acquisitionPaths.some((path) => path.label === "Media folder sync" && path.posture === "advanced"),
+    "WhatsApp must keep media sync visible as a distinct advanced path"
+  );
 });
 
 test("other network connectors stay flatly api_network_unsupported", async () => {
@@ -281,11 +334,7 @@ test("Google Maps Data Portability is the API-backed provider-auth source, not T
   assert.equal(entry.proofGate, "provider_app_deployment_config_missing");
   assert.deepEqual(
     entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
-    [
-      "GOOGLE_DATAPORTABILITY_CLIENT_ID",
-      "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
-      "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
-    ]
+    ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", "GOOGLE_DATAPORTABILITY_REDIRECT_URI"]
   );
   assert.equal(entry.enrollmentKey, undefined);
 });

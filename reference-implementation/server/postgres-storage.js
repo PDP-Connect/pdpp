@@ -422,6 +422,47 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
 
+      CREATE TABLE IF NOT EXISTS acquisition_batches (
+        batch_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        acquisition_method TEXT NOT NULL CHECK (acquisition_method IN ('provider_api', 'owner_artifact', 'device_sync', 'device_backup', 'browser_polyfill')),
+        source_format TEXT,
+        parser_version TEXT,
+        artifact_sha256 TEXT,
+        uploaded_file_name TEXT,
+        status TEXT NOT NULL CHECK (status IN ('validated', 'committed', 'duplicate', 'failed')),
+        event_time_start TEXT,
+        event_time_end TEXT,
+        parsed_count INTEGER,
+        accepted_count INTEGER NOT NULL DEFAULT 0,
+        duplicate_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        failed_count INTEGER NOT NULL DEFAULT 0,
+        media_coverage_json JSONB,
+        warnings_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        receipt_json JSONB,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_acquisition_batches_connection_created
+        ON acquisition_batches(connector_instance_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_acquisition_batches_owner_connector_artifact
+        ON acquisition_batches(owner_subject_id, connector_id, artifact_sha256)
+        WHERE artifact_sha256 IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS record_acquisition_provenance (
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        batch_id TEXT NOT NULL REFERENCES acquisition_batches(batch_id) ON DELETE CASCADE,
+        acquisition_method TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(connector_instance_id, stream, record_key, batch_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_record_acquisition_provenance_record
+        ON record_acquisition_provenance(connector_instance_id, stream, record_key);
+
       -- Existing Postgres deployments may carry the original two-kind CHECK.
       -- Widen it in place for sealed multi-field static-secret bundles and
       -- future username/password pairs, without touching stored ciphertext.

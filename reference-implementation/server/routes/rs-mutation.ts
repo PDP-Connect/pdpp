@@ -121,6 +121,56 @@ async function maybeActivateDraftAfterIngest(
   }
 }
 
+async function maybeMarkAcquisitionBatchCommitted(
+  ctx: MountRsMutationContext,
+  storageNamespace: ConnectorNamespaceLike | null,
+  counts: { recordsAccepted: number; recordsRejected: number }
+): Promise<void> {
+  if (!ctx.markAcquisitionBatchCommitted) {
+    return;
+  }
+  const resolvedInstanceId = storageNamespace?.connectorInstanceId;
+  if (typeof resolvedInstanceId !== "string") {
+    return;
+  }
+  await ctx.markAcquisitionBatchCommitted(resolvedInstanceId, {
+    acceptedCount: counts.recordsAccepted,
+    failedCount: counts.recordsRejected,
+  });
+}
+
+function recordKeyFromIngestRecord(record: unknown): string | null {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return null;
+  }
+  const value =
+    (record as { key?: unknown; record_key?: unknown }).key ?? (record as { record_key?: unknown }).record_key;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function maybeRecordAcquisitionProvenance(
+  ctx: MountRsMutationContext,
+  storageNamespace: ConnectorNamespaceLike,
+  batch: AcquisitionBatchLike | null,
+  stream: string,
+  record: unknown
+): Promise<void> {
+  if (!(ctx.recordAcquisitionProvenance && batch?.batchId && storageNamespace.connectorInstanceId)) {
+    return;
+  }
+  const recordKey = recordKeyFromIngestRecord(record);
+  if (!recordKey) {
+    return;
+  }
+  await ctx.recordAcquisitionProvenance({
+    acquisitionMethod: batch.acquisitionMethod ?? "owner_artifact",
+    batchId: batch.batchId,
+    connectorInstanceId: storageNamespace.connectorInstanceId,
+    recordKey,
+    stream,
+  });
+}
+
 interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
@@ -153,6 +203,12 @@ interface ConnectorNamespaceLike {
 interface StorageTargetLike {
   readonly connector_id: string | null;
   readonly connector_instance_id: string | null;
+}
+
+interface AcquisitionBatchLike {
+  readonly acquisitionMethod?: string | null;
+  readonly batchId: string;
+  readonly status?: string | null;
 }
 
 // Mutation-context shape — mirrors the object produced by `buildMutationContext`
@@ -242,11 +298,18 @@ export interface MountRsMutationContext {
   // Event-subscription capabilities
   readonly getDefaultClientEventSubscriptionStore: () => unknown;
   readonly getDefaultDeliveryWorker: () => { tick(): Promise<void> };
+  readonly getLatestAcquisitionBatchForConnection?: (
+    connectorInstanceId: string
+  ) => Promise<AcquisitionBatchLike | null> | AcquisitionBatchLike | null;
   readonly getSyncState: (target: StorageTargetLike, args: unknown) => Promise<unknown>;
 
   // Capability: error handler for untyped errors
   readonly handleError: (res: RouteResponse, err: unknown) => void;
   readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  readonly markAcquisitionBatchCommitted?: (
+    connectorInstanceId: string,
+    counts: { acceptedCount?: number; failedCount?: number; updatedAt?: string }
+  ) => Promise<unknown> | unknown;
   readonly pdppError: PdppErrorFn;
 
   // Capability: store a content-addressed blob (blobs upload route)
@@ -259,6 +322,13 @@ export interface MountRsMutationContext {
     data: Buffer;
   }) => Promise<unknown>;
   readonly putSyncState: (target: StorageTargetLike, map: unknown, args: unknown) => Promise<unknown>;
+  readonly recordAcquisitionProvenance?: (record: {
+    acquisitionMethod: string;
+    batchId: string;
+    connectorInstanceId: string;
+    recordKey: string;
+    stream: string;
+  }) => Promise<unknown> | unknown;
   readonly rejectMutation: (
     res: RouteResponse,
     req: RouteRequest,
@@ -864,6 +934,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     });
     try {
       let storageNamespace: ConnectorNamespaceLike | null = null;
+      let acquisitionBatchPromise: Promise<AcquisitionBatchLike | null> | null = null;
       // A static-secret first connection is addressed by an explicit
       // connector_instance_id while still `draft`; admit that status so first
       // ingest can write into the draft. The connector-only path
@@ -892,7 +963,20 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          return ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+          if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
+            acquisitionBatchPromise ??= Promise.resolve(
+              ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
+            );
+            await maybeRecordAcquisitionProvenance(
+              ctx,
+              namespace,
+              await acquisitionBatchPromise,
+              req.params.stream ?? "",
+              record
+            );
+          }
+          return result;
         },
       };
       let output: {
@@ -931,6 +1015,10 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         throw opErr;
       }
       await maybeActivateDraftAfterIngest(ctx, storageNamespace, output.envelope.records_accepted);
+      await maybeMarkAcquisitionBatchCommitted(ctx, storageNamespace, {
+        recordsAccepted: output.envelope.records_accepted,
+        recordsRejected: output.envelope.records_rejected,
+      });
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,

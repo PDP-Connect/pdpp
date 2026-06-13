@@ -294,6 +294,26 @@ test('5.3 content[] is a bounded readable preview, not a JSON dump', async () =>
   await server.close();
 });
 
+test('grant-scoped query_records does not add owner-only acquisition diagnostics', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders' },
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.data.data[0].id, 'o1');
+
+  const serialized = JSON.stringify(result);
+  for (const forbidden of ['acquisition_coverage', 'import_receipt', 'artifact_sha256', 'media_coverage']) {
+    assert.ok(!serialized.includes(forbidden), `${forbidden} must not appear in MCP grant-scoped reads`);
+  }
+
+  await client.close();
+  await server.close();
+});
+
 test('5.4 MCP forwards canonical args verbatim — `sort` reaches RS rather than being silently dropped', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);

@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
 const MANUAL_UPLOAD_FILE = `${HERE}../../connect/manual-upload/[connectorId]/page.tsx`;
+const MANUAL_UPLOAD_FORM_FILE = `${HERE}../../connect/manual-upload/[connectorId]/manual-upload-form.tsx`;
 const STATUS_FILE = `${HERE}../../connect/status/[connectionId]/page.tsx`;
 
 const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
@@ -41,7 +42,7 @@ const COVERAGE_RECEIPT_COPY = /coverage receipt|coverage provenance/i;
 const PRIMARY_METHODS_IDENTIFIER = /primaryMethods/;
 const ADVANCED_METHODS_IDENTIFIER = /advancedMethods/;
 const OTHER_EXPORT_PATHS_DISCLOSURE = /<details[\s\S]*?Other ways to export this data/;
-const IMPORT_OWNER_ARTIFACT_CTA = /Validate and import|Import file/;
+const IMPORT_OWNER_ARTIFACT_CTA = /Review file[\s\S]*Import this file/;
 const OLD_FIRST_SYNC_CTA = /Upload and start first sync/;
 const PROVIDER_CREDENTIAL_COPY = /provider account sign-in is required|provider credential/;
 const DEPLOYMENT_SEMANTICS_COPY = /pnpm --dir|packages\/[a-z]|connector_instance_id|source_instance_id/;
@@ -49,16 +50,26 @@ const IMPORT_COMPLETE_COPY = /Import complete/;
 const VALIDATED_AND_COMMITTED_COPY = /validated and committed/;
 const COVERAGE_PREVIEW_COPY = /Coverage preview/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
+const PARSED_RECORDS_COPY = /Parsed records/;
+const ACCEPTED_COUNT_COPY = /Accepted/;
+const DUPLICATE_COUNT_COPY = /Duplicates/;
+const SKIPPED_COUNT_COPY = /Skipped/;
+const FAILED_COUNT_COPY = /Failed/;
 const ESTIMATED_POINTS_COPY = /Estimated points/;
 const ESTIMATED_SEGMENTS_COPY = /Estimated segments/;
 const COVERAGE_WINDOW_COPY = /Coverage window/;
-const VALIDATION_ESTIMATES_COPY = /validation estimates/;
-const FUTURE_COMMITTED_COUNTS_COPY = /accepted, duplicate, skipped, and failed/;
+const DURABLE_RECEIPT_COPY = /durable coverage receipt|committed acquisition-batch counts/i;
+const IDEMPOTENT_REPEAT_COPY = /Repeating the same file[\s\S]*returns[\s\S]*this receipt/i;
 const IMPORT_RECEIPT_REFERENCE = /status\.import_receipt/;
 const MANUAL_UPLOAD_BRANCH = /status\.setup_kind === "manual_upload"/;
 const IMPORT_STATE_FUNCTION = /function describeImportState/;
 const IMPORT_COMPLETE_HEADLINE = /headline: "Import complete"/;
 const IMPORT_FILE_COPY = /import file is captured/;
+const IMPORT_PROGRESS_TEST_ID = /data-testid="import-progress"/;
+const IMPORT_PHASES = [/Received/, /Parsed/, /Deduplicated/, /Committed/, /Indexed/, /Health projected/];
+const NO_PARALLEL_PROGRESS_ENUM = /type ImportPhaseState = "current" \| "done" \| "failed" \| "waiting"/;
+const SETUP_STATE_REFERENCE = /status\.setup_state/;
+const IMPORT_RECEIPT_STATE_REFERENCE = /status\.import_receipt/;
 
 // ── 1. Source catalog presents a source journey ─────────────────────────────
 
@@ -82,12 +93,13 @@ test("source card keeps the support fact distinct from the recommended next acti
 // ── 2. Manual/upload page is a coverage-assistant start ─────────────────────
 
 test("manual upload page is manifest-generated and uses validate-before-commit language", async () => {
-  const src = await readFile(MANUAL_UPLOAD_FILE, "utf8");
-  assert.match(src, MANIFEST_GENERATED_COPY);
+  const pageSrc = await readFile(MANUAL_UPLOAD_FILE, "utf8");
+  const formSrc = await readFile(MANUAL_UPLOAD_FORM_FILE, "utf8");
+  assert.match(pageSrc, MANIFEST_GENERATED_COPY);
   // Validates before durable commit when a validator exists.
-  assert.match(src, VALIDATES_BEFORE_COMMIT_COPY);
+  assert.match(formSrc, VALIDATES_BEFORE_COMMIT_COPY);
   // It speaks of a durable receipt the owner can revisit.
-  assert.match(src, COVERAGE_RECEIPT_COPY);
+  assert.match(pageSrc, COVERAGE_RECEIPT_COPY);
 });
 
 test("manual upload page leads with primary methods and hides advanced behind one disclosure", async () => {
@@ -99,16 +111,17 @@ test("manual upload page leads with primary methods and hides advanced behind on
 });
 
 test("manual upload CTA imports an owner artifact rather than starting a sync", async () => {
-  const src = await readFile(MANUAL_UPLOAD_FILE, "utf8");
+  const src = await readFile(MANUAL_UPLOAD_FORM_FILE, "utf8");
   // The owner artifact is imported/validated, never "first sync".
   assert.match(src, IMPORT_OWNER_ARTIFACT_CTA);
   assert.doesNotMatch(src, OLD_FIRST_SYNC_CTA);
 });
 
 test("manual upload page does not imply provider credential or deployment semantics", async () => {
-  const src = await readFile(MANUAL_UPLOAD_FILE, "utf8");
-  assert.doesNotMatch(src, PROVIDER_CREDENTIAL_COPY);
-  assert.doesNotMatch(src, DEPLOYMENT_SEMANTICS_COPY);
+  const pageSrc = await readFile(MANUAL_UPLOAD_FILE, "utf8");
+  const formSrc = await readFile(MANUAL_UPLOAD_FORM_FILE, "utf8");
+  assert.doesNotMatch(`${pageSrc}\n${formSrc}`, PROVIDER_CREDENTIAL_COPY);
+  assert.doesNotMatch(`${pageSrc}\n${formSrc}`, DEPLOYMENT_SEMANTICS_COPY);
 });
 
 // ── 3. Setup status page uses import/receipt language for manual_upload ──────
@@ -119,14 +132,32 @@ test("status page uses import/receipt language for manual_upload", async () => {
   assert.match(src, VALIDATED_AND_COMMITTED_COPY);
   assert.match(src, COVERAGE_PREVIEW_COPY);
   assert.match(src, WHAT_PDPP_FOUND_COPY);
+  assert.match(src, PARSED_RECORDS_COPY);
+  assert.match(src, ACCEPTED_COUNT_COPY);
+  assert.match(src, DUPLICATE_COUNT_COPY);
+  assert.match(src, SKIPPED_COUNT_COPY);
+  assert.match(src, FAILED_COUNT_COPY);
   assert.match(src, ESTIMATED_POINTS_COPY);
   assert.match(src, ESTIMATED_SEGMENTS_COPY);
   assert.match(src, COVERAGE_WINDOW_COPY);
-  assert.match(src, VALIDATION_ESTIMATES_COPY);
-  assert.match(src, FUTURE_COMMITTED_COUNTS_COPY);
+  assert.match(src, DURABLE_RECEIPT_COPY);
+  assert.match(src, IDEMPOTENT_REPEAT_COPY);
   assert.match(src, IMPORT_RECEIPT_REFERENCE);
   // Branch is keyed on the import setup_kind, not source-specific React.
   assert.match(src, MANUAL_UPLOAD_BRANCH);
+});
+
+test("status page projects generic import progress phases from setup status", async () => {
+  const src = await readFile(STATUS_FILE, "utf8");
+  assert.match(src, IMPORT_PROGRESS_TEST_ID);
+  for (const phase of IMPORT_PHASES) {
+    assert.match(src, phase);
+  }
+  // This is a display projection from setup_state + receipt facts, not a second
+  // onboarding lifecycle enum with source-specific states.
+  assert.match(src, NO_PARALLEL_PROGRESS_ENUM);
+  assert.match(src, SETUP_STATE_REFERENCE);
+  assert.match(src, IMPORT_RECEIPT_STATE_REFERENCE);
 });
 
 test("status page never implies provider credential semantics for an import", async () => {

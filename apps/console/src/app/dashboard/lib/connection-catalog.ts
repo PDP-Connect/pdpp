@@ -24,6 +24,7 @@ import {
   canonicalConnectorKey,
   classifyConnectorIntentModality,
   enrollmentKeyForCanonicalKey,
+  manualUploadSetupFromManifest,
   type StaticSecretSetupFieldLike,
 } from "pdpp-reference-implementation/connection-setup-plan";
 
@@ -58,7 +59,17 @@ export interface CatalogManifestLike {
     } | null;
     deployment_config?: readonly string[] | null;
     manual_or_upload?: {
+      accepted_file_extensions?: readonly string[] | null;
       accepted_file_names?: readonly string[] | null;
+      acquisition_methods?:
+        | readonly {
+            detail?: string | null;
+            help_url?: string | null;
+            label?: string | null;
+            platform?: string | null;
+            posture?: string | null;
+          }[]
+        | null;
       description?: string | null;
       help_text?: string | null;
       help_url?: string | null;
@@ -103,7 +114,17 @@ export type CatalogModality = ConnectorIntentModality;
  */
 export type CatalogDisposition = ConnectorCatalogDisposition;
 
+export interface ConnectorAcquisitionPath {
+  detail: string | null;
+  helpUrl: string | null;
+  label: string;
+  platform: string | null;
+  posture: string;
+}
+
 export interface ConnectorCatalogEntry {
+  /** Manifest-declared owner acquisition jobs, such as export/upload paths. */
+  acquisitionPaths: readonly ConnectorAcquisitionPath[];
   /** Canonical bare connector key (registry-URL prefix stripped). */
   connectorKey: string;
   /** Non-secret deployment blockers, separated from per-connection owner action. */
@@ -154,6 +175,20 @@ function displayNameFor(manifest: CatalogManifestLike, connectorKey: string): st
   return connectorKey;
 }
 
+function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorAcquisitionPath[] {
+  const uploadSetup = manualUploadSetupFromManifest(manifest);
+  if (!uploadSetup) {
+    return [];
+  }
+  return uploadSetup.acquisitionMethods.map((method) => ({
+    detail: method.detail,
+    helpUrl: method.helpUrl,
+    label: method.label,
+    platform: method.platform,
+    posture: method.posture ?? "secondary",
+  }));
+}
+
 /**
  * Build the connector catalog from the shipped manifests. One entry per manifest
  * with a `connector_id`, sorted by display name so the picker is stable across
@@ -169,6 +204,7 @@ export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[])
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
     const plan = buildConnectionSetupPlan({ connectorKey, manifest });
     const entry: ConnectorCatalogEntry = {
+      acquisitionPaths: acquisitionPathsFromManifest(manifest),
       connectorKey,
       deploymentReadiness: plan.deploymentReadiness,
       displayName: displayNameFor(manifest, connectorKey),

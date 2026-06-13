@@ -21,6 +21,7 @@ import {
 } from "./owner-token.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
 import type {
+  RefAcquisitionCoverageSummary,
   RefCollectionReportEntry,
   RefConnectionHealthSnapshot,
   RefLocalDeviceProgress,
@@ -521,6 +522,7 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
 }
 
 export interface ConnectorOverview {
+  acquisitionCoverage?: RefAcquisitionCoverageSummary | null;
   /**
    * Per-stream Collection Report (`collection_report` on the connector
    * summary, `define-connector-progress-evidence-contract` Tranche C),

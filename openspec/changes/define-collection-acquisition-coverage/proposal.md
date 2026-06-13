@@ -40,10 +40,9 @@ Removed:
 
 ## Impact
 
-- No runtime implementation in this change.
 - No PDPP Core change; grant-scoped reads remain collection-method agnostic.
-- Future implementation will touch connector manifest schema, upload/import
-  setup, connection health projection, acquisition-batch storage, and connector
-  validators.
+- Reference implementation work is in progress for connector manifest schema,
+  upload/import setup, connection health projection, acquisition-batch storage,
+  and connector validators.
 - Existing connectors remain valid until they opt into acquisition-batch
   reporting.

@@ -71,6 +71,62 @@ function addSourceHrefForConnector(connectorId: string): string {
   return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
 }
 
+function resolveEffectiveStartIso({
+  isRunning,
+  lastRun,
+  optimisticStart,
+}: {
+  isRunning: boolean;
+  lastRun: ConnectorRunRef | null;
+  optimisticStart: number | null;
+}): string | undefined {
+  if (isRunning && lastRun) {
+    return lastRun.first_at;
+  }
+  if (optimisticStart !== null) {
+    return new Date(optimisticStart).toISOString();
+  }
+  return;
+}
+
+function setupStatusHrefForRow({
+  connectionId,
+  connectorInstanceId,
+  detailHref,
+  routeId,
+}: {
+  connectionId?: string;
+  connectorInstanceId?: string;
+  detailHref: string;
+  routeId: string;
+}): string {
+  if (!(connectionId || connectorInstanceId)) {
+    return detailHref;
+  }
+  return `/dashboard/connect/status/${encodeURIComponent(connectionId ?? connectorInstanceId ?? routeId)}`;
+}
+
+function deriveRevokedAwareRowAction({
+  connectorId,
+  primaryAction,
+  revoked,
+}: {
+  connectorId: string;
+  primaryAction: PrimaryRowAction;
+  revoked: boolean;
+}): RowPrimaryAction {
+  if (!revoked) {
+    return primaryAction;
+  }
+  return {
+    kind: "new_setup",
+    href: addSourceHrefForConnector(connectorId),
+    label: "Start new setup",
+    detail:
+      "This connection is revoked: future collection is stopped while retained records stay visible. Starting a new setup begins the supported setup path for this source — it does not re-authorize the revoked connection.",
+  };
+}
+
 function useConnectorSyncState({
   connectionId,
   connectorId,
@@ -177,15 +233,11 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     lastRunKnownGaps,
     totalRecords,
   });
-  let effectiveStartIso: string | undefined;
-  if (isRunning && lastRun) {
-    effectiveStartIso = lastRun.first_at;
-  } else if (optimisticStart !== null) {
-    effectiveStartIso = new Date(optimisticStart).toISOString();
-  }
+  const effectiveStartIso = resolveEffectiveStartIso({ isRunning, lastRun, optimisticStart });
 
   const routeId = connectionId ?? connectorInstanceId ?? connector.connector_id;
   const detailHref = `/dashboard/records/${encodeURIComponent(routeId)}`;
+  const setupStatusHref = setupStatusHrefForRow({ connectionId, connectorInstanceId, detailHref, routeId });
   const displayName = formatConnectorNameForDisplay({
     connectorId: connector.connector_id,
     displayName: connector.display_name,
@@ -237,21 +289,11 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(lastRun?.status);
-  // The verb must match the destination [SLVP §1.3, Defect 6]. A revoked row's
-  // href is the add-source SETUP PICKER (a new-setup start), not a re-auth — so
-  // "Reconnect" was a dead-end promise (for a browser-bound source like Reddit
-  // the picker shows "Packaged path pending"). Label it "Start new setup" and
-  // render it secondary-weight, so it never reads as an imperative repair that
-  // re-authorizes the existing connection.
-  const rowAction: RowPrimaryAction = revoked
-    ? {
-        kind: "new_setup",
-        href: addSourceHrefForConnector(connector.connector_id),
-        label: "Start new setup",
-        detail:
-          "This connection is revoked: future collection is stopped while retained records stay visible. Starting a new setup begins the supported setup path for this source — it does not re-authorize the revoked connection.",
-      }
-    : primaryAction;
+  const rowAction = deriveRevokedAwareRowAction({
+    connectorId: connector.connector_id,
+    primaryAction,
+    revoked,
+  });
   const durableProgress = formatLastDurableProgress({
     hasError: Boolean(overview.error),
     lastRun,
@@ -259,6 +301,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     localDeviceProgress: overview.localDeviceProgress ?? null,
     totalRecords,
   });
+  const importReceipt = formatAcquisitionReceipt(overview.acquisitionCoverage ?? null);
 
   return (
     <li>
@@ -327,6 +370,8 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
         detailHref={detailHref}
         dominantCondition={dominantCondition}
         durableProgress={durableProgress}
+        importReceipt={importReceipt}
+        importReceiptHref={setupStatusHref}
         nextAction={nextAction}
         nextStep={nextStep}
         partialCoverageHref={hasPartialCoverageHint ? `${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}` : null}
@@ -450,11 +495,70 @@ function ConnectorStats({
   );
 }
 
+function formatAcquisitionReceipt(acquisitionCoverage: ConnectorOverview["acquisitionCoverage"]) {
+  const batch = acquisitionCoverage?.latest_batch;
+  if (!batch) {
+    return null;
+  }
+  const accepted = batch.accepted_count ?? 0;
+  const duplicates = batch.duplicate_count ?? 0;
+  const parsed = batch.parsed_count ?? null;
+  const countParts = [
+    accepted > 0 ? `${accepted.toLocaleString()} accepted` : null,
+    duplicates > 0 ? `${duplicates.toLocaleString()} duplicates` : null,
+    accepted === 0 && duplicates === 0 && parsed !== null ? `${parsed.toLocaleString()} parsed` : null,
+  ].filter((part): part is string => part !== null);
+  const range =
+    batch.date_range.start || batch.date_range.end
+      ? `${batch.date_range.start ?? "unknown"} to ${batch.date_range.end ?? "unknown"}`
+      : null;
+  return {
+    countLabel: countParts.length > 0 ? countParts.join(" · ") : null,
+    fileName: batch.uploaded_file_name,
+    format: batch.detected_format,
+    range,
+    status: batch.status,
+    warningCount: batch.warnings.length,
+  };
+}
+
+function AcquisitionReceiptLine({
+  href,
+  receipt,
+}: {
+  href: string;
+  receipt: NonNullable<ReturnType<typeof formatAcquisitionReceipt>>;
+}) {
+  const parts = [receipt.status, receipt.countLabel, receipt.range].filter(
+    (part): part is string => typeof part === "string" && part.length > 0
+  );
+  const title = [
+    receipt.fileName ? `File: ${receipt.fileName}` : null,
+    receipt.format ? `Format: ${receipt.format}` : null,
+    receipt.warningCount > 0 ? `${receipt.warningCount} warning${receipt.warningCount === 1 ? "" : "s"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Link
+      className="pdpp-caption inline-flex w-fit items-center gap-1 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      data-testid="acquisition-receipt-link"
+      href={href}
+      title={title || "Latest import coverage receipt"}
+    >
+      Import receipt
+      {parts.length > 0 ? <span className="text-muted-foreground/80">· {parts.join(" · ")}</span> : null}
+    </Link>
+  );
+}
+
 function ConnectorRowEvidence({
   axisChips,
   detailHref,
   dominantCondition,
   durableProgress,
+  importReceipt,
+  importReceiptHref,
   nextAction,
   nextStep,
   partialCoverageHref,
@@ -467,6 +571,8 @@ function ConnectorRowEvidence({
   detailHref: string;
   dominantCondition: ReturnType<typeof formatDominantCondition>;
   durableProgress: ReturnType<typeof formatLastDurableProgress>;
+  importReceipt: ReturnType<typeof formatAcquisitionReceipt>;
+  importReceiptHref: string;
   nextAction: ReturnType<typeof formatNextAction>;
   nextStep: NextStepGuidance | null;
   /** Run-detail href for the partial-coverage cue, or null when none. */
@@ -482,13 +588,7 @@ function ConnectorRowEvidence({
   if (revoked) {
     return (
       <>
-        <div
-          className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-muted-foreground"
-          data-testid="connection-revoked-notice"
-        >
-          Future collection is stopped. Retained records stay visible; use Reconnect to start a fresh setup path for
-          this source.
-        </div>
+        <RevokedConnectionNotice />
         <ConnectorRowToast toast={toast} />
       </>
     );
@@ -504,6 +604,7 @@ function ConnectorRowEvidence({
   const hasPeekBody =
     hasAxisChips ||
     durableProgress.unavailable ||
+    importReceipt !== null ||
     projectionFreshness.unreliable ||
     dominantCondition !== null ||
     nextAction !== null ||
@@ -529,53 +630,127 @@ function ConnectorRowEvidence({
           <span className="min-w-0 truncate">{runbook ?? "Status detail"}</span>
         </summary>
         {hasPeekBody ? (
-          <div className="mt-2 flex flex-col gap-2" data-testid="connector-row-peek-body">
-            {hasAxisChips ? (
-              <div className="flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
-                {axisChips.map((chip) => (
-                  <AxisChipBadge chip={chip} key={chip.label} />
-                ))}
-                {durableProgress.unavailable ? (
-                  <span
-                    className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
-                    data-testid="durable-progress-unavailable"
-                    title="Last durable progress could not be derived from current evidence."
-                  >
-                    {durableProgress.label}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-
-            {projectionFreshness.unreliable ? (
-              <div
-                className="pdpp-caption border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
-                data-testid="projection-unreliable"
-                title={projectionFreshness.detail}
-              >
-                <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
-              </div>
-            ) : null}
-
-            {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
-            {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
-            {nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
-
-            {partialCoverageHref ? (
-              <Link
-                className="pdpp-caption inline-flex w-fit items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
-                data-testid="partial-coverage-link"
-                href={partialCoverageHref}
-                title="Latest run produced records but reported known source gaps"
-              >
-                Partial source coverage
-              </Link>
-            ) : null}
-          </div>
+          <ConnectorPeekBody
+            axisChips={axisChips}
+            detailHref={detailHref}
+            dominantCondition={dominantCondition}
+            durableProgress={durableProgress}
+            hasAxisChips={hasAxisChips}
+            importReceipt={importReceipt}
+            importReceiptHref={importReceiptHref}
+            nextAction={nextAction}
+            nextStep={nextStep}
+            partialCoverageHref={partialCoverageHref}
+            projectionFreshness={projectionFreshness}
+          />
         ) : null}
       </details>
       <ConnectorRowToast toast={toast} />
     </>
+  );
+}
+
+function RevokedConnectionNotice() {
+  return (
+    <div
+      className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/30 px-3 py-2 text-muted-foreground"
+      data-testid="connection-revoked-notice"
+    >
+      Future collection is stopped. Retained records stay visible; use Start new setup to begin a fresh setup path for
+      this source.
+    </div>
+  );
+}
+
+function ConnectorPeekBody({
+  axisChips,
+  detailHref,
+  dominantCondition,
+  durableProgress,
+  hasAxisChips,
+  importReceipt,
+  importReceiptHref,
+  nextAction,
+  nextStep,
+  partialCoverageHref,
+  projectionFreshness,
+}: {
+  axisChips: AxisChip[];
+  detailHref: string;
+  dominantCondition: ReturnType<typeof formatDominantCondition>;
+  durableProgress: ReturnType<typeof formatLastDurableProgress>;
+  hasAxisChips: boolean;
+  importReceipt: ReturnType<typeof formatAcquisitionReceipt>;
+  importReceiptHref: string;
+  nextAction: ReturnType<typeof formatNextAction>;
+  nextStep: NextStepGuidance | null;
+  partialCoverageHref: string | null;
+  projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
+}) {
+  return (
+    <div className="mt-2 flex flex-col gap-2" data-testid="connector-row-peek-body">
+      {hasAxisChips ? <AxisChipStrip axisChips={axisChips} durableProgress={durableProgress} /> : null}
+      {projectionFreshness.unreliable ? <ProjectionUnreliableNotice projectionFreshness={projectionFreshness} /> : null}
+      {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
+      {importReceipt ? <AcquisitionReceiptLine href={importReceiptHref} receipt={importReceipt} /> : null}
+      {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
+      {nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
+      {partialCoverageHref ? <PartialCoverageLink href={partialCoverageHref} /> : null}
+    </div>
+  );
+}
+
+function AxisChipStrip({
+  axisChips,
+  durableProgress,
+}: {
+  axisChips: AxisChip[];
+  durableProgress: ReturnType<typeof formatLastDurableProgress>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
+      {axisChips.map((chip) => (
+        <AxisChipBadge chip={chip} key={chip.label} />
+      ))}
+      {durableProgress.unavailable ? (
+        <span
+          className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
+          data-testid="durable-progress-unavailable"
+          title="Last durable progress could not be derived from current evidence."
+        >
+          {durableProgress.label}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectionUnreliableNotice({
+  projectionFreshness,
+}: {
+  projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
+}) {
+  return (
+    <div
+      className="pdpp-caption border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
+      data-testid="projection-unreliable"
+      title={projectionFreshness.detail}
+    >
+      <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
+    </div>
+  );
+}
+
+function PartialCoverageLink({ href }: { href: string }) {
+  return (
+    <Link
+      className="pdpp-caption inline-flex w-fit items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
+      data-testid="partial-coverage-link"
+      href={href}
+      title="Latest run produced records but reported known source gaps"
+    >
+      Partial source coverage
+    </Link>
   );
 }
 
@@ -676,6 +851,33 @@ function RunStatus({
     );
   }
 
+  return (
+    <LegacyRunStatus
+      collectionReport={collectionReport}
+      hasRecords={hasRecords}
+      lastRun={lastRun}
+      running={running}
+      runStart={runStart}
+      runsHref={runsHref}
+    />
+  );
+}
+
+function LegacyRunStatus({
+  collectionReport,
+  hasRecords,
+  lastRun,
+  running,
+  runStart,
+  runsHref,
+}: {
+  collectionReport: ConnectorOverview["collectionReport"];
+  hasRecords: boolean;
+  lastRun: ConnectorRunRef | null;
+  running: boolean;
+  runStart: string | undefined;
+  runsHref: string;
+}) {
   // No connection-health projection (a reference predating it). The "Partial"
   // badge still prefers the server-projected Collection Report when one is
   // present, and only reconstructs from the last run's raw `known_gaps` when no
@@ -696,87 +898,17 @@ function RunStatus({
     );
   }
   if (!lastRun) {
-    if (hasRecords) {
-      return (
-        <span
-          className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
-          title="records exist, but this database has no recorded sync run for this connector"
-        >
-          <StatusDot tone="neutral" />
-          Data present
-        </span>
-      );
-    }
-    return (
-      <span className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground" title="never run">
-        <StatusDot tone="neutral" />
-        Never run
-      </span>
-    );
+    return <NoRecordedRunStatus hasRecords={hasRecords} />;
   }
+  const runHref = `${runsHref}/${encodeURIComponent(lastRun.run_id)}`;
   if (lastRun.status === "failed") {
-    if (hasPartialCoverageHint) {
-      return (
-        <Link
-          className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
-          href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-          title={lastRun.failure_reason ?? "Run failed after producing partial data"}
-        >
-          <StatusDot shape="diamond" tone="warning" />
-          Partial
-        </Link>
-      );
-    }
-    return (
-      <Link
-        className="pdpp-caption inline-flex items-center gap-1 text-destructive hover:underline"
-        href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-        title={lastRun.failure_reason ?? "Run failed"}
-      >
-        <StatusDot shape="triangle" tone="danger" />
-        Failed
-      </Link>
-    );
+    return <FailedRunStatus hasPartialCoverageHint={hasPartialCoverageHint} href={runHref} lastRun={lastRun} />;
   }
   if (lastRun.status === "abandoned") {
-    // Boot-time reconciliation marked this run as never-completing
-    // (the controller that started it terminated mid-run). It's
-    // terminal but distinct from a user-facing "failure" — the
-    // connector itself never reported a result. See
-    // docs/run-reconciliation-design-brief.md §3.7.
-    return (
-      <Link
-        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground hover:underline"
-        href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-        title="The controller terminated before this run finished. Re-running may succeed."
-      >
-        <StatusDot shape="diamond" tone="warning" />
-        Abandoned
-      </Link>
-    );
+    return <AbandonedRunStatus href={runHref} />;
   }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
-    if (hasPartialCoverageHint) {
-      return (
-        <Link
-          className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
-          href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-          title="Latest run succeeded but reported known source gaps"
-        >
-          <StatusDot shape="diamond" tone="warning" />
-          Partial
-        </Link>
-      );
-    }
-    return (
-      <span
-        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
-        title="Latest run succeeded; connection-health evidence is unavailable"
-      >
-        <StatusDot tone="success" />
-        Last sync succeeded
-      </span>
-    );
+    return <SucceededRunStatus hasPartialCoverageHint={hasPartialCoverageHint} href={runHref} />;
   }
   // Unknown or skipped — report the run status without inventing a health verdict.
   return (
@@ -786,6 +918,101 @@ function RunStatus({
     >
       <StatusDot tone="neutral" />
       {lastRun.status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+function NoRecordedRunStatus({ hasRecords }: { hasRecords: boolean }) {
+  if (hasRecords) {
+    return (
+      <span
+        className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+        title="records exist, but this database has no recorded sync run for this connector"
+      >
+        <StatusDot tone="neutral" />
+        Data present
+      </span>
+    );
+  }
+  return (
+    <span className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground" title="never run">
+      <StatusDot tone="neutral" />
+      Never run
+    </span>
+  );
+}
+
+function FailedRunStatus({
+  hasPartialCoverageHint,
+  href,
+  lastRun,
+}: {
+  hasPartialCoverageHint: boolean;
+  href: string;
+  lastRun: ConnectorRunRef;
+}) {
+  if (hasPartialCoverageHint) {
+    return (
+      <Link
+        className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
+        href={href}
+        title={lastRun.failure_reason ?? "Run failed after producing partial data"}
+      >
+        <StatusDot shape="diamond" tone="warning" />
+        Partial
+      </Link>
+    );
+  }
+  return (
+    <Link
+      className="pdpp-caption inline-flex items-center gap-1 text-destructive hover:underline"
+      href={href}
+      title={lastRun.failure_reason ?? "Run failed"}
+    >
+      <StatusDot shape="triangle" tone="danger" />
+      Failed
+    </Link>
+  );
+}
+
+function AbandonedRunStatus({ href }: { href: string }) {
+  // Boot-time reconciliation marked this run as never-completing
+  // (the controller that started it terminated mid-run). It's
+  // terminal but distinct from a user-facing "failure" — the
+  // connector itself never reported a result. See
+  // docs/run-reconciliation-design-brief.md §3.7.
+  return (
+    <Link
+      className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground hover:underline"
+      href={href}
+      title="The controller terminated before this run finished. Re-running may succeed."
+    >
+      <StatusDot shape="diamond" tone="warning" />
+      Abandoned
+    </Link>
+  );
+}
+
+function SucceededRunStatus({ hasPartialCoverageHint, href }: { hasPartialCoverageHint: boolean; href: string }) {
+  if (hasPartialCoverageHint) {
+    return (
+      <Link
+        className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
+        href={href}
+        title="Latest run succeeded but reported known source gaps"
+      >
+        <StatusDot shape="diamond" tone="warning" />
+        Partial
+      </Link>
+    );
+  }
+  return (
+    <span
+      className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
+      title="Latest run succeeded; connection-health evidence is unavailable"
+    >
+      <StatusDot tone="success" />
+      Last sync succeeded
     </span>
   );
 }

@@ -141,11 +141,17 @@ test('manual/upload draft projects captured import file without credential seman
       capturedAt: null,
     },
     importReceipt: {
-      acquisitionMethod: 'owner_upload',
+      acquisitionMethod: 'owner_artifact',
+      acceptedCount: 0,
+      batchId: 'ab_test',
       dateRange: { start: '2024-06-05T13:45:22.000Z', end: '2024-06-05T13:45:22.000Z' },
       detectedFormat: 'legacy_records',
+      duplicateCount: 0,
       estimatedPoints: 1,
       estimatedSegments: 0,
+      failedCount: 0,
+      parsedCount: 1,
+      skippedCount: 0,
       status: 'valid',
       uploadedFileName: 'Timeline.json',
     },
@@ -156,11 +162,14 @@ test('manual/upload draft projects captured import file without credential seman
   assert.equal(status.setup_material.label, 'Import file (Timeline.json)');
   assert.equal(status.setup_material.present, true);
   assert.equal(status.credential.present, false);
+  assert.equal(status.import_receipt.batch_id, 'ab_test');
   assert.equal(status.import_receipt.status, 'valid');
   assert.equal(status.import_receipt.detected_format, 'legacy_records');
+  assert.equal(status.import_receipt.parsed_count, 1);
+  assert.equal(status.import_receipt.accepted_count, 0);
   assert.equal(status.import_receipt.estimated_points, 1);
   assert.equal(status.import_receipt.estimated_segments, 0);
   assert.equal(status.import_receipt.date_range.start, '2024-06-05T13:45:22.000Z');
   assert.equal(status.import_receipt.uploaded_file_name, 'Timeline.json');
-  assert.equal(status.import_receipt.acquisition_method, 'owner_upload');
+  assert.equal(status.import_receipt.acquisition_method, 'owner_artifact');
 });

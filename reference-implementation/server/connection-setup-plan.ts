@@ -40,10 +40,6 @@ export type ConnectorCatalogDisposition =
   | "unknown_unsupported";
 
 export interface ConnectorManifestLike {
-  readonly connector_id?: string | null;
-  readonly connector_key?: string | null;
-  readonly display_name?: string | null;
-  readonly name?: string | null;
   readonly capabilities?: {
     readonly auth?: {
       readonly kind?: string | null;
@@ -53,6 +49,10 @@ export interface ConnectorManifestLike {
       readonly deployment_config?: readonly string[] | null;
     } | null;
   } | null;
+  readonly connector_id?: string | null;
+  readonly connector_key?: string | null;
+  readonly display_name?: string | null;
+  readonly name?: string | null;
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
@@ -66,6 +66,7 @@ export interface ConnectorManifestLike {
       readonly submit_label?: string | null;
     } | null;
     readonly manual_or_upload?: {
+      readonly accepted_file_extensions?: readonly string[] | null;
       readonly accepted_file_names?: readonly string[] | null;
       readonly acquisition_methods?: readonly ManualUploadAcquisitionMethodLike[] | null;
       readonly description?: string | null;
@@ -80,6 +81,7 @@ export interface ConnectorManifestLike {
     readonly modality?: string | null;
     readonly deployment_config?: readonly string[] | null;
   } | null;
+  readonly version?: string | null;
 }
 
 export type StaticSecretSetupFieldType = "email" | "password" | "text";
@@ -123,8 +125,9 @@ export interface StaticSecretCredentialCaptureSetup {
 }
 
 export interface ManualUploadSetup {
-  readonly acquisitionMethods: readonly ManualUploadAcquisitionMethod[];
+  readonly acceptedFileExtensions: readonly string[];
   readonly acceptedFileNames: readonly string[];
+  readonly acquisitionMethods: readonly ManualUploadAcquisitionMethod[];
   readonly description: string | null;
   readonly helpText: string | null;
   readonly helpUrl: string | null;
@@ -239,13 +242,9 @@ export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 //
 // "test_provider" is a synthetic connector used by the deterministic test suite
 // to exercise the full lifecycle without live provider credentials.
-export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = [
-  "test_provider",
-  "google-maps-data-portability",
-] as const;
+export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = ["test_provider", "google-maps-data-portability"] as const;
 
-export type ProviderAuthLifecycleProvenConnector =
-  (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];
+export type ProviderAuthLifecycleProvenConnector = (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
   return (PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
@@ -264,13 +263,10 @@ export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
 // (ynab store path also proven; token is provider-side dead — not a capture-path failure)
 export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] as const;
 
-export type StaticSecretLiveProvenConnector =
-  (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
+export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isStaticSecretLiveProven(connectorKey: string): boolean {
-  return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
-    canonicalConnectorKey(connectorKey)
-  );
+  return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(canonicalConnectorKey(connectorKey));
 }
 
 const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
@@ -286,6 +282,7 @@ const READY_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.fre
 });
 
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const SECRET_DEPLOYMENT_KEY_RE = /SECRET|TOKEN|PASSWORD|KEY/i;
 const TRAILING_SLASH_RE = /\/$/;
 
 function stripRegistryPrefix(connectorId: string): string {
@@ -318,19 +315,24 @@ function cleanString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function normalizeStaticSecretFieldType(raw: StaticSecretSetupFieldLike): StaticSecretSetupFieldType {
+  const rawType = cleanString(raw.type)?.toLowerCase();
+  if (rawType === "email" || rawType === "password" || rawType === "text") {
+    return rawType;
+  }
+  if (raw.secret === true) {
+    return "password";
+  }
+  return "text";
+}
+
 function normalizeStaticSecretField(raw: StaticSecretSetupFieldLike): StaticSecretSetupField | null {
   const name = cleanString(raw?.name);
   const label = cleanString(raw?.label);
-  if (!name || !label) {
+  if (!(name && label)) {
     return null;
   }
-  const rawType = cleanString(raw.type)?.toLowerCase();
-  const type: StaticSecretSetupFieldType =
-    rawType === "email" || rawType === "password" || rawType === "text"
-      ? rawType
-      : raw.secret === true
-        ? "password"
-        : "text";
+  const type = normalizeStaticSecretFieldType(raw);
   return {
     autocomplete: cleanString(raw.autocomplete),
     description: cleanString(raw.description),
@@ -385,6 +387,12 @@ export function manualUploadSetupFromManifest(
   const acceptedFileNames = Array.isArray(meta?.accepted_file_names)
     ? meta.accepted_file_names.filter((value): value is string => cleanString(value) !== null)
     : [];
+  const acceptedFileExtensions = Array.isArray(meta?.accepted_file_extensions)
+    ? meta.accepted_file_extensions
+        .map((value) => cleanString(value))
+        .filter((value): value is string => value !== null)
+        .map((value) => (value.startsWith(".") ? value.toLowerCase() : `.${value.toLowerCase()}`))
+    : [];
   const acquisitionMethods = Array.isArray(meta?.acquisition_methods)
     ? meta.acquisition_methods
         .map((method): ManualUploadAcquisitionMethod | null => {
@@ -409,6 +417,7 @@ export function manualUploadSetupFromManifest(
       : null;
   return {
     acquisitionMethods,
+    acceptedFileExtensions,
     acceptedFileNames,
     description: cleanString(meta?.description),
     helpText: cleanString(meta?.help_text),
@@ -452,10 +461,7 @@ export function isStaticSecretConnector(
   connectorId: string | null | undefined,
   manifest?: ConnectorManifestLike | null
 ): boolean {
-  return (
-    typeof connectorId === "string" &&
-    expectedStaticSecretCredentialKind(connectorId, manifest) !== null
-  );
+  return typeof connectorId === "string" && expectedStaticSecretCredentialKind(connectorId, manifest) !== null;
 }
 
 export function isBrowserBoundConnector(connectorId: string | null | undefined): boolean {
@@ -564,7 +570,7 @@ function buildDeploymentReadiness(args: {
     (key) => ({
       key,
       label: key,
-      secret: /SECRET|TOKEN|PASSWORD|KEY/i.test(key),
+      secret: SECRET_DEPLOYMENT_KEY_RE.test(key),
     })
   );
   return {
@@ -592,6 +598,257 @@ export function unsupportedReason(modality: ConnectorIntentModality | ConnectorS
     return "This connector imports an owner-provided file or artifact declared by its connector manifest. The reference recognizes the setup class, but the generic owner upload/import capture flow is not packaged yet.";
   }
   return "Unknown connector: no manifest with runtime binding requirements is registered for this connector_id. Register the connector or check the connector_id.";
+}
+
+type ConnectionSetupPlanContext = Readonly<{
+  connectorKey: string;
+  connectorModality: ConnectorIntentModality;
+  deploymentReadiness: ConnectorSetupDeploymentReadiness;
+  displayName: string;
+  enrollmentKey: string;
+  manifest: ConnectorManifestLike | null;
+  setupModality: ConnectorSetupModality;
+  validationMode: CredentialValidationMode;
+}>;
+
+function buildManualUploadSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  const uploadSetup = manualUploadSetupFromManifest(ctx.manifest);
+  if (uploadSetup?.importDirEnvVar) {
+    return {
+      catalogDisposition: "manual_upload_connect",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "provide_import_file",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "provide_import_file",
+        reason:
+          "Upload the owner-provided import file from the owner session. The connection activates after the first accepted ingest.",
+        status: "supported",
+      },
+      proofGate: null,
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "supported",
+      validationMode: ctx.validationMode,
+    };
+  }
+  return {
+    catalogDisposition: "manual_upload_pending",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: "provide_import_file",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: "provide_import_file",
+      reason: unsupportedReason(ctx.setupModality),
+      status: "proof_gated",
+    },
+    proofGate: "manual_upload_capture_missing",
+    runbookPath: null,
+    setupModality: ctx.setupModality,
+    supportState: "proof_gated",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildLocalCollectorSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  if (isSupportedLocalCollectorConnector(ctx.enrollmentKey)) {
+    return {
+      catalogDisposition: "local_collector_enroll",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      enrollmentKey: ctx.enrollmentKey,
+      nextStepKind: "enroll_local_collector",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "enroll_local_collector",
+        reason:
+          "Create an owner-mediated local-collector enrollment intent. The connection materializes only after the owner's local collector exchanges the enrollment code and ingests.",
+        status: "supported",
+      },
+      proofGate: null,
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "supported",
+      validationMode: ctx.validationMode,
+    };
+  }
+  return {
+    catalogDisposition: "local_collector_unproven",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: "unsupported",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: "manual_runbook",
+      reason: unsupportedReason(ctx.connectorModality),
+      status: "proof_gated",
+    },
+    proofGate: "local_collector_connector_proof_missing",
+    runbookPath: null,
+    setupModality: ctx.setupModality,
+    supportState: "proof_gated",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildBrowserBoundSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  const hasManualBrowserPath = isSupportedBrowserCollectorConnector(ctx.connectorKey);
+  return {
+    catalogDisposition: hasManualBrowserPath ? "browser_collector_manual" : "browser_bound_runbook",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    ...(hasManualBrowserPath ? { enrollmentKey: ctx.enrollmentKey } : {}),
+    nextStepKind: hasManualBrowserPath ? "enroll_browser_collector" : "manual_runbook",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: "manual_runbook",
+      reason: unsupportedReason(ctx.connectorModality),
+      status: "proof_gated",
+    },
+    proofGate: "browser_collector_live_proof_missing",
+    runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
+    setupModality: ctx.setupModality,
+    supportState: "proof_gated",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  const liveProven = isStaticSecretLiveProven(ctx.connectorKey);
+  return {
+    catalogDisposition: "static_secret_connect",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: "capture_static_secret",
+    ownerAgentIntent: {
+      method: liveProven ? "POST" : null,
+      nextStepKind: "capture_static_secret",
+      reason: liveProven
+        ? "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds."
+        : unsupportedReason(ctx.setupModality),
+      status: liveProven ? "supported" : "proof_gated",
+    },
+    proofGate: liveProven ? null : "static_secret_live_proof_missing",
+    runbookPath: liveProven ? null : STATIC_SECRET_RUNBOOK_PATH,
+    setupModality: ctx.setupModality,
+    supportState: liveProven ? "supported" : "proof_gated",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildProviderAuthorizationSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  const deploymentBlocked = ctx.deploymentReadiness.state === "needs_config";
+  const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(ctx.connectorKey);
+  if (lifecycleProven) {
+    return {
+      catalogDisposition: "provider_auth_proof_gated",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "open_provider_auth",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "open_provider_auth",
+        reason:
+          "Initiate provider authorization from the owner session. The callback will activate the connection only after authorization and account inventory succeed.",
+        status: "supported",
+      },
+      proofGate: null,
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "supported",
+      validationMode: ctx.validationMode,
+    };
+  }
+  return {
+    catalogDisposition: deploymentBlocked ? "provider_auth_deployment_blocked" : "provider_auth_proof_gated",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
+      reason: deploymentBlocked
+        ? (ctx.deploymentReadiness.guidance ?? unsupportedReason(ctx.setupModality))
+        : unsupportedReason(ctx.setupModality),
+      status: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
+    },
+    proofGate: deploymentBlocked
+      ? "provider_app_deployment_config_missing"
+      : "provider_authorization_lifecycle_missing",
+    runbookPath: PROVIDER_AUTH_RUNBOOK_PATH,
+    setupModality: ctx.setupModality,
+    supportState: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildApiNetworkSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  if (ctx.setupModality === "static_secret") {
+    return buildStaticSecretSetupPlan(ctx);
+  }
+  if (ctx.setupModality === "provider_authorization") {
+    return buildProviderAuthorizationSetupPlan(ctx);
+  }
+  return {
+    catalogDisposition: "api_network_unsupported",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: "unsupported",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: "unsupported",
+      reason:
+        "This API/network connector has no owner-mediated connection setup route in this reference build. A supported setup path must be added before it can be created from Console, owner-agent REST, CLI, or SDK helpers.",
+      status: "unsupported",
+    },
+    proofGate: null,
+    runbookPath: null,
+    setupModality: ctx.setupModality,
+    supportState: "unsupported",
+    validationMode: ctx.validationMode,
+  };
+}
+
+function buildUnsupportedSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
+  return {
+    catalogDisposition: "unknown_unsupported",
+    connectorKey: ctx.connectorKey,
+    connectorModality: ctx.connectorModality,
+    deploymentReadiness: ctx.deploymentReadiness,
+    displayName: ctx.displayName,
+    nextStepKind: "unsupported",
+    ownerAgentIntent: {
+      method: null,
+      nextStepKind: "unsupported",
+      reason: unsupportedReason(ctx.connectorModality),
+      status: "unsupported",
+    },
+    proofGate: null,
+    runbookPath: null,
+    setupModality: ctx.setupModality,
+    supportState: "unsupported",
+    validationMode: ctx.validationMode,
+  };
 }
 
 export function buildConnectionSetupPlan(args: {
@@ -626,232 +883,32 @@ export function buildConnectionSetupPlan(args: {
   // registered probe. Everything else activates at first sync.
   const validationMode: CredentialValidationMode =
     setupModality === "static_secret" ? credentialValidationMode(connectorKey) : "first_sync";
-
-  if (setupModality === "manual_or_upload") {
-    const uploadSetup = manualUploadSetupFromManifest(args.manifest);
-    if (uploadSetup?.importDirEnvVar) {
-      return {
-        catalogDisposition: "manual_upload_connect",
-        connectorKey,
-        connectorModality,
-        deploymentReadiness,
-        displayName,
-        nextStepKind: "provide_import_file",
-        ownerAgentIntent: {
-          method: "POST",
-          nextStepKind: "provide_import_file",
-          reason:
-            "Upload the owner-provided import file from the owner session. The connection activates after the first accepted ingest.",
-          status: "supported",
-        },
-        proofGate: null,
-        runbookPath: null,
-        setupModality,
-        validationMode,
-        supportState: "supported",
-      };
-    }
-    return {
-      catalogDisposition: "manual_upload_pending",
-      connectorKey,
-      connectorModality,
-      deploymentReadiness,
-      displayName,
-      nextStepKind: "provide_import_file",
-      ownerAgentIntent: {
-        method: null,
-        nextStepKind: "provide_import_file",
-        reason: unsupportedReason(setupModality),
-        status: "proof_gated",
-      },
-      proofGate: "manual_upload_capture_missing",
-      runbookPath: null,
-      setupModality,
-      validationMode,
-      supportState: "proof_gated",
-    };
-  }
-
-  if (connectorModality === "local_collector") {
-    if (isSupportedLocalCollectorConnector(enrollmentKey)) {
-      return {
-        catalogDisposition: "local_collector_enroll",
-        connectorKey,
-        connectorModality,
-        deploymentReadiness,
-        displayName,
-        enrollmentKey,
-        nextStepKind: "enroll_local_collector",
-        ownerAgentIntent: {
-          method: "POST",
-          nextStepKind: "enroll_local_collector",
-          reason:
-            "Create an owner-mediated local-collector enrollment intent. The connection materializes only after the owner's local collector exchanges the enrollment code and ingests.",
-          status: "supported",
-        },
-        proofGate: null,
-        runbookPath: null,
-        setupModality,
-        validationMode,
-        supportState: "supported",
-      };
-    }
-    return {
-      catalogDisposition: "local_collector_unproven",
-      connectorKey,
-      connectorModality,
-      deploymentReadiness,
-      displayName,
-      nextStepKind: "unsupported",
-      ownerAgentIntent: {
-        method: null,
-        nextStepKind: "manual_runbook",
-        reason: unsupportedReason(connectorModality),
-        status: "proof_gated",
-      },
-      proofGate: "local_collector_connector_proof_missing",
-      runbookPath: null,
-      setupModality,
-      validationMode,
-      supportState: "proof_gated",
-    };
-  }
-
-  if (connectorModality === "browser_bound") {
-    const hasManualBrowserPath = isSupportedBrowserCollectorConnector(connectorKey);
-    return {
-      catalogDisposition: hasManualBrowserPath ? "browser_collector_manual" : "browser_bound_runbook",
-      connectorKey,
-      connectorModality,
-      deploymentReadiness,
-      displayName,
-      ...(hasManualBrowserPath ? { enrollmentKey } : {}),
-      nextStepKind: hasManualBrowserPath ? "enroll_browser_collector" : "manual_runbook",
-      ownerAgentIntent: {
-        method: null,
-        nextStepKind: "manual_runbook",
-        reason: unsupportedReason(connectorModality),
-        status: "proof_gated",
-      },
-      proofGate: "browser_collector_live_proof_missing",
-      runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
-      setupModality,
-      validationMode,
-      supportState: "proof_gated",
-    };
-  }
-
-  if (connectorModality === "api_network") {
-    if (setupModality === "static_secret") {
-      const liveProven = isStaticSecretLiveProven(connectorKey);
-      return {
-        catalogDisposition: "static_secret_connect",
-        connectorKey,
-        connectorModality,
-        deploymentReadiness,
-        displayName,
-        nextStepKind: "capture_static_secret",
-        ownerAgentIntent: {
-          method: liveProven ? "POST" : null,
-          nextStepKind: "capture_static_secret",
-          reason: liveProven
-            ? "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds."
-            : unsupportedReason(setupModality),
-          status: liveProven ? "supported" : "proof_gated",
-        },
-        proofGate: liveProven ? null : "static_secret_live_proof_missing",
-        runbookPath: liveProven ? null : STATIC_SECRET_RUNBOOK_PATH,
-        setupModality,
-        validationMode,
-        supportState: liveProven ? "supported" : "proof_gated",
-      };
-    }
-    if (setupModality === "provider_authorization") {
-      const deploymentBlocked = deploymentReadiness.state === "needs_config";
-      const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(connectorKey);
-      if (lifecycleProven) {
-        return {
-          catalogDisposition: "provider_auth_proof_gated",
-          connectorKey,
-          connectorModality,
-          deploymentReadiness,
-          displayName,
-          nextStepKind: "open_provider_auth",
-          ownerAgentIntent: {
-            method: "POST",
-            nextStepKind: "open_provider_auth",
-            reason:
-              "Initiate provider authorization from the owner session. The callback will activate the connection only after authorization and account inventory succeed.",
-            status: "supported",
-          },
-          proofGate: null,
-          runbookPath: null,
-          setupModality,
-          validationMode,
-          supportState: "supported",
-        };
-      }
-      return {
-        catalogDisposition: deploymentBlocked ? "provider_auth_deployment_blocked" : "provider_auth_proof_gated",
-        connectorKey,
-        connectorModality,
-        deploymentReadiness,
-        displayName,
-        nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
-        ownerAgentIntent: {
-          method: null,
-          nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
-          reason: deploymentBlocked
-            ? deploymentReadiness.guidance ?? unsupportedReason(setupModality)
-            : unsupportedReason(setupModality),
-          status: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
-        },
-        proofGate: deploymentBlocked ? "provider_app_deployment_config_missing" : "provider_authorization_lifecycle_missing",
-        runbookPath: PROVIDER_AUTH_RUNBOOK_PATH,
-        setupModality,
-        validationMode,
-        supportState: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
-      };
-    }
-    return {
-      catalogDisposition: "api_network_unsupported",
-      connectorKey,
-      connectorModality,
-      deploymentReadiness,
-      displayName,
-      nextStepKind: "unsupported",
-      ownerAgentIntent: {
-        method: null,
-        nextStepKind: "unsupported",
-        reason:
-          "This API/network connector has no owner-mediated connection setup route in this reference build. A supported setup path must be added before it can be created from Console, owner-agent REST, CLI, or SDK helpers.",
-        status: "unsupported",
-      },
-      proofGate: null,
-      runbookPath: null,
-      setupModality,
-      validationMode,
-      supportState: "unsupported",
-    };
-  }
-
-  return {
-    catalogDisposition: "unknown_unsupported",
+  const ctx: ConnectionSetupPlanContext = {
     connectorKey,
     connectorModality,
     deploymentReadiness,
     displayName,
-    nextStepKind: "unsupported",
-    ownerAgentIntent: {
-      method: null,
-      nextStepKind: "unsupported",
-      reason: unsupportedReason(connectorModality),
-      status: "unsupported",
-    },
-    proofGate: null,
-    runbookPath: null,
+    enrollmentKey,
+    manifest: args.manifest,
     setupModality,
     validationMode,
-    supportState: "unsupported",
   };
+
+  if (setupModality === "manual_or_upload") {
+    return buildManualUploadSetupPlan(ctx);
+  }
+
+  if (connectorModality === "local_collector") {
+    return buildLocalCollectorSetupPlan(ctx);
+  }
+
+  if (connectorModality === "browser_bound") {
+    return buildBrowserBoundSetupPlan(ctx);
+  }
+
+  if (connectorModality === "api_network") {
+    return buildApiNetworkSetupPlan(ctx);
+  }
+
+  return buildUnsupportedSetupPlan(ctx);
 }

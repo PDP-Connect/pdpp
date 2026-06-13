@@ -82,14 +82,26 @@ export interface SetupStatusMaterialMetadata {
 // connector parser, not the full future acquisition-batch ledger with accepted,
 // duplicate, skipped, or failed committed counts.
 export interface SetupStatusImportReceipt {
+  readonly acceptedCount?: number | null;
   readonly acquisitionMethod?: string | null;
+  readonly batchId?: string | null;
   readonly dateRange?: { readonly end: string | null; readonly start: string | null } | null;
   readonly detectedFormat?: string | null;
+  readonly duplicateCount?: number | null;
+  readonly estimatedAttachments?: number | null;
+  readonly estimatedChats?: number | null;
+  readonly estimatedMessages?: number | null;
+  readonly estimatedParticipants?: number | null;
   readonly estimatedPoints?: number | null;
   readonly estimatedSegments?: number | null;
+  readonly failedCount?: number | null;
+  readonly mediaCoverage?: unknown;
+  readonly parsedCount?: number | null;
   readonly remediation?: string | null;
+  readonly skippedCount?: number | null;
   readonly status?: string | null;
   readonly uploadedFileName?: string | null;
+  readonly warnings?: readonly string[] | null;
 }
 
 // A non-secret view of a run. `status` is the spine run status
@@ -124,12 +136,12 @@ export interface ProjectConnectionSetupStatusInput {
   // The identity field name (a non-secret manifest setup field marked
   // `identity: true`), used to pull the account label out of `setupFields`.
   readonly identityFieldName?: string | null;
+  // Manual-upload validation receipt. Only projected for manual_upload setup.
+  readonly importReceipt?: SetupStatusImportReceipt | null;
   readonly instance: SetupStatusInstance;
   // The most recent run for this connection (terminal or otherwise), if known.
   // Used to surface a failed first sync after the run leaves the active table.
   readonly lastRun: SetupStatusRun | null;
-  // Manual-upload validation receipt. Only projected for manual_upload setup.
-  readonly importReceipt?: SetupStatusImportReceipt | null;
   readonly setupKind?: ConnectionSetupKind;
   readonly setupMaterial?: SetupStatusMaterialMetadata | null;
 }
@@ -151,22 +163,34 @@ export interface ConnectionSetupStatus {
   readonly display_name: string | null;
   // The canonical health state this setup_state projects onto.
   readonly health_state: ConnectionHealthState;
-  // The actionable failure + remediation when the first sync failed. Non-secret.
-  readonly last_error: {
-    readonly reason: string;
-    readonly remediation: string;
-  } | null;
   // Non-secret manual-upload validation/import-preview receipt. Present only
   // for manual_upload setups with connector-provided validation evidence.
   readonly import_receipt: {
     readonly acquisition_method: string | null;
+    readonly accepted_count: number | null;
+    readonly batch_id: string | null;
     readonly date_range: { readonly end: string | null; readonly start: string | null } | null;
     readonly detected_format: string | null;
+    readonly duplicate_count: number | null;
+    readonly estimated_attachments: number | null;
+    readonly estimated_chats: number | null;
+    readonly estimated_messages: number | null;
+    readonly estimated_participants: number | null;
     readonly estimated_points: number | null;
     readonly estimated_segments: number | null;
+    readonly failed_count: number | null;
+    readonly media_coverage: unknown;
+    readonly parsed_count: number | null;
     readonly remediation: string | null;
+    readonly skipped_count: number | null;
     readonly status: string | null;
     readonly uploaded_file_name: string | null;
+    readonly warnings: readonly string[];
+  } | null;
+  // The actionable failure + remediation when the first sync failed. Non-secret.
+  readonly last_error: {
+    readonly reason: string;
+    readonly remediation: string;
   } | null;
   readonly object: "connection_setup_status";
   // True while the connection is not yet a working connection (draft) and the
@@ -285,6 +309,23 @@ function defaultSetupMaterial(
   return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
 }
 
+function nullable<T>(value: T | null | undefined): T | null {
+  return value ?? null;
+}
+
+function projectedDateRange(
+  range: SetupStatusImportReceipt["dateRange"]
+): { readonly end: string | null; readonly start: string | null } | null {
+  if (!(range && (range.start != null || range.end != null))) {
+    return null;
+  }
+  return { start: nullable(range.start), end: nullable(range.end) };
+}
+
+function projectedWarnings(value: readonly string[] | null | undefined): readonly string[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function projectImportReceipt(
   setupKind: ConnectionSetupKind,
   receipt: SetupStatusImportReceipt | null | undefined
@@ -292,19 +333,27 @@ function projectImportReceipt(
   if (setupKind !== "manual_upload" || !receipt) {
     return null;
   }
-  const dateRange =
-    receipt.dateRange && (receipt.dateRange.start != null || receipt.dateRange.end != null)
-      ? { start: receipt.dateRange.start ?? null, end: receipt.dateRange.end ?? null }
-      : null;
   return {
-    acquisition_method: receipt.acquisitionMethod ?? null,
-    date_range: dateRange,
-    detected_format: receipt.detectedFormat ?? null,
-    estimated_points: receipt.estimatedPoints ?? null,
-    estimated_segments: receipt.estimatedSegments ?? null,
-    remediation: receipt.remediation ?? null,
-    status: receipt.status ?? null,
-    uploaded_file_name: receipt.uploadedFileName ?? null,
+    acquisition_method: nullable(receipt.acquisitionMethod),
+    accepted_count: nullable(receipt.acceptedCount),
+    batch_id: nullable(receipt.batchId),
+    date_range: projectedDateRange(receipt.dateRange),
+    detected_format: nullable(receipt.detectedFormat),
+    duplicate_count: nullable(receipt.duplicateCount),
+    estimated_attachments: nullable(receipt.estimatedAttachments),
+    estimated_chats: nullable(receipt.estimatedChats),
+    estimated_messages: nullable(receipt.estimatedMessages),
+    estimated_participants: nullable(receipt.estimatedParticipants),
+    estimated_points: nullable(receipt.estimatedPoints),
+    estimated_segments: nullable(receipt.estimatedSegments),
+    failed_count: nullable(receipt.failedCount),
+    media_coverage: nullable(receipt.mediaCoverage),
+    parsed_count: nullable(receipt.parsedCount),
+    remediation: nullable(receipt.remediation),
+    skipped_count: nullable(receipt.skippedCount),
+    status: nullable(receipt.status),
+    uploaded_file_name: nullable(receipt.uploadedFileName),
+    warnings: projectedWarnings(receipt.warnings),
   };
 }
 

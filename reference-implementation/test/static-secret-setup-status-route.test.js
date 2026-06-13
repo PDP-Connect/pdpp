@@ -216,6 +216,12 @@ async function getStatus(asUrl, cookie, connectionId, runId = null) {
   });
 }
 
+async function listRefConnectors(asUrl, cookie) {
+  return fetchJson(`${asUrl}/_ref/connectors`, {
+    headers: { Accept: 'application/json', Cookie: cookie },
+  });
+}
+
 async function ingest(rsUrl, ownerToken, connectorId, connectionId, stream, records) {
   const lines = records
     .map((record) => JSON.stringify({ key: record.id, data: record, emitted_at: record.emitted_at }))
@@ -362,14 +368,20 @@ test('pending manual/upload setup is visible without credential semantics', asyn
     assert.equal(pending.body.setup_material.label, 'Import file (Timeline.json)');
     assert.equal(pending.body.setup_material.present, true);
     assert.equal(pending.body.credential.present, false);
-    assert.equal(pending.body.import_receipt.status, 'valid');
+    assert.match(pending.body.import_receipt.batch_id, /^ab_/);
+    assert.equal(pending.body.import_receipt.status, 'validated');
     assert.equal(pending.body.import_receipt.detected_format, 'legacy_records');
+    assert.equal(pending.body.import_receipt.parsed_count, 1);
+    assert.equal(pending.body.import_receipt.accepted_count, 0);
+    assert.equal(pending.body.import_receipt.duplicate_count, 0);
+    assert.equal(pending.body.import_receipt.skipped_count, 0);
+    assert.equal(pending.body.import_receipt.failed_count, 0);
     assert.equal(pending.body.import_receipt.estimated_points, 1);
     assert.equal(pending.body.import_receipt.estimated_segments, 0);
     assert.equal(pending.body.import_receipt.date_range.start, '2024-06-05T13:45:22.000Z');
     assert.equal(pending.body.import_receipt.date_range.end, '2024-06-05T13:45:22.000Z');
     assert.equal(pending.body.import_receipt.uploaded_file_name, 'Timeline.json');
-    assert.equal(pending.body.import_receipt.acquisition_method, 'owner_upload');
+    assert.equal(pending.body.import_receipt.acquisition_method, 'owner_artifact');
     assert.ok(!pending.text.includes('locations'), 'status must not echo uploaded file contents');
     assert.ok(!pending.text.includes('import_dir'), 'status must not leak import_dir');
     assert.ok(!pending.text.includes('GOOGLE_MAPS_TIMELINE_DIR'), 'status must not expose env-var plumbing');
@@ -432,6 +444,135 @@ test('setup status flips to active once first ingest accepts records', async () 
       assert.equal(active.body.health_state, 'healthy');
       assert.equal(active.body.pending, false);
     });
+  });
+});
+
+test('manual/upload setup status shows committed acquisition-batch counts after ingest', async () => {
+  await withOpenServer(async ({ asUrl, rsUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = '';
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const created = await createManualUploadDraft(asUrl, cookie, 'google-maps');
+    assert.equal(created.status, 201, created.text);
+    const connectionId = created.body.connection_id;
+
+    const ingested = await ingest(rsUrl, ownerToken, 'google-maps', connectionId, 'timeline_points', [
+      {
+        id: 'point_1',
+        emitted_at: '2024-06-05T13:45:22.000Z',
+        timestamp: '2024-06-05T13:45:22.000Z',
+        latitude: 37.7749,
+        longitude: -122.4194,
+        source_format: 'legacy_records',
+        source_kind: 'raw_location',
+      },
+    ]);
+    assert.equal(ingested.status, 200, ingested.text);
+
+    const active = await getStatus(asUrl, cookie, connectionId);
+    assert.equal(active.status, 200, active.text);
+    assert.equal(active.body.status, 'active');
+    assert.equal(active.body.setup_state, 'active');
+    assert.equal(active.body.import_receipt.status, 'committed');
+    assert.equal(active.body.import_receipt.parsed_count, 1);
+    assert.equal(active.body.import_receipt.accepted_count, 1);
+    assert.equal(active.body.import_receipt.duplicate_count, 0);
+    assert.equal(active.body.import_receipt.failed_count, 0);
+    assert.equal(active.body.import_receipt.acquisition_method, 'owner_artifact');
+
+    const summaries = await listRefConnectors(asUrl, cookie);
+    assert.equal(summaries.status, 200, summaries.text);
+    const summary = summaries.body.data.find((item) => item.connection_id === connectionId);
+    assert.ok(summary, 'manual upload connection summary should be visible after ingest');
+    assert.equal(summary.acquisition_coverage.latest_batch.status, 'committed');
+    assert.equal(summary.acquisition_coverage.latest_batch.acquisition_method, 'owner_artifact');
+    assert.equal(summary.acquisition_coverage.latest_batch.accepted_count, 1);
+    assert.equal(summary.acquisition_coverage.latest_batch.detected_format, 'legacy_records');
+    assert.equal(summary.acquisition_coverage.latest_batch.uploaded_file_name, 'Timeline.json');
+    assert.equal(Object.hasOwn(summary.acquisition_coverage.latest_batch, 'artifact_sha256'), false);
+
+    const provenance = getDb()
+      .prepare(
+        `SELECT batch_id, acquisition_method, connector_instance_id, stream, record_key
+           FROM record_acquisition_provenance
+          WHERE connector_instance_id = ?
+            AND stream = 'timeline_points'
+            AND record_key = 'point_1'`,
+      )
+      .get(connectionId);
+    assert.equal(provenance.batch_id, active.body.import_receipt.batch_id);
+    assert.equal(provenance.acquisition_method, 'owner_artifact');
+    assert.equal(provenance.connector_instance_id, connectionId);
+
+    const publicRead = await fetch(
+      `${rsUrl}/v1/streams/timeline_points/records?connector_id=${encodeURIComponent('google-maps')}&connection_id=${encodeURIComponent(connectionId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    const publicReadText = await publicRead.text();
+    assert.equal(publicRead.status, 200, publicReadText);
+    assert.match(publicReadText, /"point_1"/, 'public read should still expose the accepted record');
+    for (const forbidden of ['acquisition_coverage', 'import_receipt', 'artifact_sha256', 'media_coverage']) {
+      assert.ok(!publicReadText.includes(forbidden), `${forbidden} must not leak onto public /v1 records reads`);
+    }
+
+    const providerBatchId = 'ab_provider_api_same_stream';
+    getDb()
+      .prepare(
+        `INSERT INTO acquisition_batches(
+           batch_id, owner_subject_id, connector_id, connector_instance_id,
+           acquisition_method, source_format, parser_version, artifact_sha256,
+           uploaded_file_name, status, event_time_start, event_time_end,
+           parsed_count, accepted_count, duplicate_count, skipped_count, failed_count,
+           media_coverage_json, warnings_json, receipt_json, created_at, updated_at
+         )
+         VALUES(?, ?, ?, ?, 'provider_api', 'data_portability', 'test-provider-v1', NULL,
+           NULL, 'validated', '2024-06-05T13:45:22.000Z', '2024-06-06T00:00:00.000Z',
+           1, 0, 0, 0, 0, NULL, '[]', NULL, '9999-01-01T00:00:00.000Z', '9999-01-01T00:00:00.000Z')`,
+      )
+      .run(providerBatchId, OWNER_SUBJECT_ID, 'google-maps', connectionId);
+
+    const apiIngest = await ingest(rsUrl, ownerToken, 'google-maps', connectionId, 'timeline_points', [
+      {
+        id: 'point_1',
+        emitted_at: '2024-06-05T13:45:22.000Z',
+        timestamp: '2024-06-05T13:45:22.000Z',
+        latitude: 37.7749,
+        longitude: -122.4194,
+        source_format: 'data_portability',
+        source_kind: 'raw_location',
+      },
+    ]);
+    assert.equal(apiIngest.status, 200, apiIngest.text);
+
+    const provenanceMethods = getDb()
+      .prepare(
+        `SELECT acquisition_method
+           FROM record_acquisition_provenance
+          WHERE connector_instance_id = ?
+            AND stream = 'timeline_points'
+            AND record_key = 'point_1'
+          ORDER BY acquisition_method`,
+      )
+      .all(connectionId)
+      .map((row) => row.acquisition_method);
+    assert.deepEqual(provenanceMethods, ['owner_artifact', 'provider_api']);
+
+    const batchCounts = getDb()
+      .prepare(
+        `SELECT batch_id, accepted_count
+           FROM acquisition_batches
+          WHERE connector_instance_id = ?
+          ORDER BY created_at ASC, batch_id ASC`,
+      )
+      .all(connectionId);
+    assert.deepEqual(
+      batchCounts.map((row) => [row.batch_id, row.accepted_count]),
+      [
+        [active.body.import_receipt.batch_id, 1],
+        [providerBatchId, 1],
+      ],
+    );
   });
 });
 

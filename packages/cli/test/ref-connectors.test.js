@@ -67,6 +67,24 @@ const SUMMARY_FIXTURE = {
     response_contract: 'response_required',
     source: 'structured',
   },
+  acquisition_coverage: {
+    latest_batch: {
+      accepted_count: 12,
+      acquisition_method: 'owner_artifact',
+      batch_id: 'ab_timeline_1',
+      date_range: { start: '2024-06-01T00:00:00.000Z', end: '2024-06-05T13:45:22.000Z' },
+      detected_format: 'legacy_records',
+      duplicate_count: 2,
+      failed_count: 0,
+      media_coverage: { status: 'none_reported' },
+      parsed_count: 14,
+      skipped_count: 0,
+      status: 'committed',
+      uploaded_file_name: 'Timeline.json',
+      warnings: ['older export'],
+    },
+    recent_batches: [],
+  },
   connection_health: {
     axes: {
       attention: 'open',
@@ -174,6 +192,21 @@ test('ref connectors list: projects summary fields in JSON list', async () => {
   assert.equal(row.last_run_status, 'succeeded');
   assert.equal(row.last_success_at, '2026-05-19T00:30:00Z');
   assert.equal(row.next_attempt_at, '2026-05-19T01:00:00Z');
+  assert.equal(row.latest_acquisition_batch_id, 'ab_timeline_1');
+  assert.equal(row.latest_acquisition_status, 'committed');
+  assert.equal(row.latest_acquisition_method, 'owner_artifact');
+  assert.equal(row.latest_acquisition_format, 'legacy_records');
+  assert.equal(row.latest_acquisition_file, 'Timeline.json');
+  assert.equal(row.latest_acquisition_start, '2024-06-01T00:00:00.000Z');
+  assert.equal(row.latest_acquisition_end, '2024-06-05T13:45:22.000Z');
+  assert.equal(row.latest_acquisition_parsed, 14);
+  assert.equal(row.latest_acquisition_accepted, 12);
+  assert.equal(row.latest_acquisition_duplicates, 2);
+  assert.equal(row.latest_acquisition_skipped, 0);
+  assert.equal(row.latest_acquisition_failed, 0);
+  assert.equal(row.latest_acquisition_warnings, 1);
+  assert.equal(Object.hasOwn(row, 'artifact_sha256'), false);
+  assert.equal(Object.hasOwn(row, 'media_coverage'), false);
 });
 
 test('ref connectors list: --verbose returns raw envelope', async () => {
@@ -210,7 +243,10 @@ test('ref connectors list: table format includes projected columns', async () =>
   assert.match(captured.stdout, /github/);
   assert.match(captured.stdout, /needs_attention/);
   assert.match(captured.stdout, /otp_required/);
+  assert.match(captured.stdout, /latest_acquisition_status/);
+  assert.match(captured.stdout, /owner_artifact/);
   assert.doesNotMatch(captured.stdout, /Owner action is required before collection can continue/);
+  assert.doesNotMatch(captured.stdout, /artifact_sha256/);
 });
 
 test('ref connectors list: handles missing axes / next_action without crashing', async () => {
@@ -275,6 +311,8 @@ test('ref connectors show: returns projected row for connector id', async () => 
   assert.equal(parsed.state, 'needs_attention');
   assert.equal(parsed.dominant_condition_reason, 'otp_required');
   assert.equal(parsed.next_action_source, 'structured');
+  assert.equal(parsed.latest_acquisition_status, 'committed');
+  assert.equal(parsed.latest_acquisition_accepted, 12);
 });
 
 test('ref connectors show: --verbose returns raw envelope', async () => {

@@ -17,6 +17,7 @@ function projectSummaryRow(summary) {
   const schedule = summary?.schedule || null;
   const lastRun = summary?.last_run || null;
   const lastSuccess = summary?.last_successful_run || null;
+  const latestBatch = summary?.acquisition_coverage?.latest_batch || null;
   const dominantCondition = findConditionById(health.conditions, health.dominant_condition_id);
   return {
     connection_id: summary?.connection_id ?? null,
@@ -47,6 +48,19 @@ function projectSummaryRow(summary) {
     last_run_status: lastRun?.status ?? null,
     last_success_at: health.last_success_at ?? lastSuccess?.last_at ?? null,
     next_attempt_at: health.next_attempt_at ?? schedule?.next_due_at ?? null,
+    latest_acquisition_batch_id: latestBatch?.batch_id ?? null,
+    latest_acquisition_status: latestBatch?.status ?? null,
+    latest_acquisition_method: latestBatch?.acquisition_method ?? null,
+    latest_acquisition_format: latestBatch?.detected_format ?? null,
+    latest_acquisition_file: latestBatch?.uploaded_file_name ?? null,
+    latest_acquisition_start: latestBatch?.date_range?.start ?? null,
+    latest_acquisition_end: latestBatch?.date_range?.end ?? null,
+    latest_acquisition_parsed: latestBatch?.parsed_count ?? null,
+    latest_acquisition_accepted: latestBatch?.accepted_count ?? null,
+    latest_acquisition_duplicates: latestBatch?.duplicate_count ?? null,
+    latest_acquisition_skipped: latestBatch?.skipped_count ?? null,
+    latest_acquisition_failed: latestBatch?.failed_count ?? null,
+    latest_acquisition_warnings: Array.isArray(latestBatch?.warnings) ? latestBatch.warnings.length : 0,
   };
 }
 
@@ -128,6 +142,10 @@ function projectSummaryTableRow(row) {
     reason_code: row.reason_code,
     dominant_condition_reason: row.dominant_condition_reason,
     next_action_reason: row.next_action_reason,
+    latest_acquisition_status: row.latest_acquisition_status,
+    latest_acquisition_method: row.latest_acquisition_method,
+    latest_acquisition_accepted: row.latest_acquisition_accepted,
+    latest_acquisition_end: row.latest_acquisition_end,
     last_success_at: row.last_success_at,
     next_attempt_at: row.next_attempt_at,
   };

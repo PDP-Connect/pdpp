@@ -48,6 +48,10 @@ import {
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
 import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
+import {
+  createPostgresAcquisitionBatchStore,
+  createSqliteAcquisitionBatchStore,
+} from "./stores/acquisition-batch-store.js";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
@@ -238,7 +242,7 @@ export interface RuntimeCollectionFactSkip {
  * `collected` alone.
  */
 export interface RuntimeCollectionFact {
-  readonly stream: string;
+  readonly checkpoint: string | null;
   readonly collected: number;
   readonly considered: number | null;
   /**
@@ -251,9 +255,9 @@ export interface RuntimeCollectionFact {
    * neither count, so a real shortfall still reads `partial`.
    */
   readonly covered: number | null;
-  readonly checkpoint: string | null;
   readonly pending_detail_gaps: number;
   readonly skipped: RuntimeCollectionFactSkip | null;
+  readonly stream: string;
 }
 
 /** The runtime `collection_facts` terminal-event block, parsed defensively. */
@@ -382,7 +386,34 @@ export interface LocalDeviceProgress {
   readonly source_count: number;
 }
 
+export interface AcquisitionBatchSummary {
+  readonly accepted_count: number | null;
+  readonly acquisition_method: string | null;
+  readonly batch_id: string;
+  readonly date_range: { readonly end: string | null; readonly start: string | null };
+  readonly detected_format: string | null;
+  readonly duplicate_count: number | null;
+  readonly failed_count: number | null;
+  readonly media_coverage: unknown;
+  readonly parsed_count: number | null;
+  readonly skipped_count: number | null;
+  readonly status: string;
+  readonly uploaded_file_name: string | null;
+  readonly warnings: readonly string[];
+}
+
+export interface AcquisitionCoverageSummary {
+  readonly latest_batch: AcquisitionBatchSummary | null;
+  readonly recent_batches: readonly AcquisitionBatchSummary[];
+}
+
 export interface ConnectorSummary {
+  /**
+   * Owner/control-plane acquisition evidence. This is how manual exports,
+   * device sync, future backup imports, and browser/API batches stay visible as
+   * coverage provenance without changing grant-scoped read surfaces.
+   */
+  readonly acquisition_coverage: AcquisitionCoverageSummary | null;
   /**
    * Per-stream Collection Report derived on read from the latest run's runtime
    * `collection_facts` block plus this connection's freshness / refresh-policy /
@@ -417,14 +448,14 @@ export interface ConnectorSummary {
    */
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
-  /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
-  readonly revoked_at: string | null;
   /**
    * Storage bytes by retention class. `total_retained_bytes` is kept for
    * compatibility; this breakdown lets the operator distinguish current live
    * records from retained change history.
    */
   readonly retained_bytes?: RetainedBytesBreakdown | null;
+  /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
+  readonly revoked_at: string | null;
   readonly schedule: unknown;
   readonly status: string | null;
   readonly stream_count?: number;
@@ -434,6 +465,7 @@ export interface ConnectorSummary {
 }
 
 export interface ConnectorDetail {
+  readonly acquisition_coverage: AcquisitionCoverageSummary | null;
   /** See {@link ConnectorSummary.collection_report}. Derived on read on the detail surface too. */
   readonly collection_report: readonly CollectionReportEntry[];
   readonly connection_health: ConnectionHealthSnapshot;
@@ -647,6 +679,36 @@ function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): un
   return [];
 }
 
+function readSafeNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function readFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const entry = raw as Record<string, unknown>;
+  if (typeof entry.stream !== "string" || !entry.stream) {
+    return null;
+  }
+  return {
+    checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
+    collected: readFiniteNumber(entry.collected, 0),
+    // `considered` and `covered` are OMITTED upstream when unknown. Re-validate
+    // defensively: anything not a safe non-negative integer reads as absent,
+    // never as a fabricated denominator or numerator.
+    considered: readSafeNonNegativeInteger(entry.considered),
+    covered: readSafeNonNegativeInteger(entry.covered),
+    pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
+    skipped: readCollectionFactSkip(entry.skipped),
+    stream: entry.stream,
+  };
+}
+
 /**
  * Read the runtime `collection_facts` block (the Tranche B per-stream fact
  * block) off a terminal-event payload. The runtime attaches only objective,
@@ -671,37 +733,10 @@ function readCollectionFactsFromTerminalData(data: Record<string, unknown> | nul
   }
   const entries: RuntimeCollectionFact[] = [];
   for (const raw of streams) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      continue;
+    const fact = readRuntimeCollectionFact(raw);
+    if (fact) {
+      entries.push(fact);
     }
-    const entry = raw as Record<string, unknown>;
-    if (typeof entry.stream !== "string" || !entry.stream) {
-      continue;
-    }
-    entries.push({
-      stream: entry.stream,
-      collected: typeof entry.collected === "number" && Number.isFinite(entry.collected) ? entry.collected : 0,
-      // `considered` is OMITTED upstream when unknown. Re-validate defensively:
-      // anything not a safe non-negative integer reads as absent (`unknown`),
-      // never a fabricated denominator. (Spec: "Considered evidence is unreadable".)
-      considered:
-        typeof entry.considered === "number" && Number.isSafeInteger(entry.considered) && entry.considered >= 0
-          ? entry.considered
-          : null,
-      // `covered` is OMITTED upstream when unknown. Re-validate defensively the
-      // same way as `considered`: anything not a safe non-negative integer reads
-      // as absent (`null`), never a fabricated covered count.
-      covered:
-        typeof entry.covered === "number" && Number.isSafeInteger(entry.covered) && entry.covered >= 0
-          ? entry.covered
-          : null,
-      checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
-      pending_detail_gaps:
-        typeof entry.pending_detail_gaps === "number" && Number.isFinite(entry.pending_detail_gaps)
-          ? entry.pending_detail_gaps
-          : 0,
-      skipped: readCollectionFactSkip(entry.skipped),
-    });
   }
   return { streams: entries };
 }
@@ -1081,6 +1116,10 @@ function getConnectorInstanceStore() {
   return isPostgresStorageBackend() ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
 }
 
+function getAcquisitionBatchStore() {
+  return isPostgresStorageBackend() ? createPostgresAcquisitionBatchStore() : createSqliteAcquisitionBatchStore();
+}
+
 function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): string {
   // Local-device records are stored under the bare canonical connector key,
   // the same key API/browser records use; connection isolation is carried by
@@ -1088,6 +1127,58 @@ function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): 
   // projection scopes by connectorInstanceId, so this value is only a
   // fallback identity. See canonicalize-connector-keys design Decision 7.
   return instance.connectorId;
+}
+
+interface AcquisitionBatchRow {
+  readonly acceptedCount?: number | null;
+  readonly acquisitionMethod?: string | null;
+  readonly batchId: string;
+  readonly duplicateCount?: number | null;
+  readonly eventTimeEnd?: string | null;
+  readonly eventTimeStart?: string | null;
+  readonly failedCount?: number | null;
+  readonly mediaCoverage?: unknown;
+  readonly parsedCount?: number | null;
+  readonly skippedCount?: number | null;
+  readonly sourceFormat?: string | null;
+  readonly status: string;
+  readonly uploadedFileName?: string | null;
+  readonly warnings?: readonly string[] | null;
+}
+
+function projectAcquisitionBatchSummary(batch: AcquisitionBatchRow): AcquisitionBatchSummary {
+  return {
+    accepted_count: batch.acceptedCount ?? null,
+    acquisition_method: batch.acquisitionMethod ?? null,
+    batch_id: batch.batchId,
+    date_range: {
+      start: batch.eventTimeStart ?? null,
+      end: batch.eventTimeEnd ?? null,
+    },
+    detected_format: batch.sourceFormat ?? null,
+    duplicate_count: batch.duplicateCount ?? null,
+    failed_count: batch.failedCount ?? null,
+    media_coverage: batch.mediaCoverage ?? null,
+    parsed_count: batch.parsedCount ?? null,
+    skipped_count: batch.skippedCount ?? null,
+    status: batch.status,
+    uploaded_file_name: batch.uploadedFileName ?? null,
+    warnings: Array.isArray(batch.warnings) ? batch.warnings : [],
+  };
+}
+
+async function getAcquisitionCoverageSummary(connectorInstanceId: string): Promise<AcquisitionCoverageSummary | null> {
+  const batches = (await getAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 5 })) as
+    | readonly AcquisitionBatchRow[]
+    | null;
+  if (!batches || batches.length === 0) {
+    return null;
+  }
+  const recent = batches.map(projectAcquisitionBatchSummary);
+  return {
+    latest_batch: recent[0] ?? null,
+    recent_batches: recent,
+  };
 }
 
 async function listConnectorInstanceRowsForDashboard(): Promise<readonly ConnectorInstanceRow[]> {
@@ -1604,11 +1695,14 @@ type ConsideredAxis = number | "unknown";
 
 /** One derived per-stream Collection Report entry on the owner/control-plane surface. */
 export interface CollectionReportEntry {
-  readonly stream: string;
+  /** Committed-checkpoint status from the runtime fact block, or `unknown`. */
+  readonly checkpoint: string;
   /** Raw per-stream collected count from the runtime fact block (never a verdict). */
   readonly collected: number;
   /** Known considered denominator, or `unknown` when the connector declared none. */
   readonly considered: ConsideredAxis;
+  /** Derived coverage condition from the canonical {@link CoverageAxis} vocabulary. */
+  readonly coverage_condition: CoverageAxis;
   /**
    * Connector-declared `covered` count (in-boundary items accounted for: emitted +
    * suppressed-because-unchanged), or `unknown` when the connector declared none.
@@ -1616,17 +1710,19 @@ export interface CollectionReportEntry {
    * so a steady-state full-sync run reads `complete` without a false `partial`.
    */
   readonly covered: ConsideredAxis;
-  /** Committed-checkpoint status from the runtime fact block, or `unknown`. */
-  readonly checkpoint: string;
+  /** Derived forward disposition (what the next run is expected to do on this stream). */
+  readonly forward_disposition: ForwardDisposition;
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
   readonly pending_detail_gaps: number;
   /** The `SKIP_RESULT` fact for this stream, or `null`. */
   readonly skipped: RuntimeCollectionFactSkip | null;
-  /** Derived coverage condition from the canonical {@link CoverageAxis} vocabulary. */
-  readonly coverage_condition: CoverageAxis;
-  /** Derived forward disposition (what the next run is expected to do on this stream). */
-  readonly forward_disposition: ForwardDisposition;
+  readonly stream: string;
 }
+
+const RETRYABLE_SKIP_REASON_PATTERN = /(429|rate|temporar|retry|upstream_pressure|pressure)/;
+const DEFERRED_SKIP_REASON_PATTERN = /(out_of_scope|user_disabled|deferred|paused|postpon)/;
+const UNAVAILABLE_SKIP_REASON_PATTERN = /(unavailable|not_available|blocked|locked|upstream)/;
+const UNSUPPORTED_SKIP_REASON_PATTERN = /(unsupported|not_supported|capability|incapable)/;
 
 /**
  * Map a `SKIP_RESULT` reason / recovery action to a coverage condition that is
@@ -1643,16 +1739,16 @@ function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): CoverageAxis
   if (skip.recovery_action === "retry_by_runtime") {
     return "retryable_gap";
   }
-  if (/(429|rate|temporar|retry|upstream_pressure|pressure)/.test(reason)) {
+  if (RETRYABLE_SKIP_REASON_PATTERN.test(reason)) {
     return "retryable_gap";
   }
-  if (/(out_of_scope|user_disabled|deferred|paused|postpon)/.test(reason)) {
+  if (DEFERRED_SKIP_REASON_PATTERN.test(reason)) {
     return "deferred";
   }
-  if (/(unavailable|not_available|blocked|locked|upstream)/.test(reason)) {
+  if (UNAVAILABLE_SKIP_REASON_PATTERN.test(reason)) {
     return "unavailable";
   }
-  if (/(unsupported|not_supported|capability|incapable)/.test(reason)) {
+  if (UNSUPPORTED_SKIP_REASON_PATTERN.test(reason)) {
     return "unsupported";
   }
   return "terminal_gap";
@@ -1793,7 +1889,7 @@ export function buildCollectionReport(input: {
       forward_disposition: forwardDisposition,
     });
   }
-  entries.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : 0));
+  entries.sort((a, b) => a.stream.localeCompare(b.stream));
   return entries;
 }
 
@@ -2275,15 +2371,20 @@ function combineUnreliableSources(
  * identity. Reason-filtering and the floor/null honesty rules live in
  * `deriveSourcePressureBacklog`, not here.
  */
+function readPendingGapLastPressureAt(gap: PendingDetailGapSummary): string | null {
+  if (typeof gap.last_attempt_at === "string") {
+    return gap.last_attempt_at;
+  }
+  if (typeof gap.updated_at === "string") {
+    return gap.updated_at;
+  }
+  return null;
+}
+
 function mapPendingPressureGaps(gaps: readonly PendingDetailGapSummary[]): readonly PendingPressureGap[] {
   return gaps.map((gap) => ({
     attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
-    lastPressureAt:
-      typeof gap.last_attempt_at === "string"
-        ? gap.last_attempt_at
-        : typeof gap.updated_at === "string"
-          ? gap.updated_at
-          : null,
+    lastPressureAt: readPendingGapLastPressureAt(gap),
     nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
     reason: typeof gap.reason === "string" ? gap.reason : null,
   }));
@@ -2720,6 +2821,69 @@ export async function loadSharedBrowserSurfaceReader(
   };
 }
 
+interface BackoffEvidenceProjection {
+  readonly backoff: {
+    readonly backoffApplied: boolean;
+    readonly consecutiveFailures: number;
+    readonly nextRunAt: string | null;
+    readonly reasonClass: string | null;
+  } | null;
+  readonly schedulerFailureStatus: "failed" | null;
+}
+
+interface ConnectionHealthScheduleEvidence {
+  readonly activeRunId: string | null;
+  readonly backoffEvidence: BackoffEvidenceProjection;
+  readonly humanAttentionNeeded: boolean;
+  readonly lastErrorCode: string | null;
+  readonly lastSuccessfulAt: string | null;
+  readonly schedule: { readonly enabled: boolean } | null;
+}
+
+function projectConnectionHealthScheduleEvidence(
+  schedule: Record<string, unknown> | null,
+  lastRun: ConnectorRunSummary | null
+): ConnectionHealthScheduleEvidence {
+  const schedulerBackoff = asBackoffRecord(schedule);
+  const staleSchedulerBackoff = succeededRunSupersedesSchedulerBackoff(lastRun, schedule);
+  const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
+  const activeRunId =
+    typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
+  const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
+  const lastErrorCode =
+    !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
+  const lastSuccessfulAt = typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
+  return {
+    activeRunId,
+    backoffEvidence: projectSchedulerBackoffEvidence({
+      effectiveSchedulerBackoff,
+      lastErrorCode,
+      nextDueAt,
+    }),
+    humanAttentionNeeded: schedule?.human_attention_needed === true,
+    lastErrorCode,
+    lastSuccessfulAt,
+    schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+  };
+}
+
+function buildLocalDeviceCollectionEvidence(input: {
+  readonly coverage: { readonly axis: CoverageAxis };
+  readonly freshnessAxis: FreshnessAxis;
+  readonly localDeviceBacked: boolean | undefined;
+  readonly outbox: { readonly axis: OutboxAxis; readonly cause?: OutboxStalledCause | null };
+}): ConnectionLocalDeviceCollectionEvidence | null {
+  if (
+    input.localDeviceBacked === true &&
+    input.outbox.axis === "idle" &&
+    input.coverage.axis === "complete" &&
+    input.freshnessAxis === "fresh"
+  ) {
+    return { verdict: "succeeded" };
+  }
+  return null;
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -2824,28 +2988,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
-  const schedulerBackoff = asBackoffRecord(schedule);
-  const staleSchedulerBackoff = succeededRunSupersedesSchedulerBackoff(input.lastRun, schedule);
-  const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
+  const scheduleEvidence = projectConnectionHealthScheduleEvidence(schedule, input.lastRun);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const humanAttentionNeeded = schedule?.human_attention_needed === true;
-  const activeRunId =
-    typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
-  const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
-  const lastErrorCode =
-    !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
-  const scheduleLastSuccessfulAt =
-    typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
-  const backoffEvidence = projectSchedulerBackoffEvidence({
-    effectiveSchedulerBackoff,
-    lastErrorCode,
-    nextDueAt,
-  });
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
-    humanAttentionNeeded,
-    lastErrorCode,
+    humanAttentionNeeded: scheduleEvidence.humanAttentionNeeded,
+    lastErrorCode: scheduleEvidence.lastErrorCode,
     nowIso,
   });
   const coverage = buildCoverageEvidence(
@@ -2869,13 +3018,12 @@ export function projectConnectorSummaryConnectionHealth(input: {
   // the ordered precedence, so this can never green a stalled, gappy, stale, or
   // unproven connection. Scheduler-managed connections never reach here because
   // the caller passes `localDeviceBacked: false` for them.
-  const localDeviceCollection: ConnectionLocalDeviceCollectionEvidence | null =
-    input.localDeviceBacked === true &&
-    outbox.axis === "idle" &&
-    coverage.axis === "complete" &&
-    freshnessAxis === "fresh"
-      ? { verdict: "succeeded" }
-      : null;
+  const localDeviceCollection = buildLocalDeviceCollectionEvidence({
+    coverage,
+    freshnessAxis,
+    localDeviceBacked: input.localDeviceBacked,
+    outbox,
+  });
   // Source-pressure detail-gap backlog evidence: reuse the same durable pending
   // gaps already read for coverage/classification, mapped onto the cooldown
   // governor's gap shape. The runtime derivation
@@ -2889,9 +3037,9 @@ export function projectConnectorSummaryConnectionHealth(input: {
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
-    activity: { active: activeRunId !== null },
+    activity: { active: scheduleEvidence.activeRunId !== null },
     attention,
-    backoff: backoffEvidence.backoff,
+    backoff: scheduleEvidence.backoffEvidence.backoff,
     collectionRate: input.collectionRate ?? null,
     coverage,
     detailGapBacklog,
@@ -2903,8 +3051,8 @@ export function projectConnectorSummaryConnectionHealth(input: {
     remoteSurface: input.remoteSurface ?? null,
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
-      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
-      latestStatus: mapRunStatus(input.lastRun?.status) ?? backoffEvidence.schedulerFailureStatus,
+      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleEvidence.lastSuccessfulAt,
+      latestStatus: mapRunStatus(input.lastRun?.status) ?? scheduleEvidence.backoffEvidence.schedulerFailureStatus,
       reasonCode:
         // §10-C: a credential/auth signal buried in a known-gap takes priority
         // over a GENERIC top-level `failure_reason` (e.g. ChatGPT's terminal 401
@@ -2916,21 +3064,11 @@ export function projectConnectorSummaryConnectionHealth(input: {
         input.lastRun?.failure_reason ??
         firstDegradingKnownGapReason(input.lastRun) ??
         firstPendingDetailGapReason(pendingDetailGaps) ??
-        lastErrorCode,
+        scheduleEvidence.lastErrorCode,
     },
-    schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+    schedule: scheduleEvidence.schedule,
     observedAt: nowIso,
   });
-}
-
-interface BackoffEvidenceProjection {
-  readonly backoff: {
-    readonly backoffApplied: boolean;
-    readonly consecutiveFailures: number;
-    readonly nextRunAt: string | null;
-    readonly reasonClass: string | null;
-  } | null;
-  readonly schedulerFailureStatus: "failed" | null;
 }
 
 function projectSchedulerBackoffEvidence(input: {
@@ -3102,20 +3240,30 @@ async function projectConnectorSummaryForInstance(
     return null;
   }
   const live = await getConnectorRecordProjection(recordStorageConnectorIdForConnection(instance), connectorInstanceId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
-    await Promise.all([
-      getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-      getLatestRunSummary(connectorId),
-      getLatestRunSummary(connectorId, "succeeded"),
-      getConnectorDetailGapProjection(connectorId, connectorInstanceId),
-      getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
-      getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
-      getConnectorBrowserSurfaceProjection(connectorId, {
-        profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
-        store: sharedBrowserSurfaceReader,
-      }),
-      getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
-    ]);
+  const [
+    schedule,
+    lastRun,
+    lastSuccessfulRun,
+    detailGaps,
+    outbox,
+    attention,
+    remoteSurface,
+    localCoverage,
+    acquisitionCoverage,
+  ] = await Promise.all([
+    getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+    getLatestRunSummary(connectorId),
+    getLatestRunSummary(connectorId, "succeeded"),
+    getConnectorDetailGapProjection(connectorId, connectorInstanceId),
+    getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
+    getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
+    getConnectorBrowserSurfaceProjection(connectorId, {
+      profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+      store: sharedBrowserSurfaceReader,
+    }),
+    getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
+    getAcquisitionCoverageSummary(connectorInstanceId),
+  ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   // Adaptive rate controller snapshot: read from the latest run's terminal
   // event (fast path) or its most recent rate-change progress event (in-
@@ -3123,7 +3271,7 @@ async function projectConnectorSummaryForInstance(
   const collectionRate = lastRun?.run_id
     ? await readLatestCollectionRateForRun(
         lastRun.run_id,
-        lastRun.status !== "pending" ? await readRunTerminalEventData(lastRun.run_id) : null
+        lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
       )
     : null;
   const localDeviceProgress =
@@ -3175,6 +3323,7 @@ async function projectConnectorSummaryForInstance(
     refreshPolicy,
   });
   return {
+    acquisition_coverage: acquisitionCoverage,
     collection_report: collectionReport,
     connection_id: connectorInstanceId,
     connection_health: connectionHealth,
@@ -3280,7 +3429,7 @@ export async function getConnectorDetail(
   const collectionRate = lastRun?.run_id
     ? await readLatestCollectionRateForRun(
         lastRun.run_id,
-        lastRun.status !== "pending" ? await readRunTerminalEventData(lastRun.run_id) : null
+        lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
       )
     : null;
   const freshness = buildConnectorFreshness({
@@ -3327,6 +3476,7 @@ export async function getConnectorDetail(
   });
   return {
     object: "ref_connector_detail",
+    acquisition_coverage: null,
     collection_report: collectionReport,
     connection_id: connectorId,
     connection_health: connectionHealth,

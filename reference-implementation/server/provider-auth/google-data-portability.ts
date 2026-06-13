@@ -5,11 +5,7 @@ import {
   GOOGLE_MAPS_DATA_PORTABILITY_RESOURCE_GROUPS,
   GoogleDataPortabilityClient,
 } from "../../../packages/polyfill-connectors/connectors/google_maps_data_portability/api.ts";
-import type {
-  ProviderAccount,
-  ProviderAuthExchanger,
-  ProviderAuthTokens,
-} from "../routes/ref-provider-auth.ts";
+import type { ProviderAccount, ProviderAuthExchanger, ProviderAuthTokens } from "../routes/ref-provider-auth.ts";
 
 export const GOOGLE_MAPS_DATA_PORTABILITY_CONNECTOR_KEY = "google-maps-data-portability";
 
@@ -92,7 +88,10 @@ function parseResourceGroups(value: string | null): readonly string[] {
   }
   const parsed = value.trim().startsWith("[")
     ? JSON.parse(value)
-    : value.split(",").map((item) => item.trim()).filter(Boolean);
+    : value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
   if (!Array.isArray(parsed)) {
     throw new GoogleDataPortabilityProviderAuthError(
       "google_dataportability_resource_groups_invalid",
@@ -101,9 +100,9 @@ function parseResourceGroups(value: string | null): readonly string[] {
     );
   }
   const allowed = new Set(GOOGLE_MAPS_DATA_PORTABILITY_RESOURCE_GROUPS);
-  const unique = [...new Set(parsed.filter((item): item is string => typeof item === "string" && item.trim()))].map(
-    (item) => item.trim()
-  );
+  const unique = [
+    ...new Set(parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)),
+  ].map((item) => item.trim());
   const unsupported = unique.filter((item) => !allowed.has(item));
   if (unsupported.length > 0) {
     throw new GoogleDataPortabilityProviderAuthError(
@@ -266,7 +265,7 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
       return { authorizationUrl: url.toString() };
     },
 
-    async exchangeCode({ code, connectorId, redirectUri }) {
+    exchangeCode({ code, connectorId, redirectUri }) {
       assertConnector(connectorId);
       const configuredRedirectUri = requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_REDIRECT_URI");
       if (redirectUri !== configuredRedirectUri) {
@@ -339,7 +338,9 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
   };
 }
 
-export function googleDataPortabilityScopesForConfiguredEnv(env: GoogleDataPortabilityEnv = process.env): readonly string[] {
+export function googleDataPortabilityScopesForConfiguredEnv(
+  env: GoogleDataPortabilityEnv = process.env
+): readonly string[] {
   const resourceGroups = resourceGroupsFromEnv(env);
   const allScopes = new Set(GOOGLE_MAPS_DATA_PORTABILITY_OAUTH_SCOPES);
   return scopesForResourceGroups(resourceGroups).filter((scope) => allScopes.has(scope));

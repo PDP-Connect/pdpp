@@ -13,45 +13,13 @@
  * WHATSAPP_EXPORT_DIR defaults to ~/.pdpp/imports/whatsapp/
  */
 
-import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { nowIso, type ParsedWhatsAppChat, parseWhatsAppChatFile } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-
-interface ParsedMessage {
-  author: string;
-  content: string;
-  has_attachment?: boolean;
-  sent_at: string;
-}
-
-interface ParsedChat {
-  chatId: string;
-  messages: ParsedMessage[];
-  participants: string[];
-  title: string;
-}
-
-// WhatsApp export line formats:
-//   iOS: [M/D/YY, H:MM:SS AM] Author: Message
-//   iOS: [YYYY-MM-DD, HH:MM:SS] Author: Message
-//   Android: M/D/YY, H:MM - Author: Message
-//   Android: DD/MM/YYYY, HH:MM - Author: Message
-const LINE_RE =
-  /^\s*(?:\[)?(\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)(?:\])?\s*[-–]?\s*([^:]+?):\s?(.*)$/;
-const ATTACHMENT_RE = /<attached: |<Media omitted>|image omitted|video omitted|audio omitted|document omitted/i;
-const TXT_EXT_RE = /\.txt$/i;
-const WHATSAPP_TITLE_PREFIX_RE = /^WhatsApp Chat - /;
-const WHATSAPP_LINE_SPLIT_RE = /\r?\n/;
-
-// Chat ID derived from filename; 16 hex chars is collision-safe for a user's
-// local export dir.
-const CHAT_ID_HASH_LENGTH = 16;
-
-const nowIso = (): string => new Date().toISOString();
 
 // ─── Fingerprinted record emission ───────────────────────────────────────────
 
@@ -59,7 +27,7 @@ type EmitRecord = (stream: string, record: Record<string, unknown>) => Promise<v
 type FingerprintCursor = ReturnType<typeof openFingerprintCursor>;
 
 async function emitChatRecord(
-  parsed: ParsedChat,
+  parsed: ParsedWhatsAppChat,
   first: string | null,
   last: string | null,
   chatsCursor: FingerprintCursor,
@@ -79,7 +47,7 @@ async function emitChatRecord(
 }
 
 async function emitMessageRecords(
-  parsed: ParsedChat,
+  parsed: ParsedWhatsAppChat,
   messagesCursor: FingerprintCursor,
   emitRecord: EmitRecord
 ): Promise<void> {
@@ -100,55 +68,6 @@ async function emitMessageRecords(
       await emitRecord("messages", record);
     }
   }
-}
-
-function parseDateTime(dateStr: string, timeStr: string): string | null {
-  try {
-    const d = new Date(`${dateStr} ${timeStr}`);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toISOString();
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
-}
-
-function parseChatFile(filename: string, content: string): ParsedChat {
-  const messages: ParsedMessage[] = [];
-  const participants = new Set<string>();
-  const lines = content.split(WHATSAPP_LINE_SPLIT_RE);
-  let current: ParsedMessage | null = null;
-  for (const line of lines) {
-    const m = LINE_RE.exec(line);
-    if (m) {
-      if (current) {
-        messages.push(current);
-      }
-      const sentAt = parseDateTime(m[1] ?? "", m[2] ?? "") || nowIso();
-      const author = (m[3] ?? "").trim();
-      participants.add(author);
-      const body = m[4] || "";
-      current = { author, content: body, sent_at: sentAt };
-    } else if (current && line.trim()) {
-      current.content += `\n${line}`;
-    }
-  }
-  if (current) {
-    messages.push(current);
-  }
-
-  for (const msg of messages) {
-    msg.has_attachment = ATTACHMENT_RE.test(msg.content);
-  }
-
-  const chatId = createHash("sha256").update(filename).digest("hex").slice(0, CHAT_ID_HASH_LENGTH);
-  return {
-    chatId,
-    title: filename.replace(TXT_EXT_RE, "").replace(WHATSAPP_TITLE_PREFIX_RE, ""),
-    participants: [...participants],
-    messages,
-  };
 }
 
 runConnector({
@@ -188,7 +107,7 @@ runConnector({
       if (!content) {
         continue;
       }
-      const parsed = parseChatFile(f, content);
+      const parsed = parseWhatsAppChatFile(f, content);
       const first = parsed.messages[0]?.sent_at || null;
       const last = parsed.messages.at(-1)?.sent_at || null;
 

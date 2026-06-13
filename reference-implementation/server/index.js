@@ -79,6 +79,10 @@ import {
   resolveOwnerConnectorInstanceNamespace,
 } from './stores/connector-instance-store.js';
 import {
+  createPostgresAcquisitionBatchStore,
+  createSqliteAcquisitionBatchStore,
+} from './stores/acquisition-batch-store.js';
+import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from './stores/connector-instance-credential-store.js';
@@ -1253,6 +1257,12 @@ function createRequestConnectorInstanceCredentialStore() {
   return isPostgresStorageBackend()
     ? createPostgresConnectorInstanceCredentialStore()
     : createSqliteConnectorInstanceCredentialStore();
+}
+
+function createRequestAcquisitionBatchStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresAcquisitionBatchStore()
+    : createSqliteAcquisitionBatchStore();
 }
 
 // Lazily loads the pure static-secret injection helpers from the
@@ -3554,6 +3564,7 @@ function buildAsApp(opts = {}) {
       handleError,
       pdppError,
       canonicalConnectorKey,
+      createRequestAcquisitionBatchStore,
       createRequestConnectorInstanceStore,
       resolveRegisteredConnectorManifest,
       getOwnerSubjectId,
@@ -3592,6 +3603,7 @@ function buildAsApp(opts = {}) {
     handleError,
     pdppError,
     canonicalConnectorKey,
+    createRequestAcquisitionBatchStore,
     createRequestConnectorInstanceStore,
     createRequestConnectorInstanceCredentialStore,
     resolveRegisteredConnectorManifest,
@@ -4003,6 +4015,12 @@ function buildRsApp(opts = {}) {
     // add-static-secret-owner-session-connect-path design Decision 5.
     activateDraftConnection: (connectorInstanceId) =>
       createRequestConnectorInstanceStore().activateDraft(connectorInstanceId),
+    getLatestAcquisitionBatchForConnection: async (connectorInstanceId) =>
+      (await createRequestAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 1 }))[0] ?? null,
+    markAcquisitionBatchCommitted: (connectorInstanceId, counts) =>
+      createRequestAcquisitionBatchStore().markCommittedForConnection(connectorInstanceId, counts),
+    recordAcquisitionProvenance: (record) =>
+      createRequestAcquisitionBatchStore().recordRecordProvenance(record),
     getSyncState,
     putSyncState,
     resolveGrantScopedStateGrant,

@@ -1,10 +1,10 @@
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { buttonVariants } from "@/components/ui/button.tsx";
 import { DashboardShell } from "../../../components/shell.tsx";
 import { getManualUploadSetup, RefNotFoundError } from "../../../lib/ref-client.ts";
-import { createManualUploadConnectionAction } from "./actions.ts";
+import { ManualUploadForm } from "./manual-upload-form.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -36,9 +36,11 @@ function MethodCard({ method }: { method: AcquisitionMethod }) {
   return (
     <div className="rounded-md border border-border/80 bg-background px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium text-foreground">{method.label}</span>
+        <span className="font-medium text-foreground text-sm">{method.label}</span>
         {method.platform ? (
-          <span className="pdpp-caption rounded-sm bg-muted px-1.5 py-0.5 text-muted-foreground">{method.platform}</span>
+          <span className="pdpp-caption rounded-sm bg-muted px-1.5 py-0.5 text-muted-foreground">
+            {method.platform}
+          </span>
         ) : null}
       </div>
       {method.detail ? <p className="pdpp-caption mt-1 text-muted-foreground">{method.detail}</p> : null}
@@ -73,13 +75,11 @@ export default async function ManualUploadConnectPage({
   });
   const resolvedSearchParams = await searchParams;
   const error = firstValue(resolvedSearchParams.error);
-  const acceptLabel = setup.accepted_file_names.length > 0 ? setup.accepted_file_names.join(", ") : "JSON export file";
 
   // Primary acquisition methods lead; advanced/secondary paths sit behind one
   // disclosure so the recommended path is obvious and the page stays low-noise.
   const primaryMethods = setup.acquisition_methods.filter((method) => method.posture === "primary");
   const advancedMethods = setup.acquisition_methods.filter((method) => method.posture !== "primary");
-  const hasValidator = setup.validation_expectations.length > 0;
 
   return (
     <DashboardShell active="records">
@@ -122,50 +122,7 @@ export default async function ManualUploadConnectPage({
             </div>
           </details>
         ) : null}
-        <form
-          action={createManualUploadConnectionAction}
-          className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4"
-          encType="multipart/form-data"
-        >
-          <input name="connector_id" type="hidden" value={setup.connector_id} />
-          <label className="grid gap-1" htmlFor="manual-upload-file">
-            <span className="pdpp-eyebrow">Export file</span>
-            <input
-              accept={setup.accepted_file_names.length > 0 ? setup.accepted_file_names.join(",") : undefined}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:font-medium file:text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              id="manual-upload-file"
-              name="import_file"
-              required
-              type="file"
-            />
-            <span className="pdpp-caption text-muted-foreground">
-              Accepted file names: {acceptLabel}
-              {setup.help_url ? (
-                <>
-                  {". "}
-                  <a
-                    className="underline decoration-dotted underline-offset-4"
-                    href={setup.help_url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Export instructions
-                  </a>
-                </>
-              ) : null}
-            </span>
-            {setup.help_text ? <span className="pdpp-caption text-muted-foreground">{setup.help_text}</span> : null}
-          </label>
-          {hasValidator ? (
-            <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-              PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If the file does not
-              pass, nothing is imported.
-            </div>
-          ) : null}
-          <div>
-            <Button type="submit">{hasValidator ? "Validate and import" : "Import file"}</Button>
-          </div>
-        </form>
+        <ManualUploadForm setup={setup} />
         {setup.large_file_fallback ? (
           <p className="pdpp-caption mt-3 max-w-2xl text-muted-foreground">{setup.large_file_fallback}</p>
         ) : null}

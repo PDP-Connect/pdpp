@@ -39,6 +39,12 @@ const RE_AUTO_PAUSED_BANNER_ROW_COMPONENT = /<AutoPausedBannerRow/;
 const RE_AUTO_PAUSED_BANNER_ROW_TESTID = /data-testid="auto-paused-banner-row"/;
 const RE_AUTO_PAUSED_BANNER_TESTID = /data-testid="auto-paused-banner"/;
 const RE_RECENT_RUNS_SECTION = /Recent runs/;
+const RE_ACQUISITION_COVERAGE_MAPPING = /acquisitionCoverage: summary\.acquisition_coverage \?\? null/;
+const RE_ACQUISITION_COVERAGE_SECTION = /function AcquisitionCoverageSection/;
+const RE_ACQUISITION_COVERAGE_TITLE = /title="Acquisition coverage"/;
+const RE_ACQUISITION_COVERAGE_RECEIPT_LINK = /\/dashboard\/connect\/status\//;
+const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync status/;
+const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
 
 // ─── Surface 1: failure expander ─────────────────────────────────────────────
 
@@ -118,4 +124,17 @@ test("auto-paused banner is placed inside the runs DataList, not outside", async
   assert.match(src, RE_AUTO_PAUSED_BANNER_TESTID);
   assert.match(src, RE_RECENT_RUNS_SECTION);
   assert.ok(bannerIdx > runsSectionIdx, "auto-paused banner should be inside the Recent runs section");
+});
+
+test("connector detail page threads owner-only acquisition coverage into a source-neutral receipt section", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  const sectionStart = src.indexOf("function AcquisitionCoverageSection");
+  const sectionEnd = src.indexOf("/**\n * Recent runs", sectionStart);
+  const sectionSrc = src.slice(sectionStart, sectionEnd);
+  assert.match(src, RE_ACQUISITION_COVERAGE_MAPPING);
+  assert.match(src, RE_ACQUISITION_COVERAGE_SECTION);
+  assert.match(src, RE_ACQUISITION_COVERAGE_TITLE);
+  assert.match(src, RE_ACQUISITION_COVERAGE_RECEIPT_LINK);
+  assert.match(src, RE_ACQUISITION_COVERAGE_OWNER_COPY);
+  assert.doesNotMatch(sectionSrc, RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL);
 });

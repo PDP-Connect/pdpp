@@ -77,6 +77,30 @@ interface ConnectorInstanceCredentialStore {
   getMetadata(connectorInstanceId: string): Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
+interface AcquisitionBatch {
+  readonly acceptedCount?: number | null;
+  readonly batchId: string;
+  readonly duplicateCount?: number | null;
+  readonly eventTimeEnd?: string | null;
+  readonly eventTimeStart?: string | null;
+  readonly failedCount?: number | null;
+  readonly mediaCoverage?: unknown;
+  readonly parsedCount?: number | null;
+  readonly receipt?: unknown;
+  readonly skippedCount?: number | null;
+  readonly sourceFormat?: string | null;
+  readonly status: string;
+  readonly uploadedFileName?: string | null;
+  readonly warnings?: readonly string[] | null;
+}
+
+interface AcquisitionBatchStore {
+  listByConnection(
+    connectorInstanceId: string,
+    options?: { readonly limit?: number }
+  ): Promise<readonly AcquisitionBatch[]> | readonly AcquisitionBatch[];
+}
+
 interface ConnectorNamespace {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
@@ -84,6 +108,7 @@ interface ConnectorNamespace {
 
 export interface MountRefStaticSecretSetupStatusContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
+  createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
   createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
   getOwnerSubjectId(req: unknown): string;
@@ -188,6 +213,13 @@ function asFiniteNumberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function asStringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
 function importDateRange(value: unknown): { end: string | null; start: string | null } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -215,7 +247,9 @@ function importReceiptFromBinding(
     uploaded_file_name?: unknown;
   };
   const validation =
-    binding.import_validation && typeof binding.import_validation === "object" && !Array.isArray(binding.import_validation)
+    binding.import_validation &&
+    typeof binding.import_validation === "object" &&
+    !Array.isArray(binding.import_validation)
       ? (binding.import_validation as Record<string, unknown>)
       : null;
   if (!validation) {
@@ -225,11 +259,53 @@ function importReceiptFromBinding(
     acquisitionMethod: asStringOrNull(binding.acquisition_method),
     dateRange: importDateRange(validation.date_range),
     detectedFormat: asStringOrNull(validation.detected_format),
+    estimatedAttachments: asFiniteNumberOrNull(validation.estimated_attachments),
+    estimatedChats: asFiniteNumberOrNull(validation.estimated_chats),
+    estimatedMessages: asFiniteNumberOrNull(validation.estimated_messages),
+    estimatedParticipants: asFiniteNumberOrNull(validation.estimated_participants),
     estimatedPoints: asFiniteNumberOrNull(validation.estimated_points),
     estimatedSegments: asFiniteNumberOrNull(validation.estimated_segments),
+    mediaCoverage: validation.media_coverage ?? null,
+    parsedCount: asFiniteNumberOrNull(validation.estimated_records),
     remediation: asStringOrNull(validation.remediation),
     status: asStringOrNull(validation.status),
     uploadedFileName: asStringOrNull(binding.uploaded_file_name),
+    warnings: asStringArray(validation.warnings),
+  };
+}
+
+function receiptObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function importReceiptFromBatch(batch: AcquisitionBatch | null): SetupStatusImportReceipt | null {
+  if (!batch) {
+    return null;
+  }
+  const receipt = receiptObject(batch.receipt);
+  return {
+    acquisitionMethod: "owner_artifact",
+    acceptedCount: asFiniteNumberOrNull(batch.acceptedCount),
+    batchId: batch.batchId,
+    dateRange: {
+      start: asStringOrNull(batch.eventTimeStart),
+      end: asStringOrNull(batch.eventTimeEnd),
+    },
+    detectedFormat: asStringOrNull(batch.sourceFormat) ?? asStringOrNull(receipt.detected_format),
+    duplicateCount: asFiniteNumberOrNull(batch.duplicateCount),
+    estimatedAttachments: asFiniteNumberOrNull(receipt.estimated_attachments),
+    estimatedChats: asFiniteNumberOrNull(receipt.estimated_chats),
+    estimatedMessages: asFiniteNumberOrNull(receipt.estimated_messages),
+    estimatedParticipants: asFiniteNumberOrNull(receipt.estimated_participants),
+    estimatedPoints: asFiniteNumberOrNull(receipt.estimated_points),
+    estimatedSegments: asFiniteNumberOrNull(receipt.estimated_segments),
+    failedCount: asFiniteNumberOrNull(batch.failedCount),
+    mediaCoverage: batch.mediaCoverage ?? null,
+    parsedCount: asFiniteNumberOrNull(batch.parsedCount) ?? asFiniteNumberOrNull(receipt.parsed_count),
+    skippedCount: asFiniteNumberOrNull(batch.skippedCount),
+    status: asStringOrNull(batch.status),
+    uploadedFileName: asStringOrNull(batch.uploadedFileName),
+    warnings: asStringArray(batch.warnings),
   };
 }
 
@@ -326,6 +402,12 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
           namespace.connectorInstanceId,
           requestedRunId
         );
+        const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
+        const acquisitionBatches =
+          setupKind === "manual_upload"
+            ? await acquisitionStore.listByConnection(namespace.connectorInstanceId, { limit: 1 })
+            : [];
+        const latestBatch = acquisitionBatches[0] ?? null;
 
         const status = projectConnectionSetupStatus({
           instance: {
@@ -346,7 +428,8 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
             : null,
           activeRun,
           lastRun,
-          importReceipt: importReceiptFromBinding(setupKind, instance.sourceBinding),
+          importReceipt:
+            importReceiptFromBatch(latestBatch) ?? importReceiptFromBinding(setupKind, instance.sourceBinding),
           identityFieldName: identityFieldName(manifest),
           setupKind,
           setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),

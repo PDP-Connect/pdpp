@@ -405,7 +405,34 @@ export interface RefCollectionReportEntry {
   stream: string;
 }
 
+export interface RefAcquisitionBatchSummary {
+  accepted_count: number | null;
+  acquisition_method: string | null;
+  batch_id: string;
+  date_range: { end: string | null; start: string | null };
+  detected_format: string | null;
+  duplicate_count: number | null;
+  failed_count: number | null;
+  media_coverage: unknown;
+  parsed_count: number | null;
+  skipped_count: number | null;
+  status: string;
+  uploaded_file_name: string | null;
+  warnings: readonly string[];
+}
+
+export interface RefAcquisitionCoverageSummary {
+  latest_batch: RefAcquisitionBatchSummary | null;
+  recent_batches: readonly RefAcquisitionBatchSummary[];
+}
+
 export interface RefConnectorSummary {
+  /**
+   * Owner/control-plane acquisition provenance for manual imports, device
+   * syncs, backup imports, and future multi-path coverage. Never appears on
+   * grant-scoped `/v1` reads.
+   */
+  acquisition_coverage?: RefAcquisitionCoverageSummary | null;
   /**
    * Per-stream Collection Report derived on read by the reference
    * (`define-connector-progress-evidence-contract`). Optional on the mirror:
@@ -1329,16 +1356,28 @@ export interface ConnectionSetupStatus {
   health_state: string;
   import_receipt: {
     acquisition_method: string | null;
+    accepted_count: number | null;
+    batch_id: string | null;
     date_range: {
       end: string | null;
       start: string | null;
     } | null;
     detected_format: string | null;
+    duplicate_count: number | null;
+    estimated_attachments: number | null;
+    estimated_chats: number | null;
+    estimated_messages: number | null;
+    estimated_participants: number | null;
     estimated_points: number | null;
     estimated_segments: number | null;
+    failed_count: number | null;
+    media_coverage: unknown;
+    parsed_count: number | null;
     remediation: string | null;
+    skipped_count: number | null;
     status: string | null;
     uploaded_file_name: string | null;
+    warnings: string[];
   } | null;
   last_error: {
     reason: string;
@@ -1389,6 +1428,7 @@ export function getStaticSecretSetupStatus(
 // ---------------------------------------------------------------------------
 
 export interface ManualUploadSetup {
+  accepted_file_extensions: string[];
   accepted_file_names: string[];
   acquisition_methods: {
     detail: string | null;
@@ -1409,26 +1449,57 @@ export interface ManualUploadSetup {
 }
 
 export interface ManualUploadDraftConnection {
+  batch_id?: string | null;
   connection_id: string;
   connector_id: string;
   connector_instance_id: string;
   display_name: string;
   next_step: {
-    kind: "run_connection";
-    method: "POST";
+    kind: "run_connection" | "show_status";
+    method: "GET" | "POST";
     reason?: string;
     url: string;
   };
-  object: "manual_upload_draft_connection";
-  status: "draft";
+  object: "manual_upload_draft_connection" | "manual_upload_known_artifact";
+  receipt?: Record<string, unknown> | null;
+  status: "draft" | string;
   uploaded_file_name: string;
   validation?: {
     date_range: { end: string | null; start: string | null };
     detected_format: string;
-    estimated_points: number;
-    estimated_segments: number;
+    estimated_attachments?: number;
+    estimated_chats?: number;
+    estimated_messages?: number;
+    estimated_participants?: number;
+    estimated_points?: number;
+    estimated_segments?: number;
+    estimated_records?: number;
     status: string;
   } | null;
+}
+
+export interface ManualUploadValidationPreview {
+  connector_id: string;
+  display_name: string;
+  duplicate: {
+    batch_id: string;
+    connection_id: string;
+    receipt?: Record<string, unknown> | null;
+    status: string;
+  } | null;
+  next_step: {
+    kind: "confirm_import" | "show_status";
+    method: "GET" | "POST";
+    reason?: string;
+    url: string;
+  };
+  object: "manual_upload_validation_preview";
+  uploaded_file_name: string;
+  validation?: ManualUploadDraftConnection["validation"] & {
+    media_coverage?: unknown;
+    remediation?: string;
+    warnings?: string[];
+  };
 }
 
 export async function getManualUploadSetup(connectorId: string): Promise<ManualUploadSetup> {
@@ -1437,13 +1508,8 @@ export async function getManualUploadSetup(connectorId: string): Promise<ManualU
   )) as ManualUploadSetup;
 }
 
-export async function createManualUploadDraftConnection(
-  connectorId: string,
-  file: File
-): Promise<ManualUploadDraftConnection> {
-  const url = new URL(
-    `${getAsInternalUrl()}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`
-  );
+async function postManualUploadFile(path: string, file: File, errorPrefix: string): Promise<unknown> {
+  const url = new URL(`${getAsInternalUrl()}${path}`);
   url.searchParams.set("file_name", file.name);
   const init = await withOwnerSessionCookie({
     method: "POST",
@@ -1461,9 +1527,31 @@ export async function createManualUploadDraftConnection(
     if (res.status === 401 && isOwnerSessionRequiredBody(body)) {
       await redirectToOwnerLogin();
     }
-    throw new RefRequestError(describeErrorText(body, `manual upload failed (${res.status})`), res.status, body);
+    throw new RefRequestError(describeErrorText(body, `${errorPrefix} (${res.status})`), res.status, body);
   }
-  return res.json() as Promise<ManualUploadDraftConnection>;
+  return res.json();
+}
+
+export async function validateManualUploadArtifact(
+  connectorId: string,
+  file: File
+): Promise<ManualUploadValidationPreview> {
+  return (await postManualUploadFile(
+    `/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-validation-preview`,
+    file,
+    "manual upload validation failed"
+  )) as ManualUploadValidationPreview;
+}
+
+export async function createManualUploadDraftConnection(
+  connectorId: string,
+  file: File
+): Promise<ManualUploadDraftConnection> {
+  return (await postManualUploadFile(
+    `/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-draft-connection`,
+    file,
+    "manual upload failed"
+  )) as ManualUploadDraftConnection;
 }
 
 export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter>> {
