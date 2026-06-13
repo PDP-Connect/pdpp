@@ -32,9 +32,22 @@ services:
       PDPP_RS_URL: ${PDPP_RS_URL:-http://127.0.0.1:7663}
       AS_ISSUER: ${AS_ISSUER:-}
       PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
-      PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}
-      # When PDPP_STORAGE_BACKEND=postgres, PDPP_DB_PATH is ignored;
-      # the runtime opens the Postgres pool from PDPP_DATABASE_URL.
+      # CANONICAL DEPLOY: `bash scripts/reference-stack.sh up --build-app`
+      # (or `pnpm docker:reference:build-all`). That script ALWAYS passes
+      # `--env-file .env.docker`, which supplies PDPP_STORAGE_BACKEND=postgres
+      # + PDPP_DATABASE_URL — the real store (the live `pdpp` Postgres DB holding
+      # all records). Do NOT hand-roll `docker compose up` without --env-file:
+      # without the backend vars the server falls back to SQLite, and a bad
+      # SQLITE path crashes boot ("Cannot open database because the directory
+      # does not exist").
+      #
+      # The default below lives INSIDE the persistent pdpp-home volume
+      # (/root/.pdpp, see the `volumes:` mount) so even a no-env-file fallback
+      # opens a writable path instead of crashing on a missing /var/lib dir.
+      # When PDPP_STORAGE_BACKEND=postgres this SQLite path is inert
+      # (canonical record/blob storage is Postgres; only local-only caches use
+      # SQLite — see .env.docker).
+      PDPP_DB_PATH: ${PDPP_DB_PATH:-/root/.pdpp/pdpp.sqlite}
       PDPP_STORAGE_BACKEND: ${PDPP_STORAGE_BACKEND:-}
       PDPP_DATABASE_URL: ${PDPP_DATABASE_URL:-}
       PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}
