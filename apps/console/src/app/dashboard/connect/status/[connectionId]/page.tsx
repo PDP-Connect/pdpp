@@ -30,38 +30,41 @@ function describeState(status: ConnectionSetupStatus): {
   detail: string;
 } {
   const material = materialNoun(status);
+  const isImport = status.setup_kind === "manual_upload";
   switch (status.setup_state) {
     case "active":
       return {
         tone: "active",
-        headline: "Connection active",
-        detail: "The first sync accepted records. This account is now a working connection.",
+        headline: isImport ? "Import complete" : "Connection active",
+        detail: isImport
+          ? "Your import was validated and committed. This source now carries the coverage from that import; revisit it any time to import another export."
+          : "The first sync accepted records. This account is now a working connection.",
       };
     case "first_sync_running":
       return {
         tone: "pending",
-        headline: status.setup_kind === "manual_upload" ? "First import running" : "First sync running",
-        detail: `The ${material} is captured and the first ${status.setup_kind === "manual_upload" ? "import" : "sync"} is in progress. This page updates as it finishes.`,
+        headline: isImport ? "Import running" : "First sync running",
+        detail: `The ${material} is captured and the ${isImport ? "import" : "first sync"} is in progress. This page updates as it finishes.`,
       };
     case "first_sync_pending":
       return {
         tone: "pending",
-        headline: status.setup_kind === "manual_upload" ? "First import starting" : "First sync starting",
-        detail: `The ${material} is captured and the first ${status.setup_kind === "manual_upload" ? "import" : "sync"} is queued. This page updates as it runs.`,
+        headline: isImport ? "Import starting" : "First sync starting",
+        detail: `The ${material} is captured and the ${isImport ? "import" : "first sync"} is queued. This page updates as it runs.`,
       };
     case "awaiting_credential":
       return {
         tone: "pending",
-        headline: "Setup material needed",
-        detail: `This connection is set up but no ${material} is captured yet.`,
+        headline: isImport ? "File needed" : "Setup material needed",
+        detail: isImport
+          ? "This source is set up but no import file is captured yet."
+          : `This connection is set up but no ${material} is captured yet.`,
       };
     case "first_sync_failed":
       return {
         tone: "failed",
-        headline: status.setup_kind === "manual_upload" ? "First import failed" : "First sync failed",
-        detail:
-          status.last_error?.remediation ??
-          `Start the first ${status.setup_kind === "manual_upload" ? "import" : "sync"} again.`,
+        headline: isImport ? "Import failed" : "First sync failed",
+        detail: status.last_error?.remediation ?? `Start the ${isImport ? "import" : "first sync"} again.`,
       };
     case "paused":
       return { tone: "pending", headline: "Connection paused", detail: "This connection is paused." };

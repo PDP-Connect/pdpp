@@ -34,6 +34,7 @@ function filterSourceCatalog(catalog: readonly ConnectorCatalogEntry[], query: s
 function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
+  const guidance = sourceSetupGuidance(entry);
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -42,15 +43,30 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="pdpp-title text-foreground">{entry.displayName}</h3>
-          <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
+          {/* Current support / blocked fact, kept distinct from the next action. */}
+          <span
+            className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}
+            data-testid="source-support-fact"
+          >
+            {status.label}
+          </span>
         </div>
-        <p className="pdpp-caption mt-1 text-muted-foreground">{sourceSetupGuidance(entry)}</p>
+        {/* Low-noise path to detail: the support reasoning stays one disclosure away. */}
+        <details className="mt-1 group">
+          <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
+            Why this, and what to expect
+          </summary>
+          <p className="pdpp-caption mt-1 text-muted-foreground">{guidance}</p>
+        </details>
       </div>
-      <div className="flex items-start justify-end gap-2">
+      <div className="flex flex-col items-end justify-start gap-1">
         {action ? (
-          <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
-            {action.label}
-          </Link>
+          <>
+            <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
+            <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
+              {action.label}
+            </Link>
+          </>
         ) : (
           <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
             No setup action yet
@@ -73,7 +89,7 @@ export function SourceSetupCatalog({
   const filtered = filterSourceCatalog(catalog, query);
   return (
     <Section
-      description="Search every connector this build knows about. Each source shows one status and one next action; repeat the same setup to add another account."
+      description="Search every source this build knows about. Each card is a source journey: the source name, its recommended next action, the current support fact, and a low-noise path to the details. Repeat the same setup to add another account."
       title="Add data sources"
     >
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">

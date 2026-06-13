@@ -24,6 +24,38 @@ function InlineNotice({ message }: { message: string }) {
   );
 }
 
+interface AcquisitionMethod {
+  detail: string | null;
+  help_url: string | null;
+  label: string;
+  platform: string | null;
+  posture: string | null;
+}
+
+function MethodCard({ method }: { method: AcquisitionMethod }) {
+  return (
+    <div className="rounded-md border border-border/80 bg-background px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-foreground">{method.label}</span>
+        {method.platform ? (
+          <span className="pdpp-caption rounded-sm bg-muted px-1.5 py-0.5 text-muted-foreground">{method.platform}</span>
+        ) : null}
+      </div>
+      {method.detail ? <p className="pdpp-caption mt-1 text-muted-foreground">{method.detail}</p> : null}
+      {method.help_url ? (
+        <a
+          className="pdpp-caption mt-1 inline-flex underline decoration-dotted underline-offset-4"
+          href={method.help_url}
+          rel="noreferrer"
+          target="_blank"
+        >
+          Open instructions
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
 export default async function ManualUploadConnectPage({
   params,
   searchParams,
@@ -43,6 +75,12 @@ export default async function ManualUploadConnectPage({
   const error = firstValue(resolvedSearchParams.error);
   const acceptLabel = setup.accepted_file_names.length > 0 ? setup.accepted_file_names.join(", ") : "JSON export file";
 
+  // Primary acquisition methods lead; advanced/secondary paths sit behind one
+  // disclosure so the recommended path is obvious and the page stays low-noise.
+  const primaryMethods = setup.acquisition_methods.filter((method) => method.posture === "primary");
+  const advancedMethods = setup.acquisition_methods.filter((method) => method.posture !== "primary");
+  const hasValidator = setup.validation_expectations.length > 0;
+
   return (
     <DashboardShell active="records">
       <PageHeader
@@ -52,7 +90,7 @@ export default async function ManualUploadConnectPage({
           </Link>
         }
         breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: `Import ${setup.display_name}` }]}
-        description="Upload an owner-exported file to start the first sync. The connection stays hidden until the first sync accepts records."
+        description="Bring your exported data in. Pick the file you exported, PDPP validates it before anything is committed, then imports it and shows a durable coverage receipt you can revisit."
         title={`Import ${setup.display_name}`}
       />
 
@@ -65,32 +103,24 @@ export default async function ManualUploadConnectPage({
         }
         title={setup.label}
       >
-        {setup.acquisition_methods.length > 0 ? (
+        {primaryMethods.length > 0 ? (
           <div className="mb-4 grid max-w-2xl gap-2">
-            {setup.acquisition_methods.map((method) => (
-              <div className="rounded-md border border-border/80 bg-background px-4 py-3" key={method.label}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium text-foreground">{method.label}</span>
-                  {method.posture ? (
-                    <span className="pdpp-caption rounded-sm bg-muted px-1.5 py-0.5 text-muted-foreground">
-                      {method.posture}
-                    </span>
-                  ) : null}
-                </div>
-                {method.detail ? <p className="pdpp-caption mt-1 text-muted-foreground">{method.detail}</p> : null}
-                {method.help_url ? (
-                  <a
-                    className="pdpp-caption mt-1 inline-flex underline decoration-dotted underline-offset-4"
-                    href={method.help_url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Open instructions
-                  </a>
-                ) : null}
-              </div>
+            {primaryMethods.map((method) => (
+              <MethodCard key={method.label} method={method} />
             ))}
           </div>
+        ) : null}
+        {advancedMethods.length > 0 ? (
+          <details className="mb-4 max-w-2xl">
+            <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
+              Other ways to export this data
+            </summary>
+            <div className="mt-2 grid gap-2">
+              {advancedMethods.map((method) => (
+                <MethodCard key={method.label} method={method} />
+              ))}
+            </div>
+          </details>
         ) : null}
         <form
           action={createManualUploadConnectionAction}
@@ -126,13 +156,14 @@ export default async function ManualUploadConnectPage({
             </span>
             {setup.help_text ? <span className="pdpp-caption text-muted-foreground">{setup.help_text}</span> : null}
           </label>
-          {setup.validation_expectations.length > 0 ? (
+          {hasValidator ? (
             <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-              Validation checks: {setup.validation_expectations.join(", ")}.
+              PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If the file does not
+              pass, nothing is imported.
             </div>
           ) : null}
           <div>
-            <Button type="submit">Upload and start first sync</Button>
+            <Button type="submit">{hasValidator ? "Validate and import" : "Import file"}</Button>
           </div>
         </form>
         {setup.large_file_fallback ? (
@@ -142,12 +173,12 @@ export default async function ManualUploadConnectPage({
 
       <Callout
         className="mt-5"
-        description="After the first import, refresh this source from its status page so new files keep the same source identity and record their own import provenance."
+        description="After this import, revisit the source from its status page to import another export. Each import keeps the same source identity and records its own coverage provenance."
         surface="human"
-        title="No deployment changes"
+        title="This is a file import"
       >
         <p className="pdpp-caption text-muted-foreground">
-          This is a file import. No provider account sign-in or deployment change is required.
+          You are importing data you already exported. There is no provider account sign-in and no deployment change.
         </p>
       </Callout>
     </DashboardShell>

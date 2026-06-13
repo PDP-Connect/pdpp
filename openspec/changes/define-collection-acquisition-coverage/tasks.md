@@ -14,7 +14,9 @@
 - [ ] 2.6 Project owner-artifact and multi-acquisition coverage into reference connection health without labeling expected manual staleness or missing media as generic failure.
 - [ ] 2.7 Ensure same-stream multi-acquisition keeps acquisition provenance and refuses silent cross-method merge without explicit identity rules.
 - [ ] 2.8 Replace source-specific owner setup branches with a manifest-driven source catalog and acquisition path chooser.
+  - [x] 2.8a UI copy down-payment: the manifest-driven source catalog now presents a source journey (name, recommended next action, current support fact, low-noise detail disclosure) instead of "one status and one next action"; the manual/upload page orders primary acquisition methods first with advanced paths behind one disclosure. No path-chooser data model yet; no source-specific React branches added.
 - [ ] 2.9 Add the generic coverage-assistant UI flow: instructions, pre-commit preview, commit progress, durable receipt, and next-action copy.
+  - [x] 2.9a Copy/framing down-payment only: manual/upload page reads as a coverage-assistant start (manifest-generated, validate-before-commit language when a validator exists, import not "first sync" CTA for owner artifacts); setup status page uses import/receipt language for `manual_upload` and drops provider-credential semantics for imports. The durable pre-commit preview, phase-by-phase commit progress, and structured coverage receipt (counts, gaps, duplicates) data surfaces remain unimplemented.
 - [ ] 2.10 Add acquisition lanes and recent batch receipts to source/connection detail pages so historical import, current sync, media sync, and backup import remain visible under one source.
 - [ ] 2.11 Add owner-journey fixtures for duplicate artifact upload, stale manual export, missing media, wrong-account artifact, parser failure, and same-stream historical-plus-current acquisition.
 
