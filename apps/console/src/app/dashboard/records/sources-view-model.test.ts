@@ -9,10 +9,24 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RefConnectionHealthSnapshot, RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
-import { deriveSourceStatus, exploreHrefFor, formatSchedule, toSourceInstanceView } from "./sources-view-model.ts";
+import type {
+  RefConnectionHealthSnapshot,
+  RefConnectorSummary,
+  RefRecordVersionStatsRow,
+  RefSchedule,
+} from "../lib/ref-client.ts";
+import {
+  buildSourcesChurnAdvisory,
+  deriveSourceStatus,
+  exploreHrefFor,
+  formatSchedule,
+  toSourceInstanceView,
+} from "./sources-view-model.ts";
 
 const EXPLORE_HREF_RE = /^\/dashboard\/explore\?connection=conn_1&stream=/;
+const CHURN_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions/;
+const CHURN_CLASSIFIED_RE = /classified/;
+const CHURN_NEEDS_REVIEW_RE = /needs review/;
 
 const EMPTY_AXES = {
   attention: {} as RefConnectionHealthSnapshot["axes"]["attention"],
@@ -142,4 +156,50 @@ test("toSourceInstanceView surfaces a revoked instance with a struck status", ()
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
   const view = toSourceInstanceView(summary({ connection_id: "conn x/y" }));
   assert.equal(view.detailHref, "/dashboard/records/conn%20x%2Fy");
+});
+
+function churnRow(partial: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
+  return {
+    connector_id: "ynab",
+    connector_instance_id: "cin_ynab_1",
+    current_record_count: 4,
+    display_name: null,
+    last_current_at: "2026-05-30T00:00:00.000Z",
+    last_history_at: "2026-05-31T00:00:00.000Z",
+    projection_authority: "record_changes_ground_truth",
+    projection_dirty: false,
+    projection_missing: false,
+    record_history_count: 1095,
+    record_key_count: 4,
+    risk_level: "high",
+    risk_reasons: ["versions_per_record_high"],
+    stream: "budgets",
+    version_disposition: "lossless_compaction_candidate",
+    version_remediation: "none",
+    versions_per_record: 273.75,
+    ...partial,
+  };
+}
+
+test("buildSourcesChurnAdvisory surfaces an advisory for a churned source", () => {
+  const advisory = buildSourcesChurnAdvisory([churnRow()]);
+  assert.ok(advisory, "a churning (non-normal) stream must surface an advisory");
+  assert.match(advisory.highestSignal, CHURN_SIGNAL_RE);
+  // A classified compaction candidate is not "needs review" — the advisory
+  // stays informational, reusing the disposition-honest summarizer verdict.
+  assert.equal(advisory.needsReview, false);
+  assert.match(advisory.headline, CHURN_CLASSIFIED_RE);
+});
+
+test("buildSourcesChurnAdvisory flags needsReview for an unclassified churn row", () => {
+  const advisory = buildSourcesChurnAdvisory([churnRow({ version_disposition: "active_defect_or_unclassified" })]);
+  assert.ok(advisory);
+  assert.equal(advisory.needsReview, true);
+  assert.match(advisory.headline, CHURN_NEEDS_REVIEW_RE);
+});
+
+test("buildSourcesChurnAdvisory returns null when no stream is churning", () => {
+  // A fresh source: only normal-risk rows (or none) → no advisory at all.
+  assert.equal(buildSourcesChurnAdvisory([]), null);
+  assert.equal(buildSourcesChurnAdvisory([churnRow({ risk_level: "normal" })]), null);
 });

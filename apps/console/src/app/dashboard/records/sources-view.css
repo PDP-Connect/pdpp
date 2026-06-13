@@ -320,3 +320,42 @@
   color: var(--muted-foreground);
   font-size: 0.875rem;
 }
+
+/* Version-churn advisory — quiet, protocol-toned, informational.
+   Stays on the muted/border palette regardless of review state: retained
+   history is not an alarm. The eyebrow carries the mono protocol voice; the
+   body is muted prose. No warning amber, no copper consent tone here. */
+.rr-s-churn {
+  margin-top: 24px;
+  border-left: 2px solid var(--border-strong);
+  padding: 10px 14px;
+  background: var(--muted);
+  max-width: 72ch;
+}
+.rr-s-churn__eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-s-churn__head {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.rr-s-churn__signal {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.rr-s-churn__note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}

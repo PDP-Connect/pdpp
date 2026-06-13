@@ -29,8 +29,10 @@ import type {
   RefConnectionHealthSnapshot,
   RefConnectorRunSummary,
   RefConnectorSummary,
+  RefRecordVersionStatsRow,
   RefSchedule,
 } from "../lib/ref-client.ts";
+import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
  * The status flag rendered against each instance in the list and the passport.
@@ -305,4 +307,56 @@ export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstan
 /** Map a list of summaries into the Sources view, preserving input order. */
 export function toSourcesView(summaries: RefConnectorSummary[]): SourceInstanceView[] {
   return summaries.map(toSourceInstanceView);
+}
+
+/**
+ * Quiet, serializable version-churn advisory for the Sources surface.
+ *
+ * The old records page surfaced version churn through `VersionChurnNotice`; the
+ * Recordroom Sources redesign replaced that page and dropped the notice. This
+ * is the same signal, folded back in honestly: it is metadata only (counts from
+ * `/_ref/records/version-stats`, never record payloads) and it reuses the
+ * already-tested `summarizeVersionChurn` derivation rather than re-deriving any
+ * disposition logic.
+ *
+ * The Sources surface is informational, not the version-churn remediation
+ * console — so this advisory is intentionally lossy: it carries only the
+ * headline verdict and the highest-signal line, plus the honest `needsReview`
+ * flag, and links the owner to the per-source detail where the full drilldown
+ * (dry-run commands, dispositions) lives. The full table is NOT re-rendered here.
+ */
+export interface SourcesChurnAdvisory {
+  /** Honest collapsed verdict from `summarizeVersionChurn` (review-needed vs. classified). */
+  headline: string;
+  /** "Highest signal: ynab / budgets retains 273.75 versions per current record." */
+  highestSignal: string;
+  /**
+   * True only when at least one churning stream is genuinely unclassified and
+   * needs operator review. The view keeps the advisory protocol-toned (quiet,
+   * never alarm) regardless; this flag only refines the eyebrow copy.
+   */
+  needsReview: boolean;
+}
+
+/**
+ * Project the raw version-stats rows into the quiet Sources advisory, or null
+ * when there is nothing to surface.
+ *
+ * Mirrors the prior page's filter exactly: only non-`normal` risk rows are
+ * advisory-worthy (every non-normal row already crossed the route's risk
+ * threshold). The disposition-honest headline then comes straight from
+ * `summarizeVersionChurn` — this function adds the Sources-specific filter and
+ * the null-when-empty contract, and re-derives no disposition itself.
+ */
+export function buildSourcesChurnAdvisory(rows: readonly RefRecordVersionStatsRow[]): SourcesChurnAdvisory | null {
+  const advisoryRows = rows.filter((row) => row.risk_level !== "normal");
+  const summary = summarizeVersionChurn(advisoryRows);
+  if (!summary) {
+    return null;
+  }
+  return {
+    headline: summary.headline,
+    highestSignal: summary.highestSignal,
+    needsReview: summary.needsReview,
+  };
 }

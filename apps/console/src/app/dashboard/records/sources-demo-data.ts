@@ -12,7 +12,7 @@
  * the real projection, not a parallel one.
  */
 
-import type { RefConnectionHealthSnapshot, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RefConnectionHealthSnapshot, RefConnectorSummary, RefRecordVersionStatsRow } from "../lib/ref-client.ts";
 
 export type SourcesDemoScenario = "mixed" | "healthy" | "attention";
 
@@ -198,4 +198,41 @@ export function buildSourcesDemoSummaries(scenario: SourcesDemoScenario): RefCon
   }
   // mixed — one of everything for a full screenshot.
   return [GMAIL, CHATGPT, AMAZON, CHASE, SPOTIFY_REVOKED];
+}
+
+/** Build a seeded version-stats row so the demo can render a churn advisory. */
+function churnRow(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
+  return {
+    connector_id: "ynab",
+    connector_instance_id: "cin_ynab_demo",
+    current_record_count: 4,
+    display_name: null,
+    last_current_at: "2026-06-12T08:00:00Z",
+    last_history_at: "2026-06-12T08:01:00Z",
+    projection_authority: "record_changes_ground_truth",
+    projection_dirty: false,
+    projection_missing: false,
+    record_history_count: 1095,
+    record_key_count: 4,
+    risk_level: "high",
+    risk_reasons: ["versions_per_record_high"],
+    stream: "budgets",
+    version_disposition: "lossless_compaction_candidate",
+    version_remediation: "none",
+    versions_per_record: 273.75,
+    ...overrides,
+  };
+}
+
+/**
+ * Seeded version-churn rows for the Sources demo. The `healthy` scenario has no
+ * churn (proves the advisory is absent when nothing crosses the threshold); the
+ * other scenarios surface a single classified compaction candidate so the quiet
+ * advisory renders for a screenshot. Fictional — demo only.
+ */
+export function buildSourcesDemoChurnRows(scenario: SourcesDemoScenario): RefRecordVersionStatsRow[] {
+  if (scenario === "healthy") {
+    return [];
+  }
+  return [churnRow()];
 }

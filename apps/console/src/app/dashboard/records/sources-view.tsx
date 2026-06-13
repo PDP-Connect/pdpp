@@ -47,10 +47,17 @@ import {
   TableHeaderRow,
 } from "@/components/ink-carbon";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
-import type { SourceInstanceView } from "./sources-view-model.ts";
+import type { SourceInstanceView, SourcesChurnAdvisory } from "./sources-view-model.ts";
 import "./sources-view.css";
 
 interface SourcesViewProps {
+  /**
+   * Quiet version-churn advisory derived from `/_ref/records/version-stats`
+   * (metadata only — never record payloads). Null when no churning stream
+   * crosses the risk threshold. Rendered as an informational protocol-toned
+   * footer, never an alarm; the per-source detail page carries the drilldown.
+   */
+  churnAdvisory?: SourcesChurnAdvisory | null;
   instances: SourceInstanceView[];
   /** Whether the real Sync/Revoke mutations are wired (live) or read-only. */
   interactive: boolean;
@@ -62,7 +69,7 @@ type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "
 
 const ADD_SOURCE_HREF = "/dashboard/records/add";
 
-export function SourcesView({ instances, interactive, revokeAction }: SourcesViewProps) {
+export function SourcesView({ churnAdvisory, instances, interactive, revokeAction }: SourcesViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(instances[0]?.id ?? null);
   const selected = instances.find((i) => i.id === selectedId) ?? instances[0] ?? null;
 
@@ -75,31 +82,62 @@ export function SourcesView({ instances, interactive, revokeAction }: SourcesVie
   }
 
   return (
-    <div className="rr-s">
-      <aside aria-label="Sources" className="rr-s-list">
-        {instances.map((instance) => (
-          <InstanceListItem
-            instance={instance}
-            key={instance.id}
-            onSelect={() => setSelectedId(instance.id)}
-            selected={selected?.id === instance.id}
-          />
-        ))}
-        <div className="rr-s-end">
-          <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
-            add a source →
-          </Link>
-          <span className="rr-s-end__note">a source pushes into your streams · nothing leaves</span>
-        </div>
-      </aside>
+    <>
+      <div className="rr-s">
+        <aside aria-label="Sources" className="rr-s-list">
+          {instances.map((instance) => (
+            <InstanceListItem
+              instance={instance}
+              key={instance.id}
+              onSelect={() => setSelectedId(instance.id)}
+              selected={selected?.id === instance.id}
+            />
+          ))}
+          <div className="rr-s-end">
+            <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
+              add a source →
+            </Link>
+            <span className="rr-s-end__note">a source pushes into your streams · nothing leaves</span>
+          </div>
+        </aside>
 
-      {selected ? (
-        <div className="rr-s-detail">
-          <InstancePassport instance={selected} interactive={interactive} revokeAction={revokeAction} />
-          <StreamManifest instance={selected} />
-        </div>
-      ) : null}
-    </div>
+        {selected ? (
+          <div className="rr-s-detail">
+            <InstancePassport instance={selected} interactive={interactive} revokeAction={revokeAction} />
+            <StreamManifest instance={selected} />
+          </div>
+        ) : null}
+      </div>
+      {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
+    </>
+  );
+}
+
+/**
+ * Quiet, protocol-toned version-churn advisory.
+ *
+ * This is the Recordroom home of the signal the old records page surfaced via
+ * `VersionChurnNotice`. It is deliberately informational, NOT an alarm: version
+ * churn is *retained change history*, not current-data loss, so the surface
+ * stays on the muted/border palette (no warning amber, no copper consent tone)
+ * regardless of `needsReview` — `needsReview` only refines the mono eyebrow
+ * copy. The full per-stream drilldown (dispositions, dry-run commands) lives on
+ * the source detail page; this footer is a one-line pointer, not a re-render of
+ * that table.
+ */
+function ChurnAdvisory({ advisory }: { advisory: SourcesChurnAdvisory }) {
+  return (
+    <aside className="rr-s-churn" data-testid="sources-version-churn" role="note">
+      <span className="rr-s-churn__eyebrow">
+        {advisory.needsReview ? "retained history · review" : "retained history · classified"}
+      </span>
+      <p className="rr-s-churn__head">{advisory.headline}</p>
+      <p className="rr-s-churn__signal">{advisory.highestSignal}</p>
+      <p className="rr-s-churn__note">
+        This is kept change history, not current-data loss — your latest records are intact. Open a source to see its
+        per-stream disposition and any safe compaction.
+      </p>
+    </aside>
   );
 }
 
