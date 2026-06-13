@@ -1964,9 +1964,13 @@ PDPP-Version: 0.1.0
                 </span>
               </div>
               <p className="italic" style={{ opacity: 0.7 }}>
-                The introspection panel below mirrors the real <span className="font-mono">POST /introspect</span>{" "}
-                envelope. For the exact request/response a reviewer can run against a live node — active, revoked, and
-                grant-package shapes — see{" "}
+                The introspection panel below <em>illustrates</em> the{" "}
+                <span className="font-mono">POST /introspect</span> step with a simplified envelope (this demo mock uses
+                an illustrative <span className="font-mono">grant_status</span> field; the real server returns{" "}
+                <span className="font-mono">active</span>, <span className="font-mono">grant</span>,{" "}
+                <span className="font-mono">exp</span>, and related fields instead). For the exact, conformance-tested
+                request/response a reviewer can run against a live node — active, revoked, and grant-package shapes —
+                see{" "}
                 <a
                   className="underline"
                   href="/docs/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
