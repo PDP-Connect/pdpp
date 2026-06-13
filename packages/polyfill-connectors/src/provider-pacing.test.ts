@@ -39,6 +39,11 @@ test("ProviderPacing: unset initialIntervalMs uses a conservative default", asyn
 });
 
 test("ProviderPacing: additive increase reduces currentIntervalMs toward minIntervalMs", () => {
+  // §9-C2 (rate-space): the additive increase now raises the RATE by a constant
+  // calibrated step (matched to additiveIncreaseMs at the operating point), so the
+  // FIRST step off 1000 is exactly −200ms (1000→800, live behavior preserved) but
+  // subsequent steps shrink as the interval narrows (rate climbs linearly, not
+  // super-linearly). 800→667 (rate 75→90/min, +15/min ≈ the matched step), etc.
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,
     minIntervalMs: 100,
@@ -48,14 +53,35 @@ test("ProviderPacing: additive increase reduces currentIntervalMs toward minInte
   });
   assert.equal(pacing.currentIntervalMs, 1000);
   pacing.recordSuccess();
-  assert.equal(pacing.currentIntervalMs, 800);
+  assert.equal(
+    pacing.currentIntervalMs,
+    800,
+    "first step is the calibrated −200ms (rate +15/min) — matches the operating-point step"
+  );
   pacing.recordSuccess();
-  assert.equal(pacing.currentIntervalMs, 600);
-  // Floor at minIntervalMs
+  assert.equal(
+    pacing.currentIntervalMs,
+    667,
+    "rate-space: +15/min from 75/min → 90/min → 667ms (a SMALLER interval step than the old flat 200ms)"
+  );
+  // Floor at minIntervalMs: continues converging by constant rate increments and
+  // is hard-clamped at the floor (the safety ceiling is still never crossed).
   pacing.recordSuccess();
   pacing.recordSuccess();
   pacing.recordSuccess();
-  assert.equal(pacing.currentIntervalMs, 100, "capped at minIntervalMs");
+  assert.equal(
+    pacing.currentIntervalMs,
+    444,
+    "still descending toward the floor by constant rate steps (not yet clamped)"
+  );
+  for (let i = 0; i < 40; i += 1) {
+    pacing.recordSuccess();
+  }
+  assert.equal(
+    pacing.currentIntervalMs,
+    100,
+    "capped at minIntervalMs (hard floor still binds — rests exactly at the ceiling)"
+  );
 });
 
 test("ProviderPacing: soft throttle increases currentIntervalMs by 1.5×, floored at initialIntervalMs", () => {
@@ -161,20 +187,23 @@ test("ProviderPacing Part B: a Retry-After is a one-shot wait, NOT a steady-stat
     now: () => nowMs,
     sleep: spy.sleep,
   });
-  // Warm the learned interval down so we can see it stay put.
+  // Warm the learned interval down so we can see it stay put. §9-C2 (rate-space):
+  // first success is the calibrated −100ms (1000→900); the second raises the RATE
+  // by the same constant step, so 900→818 (a smaller interval decrement than the
+  // old flat 100ms — the rate, not the interval, moves by a fixed amount).
   pacing.recordSuccess(); // 900
-  pacing.recordSuccess(); // 800
+  pacing.recordSuccess(); // 818 (rate-space step from 900)
   const learnedInterval = pacing.currentIntervalMs;
-  assert.equal(learnedInterval, 800, "warmed to a faster learned interval");
+  assert.equal(learnedInterval, 818, "warmed to a faster learned interval (rate-space second step)");
 
   // A large Retry-After arrives.
   pacing.recordThrottle({ retryAfterMs: 100_000 });
 
   // The sustained interval is UNCHANGED — the 100s is not adopted as the rate,
-  // nor even multiplicatively inflated (which would have made it 1600).
+  // nor even multiplicatively inflated.
   assert.equal(pacing.currentIntervalMs, learnedInterval, "Retry-After does NOT inflate the steady-state interval");
   // The next admit honors the one-shot wait exactly...
-  nowMs = 800;
+  nowMs = 818;
   await pacing.admit();
   assert.equal(spy.calls.at(-1), 100_000, "one-shot wait honored exactly on next admit");
   // ...and the admit AFTER that returns to the learned interval, not 100s.
@@ -273,6 +302,10 @@ test("ProviderPacing: sustained success monotonically DECREASES the interval tow
     sleep: () => Promise.resolve(),
   });
   const trajectory: number[] = [pacing.currentIntervalMs];
+  // §9-C2 (rate-space): the ramp now takes more successes (the rate climbs in
+  // constant increments, so each interval step shrinks as it nears the floor).
+  // 28 successes carry 1000→250; sample 12 to assert monotonic descent, then
+  // confirm convergence to the ceiling.
   for (let i = 0; i < 12; i += 1) {
     pacing.recordSuccess();
     trajectory.push(pacing.currentIntervalMs);
@@ -284,9 +317,18 @@ test("ProviderPacing: sustained success monotonically DECREASES the interval tow
     assert.ok(curr <= prev, `interval must never rise under sustained success: ${prev} -> ${curr}`);
   }
   const first = trajectory[0] as number;
-  const last = trajectory.at(-1) as number;
-  assert.ok(last < first, "interval decreased overall (throughput rose)");
-  assert.equal(last, ceilingMs, "interval converged to the ceiling under sustained success");
+  const sampled = trajectory.at(-1) as number;
+  assert.ok(sampled < first, "interval decreased overall over the sampled window (throughput rose)");
+  assert.equal(
+    sampled,
+    429,
+    "rate-space: 12 successes reach 429ms (interval steps shrink as the rate climbs linearly)"
+  );
+  // Continue to convergence: sustained success still rests at exactly the ceiling.
+  for (let i = 0; i < 30; i += 1) {
+    pacing.recordSuccess();
+  }
+  assert.equal(pacing.currentIntervalMs, ceilingMs, "interval converged to the ceiling under sustained success");
 });
 
 test("ProviderPacing: injected throttle multiplicatively INCREASES the interval, then success recovers it", () => {
@@ -395,11 +437,17 @@ test("ProviderPacing: snapshot() exposes interval, ceiling, and last back-off fo
 
 // ─── Faster additive recovery from transient back-off (gentle ceiling preserved) ──
 
-test("ProviderPacing: deep transient back-off recovers to the ceiling in FAR fewer successes than the flat base step", () => {
-  // The fix: after a burst of real 429s the interval correctly backs off deep
-  // (e.g. 16000ms). With the legacy flat 100ms step that tail is ~158 successes.
-  // The distance-proportional step (recoveryGain) unwinds the over-backoff in
-  // tens of successes — quantified below — WITHOUT being multiplicative.
+test("ProviderPacing: deep transient back-off recovers to the ceiling fast (rate-space subsumes the old flat tail; recoveryGain still helps)", () => {
+  // After a burst of real 429s the interval correctly backs off deep (e.g.
+  // 16000ms). §9-C2 (rate-space) CHANGES the recovery shape for the better: in
+  // rate space the per-success step raises the RATE by a constant, so at a DEEP
+  // interval (where the rate is tiny) the base step is a LARGE interval jump. The
+  // old "~158-success flat tail" (the slow legacy 100ms-per-success climb from
+  // 16000ms) NO LONGER EXISTS — the rate-space base step alone reaches the ceiling
+  // in ~36 successes. The elapsed-weighted recoveryGain term still shaves a few
+  // more off (and, crucially, is the fast-recovery path when fetches are SLOW; see
+  // the Fix1 elapsed-weighting test). Both stay ADDITIVE and ban-safe (every
+  // intermediate interval is still slower than the rate that already succeeded).
   const deepIntervalMs = 16_000;
   const ceilingMs = 250;
   const initialIntervalMs = 1000;
@@ -423,66 +471,88 @@ test("ProviderPacing: deep transient back-off recovers to the ceiling in FAR few
     return n;
   }
 
-  const oldFlat = successesToCeiling(0); // legacy flat 100ms step
-  const fast = successesToCeiling(0.1); // new default gain
+  const rateBaseOnly = successesToCeiling(0); // pure rate-space base step (no boost)
+  const withBoost = successesToCeiling(0.1); // rate-space base + deep-recovery boost
 
-  // Quantified improvement: the flat step needs ~158, the new gain ~34.
-  assert.ok(oldFlat >= 150, `sanity: flat-step recovery is the slow tail (${oldFlat})`);
-  assert.ok(fast <= 40, `distance-proportional recovery reaches the ceiling in ≤40 successes, got ${fast}`);
-  assert.ok(
-    fast * 4 < oldFlat,
-    `recovery is >4x faster than the flat step: fast=${fast}, old=${oldFlat} (ratio ${(oldFlat / fast).toFixed(1)}x)`
+  // Rate-space ALONE recovers a deep spike fast — the old slow flat tail is gone.
+  assert.equal(
+    rateBaseOnly,
+    36,
+    "rate-space base step alone recovers 16000→250 in 36 successes (the old ~158 flat tail is gone)"
   );
+  // The recoveryGain boost still helps (a few fewer successes) and never hurts.
+  assert.ok(
+    withBoost <= rateBaseOnly,
+    `recoveryGain still helps (or is neutral): boost=${withBoost} <= base=${rateBaseOnly}`
+  );
+  assert.ok(withBoost <= 40, `deep recovery reaches the ceiling in ≤40 successes, got ${withBoost}`);
 });
 
-test("ProviderPacing: near the operating point the step is STILL the gentle base step (ceiling discovery stays cautious)", () => {
-  // The theory constraint: the additive increase in the discovery region
-  // (interval at or below initialIntervalMs) MUST remain the gentle base step.
-  // recoveryGain only boosts the step ABOVE the operating point.
+test("ProviderPacing §9-C2 IDEAL: near the ceiling the per-success RATE gain is ~CONSTANT (rate-space AIMD), NOT super-accelerating", () => {
+  // §9-C2 (slvp-ideal, IMPLEMENTED) — the regression guard for the IDEAL, replacing
+  // the old "step is exactly the flat 100ms" pin (which encoded the WRONG shape: a
+  // flat INTERVAL step makes the RATE super-accelerate toward the floor). True AIMD
+  // increases the RATE by a fixed amount per success. So the load-bearing property
+  // is now: across the WHOLE operating range [floor, initial] the per-success RATE
+  // gain stays ~constant (≈ the calibrated step), NOT climbing 1×→7.5× as the
+  // interval narrows. The control LAW approaches the ceiling cautiously by
+  // construction — it does not rely on the floor clamp to bound the ramp.
   const initialIntervalMs = 1000;
   const ceilingMs = 250;
   const baseStep = 100;
+  const ratePerMin = (ms: number): number => 60_000 / ms;
+  // The calibrated constant rate step (matched to the interval law at the operating
+  // point): rate(initial − baseStep) − rate(initial) = 66.667 − 60 = 6.667/min.
+  const calibratedRateStep = ratePerMin(initialIntervalMs - baseStep) - ratePerMin(initialIntervalMs);
+
   const pacing = new ProviderPacing({
     initialIntervalMs,
     minIntervalMs: ceilingMs,
     additiveIncreaseMs: baseStep,
-    recoveryGain: 0.1,
+    recoveryGain: 0.1, // boost is zero in this region (overBackoff = 0), so it does not perturb the band
     now: () => 0,
     sleep: () => Promise.resolve(),
   });
-  // Walk down from the operating point. Every step in this region must be the
-  // base step exactly (no boost), so the discovery toward the ceiling is gentle.
-  let prev = pacing.currentIntervalMs;
-  assert.equal(prev, initialIntervalMs);
+  assert.equal(pacing.currentIntervalMs, initialIntervalMs);
+
+  // Walk down from the operating point to the floor, recording the per-success RATE
+  // gain at every step. Every FULL step must sit in a TIGHT band around the
+  // calibrated step (the only deviation is integer-rounding noise); the single
+  // partial step that lands ON the floor is allowed to be smaller (it is clamped).
+  let prevInterval = pacing.currentIntervalMs;
+  const fullStepRatios: number[] = [];
   while (pacing.currentIntervalMs > ceilingMs) {
     pacing.recordSuccess();
-    const step = prev - pacing.currentIntervalMs;
-    // At the last sub-base step the floor clamps it; otherwise it is exactly base.
+    const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
+    const ratio = dRate / calibratedRateStep;
+    if (pacing.currentIntervalMs > ceilingMs) {
+      // A full (un-clamped) step — must be in the tight rate-space band.
+      fullStepRatios.push(ratio);
+    } else {
+      // The final partial step into the floor — may be a fraction of the full step
+      // (correct: it only covers the remaining distance), never MORE than a step.
+      assert.ok(
+        ratio <= 1.1,
+        `final floor-clamped step is never larger than a full rate step (got ${ratio.toFixed(3)}×)`
+      );
+    }
+    prevInterval = pacing.currentIntervalMs;
+  }
+  // The IDEAL: every full step's rate gain is within ±10% of the calibrated step —
+  // i.e. CONSTANT, not the 1×→7.5× super-acceleration of the old interval law.
+  for (const ratio of fullStepRatios) {
     assert.ok(
-      step === baseStep || pacing.currentIntervalMs === ceilingMs,
-      `near operating point the step must be the gentle base step (${baseStep}), got ${step}`
+      ratio > 0.9 && ratio < 1.1,
+      `§9-C2 ideal: per-success RATE gain must be ~constant (±10%), got ${ratio.toFixed(3)}× the calibrated rate step — ` +
+        "a value climbing toward ~7.5× near the floor would mean the law reverted to interval-space (the WRONG shape)"
     );
-    prev = pacing.currentIntervalMs;
   }
-  // And the count from operating point to ceiling is identical to the flat step:
-  // (1000-250)/100 = 7.5 → 8.
-  const flatPacing = new ProviderPacing({
-    initialIntervalMs,
-    minIntervalMs: ceilingMs,
-    additiveIncreaseMs: baseStep,
-    recoveryGain: 0,
-    now: () => 0,
-    sleep: () => Promise.resolve(),
-  });
-  let flatN = 0;
-  while (flatPacing.currentIntervalMs > ceilingMs) {
-    flatPacing.recordSuccess();
-    flatN += 1;
-  }
+  // And there are MORE steps than the 8 of the flat interval law — the cautious
+  // (slower) ceiling approach is exactly the AIMD congestion-avoidance discipline.
   assert.equal(
-    flatN,
-    8,
-    "from the operating point the gentle base step takes the same successes as the legacy flat step"
+    fullStepRatios.length,
+    26,
+    "27-step ramp 1000→250 (one partial floor step excluded) — cautious rate-space approach, not 8"
   );
 });
 
@@ -508,44 +578,59 @@ test("ProviderPacing: distance-proportional recovery still NEVER crosses the cei
   assert.equal(pacing.currentIntervalMs, ceilingMs, "rests exactly at the ceiling, never below");
 });
 
-test("ProviderPacing: the boosted step is ADDITIVE, not multiplicative — each step is a bounded fixed increment of the current state", () => {
+test("ProviderPacing: the step is ADDITIVE, not multiplicative — each step is a deterministic fixed increment (rate-space base + interval-space deep boost)", () => {
   // Guardrail against a future refactor turning this into a geometric/multiplicative
   // increase (which would break Chiu-Jain convergence and risk overshooting the ceiling).
-  // For a multiplicative law the ratio interval[n+1]/interval[n] would be ~constant;
-  // for the additive law the per-step DELTA is a deterministic function of the interval
-  // (baseStep + gain*(interval-initial)) and the interval shrinks super-linearly but each
-  // step is a fixed subtraction, never a multiplication toward zero.
+  // §9-C2 (rate-space): the per-step DELTA is now a deterministic function of the
+  //   interval = rateSpaceBaseStep(interval) + floor(gain*(interval−initial)*weight),
+  // where rateSpaceBaseStep raises the RATE by a fixed calibrated step and converts
+  // back to an integer interval. Each step is a fixed SUBTRACTION (additive), never a
+  // multiplication toward zero. Verified by reproducing the exact formula below.
   const initialIntervalMs = 1000;
   const baseStep = 100;
   const gain = 0.1;
+  const msPerMin = 60_000;
+  // The calibrated constant rate step the base uses (matched at the operating point).
+  const calibratedRateStep = msPerMin / (initialIntervalMs - baseStep) - msPerMin / initialIntervalMs;
+  // Reproduce ProviderPacing's rate-space base step: raise the rate by the calibrated
+  // step, round back to an integer interval, take the (non-negative) decrement.
+  const rateSpaceBaseStepMs = (interval: number): number => {
+    const newInterval = Math.max(1, Math.round(msPerMin / (msPerMin / interval + calibratedRateStep)));
+    return Math.max(0, interval - newInterval);
+  };
   const pacing = new ProviderPacing({
     initialIntervalMs,
     minIntervalMs: 250,
     additiveIncreaseMs: baseStep,
     recoveryGain: gain,
     restoredIntervalMs: 8000,
-    now: () => 0,
+    now: () => 0, // const clock → every step's elapsed weight is 1
     sleep: () => Promise.resolve(),
   });
   let prev = pacing.currentIntervalMs;
   for (let i = 0; i < 5; i += 1) {
     pacing.recordSuccess();
     const observedDelta = prev - pacing.currentIntervalMs;
-    // The step is floored to whole ms so intervals stay integer-valued.
-    const expectedDelta = Math.floor(baseStep + gain * Math.max(0, prev - initialIntervalMs));
+    // rate-space base step (integer) + interval-space deep-recovery boost (weight=1).
+    const expectedDelta = rateSpaceBaseStepMs(prev) + Math.floor(gain * Math.max(0, prev - initialIntervalMs));
     assert.equal(
       observedDelta,
       expectedDelta,
-      `step is exactly the additive fixed increment floor(baseStep + gain*overshoot), not a multiplication (i=${i})`
+      `step is exactly rateSpaceBaseStep(interval) + floor(gain*overshoot), not a multiplication (i=${i})`
     );
     assert.ok(Number.isInteger(pacing.currentIntervalMs), `interval stays integer-valued (i=${i})`);
     prev = pacing.currentIntervalMs;
   }
 });
 
-test("ProviderPacing: recoveryGain=0 restores the exact legacy flat-step behaviour", () => {
-  // Backward-compat escape hatch: gain 0 must reproduce the old constant 100ms step
-  // at every interval, including deep above the operating point.
+test("ProviderPacing: recoveryGain=0 is the pure rate-space base step (no deep-recovery boost)", () => {
+  // §9-C2 (rate-space): gain=0 drops the over-backoff deep-recovery boost, leaving
+  // the PURE rate-space base step at every interval. It NO LONGER reproduces the old
+  // flat 100ms interval step — that flat step was the WRONG (interval-space) shape.
+  // Deep above the operating point (5000ms ⇒ rate ≈ 12/min) a constant rate increment
+  // of ~6.667/min is a LARGE interval jump: 5000 → round(60000/(12+6.667)) = 3214.
+  // This is the correct rate-space behavior (and is why rate-space already recovers
+  // deep backoff fast — see the deep-transient-back-off test).
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,
     minIntervalMs: 250,
@@ -559,8 +644,8 @@ test("ProviderPacing: recoveryGain=0 restores the exact legacy flat-step behavio
   pacing.recordSuccess();
   assert.equal(
     pacing.currentIntervalMs,
-    4900,
-    "gain=0 is the legacy flat 100ms step even deep above the operating point"
+    3214,
+    "gain=0 is the pure rate-space base step: 5000→3214 (constant +6.667/min rate increment), not the old flat 100ms"
   );
 });
 
@@ -578,11 +663,12 @@ test("ProviderPacing: recordSuccess with suppressAdditiveIncrease=true leaves in
     now: () => 0,
     sleep: () => Promise.resolve(),
   });
-  // Drive interval down to a warm learned value
+  // Drive interval down to a warm learned value. §9-C2 (rate-space): 1000→900→818
+  // (the second step is a smaller interval decrement — constant RATE increment).
   pacing.recordSuccess(); // 900
-  pacing.recordSuccess(); // 800
+  pacing.recordSuccess(); // 818 (rate-space step)
   const intervalBeforeRecovery = pacing.currentIntervalMs;
-  assert.equal(intervalBeforeRecovery, 800);
+  assert.equal(intervalBeforeRecovery, 818);
 
   // Recovery-only success: interval MUST NOT change
   pacing.recordSuccess({ suppressAdditiveIncrease: true });
@@ -641,9 +727,14 @@ test("ProviderPacing: recordSuccess without suppressAdditiveIncrease (or false) 
   });
   assert.equal(pacing.currentIntervalMs, 1000);
   pacing.recordSuccess();
-  assert.equal(pacing.currentIntervalMs, 900, "plain recordSuccess() still decreases interval");
+  assert.equal(pacing.currentIntervalMs, 900, "plain recordSuccess() still decreases interval (calibrated first step)");
   pacing.recordSuccess({ suppressAdditiveIncrease: false });
-  assert.equal(pacing.currentIntervalMs, 800, "recordSuccess({suppress:false}) still decreases interval");
+  // §9-C2 (rate-space): second step is the constant RATE increment from 900 → 818.
+  assert.equal(
+    pacing.currentIntervalMs,
+    818,
+    "recordSuccess({suppress:false}) still decreases interval (rate-space step)"
+  );
 });
 
 // ─── SLVP-ideal §10-E: stale warm-start cold re-entry ───────────────────────
@@ -741,8 +832,11 @@ test("ProviderPacing §10-E: warm-start exactly AT the staleness boundary is sti
 
 test("ProviderPacing Fix1: elapsed weighting — deep interval recovers MUCH faster with large elapsed gap", () => {
   // From a deep interval (~51s), a second success with elapsed ~= that interval
-  // should recover ~elapsedRecoveryCap× more than the un-weighted over-backoff
-  // term alone would. Base additiveIncreaseMs stays flat (weight doesn't touch it).
+  // recovers ~elapsedRecoveryCap× more than the un-weighted over-backoff term alone.
+  // §9-C2 (rate-space): the step is now rateSpaceBaseStep(interval) + the weighted
+  // over-backoff boost. The rate-space base step is NOT elapsed-weighted (only the
+  // over-backoff deep-recovery term is), so the elapsed weighting still demonstrably
+  // accelerates deep recovery.
   //
   // Key: the first success primes lastSuccessAtMs (null→weight=1, backward-compat).
   // The SECOND success, with a large elapsed gap, demonstrates the weighting.
@@ -752,6 +846,13 @@ test("ProviderPacing Fix1: elapsed weighting — deep interval recovers MUCH fas
   const elapsedRecoveryCap = 8;
   // Start deep enough that after the first success we're still well above initial.
   const startIntervalMs = 55_000;
+  const msPerMin = 60_000;
+  // The calibrated constant rate step the rate-space base uses (matched at the operating point).
+  const calibratedRateStep = msPerMin / (initialIntervalMs - additiveIncreaseMs) - msPerMin / initialIntervalMs;
+  const rateSpaceBaseStepMs = (interval: number): number => {
+    const newInterval = Math.max(1, Math.round(msPerMin / (msPerMin / interval + calibratedRateStep)));
+    return Math.max(0, interval - newInterval);
+  };
 
   let nowMs = 0;
   const pacing = new ProviderPacing({
@@ -765,10 +866,9 @@ test("ProviderPacing Fix1: elapsed weighting — deep interval recovers MUCH fas
     sleep: () => Promise.resolve(),
   });
 
-  // First success at t=0: null lastSuccessAtMs → elapsed treated as initialIntervalMs → weight=1
-  // step = floor(100 + 0.1 * (55000-1000) * 1) = floor(100 + 5400) = 5500
+  // First success at t=0: null lastSuccessAtMs → weight=1. The rate-space base step
+  // dominates at this depth (55000ms rate is tiny), plus a weight-1 over-backoff boost.
   pacing.recordSuccess();
-  // lastSuccessAtMs is now 0. Interval is now startIntervalMs - 5500 = 49500.
   const intervalAfterFirst = pacing.currentIntervalMs;
   assert.ok(intervalAfterFirst > initialIntervalMs, "still deep above initial after first success");
 
@@ -776,25 +876,29 @@ test("ProviderPacing Fix1: elapsed weighting — deep interval recovers MUCH fas
   const bigElapsedMs = 49_000;
   nowMs += bigElapsedMs;
 
-  // Un-weighted step for this interval: floor(100 + 0.1 * (intervalAfterFirst - 1000) * 1)
+  // Un-weighted step for this interval: rate-space base + weight-1 over-backoff boost.
   const overBackoff = intervalAfterFirst - initialIntervalMs;
-  const unweightedStep = Math.floor(additiveIncreaseMs + recoveryGain * overBackoff * 1);
-  // Weighted step: weight = clamp(49000/1000, 1, 8) = 8
+  const baseStep = rateSpaceBaseStepMs(intervalAfterFirst);
+  const unweightedStep = baseStep + Math.floor(recoveryGain * overBackoff * 1);
+  // Weighted step: weight = clamp(49000/1000, 1, 8) = 8. Only the over-backoff boost is weighted.
   const weight = Math.min(elapsedRecoveryCap, Math.max(1, bigElapsedMs / initialIntervalMs));
-  const weightedStep = Math.floor(additiveIncreaseMs + recoveryGain * overBackoff * weight);
+  const weightedStep = baseStep + Math.floor(recoveryGain * overBackoff * weight);
 
   pacing.recordSuccess();
   const actualStep = intervalAfterFirst - pacing.currentIntervalMs;
 
-  assert.equal(actualStep, weightedStep, `step = floor(base + gain*overBackoff*weight) = ${weightedStep}`);
+  assert.equal(actualStep, weightedStep, `step = rateSpaceBase + floor(gain*overBackoff*weight) = ${weightedStep}`);
   assert.ok(
-    weightedStep > unweightedStep * 4,
-    `elapsed-weighted recovery (${weightedStep}) is >4× the un-weighted step (${unweightedStep})`
+    weightedStep > unweightedStep,
+    `elapsed-weighted recovery (${weightedStep}) exceeds the un-weighted step (${unweightedStep})`
   );
-  // Base (additiveIncreaseMs=100) is NOT multiplied — only the over-backoff term is
-  const baseContribution = additiveIncreaseMs;
-  const overBackoffContribution = weightedStep - baseContribution;
-  assert.ok(overBackoffContribution > 0, "over-backoff term contributes positively to the step");
+  // The over-backoff boost term (the only elapsed-weighted part) is amplified ~weight×.
+  const unweightedBoost = Math.floor(recoveryGain * overBackoff * 1);
+  const weightedBoost = Math.floor(recoveryGain * overBackoff * weight);
+  assert.ok(
+    weightedBoost > unweightedBoost * 4,
+    `elapsed-weighted over-backoff boost (${weightedBoost}) is >4× the un-weighted boost (${unweightedBoost})`
+  );
 });
 
 test("ProviderPacing Fix1: gentle-near-ceiling PRESERVED — huge elapsed gap at tiny overBackoff does NOT collapse to floor", () => {
@@ -806,6 +910,13 @@ test("ProviderPacing Fix1: gentle-near-ceiling PRESERVED — huge elapsed gap at
   const initialIntervalMs = 1000;
   const justAboveInitial = 1100; // overBackoff = 100ms (tiny)
   const minIntervalMs = 100;
+  const msPerMin = 60_000;
+  // §9-C2 rate-space base step (matched at the operating point), reproduced here.
+  const calibratedRateStep = msPerMin / (initialIntervalMs - 100) - msPerMin / initialIntervalMs;
+  const rateSpaceBaseStepMs = (interval: number): number => {
+    const newInterval = Math.max(1, Math.round(msPerMin / (msPerMin / interval + calibratedRateStep)));
+    return Math.max(0, interval - newInterval);
+  };
 
   const nowMs = 0;
   const pacing = new ProviderPacing({
@@ -820,10 +931,10 @@ test("ProviderPacing Fix1: gentle-near-ceiling PRESERVED — huge elapsed gap at
   });
   assert.equal(pacing.currentIntervalMs, justAboveInitial);
 
-  // First success at t=0: null lastSuccessAtMs → weight=1.
-  // overBackoff = 1100-1000=100, step = floor(100 + 0.1*100*1) = 110. Interval → 990.
+  // First success at t=0: null lastSuccessAtMs → weight=1. Step = rateSpaceBase(1100)
+  // + floor(0.1*100*1). Interval drops modestly (NOT to the floor).
   pacing.recordSuccess();
-  // lastSuccessAtMs is now 0. interval is 990 (below initial, so overBackoff=0 hereafter).
+  // lastSuccessAtMs is now 0. interval is below initial (overBackoff=0 hereafter).
 
   // Now restore back above initial to re-demonstrate the ceiling check.
   // We re-create a fresh instance seeded just above initial, but this time we
@@ -851,11 +962,12 @@ test("ProviderPacing Fix1: gentle-near-ceiling PRESERVED — huge elapsed gap at
   nowMs2.v += 500_000; // weight = clamp(500000/1000, 1, 8) = 8
 
   pacing2.recordSuccess();
-  // overBackoff = 1350 - 1000 = 350. weighted step = floor(100 + 0.1*350*8) = floor(100+280) = 380.
-  // After: 1350 - 380 = 970ms — well above minIntervalMs (100ms).
-  const expectedStep = Math.floor(100 + 0.1 * (intervalAboveInitial - initialIntervalMs) * 8);
+  // overBackoff = 1350 - 1000 = 350. §9-C2 step = rateSpaceBase(1350) + floor(0.1*350*8).
+  // = 176 + 280 = 456. After: 1350 - 456 = 894ms — well above minIntervalMs (100ms).
+  const expectedStep =
+    rateSpaceBaseStepMs(intervalAboveInitial) + Math.floor(0.1 * (intervalAboveInitial - initialIntervalMs) * 8);
   const actualStep = intervalAboveInitial - pacing2.currentIntervalMs;
-  assert.equal(actualStep, expectedStep, `step is bounded to base + weighted-overBackoff: ${expectedStep}`);
+  assert.equal(actualStep, expectedStep, `step is rateSpaceBase + weighted-overBackoff: ${expectedStep}`);
   assert.notEqual(
     pacing2.currentIntervalMs,
     minIntervalMs,
@@ -871,6 +983,13 @@ test("ProviderPacing Fix1: cooldown suppression still wins — suppressed succes
   // §10-D: suppressAdditiveIncrease=true must leave both interval and
   // lastSuccessAtMs unchanged. A suppressed success is not a real recovery tick.
   let nowMs = 1000;
+  const msPerMin = 60_000;
+  // §9-C2 rate-space base step (matched at the operating point), reproduced here.
+  const calibratedRateStep = msPerMin / (1000 - 100) - msPerMin / 1000;
+  const rateSpaceBaseStepMs = (interval: number): number => {
+    const newInterval = Math.max(1, Math.round(msPerMin / (msPerMin / interval + calibratedRateStep)));
+    return Math.max(0, interval - newInterval);
+  };
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,
     minIntervalMs: 250,
@@ -904,9 +1023,11 @@ test("ProviderPacing Fix1: cooldown suppression still wins — suppressed succes
   // With elapsed=59000ms, weight=8; overBackoff=interval-1000 (positive since we're above initial)
   // If lastSuccessAtMs was NOT updated (correctly), weight=8 and step is large
   // If lastSuccessAtMs WAS updated (incorrectly), weight=1 and step is small
+  // §9-C2 (rate-space): step = rateSpaceBase(interval) + floor(gain*overBackoff*weight).
   const overBackoff = Math.max(0, intervalBeforeReal2 - 1000);
-  const expectedStepWeighted = Math.floor(100 + 0.1 * overBackoff * 8);
-  const expectedStepUnweighted = Math.floor(100 + 0.1 * overBackoff * 1);
+  const baseStep = rateSpaceBaseStepMs(intervalBeforeReal2);
+  const expectedStepWeighted = baseStep + Math.floor(0.1 * overBackoff * 8);
+  const expectedStepUnweighted = baseStep + Math.floor(0.1 * overBackoff * 1);
   assert.equal(
     step2,
     expectedStepWeighted,
@@ -916,9 +1037,16 @@ test("ProviderPacing Fix1: cooldown suppression still wins — suppressed succes
 
 test("ProviderPacing Fix1: backward-compat at operating point — normal-cadence success recovers at weight=1", () => {
   // A success with elapsed ≈ initialIntervalMs gives weight = clamp(1, 1, 8) = 1.
-  // The step must equal the old un-weighted formula exactly — no behavior change
-  // for callers operating at normal cadence.
+  // §9-C2 (rate-space): the step is rateSpaceBase(interval) + weight-1 over-backoff
+  // boost. At normal cadence the weight is 1, so the deep-recovery term is its base
+  // (un-weighted) value — no extra acceleration for callers at normal cadence.
   const initialIntervalMs = 1000;
+  const msPerMin = 60_000;
+  const calibratedRateStep = msPerMin / (initialIntervalMs - 100) - msPerMin / initialIntervalMs;
+  const rateSpaceBaseStepMs = (interval: number): number => {
+    const newInterval = Math.max(1, Math.round(msPerMin / (msPerMin / interval + calibratedRateStep)));
+    return Math.max(0, interval - newInterval);
+  };
   let nowMs = 0;
   const pacing = new ProviderPacing({
     initialIntervalMs,
@@ -933,11 +1061,11 @@ test("ProviderPacing Fix1: backward-compat at operating point — normal-cadence
   const beforeFirst = pacing.currentIntervalMs;
   pacing.recordSuccess();
   const stepFirst = beforeFirst - pacing.currentIntervalMs;
-  const expectedUnweighted = Math.floor(100 + 0.1 * (beforeFirst - initialIntervalMs));
+  const expectedUnweighted = rateSpaceBaseStepMs(beforeFirst) + Math.floor(0.1 * (beforeFirst - initialIntervalMs));
   assert.equal(
     stepFirst,
     expectedUnweighted,
-    "first success (null lastSuccessAtMs) uses weight=1, matches old formula"
+    "first success (null lastSuccessAtMs) uses weight=1, matches rateSpaceBase + un-weighted boost"
   );
 
   // Second success: advance by exactly initialIntervalMs → weight = clamp(1000/1000, 1, 8) = 1
@@ -945,8 +1073,12 @@ test("ProviderPacing Fix1: backward-compat at operating point — normal-cadence
   const beforeSecond = pacing.currentIntervalMs;
   pacing.recordSuccess();
   const stepSecond = beforeSecond - pacing.currentIntervalMs;
-  const expectedSecond = Math.floor(100 + 0.1 * (beforeSecond - initialIntervalMs));
-  assert.equal(stepSecond, expectedSecond, "normal-cadence elapsed=initialIntervalMs → weight=1 → old formula exactly");
+  const expectedSecond = rateSpaceBaseStepMs(beforeSecond) + Math.floor(0.1 * (beforeSecond - initialIntervalMs));
+  assert.equal(
+    stepSecond,
+    expectedSecond,
+    "normal-cadence elapsed=initialIntervalMs → weight=1 → rateSpaceBase + un-weighted boost"
+  );
 });
 
 // ─── Fix 2: bounded throttle (softThrottleGain + maxIntervalMs) ──────────────
@@ -1004,45 +1136,31 @@ test("ProviderPacing Fix2: maxIntervalMs does not affect retry-after one-shot (r
   assert.equal(pacing.currentIntervalMs, 1000, "retry-after does not change the sustained interval");
 });
 
-// ─── SLVP-ideal §9-C2: interval-space additive-increase vs true rate-space AIMD ──
+// ─── SLVP-ideal §9-C2: true rate-space AIMD additive increase (IMPLEMENTED) ──
 
-test("ProviderPacing §9-C2: the hard floor binds the rate identically under both laws — interval-space super-acceleration is floor-bounded, not a ceiling overshoot", () => {
-  // §9-C2 (slvp-ideal-whole-system-spec-2026-06-11.md): `recordSuccess` subtracts
-  // a FIXED `additiveIncreaseMs` from the INTERVAL, but textbook AIMD prescribes
-  // additive increase of the RATE. Because rate = 60000/interval is convex, a
-  // constant −Δms interval step makes the RATE climb super-linearly as the interval
-  // nears the floor — "the probe accelerates fastest exactly where it is riskiest."
-  //
-  // DECISION (close C2, do NOT rewrite): the divergence is real in the rate
-  // DERIVATIVE (quantified below: up to ~7.5× the matched rate-space step at the
-  // 400→300 step) but it is NOT behaviorally harmful, because the binding safety
-  // constraint is the HARD `minIntervalMs` floor (THE one authored behavioral-safety
-  // prior, §7), not the control-law space. You cannot OVERSHOOT a hard clamp: both
-  // the interval-space law and a matched rate-space AIMD REST at exactly the floor
-  // and the same max sustained rate. The only behavioral difference is that the
-  // cold-start ramp 1000→250 takes 8 successes (~5.2s) under the interval law vs 27
-  // (~12.9s) under rate-space — a ~7.7s-less-conservative ramp ONCE per COLD run,
-  // entirely inside the floor-bounded zone. A run spends the overwhelming majority
-  // of its wall-clock AT the floor, and warm-start usually skips the ramp entirely.
-  // Converting to rate-space would slow the cold-start descent without changing the
-  // steady-state rate the provider actually sees — a behavior change, not a safety
-  // win. So C2 is closed as acceptable, and THIS test pins the two load-bearing
-  // facts so a future regression that breaks either is caught:
-  //   (1) both laws rest identically at the floor (the floor binds, not the law);
-  //   (2) the interval-space descent never crosses the floor and the per-success
-  //       rate gain stays within a declared band of the matched rate-space step.
+test("ProviderPacing §9-C2: additive increase is RATE-space — per-success rate gain is ~CONSTANT across the ramp, not super-accelerating near the floor", () => {
+  // §9-C2 (slvp-ideal-whole-system-spec-2026-06-11.md), IMPLEMENTED: textbook
+  // Chiu-Jain AIMD increases the RATE by a fixed amount per success. The legacy law
+  // subtracted a fixed −Δms from the INTERVAL instead; because rate = 60000/interval
+  // is convex, that made the per-success RATE gain climb super-linearly toward the
+  // floor (up to ~7.5× the matched rate-space step at the 400→300 step) — "the probe
+  // accelerates fastest exactly where it is riskiest," the inverse of AIMD's
+  // congestion-avoidance discipline. The control law now increases the RATE by the
+  // calibrated constant `additiveRateStepPerMin` (matched to the legacy step at the
+  // operating point, so live behavior barely changes), so the per-success rate gain
+  // is ~CONSTANT across the whole ramp. This test pins the IDEAL:
+  //   (1) the per-success rate gain stays ~flat (≈ the matched step), NOT 1×→7.5×;
+  //   (2) the law still rests at exactly the floor and at the same max sustained
+  //       rate — only the ramp SHAPE changed, never the steady state.
   const initialIntervalMs = 1000; // ChatGPT operating point (chatgpt/index.ts)
   const floorMs = 250; // ChatGPT minIntervalMs — THE rate ceiling (authored prior)
   const baseStep = 100; // ChatGPT additiveIncreaseMs
   const ratePerMin = (ms: number): number => 60_000 / ms;
 
-  // Matched rate-space step: choose the constant rate increment so the FIRST step
-  // off the operating point is identical to the interval law (live behavior at the
-  // typical operating point is preserved either way).
+  // Matched rate-space step: the calibrated constant rate increment (the FIRST step
+  // off the operating point is identical to the legacy law — live behavior preserved).
   const rateStep = ratePerMin(initialIntervalMs - baseStep) - ratePerMin(initialIntervalMs); // 6.667/min
 
-  // Walk the interval-space law from a COLD start down to the floor and record the
-  // per-success rate gain at each step (the §9-C2 super-linear quantity).
   const pacing = new ProviderPacing({
     initialIntervalMs,
     minIntervalMs: floorMs,
@@ -1051,60 +1169,66 @@ test("ProviderPacing §9-C2: the hard floor binds the rate identically under bot
     sleep: () => Promise.resolve(),
   });
   let prevInterval = pacing.currentIntervalMs;
-  let maxOvershootRatio = 0;
+  let maxFullStepRatio = 0;
   let steps = 0;
   while (pacing.currentIntervalMs > floorMs) {
     pacing.recordSuccess();
     const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
-    maxOvershootRatio = Math.max(maxOvershootRatio, dRate / rateStep);
+    const ratio = dRate / rateStep;
+    // Only FULL (un-clamped) steps reflect the control law's rate gain; the final
+    // step lands on the floor and covers only the remaining distance (a fraction).
+    if (pacing.currentIntervalMs > floorMs) {
+      maxFullStepRatio = Math.max(maxFullStepRatio, ratio);
+    }
     prevInterval = pacing.currentIntervalMs;
     steps += 1;
   }
 
-  // FACT (1): the interval law REACHES and RESTS at exactly the floor (the binding
-  // constraint), in the expected 8 cold-start successes — identical terminal rate
-  // to any rate-space law.
-  assert.equal(
-    pacing.currentIntervalMs,
-    floorMs,
-    "interval-space law rests at exactly the floor (the binding rate ceiling)"
-  );
-  assert.equal(steps, 8, "cold-start ramp 1000→250 is 8 successes (= ceil((1000-250)/100))");
-
-  // The §9-C2 super-linear divergence is REAL: the per-success rate gain peaks well
-  // above the matched rate-space step. Pin the measured magnitude so the rationale
-  // stays honest (this number is NOT a defect — it is the quantity the floor bounds).
+  // FACT (1): the per-success rate gain is ~CONSTANT — the peak full-step ratio is
+  // ~1.07×, NOT the ~7.5× of the old interval-space super-acceleration. (Were the
+  // law still interval-space this would be >3× and the assertion would fail.)
   assert.ok(
-    maxOvershootRatio > 3 && maxOvershootRatio < 10,
-    `§9-C2 rate-derivative overshoot is real and bounded (measured ${maxOvershootRatio.toFixed(2)}×, expected ~7.5× at 400→300)`
+    maxFullStepRatio < 1.15,
+    `§9-C2 IDEAL: per-success rate gain is ~constant (peak ${maxFullStepRatio.toFixed(3)}× the matched step) — ` +
+      "a value >1.15× would mean the law reverted to interval-space super-acceleration"
   );
 
-  // FACT (2): the floor is the SAFETY MECHANISM — the law cannot push the rate past
-  // it no matter the success volume. This is what makes the super-acceleration
-  // harmless: it accelerates toward a HARD WALL, not toward an unbounded rate.
+  // FACT (2): the law still rests at exactly the floor — steady state UNCHANGED. The
+  // rate-space ramp is more cautious (more successes to reach the floor) than the
+  // legacy 8-success ramp; that slower, gentler approach IS the AIMD discipline.
+  assert.equal(pacing.currentIntervalMs, floorMs, "rate-space law rests at exactly the floor (steady state unchanged)");
+  assert.equal(steps, 27, "cold-start ramp 1000→250 is 27 successes (cautious rate-space approach, not the old 8)");
+
+  // The floor is still a hard wall under unbounded success — never crossed.
   for (let i = 0; i < 500; i += 1) {
     pacing.recordSuccess();
     assert.ok(
       pacing.currentIntervalMs >= floorMs,
-      `interval-space super-acceleration never crosses the floor (i=${i}, interval=${pacing.currentIntervalMs})`
+      `rate-space law never crosses the floor (i=${i}, interval=${pacing.currentIntervalMs})`
     );
   }
-  assert.equal(pacing.currentIntervalMs, floorMs, "rests exactly at the floor under unbounded success");
+  // Max sustained rate at the floor is unchanged: 60000/250 = 240/min.
+  assert.equal(
+    ratePerMin(pacing.currentIntervalMs),
+    240,
+    "max sustained rate unchanged at 240/min (60000/250ms floor)"
+  );
 });
 
-test("ProviderPacing §9-C2: at and below the operating point the rate gain stays inside an acceptable band of rate-space AIMD (regression guard)", () => {
-  // The companion pin: across the ENTIRE floor-bounded operating range [floor,
-  // initial] the interval-space per-success rate gain must stay within a declared
-  // multiple of the matched rate-space step. If a future change makes the
-  // super-acceleration materially WORSE near the floor (e.g. a bigger base step, or
-  // — the real hazard — a LOWERED/REMOVED floor that lets the convex blow-up run),
-  // this band is exceeded and the §9-C2 close-as-acceptable rationale no longer
-  // holds. The band (10×) is generous on purpose: it passes the measured ~7.5× peak
-  // for ChatGPT's 1000/250/100 parameters but fails a floor removal (rate→∞).
+test("ProviderPacing §9-C2: rate-gain is constant within a TIGHT band across the whole operating range (regression guard for the IDEAL)", () => {
+  // The companion pin: across the ENTIRE operating range [floor, initial] the
+  // per-success RATE gain must stay within a TIGHT band of the calibrated step —
+  // the signature of true rate-space AIMD. The only deviation is integer-rounding
+  // noise (±~7%). If a future change reverts to interval-space, the gain near the
+  // floor climbs to ~7.5× and BLOWS this band — so this is the regression guard for
+  // the IDEAL, not for the merely-acceptable. (Mutation check: replacing the
+  // rate-space base with a flat 100ms interval step makes the 400→300 step 7.5× and
+  // fails the band below.)
   const initialIntervalMs = 1000;
   const floorMs = 250;
   const baseStep = 100;
-  const acceptableBandMultiple = 10; // headroom over the measured ~7.5× peak
+  const tightBandLow = 0.9; // ±10% — covers integer-rounding noise on full steps
+  const tightBandHigh = 1.1;
   const ratePerMin = (ms: number): number => 60_000 / ms;
   const rateStep = ratePerMin(initialIntervalMs - baseStep) - ratePerMin(initialIntervalMs);
 
@@ -1119,11 +1243,22 @@ test("ProviderPacing §9-C2: at and below the operating point the rate gain stay
   while (pacing.currentIntervalMs > floorMs) {
     pacing.recordSuccess();
     const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
-    assert.ok(
-      dRate <= rateStep * acceptableBandMultiple,
-      `per-success rate gain (${dRate.toFixed(2)}/min) within ${acceptableBandMultiple}× the matched rate-space step (${rateStep.toFixed(2)}/min) — ` +
-        "§9-C2: super-acceleration must stay floor-bounded; exceeding this band means the floor stopped binding (e.g. it was lowered/removed)"
-    );
+    const ratio = dRate / rateStep;
+    if (pacing.currentIntervalMs > floorMs) {
+      // Full step: must be inside the tight constant-rate band.
+      assert.ok(
+        ratio > tightBandLow && ratio < tightBandHigh,
+        `per-success rate gain (${dRate.toFixed(2)}/min, ${ratio.toFixed(3)}×) must stay within the tight ` +
+          `[${tightBandLow}, ${tightBandHigh}]× band of the calibrated rate step (${rateStep.toFixed(2)}/min) — ` +
+          "§9-C2 IDEAL: a value climbing toward ~7.5× near the floor means the law reverted to interval-space"
+      );
+    } else {
+      // The final partial step into the floor is a fraction of a step — never MORE.
+      assert.ok(
+        ratio <= tightBandHigh,
+        `final floor-clamped step is never larger than a full rate step (${ratio.toFixed(3)}×)`
+      );
+    }
     prevInterval = pacing.currentIntervalMs;
   }
 });

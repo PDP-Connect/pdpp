@@ -1,10 +1,18 @@
 export interface PacingOptions {
   /**
-   * Base additive-increase step (ms) per successful response — the GENTLE step
-   * applied in the ceiling-discovery region (interval at or below
-   * `initialIntervalMs`). This is the step Chiu & Jain's AIMD proof requires
-   * near the operating point: a small, conservative linear increase so the probe
-   * toward the rate ceiling never overshoots into a ban. Default: 100ms.
+   * Base additive-increase step (ms) per successful response, expressed as an
+   * INTERVAL decrement AT THE OPERATING POINT (`initialIntervalMs`). This number
+   * CALIBRATES the rate-space additive increase: the controller derives the
+   * constant per-success RATE step from it as
+   *   additiveRateStepPerMin = rate(initial − additiveIncreaseMs) − rate(initial)
+   * (where rate = 60000/interval) and then increases the RATE by that fixed
+   * amount on every success — true Chiu & Jain AIMD (§9-C2). So the very FIRST
+   * step off the operating point is exactly `additiveIncreaseMs` (live behavior
+   * preserved at the typical operating point), but unlike a flat interval
+   * decrement the rate now climbs LINEARLY all the way down to the floor instead
+   * of super-accelerating as the interval narrows — the congestion-avoidance
+   * discipline AIMD exists to provide lives in the ramp, not the floor. Default:
+   * 100ms (→ ~6.667/min rate step at the 1000ms operating point).
    */
   additiveIncreaseMs?: number;
   /**
@@ -17,9 +25,10 @@ export interface PacingOptions {
    * Cap on the elapsed-time weight applied to the over-backoff recovery term.
    * When the pacer has been throttled and fetches are slow (one per ~51s), the
    * time between successes is large. The elapsed-weight multiplies ONLY the
-   * `recoveryGain × overBackoffMs` term (NOT the base `additiveIncreaseMs`), so
-   * a long inflated wait recovers faster while the gentle base step is preserved
-   * near the ceiling (overBackoffMs ≈ 0 → elapsed weight doesn't matter there).
+   * `recoveryGain × overBackoffMs` deep-recovery term (NOT the rate-space base
+   * step), so a long inflated wait recovers faster while the gentle rate-space
+   * base step is preserved near the ceiling (overBackoffMs ≈ 0 → elapsed weight
+   * doesn't matter there).
    * Mirrors EIP-1559's 1/8 saturation step: at 8× elapsed the over-backoff
    * term is credited 8× — a pacer at 51s between successes unwinds ~8× faster
    * than the un-weighted gain. Default: 8.
@@ -64,27 +73,35 @@ export interface PacingOptions {
   /** Injectable clock for tests. Default: Date.now. */
   now?: () => number;
   /**
-   * Distance-proportional recovery gain for the additive step ABOVE the
-   * operating point. The per-success step is elapsed-weighted on the over-backoff
-   * term only:
+   * Distance-proportional recovery gain for the deep-backoff re-climb ABOVE the
+   * operating point. The per-success interval decrement is:
    *
+   *   baseStepMs    = rateSpaceBaseStepMs(interval)    // §9-C2 rate-space base
    *   overBackoffMs = max(0, interval − initialIntervalMs)
    *   recoverWeight = clamp(elapsedMs / initialIntervalMs, 1, elapsedRecoveryCap)
-   *   step = additiveIncreaseMs + recoveryGain × overBackoffMs × recoverWeight
+   *   step          = baseStepMs + recoveryGain × overBackoffMs × recoverWeight
    *
-   * The base `additiveIncreaseMs` is FLAT — elapsed time does NOT multiply it.
-   * This preserves gentle ceiling discovery (overBackoffMs ≈ 0 near the operating
-   * point, so the weight cancels out) while allowing fast unwinding from deep
-   * transient spikes: when fetches are slow (~51s each), the large elapsed gap
-   * provides up to `elapsedRecoveryCap`× credit on the over-backoff term.
+   * Two SEPARATE concerns, deliberately kept apart:
+   *  - `baseStepMs` (the §9-C2 fix) is the RATE-space additive increase — a
+   *    constant per-success RATE gain. It governs the CEILING-APPROACH region and
+   *    is the only part that matters for the convex-blow-up critique.
+   *  - `recoveryGain × overBackoffMs × recoverWeight` is the DEEP-BACKOFF recovery
+   *    term and stays in INTERVAL space (unchanged). It is non-zero ONLY above the
+   *    operating point, where there is no convex-blow-up risk: every intermediate
+   *    interval there is still SLOWER than the rate that already succeeded, so a
+   *    large interval-space jump is ban-safe and only re-climbs the transient
+   *    spike. Keeping it interval-space preserves the fast-recovery-from-deep-
+   *    backoff intent exactly (a ~51s wait still unwinds up to `elapsedRecoveryCap`×
+   *    faster). At/below the operating point overBackoffMs = 0, so this term
+   *    vanishes and the step is the pure rate-space base — gentle, cautious
+   *    ceiling discovery regardless of elapsed time.
    *
-   * THEORY CONSTRAINT (do not violate): this remains ADDITIVE in the Chiu-Jain /
+   * THEORY CONSTRAINT (do not violate): both terms are ADDITIVE in the Chiu-Jain /
    * MAIMD N=1 sense — each success applies a FIXED increment determined by the
    * current state and elapsed time, never a multiplication toward the ceiling.
    * N=1 has no fairness line so convergence is safe, and the minIntervalMs floor
-   * is a hard ceiling that is never crossed. Recovery is therefore convergent and
-   * the probe near the operating point stays the base step. Default: 0.1. Set to
-   * 0 to restore the legacy flat step (no over-backoff boost).
+   * is a hard ceiling that is never crossed. Default: 0.1. Set to 0 to drop the
+   * over-backoff boost (pure rate-space base step at every interval).
    *
    * Tunable via PDPP_CHATGPT_PACING_RECOVERY_GAIN at the ChatGPT call site.
    */
@@ -159,6 +176,11 @@ export interface PacingSnapshot {
 const DEFAULT_INITIAL_INTERVAL_MS = 1000;
 const DEFAULT_ADDITIVE_INCREASE_MS = 100;
 /**
+ * Milliseconds per minute — the unit the rate-space additive increase works in.
+ * rate(intervalMs) = MS_PER_MIN / intervalMs requests-per-minute. §9-C2.
+ */
+const MS_PER_MIN = 60_000;
+/**
  * Default distance-proportional recovery gain (see PacingOptions.recoveryGain).
  * 0.1 unwinds a deep transient back-off in tens of successes while keeping the
  * step within ~10% of the base step in the discovery region just above the
@@ -187,11 +209,13 @@ function defaultSleep(ms: number): Promise<void> {
  * GCRA-compatible token-bucket pacing with elapsed-weighted MAIMD fill-rate
  * adjustment (Multiplicative-decrease / Additive-increase, N=1 single flow).
  *
- * Recovery (additive increase) is elapsed-time-weighted on the over-backoff term
- * only — the base `additiveIncreaseMs` stays flat so ceiling discovery remains
- * gentle, while deep transient spikes unwind faster when fetches are slow.
- * Throttle (multiplicative decrease) is bounded via `softThrottleGain` (1.5×
- * default, inside the Leonardos stable band) and clamped to `maxIntervalMs`.
+ * Additive increase is applied in RATE space (§9-C2): each success raises the
+ * RATE by a calibrated constant, so the per-success rate gain is ~flat across the
+ * operating range and the law approaches the floor cautiously by construction.
+ * The elapsed-weighted deep-backoff recovery term fires only above the operating
+ * point, where it unwinds transient spikes faster when fetches are slow. Throttle
+ * (multiplicative decrease) is bounded via `softThrottleGain` (1.5× default,
+ * inside the Leonardos stable band) and clamped to `maxIntervalMs`.
  *
  * N=1 has no fairness line so convergence is safe; the `minIntervalMs` floor is
  * a hard ceiling that is never crossed.
@@ -207,6 +231,14 @@ export class ProviderPacing {
   private readonly maxIntervalMs: number;
   private readonly burstToleranceMs: number;
   private readonly additiveIncreaseMs: number;
+  /**
+   * §9-C2: the constant per-success RATE increment (requests/min) the rate-space
+   * additive increase applies. Derived from `additiveIncreaseMs` so the FIRST step
+   * off the operating point matches the legacy interval step exactly (live
+   * behavior preserved), but the rate now climbs linearly to the floor instead of
+   * super-accelerating. See {@link rateSpaceBaseStepMs}.
+   */
+  private readonly additiveRateStepPerMin: number;
   private readonly recoveryGain: number;
   private readonly elapsedRecoveryCap: number;
   private readonly softThrottleGain: number;
@@ -228,9 +260,20 @@ export class ProviderPacing {
     this.minIntervalMs = options.minIntervalMs ?? 0;
     this.burstToleranceMs = options.burstToleranceMs ?? 2 * this.initialIntervalMs;
     this.additiveIncreaseMs = options.additiveIncreaseMs ?? DEFAULT_ADDITIVE_INCREASE_MS;
+    // §9-C2: calibrate the constant rate-space additive step from the configured
+    // interval step at the operating point. The first step off `initialIntervalMs`
+    // is then identical to the legacy interval law (live behavior preserved at the
+    // typical operating point), but the rate climbs LINEARLY toward the floor
+    // instead of super-accelerating (the convex-blow-up the §9-C2 critique flags).
+    //   additiveRateStepPerMin = rate(initial − additiveIncreaseMs) − rate(initial)
+    // Guard the degenerate case where additiveIncreaseMs ≥ initialIntervalMs (the
+    // interval-after-step would be ≤ 0): clamp to a 1ms post-step interval so the
+    // derived rate step stays finite and positive.
+    const postStepIntervalMs = Math.max(1, this.initialIntervalMs - this.additiveIncreaseMs);
+    this.additiveRateStepPerMin = MS_PER_MIN / postStepIntervalMs - MS_PER_MIN / this.initialIntervalMs;
     // Clamp the recovery gain to a non-negative, finite value. A negative or
-    // NaN gain would invert/poison the additive step; 0 restores the legacy
-    // flat-step behaviour.
+    // NaN gain would invert/poison the additive step; 0 drops the deep-backoff
+    // boost, leaving the pure §9-C2 rate-space base step.
     this.recoveryGain =
       typeof options.recoveryGain === "number" && Number.isFinite(options.recoveryGain) && options.recoveryGain >= 0
         ? options.recoveryGain
@@ -369,18 +412,18 @@ export class ProviderPacing {
   /**
    * Record a successful response — additive increase (reduce interval toward minIntervalMs).
    *
-   * The per-success step is distance-proportional but bounded and ADDITIVE
-   * (Chiu-Jain): a fixed increment per success that is the gentle base step in
-   * the ceiling-discovery region (interval at or below `initialIntervalMs`) and
-   * grows with the over-backoff distance above it. This unwinds a transient
-   * spike (a burst of real 429s pushed the interval far above the operating
-   * point) in tens of successes instead of hundreds, while keeping the probe
-   * toward the rate ceiling gentle — recovering fast above the operating point
-   * is ban-safe because every intermediate interval is still SLOWER than the
-   * rate that already succeeded; only near `initialIntervalMs`/`minIntervalMs`
-   * are we discovering the true ceiling, and there the step stays the base step.
-   * See {@link PacingOptions.recoveryGain} for the theory constraint. The step
-   * is never multiplicative, so convergence is preserved, and the result is
+   * The per-success step is ADDITIVE (Chiu-Jain) and has two parts (§9-C2): a
+   * RATE-space base step that increases the RATE by the calibrated constant
+   * `additiveRateStepPerMin` (so the per-success rate gain is ~flat across the
+   * whole operating range — the law approaches the floor cautiously by
+   * construction, not by relying on the floor clamp), plus an elapsed-weighted
+   * deep-backoff term that only fires above the operating point to unwind a
+   * transient 429 spike in tens of successes instead of hundreds. Recovering fast
+   * above the operating point is ban-safe because every intermediate interval is
+   * still SLOWER than the rate that already succeeded; near
+   * `initialIntervalMs`/`minIntervalMs` only the gentle rate-space base step
+   * applies. See {@link PacingOptions.recoveryGain} for the theory constraint. The
+   * step is never multiplicative, so convergence is preserved, and the result is
    * always floored at `minIntervalMs` — the ceiling is never crossed.
    *
    * §10-D (SLVP-ideal): pass `{ suppressAdditiveIncrease: true }` to suppress
@@ -396,21 +439,24 @@ export class ProviderPacing {
       // advance the elapsed-time baseline (which would compress future real ticks).
       return;
     }
-    // §9-C2 (slvp-ideal, CLOSED as acceptable): the additive step is subtracted in
-    // INTERVAL space, not RATE space. Since rate = 60000/interval is convex, a
-    // constant −step interval decrement makes the per-success RATE gain climb
-    // super-linearly as the interval nears the floor (measured up to ~7.5× a matched
-    // rate-space AIMD step at the 400→300 ms step, for ChatGPT's 1000/250/100). This
-    // is NOT behaviorally harmful and was deliberately NOT rewritten: the binding
-    // safety constraint is the hard `minIntervalMs` floor (§7), not the control-law
-    // space. The acceleration runs toward a hard clamp it never crosses — both this
-    // law and a rate-space AIMD rest at the SAME floor and the SAME max sustained
-    // rate. The only difference is a ~7.7s-less-conservative COLD-START ramp
-    // (8 successes vs ~27), once per cold run, entirely inside the floor-bounded
-    // zone; warm-start usually skips it and steady state is at the floor regardless.
-    // Converting to rate-space would slow the cold ramp without changing the rate
-    // the provider actually sees — a behavior change, not a safety win. Pinned by the
-    // two "ProviderPacing §9-C2" tests (floor binds identically + rate-gain band).
+    // §9-C2 (slvp-ideal, IMPLEMENTED): the additive increase is now applied in
+    // RATE space, not INTERVAL space. Textbook Chiu-Jain AIMD increases the RATE by
+    // a fixed amount per success; the legacy law subtracted a fixed −Δms from the
+    // INTERVAL instead. Because rate = 60000/interval is convex, that interval
+    // decrement made the per-success RATE gain climb super-linearly toward the floor
+    // (measured up to ~7.5× a matched rate-space step at the 400→300 ms step for
+    // ChatGPT's 1000/250/100) — "the probe accelerates fastest exactly where it is
+    // riskiest," the opposite of the congestion-avoidance discipline AIMD exists to
+    // provide. The control LAW now approaches the ceiling cautiously by construction,
+    // independent of the floor being perfectly authored: `additiveStepMs` increases
+    // the RATE by the calibrated constant `additiveRateStepPerMin` (matched to the
+    // legacy step at the operating point, so live behavior barely changes in the
+    // normal range) and converts back to an interval decrement. Near the floor the
+    // rate now rises LINEARLY (no 7.5× super-acceleration). The hard `minIntervalMs`
+    // floor still clamps the result — steady-state rest point and max sustained rate
+    // are UNCHANGED; only the ramp SHAPE is corrected. Pinned by the two
+    // "ProviderPacing §9-C2" tests (rate-gain is ~flat across the operating range +
+    // the law rests at exactly the floor).
     //
     // Read the elapsed-based step BEFORE updating lastSuccessAtMs (additiveStepMs
     // reads lastSuccessAtMs; updating first would collapse elapsed to 0).
@@ -420,15 +466,49 @@ export class ProviderPacing {
   }
 
   /**
-   * The additive-increase step (ms) to apply for the current interval. The base
-   * `additiveIncreaseMs` is FLAT regardless of elapsed time — this preserves
-   * gentle ceiling discovery (overBackoffMs ≈ 0 near the operating point). The
-   * elapsed-time weight multiplies ONLY the `recoveryGain × overBackoffMs` term,
-   * so a long inflated wait accelerates unwinding from deep transient spikes
-   * without collapsing a near-ceiling interval to the floor in one step.
+   * §9-C2: the RATE-space base step expressed as an interval decrement (ms) for
+   * the current interval. Increases the RATE by the constant calibrated
+   * `additiveRateStepPerMin` and converts back to an interval:
+   *
+   *   newRate     = MS_PER_MIN / interval + additiveRateStepPerMin
+   *   newInterval = round(MS_PER_MIN / newRate)   (rounded → integer intervals)
+   *   baseStepMs  = interval − newInterval
+   *
+   * Because the rate increment is CONSTANT, the per-success rate gain is ~flat
+   * across the whole operating range — the control law approaches the floor
+   * cautiously by construction, NOT relying on the floor clamp to bound the ramp.
+   * The result is floored at `minIntervalMs` by the caller; here we only floor the
+   * pre-clamp interval at 1ms to keep the rate finite.
+   * PURE: reads only, mutates nothing.
+   */
+  private rateSpaceBaseStepMs(intervalMs: number): number {
+    const currentRatePerMin = MS_PER_MIN / intervalMs;
+    const newRatePerMin = currentRatePerMin + this.additiveRateStepPerMin;
+    // Round so intervals stay integer-valued (operator-legible logs, integer
+    // warm-start persistence) with no IEEE-754 drift. newRatePerMin > 0 always
+    // (additiveRateStepPerMin > 0), so the division is safe.
+    const newIntervalMs = Math.max(1, Math.round(MS_PER_MIN / newRatePerMin));
+    // The decrement is non-negative: a positive rate increment can only shorten
+    // the interval. Guard against rounding producing a tiny negative.
+    return Math.max(0, intervalMs - newIntervalMs);
+  }
+
+  /**
+   * The additive-increase step (ms) to apply for the current interval. Two
+   * deliberately separate terms (see {@link PacingOptions.recoveryGain}):
+   *  - the §9-C2 RATE-space base step ({@link rateSpaceBaseStepMs}) governs the
+   *    ceiling-approach region and gives a ~constant per-success RATE gain;
+   *  - the elapsed-weighted `recoveryGain × overBackoffMs` deep-backoff term stays
+   *    in INTERVAL space and is non-zero ONLY above the operating point (where the
+   *    convex-blow-up risk does not exist), preserving fast re-climb from a deep
+   *    transient spike.
+   * At/below the operating point overBackoffMs = 0, so the step is the pure
+   * rate-space base — gentle, cautious ceiling discovery regardless of elapsed time.
    * PURE: reads only, mutates nothing.
    */
   private additiveStepMs(): number {
+    // §9-C2 rate-space base step (integer-valued, applies at every interval).
+    const baseStepMs = this.rateSpaceBaseStepMs(this._currentIntervalMs);
     const overBackoffMs = Math.max(0, this._currentIntervalMs - this.initialIntervalMs);
     // Elapsed since the last real success tick. On the very first success (null)
     // treat elapsed as one normal-cadence interval (weight = 1, backward-compat).
@@ -436,14 +516,12 @@ export class ProviderPacing {
       this.lastSuccessAtMs == null ? this.initialIntervalMs : Math.max(0, this.now() - this.lastSuccessAtMs);
     // Normalize by initialIntervalMs: one normal-cadence success → weight 1.
     // A long throttled wait → up to elapsedRecoveryCap× the over-backoff term.
-    // The base step is NOT multiplied — it stays flat near the ceiling.
+    // The rate-space base step is NOT multiplied — it stays gentle near the ceiling.
     const recoverWeight = Math.min(this.elapsedRecoveryCap, Math.max(1, elapsedMs / this.initialIntervalMs));
-    // Floor to whole ms so intervals stay integer-valued (operator-legible logs
-    // and an integer warm-start persisted value, matching the legacy flat step)
-    // and no IEEE-754 drift accumulates. At/below the operating point
-    // overBackoffMs is 0, so this is exactly `additiveIncreaseMs` — the gentle
+    // The deep-backoff term is floored to whole ms (integer intervals). At/below
+    // the operating point overBackoffMs is 0, so the step is exactly the rate-space
     // base step — preserving cautious ceiling discovery regardless of elapsed time.
-    return Math.floor(this.additiveIncreaseMs + this.recoveryGain * overBackoffMs * recoverWeight);
+    return baseStepMs + Math.floor(this.recoveryGain * overBackoffMs * recoverWeight);
   }
 
   /**
