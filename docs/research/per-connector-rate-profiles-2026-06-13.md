@@ -159,12 +159,17 @@ terminal classifier runs on `DETAIL_GAP` records, and the source-pressure cooldo
 escalation arms only on *pending source-pressure detail gaps*
 (`reason ∈ {rate_limited, upstream_pressure}`).
 
-**All six connectors emit zero detail gaps.** They are simple list-paginating API
-connectors: a 429 throws `<connector>_rate_limited` which surfaces as a *run-level*
-retryable failure (cross-run deferral via each connector's `retryablePattern`),
-never a per-resource `DETAIL_GAP`. (Verified by source scan: no `emitDetailGap` /
-`DETAIL_GAP` emission in any of the six; the only `rate_limited`/`upstream_pressure`
-string matches are the `retryablePattern` regexes.) This is the structural
+**None of the six emit a source-pressure or recovery-retried gap** — so neither the
+§10-A terminal-gap loop nor the §10-B cooldown loop ever runs for them, and the safe
+shared defaults are correct. They are simple list-paginating API connectors: a 429
+throws `<connector>_rate_limited` which surfaces as a *run-level* retryable failure
+(cross-run deferral via each connector's `retryablePattern`), never a
+source-pressure `DETAIL_GAP`. (NOTE: github does emit `SKIP_RESULT` coverage markers
+— `pr_search_cap_truncated` / `pr_detail_fetch_failed` — but their `reason` is NOT in
+`SOURCE_PRESSURE_GAP_REASONS = {rate_limited, upstream_pressure}`, so they never arm
+the cooldown, and they carry no per-resource recovery loop, so `maybeTerminateGap`
+never fires; the terminal-gap resolver's safe `DEFAULT_TERMINAL_GAP_PROFILE` would
+catch one regardless.) This is the structural
 difference from ChatGPT, whose private detail endpoint degrades individual
 conversations to resumable `DETAIL_GAP` records under pressure.
 
