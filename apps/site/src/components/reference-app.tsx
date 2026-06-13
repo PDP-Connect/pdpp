@@ -1732,46 +1732,57 @@ Content-Type: application/json
         <FeaturedSection
           config={SECTION_CONTENT[3]}
           detail={
-            <DetailPanel label="See the trust model" spec="§5.1 Client Display, §5.2 Client Claims">
-              <p className="font-medium text-foreground">Three content layers in the consent card above:</p>
+            <DetailPanel label="See the trust model" spec="§5 Semantic classes">
+              <p className="font-medium text-foreground">
+                Every cell in the consent card maps to exactly one semantic class. The spec defines three classes plus{" "}
+                <span className="font-mono">client_display</span> as a separate identity category, and a conformant AS
+                MUST NOT flatten them into one undifferentiated surface:
+              </p>
 
-              {/* Trust model mapping — what in the UI comes from where */}
+              {/* Trust model mapping — what in the UI comes from where, tagged by
+                  the spec's refined semantic class (spec-core.md §5). */}
               <div className="mt-1 flex flex-col gap-0">
                 {[
                   {
                     element: '"Pay statements", "Equity grants"',
-                    source: "Manifest display.label",
-                    trust: "Server-trusted",
+                    source: "Manifest display.label (manifest-authored)",
+                    trust: "Data description",
                     color: "var(--primary)",
                   },
                   {
                     element: '"Employer, pay period, gross pay..."',
-                    source: "Manifest display.detail",
-                    trust: "Server-trusted",
+                    source: "Manifest display.detail (manifest-authored, never client)",
+                    trust: "Data description",
                     color: "var(--primary)",
                   },
                   {
-                    element: `"${LONGVIEW_CLIENT_NAME}" + CLIENT APP + VERIFIED badge`,
-                    source: "Resolved client metadata + AS trust signal",
-                    trust: "Rendered under AS policy",
-                    color: "var(--primary)",
-                  },
-                  {
-                    element: `"${LONGVIEW_CLIENT_NAME} says: Workspace only..."`,
-                    source: "client_claims.commitments",
-                    trust: "Client-claimed, attributed",
-                    color: "var(--human)",
-                  },
-                  {
-                    element: '"Ongoing access, active until revocation"',
-                    source: "grant.access_mode (server-derived)",
-                    trust: "Protocol fact",
+                    element: "Streams · fields · access_mode",
+                    source: "grant constraints (AS/RS enforce)",
+                    trust: "Protocol-enforced",
                     color: "var(--success)",
                   },
                   {
-                    element: '"These are their commitments..."',
-                    source: "Fixed disclaimer (server-rendered)",
-                    trust: "Server warning",
+                    element: '"Ongoing access until revocation" / "One-time"',
+                    source: "grant.access_mode (server-derived)",
+                    trust: "Protocol-enforced",
+                    color: "var(--success)",
+                  },
+                  {
+                    element: "Purpose · retention",
+                    source: "purpose_code, purpose_description, retention",
+                    trust: "Policy declaration",
+                    color: "var(--warning)",
+                  },
+                  {
+                    element: `"${LONGVIEW_CLIENT_NAME} says: Workspace only..."`,
+                    source: "client_claims.commitments (request-scoped)",
+                    trust: "Attributed client claim",
+                    color: "var(--human)",
+                  },
+                  {
+                    element: `"${LONGVIEW_CLIENT_NAME}" + CLIENT APP + VERIFIED badge`,
+                    source: "client_display (entity-scoped) resolved under AS policy",
+                    trust: "Identity metadata",
                     color: "var(--primary)",
                   },
                 ].map((row, i, arr) => (
@@ -1890,6 +1901,19 @@ Content-Type: application/json
                   <span style={{ opacity: 0.65 }}>access pattern:</span> access_mode (single_use | continuous)
                 </span>
               </div>
+              <p>
+                A <strong>single_use</strong> grant is consumed on the first token issuance: the issued token keeps
+                working until expiry, but no second token is ever minted (a second attempt is rejected{" "}
+                <span className="font-mono">grant_consumed</span> → 403). The runtime enforces this and persists no
+                STATE from single_use runs. See{" "}
+                <a
+                  className="underline"
+                  href="/docs/reference-implementation-examples#example-6-single-use-grant-consumption"
+                >
+                  Example 6
+                </a>{" "}
+                for the real HTTP/JSON exchange (conformance-tested).
+              </p>
               <p className="italic" style={{ opacity: 0.7 }}>
                 retention is a policy commitment by the client, not server-enforced. Enforcement is through legal
                 agreements, consistent with how OAuth 2.0 treats scope compliance.
@@ -1939,6 +1963,18 @@ PDPP-Version: 0.1.0
                   <span className="text-warning">410 Gone</span> — changes_since cursor has expired
                 </span>
               </div>
+              <p className="italic" style={{ opacity: 0.7 }}>
+                The introspection panel below mirrors the real <span className="font-mono">POST /introspect</span>{" "}
+                envelope. For the exact request/response a reviewer can run against a live node — active, revoked, and
+                grant-package shapes — see{" "}
+                <a
+                  className="underline"
+                  href="/docs/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
+                >
+                  Example 4
+                </a>{" "}
+                (conformance-tested by the B3 suite).
+              </p>
             </DetailPanel>
           }
         >

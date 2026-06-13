@@ -337,8 +337,11 @@ PDPP extension fields in the response:
 
 ### Step 2: Token inactive — grant revoked
 
-When the underlying grant is revoked (or has already been consumed for a
-`single_use` grant), introspection returns `active: false` with a typed reason:
+When the underlying grant is revoked (or the token has expired), introspection
+returns `active: false` with a typed reason. Note that a **consumed** `single_use`
+grant does *not* flip its already-issued token to inactive — consumption blocks
+new token issuance, not the existing token (see Example 6). Introspection returns
+`active: false` with a typed reason in these cases:
 
 ```json
 {
@@ -450,3 +453,166 @@ curl -s "$RS_URL/v1/streams/top_artists/records" \
 Aggregate queries are equally scoped: a `sum` over `popularity` on this token
 counts only those three records. The enforcement is in SQL (`record_key IN (?)`
 pushdown), so the RS never loads the hidden records into application memory.
+
+## Example 6: Single-use grant consumption
+
+`access_mode` is a protocol-enforced grant constraint with two values:
+`continuous` (the standing-authorization default shown in Examples 1 and 4) and
+`single_use`. A `single_use` grant is **consumed atomically on the first token
+issuance**: the issued token stays valid until its own expiry, but the grant can
+never mint a second token. This is how a client that needs a one-time bootstrap
+("read my data once to seed a profile, then forget about me") gets exactly that,
+enforced by the AS rather than promised in prose.
+
+The behaviour in this example is asserted against the running server by
+`reference-implementation/test/b6-single-use-consumption-conformance.test.js`
+(and the consumption rejection by `test/pdpp.test.js`, "single_use grant: second
+token issuance is rejected with grant_consumed"). If the runtime drifts from what
+is documented here, those suites fail.
+
+### Step 1: Stage a single-use PAR request
+
+The only difference from a continuous request is `"access_mode": "single_use"`.
+
+```bash
+REQUEST_URI=$(curl -sX POST "$AS_URL/oauth/par" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_id": "longview",
+    "authorization_details": [{
+      "type": "https://pdpp.org/data-access",
+      "source": { "kind": "connector", "id": "spotify" },
+      "purpose_code": "https://pdpp.org/purpose/personalization",
+      "purpose_description": "One-time recommendation bootstrap",
+      "access_mode": "single_use",
+      "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }]
+    }]
+  }' | jq -r .request_uri)
+```
+
+### Step 2: Approval issues the first (and only) token
+
+```bash
+APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+TOKEN=$(echo "$APPROVED" | jq -r .token)
+```
+
+The issued grant carries `access_mode: "single_use"` and — unlike a continuous
+grant, whose `expires_at` may be null — always a bounded `expires_at` (the
+reference default is 24h from issuance):
+
+```json
+{
+  "grant_id": "grt_18146807dc63d26c",
+  "token": "a5461cc8…3f617a",
+  "grant": {
+    "version": "0.1.0",
+    "grant_id": "grt_18146807dc63d26c",
+    "issued_at": "2026-06-13T22:48:20.933Z",
+    "subject": { "id": "owner_local" },
+    "client": {
+      "client_id": "longview",
+      "registration_mode": "pre_registered_public",
+      "client_display": { "name": "Longview" }
+    },
+    "source": { "kind": "connector", "id": "spotify" },
+    "manifest_version": "1.0.0",
+    "purpose_code": "https://pdpp.org/purpose/personalization",
+    "purpose_description": "One-time recommendation bootstrap",
+    "access_mode": "single_use",
+    "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }],
+    "expires_at": "2026-06-14T22:48:20.933Z"
+  }
+}
+```
+
+### Step 3: The issued token still serves queries — consumption is not revocation
+
+Consumption applies to **new token issuance**, not to the already-issued token.
+The token works for as many reads as the client needs until it expires —
+`single_use` bounds how many tokens a grant mints, not how many queries one token
+may perform.
+
+```bash
+curl -s "$RS_URL/v1/streams/top_artists/records?limit=10" \
+  -H "Authorization: Bearer $TOKEN" | jq '.data | length'
+# → 200 OK, records returned
+```
+
+Introspecting that token confirms it is still `active` even though the grant is
+already consumed (the `grant` object reports `access_mode: "single_use"`):
+
+```json
+{
+  "active": true,
+  "pdpp_token_kind": "client",
+  "grant_id": "grt_18146807dc63d26c",
+  "client_id": "longview",
+  "grant": { "access_mode": "single_use", "...": "full grant object" }
+}
+```
+
+### Step 4: A second token issuance is refused with `grant_consumed`
+
+The grant was marked consumed atomically on the first issuance. Whichever HTTP
+re-issuance path a client reaches for next — an OAuth `refresh_token` exchange at
+`POST /oauth/token`, or a device re-exchange — bottoms out in the same internal
+`issueToken` primitive, which refuses a consumed `single_use` grant:
+
+```text
+issueToken(grant_id="grt_18146807dc63d26c", …)
+  → Error: Grant has already been consumed
+    code: grant_consumed   (mapped to HTTP 403 by server/routes/ref-error-status.ts)
+```
+
+A `continuous` grant under the identical sequence mints a second token and keeps
+serving — that contrast is the control test in the B6 suite. Single-use grants
+additionally persist **no STATE**: the runtime refuses to attach grant-scoped sync
+state to a `single_use` grant (`test/pdpp.test.js`, "grant-scoped polyfill state
+rejects single_use grants"), so a one-time run leaves no resumable cursor behind.
+
+## Example 7: Semantic classes on the consent surface
+
+PDPP normatively constrains how a conformant AS **renders** the parts of a
+selection request and grant, even though it does not standardize consent-screen
+layout. The spec (`spec-core.md`, "Semantic classes and consent-surface
+rendering") defines three primary semantic classes, plus `client_display` as a
+separate identity category. The reference consent surface keeps them visually
+distinct; a reviewer can map every field in the JSON above to exactly one class.
+
+| Semantic class | What it is | v0.1 fields | Trust treatment |
+| --- | --- | --- | --- |
+| **Protocol-enforced constraints** | Values the AS and/or RS actually validate or enforce | `streams`, field projection, `time_range`, `resources`, `access_mode` | Authoritative. Rendered as the binding terms of the grant. |
+| **Structured policy declarations** | Machine-readable statements that matter for consent and audit but are not generally self-enforcing | `purpose_code`, `purpose_description`, `retention` | Displayed as declared policy. (`https://pdpp.org/purpose/ai_training` is the one exception that adds a protocol-level consent requirement.) |
+| **Attributed client claims** | Client-authored, unverifiable statements about this request | `client_claims.commitments` | Rendered separately and attributed to the client (e.g. "Longview says:"). MUST NOT share the visual register of enforced terms. |
+
+`client_display` is a **separate category**, not one of the three classes:
+requester identity metadata used to identify *who is asking*, not a grant
+constraint. It is **entity-scoped** and appears at the **top level** of the
+authorization request, outside `authorization_details`. `client_claims`, by
+contrast, is **request-scoped** and lives **inside** each `authorization_details`
+entry — a client may make different commitments for different requests. Inline
+`client_display` values are client-asserted; the AS renders identity under its
+own resolution and trust policy (local registration → trust registry → validated
+software statement → inline → `client_id` fallback).
+
+```json
+{
+  "client_display": { "name": "Longview", "uri": "https://longview.example" },
+  "authorization_details": [{
+    "type": "https://pdpp.org/data-access",
+    "access_mode": "single_use",
+    "purpose_code": "https://pdpp.org/purpose/personalization",
+    "client_claims": { "commitments": ["Data used only for this study"] }
+  }]
+}
+```
+
+A separate authorship rule governs **data descriptions**: a stream's
+`display.detail` is **manifest-authored** (the provider's connector manifest),
+never client-authored. A client cannot describe what your data *is*; it can only
+request access to it and attach its own attributed claims. The AS MUST keep
+manifest-authored descriptions distinct from client claims, so a client can never
+borrow the provider's voice to make data look more innocuous than it is.
