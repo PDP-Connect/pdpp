@@ -138,12 +138,26 @@ function NavList({ pathname, onNavigate }: { onNavigate?: () => void; pathname: 
 // ─── Footer host block ────────────────────────────────────────────
 
 function FootBlock({ host, build }: { build: string; host: string }) {
+  // Theme toggle lives here in the sidebar footer — a quiet utility, not a
+  // front-and-center header action. The hook flips <html> so any toggle
+  // instance stays in sync via the DOM.
+  const [theme, toggleTheme] = useThemeToggle();
+  const themeLabel = theme === "dark" ? "Dark" : "Light";
+  const themeTitle = theme === "dark" ? "Switch to light" : "Switch to dark";
   return (
     <div className="rr-side__foot">
       <span className="rr-side__host">
         {host} · {build}
       </span>
       <span className="rr-side__motto">your data, at home</span>
+      <button
+        className="rr-side__theme rr-chrome-btn"
+        onClick={toggleTheme}
+        title={themeTitle}
+        type="button"
+      >
+        {themeLabel}
+      </button>
     </div>
   );
 }
@@ -210,7 +224,6 @@ export function RecordroomShell({
   onJump,
 }: RecordroomShellProps) {
   const pathname = usePathname() ?? "/dashboard";
-  const [theme, toggleTheme] = useThemeToggle();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -229,9 +242,6 @@ export function RecordroomShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onJump]);
-
-  const themeLabel = theme === "dark" ? "Dark" : "Light";
-  const themeTitle = theme === "dark" ? "Switch to light" : "Switch to dark";
 
   return (
     <div className="rr-app">
@@ -259,12 +269,14 @@ export function RecordroomShell({
             {host} · {build}
           </span>
           <div className="rr-head__actions">
-            <button className="rr-chrome-btn" onClick={() => onJump?.()} type="button">
-              Jump <span className="rr-kbd">⌘K</span>
-            </button>
-            <button className="rr-chrome-btn" onClick={toggleTheme} title={themeTitle} type="button">
-              {themeLabel}
-            </button>
+            {/* Jump (⌘K) renders ONLY when a caller wires onJump — no dead
+                affordance. The ⌘K keydown below is likewise a no-op without
+                a handler. Pages that mount a command palette pass onJump. */}
+            {onJump ? (
+              <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
+                Jump <span className="rr-kbd">⌘K</span>
+              </button>
+            ) : null}
             <button
               aria-expanded={drawerOpen}
               className="rr-chrome-btn rr-menu-btn"
