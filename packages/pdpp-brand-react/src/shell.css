@@ -325,7 +325,10 @@
   }
   .rr-content {
     overflow-x: hidden;
-    padding: 20px 16px 56px;
+    /* Bottom padding kept modest on mobile: 56px read as "scrolling into empty
+       space" past the last element. 24px gives breathing room without a dead
+       gap below the content. */
+    padding: 20px 16px 24px;
   }
   .rr-head {
     padding: 10px 16px;
