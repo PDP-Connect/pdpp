@@ -179,6 +179,7 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
         assert.equal(req.url?.startsWith("/v1/blobs?"), true);
         const url = new URL(req.url ?? "", "http://127.0.0.1");
         assert.equal(url.searchParams.get("connector_id"), "https://registry.pdpp.org/connectors/whatsapp");
+        assert.equal(url.searchParams.get("connector_instance_id"), "cin_whatsapp_media");
         assert.equal(url.searchParams.get("stream"), "attachments");
         assert.match(url.searchParams.get("record_key") ?? "", /^[0-9a-f]{16}:attachment:[0-9a-f]{16}$/);
         const body = await readRequestBody(req);
@@ -196,6 +197,7 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
       },
       async (baseUrl) => {
         const { attachment } = await runWhatsAppImport(importRoot, {
+          PDPP_CONNECTOR_INSTANCE_ID: "cin_whatsapp_media",
           PDPP_OWNER_TOKEN: "owner-token",
           PDPP_RS_URL: baseUrl,
         });

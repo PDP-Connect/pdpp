@@ -13,6 +13,7 @@ export type ReferenceBlobUploadContent =
 
 export type ReferenceBlobUploadFn = (args: {
   connectorId: string;
+  connectorInstanceId?: string | null;
   content: ReferenceBlobUploadContent;
   mimeType: string;
   recordKey: string;
@@ -51,9 +52,18 @@ function isBlobUploadResponse(value: unknown): value is BlobUploadResponse {
   );
 }
 
-function makeBlobUploadUrl(args: { connectorId: string; recordKey: string; rsUrl: string; stream: string }): URL {
+function makeBlobUploadUrl(args: {
+  connectorId: string;
+  connectorInstanceId?: string | null;
+  recordKey: string;
+  rsUrl: string;
+  stream: string;
+}): URL {
   const url = new URL("/v1/blobs", args.rsUrl);
   url.searchParams.set("connector_id", args.connectorId);
+  if (args.connectorInstanceId) {
+    url.searchParams.set("connector_instance_id", args.connectorInstanceId);
+  }
   url.searchParams.set("stream", args.stream);
   url.searchParams.set("record_key", args.recordKey);
   return url;
@@ -136,8 +146,12 @@ export function runtimeBlobUploadAvailable(env: NodeJS.ProcessEnv = process.env)
   return Boolean((env.PDPP_RS_URL || env.RS_URL) && env.PDPP_OWNER_TOKEN);
 }
 
-export function makeReferenceBlobUploader(args: { ownerToken: string; rsUrl: string }): ReferenceBlobUploadFn {
-  return async ({ connectorId, content, mimeType, recordKey, stream }) => {
+export function makeReferenceBlobUploader(args: {
+  connectorInstanceId?: string | null;
+  ownerToken: string;
+  rsUrl: string;
+}): ReferenceBlobUploadFn {
+  return async ({ connectorId, connectorInstanceId, content, mimeType, recordKey, stream }) => {
     const upload = createHashingUploadBody(content);
     const requestInit: StreamingRequestInit = {
       body: upload.body,
@@ -148,7 +162,16 @@ export function makeReferenceBlobUploader(args: { ownerToken: string; rsUrl: str
       },
       method: "POST",
     };
-    const response = await fetch(makeBlobUploadUrl({ connectorId, recordKey, rsUrl: args.rsUrl, stream }), requestInit);
+    const response = await fetch(
+      makeBlobUploadUrl({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? args.connectorInstanceId ?? null,
+        recordKey,
+        rsUrl: args.rsUrl,
+        stream,
+      }),
+      requestInit
+    );
     const body = (await response.json().catch((): unknown => null)) as unknown;
     if (!response.ok) {
       const message =

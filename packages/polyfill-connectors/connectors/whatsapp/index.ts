@@ -96,7 +96,11 @@ function uploadBlob(args: {
   if (!(runtimeBlobUploadAvailable(process.env) && rsUrl && ownerToken)) {
     return Promise.resolve(null);
   }
-  const uploader = makeReferenceBlobUploader({ ownerToken, rsUrl });
+  const uploader = makeReferenceBlobUploader({
+    connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
+    ownerToken,
+    rsUrl,
+  });
   return uploader({
     connectorId: args.connectorId,
     content: [args.bytes],

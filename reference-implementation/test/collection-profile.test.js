@@ -1150,7 +1150,7 @@ test('Collection Profile conformance', async (t) => {
     }
   });
 
-  await t.test('runConnector scopes checkpoint PUTs by connector_instance_id without changing ingest URLs', async () => {
+  await t.test('runConnector scopes ingest and checkpoint PUTs by connector_instance_id', async () => {
     const connectorId = 'instance_runtime_connector';
     const connectorInstanceId = 'cin_instance_runtime_work';
     const ownerToken = 'owner_runtime_token';
@@ -1207,7 +1207,7 @@ test('Collection Profile conformance', async (t) => {
       assert.ok(ingestRequest);
       assert.equal(ingestRequest.pathname, '/v1/ingest/items');
       assert.equal(ingestRequest.connectorId, connectorId);
-      assert.equal(ingestRequest.connectorInstanceId, null);
+      assert.equal(ingestRequest.connectorInstanceId, connectorInstanceId);
 
       const stateRequest = requests.find((request) => request.method === 'PUT');
       assert.ok(stateRequest);
