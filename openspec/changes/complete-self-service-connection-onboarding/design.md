@@ -338,6 +338,15 @@ connectors that can derive non-secret source identity return it as validation
 metadata. The Console may offer a preview-only action for cautious inspection,
 but import remains the primary path.
 
+Artifact-derived identity is a suggestion, not authority. If the owner starts
+from Add source, the flow must let them explicitly create a new source, choose
+an existing same-connector source when the file belongs there, and edit the new
+source label. If the owner starts from an existing source detail/status page,
+that connection id is the explicit target. The validator may warn about
+duplicates or suggest a label from the file, but it must not silently merge
+artifact families into an existing connection because a chat title, account
+name, or filename looks familiar.
+
 For WhatsApp chat exports this means the connector parser derives the chat title
 and a stable chat id from the export file, then returns a suggested source label
 such as `WhatsApp - Ghazal`. The Console renders that metadata generically; it

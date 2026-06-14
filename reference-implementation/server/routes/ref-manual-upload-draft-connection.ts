@@ -714,8 +714,9 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
           return;
         }
         const targetConnectionId = optionalConnectionId(req);
+        let targetConnection: ConnectorInstance | null = null;
         if (targetConnectionId) {
-          const targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
+          targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
             connectorId,
             ownerSubjectId,
             operation: "validate",
@@ -729,11 +730,9 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         await sendValidationPreviewResponse(ctx, req, res, {
           acquisitionStore: ctx.createRequestAcquisitionBatchStore(),
           connectorId,
-          displayName: requestedOrSuggestedDisplayName(
-            req,
-            upload.validation,
-            displayNameForConnector(connectorId, manifest)
-          ),
+          displayName:
+            targetConnection?.displayName ??
+            requestedOrSuggestedDisplayName(req, upload.validation, displayNameForConnector(connectorId, manifest)),
           fileName: upload.fileName,
           ownerSubjectId,
           validation: upload.validation,

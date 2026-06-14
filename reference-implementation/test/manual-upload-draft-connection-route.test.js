@@ -435,6 +435,18 @@ test('WhatsApp zip export with media attaches to an existing manual-upload conne
     assert.equal(first.status, 201, first.text);
     assert.equal(first.body.display_name, 'the owner WhatsApp');
 
+    const previewIntoExisting = await validateUpload(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Ghazal.txt',
+      '[6/6/24, 10:15:22 AM] Alice: Checking target label',
+      { connectionId: first.body.connection_id },
+    );
+    assert.equal(previewIntoExisting.status, 200, previewIntoExisting.text);
+    assert.equal(previewIntoExisting.body.display_name, 'the owner WhatsApp');
+    assert.equal(previewIntoExisting.body.next_step.kind, 'confirm_import');
+
     const zip = makeStoredZip([
       {
         name: 'WhatsApp Chat - Ghazal.txt',

@@ -3,7 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { DashboardShell } from "../../../components/shell.tsx";
-import { getManualUploadSetup, RefNotFoundError } from "../../../lib/ref-client.ts";
+import {
+  getManualUploadSetup,
+  listConnectorSummaries,
+  type RefConnectorSummary,
+  RefNotFoundError,
+} from "../../../lib/ref-client.ts";
 import { ManualUploadForm } from "./manual-upload-form.tsx";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +27,31 @@ function InlineNotice({ message }: { message: string }) {
       {message}
     </div>
   );
+}
+
+function sourceDetail(summary: RefConnectorSummary): string {
+  const streamCount = summary.stream_count ?? summary.streams.length;
+  const streamLabel = `${streamCount} stream${streamCount === 1 ? "" : "s"}`;
+  const recordLabel = `${summary.total_records.toLocaleString()} records`;
+  return `${recordLabel}, ${streamLabel}`;
+}
+
+function existingSourcesForConnector(summaries: readonly RefConnectorSummary[], connectorId: string) {
+  return summaries
+    .filter((summary) => {
+      if (summary.connector_id !== connectorId) {
+        return false;
+      }
+      if (!summary.connection_id) {
+        return false;
+      }
+      return !(summary.status === "revoked" || summary.revoked_at);
+    })
+    .map((summary) => ({
+      connection_id: summary.connection_id,
+      display_name: summary.display_name || summary.connector_display_name || summary.connector_id,
+      detail: sourceDetail(summary),
+    }));
 }
 
 interface AcquisitionMethod {
@@ -67,15 +97,19 @@ export default async function ManualUploadConnectPage({
 }) {
   const { connectorId: rawConnectorId } = await params;
   const connectorId = decodeURIComponent(rawConnectorId);
-  const setup = await getManualUploadSetup(connectorId).catch((err) => {
-    if (err instanceof RefNotFoundError) {
-      notFound();
-    }
-    throw err;
-  });
+  const [setup, summaries] = await Promise.all([
+    getManualUploadSetup(connectorId).catch((err) => {
+      if (err instanceof RefNotFoundError) {
+        notFound();
+      }
+      throw err;
+    }),
+    listConnectorSummaries().then((page) => page.data),
+  ]);
   const resolvedSearchParams = await searchParams;
   const error = firstValue(resolvedSearchParams.error);
   const targetConnectionId = firstValue(resolvedSearchParams.connection_id) ?? null;
+  const existingSources = targetConnectionId ? [] : existingSourcesForConnector(summaries, setup.connector_id);
 
   // Primary acquisition methods lead; advanced/secondary paths sit behind one
   // disclosure so the recommended path is obvious and the page stays low-noise.
@@ -123,7 +157,7 @@ export default async function ManualUploadConnectPage({
             </div>
           </details>
         ) : null}
-        <ManualUploadForm setup={setup} targetConnectionId={targetConnectionId} />
+        <ManualUploadForm existingSources={existingSources} setup={setup} targetConnectionId={targetConnectionId} />
         {setup.large_file_fallback ? (
           <p className="pdpp-caption mt-3 max-w-2xl text-muted-foreground">{setup.large_file_fallback}</p>
         ) : null}

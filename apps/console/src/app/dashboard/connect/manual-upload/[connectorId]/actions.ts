@@ -63,6 +63,22 @@ function fileErrorState(message: string): ManualUploadFormState {
   return { message, ok: false };
 }
 
+function readUploadTarget(formData: FormData): { connectionId: string | null; displayName: string | null } | { error: string } {
+  const fixedConnectionId = asString(formData.get("connection_id"));
+  if (fixedConnectionId) {
+    return { connectionId: fixedConnectionId, displayName: null };
+  }
+  const sourceTarget = asString(formData.get("source_target")) || "new";
+  if (sourceTarget === "existing") {
+    const existingConnectionId = asString(formData.get("existing_connection_id"));
+    if (!existingConnectionId) {
+      return { error: "Choose an existing source, or switch back to creating a new source." };
+    }
+    return { connectionId: existingConnectionId, displayName: null };
+  }
+  return { connectionId: null, displayName: asString(formData.get("display_name")) || null };
+}
+
 function previewState(preview: ManualUploadValidationPreview): ManualUploadFormState {
   const validation = preview.validation;
   return {
@@ -94,8 +110,6 @@ export async function manualUploadConnectionFormAction(
   formData: FormData
 ): Promise<ManualUploadFormState> {
   const connectorId = asString(formData.get("connector_id"));
-  const connectionId = asString(formData.get("connection_id")) || null;
-  const displayName = asString(formData.get("display_name")) || null;
   await requireDashboardAccess(`/dashboard/connect/manual-upload/${encodeURIComponent(connectorId)}`);
 
   const setup = await getManualUploadSetup(connectorId).catch((err) => {
@@ -107,6 +121,11 @@ export async function manualUploadConnectionFormAction(
   if (!setup) {
     return fileErrorState(`Connector '${connectorId}' not found.`);
   }
+  const uploadTarget = readUploadTarget(formData);
+  if ("error" in uploadTarget) {
+    return fileErrorState(uploadTarget.error);
+  }
+  const { connectionId, displayName } = uploadTarget;
 
   const rawFile = formData.get("import_file");
   if (!(rawFile instanceof File) || rawFile.size === 0) {
@@ -136,24 +155,27 @@ export async function manualUploadConnectionFormAction(
   }
 
   let draftConnectionId: string | null = null;
-  let target: string;
+  let redirectTarget: string;
   try {
     const draft = await createManualUploadDraftConnection(connectorId, fileEntry, { connectionId, displayName });
     draftConnectionId = draft.connection_id;
     if (draft.next_step.kind === "show_status") {
       revalidatePath("/dashboard/records");
-      target = statusHref(draft.connection_id, null);
+      redirectTarget = statusHref(draft.connection_id, null);
     } else {
       const started = (await runConnectionNow(draft.connection_id)) as { run_id?: string };
       revalidatePath("/dashboard/records");
-      target = statusHref(draft.connection_id, started.run_id ?? null);
+      redirectTarget = statusHref(draft.connection_id, started.run_id ?? null);
     }
   } catch (err) {
-    target = draftConnectionId
+    redirectTarget = draftConnectionId
       ? statusHref(draftConnectionId, null)
-      : pageHref(connectorId, { error: errorMessage(err) });
+      : pageHref(connectorId, {
+          error: errorMessage(err),
+          ...(connectionId ? { connection_id: connectionId } : {}),
+        });
   }
-  redirect(target);
+  redirect(redirectTarget);
 }
 
 export async function createManualUploadConnectionAction(formData: FormData) {

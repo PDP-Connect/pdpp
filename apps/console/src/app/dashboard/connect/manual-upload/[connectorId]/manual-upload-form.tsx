@@ -14,6 +14,12 @@ interface ManualUploadSetupForForm {
   validation_expectations: string[];
 }
 
+interface ExistingManualUploadSource {
+  connection_id: string;
+  display_name: string;
+  detail: string;
+}
+
 function countRows(preview: NonNullable<ManualUploadFormState["preview"]>) {
   return [
     ["Detected format", preview.detectedFormat],
@@ -103,9 +109,11 @@ function importButtonLabel(pending: boolean): string {
 }
 
 export function ManualUploadForm({
+  existingSources,
   setup,
   targetConnectionId,
 }: {
+  existingSources: ExistingManualUploadSource[];
   setup: ManualUploadSetupForForm;
   targetConnectionId?: string | null;
 }) {
@@ -130,15 +138,64 @@ export function ManualUploadForm({
       {targetConnectionId ? <input name="connection_id" type="hidden" value={targetConnectionId} /> : null}
       {targetConnectionId ? (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          This import will be added to the existing source you came from. Use the Add source page only when this export
-          belongs to a different account, profile, device, or source identity.
+          This import will be added to the existing source you came from. To keep it separate, return to Add source and
+          create a new source instead.
         </div>
       ) : (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          PDPP names the new source from the export when the file carries a source identity. Use an existing source link
-          when this file belongs with a source you already created.
+          Choose whether this file starts a new source or belongs with one you already created. PDPP can suggest a label
+          from the file, but the choice stays yours.
         </div>
       )}
+      {!targetConnectionId ? (
+        <fieldset className="grid gap-2 rounded-md border border-border/80 bg-background px-3 py-2">
+          <legend className="px-1 pdpp-eyebrow">Import target</legend>
+          <label className="flex gap-2 text-sm">
+            <input defaultChecked name="source_target" type="radio" value="new" />
+            <span>Create a new source for this file</span>
+          </label>
+          {existingSources.length > 0 ? (
+            <>
+              <label className="flex gap-2 text-sm">
+                <input name="source_target" type="radio" value="existing" />
+                <span>Add this file to an existing source</span>
+              </label>
+              <label className="grid gap-1" htmlFor="manual-upload-existing-source">
+                <span className="pdpp-caption text-muted-foreground">Existing source</span>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                  id="manual-upload-existing-source"
+                  name="existing_connection_id"
+                >
+                  {existingSources.map((source) => (
+                    <option key={source.connection_id} value={source.connection_id}>
+                      {source.display_name} · {source.detail}
+                    </option>
+                  ))}
+                </select>
+                <span className="pdpp-caption text-muted-foreground">
+                  Select this only when the export belongs with that existing source.
+                </span>
+              </label>
+            </>
+          ) : null}
+        </fieldset>
+      ) : null}
+      {!targetConnectionId ? (
+        <label className="grid gap-1" htmlFor="manual-upload-display-name">
+          <span className="pdpp-eyebrow">New source label</span>
+          <input
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            id="manual-upload-display-name"
+            name="display_name"
+            placeholder={`Leave blank to use the ${setup.display_name} label PDPP detects`}
+            type="text"
+          />
+          <span className="pdpp-caption text-muted-foreground">
+            Used only when creating a new source. You can rename the source later.
+          </span>
+        </label>
+      ) : null}
       <label className="grid gap-1" htmlFor="manual-upload-file">
         <span className="pdpp-eyebrow">Export file</span>
         <input

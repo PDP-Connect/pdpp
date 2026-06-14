@@ -8,7 +8,7 @@ const FORM_FILE = fileURLToPath(new URL("./manual-upload/[connectorId]/manual-up
 const ACTION_FILE = fileURLToPath(new URL("./manual-upload/[connectorId]/actions.ts", import.meta.url));
 
 const GET_SETUP = /getManualUploadSetup\(connectorId\)/;
-const FORM_COMPONENT = /<ManualUploadForm setup=\{setup\}/;
+const FORM_COMPONENT = /<ManualUploadForm existingSources=\{existingSources\} setup=\{setup\}/;
 const FORM_ACTION = /action=\{formAction\}/;
 const PREVIEW_ACTION = /manualUploadConnectionFormAction/;
 const VALIDATE_PREVIEW = /validateManualUploadArtifact\(connectorId, fileEntry, \{ connectionId, displayName \}\)/;
@@ -32,6 +32,9 @@ const PREVIEW_ONLY_COPY = /Preview only/;
 const IMPORT_FILE_COPY = /Import file/;
 const OPTIONAL_PREVIEW_COPY = /Preview is optional/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
+const TARGET_CHOICE_COPY = /Create a new source for this file/;
+const EXISTING_SOURCE_COPY = /Add this file to an existing source/;
+const LABEL_INPUT = /name="display_name"/;
 const NO_BEARER = /Authorization:\s*`Bearer/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 
@@ -39,6 +42,7 @@ test("manual-upload page is manifest-driven, not a connector-specific prompt", a
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, GET_SETUP);
   assert.match(src, FORM_COMPONENT);
+  assert.match(src, /listConnectorSummaries\(\)/);
   assert.match(src, SECURITY_BOUNDARY_COPY);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
@@ -58,6 +62,9 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, IMPORT_FILE_COPY);
   assert.match(src, OPTIONAL_PREVIEW_COPY);
   assert.match(src, WHAT_PDPP_FOUND_COPY);
+  assert.match(src, TARGET_CHOICE_COPY);
+  assert.match(src, EXISTING_SOURCE_COPY);
+  assert.match(src, LABEL_INPUT);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
 });

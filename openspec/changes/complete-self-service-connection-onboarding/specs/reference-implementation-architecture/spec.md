@@ -212,6 +212,11 @@ owner-provided artifact.
 - **AND** when connector validation can derive non-secret source identity from
   the artifact, setup SHALL use that identity to suggest the source label instead
   of requiring the owner to type it before upload
+- **AND** the owner SHALL be able to choose whether a valid artifact creates a
+  new source connection or imports into an existing compatible source connection
+- **AND** artifact-derived source identity SHALL NOT silently select, merge, or
+  overwrite an existing source connection without an owner-selected connection
+  target
 
 #### Scenario: Timeline refresh starts without fixed cooldown
 
