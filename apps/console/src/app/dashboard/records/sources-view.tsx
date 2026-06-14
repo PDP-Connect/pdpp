@@ -70,8 +70,13 @@ type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "
 const ADD_SOURCE_HREF = "/dashboard/records/add";
 
 export function SourcesView({ churnAdvisory, instances, interactive, revokeAction }: SourcesViewProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(instances[0]?.id ?? null);
-  const selected = instances.find((i) => i.id === selectedId) ?? instances[0] ?? null;
+  const activeInstances = instances.filter((i) => !i.revoked);
+  const revokedInstances = instances.filter((i) => i.revoked);
+
+  // Default selection: first active source, or first revoked if all are revoked.
+  const defaultId = (activeInstances[0] ?? revokedInstances[0])?.id ?? null;
+  const [selectedId, setSelectedId] = useState<string | null>(defaultId);
+  const selected = instances.find((i) => i.id === selectedId) ?? activeInstances[0] ?? revokedInstances[0] ?? null;
 
   if (instances.length === 0) {
     return (
@@ -83,9 +88,11 @@ export function SourcesView({ churnAdvisory, instances, interactive, revokeActio
 
   return (
     <>
+      {/* Advisories lead — before the list so they're not orphaned at the bottom on mobile. */}
+      {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
       <div className="rr-s">
         <aside aria-label="Sources" className="rr-s-list">
-          {instances.map((instance) => (
+          {activeInstances.map((instance) => (
             <InstanceListItem
               instance={instance}
               key={instance.id}
@@ -93,6 +100,24 @@ export function SourcesView({ churnAdvisory, instances, interactive, revokeActio
               selected={selected?.id === instance.id}
             />
           ))}
+
+          {/* Revoked sources: accessible but not noise. Collapsed by default so
+              they don't clutter the active list; the owner can always expand to
+              inspect, navigate to detail, or delete. Full row behavior is intact. */}
+          {revokedInstances.length > 0 ? (
+            <details className="rr-s-revoked-group" data-testid="sources-revoked-group">
+              <summary className="rr-s-revoked-group__summary">Revoked ({revokedInstances.length})</summary>
+              {revokedInstances.map((instance) => (
+                <InstanceListItem
+                  instance={instance}
+                  key={instance.id}
+                  onSelect={() => setSelectedId(instance.id)}
+                  selected={selected?.id === instance.id}
+                />
+              ))}
+            </details>
+          ) : null}
+
           <div className="rr-s-end">
             <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
               add a source →
@@ -108,7 +133,6 @@ export function SourcesView({ churnAdvisory, instances, interactive, revokeActio
           </div>
         ) : null}
       </div>
-      {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
     </>
   );
 }
