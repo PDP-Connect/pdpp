@@ -252,6 +252,7 @@ test('manual/upload setup descriptor is manifest-authored', async () => {
     assert.ok(body.accepted_file_names.includes('Timeline.json'));
     assert.ok(body.help_url.startsWith('https://support.google.com/maps/'));
     assert.ok(body.large_file_fallback.includes('import-folder'));
+    assert.equal(body.max_file_bytes, 104857600);
     assert.ok(body.validation_expectations.includes('Detected Timeline format'));
     assert.equal(Object.hasOwn(body, 'import_dir'), false, 'setup response must not leak server paths');
     assert.equal(Object.hasOwn(body, 'import_dir_env_var'), false, 'setup response must not expose env-var plumbing');

@@ -1,8 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
+import { type FormEvent, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
-import { type ManualUploadFormState, manualUploadConnectionFormAction } from "./actions.ts";
 
 interface ManualUploadSetupForForm {
   accepted_file_extensions: string[];
@@ -11,6 +10,8 @@ interface ManualUploadSetupForForm {
   display_name: string;
   help_text?: string | null;
   help_url?: string | null;
+  large_file_fallback?: string | null;
+  max_file_bytes?: number | null;
   validation_expectations: string[];
 }
 
@@ -20,7 +21,73 @@ interface ExistingManualUploadSource {
   detail: string;
 }
 
-function countRows(preview: NonNullable<ManualUploadFormState["preview"]>) {
+interface ManualUploadPreview {
+  dateRange?: { end: string | null; start: string | null } | null;
+  detectedFormat?: string | null;
+  duplicateConnectionId?: string | null;
+  estimatedAttachments?: number | null;
+  estimatedChats?: number | null;
+  estimatedMessages?: number | null;
+  estimatedParticipants?: number | null;
+  estimatedPoints?: number | null;
+  estimatedRecords?: number | null;
+  estimatedSegments?: number | null;
+  mediaCoverage?: unknown;
+  nextStep: "confirm_import" | "show_status";
+  remediation?: string | null;
+  sourceDisplayName?: string | null;
+  status?: string | null;
+  uploadedFileName: string;
+  warnings?: string[];
+}
+
+type UploadState = {
+  message?: string;
+  ok: boolean | null;
+  preview?: ManualUploadPreview;
+  progress?: {
+    currentFile: number;
+    fileName: string;
+    percent: number | null;
+    phase: "importing" | "running" | "uploading" | "validating";
+    totalFiles: number;
+  };
+};
+
+interface ValidationWire {
+  date_range?: { end: string | null; start: string | null } | null;
+  detected_format?: string | null;
+  estimated_attachments?: number | null;
+  estimated_chats?: number | null;
+  estimated_messages?: number | null;
+  estimated_participants?: number | null;
+  estimated_points?: number | null;
+  estimated_records?: number | null;
+  estimated_segments?: number | null;
+  media_coverage?: unknown;
+  remediation?: string | null;
+  status?: string | null;
+  warnings?: string[];
+}
+
+interface ManualUploadValidationPreviewWire {
+  connector_id: string;
+  display_name: string;
+  duplicate: { connection_id: string } | null;
+  next_step: { kind: "confirm_import" | "show_status" };
+  object: "manual_upload_validation_preview";
+  uploaded_file_name: string;
+  validation?: ValidationWire | null;
+}
+
+interface ManualUploadDraftWire {
+  connection_id: string;
+  display_name: string;
+  next_step: { kind: "run_connection" | "show_status" };
+  object: "manual_upload_draft_connection" | "manual_upload_known_artifact";
+}
+
+function countRows(preview: ManualUploadPreview) {
   return [
     ["Detected format", preview.detectedFormat],
     ["Status", preview.status],
@@ -52,7 +119,21 @@ function formatMediaCoverage(value: unknown): string | null {
   return typeof status === "string" && status.length > 0 ? status.replaceAll("_", " ") : null;
 }
 
-function PreviewCard({ preview }: { preview: NonNullable<ManualUploadFormState["preview"]> }) {
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = units[0] ?? "B";
+  for (const nextUnit of units) {
+    unit = nextUnit;
+    if (value < 1024 || nextUnit === units[units.length - 1]) {
+      break;
+    }
+    value /= 1024;
+  }
+  return `${value >= 10 || unit === "B" ? Math.round(value) : value.toFixed(1)} ${unit}`;
+}
+
+function PreviewCard({ preview }: { preview: ManualUploadPreview }) {
   const rows = countRows(preview);
   const duplicate = preview.nextStep === "show_status";
   return (
@@ -101,11 +182,193 @@ function PreviewCard({ preview }: { preview: NonNullable<ManualUploadFormState["
   );
 }
 
-function importButtonLabel(pending: boolean): string {
-  if (pending) {
-    return "Importing...";
+function ProgressCard({ progress }: { progress: NonNullable<UploadState["progress"]> }) {
+  const phase =
+    progress.phase === "running"
+      ? "Starting import"
+      : progress.phase === "validating"
+        ? "Checking file"
+        : progress.phase === "importing"
+          ? "Importing file"
+          : "Uploading file";
+  return (
+    <div className="rounded-md border border-border/80 bg-background px-3 py-2" data-testid="manual-upload-progress">
+      <p className="pdpp-caption font-medium text-foreground">
+        {phase} {progress.currentFile} of {progress.totalFiles}
+      </p>
+      <p className="pdpp-caption mt-1 break-words text-muted-foreground">{progress.fileName}</p>
+      {progress.percent !== null ? (
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+          <div className="h-full bg-foreground" style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function validationToPreview(preview: ManualUploadValidationPreviewWire): UploadState {
+  const validation = preview.validation;
+  return {
+    ok: true,
+    preview: {
+      dateRange: validation?.date_range ?? null,
+      detectedFormat: validation?.detected_format ?? null,
+      duplicateConnectionId: preview.duplicate?.connection_id ?? null,
+      estimatedAttachments: validation?.estimated_attachments ?? null,
+      estimatedChats: validation?.estimated_chats ?? null,
+      estimatedMessages: validation?.estimated_messages ?? null,
+      estimatedParticipants: validation?.estimated_participants ?? null,
+      estimatedPoints: validation?.estimated_points ?? null,
+      estimatedRecords: validation?.estimated_records ?? null,
+      estimatedSegments: validation?.estimated_segments ?? null,
+      mediaCoverage: validation?.media_coverage ?? null,
+      nextStep: preview.next_step.kind,
+      remediation: validation?.remediation ?? null,
+      sourceDisplayName: preview.display_name ?? null,
+      status: validation?.status ?? null,
+      uploadedFileName: preview.uploaded_file_name,
+      warnings: validation?.warnings ?? [],
+    },
+  };
+}
+
+function acceptedFile(file: File, setup: ManualUploadSetupForForm): boolean {
+  if (setup.accepted_file_names.length === 0 && setup.accepted_file_extensions.length === 0) {
+    return true;
   }
-  return "Import file";
+  const lowerName = file.name.toLowerCase();
+  const names = new Set(setup.accepted_file_names.map((name) => name.toLowerCase()));
+  return names.has(lowerName) || setup.accepted_file_extensions.some((extension) => lowerName.endsWith(extension));
+}
+
+function fileRejectedMessage(file: File, setup: ManualUploadSetupForForm): string | null {
+  if (!acceptedFile(file, setup)) {
+    const accepted = [
+      ...setup.accepted_file_names,
+      ...setup.accepted_file_extensions.map((extension) => `*${extension}`),
+    ];
+    return `File '${file.name}' is not accepted. Expected: ${accepted.join(", ")}.`;
+  }
+  const maxFileBytes = setup.max_file_bytes;
+  if (maxFileBytes && file.size > maxFileBytes) {
+    const fallback = setup.large_file_fallback ? ` ${setup.large_file_fallback}` : "";
+    return `File '${file.name}' is ${formatBytes(file.size)}. This connector accepts browser uploads up to ${formatBytes(maxFileBytes)}.${fallback}`;
+  }
+  return null;
+}
+
+function selectedFiles(form: HTMLFormElement): File[] {
+  const input = form.elements.namedItem("import_file");
+  if (!(input instanceof HTMLInputElement)) {
+    return [];
+  }
+  return Array.from(input.files ?? []);
+}
+
+function targetFromForm(form: HTMLFormElement): { connectionId: string | null; displayName: string | null } | { error: string } {
+  const fixed = form.elements.namedItem("connection_id");
+  if (fixed instanceof HTMLInputElement && fixed.value.trim()) {
+    return { connectionId: fixed.value.trim(), displayName: null };
+  }
+  const sourceTarget = new FormData(form).get("source_target");
+  if (sourceTarget === "existing") {
+    const existing = form.elements.namedItem("existing_connection_id");
+    if (!(existing instanceof HTMLSelectElement) || !existing.value.trim()) {
+      return { error: "Choose an existing source, or switch back to creating a new source." };
+    }
+    return { connectionId: existing.value.trim(), displayName: null };
+  }
+  const label = form.elements.namedItem("display_name");
+  return { connectionId: null, displayName: label instanceof HTMLInputElement ? label.value.trim() || null : null };
+}
+
+function statusHref(connectionId: string, runId: string | null): string {
+  const query = new URLSearchParams();
+  if (runId) {
+    query.set("run_id", runId);
+  }
+  const suffix = query.toString();
+  return `/dashboard/connect/status/${encodeURIComponent(connectionId)}${suffix ? `?${suffix}` : ""}`;
+}
+
+function ownerLoginHref(): string {
+  return `/owner/login?return_to=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`;
+}
+
+function errorFromResponse(status: number, text: string, fallback: string): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: unknown }; message?: unknown };
+    const message = parsed.error?.message ?? parsed.message;
+    if (typeof message === "string" && message.length > 0) {
+      return message;
+    }
+  } catch {
+    // Fall through to the generic message.
+  }
+  return `${fallback} (${status})`;
+}
+
+function sendRawFile<T>(
+  path: string,
+  file: File,
+  options: {
+    connectionId?: string | null;
+    displayName?: string | null;
+    onProgress(percent: number | null): void;
+  }
+): Promise<T> {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("file_name", file.name);
+  if (options.connectionId) {
+    url.searchParams.set("connection_id", options.connectionId);
+  }
+  if (options.displayName) {
+    url.searchParams.set("display_name", options.displayName);
+  }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url.toString());
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      options.onProgress(event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null);
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        window.location.href = ownerLoginHref();
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(errorFromResponse(xhr.status, xhr.responseText, "Manual upload failed")));
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText) as T);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new Error("Manual upload failed before the reference server responded."));
+    xhr.send(file);
+  });
+}
+
+async function startImportRun(connectionId: string): Promise<{ run_id?: string | null }> {
+  const res = await fetch(`/_ref/connections/${encodeURIComponent(connectionId)}/run`, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+    method: "POST",
+  });
+  const text = await res.text();
+  if (res.status === 401) {
+    window.location.href = ownerLoginHref();
+    return {};
+  }
+  if (!res.ok) {
+    throw new Error(errorFromResponse(res.status, text, "Import run did not start"));
+  }
+  return text ? (JSON.parse(text) as { run_id?: string | null }) : {};
 }
 
 export function ManualUploadForm({
@@ -117,9 +380,8 @@ export function ManualUploadForm({
   setup: ManualUploadSetupForForm;
   targetConnectionId?: string | null;
 }) {
-  const [state, formAction, pending] = useActionState(manualUploadConnectionFormAction, {
-    ok: null,
-  });
+  const [state, setState] = useState<UploadState>({ ok: null });
+  const [pending, setPending] = useState(false);
   const accepted = [
     ...setup.accepted_file_names,
     ...setup.accepted_file_extensions.map((extension) => `*${extension}`),
@@ -128,12 +390,127 @@ export function ManualUploadForm({
   const acceptAttribute = [...setup.accepted_file_names, ...setup.accepted_file_extensions].join(",");
   const hasValidator = setup.validation_expectations.length > 0;
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) {
+      return;
+    }
+    const form = event.currentTarget;
+    const files = selectedFiles(form);
+    if (files.length === 0) {
+      setState({ ok: false, message: "Choose at least one import file." });
+      return;
+    }
+    for (const file of files) {
+      const rejection = fileRejectedMessage(file, setup);
+      if (rejection) {
+        setState({ ok: false, message: rejection });
+        return;
+      }
+    }
+    const target = targetFromForm(form);
+    if ("error" in target) {
+      setState({ ok: false, message: target.error });
+      return;
+    }
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    const intent = submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
+    if (intent === "preview" && files.length !== 1) {
+      setState({ ok: false, message: "Preview one file at a time. Import can accept multiple files into one source." });
+      return;
+    }
+
+    setPending(true);
+    try {
+      if (intent === "preview") {
+        const file = files[0] as File;
+        setState({
+          ok: null,
+          progress: { currentFile: 1, fileName: file.name, percent: null, phase: "validating", totalFiles: 1 },
+        });
+        const preview = await sendRawFile<ManualUploadValidationPreviewWire>(
+          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-validation-preview`,
+          file,
+          {
+            connectionId: target.connectionId,
+            displayName: target.displayName,
+            onProgress: (percent) =>
+              setState({
+                ok: null,
+                progress: { currentFile: 1, fileName: file.name, percent, phase: "uploading", totalFiles: 1 },
+              }),
+          }
+        );
+        setState(validationToPreview(preview));
+        return;
+      }
+
+      let connectionId = target.connectionId;
+      let lastConnectionId: string | null = target.connectionId;
+      let shouldRun = false;
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index] as File;
+        setState({
+          ok: null,
+          progress: {
+            currentFile: index + 1,
+            fileName: file.name,
+            percent: null,
+            phase: "importing",
+            totalFiles: files.length,
+          },
+        });
+        const draft = await sendRawFile<ManualUploadDraftWire>(
+          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-draft-connection`,
+          file,
+          {
+            connectionId,
+            displayName: connectionId ? null : target.displayName,
+            onProgress: (percent) =>
+              setState({
+                ok: null,
+                progress: {
+                  currentFile: index + 1,
+                  fileName: file.name,
+                  percent,
+                  phase: "uploading",
+                  totalFiles: files.length,
+                },
+              }),
+          }
+        );
+        connectionId = connectionId ?? draft.connection_id;
+        lastConnectionId = draft.connection_id;
+        shouldRun = shouldRun || draft.next_step.kind === "run_connection";
+      }
+      if (!lastConnectionId) {
+        throw new Error("Manual upload did not return a connection id.");
+      }
+      if (!shouldRun) {
+        window.location.href = statusHref(lastConnectionId, null);
+        return;
+      }
+      setState({
+        ok: null,
+        progress: {
+          currentFile: files.length,
+          fileName: files[files.length - 1]?.name ?? setup.display_name,
+          percent: null,
+          phase: "running",
+          totalFiles: files.length,
+        },
+      });
+      const started = await startImportRun(lastConnectionId);
+      window.location.href = statusHref(lastConnectionId, started.run_id ?? null);
+    } catch (err) {
+      setState({ ok: false, message: err instanceof Error ? err.message : "Manual upload setup failed." });
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
-    <form
-      action={formAction}
-      className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4"
-      encType="multipart/form-data"
-    >
+    <form className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4" onSubmit={handleSubmit}>
       <input name="connector_id" type="hidden" value={setup.connector_id} />
       {targetConnectionId ? <input name="connection_id" type="hidden" value={targetConnectionId} /> : null}
       {targetConnectionId ? (
@@ -152,13 +529,13 @@ export function ManualUploadForm({
           <legend className="px-1 pdpp-eyebrow">Import target</legend>
           <label className="flex gap-2 text-sm">
             <input defaultChecked name="source_target" type="radio" value="new" />
-            <span>Create a new source for this file</span>
+            <span>Create a new source for these files</span>
           </label>
           {existingSources.length > 0 ? (
             <>
               <label className="flex gap-2 text-sm">
                 <input name="source_target" type="radio" value="existing" />
-                <span>Add this file to an existing source</span>
+                <span>Add these files to an existing source</span>
               </label>
               <label className="grid gap-1" htmlFor="manual-upload-existing-source">
                 <span className="pdpp-caption text-muted-foreground">Existing source</span>
@@ -197,17 +574,19 @@ export function ManualUploadForm({
         </label>
       ) : null}
       <label className="grid gap-1" htmlFor="manual-upload-file">
-        <span className="pdpp-eyebrow">Export file</span>
+        <span className="pdpp-eyebrow">Export files</span>
         <input
           accept={acceptAttribute || undefined}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:font-medium file:text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex min-h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:font-medium file:text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           id="manual-upload-file"
+          multiple
           name="import_file"
           required
           type="file"
         />
         <span className="pdpp-caption text-muted-foreground">
           Accepted files: {acceptLabel}
+          {setup.max_file_bytes ? `, up to ${formatBytes(setup.max_file_bytes)} each` : ""}
           {setup.help_url ? (
             <>
               {". "}
@@ -226,8 +605,8 @@ export function ManualUploadForm({
       </label>
       {hasValidator ? (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If the file does not
-          pass, nothing is imported.
+          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If a file does not pass,
+          nothing from that file is imported.
         </div>
       ) : null}
       {state.ok === false && state.message ? (
@@ -235,18 +614,18 @@ export function ManualUploadForm({
           {state.message}
         </div>
       ) : null}
+      {state.progress ? <ProgressCard progress={state.progress} /> : null}
       {state.preview ? <PreviewCard preview={state.preview} /> : null}
       <div className="flex flex-wrap gap-2">
         <Button disabled={pending} name="intent" type="submit" value="import">
-          {importButtonLabel(pending)}
+          {pending ? "Importing..." : "Import file"}
         </Button>
         <Button disabled={pending} name="intent" type="submit" value="preview" variant="outline">
           {pending ? "Checking..." : "Preview only"}
         </Button>
       </div>
       <p className="pdpp-caption text-muted-foreground">
-        Import validates the file before anything is committed. Preview is optional when you want to inspect the detected
-        coverage first.
+        Import can accept multiple files into one source. Preview checks one file without committing it.
       </p>
     </form>
   );

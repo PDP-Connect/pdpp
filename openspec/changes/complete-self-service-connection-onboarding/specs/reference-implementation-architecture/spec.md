@@ -217,6 +217,13 @@ owner-provided artifact.
 - **AND** artifact-derived source identity SHALL NOT silently select, merge, or
   overwrite an existing source connection without an owner-selected connection
   target
+- **AND** normal setup surfaces SHALL use connector-declared file limits to
+  reject oversized files before uploading when the browser can know the size
+- **AND** normal setup surfaces SHALL NOT rely on a framework Server Action
+  multipart body parser for large manual-import file transfer
+- **AND** when the owner selects multiple files in one submit, setup SHALL attach
+  them to one owner-selected compatible source connection and start the import
+  run after the files are staged
 
 #### Scenario: Timeline refresh starts without fixed cooldown
 

@@ -352,6 +352,17 @@ and a stable chat id from the export file, then returns a suggested source label
 such as `WhatsApp - Ghazal`. The Console renders that metadata generically; it
 does not carry WhatsApp-specific React branches.
 
+Large manual imports must not ride through Next Server Action multipart parsing.
+The owner UI uploads connector-accepted files directly to the owner-session
+reference upload route as raw file bodies, uses connector-authored
+`max_file_bytes` for client preflight, and shows upload/validation/run-start
+progress. Selecting multiple files imports them into the one owner-selected
+source: the first accepted file creates or resolves the source connection, later
+files in the same submit attach to that connection, and the import run starts
+after the files are staged. This is still not the final resumable/staged upload
+architecture, but it prevents the web shell from truncating large files before
+the connector validator can give an owner-actionable response.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

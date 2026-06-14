@@ -675,6 +675,7 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
           help_url: setup.helpUrl,
           help_text: setup.helpText,
           large_file_fallback: setup.largeFileFallback,
+          max_file_bytes: setup.validation?.maxFileBytes ?? null,
           validation_expectations: setup.validationExpectations,
         });
       } catch (err) {

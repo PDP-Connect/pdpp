@@ -5,16 +5,19 @@ import { fileURLToPath } from "node:url";
 
 const PAGE_FILE = fileURLToPath(new URL("./manual-upload/[connectorId]/page.tsx", import.meta.url));
 const FORM_FILE = fileURLToPath(new URL("./manual-upload/[connectorId]/manual-upload-form.tsx", import.meta.url));
-const ACTION_FILE = fileURLToPath(new URL("./manual-upload/[connectorId]/actions.ts", import.meta.url));
 
 const GET_SETUP = /getManualUploadSetup\(connectorId\)/;
 const FORM_COMPONENT = /<ManualUploadForm existingSources=\{existingSources\} setup=\{setup\}/;
-const FORM_ACTION = /action=\{formAction\}/;
-const PREVIEW_ACTION = /manualUploadConnectionFormAction/;
-const VALIDATE_PREVIEW = /validateManualUploadArtifact\(connectorId, fileEntry, \{ connectionId, displayName \}\)/;
+const CLIENT_SUBMIT = /onSubmit=\{handleSubmit\}/;
+const RAW_XHR_UPLOAD = /new XMLHttpRequest\(\)/;
+const REF_UPLOAD_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-draft-connection/;
+const REF_PREVIEW_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-validation-preview/;
+const REF_RUN_ENDPOINT = /\/_ref\/connections\/.*\/run/;
 const FILE_INPUT = /type="file"/;
+const MULTIPLE_FILES = /\bmultiple\b/;
 const ACCEPT_ATTR = /accepted_file_names/;
 const ACCEPT_EXTENSIONS = /accepted_file_extensions/;
+const SIZE_PREFLIGHT = /max_file_bytes/;
 const HELP_URL = /help_url/;
 const NEW_TAB = /target="_blank"/;
 const NOREFERRER = /rel="noreferrer"/;
@@ -24,18 +27,14 @@ const NO_PROVIDER_COPY = /\bGoogle\b|\bTimeline\b|\bMaps\b/i;
 
 const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
-const CREATE_DRAFT = /createManualUploadDraftConnection\(connectorId, fileEntry, \{ connectionId, displayName \}\)/;
-const RUN_NOW = /runConnectionNow\(draft\.connection_id\)/;
-const STATUS_SURFACE_PATH = /\/dashboard\/connect\/status\//;
-const STATUS_HREF_CALL = /statusHref\(/;
 const PREVIEW_ONLY_COPY = /Preview only/;
 const IMPORT_FILE_COPY = /Import file/;
-const OPTIONAL_PREVIEW_COPY = /Preview is optional/;
+const OPTIONAL_PREVIEW_COPY = /Preview checks one file/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
-const TARGET_CHOICE_COPY = /Create a new source for this file/;
-const EXISTING_SOURCE_COPY = /Add this file to an existing source/;
+const TARGET_CHOICE_COPY = /Create a new source for these files/;
+const EXISTING_SOURCE_COPY = /Add these files to an existing source/;
 const LABEL_INPUT = /name="display_name"/;
-const NO_BEARER = /Authorization:\s*`Bearer/;
+const NO_SERVER_ACTION = /useActionState|manualUploadConnectionFormAction|action=\{formAction\}/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 
 test("manual-upload page is manifest-driven, not a connector-specific prompt", async () => {
@@ -50,11 +49,16 @@ test("manual-upload page is manifest-driven, not a connector-specific prompt", a
 
 test("manual-upload form imports directly and offers preview without connector-specific branches", async () => {
   const src = await readFile(FORM_FILE, "utf8");
-  assert.match(src, FORM_ACTION);
-  assert.match(src, PREVIEW_ACTION);
+  assert.match(src, CLIENT_SUBMIT);
+  assert.match(src, RAW_XHR_UPLOAD);
+  assert.match(src, REF_UPLOAD_ENDPOINT);
+  assert.match(src, REF_PREVIEW_ENDPOINT);
+  assert.match(src, REF_RUN_ENDPOINT);
   assert.match(src, FILE_INPUT);
+  assert.match(src, MULTIPLE_FILES);
   assert.match(src, ACCEPT_ATTR);
   assert.match(src, ACCEPT_EXTENSIONS);
+  assert.match(src, SIZE_PREFLIGHT);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
   assert.match(src, NOREFERRER);
@@ -67,18 +71,13 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, LABEL_INPUT);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
+  assert.doesNotMatch(src, NO_SERVER_ACTION);
 });
 
-test("manual-upload action redirects to durable setup status, not a transient notice", async () => {
-  const src = await readFile(ACTION_FILE, "utf8");
-  assert.match(src, ACTION_USE_SERVER);
-  assert.match(src, REQUIRE_ACCESS);
-  assert.match(src, GET_SETUP);
-  assert.match(src, VALIDATE_PREVIEW);
-  assert.match(src, CREATE_DRAFT);
-  assert.match(src, RUN_NOW);
-  assert.match(src, STATUS_SURFACE_PATH);
-  assert.match(src, STATUS_HREF_CALL);
-  assert.doesNotMatch(src, NO_BEARER);
+test("manual-upload no longer posts large multipart bodies through a Server Action", async () => {
+  const src = await readFile(FORM_FILE, "utf8");
+  assert.doesNotMatch(src, ACTION_USE_SERVER);
+  assert.doesNotMatch(src, REQUIRE_ACCESS);
+  assert.doesNotMatch(src, NO_SERVER_ACTION);
   assert.doesNotMatch(src, NO_SECRET_LOG);
 });

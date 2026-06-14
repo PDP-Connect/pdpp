@@ -15,7 +15,7 @@ function parseBuildWorkers(value) {
 }
 
 const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
-const manualUploadBodyLimit = '64mb';
+const manualUploadBodyLimit = '128mb';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

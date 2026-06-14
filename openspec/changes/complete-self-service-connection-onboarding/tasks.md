@@ -218,3 +218,4 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.3 Derive WhatsApp chat source identity from connector validation metadata and use it to suggest the new source label.
 - [x] 11.4 Route manual-upload validation through a connector-package registry instead of reference-route connector branches.
 - [x] 11.5 Let manual/upload owners explicitly choose new source vs. existing compatible source and edit the new-source label; artifact identity may suggest but must not auto-merge.
+- [x] 11.6 Move normal manual/upload transfer off Server Action multipart parsing; add connector max-size preflight, upload progress, and multi-file import into one selected source.

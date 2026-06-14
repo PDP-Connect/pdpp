@@ -1444,6 +1444,7 @@ export interface ManualUploadSetup {
   help_url: string | null;
   label: string;
   large_file_fallback: string | null;
+  max_file_bytes: number | null;
   object: "manual_upload_setup";
   validation_expectations: string[];
 }
