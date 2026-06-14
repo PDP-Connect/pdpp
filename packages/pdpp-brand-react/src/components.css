@@ -1594,7 +1594,10 @@
 }
 .rr-x-search {
   flex: 1 1 auto;
-  min-width: 0;
+  /* min-width: 280px ensures the placeholder is never truncated on desktop;
+     the flex item still shrinks below this on very narrow viewports (mobile
+     is governed by the column-direction override in the phone media query). */
+  min-width: 280px;
   width: auto;
 }
 .rr-x-sort {
@@ -1641,7 +1644,9 @@
 .rr-x-help__body {
   position: absolute;
   z-index: 50;
-  top: 20px;
+  /* Visually connect to the trigger: overlap by 4px so it reads as attached,
+     not a detached floating tooltip. */
+  top: calc(100% + 4px);
   /* P1: anchor to the RIGHT edge of the operators link so the popup extends
      leftward (into the feed area), not rightward into the inspector column.
      right:0 means "flush with the right edge of the relative-positioned
@@ -1649,13 +1654,18 @@
   right: 0;
   left: auto;
   /* D-6: clamp to viewport width so the popup never escapes on 390px screens */
-  width: min(330px, calc(100vw - 32px));
-  max-width: min(330px, calc(100vw - 32px));
-  padding: 10px 12px;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  /* Ink Carbon card treatment: --card bg, hairline --border-strong, menu
+     shadow, comfortable padding, radius 0 (square paper). */
+  padding: 14px 16px;
   background: var(--card);
   border: 1px solid var(--border-strong);
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
   font-size: 11px;
-  line-height: 1.9;
+  line-height: 2;
   color: var(--muted-foreground);
   /* D-12: allow inline code chips to wrap rather than overflow */
   overflow-wrap: break-word;
@@ -2330,18 +2340,31 @@
   }
 }
 
-/* ─── P1: Connect page — command copy card mobile touch targets ─────
-   CopyRow: on mobile the code block and copy button stack vertically;
-   the copy button gets a minimum 44px touch target. */
+/* ─── P1: Connect page — command copy card mobile/desktop treatment ──
+   Desktop (>640px): compact single-line pill — items-center keeps the
+   copy icon vertically centered on one line; no stacking.
+   Mobile (≤640px): code block and copy button stack vertically;
+   copy button gets a minimum 44px touch target; left border becomes top. */
 @media (max-width: 640px) {
   .rr-copy-row__cmd {
     flex-direction: column;
     align-items: stretch;
   }
+  /* On mobile the code text wraps so it needs vertical padding to breathe */
+  .rr-copy-row__text {
+    white-space: normal;
+    overflow-x: hidden;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    line-height: 1.5;
+  }
+  /* Left divider → top divider when stacked */
   .rr-copy-row__btn {
+    border-left: none !important;
+    border-top: 1px solid var(--border) !important;
     min-height: 44px;
-    min-width: 44px;
-    align-self: flex-end;
+    justify-content: center;
+    width: 100%;
   }
 }
 
@@ -2373,6 +2396,22 @@
    B-3  Eyebrow letter-spacing at ≤390px — reduce from 0.12em → 0.07em
         so all-caps mono eyebrows don't feel noisy on narrow screens.
    ═══════════════════════════════════════════════════════════════════ */
+
+/* B-1 — suppress browser-default blue :focus outline on custom interactive
+   chrome; replace with design-system ring on :focus-visible only. */
+.rr-nav-item:focus,
+.rr-chrome-btn:focus,
+.rr-side__theme:focus,
+.rr-lens:focus,
+.rr-x-facet:focus,
+.rr-x-chip:focus,
+.rr-copyid:focus,
+.rr-rel__revoke:focus,
+.rr-link:focus,
+.rr-s-item:focus,
+.rr-x-row:focus {
+  outline: none;
+}
 
 /* B-1 — keyboard-visible focus rings on interactive chrome */
 .rr-nav-item:focus-visible,

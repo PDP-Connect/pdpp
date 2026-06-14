@@ -56,14 +56,15 @@ function CopyRow({ body, label, title, value }: SetupEntry) {
         <h3 className="pdpp-title text-foreground">{title}</h3>
         <p className="pdpp-caption mt-1 text-muted-foreground">{body}</p>
       </div>
-      {/* P1: mobile — code block + copy button attached in one pill; command
-          text wraps within the mono block; copy button ≥32px tap target. */}
-      <div className="flex min-w-0 items-stretch overflow-hidden rounded-md border border-border/80">
-        <code className="pdpp-caption min-w-0 flex-1 overflow-x-auto bg-muted/30 px-3 py-2 font-mono text-foreground">
+      {/* P1: desktop = compact single-line pill (items-center, content-hug);
+          mobile = column-stack via rr-copy-row__cmd (see components.css).
+          items-center keeps the copy icon vertically centered on one line. */}
+      <div className="rr-copy-row__cmd flex min-w-0 items-center overflow-hidden rounded-md border border-border/80">
+        <code className="rr-copy-row__text pdpp-caption min-w-0 flex-1 overflow-x-auto bg-muted/30 px-3 py-1.5 font-mono text-foreground leading-none">
           {value}
         </code>
-        {/* min-w-[32px] overrides CopyButton's h-6 w-6 so the tap zone is ≥32×32px */}
-        <span className="flex shrink-0 items-center border-border/80 border-l">
+        {/* rr-copy-row__btn — desktop: 32px icon tap zone; mobile: ≥44px via CSS */}
+        <span className="rr-copy-row__btn flex shrink-0 items-center border-border/80 border-l">
           <CopyButton
             ariaLabel={`Copy ${label}`}
             className="!h-8 !w-8 rounded-none bg-muted/30 hover:bg-muted/60"
