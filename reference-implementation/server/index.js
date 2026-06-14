@@ -1763,7 +1763,11 @@ async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
         connectorId: storageBinding.connector_id,
         connectorInstanceId: storageBinding.connector_instance_id,
         connectorInstanceStore: createRequestConnectorInstanceStore(),
-        allowDefaultAccount: true,
+        // Read/manifest resolution must never materialize a connection. If a
+        // default-account row already exists, resolveActiveByConnector can use
+        // it; if no real connection exists, downstream read binding resolution
+        // fails closed instead of creating a phantom zero-record source.
+        allowDefaultAccount: false,
         displayName: storageBinding.connector_id,
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
@@ -1815,7 +1819,10 @@ async function resolveGrantManifest(tokenInfo, opts = {}) {
         connectorId: storageBinding.connector_id,
         connectorInstanceId: storageBinding.connector_instance_id,
         connectorInstanceStore: createRequestConnectorInstanceStore(),
-        allowDefaultAccount: true,
+        // Client/grant reads are also side-effect-free. A grant naming an
+        // unconnected connector must not create a default-account connection
+        // simply because the client inspected schema or streams.
+        allowDefaultAccount: false,
         displayName: storageBinding.connector_id,
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
