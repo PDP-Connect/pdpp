@@ -16,6 +16,7 @@
 //   - application/json                — Fastify's JSON parser (empty bodies ⇒ {})
 //   - application/x-www-form-urlencoded — @fastify/formbody with qs depth 8
 //   - application/x-ndjson             — raw string, parsed by the handler
+//   - application/vnd.pdpp.manual-upload — raw stream for staged owner imports
 //   - other content types              — raw Buffer for binary upload routes
 //
 // Query parsing:
@@ -42,6 +43,7 @@ import {
 // Header name the reference sets on responses to expose the protocol trace
 // ID (handler-set via setReferenceTraceId in server/index.js).
 const PDPP_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
+export const PDPP_MANUAL_UPLOAD_STREAM_CONTENT_TYPE = 'application/vnd.pdpp.manual-upload';
 
 // Log field set that every record shares. Path names match the OTel log data
 // model where they overlap (`trace_id`, `req_id`) so a later OTLP adapter can
@@ -224,6 +226,13 @@ function buildFastify({ loggerInstance }) {
       done(null, body);
     });
   }
+
+  // Large owner import artifacts must not hit the wildcard buffer parser.
+  // Route handlers that opt into this exact content type receive the raw
+  // readable stream and are responsible for writing it to bounded storage.
+  fastify.addContentTypeParser(PDPP_MANUAL_UPLOAD_STREAM_CONTENT_TYPE, (req, payload, done) => {
+    done(null, payload);
+  });
 
   // Binary upload surfaces (currently `POST /v1/blobs`) need exact bytes.
   // The wildcard parser is a fallback: exact parsers above and JSON below

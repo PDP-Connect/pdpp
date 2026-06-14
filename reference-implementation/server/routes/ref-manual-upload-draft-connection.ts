@@ -7,8 +7,10 @@
 // directory as the connector-declared env var. First successful ingest flips
 // the draft to active through the existing ingest lifecycle.
 
-import { randomBytes } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { createWriteStream } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ManualUploadValidationResult,
@@ -24,10 +26,13 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract
 const PATH_SEP_RE = /[\\/]/;
 const UNSAFE_FILENAME_CHARS_RE = /[^\w .-]/g;
 const CONNECTION_ID_RE = /^cin_[A-Za-z0-9_-]+$/;
+const ARTIFACT_ID_RE = /^mua_[A-Za-z0-9_-]+$/;
+const MANUAL_UPLOAD_STREAM_CONTENT_TYPE = "application/vnd.pdpp.manual-upload";
 
 interface RouteRequest {
   readonly body?: unknown;
   ownerSession?: { readonly sub?: string | null } | null;
+  is?(type: string): string | false;
   readonly params: Readonly<Record<string, string>>;
   readonly query?: Readonly<Record<string, unknown>>;
 }
@@ -121,9 +126,60 @@ interface AcquisitionBatchStore {
   }): Promise<AcquisitionBatch> | AcquisitionBatch;
 }
 
+interface ManualUploadArtifact {
+  readonly acquisitionBatchId?: string | null;
+  readonly artifactId: string;
+  readonly artifactSha256?: string | null;
+  readonly connectorId: string;
+  readonly connectorInstanceId?: string | null;
+  readonly createdAt?: string | null;
+  readonly error?: unknown;
+  readonly fileName: string;
+  readonly fileSizeBytes?: number | null;
+  readonly finalPath?: string | null;
+  readonly ownerSubjectId: string;
+  readonly stagingPath: string;
+  readonly status: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
+  readonly updatedAt?: string | null;
+  readonly validation?: ManualUploadValidationResult | null;
+}
+
+interface ManualUploadArtifactStore {
+  get(artifactId: string): Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
+  insert(record: {
+    artifactId: string;
+    artifactSha256: string;
+    connectorId: string;
+    connectorInstanceId?: string | null;
+    fileName: string;
+    fileSizeBytes: number;
+    ownerSubjectId: string;
+    stagingPath: string;
+    status?: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
+  }): Promise<ManualUploadArtifact> | ManualUploadArtifact;
+  listByConnection(
+    connectorInstanceId: string,
+    options?: { limit?: number }
+  ): Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
+  update(
+    artifactId: string,
+    patch: {
+      acquisitionBatchId?: string | null;
+      artifactSha256?: string | null;
+      connectorInstanceId?: string | null;
+      error?: unknown;
+      fileSizeBytes?: number | null;
+      finalPath?: string | null;
+      status?: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
+      validation?: ManualUploadValidationResult | null;
+    }
+  ): Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
+}
+
 export interface MountRefManualUploadDraftConnectionContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
+  createRequestManualUploadArtifactStore(): ManualUploadArtifactStore;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
@@ -201,17 +257,25 @@ function suggestedDisplayNameFromValidation(validation: ManualUploadValidationRe
   return suggested.length > 0 && suggested.length <= 120 ? suggested : null;
 }
 
+function cleanRequestedDisplayName(raw: unknown): string | null {
+  const clean = typeof raw === "string" ? raw.trim().replace(/\s+/g, " ") : "";
+  return clean.length > 0 && clean.length <= 120 ? clean : null;
+}
+
+function displayNameFromRequestedOrSuggested(
+  raw: unknown,
+  validation: ManualUploadValidationResult | null,
+  fallback: string
+): string {
+  return cleanRequestedDisplayName(raw) ?? suggestedDisplayNameFromValidation(validation) ?? fallback;
+}
+
 function requestedOrSuggestedDisplayName(
   req: RouteRequest,
   validation: ManualUploadValidationResult | null,
   fallback: string
 ): string {
-  const raw = firstQueryValue(req.query?.display_name);
-  const clean = typeof raw === "string" ? raw.trim().replace(/\s+/g, " ") : "";
-  if (clean.length > 0 && clean.length <= 120) {
-    return clean;
-  }
-  return suggestedDisplayNameFromValidation(validation) ?? fallback;
+  return displayNameFromRequestedOrSuggested(firstQueryValue(req.query?.display_name), validation, fallback);
 }
 
 async function rejectManualUploadRequest(
@@ -325,6 +389,286 @@ async function resolveAcceptedUpload(
     });
   }
   return { fileBytes, fileName, validation };
+}
+
+function manualUploadTooLargeError(maxFileBytes: number): Error & { code?: string; maxFileBytes?: number } {
+  const err = new Error(`Import file exceeds ${maxFileBytes} bytes.`) as Error & {
+    code?: string;
+    maxFileBytes?: number;
+  };
+  err.code = "manual_upload_too_large";
+  err.maxFileBytes = maxFileBytes;
+  return err;
+}
+
+function isAsyncIterableBody(value: unknown): value is AsyncIterable<Buffer | Uint8Array | string> {
+  return Boolean(value && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function");
+}
+
+async function writeUploadBodyToPath(
+  body: unknown,
+  path: string,
+  maxFileBytes: number | null
+): Promise<{ fileSizeBytes: number; sha256: string }> {
+  const hash = createHash("sha256");
+  let fileSizeBytes = 0;
+  const out = createWriteStream(path, { flags: "wx" });
+  let finished = false;
+  try {
+    const writeChunk = async (raw: Buffer | Uint8Array | string) => {
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      fileSizeBytes += chunk.length;
+      if (maxFileBytes != null && fileSizeBytes > maxFileBytes) {
+        throw manualUploadTooLargeError(maxFileBytes);
+      }
+      hash.update(chunk);
+      if (!out.write(chunk)) {
+        await once(out, "drain");
+      }
+    };
+
+    if (isAsyncIterableBody(body)) {
+      for await (const raw of body) {
+        await writeChunk(raw);
+      }
+    } else {
+      const fileBytes = bodyAsBuffer(body);
+      if (!(fileBytes && fileBytes.length > 0)) {
+        throw Object.assign(new Error("A non-empty import file body must be provided."), {
+          code: "import_file_required",
+        });
+      }
+      await writeChunk(fileBytes);
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      out.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
+    finished = true;
+    return { fileSizeBytes, sha256: hash.digest("hex") };
+  } finally {
+    if (!finished) {
+      out.destroy();
+      await rm(path, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+function publicArtifact(artifact: ManualUploadArtifact): Record<string, unknown> {
+  const connectionId = artifact.connectorInstanceId ?? null;
+  return {
+    object: "manual_upload_artifact",
+    artifact_id: artifact.artifactId,
+    connection_id: connectionId,
+    connector_instance_id: connectionId,
+    connector_id: artifact.connectorId,
+    file_name: artifact.fileName,
+    size_bytes: artifact.fileSizeBytes ?? null,
+    status: artifact.status,
+    validation: artifact.validation ?? null,
+    error: artifact.error ?? null,
+    batch_id: artifact.acquisitionBatchId ?? null,
+    next_step:
+      artifact.status === "staged" && connectionId
+        ? {
+            kind: "run_connection",
+            method: "POST",
+            url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
+            reason: "The import file is staged and ready to run.",
+          }
+        : artifact.status === "duplicate" && connectionId
+          ? {
+              kind: "show_status",
+              method: "GET",
+              url: `/_ref/connections/${encodeURIComponent(connectionId)}/setup-status`,
+              reason: "This exact artifact is already known. Review the existing coverage receipt.",
+            }
+          : artifact.status === "failed"
+            ? {
+                kind: "choose_another_file",
+                method: "GET",
+                url: `/_ref/connectors/${encodeURIComponent(artifact.connectorId)}/manual-upload-setup`,
+                reason: "The import file failed validation.",
+              }
+            : {
+                kind: "poll_artifact",
+                method: "GET",
+                url: `/_ref/manual-upload/artifacts/${encodeURIComponent(artifact.artifactId)}`,
+                reason: "The import file is uploaded and server-side validation is continuing.",
+              },
+  };
+}
+
+async function createManualUploadDraftConnection(
+  ctx: MountRefManualUploadDraftConnectionContext,
+  args: {
+    connectorId: string;
+    displayName: string;
+    ownerSubjectId: string;
+    setup: NonNullable<ReturnType<typeof manualUploadSetupFromManifest>>;
+  }
+): Promise<{ connection: ConnectorInstance; importDir: string; sourceBindingKey: string }> {
+  const store = ctx.createRequestConnectorInstanceStore();
+  const sourceBindingKey = `manual_upload_draft_${randomBytes(24).toString("hex")}`;
+  const importDir = join(ctx.importBaseDir, safePathSegment(args.connectorId), sourceBindingKey);
+
+  const now = ctx.now ? ctx.now() : new Date().toISOString();
+  await mkdir(importDir, { recursive: true });
+  const connection = await store.upsert({
+    ownerSubjectId: args.ownerSubjectId,
+    connectorId: args.connectorId,
+    displayName: args.displayName,
+    status: "draft",
+    sourceKind: "manual",
+    sourceBindingKey,
+    sourceBinding: {
+      kind: "manual_upload_draft",
+      import_dir: importDir,
+      import_dir_env_var: args.setup.importDirEnvVar,
+      acquisition_method: "owner_artifact",
+      staged_upload: true,
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { connection, importDir, sourceBindingKey };
+}
+
+async function validateAndStageArtifact(
+  ctx: MountRefManualUploadDraftConnectionContext,
+  args: {
+    artifactId: string;
+    connectorId: string;
+    displayNameRaw?: string | null;
+    fileName: string;
+    manifest: ConnectorManifestLike;
+    ownerSubjectId: string;
+    setup: NonNullable<ReturnType<typeof manualUploadSetupFromManifest>>;
+    targetConnectionId?: string | null;
+  }
+): Promise<void> {
+  const artifactStore = ctx.createRequestManualUploadArtifactStore();
+  const artifact = await artifactStore.get(args.artifactId);
+  if (!artifact) {
+    return;
+  }
+  await artifactStore.update(args.artifactId, { status: "validating", error: null });
+  try {
+    const fileBytes = await readFile(artifact.stagingPath);
+    const validation = validateManualUploadArtifact(args.setup.validation?.kind ?? null, fileBytes, {
+      fileName: args.fileName,
+      maxFileBytes: args.setup.validation?.maxFileBytes ?? null,
+    });
+    if (validation && validation.status !== "valid") {
+      await artifactStore.update(args.artifactId, {
+        status: "failed",
+        validation,
+        error: {
+          code: `import_file_${validation.status}`,
+          message: validation.remediation ?? "Choose a supported import file.",
+        },
+      });
+      await rm(artifact.stagingPath, { force: true }).catch(() => undefined);
+      return;
+    }
+
+    const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
+    if (validation?.file_sha256) {
+      const existingBatch = await acquisitionStore.findByArtifactHash(
+        args.ownerSubjectId,
+        args.connectorId,
+        validation.file_sha256
+      );
+      if (existingBatch) {
+        await artifactStore.update(args.artifactId, {
+          acquisitionBatchId: existingBatch.batchId,
+          connectorInstanceId: existingBatch.connectorInstanceId,
+          status: "duplicate",
+          validation: {
+            ...validation,
+            remediation:
+              validation.remediation ??
+              "This file was already imported. Review the existing coverage receipt instead of running another import.",
+            status: "duplicate",
+          } as ManualUploadValidationResult,
+        });
+        await rm(artifact.stagingPath, { force: true }).catch(() => undefined);
+        return;
+      }
+    }
+
+    const targetConnection = args.targetConnectionId
+      ? await loadManualUploadTargetConnection(ctx, {
+          connectorId: args.connectorId,
+          ownerSubjectId: args.ownerSubjectId,
+          targetConnectionId: args.targetConnectionId,
+        })
+      : null;
+    const connection =
+      targetConnection != null
+        ? {
+            connection: targetConnection,
+            importDir: readImportDirFromConnection(targetConnection),
+            targetConnection: targetConnection,
+          }
+        : {
+            ...(await createManualUploadDraftConnection(ctx, {
+              connectorId: args.connectorId,
+              displayName: displayNameFromRequestedOrSuggested(
+                args.displayNameRaw,
+                validation,
+                displayNameForConnector(args.connectorId, args.manifest)
+              ),
+              ownerSubjectId: args.ownerSubjectId,
+              setup: args.setup,
+            })),
+            targetConnection: null,
+          };
+    if (!connection.importDir) {
+      throw Object.assign(new Error(`Connection '${args.targetConnectionId}' is missing a manual-upload import directory.`), {
+        code: "manual_upload_connection_required",
+      });
+    }
+    const finalDir = join(connection.importDir, args.artifactId);
+    await mkdir(finalDir, { recursive: true });
+    const finalPath = join(finalDir, args.fileName);
+    await rename(artifact.stagingPath, finalPath);
+    const batch = validation?.file_sha256
+      ? await acquisitionStore.insertOwnerArtifactBatch({
+          acquisitionMethod: "owner_artifact",
+          artifactSha256: validation.file_sha256,
+          connectorId: args.connectorId,
+          connectorInstanceId: connection.connection.connectorInstanceId,
+          eventTimeEnd: validation.date_range.end,
+          eventTimeStart: validation.date_range.start,
+          mediaCoverage: "media_coverage" in validation ? validation.media_coverage : null,
+          ownerSubjectId: args.ownerSubjectId,
+          parsedCount: parsedCountFromValidation(validation),
+          parserVersion: args.manifest.version ?? null,
+          receipt: receiptFromValidation(validation, args.fileName),
+          sourceFormat: validation.detected_format,
+          status: "validated",
+          uploadedFileName: args.fileName,
+          warnings: "warnings" in validation ? validation.warnings : [],
+        })
+      : null;
+
+    await artifactStore.update(args.artifactId, {
+      acquisitionBatchId: batch?.batchId ?? null,
+      connectorInstanceId: connection.connection.connectorInstanceId,
+      finalPath,
+      status: "staged",
+      validation,
+    });
+  } catch (err) {
+    await artifactStore.update(args.artifactId, {
+      status: "failed",
+      error: {
+        code: (err as { code?: unknown })?.code === "manual_upload_too_large" ? "import_file_too_large" : "api_error",
+        message: err instanceof Error ? err.message : "Manual upload validation failed.",
+      },
+    });
+  }
 }
 
 async function sendValidationPreviewResponse(
@@ -638,6 +982,39 @@ async function resolveManualUploadTargetConnection(
   return instance;
 }
 
+async function loadManualUploadTargetConnection(
+  ctx: MountRefManualUploadDraftConnectionContext,
+  args: {
+    connectorId: string;
+    ownerSubjectId: string;
+    targetConnectionId: string;
+  }
+): Promise<ConnectorInstance> {
+  const instance = await ctx.createRequestConnectorInstanceStore().get(args.targetConnectionId);
+  if (!instance || instance.ownerSubjectId !== args.ownerSubjectId) {
+    throw Object.assign(new Error(`Connection '${args.targetConnectionId}' does not exist for this owner.`), {
+      code: "connector_instance_not_found",
+    });
+  }
+  if (instance.connectorId !== args.connectorId) {
+    throw Object.assign(
+      new Error(`Connection '${args.targetConnectionId}' belongs to '${instance.connectorId}', not '${args.connectorId}'.`),
+      { code: "connector_instance_connector_mismatch" }
+    );
+  }
+  if (!new Set(["active", "draft"]).has(instance.status)) {
+    throw Object.assign(new Error(`Connection '${args.targetConnectionId}' is '${instance.status}', not active.`), {
+      code: "connector_instance_inactive",
+    });
+  }
+  if (instance.sourceKind !== "manual" || !readImportDirFromConnection(instance)) {
+    throw Object.assign(new Error(`Connection '${args.targetConnectionId}' is not a manual-upload connection.`), {
+      code: "manual_upload_connection_required",
+    });
+  }
+  return instance;
+}
+
 function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.get(
     "/_ref/connectors/:connectorId/manual-upload-setup",
@@ -739,6 +1116,180 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
           validation: upload.validation,
         });
       } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+function mountGetStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
+  app.get(
+    "/_ref/manual-upload/artifacts/:artifactId",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const artifactId = decodeURIComponent(req.params.artifactId as string);
+      let ownerSubjectId: string | null = null;
+      try {
+        ownerSubjectId = ctx.getOwnerSubjectId(req);
+        if (!ARTIFACT_ID_RE.test(artifactId)) {
+          ctx.pdppError(res, 404, "manual_upload_artifact_not_found", `Upload artifact '${artifactId}' was not found.`);
+          return;
+        }
+        const artifact = await ctx.createRequestManualUploadArtifactStore().get(artifactId);
+        if (!artifact || artifact.ownerSubjectId !== ownerSubjectId) {
+          ctx.pdppError(res, 404, "manual_upload_artifact_not_found", `Upload artifact '${artifactId}' was not found.`);
+          return;
+        }
+        res.status(200).json(publicArtifact(artifact));
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
+  app.post(
+    "/_ref/connectors/:connectorId/manual-upload-staged-artifact",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
+      const connectorId = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+      let ownerSubjectId: string | null = null;
+      let stagingPath: string | null = null;
+      let maxFileBytesForError: number | null = null;
+      try {
+        ownerSubjectId = ctx.getOwnerSubjectId(req);
+        const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
+        const setup = await requireManualUploadSetup(ctx, req, res, {
+          connectorId,
+          manifest,
+          ownerSubjectId,
+        });
+        if (!setup) {
+          return;
+        }
+        maxFileBytesForError = setup.validation?.maxFileBytes ?? null;
+        if (req.is?.(MANUAL_UPLOAD_STREAM_CONTENT_TYPE) === false) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "manual_upload_stream_required",
+            httpStatus: 415,
+            message: `Use Content-Type: ${MANUAL_UPLOAD_STREAM_CONTENT_TYPE} for staged manual uploads.`,
+            ownerSubjectId,
+            param: "content-type",
+          });
+          return;
+        }
+
+        const fileName = normalizeFileName(firstQueryValue(req.query?.file_name));
+        if (!fileName) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "import_file_name_rejected",
+            httpStatus: 400,
+            message: "A safe import file name is required.",
+            ownerSubjectId,
+            param: "file_name",
+          });
+          return;
+        }
+        if (!fileNameIsAccepted(fileName, setup.acceptedFileNames, setup.acceptedFileExtensions)) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "import_file_name_rejected",
+            httpStatus: 400,
+            message: acceptedFileMessage(fileName, setup.acceptedFileNames, setup.acceptedFileExtensions),
+            ownerSubjectId,
+            param: "file_name",
+          });
+          return;
+        }
+
+        const artifactId = `mua_${randomBytes(18).toString("base64url")}`;
+        const stagingDir = join(ctx.importBaseDir, "_staging", safePathSegment(connectorId), artifactId);
+        stagingPath = join(stagingDir, fileName);
+        await mkdir(stagingDir, { recursive: true });
+        const written = await writeUploadBodyToPath(req.body, stagingPath, setup.validation?.maxFileBytes ?? null);
+
+        const rawDisplayName = firstQueryValue(req.query?.display_name);
+        const targetConnectionId = optionalConnectionId(req);
+        let targetConnection: ConnectorInstance | null = null;
+        if (targetConnectionId) {
+          targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
+            connectorId,
+            ownerSubjectId,
+            operation: "create",
+            store: ctx.createRequestConnectorInstanceStore(),
+            targetConnectionId,
+          });
+        }
+        if (targetConnectionId && !targetConnection) {
+          await rm(stagingDir, { force: true, recursive: true }).catch(() => undefined);
+          return;
+        }
+
+        const artifact = await ctx.createRequestManualUploadArtifactStore().insert({
+          artifactId,
+          artifactSha256: written.sha256,
+          connectorId,
+          connectorInstanceId: targetConnection?.connectorInstanceId ?? null,
+          fileName,
+          fileSizeBytes: written.fileSizeBytes,
+          ownerSubjectId,
+          stagingPath,
+          status: "uploaded",
+        });
+
+        setImmediate(() => {
+          void validateAndStageArtifact(ctx, {
+            artifactId,
+            connectorId,
+            displayNameRaw: rawDisplayName,
+            fileName,
+            manifest,
+            ownerSubjectId: ownerSubjectId as string,
+            setup,
+            targetConnectionId,
+          });
+        });
+
+        await emitManualUploadAudit(ctx, req, res, {
+          connectionId: targetConnection?.connectorInstanceId ?? null,
+          connectorId,
+          operation: "create",
+          outcome: "succeeded",
+          ownerSubjectId,
+        });
+        res.status(202).json(publicArtifact(artifact));
+      } catch (err) {
+        if ((err as { code?: unknown })?.code === "manual_upload_too_large" && ownerSubjectId) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "import_file_too_large",
+            httpStatus: 413,
+            message: maxFileBytesForError
+              ? `This connector accepts browser uploads up to ${maxFileBytesForError} bytes.`
+              : "This import file is too large.",
+            ownerSubjectId,
+            param: "import_file",
+          });
+          return;
+        }
+        if ((err as { code?: unknown })?.code === "import_file_required" && ownerSubjectId) {
+          await rejectManualUploadRequest(ctx, req, res, {
+            connectorId,
+            errorCode: "import_file_required",
+            httpStatus: 400,
+            message: "A non-empty import file body must be provided.",
+            ownerSubjectId,
+            param: "import_file",
+          });
+          return;
+        }
+        if (stagingPath) {
+          await rm(stagingPath, { force: true }).catch(() => undefined);
+        }
         ctx.handleError(res, err);
       }
     }
@@ -942,6 +1493,8 @@ export function mountRefManualUploadDraftConnection(
   ctx: MountRefManualUploadDraftConnectionContext
 ): void {
   mountGetSetup(app, ctx);
+  mountGetStagedArtifact(app, ctx);
+  mountPostStagedArtifact(app, ctx);
   mountPostValidationPreview(app, ctx);
   mountPostDraftConnection(app, ctx);
 }

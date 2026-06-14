@@ -242,6 +242,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_acquisition_batches_owner_connector_artifa
   ON acquisition_batches(owner_subject_id, connector_id, artifact_sha256)
   WHERE artifact_sha256 IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS manual_upload_artifacts (
+  artifact_id           TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  connector_instance_id TEXT,
+  file_name             TEXT NOT NULL,
+  staging_path          TEXT NOT NULL,
+  final_path            TEXT,
+  file_size_bytes       INTEGER NOT NULL DEFAULT 0,
+  artifact_sha256       TEXT,
+  status                TEXT NOT NULL CHECK (status IN ('uploaded', 'validating', 'staged', 'duplicate', 'failed')),
+  acquisition_batch_id  TEXT,
+  validation_json       TEXT,
+  error_json            TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE SET NULL,
+  FOREIGN KEY(acquisition_batch_id) REFERENCES acquisition_batches(batch_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_upload_artifacts_connection_created
+  ON manual_upload_artifacts(connector_instance_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS record_acquisition_provenance (
   connector_instance_id TEXT NOT NULL,
   stream                TEXT NOT NULL,

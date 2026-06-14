@@ -83,6 +83,10 @@ import {
   createSqliteAcquisitionBatchStore,
 } from './stores/acquisition-batch-store.js';
 import {
+  createPostgresManualUploadArtifactStore,
+  createSqliteManualUploadArtifactStore,
+} from './stores/manual-upload-artifact-store.js';
+import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from './stores/connector-instance-credential-store.js';
@@ -1263,6 +1267,12 @@ function createRequestAcquisitionBatchStore() {
   return isPostgresStorageBackend()
     ? createPostgresAcquisitionBatchStore()
     : createSqliteAcquisitionBatchStore();
+}
+
+function createRequestManualUploadArtifactStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresManualUploadArtifactStore()
+    : createSqliteManualUploadArtifactStore();
 }
 
 // Lazily loads the pure static-secret injection helpers from the
@@ -3572,6 +3582,7 @@ function buildAsApp(opts = {}) {
       pdppError,
       canonicalConnectorKey,
       createRequestAcquisitionBatchStore,
+      createRequestManualUploadArtifactStore,
       createRequestConnectorInstanceStore,
       resolveRegisteredConnectorManifest,
       getOwnerSubjectId,

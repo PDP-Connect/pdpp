@@ -353,15 +353,16 @@ such as `WhatsApp - Ghazal`. The Console renders that metadata generically; it
 does not carry WhatsApp-specific React branches.
 
 Large manual imports must not ride through Next Server Action multipart parsing.
-The owner UI uploads connector-accepted files directly to the owner-session
-reference upload route as raw file bodies, uses connector-authored
-`max_file_bytes` for client preflight, and shows upload/validation/run-start
-progress. Selecting multiple files imports them into the one owner-selected
-source: the first accepted file creates or resolves the source connection, later
-files in the same submit attach to that connection, and the import run starts
-after the files are staged. This is still not the final resumable/staged upload
-architecture, but it prevents the web shell from truncating large files before
-the connector validator can give an owner-actionable response.
+The owner UI uploads connector-accepted files directly to a reference staged
+artifact route as raw streamed file bodies, uses connector-authored
+`max_file_bytes` for client preflight, and then polls durable artifact status.
+The upload artifact exists before any source connection exists; invalid files
+and exact duplicates do not create phantom sources. A valid non-duplicate file
+creates a new source or attaches to the owner-selected compatible source, then
+later files in the same submit attach to that source. The import run starts once
+at least one artifact is staged. Each artifact is isolated on disk under its own
+artifact directory so same-named exports can coexist without overwriting one
+another, while connector parsers still receive the original file name.
 
 ## Risks / Trade-offs
 

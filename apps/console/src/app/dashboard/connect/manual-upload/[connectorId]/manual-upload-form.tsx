@@ -49,7 +49,7 @@ type UploadState = {
     currentFile: number;
     fileName: string;
     percent: number | null;
-    phase: "importing" | "running" | "uploading" | "validating";
+    phase: "importing" | "running" | "uploading" | "validating" | "waiting";
     totalFiles: number;
   };
 };
@@ -80,11 +80,17 @@ interface ManualUploadValidationPreviewWire {
   validation?: ValidationWire | null;
 }
 
-interface ManualUploadDraftWire {
-  connection_id: string;
-  display_name: string;
-  next_step: { kind: "run_connection" | "show_status" };
-  object: "manual_upload_draft_connection" | "manual_upload_known_artifact";
+interface ManualUploadArtifactWire {
+  artifact_id: string;
+  batch_id?: string | null;
+  connection_id?: string | null;
+  connector_id: string;
+  error?: { code?: string; message?: string } | null;
+  file_name: string;
+  next_step: { kind: "choose_another_file" | "poll_artifact" | "run_connection" | "show_status"; url: string };
+  object: "manual_upload_artifact";
+  status: "duplicate" | "failed" | "staged" | "uploaded" | "validating";
+  validation?: ValidationWire | null;
 }
 
 function countRows(preview: ManualUploadPreview) {
@@ -186,6 +192,8 @@ function ProgressCard({ progress }: { progress: NonNullable<UploadState["progres
   const phase =
     progress.phase === "running"
       ? "Starting import"
+      : progress.phase === "waiting"
+        ? "Preparing file"
       : progress.phase === "validating"
         ? "Checking file"
         : progress.phase === "importing"
@@ -313,6 +321,7 @@ function sendRawFile<T>(
   file: File,
   options: {
     connectionId?: string | null;
+    contentType?: string;
     displayName?: string | null;
     onProgress(percent: number | null): void;
   }
@@ -330,7 +339,7 @@ function sendRawFile<T>(
     xhr.open("POST", url.toString());
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("Content-Type", options.contentType ?? "application/octet-stream");
     xhr.upload.onprogress = (event) => {
       options.onProgress(event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null);
     };
@@ -352,6 +361,55 @@ function sendRawFile<T>(
     xhr.onerror = () => reject(new Error("Manual upload failed before the reference server responded."));
     xhr.send(file);
   });
+}
+
+function artifactFailureMessage(artifact: ManualUploadArtifactWire): string {
+  return artifact.error?.message || artifact.validation?.remediation || "The import file failed validation.";
+}
+
+async function pollArtifactStatus(
+  artifactId: string,
+  options: {
+    currentFile: number;
+    fileName: string;
+    totalFiles: number;
+    update(progress: NonNullable<UploadState["progress"]>): void;
+  }
+): Promise<ManualUploadArtifactWire> {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const res = await fetch(`/_ref/manual-upload/artifacts/${encodeURIComponent(artifactId)}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    const text = await res.text();
+    if (res.status === 401) {
+      window.location.href = ownerLoginHref();
+      return {
+        artifact_id: artifactId,
+        connector_id: "",
+        file_name: options.fileName,
+        next_step: { kind: "poll_artifact", url: "" },
+        object: "manual_upload_artifact",
+        status: "failed",
+      };
+    }
+    if (!res.ok) {
+      throw new Error(errorFromResponse(res.status, text, "Manual upload status failed"));
+    }
+    const artifact = JSON.parse(text) as ManualUploadArtifactWire;
+    if (artifact.status === "staged" || artifact.status === "duplicate" || artifact.status === "failed") {
+      return artifact;
+    }
+    options.update({
+      currentFile: options.currentFile,
+      fileName: options.fileName,
+      percent: null,
+      phase: "waiting",
+      totalFiles: options.totalFiles,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error("Manual upload validation is still running. Open the source status page to check again.");
 }
 
 async function startImportRun(connectionId: string): Promise<{ run_id?: string | null }> {
@@ -460,10 +518,11 @@ export function ManualUploadForm({
             totalFiles: files.length,
           },
         });
-        const draft = await sendRawFile<ManualUploadDraftWire>(
-          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-draft-connection`,
+        const staged = await sendRawFile<ManualUploadArtifactWire>(
+          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
           file,
           {
+            contentType: "application/vnd.pdpp.manual-upload",
             connectionId,
             displayName: connectionId ? null : target.displayName,
             onProgress: (percent) =>
@@ -479,9 +538,25 @@ export function ManualUploadForm({
               }),
           }
         );
-        connectionId = connectionId ?? draft.connection_id;
-        lastConnectionId = draft.connection_id;
-        shouldRun = shouldRun || draft.next_step.kind === "run_connection";
+        const artifact = await pollArtifactStatus(staged.artifact_id, {
+          currentFile: index + 1,
+          fileName: file.name,
+          totalFiles: files.length,
+          update: (progress) => setState({ ok: null, progress }),
+        });
+        if (artifact.status === "failed") {
+          throw new Error(artifactFailureMessage(artifact));
+        }
+        if (artifact.status === "staged") {
+          if (!artifact.connection_id) {
+            throw new Error("Manual upload staged the file but did not return a connection id.");
+          }
+          connectionId = connectionId ?? artifact.connection_id;
+          lastConnectionId = artifact.connection_id;
+          shouldRun = true;
+        } else if (artifact.status === "duplicate" && artifact.connection_id) {
+          lastConnectionId = lastConnectionId ?? artifact.connection_id;
+        }
       }
       if (!lastConnectionId) {
         throw new Error("Manual upload did not return a connection id.");

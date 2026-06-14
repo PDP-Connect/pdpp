@@ -183,6 +183,52 @@ async function validateUpload(
   });
 }
 
+async function stageUpload(
+  asUrl,
+  cookie,
+  connectorId,
+  fileName = 'Timeline.json',
+  body = VALID_TIMELINE_BODY,
+  options = {},
+) {
+  const url = new URL(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/manual-upload-staged-artifact`);
+  url.searchParams.set('file_name', fileName);
+  if (options.connectionId) {
+    url.searchParams.set('connection_id', options.connectionId);
+  }
+  if (options.displayName) {
+    url.searchParams.set('display_name', options.displayName);
+  }
+  return fetchJson(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/vnd.pdpp.manual-upload',
+      Cookie: cookie,
+    },
+    body,
+  });
+}
+
+async function getArtifact(asUrl, cookie, artifactId) {
+  return fetchJson(`${asUrl}/_ref/manual-upload/artifacts/${encodeURIComponent(artifactId)}`, {
+    headers: { Accept: 'application/json', Cookie: cookie },
+  });
+}
+
+async function waitForArtifact(asUrl, cookie, artifactId, expectedStatuses) {
+  const statuses = new Set(expectedStatuses);
+  let latest = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    latest = await getArtifact(asUrl, cookie, artifactId);
+    if (latest.status === 200 && statuses.has(latest.body.status)) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return latest;
+}
+
 function makeStoredZip(entries) {
   const chunks = [];
   const central = [];
@@ -348,6 +394,141 @@ test('owner upload preview validates without creating a draft or writing acquisi
     const batchRows = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
     assert.equal(batchRows, 0, 'validation preview must not create an acquisition batch');
     findManualUploadAudit(preview.resp, 'succeeded', 'validate');
+  });
+});
+
+test('staged owner upload returns before validation and exposes durable artifact status', async () => {
+  await withServer(async ({ asUrl, tmp }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const staged = await stageUpload(asUrl, cookie, 'google-maps');
+    assert.equal(staged.status, 202, staged.text);
+    assert.equal(staged.body.object, 'manual_upload_artifact');
+    assert.match(staged.body.artifact_id, /^mua_/);
+    assert.equal(staged.body.connection_id, null);
+    assert.equal(staged.body.status, 'uploaded');
+    assert.equal(staged.body.next_step.kind, 'poll_artifact');
+    assert.equal(Object.hasOwn(staged.body, 'import_dir'), false, 'staged response must not leak server paths');
+    assert.ok(!staged.text.includes(tmp), 'staged response must not include server paths');
+
+    const done = await waitForArtifact(asUrl, cookie, staged.body.artifact_id, ['staged']);
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.body.status, 'staged');
+    assert.match(done.body.connection_id, /^cin_/);
+    assert.equal(done.body.validation.status, 'valid');
+    assert.equal(done.body.next_step.kind, 'run_connection');
+
+    const row = getDb()
+      .prepare(
+        `SELECT status, artifact_sha256, acquisition_batch_id
+           FROM manual_upload_artifacts
+          WHERE artifact_id = ?`,
+      )
+      .get(staged.body.artifact_id);
+    assert.equal(row.status, 'staged');
+    assert.match(row.artifact_sha256, /^[0-9a-f]{64}$/);
+    assert.match(row.acquisition_batch_id, /^ab_/);
+
+    const batch = getDb()
+      .prepare(
+        `SELECT status, connector_instance_id, uploaded_file_name
+           FROM acquisition_batches
+          WHERE batch_id = ?`,
+      )
+      .get(row.acquisition_batch_id);
+    assert.equal(batch.status, 'validated');
+    assert.equal(batch.connector_instance_id, done.body.connection_id);
+    assert.equal(batch.uploaded_file_name, 'Timeline.json');
+  });
+});
+
+test('staged uploads attach multiple files to one explicit manual-upload source', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+
+    const first = await stageUpload(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Ghazal.txt',
+      '[6/5/24, 9:15:22 AM] Alice: Hello',
+      { displayName: 'the owner WhatsApp' },
+    );
+    assert.equal(first.status, 202, first.text);
+    const firstDone = await waitForArtifact(asUrl, cookie, first.body.artifact_id, ['staged']);
+    assert.equal(firstDone.body.status, 'staged');
+    assert.match(firstDone.body.connection_id, /^cin_/);
+
+    const second = await stageUpload(
+      asUrl,
+      cookie,
+      'whatsapp',
+      'WhatsApp Chat - Family.txt',
+      '[6/6/24, 10:15:22 AM] Alice: Second chat',
+      { connectionId: firstDone.body.connection_id },
+    );
+    assert.equal(second.status, 202, second.text);
+    assert.equal(second.body.connection_id, firstDone.body.connection_id);
+    const secondDone = await waitForArtifact(asUrl, cookie, second.body.artifact_id, ['staged']);
+    assert.equal(secondDone.body.status, 'staged');
+    assert.equal(secondDone.body.connection_id, firstDone.body.connection_id);
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 1, 'explicit same-source staged uploads must not create another connection');
+    const artifactCount = getDb()
+      .prepare('SELECT COUNT(*) AS count FROM manual_upload_artifacts WHERE connector_instance_id = ?')
+      .get(firstDone.body.connection_id).count;
+    assert.equal(artifactCount, 2);
+  });
+});
+
+test('staged invalid upload fails without creating a source', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const staged = await stageUpload(asUrl, cookie, 'google-maps', 'Timeline.json', '{"not":"timeline"}');
+    assert.equal(staged.status, 202, staged.text);
+    assert.equal(staged.body.connection_id, null);
+
+    const done = await waitForArtifact(asUrl, cookie, staged.body.artifact_id, ['failed']);
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.body.status, 'failed');
+    assert.equal(done.body.connection_id, null);
+    assert.equal(done.body.error.code, 'import_file_unsupported');
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 0, 'invalid staged upload must not create a source');
+    const batchCount = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
+    assert.equal(batchCount, 0, 'invalid staged upload must not create an acquisition batch');
+  });
+});
+
+test('staged duplicate upload points at the existing receipt without creating a source', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'google_maps');
+    const cookie = await login(asUrl);
+
+    const first = await stageUpload(asUrl, cookie, 'google-maps');
+    const firstDone = await waitForArtifact(asUrl, cookie, first.body.artifact_id, ['staged']);
+    assert.equal(firstDone.body.status, 'staged');
+    assert.match(firstDone.body.connection_id, /^cin_/);
+
+    const second = await stageUpload(asUrl, cookie, 'google-maps');
+    assert.equal(second.status, 202, second.text);
+    assert.equal(second.body.connection_id, null);
+    const secondDone = await waitForArtifact(asUrl, cookie, second.body.artifact_id, ['duplicate']);
+    assert.equal(secondDone.status, 200, secondDone.text);
+    assert.equal(secondDone.body.status, 'duplicate');
+    assert.equal(secondDone.body.connection_id, firstDone.body.connection_id);
+    assert.equal(secondDone.body.next_step.kind, 'show_status');
+
+    const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;
+    assert.equal(rowCount, 1, 'duplicate staged upload must not create a second source');
+    const batchCount = getDb().prepare('SELECT COUNT(*) AS count FROM acquisition_batches').get().count;
+    assert.equal(batchCount, 1, 'duplicate staged upload must reuse the existing acquisition batch');
   });
 });
 

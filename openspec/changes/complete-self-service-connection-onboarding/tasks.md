@@ -182,12 +182,13 @@ manual/upload setup primitive for manifest-declared `manual_or_upload`
 connectors with an import binding. The setup planner projects
 `manual_upload_connect` / `provide_import_file`; the console catalog links to a
 manifest-driven upload page with no connector-specific React branches; the
-owner-session route stores the uploaded artifact under a connection-scoped
-import directory, creates an invisible `draft` connection with
-`sourceKind: "manual"`, and starts the first run through the same connection
-run path as other setups. The run environment resolver injects the
-connection-scoped import directory for manual/upload runs, so schedulers and
-owner-triggered runs share one path. The durable setup-status page is now
+owner-session staged-artifact route records durable upload status before
+connector validation and creates an invisible `draft` connection with
+`sourceKind: "manual"` only after a valid non-duplicate artifact is ready to
+stage. The first run starts through the same connection run path as other
+setups. The run environment resolver injects the connection-scoped import
+directory for manual/upload runs, so schedulers and owner-triggered runs share
+one path. The durable setup-status page is now
 generic (`/dashboard/connect/status/:connectionId`) and distinguishes
 `setup_kind: manual_upload` from static-secret setup, so file imports never show
 "credential missing" copy. Owner-facing responses do not expose import
@@ -219,3 +220,19 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.4 Route manual-upload validation through a connector-package registry instead of reference-route connector branches.
 - [x] 11.5 Let manual/upload owners explicitly choose new source vs. existing compatible source and edit the new-source label; artifact identity may suggest but must not auto-merge.
 - [x] 11.6 Move normal manual/upload transfer off Server Action multipart parsing; add connector max-size preflight, upload progress, and multi-file import into one selected source.
+- [x] 11.7 Promote normal manual/upload transfer to streamed staged artifacts with durable status polling; invalid and duplicate uploads must not create phantom source connections, and same-named artifacts must not overwrite each other before import.
+
+Progress note (11.7): the normal Console import path now posts each selected
+file to a reference staged-artifact route using
+`application/vnd.pdpp.manual-upload`, polls
+`/_ref/manual-upload/artifacts/:artifactId`, and starts the import run only
+after at least one artifact reaches `staged`. New-source uploads create no
+connection at `uploaded`/`validating`; a source is created only after a valid,
+non-duplicate artifact passes connector validation. Exact duplicate staged
+uploads point at the existing receipt without creating another source, invalid
+uploads fail with durable artifact status and no connection row, and each staged
+artifact is moved under its own artifact directory so same-named exports can
+coexist. The WhatsApp file connector now discovers supported export files
+recursively so the generic artifact-directory layout works without
+connector-specific Console code. Focused route and Console invariant tests are
+green.

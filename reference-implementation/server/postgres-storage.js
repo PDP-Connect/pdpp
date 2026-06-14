@@ -451,6 +451,27 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_acquisition_batches_owner_connector_artifact
         ON acquisition_batches(owner_subject_id, connector_id, artifact_sha256)
         WHERE artifact_sha256 IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS manual_upload_artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
+        connector_instance_id TEXT REFERENCES connector_instances(connector_instance_id) ON DELETE SET NULL,
+        file_name TEXT NOT NULL,
+        staging_path TEXT NOT NULL,
+        final_path TEXT,
+        file_size_bytes INTEGER NOT NULL DEFAULT 0,
+        artifact_sha256 TEXT,
+        status TEXT NOT NULL CHECK (status IN ('uploaded', 'validating', 'staged', 'duplicate', 'failed')),
+        acquisition_batch_id TEXT REFERENCES acquisition_batches(batch_id) ON DELETE SET NULL,
+        validation_json JSONB,
+        error_json JSONB,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_manual_upload_artifacts_connection_created
+        ON manual_upload_artifacts(connector_instance_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS record_acquisition_provenance (
         connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
         stream TEXT NOT NULL,

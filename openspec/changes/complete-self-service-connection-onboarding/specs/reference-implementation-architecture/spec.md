@@ -221,9 +221,15 @@ owner-provided artifact.
   reject oversized files before uploading when the browser can know the size
 - **AND** normal setup surfaces SHALL NOT rely on a framework Server Action
   multipart body parser for large manual-import file transfer
+- **AND** upload transfer SHALL create a durable staged artifact status before
+  connector validation or long ingest work begins
+- **AND** invalid artifacts and exact duplicate artifacts SHALL NOT create a new
+  source connection as a side effect of upload
 - **AND** when the owner selects multiple files in one submit, setup SHALL attach
   them to one owner-selected compatible source connection and start the import
   run after the files are staged
+- **AND** same-named artifacts SHALL be isolated so one upload cannot overwrite
+  another before the connector run consumes staged files
 
 #### Scenario: Timeline refresh starts without fixed cooldown
 
