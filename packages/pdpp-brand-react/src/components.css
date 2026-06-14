@@ -1628,15 +1628,26 @@
   color: var(--primary);
   cursor: pointer;
   list-style: none;
+  outline: none;
+}
+.rr-x-help > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
 }
 .rr-x-help > summary::-webkit-details-marker {
   display: none;
 }
 .rr-x-help__body {
   position: absolute;
-  z-index: 5;
+  z-index: 50;
   top: 20px;
-  left: 0;
+  /* P1: anchor to the RIGHT edge of the operators link so the popup extends
+     leftward (into the feed area), not rightward into the inspector column.
+     right:0 means "flush with the right edge of the relative-positioned
+     .rr-x-help"; the popup grows leftward, staying in the feed column. */
+  right: 0;
+  left: auto;
   /* D-6: clamp to viewport width so the popup never escapes on 390px screens */
   width: min(330px, calc(100vw - 32px));
   max-width: min(330px, calc(100vw - 32px));
@@ -2137,6 +2148,12 @@
     font-size: 13px;
     color: var(--foreground);
     user-select: none;
+    outline: none;
+  }
+  .rr-x-rail__toggle:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-control);
   }
   .rr-x-rail__toggle::-webkit-details-marker {
     display: none;
@@ -2366,7 +2383,9 @@
 .rr-x-chip:focus-visible,
 .rr-copyid:focus-visible,
 .rr-rel__revoke:focus-visible,
-.rr-link:focus-visible {
+.rr-link:focus-visible,
+.rr-s-item:focus-visible,
+.rr-x-row:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
@@ -2382,6 +2401,70 @@
 .rr-x-row.is-selected {
   background: var(--primary-tint);
   box-shadow: inset 2px 0 0 var(--primary);
+}
+
+/* B-4 — Sources list item (rr-s-item): full Ink Carbon button treatment.
+   No rr-s-item CSS existed before; browsers were showing their default blue
+   focus ring on every Sources row click/tab. */
+.rr-s-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px 9px 12px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--motion-state), box-shadow var(--motion-state);
+}
+.rr-s-item:hover {
+  background: var(--muted);
+}
+/* is-on = selected source: inset accent + tint fill, matching nav/feed selection */
+.rr-s-item.is-on {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.rr-s-item.is-on:hover {
+  background: color-mix(in oklab, var(--primary-tint) 70%, var(--muted));
+}
+/* is-revoked: muted appearance to signal inactive state */
+.rr-s-item.is-revoked {
+  opacity: 0.5;
+}
+.rr-s-item__name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-item__line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-item__kind {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  opacity: 0.75;
+}
+.rr-s-item__flag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+}
+.rr-s-dot {
+  font-size: 10px;
 }
 
 /* B-3 — narrow-screen eyebrow relief */

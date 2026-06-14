@@ -227,16 +227,28 @@
 }
 
 /* ─── Mobile drawer ───────────────────────────────────────────────── */
+/* P1 — sliver fix: rr-app has overflow:hidden + pseudo transforms making it
+   a containing block for fixed. Use position:fixed with explicit 100vw/100dvh
+   to guarantee full-viewport coverage regardless of the parent grid sizing
+   (the 1fr column at mobile can be a subpixel narrower than 100vw). */
 .rr-drawer-overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100dvh;
   z-index: 70;
+  overflow: hidden;
 }
 /* The backdrop is a real button (focusable close affordance), filling the
    overlay behind the drawer. */
 .rr-drawer-scrim {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   border: 0;
   padding: 0;
   margin: 0;
