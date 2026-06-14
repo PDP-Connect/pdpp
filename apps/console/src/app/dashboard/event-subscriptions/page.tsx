@@ -316,14 +316,14 @@ function FiltersForm({ params }: { params: ResolvedParams }) {
           <IcInput defaultValue={params.grantId} name="grant_id" placeholder="grt_…" />
         </ToolbarField>
         <ToolbarField label="status" width="min-w-[10rem]">
-          <IcSelect defaultValue={params.status} name="status">
-            <option value="">any</option>
-            {STATUS_FILTER_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </IcSelect>
+          <IcSelect
+            defaultValue={params.status}
+            name="status"
+            options={[
+              { label: "any", value: "" },
+              ...STATUS_FILTER_OPTIONS,
+            ]}
+          />
         </ToolbarField>
         <IcButton className="mt-5" size="sm" type="submit" variant="ghost">
           Filter

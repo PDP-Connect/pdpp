@@ -135,19 +135,20 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           style={{ flex: "1 1 200px", maxWidth: 320 }}
           type="search"
         />
-        {/* Status filter — Ink Carbon select (native <select> under the hood). */}
+        {/* Status filter — Ink Carbon select (base-ui listbox, fully styled). */}
         <IcSelect
           aria-label="Filter by status"
           defaultValue={params.status ?? ""}
           name="status"
+          options={[
+            { label: "all statuses", value: "" },
+            { label: "succeeded", value: "succeeded" },
+            { label: "failed", value: "failed" },
+            { label: "rejected", value: "rejected" },
+            { label: "started", value: "started" },
+          ]}
           style={{ flex: "0 0 auto", minWidth: 140 }}
-        >
-          <option value="">all statuses</option>
-          <option value="succeeded">succeeded</option>
-          <option value="failed">failed</option>
-          <option value="rejected">rejected</option>
-          <option value="started">started</option>
-        </IcSelect>
+        />
         <IcButton size="sm" type="submit" variant="ghost">
           Apply
         </IcButton>

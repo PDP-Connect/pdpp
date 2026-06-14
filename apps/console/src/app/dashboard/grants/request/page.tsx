@@ -93,10 +93,15 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
       />
       <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-source_kind">
         <span className="pdpp-eyebrow">Source kind</span>
-        <IcSelect defaultValue={draft.sourceKind} id="grant-request-source_kind" name="source_kind">
-          <option value="connector">connector</option>
-          <option value="provider_native">provider_native</option>
-        </IcSelect>
+        <IcSelect
+          defaultValue={draft.sourceKind}
+          id="grant-request-source_kind"
+          name="source_kind"
+          options={[
+            { label: "connector", value: "connector" },
+            { label: "provider_native", value: "provider_native" },
+          ]}
+        />
       </label>
       <FormField defaultValue={draft.sourceId} label="Source id" name="source_id" />
       <FormField defaultValue={draft.purposeCode} label="Purpose code" name="purpose_code" />
@@ -158,14 +163,15 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
       <span className="pdpp-eyebrow">Connection</span>
-      <IcSelect defaultValue={draft.connectionId} id="grant-request-connection_id" name="connection_id">
-        <option value={FAN_IN_OPTION_VALUE}>{FAN_IN_OPTION_LABEL}</option>
-        {connectionOptions.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </IcSelect>
+      <IcSelect
+        defaultValue={draft.connectionId}
+        id="grant-request-connection_id"
+        name="connection_id"
+        options={[
+          { label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE },
+          ...connectionOptions,
+        ]}
+      />
       <span className="pdpp-caption text-muted-foreground">
         Pin to one connection, or fan in across all the grant authorizes.
       </span>

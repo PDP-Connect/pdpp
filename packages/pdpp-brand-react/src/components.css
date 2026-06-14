@@ -336,18 +336,29 @@
 }
 
 /* ─── Select ──────────────────────────────────────────────────────
-   Native <select> restyled to IcInput geometry. The wrapper paints a
-   typographic disclosure caret (›, rotated to point down) at the right
-   edge so the glyph inherits the surface temperature — no icon import. */
+   base-ui Select skinned to Ink Carbon. base-ui owns: keyboard nav,
+   type-ahead, ARIA listbox, positioning, form hidden-input. We own
+   ONLY the visual chrome: trigger geometry matching IcInput, and a
+   fully styled popup that native <select> can never deliver.
+
+   Trigger: same geometry as IcInput (radius-control, hairline --border,
+   --card bg, mono font) with a typographic › caret at right.
+   Popup: radius 0, hairline --border-strong, --card bg, menu shadow
+   (the ONE elevation exception, same as dialog), mono items. */
+
+/* ── Trigger wrapper: positions the caret pseudo-element ── */
 .pdpp-select {
   position: relative;
   display: inline-flex;
   width: 100%;
 }
-.pdpp-select__el {
+
+/* ── Trigger button (base-ui renders a <button>) ── */
+.pdpp-select__trigger {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  /* Right padding leaves room for the caret. */
+  text-align: left;
+  /* Right padding leaves room for the › caret. */
   padding: 8px 30px 8px 12px;
   background: var(--card);
   color: var(--foreground);
@@ -356,20 +367,28 @@
   width: 100%;
   cursor: pointer;
   transition: border-color var(--motion-state);
-  /* Drop the OS chrome so the caret is the only disclosure affordance. */
+  /* Reset <button> chrome. */
   appearance: none;
   -webkit-appearance: none;
+  outline: none;
 }
-.pdpp-select__el:focus { outline: none; border-color: var(--ring); }
-.pdpp-select__el:focus-visible {
+.pdpp-select__trigger:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+  border-color: var(--ring);
 }
-.pdpp-select__el:disabled {
+.pdpp-select__trigger[data-disabled],
+.pdpp-select__trigger:disabled {
   opacity: 0.55;
   cursor: default;
 }
-/* Disclosure caret — a › glyph turned a quarter-turn to point down. */
+/* Open state: tint the border so the trigger reads as active. */
+.pdpp-select__trigger[data-popup-open] {
+  border-color: var(--ring);
+}
+
+/* Disclosure caret — a › glyph turned a quarter-turn to point down.
+   Painted by the wrapper so it sits over the trigger at the right edge. */
 .pdpp-select::after {
   content: "›";
   position: absolute;
@@ -381,6 +400,75 @@
   line-height: 1;
   color: var(--muted-foreground);
   pointer-events: none;
+}
+
+/* ── Positioner: base-ui manages z-index/position; we just anchor it ── */
+.pdpp-select-positioner {
+  z-index: 60;
+  outline: none;
+}
+
+/* ── Popup: the win — OS never styled this. radius 0, hairline, menu shadow ── */
+.pdpp-select-popup {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* Same elevation exception as IcDialog: a floating surface earns one shadow. */
+  box-shadow: 0 8px 24px -6px color-mix(in oklab, var(--foreground) 28%, transparent);
+  outline: none;
+  min-width: var(--anchor-width, 120px);
+  padding: 4px 0;
+  /* Fade on open/close (base-ui data attrs). */
+  transition: opacity var(--motion-state);
+}
+.pdpp-select-popup[data-starting-style],
+.pdpp-select-popup[data-ending-style] {
+  opacity: 0;
+}
+
+/* ── List: scrollable container for items ── */
+.pdpp-select-list {
+  max-height: 260px;
+  overflow-y: auto;
+  outline: none;
+}
+
+/* ── Item: mono, hover/highlight = --primary-tint, selected = --primary accent ── */
+.pdpp-select-item {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 7px 32px 7px 12px;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  transition: background var(--motion-state);
+  outline: none;
+  user-select: none;
+}
+/* Highlighted (keyboard or pointer hover) */
+.pdpp-select-item[data-highlighted] {
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+}
+/* Selected item */
+.pdpp-select-item[data-selected] {
+  color: var(--primary);
+}
+/* Disabled item */
+.pdpp-select-item[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── ItemIndicator: the ✓ checkmark shown for the selected item ── */
+.pdpp-select-item-indicator {
+  position: absolute;
+  right: 10px;
+  font-size: 0.75rem;
+  color: var(--primary);
 }
 
 /* ─── Timestamp ───────────────────────────────────────────────────

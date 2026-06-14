@@ -150,12 +150,7 @@ function FootBlock({ host, build }: { build: string; host: string }) {
         {host} · {build}
       </span>
       <span className="rr-side__motto">your data, at home</span>
-      <button
-        className="rr-side__theme rr-chrome-btn"
-        onClick={toggleTheme}
-        title={themeTitle}
-        type="button"
-      >
+      <button className="rr-side__theme rr-chrome-btn" onClick={toggleTheme} title={themeTitle} type="button">
         {themeLabel}
       </button>
     </div>
