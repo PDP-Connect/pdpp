@@ -339,41 +339,54 @@ function SubscriptionRow({
   href: string;
   peeked: boolean;
 }) {
+  const detailHref = `/dashboard/event-subscriptions/${encodeURIComponent(subscription.subscription_id)}`;
+
+  const rowContent = (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Typed as="code" className="max-w-[32ch] truncate font-medium" title={subscription.subscription_id}>
+          {subscription.subscription_id}
+        </Typed>
+        <div className="flex items-center gap-2">
+          <Endorse
+            label={subscriptionEndorseLabel(subscription.status)}
+            status={subscriptionEndorseStatus(subscription.status)}
+          />
+          <TypedSm className="text-muted-foreground">
+            <IcTimestamp value={subscription.updated_at} />
+          </TypedSm>
+        </div>
+      </div>
+      <div className="pdpp-caption mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+        <span>
+          client <Typed as="code">{subscription.client_id}</Typed>
+        </span>
+        <span>
+          grant <Typed as="code">{subscription.grant_id}</Typed>
+        </span>
+        <span>callback {subscription.callback_host}</span>
+        <span>pending {subscription.pending_queue_count}</span>
+        <span>failed {subscription.final_failure_count}</span>
+        <LastAttemptCell subscription={subscription} />
+      </div>
+    </>
+  );
+
   return (
     <li>
-      <Link
+      <div
         aria-current={peeked ? "true" : undefined}
         className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-        href={href}
-        scroll={false}
       >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Typed as="code" className="max-w-[32ch] truncate font-medium" title={subscription.subscription_id}>
-            {subscription.subscription_id}
-          </Typed>
-          <div className="flex items-center gap-2">
-            <Endorse
-              label={subscriptionEndorseLabel(subscription.status)}
-              status={subscriptionEndorseStatus(subscription.status)}
-            />
-            <TypedSm className="text-muted-foreground">
-              <IcTimestamp value={subscription.updated_at} />
-            </TypedSm>
-          </div>
-        </div>
-        <div className="pdpp-caption mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-          <span>
-            client <Typed as="code">{subscription.client_id}</Typed>
-          </span>
-          <span>
-            grant <Typed as="code">{subscription.grant_id}</Typed>
-          </span>
-          <span>callback {subscription.callback_host}</span>
-          <span>pending {subscription.pending_queue_count}</span>
-          <span>failed {subscription.final_failure_count}</span>
-          <LastAttemptCell subscription={subscription} />
-        </div>
-      </Link>
+        {/* Mobile (below xl): navigate to full-page detail route. */}
+        <Link className="block xl:hidden" href={detailHref}>
+          {rowContent}
+        </Link>
+        {/* Desktop (xl+): open the side-panel peek via ?peek= param. */}
+        <Link className="hidden xl:block" href={href} scroll={false}>
+          {rowContent}
+        </Link>
+      </div>
     </li>
   );
 }

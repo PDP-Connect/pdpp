@@ -62,8 +62,17 @@ export interface ListWithPeekParams<T> {
   peekId: string | undefined;
   preHeader?: ReactNode;
   preList?: ReactNode;
-  /** Render a single row anchor; called inside <li>. */
-  renderRow: (item: T, opts: { peeked: boolean; href: string }) => ReactNode;
+  /**
+   * Render a single row anchor; called inside <li>.
+   *
+   * `href`       — the `?peek=<id>` URL for the desktop side-panel (xl+).
+   * `detailHref` — the full `/[id]` route for mobile full-page navigation.
+   *
+   * Rows should render an `xl:hidden` link to `detailHref` for mobile and a
+   * `hidden xl:block` link to `href` for desktop, so the SplitLayout peek
+   * pane opens on wide screens and a full-page detail opens on narrow ones.
+   */
+  renderRow: (item: T, opts: { peeked: boolean; href: string; detailHref: string }) => ReactNode;
   resetHref: string;
   result: ListResponse<T>;
   routes: Routes;
@@ -233,6 +242,7 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
             const id = rowKey(item);
             const peeked = peekId === id;
             const href = buildListHref({ peek: id });
+            const detailHref = subjectHref(params.subject, id, params.routes);
             const groupKey = dateGroupKey ? dateGroupKey(item) : null;
             // `result.data[index - 1]` is typed `T | undefined` under
             // noUncheckedIndexedAccess; binding it first lets the `prevItem`
@@ -247,7 +257,7 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
                     {groupKey}
                   </li>
                 ) : null}
-                <li>{renderRow(item, { peeked, href })}</li>
+                <li>{renderRow(item, { peeked, href, detailHref })}</li>
               </Fragment>
             );
           })}

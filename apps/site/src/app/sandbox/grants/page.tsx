@@ -39,29 +39,41 @@ export default async function SandboxGrantsPage({ searchParams }: { searchParams
     description: "Issued, revoked, and denied grant decisions.",
     result,
     rowKey: (g) => g.grant_id,
-    renderRow: (grant, { peeked, href }) => (
-      <Link
-        aria-current={peeked ? "true" : undefined}
-        className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-        href={href}
-        scroll={false}
-      >
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={grant.status} />
-            <span className="pdpp-caption text-muted-foreground">
-              <Timestamp value={grant.last_at} />
-            </span>
+    renderRow: (grant, { peeked, href, detailHref }) => {
+      const rowContent = (
+        <>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
+            <div className="flex items-center gap-2">
+              <StatusBadge status={grant.status} />
+              <span className="pdpp-caption text-muted-foreground">
+                <Timestamp value={grant.last_at} />
+              </span>
+            </div>
           </div>
+          <div className="pdpp-caption mt-1 text-muted-foreground">
+            {grant.event_count} events
+            {grant.client_id ? ` · client ${grant.client_id}` : ""}
+            {grant.connector_id ? ` · ${grant.connector_id}` : ""}
+          </div>
+        </>
+      );
+      return (
+        <div
+          aria-current={peeked ? "true" : undefined}
+          className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
+        >
+          {/* Mobile (below xl): full-page detail route. */}
+          <Link className="block xl:hidden" href={detailHref}>
+            {rowContent}
+          </Link>
+          {/* Desktop (xl+): side-panel peek via ?peek= param. */}
+          <Link className="hidden xl:block" href={href} scroll={false}>
+            {rowContent}
+          </Link>
         </div>
-        <div className="pdpp-caption mt-1 text-muted-foreground">
-          {grant.event_count} events
-          {grant.client_id ? ` · client ${grant.client_id}` : ""}
-          {grant.connector_id ? ` · ${grant.connector_id}` : ""}
-        </div>
-      </Link>
-    ),
+      );
+    },
     filters: {
       query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
       status: {

@@ -46,33 +46,45 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
     description: "Connector runs and their outcomes.",
     result,
     rowKey: (r) => r.run_id,
-    renderRow: (run, { peeked, href }) => (
-      <Link
-        aria-current={peeked ? "true" : undefined}
-        className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-        href={href}
-        scroll={false}
-      >
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
-          <div className="flex items-center gap-2">
-            {run.needs_input ? (
-              <span className="pdpp-eyebrow rounded-[3px] bg-[color:var(--warning-wash)] px-1.5 py-0.5 font-medium text-[color:var(--warning)]">
-                needs input
+    renderRow: (run, { peeked, href, detailHref }) => {
+      const rowContent = (
+        <>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
+            <div className="flex items-center gap-2">
+              {run.needs_input ? (
+                <span className="pdpp-eyebrow rounded-[3px] bg-[color:var(--warning-wash)] px-1.5 py-0.5 font-medium text-[color:var(--warning)]">
+                  needs input
+                </span>
+              ) : null}
+              <StatusBadge status={run.status} />
+              <span className="pdpp-caption text-muted-foreground">
+                <Timestamp value={run.last_at} />
               </span>
-            ) : null}
-            <StatusBadge status={run.status} />
-            <span className="pdpp-caption text-muted-foreground">
-              <Timestamp value={run.last_at} />
-            </span>
+            </div>
           </div>
+          <div className="pdpp-caption mt-1 text-muted-foreground">
+            {run.event_count} events · {run.connector_id ?? "—"}
+            {run.failure_reason ? ` · ${run.failure_reason}` : ""}
+          </div>
+        </>
+      );
+      return (
+        <div
+          aria-current={peeked ? "true" : undefined}
+          className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
+        >
+          {/* Mobile (below xl): full-page detail route. */}
+          <Link className="block xl:hidden" href={detailHref}>
+            {rowContent}
+          </Link>
+          {/* Desktop (xl+): side-panel peek via ?peek= param. */}
+          <Link className="hidden xl:block" href={href} scroll={false}>
+            {rowContent}
+          </Link>
         </div>
-        <div className="pdpp-caption mt-1 text-muted-foreground">
-          {run.event_count} events · {run.connector_id ?? "—"}
-          {run.failure_reason ? ` · ${run.failure_reason}` : ""}
-        </div>
-      </Link>
-    ),
+      );
+    },
     filters: {
       query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
       connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },

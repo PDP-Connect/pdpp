@@ -140,7 +140,9 @@ export function SplitLayout({ main, peek }: { main: ReactNode; peek: ReactNode }
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="min-w-0">{main}</div>
-      <div className="min-w-0">{peek}</div>
+      {/* On mobile (below xl / 1280px) the peek pane is hidden entirely.
+          Mobile list rows navigate to full-page detail routes instead. */}
+      <div className="hidden min-w-0 xl:block">{peek}</div>
     </div>
   );
 }

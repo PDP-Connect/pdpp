@@ -150,7 +150,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     peekEnvelope,
     peekId: params.peek,
     preHeader,
-    renderRow: (grant, { peeked, href }) => <GrantRow grant={grant} href={href} peeked={peeked} />,
+    renderRow: (grant, { peeked, href, detailHref }) => (
+      <GrantRow detailHref={detailHref} grant={grant} href={href} peeked={peeked} />
+    ),
     resetHref: "/dashboard/grants",
     result,
     routes: dashboardRoutes,
@@ -204,45 +206,68 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
   );
 }
 
-function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; peeked: boolean }) {
+function GrantRow({
+  grant,
+  href,
+  detailHref,
+  peeked,
+}: {
+  grant: GrantSummary;
+  href: string;
+  detailHref: string;
+  peeked: boolean;
+}) {
   const packageHref = grant.grant_package_id
     ? `/dashboard/grants/packages/${encodeURIComponent(grant.grant_package_id)}`
     : null;
+
+  // Shared row content rendered inside both the mobile and desktop links.
+  const rowContent = (
+    <>
+      {/* Lead with the source/client + decision; the raw grant id is demoted
+          to a monospace lookup key on the detail line. */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
+          <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
+          {grant.client_id ? (
+            <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id}>
+              client {grant.client_id}
+            </span>
+          ) : null}
+        </div>
+        <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+          <IcTimestamp value={grant.last_at} />
+        </span>
+      </div>
+      <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+        <code className="max-w-[32ch] truncate font-mono" title={grant.grant_id}>
+          {grant.grant_id}
+        </code>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="tabular-nums">{grant.event_count} events</span>
+        {grant.source ? (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span>source {formatSourceForDisplay(grant.source)}</span>
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+
   return (
     <div
       aria-current={peeked ? "true" : undefined}
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
     >
-      <Link className="block" href={href} scroll={false}>
-        {/* Lead with the source/client + decision; the raw grant id is demoted
-            to a monospace lookup key on the detail line. */}
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
-            <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
-            {grant.client_id ? (
-              <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id}>
-                client {grant.client_id}
-              </span>
-            ) : null}
-          </div>
-          <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
-            <IcTimestamp value={grant.last_at} />
-          </span>
-        </div>
-        <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
-          <code className="max-w-[32ch] truncate font-mono" title={grant.grant_id}>
-            {grant.grant_id}
-          </code>
-          <span className="text-muted-foreground/50">·</span>
-          <span className="tabular-nums">{grant.event_count} events</span>
-          {grant.source ? (
-            <>
-              <span className="text-muted-foreground/50">·</span>
-              <span>source {formatSourceForDisplay(grant.source)}</span>
-            </>
-          ) : null}
-        </div>
+      {/* Mobile (below xl): navigate to full-page detail route. */}
+      <Link className="block xl:hidden" href={detailHref}>
+        {rowContent}
+      </Link>
+      {/* Desktop (xl+): open the side-panel peek via ?peek= param. */}
+      <Link className="hidden xl:block" href={href} scroll={false}>
+        {rowContent}
       </Link>
       {packageHref ? (
         <div className="pdpp-caption mt-1">

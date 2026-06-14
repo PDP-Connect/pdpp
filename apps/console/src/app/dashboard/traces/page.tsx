@@ -190,13 +190,14 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
       ) : null}
 
       {/* ── Split layout: list + optional peek panel ─────────────────── */}
+      {/* On desktop (xl+): 2-column grid when peeking; 1-column otherwise.
+          On mobile (below xl): always 1-column; the peek pane is hidden via
+          `hidden xl:block` on the panel element — mobile rows navigate to
+          the full detail page instead. */}
       <div
-        className="rr-traces-split"
+        className="rr-traces-split xl:grid xl:gap-6 xl:items-start"
         style={{
-          display: "grid",
           gridTemplateColumns: isPeeking ? "minmax(0, 1.4fr) minmax(0, 1fr)" : "1fr",
-          gap: 24,
-          alignItems: "start",
         }}
       >
         {/* ── Traces table ──────────────────────────────────────────── */}
@@ -274,8 +275,6 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
               {/* Mobile card list — shown only at <640px */}
               <ul className="rr-traces-cards sm:hidden" style={{ listStyle: "none", margin: 0, padding: 0 }}>
                 {result.data.map((trace) => {
-                  const peeked = params.peek === trace.trace_id;
-                  const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
                   const detailHref = `/dashboard/traces/${encodeURIComponent(trace.trace_id)}`;
                   const label = traceRowLabel(trace);
                   const kinds = trace.kinds.slice(0, 3).join(", ");
@@ -285,11 +284,10 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                       style={{
                         borderBottom: "1px solid var(--border)",
                         padding: "10px 0",
-                        background: peeked ? "var(--primary-tint)" : undefined,
                       }}
                     >
-                      {/* Subject line */}
-                      <Link href={peekHref} scroll={false} style={{ display: "block", textDecoration: "none" }}>
+                      {/* Mobile card: tap anywhere navigates to full-page detail. */}
+                      <Link href={detailHref} style={{ display: "block", textDecoration: "none" }}>
                         <span
                           style={{
                             display: "block",
@@ -316,35 +314,28 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                         >
                           {trace.trace_id}
                         </TypedSm>
-                      </Link>
-                      {/* Meta line: status · kinds · events · time */}
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          alignItems: "center",
-                          gap: "5px 10px",
-                          marginTop: 6,
-                        }}
-                      >
-                        <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
-                        {kinds ? (
-                          <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm>
-                        ) : null}
-                        <TypedSm style={{ color: "var(--muted-foreground)" }}>
-                          {trace.event_count} events
-                        </TypedSm>
-                        <TypedSm style={{ color: "var(--muted-foreground)" }}>
-                          <IcTimestamp value={trace.last_at} />
-                        </TypedSm>
-                        <Link
-                          className={buttonVariants({ variant: "ghost", size: "sm" })}
-                          href={detailHref}
-                          style={{ marginLeft: "auto", fontSize: "0.7rem", padding: "2px 8px" }}
+                        {/* Meta line: status · kinds · events · time */}
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            alignItems: "center",
+                            gap: "5px 10px",
+                            marginTop: 6,
+                          }}
                         >
-                          →
-                        </Link>
-                      </div>
+                          <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+                          {kinds ? (
+                            <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm>
+                          ) : null}
+                          <TypedSm style={{ color: "var(--muted-foreground)" }}>
+                            {trace.event_count} events
+                          </TypedSm>
+                          <TypedSm style={{ color: "var(--muted-foreground)" }}>
+                            <IcTimestamp value={trace.last_at} />
+                          </TypedSm>
+                        </div>
+                      </Link>
                     </li>
                   );
                 })}
@@ -384,14 +375,16 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           ) : null}
         </div>
 
-        {/* ── Peek panel ────────────────────────────────────────────── */}
+        {/* ── Peek panel — desktop only (xl+) ────────────────────────── */}
         {isPeeking && peekEnvelope ? (
-          <TracesPeekPanel
-            cliCommand={`pdpp ref trace show ${params.peek}`}
-            envelope={peekEnvelope}
-            listParams={params}
-            traceId={params.peek!}
-          />
+          <div className="hidden xl:block">
+            <TracesPeekPanel
+              cliCommand={`pdpp ref trace show ${params.peek}`}
+              envelope={peekEnvelope}
+              listParams={params}
+              traceId={params.peek!}
+            />
+          </div>
         ) : null}
       </div>
     </RecordroomShellWithPalette>
