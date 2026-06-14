@@ -11,7 +11,7 @@
  * These render as `data-surface="protocol|human"` — the attribute
  * selector in components.css handles styling so tokens update it automatically.
  */
-import type { HTMLAttributes, ReactNode } from "react";
+import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
 import "./components.css";
 
 // ─── ProtocolSurface ─────────────────────────────────────────────
@@ -19,6 +19,7 @@ import "./components.css";
 interface SurfaceProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
   className?: string;
+  style?: CSSProperties;
 }
 
 export function ProtocolSurface({ className, children, ...rest }: SurfaceProps) {
