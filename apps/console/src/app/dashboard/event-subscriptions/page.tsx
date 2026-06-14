@@ -12,6 +12,24 @@
  *       reference-implementation-architecture/spec.md
  */
 
+import {
+  Endorse,
+  Eyebrow,
+  IcButton,
+  IcField,
+  IcInput,
+  IcSelect,
+  KV,
+  KVRow,
+  RecordroomShell,
+  Sheet,
+  SheetBody,
+  SheetHead,
+  SheetSerial,
+  SheetTitle,
+  Typed,
+  TypedSm,
+} from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import {
   DataList,
@@ -24,23 +42,6 @@ import {
 } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
-import {
-  Endorse,
-  Eyebrow,
-  IcButton,
-  IcField,
-  IcInput,
-  KV,
-  KVRow,
-  RecordroomShell,
-  Sheet,
-  SheetBody,
-  SheetHead,
-  SheetSerial,
-  SheetTitle,
-  Typed,
-  TypedSm,
-} from "@pdpp/brand-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -70,7 +71,7 @@ export const metadata: Metadata = {
 //   disabled / disabled_failure / disabled_revoked → denied (red)
 //   deleted            → revoked (muted/struck — soft-deleted, not erased)
 function subscriptionEndorseStatus(
-  status: ClientEventSubscriptionStatus,
+  status: ClientEventSubscriptionStatus
 ): "active" | "expiring" | "denied" | "revoked" {
   switch (status) {
     case "active":
@@ -315,17 +316,16 @@ function FiltersForm({ params }: { params: ResolvedParams }) {
           <IcInput defaultValue={params.grantId} name="grant_id" placeholder="grt_…" />
         </ToolbarField>
         <ToolbarField label="status" width="min-w-[10rem]">
-          {/* No IcSelect yet — native select, token-driven via .pdpp-input */}
-          <select className="pdpp-input" defaultValue={params.status} name="status">
+          <IcSelect defaultValue={params.status} name="status">
             <option value="">any</option>
             {STATUS_FILTER_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
-          </select>
+          </IcSelect>
         </ToolbarField>
-        <IcButton className="mt-5" size="sm" type="submit">
+        <IcButton className="mt-5" size="sm" type="submit" variant="ghost">
           Filter
         </IcButton>
       </Toolbar>
@@ -441,7 +441,10 @@ function PeekPane({
             <KVRow k="disabled">
               <Timestamp value={subscription.disabled_at} />
               {subscription.disabled_reason ? (
-                <> · <Typed as="code">{subscription.disabled_reason}</Typed></>
+                <>
+                  {" "}
+                  · <Typed as="code">{subscription.disabled_reason}</Typed>
+                </>
               ) : null}
             </KVRow>
           ) : null}

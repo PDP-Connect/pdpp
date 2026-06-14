@@ -1,5 +1,5 @@
+import { buttonVariants, IcButton, IcInput, IcSelect, RecordroomShell } from "@pdpp/brand-react";
 import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
-import { buttonVariants, IcButton, IcInput, RecordroomShell } from "@pdpp/brand-react";
 import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import {
@@ -92,16 +92,12 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
         name="redirect_uri"
         placeholder="https://client.example/callback"
       />
-      <label className="flex min-w-0 flex-col gap-1">
+      <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-source_kind">
         <span className="pdpp-eyebrow">Source kind</span>
-        <select
-          className="pdpp-input"
-          defaultValue={draft.sourceKind}
-          name="source_kind"
-        >
+        <IcSelect defaultValue={draft.sourceKind} id="grant-request-source_kind" name="source_kind">
           <option value="connector">connector</option>
           <option value="provider_native">provider_native</option>
-        </select>
+        </IcSelect>
       </label>
       <FormField defaultValue={draft.sourceId} label="Source id" name="source_id" />
       <FormField defaultValue={draft.purposeCode} label="Purpose code" name="purpose_code" />
@@ -163,14 +159,14 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
       <span className="pdpp-eyebrow">Connection</span>
-      <select className="pdpp-input" defaultValue={draft.connectionId} id="grant-request-connection_id" name="connection_id">
+      <IcSelect defaultValue={draft.connectionId} id="grant-request-connection_id" name="connection_id">
         <option value={FAN_IN_OPTION_VALUE}>{FAN_IN_OPTION_LABEL}</option>
         {connectionOptions.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {opt.label}
           </option>
         ))}
-      </select>
+      </IcSelect>
       <span className="pdpp-caption text-muted-foreground">
         Pin to one connection, or fan in across all the grant authorizes.
       </span>
@@ -393,13 +389,7 @@ function FormSelect({
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor={`grant-request-${name}`}>
       <span className="pdpp-eyebrow">{label}</span>
-      <select className="pdpp-input" defaultValue={defaultValue} id={`grant-request-${name}`} name={name}>
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
+      <IcSelect defaultValue={defaultValue} id={`grant-request-${name}`} name={name} options={options} />
     </label>
   );
 }

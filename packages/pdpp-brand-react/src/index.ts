@@ -57,6 +57,9 @@ export type { RhythmTick } from "./rhythm.tsx";
 export { Rhythm } from "./rhythm.tsx";
 // ─── Scope ───────────────────────────────────────────────────────
 export { Scope } from "./scope.tsx";
+// ─── Select ───────────────────────────────────────────────────────
+export type { IcSelectOption, IcSelectProps } from "./select.tsx";
+export { IcSelect } from "./select.tsx";
 // ─── Sheet ────────────────────────────────────────────────────────
 export { Sheet, SheetBody, SheetFoot, SheetHead, SheetSerial, SheetTitle } from "./sheet.tsx";
 // ─── Shell frame (RecordroomShell + nav data) ─────────────────────

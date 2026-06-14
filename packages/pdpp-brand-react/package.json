@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "test": "node --test --import tsx --import ./css-stub-register.mjs 'src/**/*.test.ts'",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {

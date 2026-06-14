@@ -18,6 +18,7 @@ import {
   Eyebrow,
   IcButton,
   IcInput,
+  IcSelect,
   RecordroomShell,
   Sheet,
   SheetBody,
@@ -40,8 +41,8 @@ import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   getTraceTimeline,
-  listTraces,
   type ListResponse,
+  listTraces,
   type TimelineEnvelope,
   type TraceSummary,
 } from "../lib/ref-client.ts";
@@ -68,9 +69,7 @@ function listHref(params: Params, overrides: Record<string, string | undefined> 
 }
 
 /** Map trace status to the Endorse variant vocabulary. */
-function traceEndorseStatus(
-  status: string
-): "active" | "continuous" | "expiring" | "revoked" | "denied" {
+function traceEndorseStatus(status: string): "active" | "continuous" | "expiring" | "revoked" | "denied" {
   switch (status) {
     case "succeeded":
       return "active";
@@ -136,10 +135,9 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           style={{ flex: "1 1 200px", maxWidth: 320 }}
           type="search"
         />
-        {/* Status filter — no IcSelect yet; native select with token styling */}
-        <select
+        {/* Status filter — Ink Carbon select (native <select> under the hood). */}
+        <IcSelect
           aria-label="Filter by status"
-          className="pdpp-input"
           defaultValue={params.status ?? ""}
           name="status"
           style={{ flex: "0 0 auto", minWidth: 140 }}
@@ -149,8 +147,8 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           <option value="failed">failed</option>
           <option value="rejected">rejected</option>
           <option value="started">started</option>
-        </select>
-        <IcButton size="sm" type="submit">
+        </IcSelect>
+        <IcButton size="sm" type="submit" variant="ghost">
           Apply
         </IcButton>
         {hasFilters ? (
@@ -219,24 +217,14 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                 const label = traceRowLabel(trace);
                 const kinds = trace.kinds.slice(0, 3).join(", ");
                 return (
-                  <TableRow
-                    className={peeked ? "pdpp-table__row--active" : undefined}
-                    key={trace.trace_id}
-                  >
+                  <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
                     {/* Status */}
                     <TableCell>
-                      <Endorse
-                        label={trace.status}
-                        status={traceEndorseStatus(trace.status)}
-                      />
+                      <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
                     </TableCell>
                     {/* Subject — primary label + mono trace id below */}
                     <TableCell>
-                      <Link
-                        href={peekHref}
-                        scroll={false}
-                        style={{ display: "block", textDecoration: "none" }}
-                      >
+                      <Link href={peekHref} scroll={false} style={{ display: "block", textDecoration: "none" }}>
                         <span
                           style={{
                             display: "block",
@@ -266,9 +254,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                     </TableCell>
                     {/* Kinds */}
                     <TableCell>
-                      {kinds ? (
-                        <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm>
-                      ) : null}
+                      {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
                     </TableCell>
                     {/* Event count */}
                     <TableCell numeric>
@@ -287,7 +273,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           )}
 
           {/* ── Pagination ────────────────────────────────────────── */}
-          {(result.has_more || params.cursor) ? (
+          {result.has_more || params.cursor ? (
             <div
               style={{
                 display: "flex",

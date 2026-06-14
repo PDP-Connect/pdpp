@@ -1,9 +1,8 @@
 "use client";
 
+import { IcButton, IcInput } from "@pdpp/brand-react";
 import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import { type DashboardMode, listDashboardCommands } from "../lib/actions.ts";
 
 interface CommandPaletteContextValue {
@@ -50,19 +49,19 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 export function CommandPaletteTrigger() {
   const palette = useCommandPalette();
   return (
-    <Button
+    <IcButton
       aria-label="Open command palette"
       className="gap-3 font-normal text-muted-foreground"
       onClick={palette.open}
       size="sm"
       type="button"
-      variant="outline"
+      variant="ghost"
     >
       <span>Jump to…</span>
       <kbd className="pdpp-caption rounded border border-border bg-muted/50 px-1 py-px font-mono text-foreground/80">
         ⌘K
       </kbd>
-    </Button>
+    </IcButton>
   );
 }
 
@@ -122,7 +121,7 @@ export function CommandPalette({
         role="dialog"
       >
         <form className="p-3" onSubmit={submit}>
-          <Input
+          <IcInput
             className="h-10 py-2 font-mono"
             data-testid="command-palette-input"
             onChange={(e) => setQuery(e.target.value)}
@@ -133,16 +132,16 @@ export function CommandPalette({
           />
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
             {navCommands.map((cmd) => (
-              <Button key={cmd.id} onClick={() => navigate(cmd.href)} size="xs" type="button" variant="outline">
+              <IcButton key={cmd.id} onClick={() => navigate(cmd.href)} size="sm" type="button" variant="ghost">
                 {cmd.title}
-              </Button>
+              </IcButton>
             ))}
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
             {actionCommands.map((cmd) => (
-              <Button key={cmd.id} onClick={() => navigate(cmd.href)} size="xs" type="button" variant="secondary">
+              <IcButton key={cmd.id} onClick={() => navigate(cmd.href)} size="sm" type="button" variant="default">
                 {cmd.title}
-              </Button>
+              </IcButton>
             ))}
           </div>
           <div className="pdpp-caption mt-3 text-muted-foreground/70">⏎ search · ⎋ close · ⌘/ctrl+k toggle</div>

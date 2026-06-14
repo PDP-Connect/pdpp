@@ -334,6 +334,54 @@
   color: var(--muted-foreground);
 }
 
+/* ─── Select ──────────────────────────────────────────────────────
+   Native <select> restyled to IcInput geometry. The wrapper paints a
+   typographic disclosure caret (›, rotated to point down) at the right
+   edge so the glyph inherits the surface temperature — no icon import. */
+.pdpp-select {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+}
+.pdpp-select__el {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  /* Right padding leaves room for the caret. */
+  padding: 8px 30px 8px 12px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  width: 100%;
+  cursor: pointer;
+  transition: border-color var(--motion-state);
+  /* Drop the OS chrome so the caret is the only disclosure affordance. */
+  appearance: none;
+  -webkit-appearance: none;
+}
+.pdpp-select__el:focus { outline: none; border-color: var(--ring); }
+.pdpp-select__el:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.pdpp-select__el:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* Disclosure caret — a › glyph turned a quarter-turn to point down. */
+.pdpp-select::after {
+  content: "›";
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%) rotate(90deg);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
 /* ─── KV block — typed record key/value pairs ────────────────────── */
 .pdpp-kv { display: flex; flex-direction: column; }
 .pdpp-kv__row {
