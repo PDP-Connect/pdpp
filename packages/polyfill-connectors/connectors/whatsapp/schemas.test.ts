@@ -1,8 +1,8 @@
 /**
- * Schema tests for the WhatsApp connector. The parsing logic is inline in
- * index.ts (no parsers.ts), so these tests assert the schema against literal
- * records shaped exactly as index.ts's `emitRecord` calls build them — the
- * authoritative emitted shape. SLVP "validate representative emitted records".
+ * Schema tests for the WhatsApp connector. Parser output lives in parsers.ts;
+ * these tests assert the stream schemas against literal records shaped exactly
+ * as index.ts's `emitRecord` calls build them — the authoritative emitted
+ * shape. SLVP "validate representative emitted records".
  */
 
 import assert from "node:assert/strict";
