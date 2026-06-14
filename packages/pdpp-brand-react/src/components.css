@@ -2232,8 +2232,9 @@ a.rr-x-row {
   .rr-x-jump {
     margin-left: 0;
   }
-  /* Mobile push nav: show the Link affordance, hide the button affordance. */
-  .rr-x-row--desktop {
+  /* Mobile push nav: show the Link affordance, hide the button affordance.
+     Double-class specificity beats the unconditional .rr-x-row base rule. */
+  .rr-x-row.rr-x-row--desktop {
     display: none;
   }
   /* Hide the record inspector entirely on mobile — taps push to the full-page
@@ -2245,9 +2246,10 @@ a.rr-x-row {
   }
 }
 
-/* Desktop (>860px): show the button affordance, hide the Link affordance. */
+/* Desktop (>860px): show the button affordance, hide the Link affordance.
+   Double-class specificity beats the unconditional .rr-x-row base rule. */
 @media (min-width: 861px) {
-  .rr-x-row--mobile {
+  .rr-x-row.rr-x-row--mobile {
     display: none;
   }
 }

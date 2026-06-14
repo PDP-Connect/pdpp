@@ -13,30 +13,6 @@
   align-items: start;
 }
 
-/* Mobile (≤800px): single column; detail column hidden — tap navigates to
-   the full connection detail page via the mobile <Link> affordance. */
-@media (max-width: 800px) {
-  .rr-s {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-  }
-  /* Hide the in-place detail panel — mobile uses full-page push navigation. */
-  .rr-s-detail {
-    display: none;
-  }
-  /* Show the Link affordance, hide the button affordance on mobile. */
-  .rr-s-item--desktop {
-    display: none;
-  }
-}
-
-/* Desktop (>800px): show button affordance, hide the mobile Link affordance. */
-@media (min-width: 801px) {
-  .rr-s-item--mobile {
-    display: none;
-  }
-}
-
 /* ── Instance list ── */
 .rr-s-list {
   display: flex;
@@ -407,4 +383,28 @@ a.rr-s-item {
   font-size: 11.5px;
   line-height: 1.55;
   color: var(--muted-foreground);
+}
+
+/* ── Responsive: mobile push navigation ──
+   These MUST come after all base rules so they win in the cascade.
+   At ≤800px: hide the in-place detail panel and the desktop button affordance;
+   the mobile <Link> affordance (rr-s-item--mobile) pushes to the connection
+   detail page. At >800px: hide the mobile link, show the desktop button. */
+@media (max-width: 800px) {
+  .rr-s {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .rr-s-detail {
+    display: none;
+  }
+  .rr-s-item.rr-s-item--desktop {
+    display: none;
+  }
+}
+
+@media (min-width: 801px) {
+  .rr-s-item.rr-s-item--mobile {
+    display: none;
+  }
 }
