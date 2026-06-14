@@ -221,6 +221,7 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.5 Let manual/upload owners explicitly choose new source vs. existing compatible source and edit the new-source label; artifact identity may suggest but must not auto-merge.
 - [x] 11.6 Move normal manual/upload transfer off Server Action multipart parsing; add connector max-size preflight, upload progress, and multi-file import into one selected source.
 - [x] 11.7 Promote normal manual/upload transfer to streamed staged artifacts with durable status polling; invalid and duplicate uploads must not create phantom source connections, and same-named artifacts must not overwrite each other before import.
+- [x] 11.8 Import media-bearing WhatsApp zip exports as attachment records with blob references when runtime blob upload is available, or explicit deferred/failed hydration state otherwise.
 
 Progress note (11.7): the normal Console import path now posts each selected
 file to a reference staged-artifact route using
@@ -236,3 +237,14 @@ coexist. The WhatsApp file connector now discovers supported export files
 recursively so the generic artifact-directory layout works without
 connector-specific Console code. Focused route and Console invariant tests are
 green.
+
+Progress note (11.8): WhatsApp zip exports with media now validate as
+`included_for_import` and the connector declares an `attachments` stream. The
+connector emits one attachment record per media file with stable id,
+chat/message linkage when detectable, content hash, MIME type, size, hydration
+status, and a standard `blob_ref` when `PDPP_RS_URL`/`RS_URL` plus
+`PDPP_OWNER_TOKEN` are present. Missing blob upload config no longer lets the UI
+claim "with media" while dropping the bytes; records surface
+`hydration_status: "deferred"`. A real connector subprocess test stages a
+WhatsApp zip in a nested artifact directory and proves `chats`, `messages`, and
+`attachments` records are emitted through the production JSONL protocol.

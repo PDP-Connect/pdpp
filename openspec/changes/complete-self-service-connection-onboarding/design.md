@@ -364,6 +364,18 @@ at least one artifact is staged. Each artifact is isolated on disk under its own
 artifact directory so same-named exports can coexist without overwriting one
 another, while connector parsers still receive the original file name.
 
+Media-bearing manual imports must be honest about binary content. If a connector
+accepts an artifact that can include media or attachments, "with media" cannot
+mean "detect the media and ignore it." The connector either imports the media as
+records that reference the reference blob store, or emits explicit
+`hydration_status: "deferred" | "failed"` metadata so the owner and downstream
+read surfaces know what was not retained. WhatsApp zip exports therefore add an
+`attachments` stream: each included media file gets a stable attachment id,
+chat/message linkage when detectable, content hash, MIME type, size, and a
+`blob_ref` when the run has the standard blob-upload runtime config. The Console
+stays connector-generic; the stream, copy, and validation expectations come from
+the connector manifest.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

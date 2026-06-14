@@ -8,7 +8,13 @@ export interface ParsedWhatsAppMessage {
   sent_at: string;
 }
 
+export interface ParsedWhatsAppAttachment {
+  bytes: Buffer;
+  filename: string;
+}
+
 export interface ParsedWhatsAppChat {
+  attachments: ParsedWhatsAppAttachment[];
   chatId: string;
   messages: ParsedWhatsAppMessage[];
   participants: string[];
@@ -73,6 +79,7 @@ export interface ExtractedWhatsAppChatArtifact {
   chatFileName: string;
   format: WhatsAppChatArtifactFormat;
   mediaFileCount: number;
+  mediaFiles: ParsedWhatsAppAttachment[];
   text: string;
 }
 
@@ -172,6 +179,9 @@ export function extractWhatsAppChatArtifact(
   if (ZIP_EXT_RE.test(filename) || hasZipLocalFileSignature(bytes)) {
     const entries = readZipEntries(bytes);
     const textEntries = entries.filter((entry) => TXT_EXT_RE.test(entry.name));
+    const mediaFiles = entries
+      .filter((entry) => isProbablyMediaEntry(entry.name))
+      .map((entry) => ({ bytes: entry.data(), filename: basename(entry.name) }));
     for (const entry of textEntries) {
       let text: string;
       try {
@@ -183,7 +193,8 @@ export function extractWhatsAppChatArtifact(
         return {
           chatFileName: basename(entry.name),
           format: "whatsapp_chat_export_zip",
-          mediaFileCount: entries.filter((candidate) => isProbablyMediaEntry(candidate.name)).length,
+          mediaFileCount: mediaFiles.length,
+          mediaFiles,
           text,
         };
       }
@@ -192,7 +203,7 @@ export function extractWhatsAppChatArtifact(
   }
   const text = bytes.toString("utf8");
   return looksLikeWhatsAppChatExport(text)
-    ? { chatFileName: filename, format: "whatsapp_chat_export", mediaFileCount: 0, text }
+    ? { chatFileName: filename, format: "whatsapp_chat_export", mediaFileCount: 0, mediaFiles: [], text }
     : null;
 }
 
@@ -226,6 +237,7 @@ export function parseWhatsAppChatFile(filename: string, content: string): Parsed
   }
 
   return {
+    attachments: [],
     chatId: createHash("sha256").update(filename).digest("hex").slice(0, CHAT_ID_HASH_LENGTH),
     title: whatsappChatTitleFromFilename(filename),
     participants: [...participants],

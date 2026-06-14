@@ -21,7 +21,7 @@ export interface WhatsAppChatExportValidation {
   readonly media_coverage: {
     readonly attached_media_files: number;
     readonly referenced_media_files: number;
-    readonly status: "included_not_imported" | "none_referenced" | "not_included";
+    readonly status: "included_for_import" | "none_referenced" | "not_included";
   };
   readonly remediation: string | null;
   readonly source_identity: {
@@ -63,7 +63,7 @@ function mediaCoverageStatus(
   referencedMediaFiles: number
 ): WhatsAppChatExportValidation["media_coverage"]["status"] {
   if (attachedMediaFiles > 0) {
-    return "included_not_imported";
+    return "included_for_import";
   }
   if (referencedMediaFiles > 0) {
     return "not_included";
@@ -116,14 +116,12 @@ export function validateWhatsAppChatExportArtifact(
 
   const warnings: string[] = [];
   if (attachmentCount > 0 && artifact.mediaFileCount > 0) {
-    warnings.push(
-      "This export includes media files. PDPP imports messages now and records media as present, but does not attach media files to records in this tranche."
-    );
+    warnings.push("This export includes media files. PDPP will import them as WhatsApp attachment records.");
   } else if (attachmentCount > 0) {
     warnings.push("This text export references media, but the media files are not included in this import.");
   } else if (artifact.mediaFileCount > 0) {
     warnings.push(
-      "This zip includes media-like files, but the parsed chat text did not reference them. PDPP records them as present but not attached."
+      "This zip includes media-like files, but the parsed chat text did not reference them. PDPP will still import them as attachment records for this chat."
     );
   }
 

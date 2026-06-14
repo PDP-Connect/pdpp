@@ -33,6 +33,7 @@ import { Readable } from "node:stream";
 import { mock, test } from "node:test";
 import type { FetchMessageObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
+import { runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   type AttachmentDetailCoverage,
@@ -56,7 +57,6 @@ import {
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
-  runtimeBlobUploadAvailable,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
   validateAttachmentHydrationPreflight,

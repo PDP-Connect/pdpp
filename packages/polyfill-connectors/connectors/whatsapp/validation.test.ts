@@ -86,8 +86,8 @@ test("validateWhatsAppChatExportArtifact accepts zip exports with media present"
   assert.equal(validation.estimated_messages, 3);
   assert.equal(validation.media_coverage.referenced_media_files, 1);
   assert.equal(validation.media_coverage.attached_media_files, 1);
-  assert.equal(validation.media_coverage.status, "included_not_imported");
-  assert.match(validation.warnings[0] ?? "", /includes media files/i);
+  assert.equal(validation.media_coverage.status, "included_for_import");
+  assert.match(validation.warnings[0] ?? "", /attachment records/i);
 });
 
 test("validateWhatsAppChatExportArtifact rejects malformed zip input without throwing", () => {

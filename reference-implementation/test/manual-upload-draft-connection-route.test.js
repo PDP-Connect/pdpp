@@ -642,7 +642,7 @@ test('WhatsApp zip export with media attaches to an existing manual-upload conne
     assert.equal(second.status, 201, second.text);
     assert.equal(second.body.connection_id, first.body.connection_id);
     assert.equal(second.body.validation.detected_format, 'whatsapp_chat_export_zip');
-    assert.equal(second.body.validation.media_coverage.status, 'included_not_imported');
+    assert.equal(second.body.validation.media_coverage.status, 'included_for_import');
     assert.equal(second.body.validation.media_coverage.attached_media_files, 1);
 
     const rowCount = getDb().prepare('SELECT COUNT(*) AS count FROM connector_instances').get().count;

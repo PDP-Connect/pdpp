@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatsSchema, messagesSchema, validateRecord } from "./schemas.ts";
+import { attachmentsSchema, chatsSchema, messagesSchema, validateRecord } from "./schemas.ts";
 
 // A chat record exactly as index.ts emits it: 16-hex id, filename-derived
 // title, participant list, count, first/last sent_at.
@@ -28,6 +28,24 @@ const MESSAGE_RECORD = {
   content: "hey, are we still on for tomorrow?",
   has_attachment: false,
   sent_at: "2024-06-05T13:45:22.000Z",
+};
+
+const ATTACHMENT_RECORD = {
+  id: "0123456789abcdef:attachment:0011223344556677",
+  blob_ref: {
+    blob_id: "blob_123",
+    mime_type: "image/jpeg",
+    sha256: "a".repeat(64),
+    size_bytes: 3,
+  },
+  chat_id: "0123456789abcdef",
+  content_sha256: "a".repeat(64),
+  content_type: "image/jpeg",
+  filename: "IMG-20240605-WA0001.jpg",
+  hydration_error: null,
+  hydration_status: "hydrated",
+  message_id: "0123456789abcdef:0",
+  size_bytes: 3,
 };
 
 test("chats schema accepts a representative emitted record", () => {
@@ -60,6 +78,21 @@ test("messages schema accepts an attachment-only message (empty content)", () =>
   assert.ok(result.success, JSON.stringify(result.error?.issues));
 });
 
+test("attachments schema accepts a representative emitted media record", () => {
+  const result = attachmentsSchema.safeParse(ATTACHMENT_RECORD);
+  assert.ok(result.success, JSON.stringify(result.error?.issues));
+});
+
+test("attachments schema accepts a deferred media record without blob_ref", () => {
+  const result = attachmentsSchema.safeParse({
+    ...ATTACHMENT_RECORD,
+    blob_ref: null,
+    hydration_status: "deferred",
+    message_id: null,
+  });
+  assert.ok(result.success, JSON.stringify(result.error?.issues));
+});
+
 test("messages schema rejects a malformed id (not <chatId>:<index>)", () => {
   assert.equal(messagesSchema.safeParse({ ...MESSAGE_RECORD, id: "no-colon" }).success, false);
 });
@@ -71,5 +104,6 @@ test("chats schema rejects a non-hex chat id (filename-hash drift)", () => {
 test("validateRecord routes by stream and passes unknown streams through", () => {
   assert.equal(validateRecord("chats", CHAT_RECORD).ok, true);
   assert.equal(validateRecord("messages", MESSAGE_RECORD).ok, true);
+  assert.equal(validateRecord("attachments", ATTACHMENT_RECORD).ok, true);
   assert.equal(validateRecord("unknown_stream", { x: 1 }).ok, true);
 });

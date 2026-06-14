@@ -39,7 +39,7 @@
           "label": "Media folder sync",
           "platform": "device",
           "posture": "advanced",
-          "detail": "Zip exports can include media files. This flow records media as present, but attaching media files to message records remains a separate future device-sync path."
+          "detail": "Zip exports can include media files. When the import run has blob-upload support, PDPP keeps those files as WhatsApp attachment records with blob references."
         }
       ],
       "accepted_file_extensions": [
@@ -59,7 +59,7 @@
         "Estimated messages and participants",
         "Detected message date range",
         "Duplicate, empty, unsupported, or too-large file status",
-        "Whether media files are absent, present in the zip, or not yet attached to records"
+        "Whether media files are absent, referenced but not included, or included for attachment import"
       ]
     }
   },
@@ -138,7 +138,7 @@
       "description": "Messages from WhatsApp chat exports.",
       "display": {
         "label": "Your WhatsApp messages",
-        "detail": "Author, timestamp, text content per message. Media attachments flagged but not stored."
+        "detail": "Author, timestamp, text content per message. Media attachments are represented in the attachments stream when the export includes them."
       },
       "semantics": "append_only",
       "schema": {
@@ -191,6 +191,115 @@
           "name": "chat",
           "stream": "chats",
           "foreign_key": "chat_id",
+          "cardinality": "has_one"
+        }
+      ]
+    },
+    {
+      "name": "attachments",
+      "description": "Media files included in WhatsApp chat export zip files.",
+      "display": {
+        "label": "Your WhatsApp media attachments",
+        "detail": "Filename, MIME type, size, linked chat/message when detectable, and a blob reference when the media file was retained."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "content_sha256": {
+            "type": "string"
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": [
+              "deferred",
+              "failed",
+              "hydrated"
+            ]
+          },
+          "hydration_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blob_ref": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "blob_id",
+              "mime_type",
+              "sha256",
+              "size_bytes"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "chat_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "content_sha256",
+          "hydration_status"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "chat",
+          "stream": "chats",
+          "foreign_key": "chat_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
           "cardinality": "has_one"
         }
       ]

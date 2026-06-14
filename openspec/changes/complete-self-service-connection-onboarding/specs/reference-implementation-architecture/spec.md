@@ -230,6 +230,10 @@ owner-provided artifact.
   run after the files are staged
 - **AND** same-named artifacts SHALL be isolated so one upload cannot overwrite
   another before the connector run consumes staged files
+- **AND** if an accepted artifact contains media or attachment bytes, the
+  connector SHALL either import those bytes as blob-backed records or emit
+  explicit per-record hydration state (`deferred` or `failed`) rather than
+  implying that media was imported when only metadata was detected
 
 #### Scenario: Timeline refresh starts without fixed cooldown
 
