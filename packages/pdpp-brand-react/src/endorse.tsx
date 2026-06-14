@@ -15,8 +15,10 @@
  * The badge background and border are derived from currentColor
  * via color-mix so the variant modifier drives the entire badge.
  */
-import { cva, type VariantProps } from "class-variance-authority";
+import { cva } from "class-variance-authority";
 import "./components.css";
+
+export type EndorseStatus = "active" | "continuous" | "expiring" | "revoked" | "denied";
 
 const endorse = cva("pdpp-endorse", {
   variants: {
@@ -34,7 +36,7 @@ const endorse = cva("pdpp-endorse", {
 });
 
 /** Human-readable label for each status, matching the RFC voice. */
-const LABEL: Record<NonNullable<EndorseProps["status"]>, string> = {
+const LABEL: Record<EndorseStatus, string> = {
   active: "active",
   continuous: "continuous",
   expiring: "expiring",
@@ -42,10 +44,11 @@ const LABEL: Record<NonNullable<EndorseProps["status"]>, string> = {
   denied: "denied",
 };
 
-interface EndorseProps extends VariantProps<typeof endorse> {
+interface EndorseProps {
   className?: string;
   /** Override the default label derived from status. */
   label?: string;
+  status?: EndorseStatus | null;
 }
 
 export function Endorse({ status = "active", label, className }: EndorseProps) {
