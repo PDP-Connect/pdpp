@@ -65,7 +65,10 @@ const DELETED_COPY_RE = /has been deleted/;
 // Filter-status select must surface exactly one empty-value option (the
 // "any" fallback). A duplicate is a real bug we saw upstream of this
 // revision; locking it in keeps a future refactor from re-introducing it.
-const ANY_STATUS_OPTION_GLOBAL_RE = /<option\s+value=""[^>]*>/g;
+// The status filter migrated from a native <select>/<option> to the Ink
+// Carbon <IcSelect>, which takes its choices via an `options` array, so the
+// "any" default is now the lone `value: ""` entry in that array literal.
+const ANY_STATUS_OPTION_GLOBAL_RE = /\bvalue:\s*""/g;
 
 // Server-rendered confirmation. The form must POST a `confirm_disable`
 // field and the action must reject submits where it is not exactly "yes".
@@ -148,7 +151,7 @@ test("status filter renders exactly one empty-value option", async () => {
   assert.equal(
     matches.length,
     1,
-    `expected exactly one <option value=""> in page.tsx but found ${matches.length}: ${JSON.stringify(matches)}`
+    `expected exactly one empty-value ("any") status option in page.tsx but found ${matches.length}: ${JSON.stringify(matches)}`
   );
 });
 
