@@ -128,6 +128,23 @@ export interface ConnectorManifest {
    * it through the typed `listConnectorManifests()` path.
    */
   runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
+  /**
+   * Owner setup metadata. The Sources surface reads only the manual/upload
+   * shape to decide whether an existing source can import another owner file.
+   * Provider-specific labels and instructions remain in the manifest.
+   */
+  setup?: {
+    manual_or_upload?: {
+      accepted_file_extensions?: readonly string[] | null;
+      accepted_file_names?: readonly string[] | null;
+      description?: string | null;
+      help_text?: string | null;
+      help_url?: string | null;
+      import_dir_env_var?: string | null;
+      label?: string | null;
+    } | null;
+    modality?: string | null;
+  } | null;
   streams?: Array<{ name: string; [k: string]: unknown }>;
 }
 

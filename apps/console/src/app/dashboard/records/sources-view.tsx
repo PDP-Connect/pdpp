@@ -303,6 +303,7 @@ function PassportActions({
   const [isPending, startTransition] = useTransition();
   const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
+  const manualUploadHref = instance.manualUploadHref;
 
   const handleSync = useCallback(() => {
     setToast({ kind: "none" });
@@ -312,7 +313,8 @@ function PassportActions({
         instance.connectionId ?? instance.connectorInstanceId ?? null
       );
       if (res.ok) {
-        setToast({ kind: "ok", message: res.run_id ? `Sync started (${res.run_id}).` : "Sync started." });
+        const action = manualUploadHref ? "Reprocessing uploaded export" : "Sync";
+        setToast({ kind: "ok", message: res.run_id ? `${action} started (${res.run_id}).` : `${action} started.` });
         router.refresh();
         return;
       }
@@ -323,15 +325,37 @@ function PassportActions({
       }
       setToast({ kind: "error", message: res.message });
     });
-  }, [instance.connectorId, instance.connectionId, instance.connectorInstanceId, router]);
+  }, [instance.connectorId, instance.connectionId, instance.connectorInstanceId, manualUploadHref, router]);
 
   // Push-mode connections can't be remotely pulled — Sync is inert for them.
-  const syncDisabled = !interactive || instance.isLocalDevicePush || instance.revoked || isPending;
+  const syncDisabled =
+    !interactive || instance.isLocalDevicePush || instance.revoked || instance.isRunning || isPending;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
       <div className="rr-s-actions">
-        {instance.isLocalDevicePush ? (
+        {manualUploadHref ? (
+          <>
+            <Link
+              className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+              href={manualUploadHref}
+              title="Upload another exported file into this same source. Use Add source only for a different account or identity."
+            >
+              Add another export
+            </Link>
+            <IcButton
+              aria-label={`Reprocess the uploaded export for ${instance.displayName}`}
+              disabled={syncDisabled}
+              onClick={handleSync}
+              size="sm"
+              title="Reprocesses files already uploaded for this source. It does not add a new export."
+              type="button"
+              variant="ghost"
+            >
+              {instance.isRunning ? "Import running" : isPending ? "Starting…" : "Reprocess last import"}
+            </IcButton>
+          </>
+        ) : instance.isLocalDevicePush ? (
           <span className="rr-s-cta__hint" data-testid="sources-sync-device-wait">
             Data arrives when your paired device pushes it.
           </span>
@@ -350,9 +374,13 @@ function PassportActions({
         <Link
           className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
           href={instance.detailHref}
-          title="Reauthorize and credential controls live on the connection detail page."
+          title={
+            manualUploadHref
+              ? "Open runs, receipts, streams, and source settings."
+              : "Reauthorize and credential controls live on the connection detail page."
+          }
         >
-          Reauthorize →
+          {manualUploadHref ? "Source details →" : "Reauthorize →"}
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (

@@ -24,6 +24,11 @@
  */
 
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import {
+  canonicalConnectorKey,
+  type ConnectorManifestLike,
+  manualUploadSetupFromManifest,
+} from "pdpp-reference-implementation/connection-setup-plan";
 import { type FormattedNextAction, formatNextAction } from "../lib/next-action.ts";
 import type {
   RefConnectionHealthSnapshot,
@@ -105,8 +110,12 @@ export interface SourceInstanceView {
   id: string;
   /** True when this connection's data arrives by device push (sync is inert). */
   isLocalDevicePush: boolean;
+  /** True when the latest run is active, so reprocessing should not start again. */
+  isRunning: boolean;
   /** Connector type label (mono kind line in the list). */
   kind: string;
+  /** Existing-source import route for manual/upload connectors. */
+  manualUploadHref: string | null;
   /** Owner CTA derived from health.next_action, or null. */
   nextAction: FormattedNextAction | null;
   /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
@@ -119,6 +128,8 @@ export interface SourceInstanceView {
   /** Total retained records across all streams. */
   totalRecords: number;
 }
+
+type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
 
 const HEALTHY_STATES = new Set(["healthy", "idle"]);
 const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
@@ -203,9 +214,16 @@ export function formatSchedule(schedule: RefSchedule | null): string {
  * falling back to a neutral "session / stored credential" line. Never prints a
  * secret or invents a method name.
  */
-function deriveAuthLine(next: FormattedNextAction | null, isLocalDevicePush: boolean): string {
+function deriveAuthLine(
+  next: FormattedNextAction | null,
+  isLocalDevicePush: boolean,
+  manualUploadHref: string | null
+): string {
   if (isLocalDevicePush) {
     return "local device push";
+  }
+  if (manualUploadHref) {
+    return "owner file import";
   }
   if (next && next.variant === "structured" && next.label) {
     return "owner action required";
@@ -231,6 +249,34 @@ export function exploreHrefFor(connectionId: string, streamName: string): string
   return `${EXPLORE_BASE}?${params.toString()}`;
 }
 
+function manifestMatchesConnectorId(manifest: SourceManifestLike, connectorId: string): boolean {
+  const canonical = canonicalConnectorKey(connectorId);
+  return (
+    manifest.connector_id === connectorId ||
+    manifest.connector_key === connectorId ||
+    canonicalConnectorKey(manifest.connector_id) === canonical ||
+    (manifest.connector_key ? canonicalConnectorKey(manifest.connector_key) === canonical : false)
+  );
+}
+
+export function manualUploadHrefForSource(
+  summary: Pick<RefConnectorSummary, "connection_id" | "connector_id" | "connector_instance_id">,
+  manifests: readonly SourceManifestLike[] | undefined
+): string | null {
+  const connectionId = summary.connection_id ?? summary.connector_instance_id ?? null;
+  if (!connectionId || !manifests) {
+    return null;
+  }
+  const manifest = manifests.find((candidate) => manifestMatchesConnectorId(candidate, summary.connector_id));
+  const setup = manifest ? manualUploadSetupFromManifest(manifest) : null;
+  if (!setup?.importDirEnvVar) {
+    return null;
+  }
+  const connectorKey = canonicalConnectorKey(summary.connector_id);
+  const params = new URLSearchParams({ connection_id: connectionId });
+  return `/dashboard/connect/manual-upload/${encodeURIComponent(connectorKey)}?${params.toString()}`;
+}
+
 /** True when the durable lifecycle says this connection is revoked. */
 function isRevoked(summary: RefConnectorSummary): boolean {
   return summary.status === "revoked" || Boolean(summary.revoked_at);
@@ -242,13 +288,19 @@ function isRevoked(summary: RefConnectorSummary): boolean {
  * (the summary carries only stream names + the connection total), so each row's
  * count is null and the manifest links into Explore for the authoritative read.
  */
-export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstanceView {
+export function toSourceInstanceView(
+  summary: RefConnectorSummary,
+  options: { manifests?: readonly SourceManifestLike[] } = {}
+): SourceInstanceView {
   const connectorId = summary.connector_id;
   const connectionId = summary.connection_id ?? null;
   const connectorInstanceId = summary.connector_instance_id ?? null;
   const routeId = connectionId ?? connectorInstanceId ?? connectorId;
   const revoked = isRevoked(summary);
   const isLocalDevicePush = Boolean(summary.local_device_progress);
+  const isRunning =
+    summary.last_run != null && (summary.last_run.status === "started" || summary.last_run.status === "in_progress");
+  const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
 
   const displayName = formatConnectorNameForDisplay({
     connectorId,
@@ -278,7 +330,7 @@ export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstan
     { k: "kind", value: kind, mono: true },
     { k: "account", value: displayName },
     { k: "config", value: `${summary.stream_count ?? summary.streams.length} streams`, mono: true },
-    { k: "auth", value: deriveAuthLine(nextAction, isLocalDevicePush) },
+    { k: "auth", value: deriveAuthLine(nextAction, isLocalDevicePush, manualUploadHref) },
     { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
     { k: "last run", value: formatLastRun(summary.last_run), mono: true },
     { k: "records", value: summary.total_records.toLocaleString(), mono: true },
@@ -296,6 +348,8 @@ export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstan
     accountLine: displayName === kind ? kind : `${kind} · ${displayName}`,
     revoked,
     isLocalDevicePush,
+    isRunning,
+    manualUploadHref,
     status,
     nextAction,
     streams,
@@ -305,8 +359,11 @@ export function toSourceInstanceView(summary: RefConnectorSummary): SourceInstan
 }
 
 /** Map a list of summaries into the Sources view, preserving input order. */
-export function toSourcesView(summaries: RefConnectorSummary[]): SourceInstanceView[] {
-  return summaries.map(toSourceInstanceView);
+export function toSourcesView(
+  summaries: RefConnectorSummary[],
+  options: { manifests?: readonly SourceManifestLike[] } = {}
+): SourceInstanceView[] {
+  return summaries.map((summary) => toSourceInstanceView(summary, options));
 }
 
 /**

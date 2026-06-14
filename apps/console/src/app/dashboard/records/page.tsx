@@ -24,6 +24,7 @@ import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listRecordVersionStats, type RefConnectorSummary } from "../lib/ref-client.ts";
+import { listConnectorManifests } from "../lib/rs-client.ts";
 import { revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 import { SourcesView } from "./sources-view.tsx";
@@ -92,9 +93,14 @@ export default async function RecordsIndexPage({
   }
 
   let summaries: RefConnectorSummary[];
+  let manifests: Awaited<ReturnType<typeof listConnectorManifests>>;
   try {
-    const response = await liveDashboardDataSource.listConnectorSummaries();
+    const [response, connectorManifests] = await Promise.all([
+      liveDashboardDataSource.listConnectorSummaries(),
+      listConnectorManifests(),
+    ]);
     summaries = response.data;
+    manifests = connectorManifests;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -107,7 +113,7 @@ export default async function RecordsIndexPage({
     throw err;
   }
 
-  const instances = toSourcesView(summaries);
+  const instances = toSourcesView(summaries, { manifests });
   const churnAdvisory = await resolveChurnAdvisory();
   // The poller is mounted unconditionally; `running` (derived from any active
   // run) only selects the fast vs. idle cadence. Named `runningCount` to match

@@ -37,6 +37,9 @@ const SYNC_BRANCH_GUARD = /primaryAction\.kind === "sync" \? \(\s*<SyncNowButton
 const COOLDOWN_BRANCH_GUARD = /primaryAction\.kind === "cooldown_wait" \? \(\s*<CooldownPrimaryAction/;
 const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
 const FORCE_BUTTON_WARNING = /Bypasses the provider-pressure cooldown/;
+const MANUAL_UPLOAD_IMPORT_LINK = /Add another export/;
+const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess last import"/;
+const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
 const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
@@ -65,10 +68,14 @@ test("detail page labels failed owner syncs as retryable", async () => {
 test("SyncNowButton renders only inside the owner-syncable branch", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, SYNC_BRANCH_GUARD);
-  // Two render sites are allowed: ordinary sync, and the separately-named
-  // force override nested under the cooldown-only branch.
+  // Three render sites are allowed: ordinary sync, manual-upload reprocess
+  // nested under the owner-syncable branch, and the separately-named force
+  // override nested under the cooldown-only branch.
   const renders = src.match(/<SyncNowButton/g) ?? [];
-  assert.equal(renders.length, 2, "expected ordinary sync plus cooldown force render sites");
+  assert.equal(renders.length, 3, "expected ordinary sync, manual reprocess, and cooldown force render sites");
+  assert.match(src, MANUAL_UPLOAD_IMPORT_LINK);
+  assert.match(src, MANUAL_UPLOAD_REPROCESS_BUTTON);
+  assert.match(src, MANUAL_UPLOAD_RUNNING_LABEL);
   assert.match(src, COOLDOWN_BRANCH_GUARD);
   assert.match(src, COOLDOWN_FORCE_BUTTON);
   assert.match(src, FORCE_BUTTON_WARNING);
