@@ -305,7 +305,7 @@ export default async function SubscriptionDetailPage({
               status={subscriptionEndorseStatus(subscription.status)}
             />
           </div>
-          <p className="pdpp-caption mt-1 text-muted-foreground">
+          <p className="pdpp-caption mt-2 text-muted-foreground">
             grant{" "}
             <Link className="underline-offset-2 hover:underline" href={dashboardRoutes.grant(subscription.grant_id)}>
               <SheetSerial>{subscription.grant_id}</SheetSerial>
