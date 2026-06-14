@@ -71,9 +71,10 @@ export function PeekEmpty() {
   return (
     <aside
       aria-label="peek hint"
-      className="pdpp-caption hidden items-center justify-center rounded-md border border-border/80 border-dashed p-6 text-muted-foreground italic xl:flex"
+      className="hidden flex-col items-center justify-center border-border/40 border-t p-8 xl:flex"
     >
-      Select a row to peek its timeline
+      <p className="pdpp-eyebrow mb-2 text-muted-foreground/50 uppercase tracking-widest">Peek</p>
+      <p className="pdpp-caption text-center text-muted-foreground">Select a row to see its timeline here.</p>
     </aside>
   );
 }

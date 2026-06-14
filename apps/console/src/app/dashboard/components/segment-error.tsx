@@ -46,10 +46,11 @@ export function SegmentError({
   }, [error]);
 
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
+    <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-3 px-6 py-16">
+      <p className="pdpp-eyebrow text-muted-foreground/60 uppercase tracking-widest">Read error</p>
       <h1 className="pdpp-heading text-foreground">{title}</h1>
-      <p className="max-w-prose text-muted-foreground">{description}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <p className="pdpp-body max-w-prose text-muted-foreground">{description}</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>

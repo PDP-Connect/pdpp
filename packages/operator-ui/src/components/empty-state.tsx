@@ -11,9 +11,10 @@ import type { ReactNode } from "react";
  */
 export function EmptyState({ title, hint }: { title: string; hint?: ReactNode }) {
   return (
-    <div className="rounded-md border border-border/80 border-dashed px-4 py-10 text-center">
-      <p className="pdpp-body font-medium text-foreground">{title}</p>
-      {hint ? <p className="pdpp-body mx-auto mt-1 max-w-md text-muted-foreground">{hint}</p> : null}
+    <div className="border-border/40 border-t px-4 py-12 text-center">
+      <p className="pdpp-eyebrow mb-3 text-muted-foreground/60 uppercase tracking-widest">Empty</p>
+      <p className="pdpp-title text-foreground">{title}</p>
+      {hint ? <p className="pdpp-caption mx-auto mt-2 max-w-sm text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }

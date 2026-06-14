@@ -18,12 +18,14 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
   }, [error]);
 
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
+    <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-3 px-6 py-16">
+      <p className="pdpp-eyebrow text-muted-foreground/60 uppercase tracking-widest">Dashboard</p>
       <h1 className="pdpp-heading text-foreground">Something went wrong</h1>
-      <p className="max-w-prose text-muted-foreground">
-        The dashboard ran into an unexpected error. Try refreshing this page, or check your reference deployment status.
+      <p className="pdpp-body max-w-prose text-muted-foreground">
+        The dashboard ran into an unexpected error. Your data is safe — this is a display failure, not a change. Try
+        again or sign back in if the problem persists.
       </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>
