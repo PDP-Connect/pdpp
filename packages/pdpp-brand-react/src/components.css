@@ -876,6 +876,14 @@
   border: 1px solid var(--warning);
   box-shadow: inset 3px 0 0 var(--warning);
 }
+/* `wait` = cooldown/throttle — lower severity than `reconnect`.
+   The card stays informational (no action needed), so chrome steps
+   down from full warning amber to a quieter muted tint. */
+.rr-fix[data-cta="wait"] {
+  background: var(--muted);
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
 .rr-fix__body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .rr-fix__title { font-size: 0.95rem; font-weight: 700; margin: 0; }
 .rr-fix__expl { font-size: 0.8rem; line-height: 1.55; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
@@ -893,6 +901,22 @@
   color: var(--muted-foreground);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   padding: 3px 8px;
+}
+/* At mobile the side-by-side (body | action) layout crushes both columns.
+   Stack body then action full-width so Reconnect / wait badge sits clearly
+   beneath the prose rather than squeezing into a narrow auto column. */
+@media (max-width: 560px) {
+  .rr-fix {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .rr-fix__act {
+    align-self: auto;
+    justify-self: start;
+  }
+  .rr-fix[data-cta="wait"] .rr-fix__act {
+    align-self: auto;
+  }
 }
 
 /* Per-connection group. */
@@ -1353,6 +1377,33 @@
   .rr-stand-hero__line {
     font-size: 1.6rem;
   }
+  /* Bearer rows: at narrow viewports the 3-column grid
+     (identity | READS EVERYTHING | revoke) is too tight.
+     Stack into 2 rows: identity on row 1, then tag+revoke
+     on row 2 aligned baseline so neither collides nor clips. */
+  .rr-bearer__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 10px;
+  }
+  .rr-bearer__id {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .rr-bearer__tag {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+    justify-self: start;
+  }
+  .rr-bearer__how {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .rr-bearer__row .rr-rel__revoke {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: center;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1585,13 +1636,17 @@
   z-index: 5;
   top: 20px;
   left: 0;
-  width: 330px;
+  /* D-6: clamp to viewport width so the popup never escapes on 390px screens */
+  width: min(330px, calc(100vw - 32px));
+  max-width: min(330px, calc(100vw - 32px));
   padding: 10px 12px;
   background: var(--card);
   border: 1px solid var(--border-strong);
   font-size: 11px;
   line-height: 1.9;
   color: var(--muted-foreground);
+  /* D-12: allow inline code chips to wrap rather than overflow */
+  overflow-wrap: break-word;
 }
 .rr-x-help__body code {
   font-family: var(--font-mono);
@@ -1599,6 +1654,8 @@
   color: var(--foreground);
   background: var(--muted);
   padding: 1px 5px;
+  /* inline-block so chips can wrap to the next line */
+  display: inline-block;
 }
 
 /* ─── Chip bar ─── */
@@ -2109,5 +2166,113 @@
   }
   .rr-x-jump {
     margin-left: 0;
+  }
+  /* D-7: convert the populated record inspector to a fixed bottom-sheet at phone
+     widths so it doesn't stack 4000px below the feed. The empty inspector stays
+     in document flow (source-order: rail → feed → inspector) so there's an
+     intentional placeholder at the top of the column before any record is picked.
+     Only the filled inspector becomes an overlay. */
+  .rr-x .rr-inspector:not(.rr-inspector--empty) {
+    position: fixed;
+    inset: auto 0 0 0;
+    height: 65dvh;
+    overflow-y: auto;
+    z-index: 30;
+    box-shadow: 0 -4px 24px -4px color-mix(in oklab, var(--foreground) 20%, transparent);
+    border-top: 2px solid var(--border-strong);
+  }
+}
+
+/* ─── Traces table mobile (D-8 / D-9 / D-10 / D-11) ──────────────
+   At ≤640px the 5-column grid crushes headers to ~40px each, causing
+   overlap. Wrap the Table in .rr-traces-table-scroll to get horizontal
+   scroll with a comfortable minimum table width. The peek split-pane
+   (D-9) forces a 50/50 split on 390px — collapse to single-column and
+   show only the detail panel. D-11: pre/JSON blocks already have
+   overflow-x:auto from the component; no additional fix needed here.   */
+.rr-traces-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 640px) {
+  .rr-traces-table-scroll .pdpp-table__hrow,
+  .rr-traces-table-scroll .pdpp-table__row {
+    min-width: 520px;
+  }
+  /* D-9: collapse the peek split to single column; hide the list, show only
+     the detail panel full-width (detail panel is the second child). */
+  .rr-traces-split {
+    grid-template-columns: 1fr !important;
+  }
+  .rr-traces-split > *:first-child:has(+ *) {
+    display: none;
+  }
+}
+
+/* D-14: Copy-ID buttons — expand the tap zone to ≥44×44px without
+   changing the visible icon size. The padding creates invisible touch area. */
+.rr-copyid {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SYSTEMIC TOKEN FIXES (part B)
+   ═══════════════════════════════════════════════════════════════════
+
+   B-1  Focus rings — the existing :is(button,a,...):focus-visible rule
+        handles most elements. Below we add explicit :focus-visible rules
+        on nav items and chrome buttons that previously had outline:none
+        on :focus with no :focus-visible override, leaving keyboard users
+        with no visible ring.
+
+   B-2  Active-nav / selected-row / selected-card — unified to ONE
+        treatment: inset-left-2 --primary accent + --primary-tint fill.
+        Covers rr-nav-item.is-active, rr-x-row.is-selected, rr-s-item.is-on.
+
+   B-3  Eyebrow letter-spacing at ≤390px — reduce from 0.12em → 0.07em
+        so all-caps mono eyebrows don't feel noisy on narrow screens.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* B-1 — keyboard-visible focus rings on interactive chrome */
+.rr-nav-item:focus-visible,
+.rr-chrome-btn:focus-visible,
+.rr-side__theme:focus-visible,
+.rr-lens:focus-visible,
+.rr-x-facet:focus-visible,
+.rr-x-chip:focus-visible,
+.rr-copyid:focus-visible,
+.rr-rel__revoke:focus-visible,
+.rr-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/* B-2 — unified active / selected treatment */
+.rr-nav-item.is-active {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+.rr-x-row.is-selected {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+/* B-3 — narrow-screen eyebrow relief */
+@media (max-width: 390px) {
+  .pdpp-eyebrow,
+  .rr-x-facets__label,
+  .pdpp-table__h,
+  .pdpp-copyline,
+  .rr-stand-hero__kicker {
+    letter-spacing: 0.07em;
+    font-size: 0.63rem;
   }
 }
