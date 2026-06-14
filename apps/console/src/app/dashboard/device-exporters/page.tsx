@@ -170,8 +170,8 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
 
   return (
     <li className="py-4">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="pdpp-title text-foreground">{device.display_name || device.device_id}</h2>
             <StatusBadge status={device.status} vocabulary={DEVICE_STATUS_VOCABULARY} />
@@ -205,16 +205,18 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
           </div>
         </div>
 
-        {device.status === "active" ? (
-          <form action={revokeDeviceExporterAction}>
-            <input name="device_id" type="hidden" value={device.device_id} />
-            <IcButton size="sm" type="submit" variant="destructive">
-              Revoke
-            </IcButton>
-          </form>
-        ) : (
-          <span className="pdpp-caption text-muted-foreground">Revoked {formatRelativeTime(device.revoked_at)}</span>
-        )}
+        <div className="shrink-0">
+          {device.status === "active" ? (
+            <form action={revokeDeviceExporterAction}>
+              <input name="device_id" type="hidden" value={device.device_id} />
+              <IcButton size="sm" type="submit" variant="destructive">
+                Revoke
+              </IcButton>
+            </form>
+          ) : (
+            <span className="pdpp-caption text-muted-foreground">Revoked {formatRelativeTime(device.revoked_at)}</span>
+          )}
+        </div>
       </div>
 
       {device.source_instances.length > 0 ? (
@@ -241,7 +243,7 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
 
   return (
     <li className="rounded-md border border-border/70 bg-muted/20 p-3">
-      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
+      <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="pdpp-body truncate font-medium text-foreground">{sourceLabel(source)}</h3>
           <p className="pdpp-caption truncate text-muted-foreground">

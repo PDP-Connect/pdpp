@@ -347,8 +347,8 @@ function SubscriptionRow({
         href={href}
         scroll={false}
       >
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <Typed as="code" className="break-all font-medium">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Typed as="code" className="max-w-[32ch] truncate font-medium" title={subscription.subscription_id}>
             {subscription.subscription_id}
           </Typed>
           <div className="flex items-center gap-2">

@@ -46,21 +46,24 @@ export function SearchView({
         title="Jump to artifact"
       />
 
-      <form className="mb-6 flex flex-wrap items-end gap-x-3 gap-y-2" method="get">
-        <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="jump-q">
+      <form className="mb-6" method="get">
+        <label className="mb-1 block" htmlFor="jump-q">
           <span className="pdpp-eyebrow text-muted-foreground">Artifact id</span>
+        </label>
+        <div className="flex min-w-0 gap-2">
           <Input
             autoFocus
+            className="flex-1"
             defaultValue={query}
             id="jump-q"
             name="q"
             placeholder="trace id, grant id, or run id…"
             type="search"
           />
-        </label>
-        <Button size="sm" type="submit" variant="default">
-          Go
-        </Button>
+          <Button size="sm" type="submit" variant="default">
+            Go
+          </Button>
+        </div>
       </form>
 
       {query ? null : (

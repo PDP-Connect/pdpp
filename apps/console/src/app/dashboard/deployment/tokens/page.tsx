@@ -101,14 +101,23 @@ function IssueCard({ flow }: { flow: FlowState | null }) {
           owner-agent command above so the credential lands in the right local file.
         </p>
       </div>
-      <form action={issueOwnerTokenAction} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="token-name">
+      <form action={issueOwnerTokenAction} className="flex flex-col gap-2">
+        <label className="flex min-w-0 flex-col gap-1" htmlFor="token-name">
           <span className="pdpp-eyebrow">Debug credential name</span>
-          <IcInput defaultValue="" id="token-name" name="name" placeholder="e.g. local-debug" type="text" />
         </label>
-        <IcButton size="sm" type="submit" variant="ghost">
-          Issue debug bearer
-        </IcButton>
+        <div className="flex min-w-0 gap-2">
+          <IcInput
+            className="flex-1"
+            defaultValue=""
+            id="token-name"
+            name="name"
+            placeholder="e.g. local-debug"
+            type="text"
+          />
+          <IcButton size="sm" type="submit" variant="ghost">
+            Issue debug bearer
+          </IcButton>
+        </div>
       </form>
 
       {flow?.token ? (

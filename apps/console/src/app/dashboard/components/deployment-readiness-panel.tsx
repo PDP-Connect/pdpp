@@ -149,7 +149,7 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
 function ReadinessRowItem({ row }: { row: ReadinessRow }) {
   return (
     <li className="flex flex-col gap-1 py-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="pdpp-title text-foreground">{row.check}</span>
         <StatusChip status={row.status} />
       </div>
@@ -175,10 +175,19 @@ const STATUS_LABEL: Record<ReadinessStatus, string> = {
   unknown: "checking",
 };
 
+const STATUS_BADGE_TONE: Record<ReadinessStatus, string> = {
+  ok: "success",
+  warn: "warning",
+  error: "danger",
+  info: "neutral",
+  unknown: "neutral",
+};
+
 function StatusChip({ status }: { status: ReadinessStatus }) {
   return (
     <span
-      className={`pdpp-eyebrow inline-flex rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${STATUS_TONE[status]}`}
+      className={`pdpp-status-badge pdpp-eyebrow inline-flex rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${STATUS_TONE[status]}`}
+      data-status-tone={STATUS_BADGE_TONE[status]}
     >
       {STATUS_LABEL[status]}
     </span>

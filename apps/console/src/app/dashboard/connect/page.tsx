@@ -51,12 +51,12 @@ function buildCimdCommands(mcpUrl: string, clientId: string) {
 
 function CopyRow({ body, label, title, value }: SetupEntry) {
   return (
-    <li className="grid gap-2 py-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-5">
+    <li className="grid gap-2 py-4 md:grid-cols-[14rem_minmax(0,1fr)] md:gap-6">
       <div>
         <h3 className="pdpp-title text-foreground">{title}</h3>
-        <p className="pdpp-caption mt-0.5 text-muted-foreground">{body}</p>
+        <p className="pdpp-caption mt-1 text-muted-foreground">{body}</p>
       </div>
-      <div className="flex min-w-0 items-start gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <code className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border/80 bg-muted/30 px-3 py-2 font-mono text-foreground">
           {value}
         </code>
@@ -86,24 +86,25 @@ function noticeText(code?: string): string | null {
 
 function ClientIdentityForm() {
   return (
-    <form
-      action={createCimdClientIdentityAction}
-      className="grid gap-3 rounded-md border border-border/80 bg-muted/20 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] lg:items-end"
-    >
-      <IcField htmlFor="cimd-client-name" label="Client name">
-        <IcInput defaultValue="Claude Code" id="cimd-client-name" name="client_name" />
-      </IcField>
-      <IcField htmlFor="cimd-redirect-uri" label="Redirect URI">
-        <IcInput
-          defaultValue="http://localhost:1455/callback"
-          id="cimd-redirect-uri"
-          name="redirect_uri"
-          placeholder="http://localhost:<port>/callback"
-        />
-      </IcField>
-      <IcButton size="sm" type="submit" variant="ghost">
-        Create identity
-      </IcButton>
+    <form action={createCimdClientIdentityAction} className="rounded-md border border-border/80 bg-muted/20 p-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+        <IcField htmlFor="cimd-client-name" label="Client name">
+          <IcInput defaultValue="Claude Code" id="cimd-client-name" name="client_name" />
+        </IcField>
+        <IcField htmlFor="cimd-redirect-uri" label="Redirect URI">
+          <IcInput
+            defaultValue="http://localhost:1455/callback"
+            id="cimd-redirect-uri"
+            name="redirect_uri"
+            placeholder="http://localhost:<port>/callback"
+          />
+        </IcField>
+      </div>
+      <div className="mt-3 flex justify-end">
+        <IcButton size="sm" type="submit" variant="ghost">
+          Create identity
+        </IcButton>
+      </div>
     </form>
   );
 }

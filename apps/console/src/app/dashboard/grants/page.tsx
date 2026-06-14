@@ -221,7 +221,7 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
             <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
             <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
             {grant.client_id ? (
-              <span className="pdpp-caption max-w-[28ch] truncate text-muted-foreground" title={grant.client_id}>
+              <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id}>
                 client {grant.client_id}
               </span>
             ) : null}
@@ -231,7 +231,9 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
           </span>
         </div>
         <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
-          <code className="break-all font-mono">{grant.grant_id}</code>
+          <code className="max-w-[32ch] truncate font-mono" title={grant.grant_id}>
+            {grant.grant_id}
+          </code>
           <span className="text-muted-foreground/50">·</span>
           <span className="tabular-nums">{grant.event_count} events</span>
           {grant.source ? (

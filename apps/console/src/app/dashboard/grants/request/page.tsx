@@ -179,7 +179,7 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
 
 function DraftFormActions() {
   return (
-    <div className="flex flex-wrap gap-2 pt-2">
+    <div className="flex flex-wrap justify-end gap-2 border-border/70 border-t pt-3">
       <IcButton formAction={saveGrantRequestDraftAction} size="sm" type="submit" variant="ghost">
         Save draft
       </IcButton>
