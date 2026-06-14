@@ -183,6 +183,8 @@ test('owner-auth state route uses explicit connector_instance_id for migrated sy
     const manifest = await registerSpotify(asUrl);
     const connectorId = manifest.connector_id;
     await seedTwoSpotifyInstances(connectorId);
+    const draftStore = await seedDraftSpotifyInstance(connectorId);
+    assert.equal((await draftStore.get('cin_spotify_draft')).status, 'draft');
     const ownerToken = await issueOwnerToken(asUrl);
 
     const workUrl =
@@ -311,6 +313,8 @@ test('owner-auth blob upload and read route through explicit connector instance 
     const manifest = await registerSpotify(asUrl);
     const connectorId = manifest.connector_id;
     await seedTwoSpotifyInstances(connectorId);
+    const draftStore = await seedDraftSpotifyInstance(connectorId);
+    assert.equal((await draftStore.get('cin_spotify_draft')).status, 'draft');
     const ownerToken = await issueOwnerToken(asUrl);
 
     const ambiguousUpload = await fetchJson(
@@ -374,6 +378,22 @@ test('owner-auth blob upload and read route through explicit connector instance 
     );
     assert.equal(personalRead.status, 404);
     assert.equal(personalRead.body.error.code, 'blob_not_found');
+    assert.equal((await draftStore.get('cin_spotify_draft')).status, 'draft');
+
+    const draftUploadResp = await fetchJson(
+      `${rsUrl}/v1/blobs?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_draft&stream=top_artists&record_key=draft_blob`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'text/plain',
+        },
+        body: 'draft blob',
+      },
+    );
+    assert.equal(draftUploadResp.status, 200, JSON.stringify(draftUploadResp.body));
+    assert.equal(draftUploadResp.body.object, 'blob');
+    assert.equal((await draftStore.get('cin_spotify_draft')).status, 'draft');
   } finally {
     await closeServer(server);
   }

@@ -267,6 +267,10 @@ was not connection-scoped end-to-end. The runtime now sends
 `connector_instance_id` on record ingest, the shared reference blob uploader
 sends it for blob upload, and the owner-authenticated state routes mirror the
 ingest route's explicit draft-admission rule for non-grant state reads/writes.
+The first live retry after that routing fix started `run_1781412768569` and
+proved record ingest was scoped correctly, but exposed the same active-only
+admission bug on `/v1/blobs`; the blob-upload host adapter now resolves an
+explicit `connector_instance_id` with `active` or `draft` status as well.
 Drafts remain hidden from normal read/grant surfaces and still activate only
 after accepted records; regressions prove ingest and checkpoint URLs carry the
 same explicit connection id, blob upload carries it, and state can be written

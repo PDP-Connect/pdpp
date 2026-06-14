@@ -411,6 +411,14 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
+        const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+        const resolveStorageNamespace = (connectorId: string) =>
+          connectorInstanceId
+            ? ctx.resolveOwnerConnectorNamespace(req, connectorId, {
+                allowStatuses: ["active", "draft"],
+                connectorInstanceId,
+              })
+            : ctx.resolveOwnerConnectorNamespace(req, connectorId);
         let manifestCache: {
           streams?: Array<{ name?: string | null }> | null;
         } | null = null;
@@ -420,7 +428,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             manifestCache = await ctx.resolveRegisteredConnectorManifest(connectorId);
             const visible = Boolean((manifestCache.streams || []).find((candidate) => candidate.name === streamName));
             if (visible) {
-              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, connectorId);
+              storageNamespace = await resolveStorageNamespace(connectorId);
             }
             return visible;
           },
@@ -437,7 +445,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             mimeType: string;
             data: unknown;
           }) => {
-            const namespace = storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, connectorId));
+            const namespace = storageNamespace ?? (await resolveStorageNamespace(connectorId));
             return ctx.persistContentAddressedBlob({
               connectorId: namespace.connectorId,
               connectorInstanceId: namespace.connectorInstanceId,
