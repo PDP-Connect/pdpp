@@ -313,7 +313,7 @@ function PassportActions({
         instance.connectionId ?? instance.connectorInstanceId ?? null
       );
       if (res.ok) {
-        const action = manualUploadHref ? "Reprocessing uploaded export" : "Sync";
+        const action = manualUploadHref ? "Reprocessing all uploaded exports" : "Sync";
         setToast({ kind: "ok", message: res.run_id ? `${action} started (${res.run_id}).` : `${action} started.` });
         router.refresh();
         return;
@@ -352,7 +352,7 @@ function PassportActions({
               type="button"
               variant="ghost"
             >
-              {instance.isRunning ? "Import running" : isPending ? "Starting…" : "Reprocess last import"}
+              {instance.isRunning ? "Import running" : isPending ? "Starting…" : "Reprocess all exports"}
             </IcButton>
           </>
         ) : instance.isLocalDevicePush ? (

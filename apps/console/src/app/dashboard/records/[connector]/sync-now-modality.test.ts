@@ -38,7 +38,7 @@ const COOLDOWN_BRANCH_GUARD = /primaryAction\.kind === "cooldown_wait" \? \(\s*<
 const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
 const FORCE_BUTTON_WARNING = /Bypasses the provider-pressure cooldown/;
 const MANUAL_UPLOAD_IMPORT_LINK = /Add another export/;
-const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess last import"/;
+const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess all exports"/;
 const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
 const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;

@@ -574,7 +574,7 @@ function ConnectorPrimaryHeaderAction({
             connectionId={connectionId}
             connectorId={connectorId}
             displayName={displayName}
-            idleLabel="Reprocess last import"
+            idleLabel="Reprocess all exports"
             initialRunning={running}
             runningLabel="Import running"
             title="Reprocesses files already uploaded for this source. It does not add a new export."

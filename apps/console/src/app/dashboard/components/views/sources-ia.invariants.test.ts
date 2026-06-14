@@ -53,7 +53,7 @@ const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
 const SYNC_ACTION_RE = /Sync now/;
 const REAUTHORIZE_ACTION_RE = /Reauthorize/;
 const MANUAL_UPLOAD_ADD_EXPORT_RE = /Add another export/;
-const MANUAL_UPLOAD_REPROCESS_RE = /Reprocess last import/;
+const MANUAL_UPLOAD_REPROCESS_RE = /Reprocess all exports/;
 const MANUAL_UPLOAD_DETAILS_RE = /Source details/;
 const MANUAL_UPLOAD_CONNECTION_ID_PARAM_RE = /connection_id/;
 const REVOKE_ACTION_RE = /data-testid="sources-revoke-ceremony"/;
