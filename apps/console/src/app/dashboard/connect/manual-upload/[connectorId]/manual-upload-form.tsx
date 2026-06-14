@@ -1,7 +1,7 @@
 "use client";
 
+import { IcButton } from "@pdpp/brand-react";
 import { useActionState } from "react";
-import { Button } from "@pdpp/operator-ui/ui/button";
 import { type ManualUploadFormState, manualUploadConnectionFormAction } from "./actions.ts";
 
 interface ManualUploadSetupForForm {
@@ -191,12 +191,12 @@ export function ManualUploadForm({
       ) : null}
       {state.preview ? <PreviewCard preview={state.preview} /> : null}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={pending} name="intent" type="submit" value="preview" variant="outline">
+        <IcButton disabled={pending} name="intent" type="submit" value="preview" variant="ghost">
           {reviewButtonLabel(pending, hasValidator)}
-        </Button>
-        <Button disabled={pending || (hasValidator && !canImport)} name="intent" type="submit" value="import">
+        </IcButton>
+        <IcButton disabled={pending || (hasValidator && !canImport)} name="intent" type="submit" value="import">
           {pending ? "Importing..." : "Import this file"}
-        </Button>
+        </IcButton>
       </div>
       {hasValidator && !canImport ? (
         <p className="pdpp-caption text-muted-foreground">

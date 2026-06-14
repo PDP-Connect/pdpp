@@ -1,9 +1,8 @@
 "use client";
 
+import { IcButton, IcInput } from "@pdpp/brand-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { Button } from "@pdpp/operator-ui/ui/button";
-import { Input } from "@pdpp/operator-ui/ui/input";
 import { type RenameConnectionResult, renameConnectionAction } from "./actions.ts";
 
 interface Props {
@@ -86,9 +85,9 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
   if (!editing) {
     return (
       <div className="flex flex-col items-end gap-1">
-        <Button onClick={() => setEditing(true)} size="sm" variant="outline">
+        <IcButton onClick={() => setEditing(true)} size="sm" variant="ghost">
           Rename
-        </Button>
+        </IcButton>
         {toast ? <Toast message={toast.message} tone={toast.tone} /> : null}
       </div>
     );
@@ -103,7 +102,7 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
           submit();
         }}
       >
-        <Input
+        <IcInput
           aria-label="Connection label"
           className="w-56"
           disabled={isPending}
@@ -118,12 +117,12 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
           ref={inputRef}
           value={value}
         />
-        <Button disabled={isPending || !value.trim()} size="sm" type="submit">
+        <IcButton disabled={isPending || !value.trim()} size="sm" type="submit">
           {isPending ? "Saving…" : "Save"}
-        </Button>
-        <Button disabled={isPending} onClick={cancel} size="sm" type="button" variant="ghost">
+        </IcButton>
+        <IcButton disabled={isPending} onClick={cancel} size="sm" type="button" variant="ghost">
           Cancel
-        </Button>
+        </IcButton>
       </form>
       {toast ? <Toast message={toast.message} tone={toast.tone} /> : null}
     </div>

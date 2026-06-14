@@ -1,6 +1,5 @@
-import { buttonVariants, IcButton, IcInput, IcSelect, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcInput, IcSelect, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import {
   buildGrantRequestExamples,
@@ -244,8 +243,8 @@ function WorkspaceStateSection({ workspace }: { workspace: Workspace | null }) {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <DetailCard title="Workspace">
             <DetailRow label="id" value={<code className="break-all">{workspace.workspaceId}</code>} />
-            <DetailRow label="created" value={<Timestamp value={workspace.createdAt} />} />
-            <DetailRow label="updated" value={<Timestamp value={workspace.updatedAt} />} />
+            <DetailRow label="created" value={<IcTimestamp value={workspace.createdAt} />} />
+            <DetailRow label="updated" value={<IcTimestamp value={workspace.updatedAt} />} />
           </DetailCard>
           <DetailCard title="Registered client">
             {workspace.registeredClient ? (

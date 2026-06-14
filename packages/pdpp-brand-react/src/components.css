@@ -301,6 +301,7 @@
 }
 .pdpp-btn--destructive:hover:not(:disabled) { background: var(--destructive-tint); }
 .pdpp-btn--sm { font-size: 0.75rem; padding: 6px 12px; }
+.pdpp-btn--lg { font-size: 0.92rem; padding: 12px 22px; }
 
 /* ─── Inputs + Fields ─────────────────────────────────────────────── */
 .pdpp-input {
@@ -380,6 +381,82 @@
   line-height: 1;
   color: var(--muted-foreground);
   pointer-events: none;
+}
+
+/* ─── Timestamp ───────────────────────────────────────────────────
+   A <time> element in the mono protocol voice. Muted by default;
+   tabular-nums keeps digit columns aligned in tables and rows. The
+   relative label ("5 minutes ago") is post-mount; the absolute value
+   rides along as the title tooltip. */
+.pdpp-timestamp {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Unparseable / empty value falls back to an em dash, still muted. */
+.pdpp-timestamp--empty {
+  color: var(--muted-foreground);
+}
+
+/* ─── Dialog ──────────────────────────────────────────────────────
+   A modal surface skinned over @base-ui/react's Dialog (base-ui owns
+   focus-trap / dismissal / portal). A dialog floats above the page, so
+   it earns the ONE resting-shadow exception the kit grants modal/menu
+   surfaces — flat document surfaces never get a shadow. Square corners,
+   a hairline --border, --card paper, mono title eyebrow. */
+.pdpp-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in oklab, var(--foreground) 32%, transparent);
+  transition: opacity var(--motion-state);
+}
+.pdpp-dialog-backdrop[data-starting-style],
+.pdpp-dialog-backdrop[data-ending-style] {
+  opacity: 0;
+}
+.pdpp-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 32rem;
+  padding: 20px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* The one shadow exception: a floating modal earns soft elevation. */
+  box-shadow: 0 16px 48px -12px color-mix(in oklab, var(--foreground) 40%, transparent);
+  outline: none;
+  transition: opacity var(--motion-state), transform var(--motion-state);
+}
+.pdpp-dialog[data-starting-style],
+.pdpp-dialog[data-ending-style] {
+  opacity: 0;
+}
+/* Mono eyebrow title — protocol voice for the modal heading. */
+.pdpp-dialog__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+.pdpp-dialog__desc {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  color: var(--muted-foreground);
 }
 
 /* ─── KV block — typed record key/value pairs ────────────────────── */

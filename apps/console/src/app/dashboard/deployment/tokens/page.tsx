@@ -1,8 +1,7 @@
+import { buttonVariants, IcButton, IcInput, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
-import { buttonVariants, IcButton, IcInput, RecordroomShell } from "@pdpp/brand-react";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
@@ -117,7 +116,7 @@ function IssueCard({ flow }: { flow: FlowState | null }) {
             <span>{flow.name ?? "Unnamed token"}</span>
             {flow.tokenIssuedAt ? (
               <span className="text-muted-foreground">
-                · issued <Timestamp value={flow.tokenIssuedAt} />
+                · issued <IcTimestamp value={flow.tokenIssuedAt} />
               </span>
             ) : null}
           </div>
@@ -196,7 +195,8 @@ function IntrospectControl({ flow }: { flow: FlowState }) {
       {flow.introspection ? (
         <div className="mt-3">
           <div className="pdpp-caption mb-1 text-muted-foreground">
-            POST /introspect · refreshed {flow.introspectedAt ? <Timestamp value={flow.introspectedAt} /> : "just now"}
+            POST /introspect · refreshed{" "}
+            {flow.introspectedAt ? <IcTimestamp value={flow.introspectedAt} /> : "just now"}
           </div>
           <CodeBlock>{JSON.stringify(flow.introspection, null, 2)}</CodeBlock>
         </div>
@@ -313,7 +313,7 @@ function TokensListSection({
                 <div className="pdpp-body font-medium">{token.client_name ?? "Unnamed token"}</div>
                 <div className="pdpp-caption mt-0.5 inline-flex flex-wrap items-baseline gap-x-2 text-muted-foreground">
                   <span>
-                    issued <Timestamp value={token.created_at} />
+                    issued <IcTimestamp value={token.created_at} />
                   </span>
                   <span aria-hidden>·</span>
                   <span>

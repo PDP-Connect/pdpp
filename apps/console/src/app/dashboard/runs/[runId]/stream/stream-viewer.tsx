@@ -67,21 +67,21 @@ import {
   parseStreamErrorMessage,
   parseUrlChangedMessage,
 } from "@opendatalabs/remote-surface/protocol";
+import {
+  IcButton,
+  IcDialog,
+  IcDialogBackdrop,
+  IcDialogDescription,
+  IcDialogPopup,
+  IcDialogPortal,
+  IcDialogTitle,
+  IcInput,
+} from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type RefObject, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { Button } from "@pdpp/operator-ui/ui/button";
-import {
-  Dialog,
-  DialogBackdrop,
-  DialogDescription,
-  DialogPopup,
-  DialogPortal,
-  DialogTitle,
-} from "@pdpp/operator-ui/ui/dialog";
-import { Input } from "@pdpp/operator-ui/ui/input";
 import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction, reportStreamReachFailureAction } from "./actions.ts";
 import {
@@ -1539,7 +1539,7 @@ function OrientationCard({
       <p className="pdpp-body-lg text-foreground" id="stream-orientation-title">
         {message}
       </p>
-      <Button
+      <IcButton
         aria-busy={isMinting || undefined}
         aria-describedby={troubleMessage ? "stream-trouble-note" : undefined}
         className="h-12 w-full"
@@ -1549,7 +1549,7 @@ function OrientationCard({
         type="button"
       >
         {label}
-      </Button>
+      </IcButton>
       {troubleMessage ? (
         <p className="pdpp-caption text-destructive/85" id="stream-trouble-note" role="status">
           {troubleMessage}
@@ -1593,7 +1593,7 @@ function StreamOverlay({
   status,
 }: StreamOverlayProps) {
   return (
-    <Dialog
+    <IcDialog
       // `dismissible={false}` would block Esc too. We want Esc to close
       // (a11y + desktop convention), but we don't want backdrop-click to
       // close (operators might miss-click while interacting with the
@@ -1607,13 +1607,13 @@ function StreamOverlay({
       }}
       open={open}
     >
-      <DialogPortal>
+      <IcDialogPortal>
         {/* On phone the popup is the viewport — backdrop is invisible.
             On desktop we let the backdrop dim around the popup, which has
             margins. The backdrop renders regardless so base-ui's pointer
             and scroll-lock machinery behave. */}
-        <DialogBackdrop className="pdpp-stream-dialog-backdrop" />
-        <DialogPopup aria-label={`${connectorName} live browser`} className="pdpp-stream-dialog">
+        <IcDialogBackdrop className="pdpp-stream-dialog-backdrop" />
+        <IcDialogPopup aria-label={`${connectorName} live browser`} className="pdpp-stream-dialog">
           {open && initialSession ? (
             <StreamStage
               connectorName={connectorName}
@@ -1627,9 +1627,9 @@ function StreamOverlay({
               status={status}
             />
           ) : null}
-        </DialogPopup>
-      </DialogPortal>
-    </Dialog>
+        </IcDialogPopup>
+      </IcDialogPortal>
+    </IcDialog>
   );
 }
 
@@ -4575,30 +4575,30 @@ function ClipboardSheet({
   const copyStatus = remoteClipboardStatus(copyState, remoteClipboard);
 
   return (
-    <Dialog modal onOpenChange={onOpenChange} open={open}>
-      <DialogPortal>
-        <DialogBackdrop className="bg-black/30" data-pdpp-stream-ui />
-        <DialogPopup
+    <IcDialog modal onOpenChange={onOpenChange} open={open}>
+      <IcDialogPortal>
+        <IcDialogBackdrop className="bg-black/30" data-pdpp-stream-ui />
+        <IcDialogPopup
           aria-label={`${connectorName} browser clipboard`}
           className="pdpp-stream-clipboard-sheet fixed inset-x-3 top-auto bottom-3 m-0 flex max-h-[min(82vh,42rem)] max-w-none translate-x-0 translate-y-0 flex-col gap-4 overflow-hidden rounded-2xl border border-border/80 bg-background p-0 shadow-2xl data-[ending-style]:translate-y-full data-[starting-style]:translate-y-full data-[ending-style]:scale-100 data-[starting-style]:scale-100 sm:right-5 sm:left-auto sm:w-[28rem]"
           data-pdpp-stream-ui
         >
           <div className="flex items-start justify-between gap-3 border-border/70 border-b px-4 py-3">
             <div>
-              <DialogTitle className="text-base">Clipboard</DialogTitle>
-              <DialogDescription className="mt-1 text-sm">
+              <IcDialogTitle className="text-base">Clipboard</IcDialogTitle>
+              <IcDialogDescription className="mt-1 text-sm">
                 Move text between this device and the streamed browser with an explicit tap.
-              </DialogDescription>
+              </IcDialogDescription>
             </div>
-            <Button
+            <IcButton
               aria-label="Close clipboard"
               onClick={() => onOpenChange(false)}
-              size="icon-xs"
+              size="sm"
               type="button"
               variant="ghost"
             >
               ×
-            </Button>
+            </IcButton>
           </div>
           <div className="flex flex-1 flex-col gap-5 overflow-y-auto overscroll-contain px-4 pb-4">
             <section className="grid gap-3">
@@ -4607,22 +4607,27 @@ function ClipboardSheet({
                 <p className="pdpp-caption text-muted-foreground">{localStatus}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button
+                <IcButton
                   disabled={!(canPasteLocalToRemote && policy.canReadLocalClipboard)}
                   onClick={pasteFromDevice}
                   size="sm"
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                 >
                   Paste from device
-                </Button>
-                <Button disabled={!canSendLocalText} onClick={sendToBrowser} size="sm" type="button">
+                </IcButton>
+                <IcButton disabled={!canSendLocalText} onClick={sendToBrowser} size="sm" type="button">
                   Send to browser
-                </Button>
+                </IcButton>
                 {remoteInputSensitive ? (
-                  <Button onClick={() => setRevealLocalText((shown) => !shown)} size="sm" type="button" variant="ghost">
+                  <IcButton
+                    onClick={() => setRevealLocalText((shown) => !shown)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
                     {revealLocalText ? "Hide text" : "Show text"}
-                  </Button>
+                  </IcButton>
                 ) : null}
               </div>
               <textarea
@@ -4658,24 +4663,24 @@ function ClipboardSheet({
                 <p className="pdpp-caption text-muted-foreground">{copyStatus}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button
+                <IcButton
                   disabled={!canRequestRemoteCopy}
                   onClick={requestBrowserCopy}
                   size="sm"
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                 >
                   Copy browser selection
-                </Button>
-                <Button
+                </IcButton>
+                <IcButton
                   disabled={!(remoteClipboard && policy.canWriteLocalClipboard)}
                   onClick={copyToDevice}
                   size="sm"
                   type="button"
                 >
                   Copy to device
-                </Button>
-                <Button
+                </IcButton>
+                <IcButton
                   disabled={!remoteClipboard}
                   onClick={onClearRemoteClipboard}
                   size="sm"
@@ -4683,7 +4688,7 @@ function ClipboardSheet({
                   variant="ghost"
                 >
                   Clear
-                </Button>
+                </IcButton>
               </div>
               <textarea
                 aria-label="Text copied from browser"
@@ -4693,9 +4698,9 @@ function ClipboardSheet({
               />
             </section>
           </div>
-        </DialogPopup>
-      </DialogPortal>
-    </Dialog>
+        </IcDialogPopup>
+      </IcDialogPortal>
+    </IcDialog>
   );
 }
 
@@ -4947,12 +4952,12 @@ function CloseConfirmBubble({
           instructions” instead.
         </p>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={onConfirm} size="sm" type="button" variant="destructive">
+          <IcButton onClick={onConfirm} size="sm" type="button" variant="destructive">
             End browser session
-          </Button>
-          <Button onClick={onCancel} size="sm" type="button" variant="outline">
+          </IcButton>
+          <IcButton onClick={onCancel} size="sm" type="button" variant="ghost">
             Keep working
-          </Button>
+          </IcButton>
         </div>
       </div>
     </div>
@@ -5027,16 +5032,16 @@ function StreamInteractionDock({
   if (collapsed) {
     return (
       <div className="pdpp-stream-toast-zone" data-pdpp-stream-ui data-slot="interaction">
-        <Button
+        <IcButton
           aria-expanded="false"
           className="pdpp-stream-toast-bubble"
           onClick={() => setCollapsed(false)}
           size="sm"
           type="button"
-          variant="outline"
+          variant="ghost"
         >
           Show step instructions
-        </Button>
+        </IcButton>
       </div>
     );
   }
@@ -5051,7 +5056,7 @@ function StreamInteractionDock({
       >
         <div className="flex items-start justify-between gap-3">
           <p className="pdpp-caption font-medium text-foreground">{message}</p>
-          <Button
+          <IcButton
             aria-expanded="true"
             aria-label="Hide connector step instructions"
             className="shrink-0"
@@ -5061,10 +5066,10 @@ function StreamInteractionDock({
             variant="ghost"
           >
             Hide instructions
-          </Button>
+          </IcButton>
         </div>
         {interactionKind === "otp" ? (
-          <Input
+          <IcInput
             autoComplete="one-time-code"
             inputMode="numeric"
             onChange={(event) => setCode(event.currentTarget.value)}
@@ -5085,13 +5090,13 @@ function StreamInteractionDock({
           </p>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          <Button disabled={isPending} size="sm" type="submit">
+          <IcButton disabled={isPending} size="sm" type="submit">
             {submitLabel}
-          </Button>
+          </IcButton>
           {interactionKind === "otp" ? (
-            <Button disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="outline">
+            <IcButton disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="ghost">
               I entered it in the browser
-            </Button>
+            </IcButton>
           ) : null}
         </div>
       </form>
@@ -5172,7 +5177,7 @@ export function ResolvedSurface({ connector }: { connector: ConnectorContext | n
             {subject} is back on it.
           </p>
           <p className="pdpp-body text-foreground">You can close this tab.</p>
-          <Button
+          <IcButton
             className="h-12 w-full"
             onClick={() => {
               try {
@@ -5185,7 +5190,7 @@ export function ResolvedSurface({ connector }: { connector: ConnectorContext | n
             type="button"
           >
             Close this tab
-          </Button>
+          </IcButton>
         </section>
       </div>
     </main>
@@ -5224,9 +5229,9 @@ function UnsupportedSurface({
           </p>
           <p className="pdpp-body text-foreground">This step takes a credential, not a browser.</p>
           <Link className="block w-full" href={runHref}>
-            <Button className="h-12 w-full" size="lg" type="button">
+            <IcButton className="h-12 w-full" size="lg" type="button">
               Open run timeline
-            </Button>
+            </IcButton>
           </Link>
         </section>
       </div>

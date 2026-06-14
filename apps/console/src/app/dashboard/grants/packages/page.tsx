@@ -9,13 +9,12 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
+import { IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { RecordroomShell } from "@pdpp/brand-react";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
@@ -79,7 +78,7 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
         <div className="flex items-center gap-2">
           <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={pkg.created_at} />
+            <IcTimestamp value={pkg.created_at} />
           </span>
         </div>
       </div>

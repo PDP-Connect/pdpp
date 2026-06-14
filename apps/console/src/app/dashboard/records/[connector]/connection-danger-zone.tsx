@@ -1,9 +1,8 @@
 "use client";
 
+import { IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useState } from "react";
-import { Button } from "@pdpp/operator-ui/ui/button";
-import { Input } from "@pdpp/operator-ui/ui/input";
 import { deleteConnectionAction, revokeConnectionAction } from "./actions.ts";
 
 interface Props {
@@ -82,9 +81,9 @@ function RevokeForm({ connectionId }: { connectionId: string }) {
             Stop future collection for <code className="font-mono">{connectionId}</code>; keep its records.
           </span>
         </label>
-        <Button type="submit" variant="outline">
+        <IcButton type="submit" variant="ghost">
           Revoke connection
-        </Button>
+        </IcButton>
       </form>
     </div>
   );
@@ -107,7 +106,7 @@ function DeleteForm({ connectionId }: { connectionId: string }) {
           <span>
             Type the connection id <code className="font-mono">{connectionId}</code> to confirm.
           </span>
-          <Input
+          <IcInput
             aria-label="Type the connection id to confirm deletion"
             autoComplete="off"
             className="w-full max-w-md font-mono"
@@ -119,9 +118,9 @@ function DeleteForm({ connectionId }: { connectionId: string }) {
           />
         </label>
         <div>
-          <Button disabled={!confirmed} type="submit" variant="destructive">
+          <IcButton disabled={!confirmed} type="submit" variant="destructive">
             Delete connection and erase its records
-          </Button>
+          </IcButton>
         </div>
       </form>
     </div>

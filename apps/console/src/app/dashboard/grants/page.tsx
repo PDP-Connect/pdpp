@@ -1,3 +1,4 @@
+import { buttonVariants, IcButton, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
@@ -5,11 +6,9 @@ import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/com
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
-import { buttonVariants, IcButton, RecordroomShell } from "@pdpp/brand-react";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
-import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { ServerUnreachable } from "../components/shell.tsx";
+import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
   getGrantTimeline,
@@ -180,7 +179,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         <div className="flex flex-wrap items-baseline gap-2">
           <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>
           <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={approval.created_at} />
+            <IcTimestamp value={approval.created_at} />
           </span>
           <StatusBadge status={approval.kind} />
         </div>
@@ -227,7 +226,7 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
             ) : null}
           </div>
           <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
-            <Timestamp value={grant.last_at} />
+            <IcTimestamp value={grant.last_at} />
           </span>
         </div>
         <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">

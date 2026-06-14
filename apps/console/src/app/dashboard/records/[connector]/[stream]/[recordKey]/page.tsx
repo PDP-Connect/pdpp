@@ -1,8 +1,7 @@
+import { IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { RecordroomShell } from "@pdpp/brand-react";
 import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
@@ -164,7 +163,7 @@ export default async function RecordDetailPage({
         ]}
         description={
           <>
-            emitted_at <Timestamp className="text-foreground" value={record.emitted_at} />
+            emitted_at <IcTimestamp className="text-foreground" value={record.emitted_at} />
           </>
         }
         title={<code className="break-all font-mono">{recordId}</code>}

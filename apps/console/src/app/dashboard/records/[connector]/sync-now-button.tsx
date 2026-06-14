@@ -1,8 +1,8 @@
 "use client";
 
+import { IcButton } from "@pdpp/brand-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
-import { Button } from "@pdpp/operator-ui/ui/button";
 import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
@@ -27,6 +27,12 @@ interface Props {
   initialRunning: boolean;
   title?: string;
   variant?: "default" | "destructive" | "outline";
+}
+
+// operator-ui's "outline" weight maps to Ink Carbon's "ghost".
+type IcButtonVariant = "default" | "destructive" | "ghost";
+function toIcVariant(v: "default" | "destructive" | "outline"): IcButtonVariant {
+  return v === "outline" ? "ghost" : v;
 }
 
 export function SyncNowButton({
@@ -94,16 +100,16 @@ export function SyncNowButton({
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button
+      <IcButton
         aria-label={running ? `Sync in progress for ${displayName}` : `${idleLabel} for ${displayName}`}
         disabled={running || isPending}
         onClick={handleClick}
         size="sm"
         title={title}
-        variant={variant}
+        variant={toIcVariant(variant)}
       >
         {running ? "Syncing…" : idleLabel}
-      </Button>
+      </IcButton>
       {toast ? (
         <span
           aria-live="polite"

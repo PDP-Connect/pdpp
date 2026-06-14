@@ -19,6 +19,7 @@ import {
   IcField,
   IcInput,
   IcSelect,
+  IcTimestamp,
   KV,
   KVRow,
   RecordroomShell,
@@ -41,7 +42,6 @@ import {
   ToolbarField,
 } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -360,7 +360,7 @@ function SubscriptionRow({
               status={subscriptionEndorseStatus(subscription.status)}
             />
             <TypedSm className="text-muted-foreground">
-              <Timestamp value={subscription.updated_at} />
+              <IcTimestamp value={subscription.updated_at} />
             </TypedSm>
           </div>
         </div>
@@ -389,7 +389,7 @@ function LastAttemptCell({ subscription }: { subscription: ClientEventSubscripti
   const code = subscription.last_attempt_status_code ?? "—";
   return (
     <span>
-      last attempt {okLabel} {code} · <Timestamp value={subscription.last_attempted_at} />
+      last attempt {okLabel} {code} · <IcTimestamp value={subscription.last_attempted_at} />
     </span>
   );
 }
@@ -432,14 +432,14 @@ function PeekPane({
             </Typed>
           </KVRow>
           <KVRow k="created">
-            <Timestamp value={subscription.created_at} />
+            <IcTimestamp value={subscription.created_at} />
           </KVRow>
           <KVRow k="updated">
-            <Timestamp value={subscription.updated_at} />
+            <IcTimestamp value={subscription.updated_at} />
           </KVRow>
           {subscription.disabled_at ? (
             <KVRow k="disabled">
-              <Timestamp value={subscription.disabled_at} />
+              <IcTimestamp value={subscription.disabled_at} />
               {subscription.disabled_reason ? (
                 <>
                   {" "}
@@ -572,7 +572,7 @@ function RecentAttempts({ attempts }: { attempts: ClientEventSubscriptionAttempt
               {attempt.latency_ms == null ? "—" : `${attempt.latency_ms}ms`}
             </span>
             <TypedSm className="text-muted-foreground">
-              <Timestamp value={attempt.attempted_at} />
+              <IcTimestamp value={attempt.attempted_at} />
             </TypedSm>
             {attempt.error ? <span className="text-destructive">err: {attempt.error}</span> : null}
           </li>

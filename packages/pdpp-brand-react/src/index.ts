@@ -25,6 +25,17 @@ export {
   DataRowWho,
   Monogram,
 } from "./data-row.tsx";
+// ─── Dialog (base-ui skin — focus-trap/dismiss/portal owned by base-ui) ──
+export {
+  IcDialog,
+  IcDialogBackdrop,
+  IcDialogClose,
+  IcDialogDescription,
+  IcDialogPopup,
+  IcDialogPortal,
+  IcDialogTitle,
+  IcDialogTrigger,
+} from "./dialog.tsx";
 // ─── Endorse (status badge — only home of state color) ────────────
 export { Endorse } from "./endorse.tsx";
 export type { IcInputProps } from "./input.tsx";
@@ -77,6 +88,14 @@ export {
 } from "./table.tsx";
 // ─── Tag ──────────────────────────────────────────────────────────
 export { Tag } from "./tag.tsx";
+// ─── Timestamp ────────────────────────────────────────────────────
+export type {
+  IcTimestampProps,
+  TimestampMode,
+  TimestampPrecision,
+  TimestampValueKind,
+} from "./timestamp.tsx";
+export { IcTimestamp, parseTimestampValue } from "./timestamp.tsx";
 // ─── Type system ──────────────────────────────────────────────────
 export {
   Body,

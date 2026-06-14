@@ -1,9 +1,8 @@
+import { IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
-import { RecordroomShell } from "@pdpp/brand-react";
 import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
@@ -141,10 +140,10 @@ function StreamHealthReport({
               <tr>
                 <td className={`${TD} font-mono`}>emitted_at</td>
                 <td className={`${TD} whitespace-nowrap tabular-nums`}>
-                  {emittedAt.min ? <Timestamp value={emittedAt.min} /> : <Dash />}
+                  {emittedAt.min ? <IcTimestamp value={emittedAt.min} /> : <Dash />}
                 </td>
                 <td className={`${TD} whitespace-nowrap tabular-nums`}>
-                  {emittedAt.max ? <Timestamp value={emittedAt.max} /> : <Dash />}
+                  {emittedAt.max ? <IcTimestamp value={emittedAt.max} /> : <Dash />}
                 </td>
               </tr>
               {cursorField && (

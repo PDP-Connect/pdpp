@@ -1,11 +1,10 @@
+import { buttonVariants, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
 import { deriveDeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
 import type { DeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-kind";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
 import { ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
@@ -328,7 +327,7 @@ export default async function StreamPage({
                   <tr className="transition-colors hover:bg-muted/30" key={r.id}>
                     <td className={`${TD} whitespace-nowrap text-muted-foreground`}>
                       <Link className="block" href={recordHref(r.id)}>
-                        <Timestamp value={r.emitted_at} />
+                        <IcTimestamp value={r.emitted_at} />
                       </Link>
                     </td>
                     <td className={`${TD} whitespace-nowrap`}>
@@ -420,7 +419,7 @@ function RecordCard({
     <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">emitted_at</dt>
       <dd className="break-all text-muted-foreground">
-        <Timestamp value={record.emitted_at} />
+        <IcTimestamp value={record.emitted_at} />
       </dd>
       <dt className="text-muted-foreground">id</dt>
       <dd className="break-all font-mono">{truncate(record.id, 48)}</dd>

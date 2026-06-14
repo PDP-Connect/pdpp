@@ -17,6 +17,7 @@ import {
   Caption,
   Endorse,
   IcButton,
+  IcTimestamp,
   KV,
   KVRow,
   Rhythm,
@@ -29,7 +30,6 @@ import {
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { useState } from "react";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import type { FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) auto minmax(0,1.2fr) minmax(0,0.9fr)";
@@ -80,12 +80,12 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
         <p className="rr-fix__expl">{summary.prose}</p>
         {summary.cta === "wait" && summary.nextAttemptAt ? (
           <p className="rr-fix__meta">
-            Next automatic attempt <Timestamp mode="relative" value={summary.nextAttemptAt} />.
+            Next automatic attempt <IcTimestamp mode="relative" value={summary.nextAttemptAt} />.
           </p>
         ) : null}
         {summary.lastSuccessAt ? (
           <p className="rr-fix__meta">
-            Last successful sync <Timestamp mode="relative" value={summary.lastSuccessAt} />.
+            Last successful sync <IcTimestamp mode="relative" value={summary.lastSuccessAt} />.
           </p>
         ) : null}
       </div>
@@ -132,24 +132,24 @@ function SyncTableRow({ row, isOpen, onToggle }: { row: SyncRow; isOpen: boolean
           <span>{row.delta}</span>
           {row.lastAt ? (
             <span className="rr-sync-row__when">
-              <Timestamp mode="relative" value={row.lastAt} />
+              <IcTimestamp mode="relative" value={row.lastAt} />
             </span>
           ) : null}
         </TableCell>
         <TableCell className="rr-sync-row__next" numeric>
-          {row.nextAt ? <Timestamp mode="relative" value={row.nextAt} /> : row.next}
+          {row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}
         </TableCell>
       </TableRow>
       {isOpen ? (
         <div className="rr-sync-detail">
           <KV>
             <KVRow k="last run">
-              {row.lastAt ? <Timestamp mode="relative" value={row.lastAt} /> : "—"}
+              {row.lastAt ? <IcTimestamp mode="relative" value={row.lastAt} /> : "—"}
               {row.duration ? ` · ${row.duration}` : ""}
             </KVRow>
             <KVRow k="delta">{row.failed ? "0 records — cursor held" : row.delta}</KVRow>
             <KVRow k="cadence">{row.cadence}</KVRow>
-            <KVRow k="next">{row.nextAt ? <Timestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
+            <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
           </KV>
           <Link className="rr-link rr-sync-detail__browse" href={row.browseHref}>
             browse this stream →

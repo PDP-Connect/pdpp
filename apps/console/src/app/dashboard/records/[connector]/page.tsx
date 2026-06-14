@@ -1,3 +1,4 @@
+import { buttonVariants, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
@@ -7,8 +8,6 @@ import {
 } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import {
   formatStreamCollectionFacts,
@@ -419,7 +418,7 @@ function ConnectorPageView({
                       {s.last_updated ? (
                         <>
                           <span aria-hidden>·</span>
-                          <Timestamp value={s.last_updated} />
+                          <IcTimestamp value={s.last_updated} />
                         </>
                       ) : null}
                     </span>
@@ -719,7 +718,7 @@ function RecentRunsSection({
                   <span className="font-mono text-muted-foreground text-xs">{r.run_id}</span>
                 </span>
                 <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
-                  <Timestamp value={r.first_at} />
+                  <IcTimestamp value={r.first_at} />
                   <span aria-hidden>·</span>
                   <span>{durationLabel(r.first_at, r.last_at)}</span>
                   <span aria-hidden>·</span>
@@ -884,7 +883,7 @@ function RevokedConnectionSection({ connectorId, revokedAt }: { connectorId: str
       </Link>
       {revokedAt ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">
-          Revoked <Timestamp value={revokedAt} />.
+          Revoked <IcTimestamp value={revokedAt} />.
         </p>
       ) : null}
     </Section>
@@ -981,7 +980,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
               <>
                 <dt className="text-muted-foreground">next attempt</dt>
                 <dd className="tabular-nums">
-                  <Timestamp value={summary.nextAttemptAt} />
+                  <IcTimestamp value={summary.nextAttemptAt} />
                 </dd>
               </>
             ) : null}
@@ -989,7 +988,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
               <>
                 <dt className="text-muted-foreground">last success</dt>
                 <dd className="tabular-nums">
-                  <Timestamp value={summary.lastSuccessAt} />
+                  <IcTimestamp value={summary.lastSuccessAt} />
                 </dd>
               </>
             ) : null}
@@ -1123,7 +1122,7 @@ function AutoPausedBannerRow({ banner, connectorId }: { banner: AutoPausedBanner
             <>
               {" "}
               <span className="pdpp-caption">
-                Next retry at <Timestamp value={banner.nextRunAt} />.
+                Next retry at <IcTimestamp value={banner.nextRunAt} />.
               </span>
             </>
           ) : null}

@@ -1,7 +1,7 @@
 "use client";
 
+import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect } from "react";
-import { buttonVariants } from "@pdpp/operator-ui/ui/button";
 
 /**
  * Runs-segment error boundary (App Router convention).
@@ -27,7 +27,7 @@ export default function RunsError({ error, reset }: { error: Error & { digest?: 
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/runs">
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/runs">
           Back to runs
         </a>
       </div>

@@ -19,6 +19,7 @@ import {
   IcButton,
   IcInput,
   IcSelect,
+  IcTimestamp,
   RecordroomShell,
   Sheet,
   SheetBody,
@@ -35,7 +36,6 @@ import {
   TypedSm,
 } from "@pdpp/brand-react";
 import { traceRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
-import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -263,7 +263,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                     {/* Timestamp */}
                     <TableCell numeric>
                       <TypedSm>
-                        <Timestamp value={trace.last_at} />
+                        <IcTimestamp value={trace.last_at} />
                       </TypedSm>
                     </TableCell>
                   </TableRow>
@@ -462,7 +462,7 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
                   {event.event_type}
                 </Typed>
                 <TypedSm style={{ color: "var(--muted-foreground)", flexShrink: 0 }}>
-                  <Timestamp value={event.occurred_at} />
+                  <IcTimestamp value={event.occurred_at} />
                 </TypedSm>
               </div>
               {event.status ? (
