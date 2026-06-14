@@ -11,9 +11,6 @@
  * button, so a throttled connection is never told to "log in again".
  */
 
-import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import Link from "next/link";
-import { useState } from "react";
 import {
   Band,
   BandCell,
@@ -28,7 +25,10 @@ import {
   TableHeader,
   TableHeaderRow,
   TableRow,
-} from "@/components/ink-carbon";
+} from "@pdpp/brand-react";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import Link from "next/link";
+import { useState } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 

@@ -19,7 +19,7 @@
  * ceremony without a live server. The live path never imports the fixtures
  * when `demo` is absent.
  */
-import { RecordroomShell } from "@/components/ink-carbon";
+import { RecordroomShell } from "@pdpp/brand-react";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";

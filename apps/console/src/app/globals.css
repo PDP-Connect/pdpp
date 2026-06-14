@@ -16,15 +16,17 @@
 @import "fumadocs-ui/css/preset.css";
 @import "@demodesk/neko/dist/neko.css";
 @import "@pdpp/brand/docs.css";
-/* ─── Ink Carbon token layer (imported LAST → wins) ──────────────────────────
+/* ─── Ink Carbon token layer (imported LAST among value-declaring sheets → wins)
    Overrides the @pdpp/brand color/geometry/motion token VALUES with the Ink
    Carbon palette. The @theme inline mapping below continues to resolve correctly
    because the token NAMES are unchanged; only values shift.
-   See: src/components/ink-carbon/tokens.css for editing instructions. */
-@import "../components/ink-carbon/tokens.css";
+   See: packages/pdpp-brand/ink-carbon.css for editing instructions. */
+@import "@pdpp/brand/ink-carbon.css";
 /* Ink Carbon component classes: .pdpp-sheet / .pdpp-carbon / .pdpp-table /
-   .pdpp-endorse etc. Used by the React components in src/components/ink-carbon/. */
-@import "../components/ink-carbon/components.css";
+   .pdpp-endorse etc. (components.css) and the shell chrome (.pdpp-shell-*,
+   shell.css). Used by the React components in @pdpp/brand-react. */
+@import "@pdpp/brand-react/components.css";
+@import "@pdpp/brand-react/shell.css";
 
 /*
  * The operator console renders most of its surfaces from the @pdpp/operator-ui
@@ -37,6 +39,16 @@
  * resolve relative to this CSS file.
  */
 @source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
+
+/*
+ * The Ink Carbon component library (@pdpp/brand-react) lives outside this app's
+ * tree, so Tailwind v4's automatic source detection won't scan it either. Any
+ * utility class used *only* inside an Ink Carbon component (e.g. shell-frame's
+ * responsive nav utilities) would be purged without this explicit @source —
+ * the same failure class as the operator-ui hero-collapse above. Path resolves
+ * relative to this CSS file.
+ */
+@source "../../../../packages/pdpp-brand-react/src/**/*.{ts,tsx}";
 
 @custom-variant dark (&:where(.dark, .dark *, [data-theme=dark], [data-theme=dark] *));
 

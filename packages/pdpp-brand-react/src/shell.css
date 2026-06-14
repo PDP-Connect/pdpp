@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    INK CARBON — Shell frame
-   apps/console/src/components/ink-carbon/shell.css
+   packages/pdpp-brand-react/src/shell.css
 
    The owner-console frame: left sidebar (the rack), main column (the paper),
    sticky header, and the mobile drawer. Token-driven; no hard-coded colors.

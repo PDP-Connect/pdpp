@@ -19,7 +19,7 @@
  * VOICE: human label = grotesk, wire key = mono. Every field row shows BOTH —
  * a client literally receives the wire key, so it never hides.
  */
-import { formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
+import { formatDeclaredAmount } from "@pdpp/brand/record-format";
 
 // ─── Declared-type map ────────────────────────────────────────────
 //

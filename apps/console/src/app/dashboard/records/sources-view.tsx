@@ -26,9 +26,6 @@
  */
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useState, useTransition } from "react";
 import {
   CopyMono,
   Endorse,
@@ -45,7 +42,10 @@ import {
   TableCell,
   TableHeader,
   TableHeaderRow,
-} from "@/components/ink-carbon";
+} from "@pdpp/brand-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 import type { SourceInstanceView, SourcesChurnAdvisory } from "./sources-view-model.ts";
 import "./sources-view.css";
