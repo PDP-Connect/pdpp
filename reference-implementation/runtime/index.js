@@ -2545,8 +2545,12 @@ export async function runConnector(opts) {
     const batch = recordBatch[stream];
     if (!batch || !batch.length) return;
     const ndjson = batch.map(r => JSON.stringify(r)).join('\n');
-    const url = `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`;
-    const resp = await fetch(url, {
+    const ingestUrl = new URL(`/v1/ingest/${encodeURIComponent(stream)}`, rsUrl);
+    ingestUrl.searchParams.set('connector_id', connectorId);
+    if (connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID) {
+      ingestUrl.searchParams.set('connector_instance_id', connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
+    }
+    const resp = await fetch(ingestUrl.toString(), {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${ownerToken}`,

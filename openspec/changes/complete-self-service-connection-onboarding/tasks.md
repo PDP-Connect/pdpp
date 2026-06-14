@@ -223,6 +223,7 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.7 Promote normal manual/upload transfer to streamed staged artifacts with durable status polling; invalid and duplicate uploads must not create phantom source connections, and same-named artifacts must not overwrite each other before import.
 - [x] 11.8 Import media-bearing WhatsApp zip exports as attachment records with blob references when runtime blob upload is available, or explicit deferred/failed hydration state otherwise.
 - [x] 11.9 Align WhatsApp, Console proxy, and reference route upload limits so hundreds-of-megabytes media zip exports use the normal staged browser path instead of a stale small-file fallback.
+- [x] 11.10 Scope runtime record ingest, blob upload, and state checkpoints to the explicit draft connection id, and admit explicitly addressed drafts on owner-authenticated state read/write routes so manual/import first sync cannot split records and checkpoints across sibling connections.
 
 Progress note (11.7): the normal Console import path now posts each selected
 file to a reference staged-artifact route using
@@ -255,3 +256,22 @@ and the reference staged-artifact route now align at a 1 GiB explicit
 deployment envelope. A 301 MB media zip therefore follows the normal browser
 upload/import path; import-folder handoff remains reserved for artifacts above
 that envelope.
+
+Progress note (11.10): Live WhatsApp import `run_1781411486188` accepted blobs
+and records, then failed at the final `/v1/state/:connectorId` checkpoint
+because the explicit manual-upload connection was still `draft`. Live DB smoke
+also showed those records landed under sibling connection
+`cin_8e7ed2230aa9d110fdfdc1da` while the draft
+`cin_539833f9f2d11bc0f58bbb00` stayed draft, proving the runtime mutation path
+was not connection-scoped end-to-end. The runtime now sends
+`connector_instance_id` on record ingest, the shared reference blob uploader
+sends it for blob upload, and the owner-authenticated state routes mirror the
+ingest route's explicit draft-admission rule for non-grant state reads/writes.
+The first live retry after that routing fix started `run_1781412768569` and
+proved record ingest was scoped correctly, but exposed the same active-only
+admission bug on `/v1/blobs`; the blob-upload host adapter now resolves an
+explicit `connector_instance_id` with `active` or `draft` status as well.
+Drafts remain hidden from normal read/grant surfaces and still activate only
+after accepted records; regressions prove ingest and checkpoint URLs carry the
+same explicit connection id, blob upload carries it, and state can be written
+and read for an explicit draft without activating it.

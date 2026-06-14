@@ -1246,7 +1246,11 @@ function buildRuntimeBlobUploader(): UploadAttachmentBlobFn {
   if (!(rsUrl && ownerToken)) {
     return () => Promise.reject(new Error(BLOB_UPLOAD_ENV_ERROR));
   }
-  return makeSharedReferenceBlobUploader({ ownerToken, rsUrl });
+  return makeSharedReferenceBlobUploader({
+    connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
+    ownerToken,
+    rsUrl,
+  });
 }
 
 export function validateAttachmentHydrationPreflight(args: {

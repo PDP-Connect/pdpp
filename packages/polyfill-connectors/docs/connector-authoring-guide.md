@@ -643,9 +643,11 @@ The shipped reference is `connectors/gmail/index.ts`:
 - `enforceMaxBytes(content, maxBytes)` — generator wrapper that throws
   when a stream's running byte count exceeds the cap. Reuse this — do
   not re-implement it.
-- `makeReferenceBlobUploader({ ownerToken, rsUrl })` — creates the
-  streaming upload body, computes sha256 inline, posts to `/v1/blobs`,
-  parses the typed response. Reuse this for any
+- `makeReferenceBlobUploader({ ownerToken, rsUrl, connectorInstanceId })` —
+  creates the streaming upload body, computes sha256 inline, posts to
+  `/v1/blobs`, and parses the typed response. Pass `connectorInstanceId` when
+  the run is connection-scoped so blobs land with the same connection as record
+  ingest and state checkpoints. Reuse this for any
   `AsyncIterable<Buffer | Uint8Array | string>` source.
 - `attachmentWithHydrationFailure(attachment, status, err)` — preserves
   metadata, sets `blob_ref: null`, sets `hydration_status`, and applies
