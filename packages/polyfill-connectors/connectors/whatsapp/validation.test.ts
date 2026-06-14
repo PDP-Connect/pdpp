@@ -65,6 +65,9 @@ test("validateWhatsAppChatExportArtifact reports messages, participants, media, 
   assert.equal(validation.media_coverage.referenced_media_files, 1);
   assert.equal(validation.media_coverage.attached_media_files, 0);
   assert.equal(validation.media_coverage.status, "not_included");
+  assert.equal(validation.source_identity?.title, "Alice");
+  assert.equal(validation.source_identity?.suggested_display_name, "WhatsApp - Alice");
+  assert.deepEqual(validation.source_identity?.participant_preview, ["Alice", "Bob"]);
   assert.equal(validation.date_range.start, "2024-06-05T14:15:22.000Z");
   assert.equal(validation.date_range.end, "2024-06-05T14:17:00.000Z");
   assert.match(validation.file_sha256, /^[0-9a-f]{64}$/);

@@ -27,6 +27,7 @@ function countRows(preview: NonNullable<ManualUploadFormState["preview"]>) {
     ["Estimated participants", preview.estimatedParticipants],
     ["Estimated attachments", preview.estimatedAttachments],
     ["Media coverage", formatMediaCoverage(preview.mediaCoverage)],
+    ["Source PDPP will use", preview.sourceDisplayName],
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
 }
 
@@ -94,11 +95,11 @@ function PreviewCard({ preview }: { preview: NonNullable<ManualUploadFormState["
   );
 }
 
-function reviewButtonLabel(pending: boolean, hasValidator: boolean): string {
+function importButtonLabel(pending: boolean): string {
   if (pending) {
-    return "Checking...";
+    return "Importing...";
   }
-  return hasValidator ? "Review file" : "Check file";
+  return "Import file";
 }
 
 export function ManualUploadForm({
@@ -118,7 +119,6 @@ export function ManualUploadForm({
   const acceptLabel = accepted.length > 0 ? accepted.join(", ") : "supported export file";
   const acceptAttribute = [...setup.accepted_file_names, ...setup.accepted_file_extensions].join(",");
   const hasValidator = setup.validation_expectations.length > 0;
-  const canImport = state.ok === true && state.preview?.nextStep === "confirm_import";
 
   return (
     <form
@@ -134,21 +134,10 @@ export function ManualUploadForm({
           belongs to a different account, profile, device, or source identity.
         </div>
       ) : (
-        <label className="grid gap-1" htmlFor="manual-upload-display-name">
-          <span className="pdpp-eyebrow">Source name</span>
-          <input
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            defaultValue={setup.display_name}
-            id="manual-upload-display-name"
-            maxLength={120}
-            name="display_name"
-            type="text"
-          />
-          <span className="pdpp-caption text-muted-foreground">
-            Use one source per account, profile, device, or source identity. Import related exports into that same
-            source.
-          </span>
-        </label>
+        <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
+          PDPP names the new source from the export when the file carries a source identity. Use an existing source link
+          when this file belongs with a source you already created.
+        </div>
       )}
       <label className="grid gap-1" htmlFor="manual-upload-file">
         <span className="pdpp-eyebrow">Export file</span>
@@ -191,18 +180,17 @@ export function ManualUploadForm({
       ) : null}
       {state.preview ? <PreviewCard preview={state.preview} /> : null}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={pending} name="intent" type="submit" value="preview" variant="outline">
-          {reviewButtonLabel(pending, hasValidator)}
+        <Button disabled={pending} name="intent" type="submit" value="import">
+          {importButtonLabel(pending)}
         </Button>
-        <Button disabled={pending || (hasValidator && !canImport)} name="intent" type="submit" value="import">
-          {pending ? "Importing..." : "Import this file"}
+        <Button disabled={pending} name="intent" type="submit" value="preview" variant="outline">
+          {pending ? "Checking..." : "Preview only"}
         </Button>
       </div>
-      {hasValidator && !canImport ? (
-        <p className="pdpp-caption text-muted-foreground">
-          Review the file first. Import stays disabled until PDPP can show what it found.
-        </p>
-      ) : null}
+      <p className="pdpp-caption text-muted-foreground">
+        Import validates the file before anything is committed. Preview is optional when you want to inspect the detected
+        coverage first.
+      </p>
     </form>
   );
 }

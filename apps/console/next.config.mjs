@@ -15,6 +15,7 @@ function parseBuildWorkers(value) {
 }
 
 const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
+const manualUploadBodyLimit = '64mb';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -41,6 +42,10 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     cpus: buildWorkers,
+    proxyClientMaxBodySize: manualUploadBodyLimit,
+    serverActions: {
+      bodySizeLimit: manualUploadBodyLimit,
+    },
   },
   // Transpile the reference-implementation workspace package so Next can
   // consume its TypeScript sources directly once shim pairs (.js + .d.ts)

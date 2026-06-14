@@ -328,6 +328,21 @@ Timeline points/segments unless Google documents those resources.
 
 Design note: `design-notes/google-maps-timeline-refresh-slvp-plan-2026-06-11.md`.
 
+### 16. Manual-upload setup is one owner action, with preview as an optional aid
+
+Manual/import setup should not make the owner name a source before PDPP has
+looked at the artifact, and it should not require a mandatory
+preview-then-import loop for normal valid files. The owner selects an export and
+imports it; the reference validates the artifact before writing setup state, and
+connectors that can derive non-secret source identity return it as validation
+metadata. The Console may offer a preview-only action for cautious inspection,
+but import remains the primary path.
+
+For WhatsApp chat exports this means the connector parser derives the chat title
+and a stable chat id from the export file, then returns a suggested source label
+such as `WhatsApp - Ghazal`. The Console renders that metadata generically; it
+does not carry WhatsApp-specific React branches.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

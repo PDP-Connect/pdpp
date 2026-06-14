@@ -207,6 +207,11 @@ owner-provided artifact.
 - **AND** it SHALL surface non-secret validation evidence such as detected
   format, estimated record or segment count, date range when available, duplicate
   or stale-file status, and the next action for unsupported files
+- **AND** normal setup surfaces SHALL let the owner import directly, with preview
+  as an optional inspection aid rather than a required second submission
+- **AND** when connector validation can derive non-secret source identity from
+  the artifact, setup SHALL use that identity to suggest the source label instead
+  of requiring the owner to type it before upload
 
 #### Scenario: Timeline refresh starts without fixed cooldown
 

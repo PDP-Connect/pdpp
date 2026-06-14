@@ -397,10 +397,12 @@ test('WhatsApp chat export is manifest-driven and accepts owner .txt artifacts',
     );
     assert.equal(created.status, 201, created.text);
     assert.equal(created.body.connector_id, 'whatsapp');
+    assert.equal(created.body.display_name, 'WhatsApp - Ghazal');
     assert.equal(created.body.validation.status, 'valid');
     assert.equal(created.body.validation.detected_format, 'whatsapp_chat_export');
     assert.equal(created.body.validation.estimated_messages, 2);
     assert.equal(created.body.validation.estimated_attachments, 1);
+    assert.equal(created.body.validation.source_identity.title, 'Ghazal');
 
     const batch = getDb()
       .prepare(

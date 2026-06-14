@@ -1474,6 +1474,7 @@ export interface ManualUploadDraftConnection {
     estimated_points?: number;
     estimated_segments?: number;
     estimated_records?: number;
+    source_identity?: unknown;
     status: string;
   } | null;
 }

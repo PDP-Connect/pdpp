@@ -10,8 +10,10 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { validateGoogleMapsTimelineArtifact } from "../../../packages/polyfill-connectors/connectors/google_maps/validation.ts";
-import { validateWhatsAppChatExportArtifact } from "../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts";
+import {
+  type ManualUploadValidationResult,
+  validateManualUploadArtifactByKind,
+} from "../../../packages/polyfill-connectors/src/manual-upload-validation.ts";
 import {
   type ConnectorManifestLike,
   displayNameForConnector,
@@ -20,7 +22,7 @@ import {
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 const PATH_SEP_RE = /[\\/]/;
-const UNSAFE_FILENAME_CHARS_RE = /[^\w.-]/g;
+const UNSAFE_FILENAME_CHARS_RE = /[^\w .-]/g;
 const CONNECTION_ID_RE = /^cin_[A-Za-z0-9_-]+$/;
 
 interface RouteRequest {
@@ -119,10 +121,6 @@ interface AcquisitionBatchStore {
   }): Promise<AcquisitionBatch> | AcquisitionBatch;
 }
 
-type GoogleMapsValidationResult = ReturnType<typeof validateGoogleMapsTimelineArtifact>;
-type WhatsAppValidationResult = ReturnType<typeof validateWhatsAppChatExportArtifact>;
-type ManualUploadValidationResult = GoogleMapsValidationResult | WhatsAppValidationResult;
-
 export interface MountRefManualUploadDraftConnectionContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
@@ -194,10 +192,26 @@ function optionalConnectionId(req: RouteRequest): string | null {
   return raw && CONNECTION_ID_RE.test(raw) ? raw : null;
 }
 
-function requestedDisplayName(req: RouteRequest, fallback: string): string {
+function suggestedDisplayNameFromValidation(validation: ManualUploadValidationResult | null): string | null {
+  const sourceIdentity = validation && "source_identity" in validation ? validation.source_identity : null;
+  const suggested =
+    sourceIdentity && typeof sourceIdentity.suggested_display_name === "string"
+      ? sourceIdentity.suggested_display_name.trim().replace(/\s+/g, " ")
+      : "";
+  return suggested.length > 0 && suggested.length <= 120 ? suggested : null;
+}
+
+function requestedOrSuggestedDisplayName(
+  req: RouteRequest,
+  validation: ManualUploadValidationResult | null,
+  fallback: string
+): string {
   const raw = firstQueryValue(req.query?.display_name);
   const clean = typeof raw === "string" ? raw.trim().replace(/\s+/g, " ") : "";
-  return clean.length > 0 && clean.length <= 120 ? clean : fallback;
+  if (clean.length > 0 && clean.length <= 120) {
+    return clean;
+  }
+  return suggestedDisplayNameFromValidation(validation) ?? fallback;
 }
 
 async function rejectManualUploadRequest(
@@ -715,7 +729,11 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         await sendValidationPreviewResponse(ctx, req, res, {
           acquisitionStore: ctx.createRequestAcquisitionBatchStore(),
           connectorId,
-          displayName: requestedDisplayName(req, displayNameForConnector(connectorId, manifest)),
+          displayName: requestedOrSuggestedDisplayName(
+            req,
+            upload.validation,
+            displayNameForConnector(connectorId, manifest)
+          ),
           fileName: upload.fileName,
           ownerSubjectId,
           validation: upload.validation,
@@ -751,7 +769,11 @@ function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftCo
           return;
         }
 
-        const displayName = requestedDisplayName(req, displayNameForConnector(connectorId, manifest));
+        const displayName = requestedOrSuggestedDisplayName(
+          req,
+          upload.validation,
+          displayNameForConnector(connectorId, manifest)
+        );
         const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
         const known = await maybeSendKnownArtifactResponse(ctx, req, res, {
           acquisitionStore,
@@ -788,18 +810,7 @@ function validateManualUploadArtifact(
   fileBytes: Buffer,
   options: { fileName?: string | null; maxFileBytes: number | null }
 ): ManualUploadValidationResult | null {
-  // The validator is selected by connector-authored manifest metadata so Console
-  // stays connector-generic while Timeline gets pre-ingest evidence.
-  if (kind === "google_maps_timeline") {
-    return validateGoogleMapsTimelineArtifact(fileBytes, { maxFileBytes: options.maxFileBytes });
-  }
-  if (kind === "whatsapp_chat_export") {
-    return validateWhatsAppChatExportArtifact(fileBytes, {
-      fileName: options.fileName ?? null,
-      maxFileBytes: options.maxFileBytes,
-    });
-  }
-  return null;
+  return validateManualUploadArtifactByKind(kind, fileBytes, options);
 }
 
 function fileNameIsAccepted(
@@ -865,6 +876,7 @@ function receiptFromValidation(
           estimated_participants: validation.estimated_participants,
         }
       : {}),
+    ...("source_identity" in validation ? { source_identity: validation.source_identity } : {}),
   };
 }
 

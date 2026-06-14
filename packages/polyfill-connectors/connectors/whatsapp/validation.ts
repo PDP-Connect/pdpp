@@ -24,6 +24,14 @@ export interface WhatsAppChatExportValidation {
     readonly status: "included_not_imported" | "none_referenced" | "not_included";
   };
   readonly remediation: string | null;
+  readonly source_identity: {
+    readonly kind: "whatsapp_chat";
+    readonly participant_count: number;
+    readonly participant_preview: readonly string[];
+    readonly stable_id: string;
+    readonly suggested_display_name: string;
+    readonly title: string;
+  } | null;
   readonly status: WhatsAppChatExportValidationStatus;
   readonly warnings: readonly string[];
 }
@@ -84,6 +92,7 @@ export function validateWhatsAppChatExportArtifact(
       status: "none_referenced" as const,
     },
     warnings: [] as const,
+    source_identity: null,
   };
 
   if (options.maxFileBytes != null && bytes.byteLength > options.maxFileBytes) {
@@ -133,6 +142,17 @@ export function validateWhatsAppChatExportArtifact(
       status: mediaCoverageStatus(artifact.mediaFileCount, attachmentCount),
     },
     remediation: remediationFor(status),
+    source_identity:
+      parsed.messages.length > 0
+        ? {
+            kind: "whatsapp_chat",
+            participant_count: parsed.participants.length,
+            participant_preview: parsed.participants.slice(0, 8),
+            stable_id: parsed.chatId,
+            suggested_display_name: parsed.title ? `WhatsApp - ${parsed.title}` : "WhatsApp chat export",
+            title: parsed.title,
+          }
+        : null,
     status,
     warnings,
   };

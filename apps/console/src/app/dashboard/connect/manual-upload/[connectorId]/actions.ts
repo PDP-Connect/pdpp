@@ -29,6 +29,7 @@ export interface ManualUploadFormState {
     mediaCoverage?: unknown;
     nextStep: "confirm_import" | "show_status";
     remediation?: string | null;
+    sourceDisplayName?: string | null;
     status?: string | null;
     uploadedFileName: string;
     warnings?: string[];
@@ -80,6 +81,7 @@ function previewState(preview: ManualUploadValidationPreview): ManualUploadFormS
       mediaCoverage: validation?.media_coverage ?? null,
       nextStep: preview.next_step.kind,
       remediation: validation?.remediation ?? preview.next_step.reason ?? null,
+      sourceDisplayName: preview.display_name ?? null,
       status: validation?.status ?? null,
       uploadedFileName: preview.uploaded_file_name,
       warnings: validation?.warnings ?? [],

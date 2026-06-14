@@ -210,3 +210,10 @@ deployed image containing this tranche.
 - [x] 10.9 Add Timeline refresh governance tests proving valid uploads start validation/import without a fixed cooldown, Takeout cadence is scoped to the Takeout probe lane, and checkpoint/provenance state is recorded at the earliest coverage-safe boundary available to the parser/run model.
 
 Progress note: this tranche added manifest-authored Timeline acquisition metadata, generic manual/upload rendering, a pure Timeline artifact validator with duplicate/stale/empty/unsupported/large-file remediation, and owner-session route validation before draft creation. Valid uploads store non-secret validation evidence and acquisition provenance in the manual-upload source binding without fixed cooldown fields; Takeout appears only as an advanced probe in connector metadata. The Add source/manual upload flow is covered, but route-level duplicate/stale detection still needs connection-history inputs, source-detail refresh that reuses an existing connection/source identity remains open in 10.2/10.4, and owner live pilot remains open in 10.8.
+
+## 11. Manual/import UX Correction
+
+- [x] 11.1 Configure the Console proxy/action upload body limit so manifest-accepted manual-upload artifacts are not rejected by Next before the reference validator runs.
+- [x] 11.2 Make import the primary one-submit action; keep preview as an optional inspection action rather than a mandatory gate.
+- [x] 11.3 Derive WhatsApp chat source identity from connector validation metadata and use it to suggest the new source label.
+- [x] 11.4 Route manual-upload validation through a connector-package registry instead of reference-route connector branches.
