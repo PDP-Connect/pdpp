@@ -243,6 +243,12 @@ export interface CollectionRateProgress {
   object: "collection_rate";
 }
 
+export interface ProgressExtra {
+  count?: number;
+  stream?: string;
+  total?: number;
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -257,7 +263,9 @@ export type EmittedMessage =
   | {
       type: "PROGRESS";
       message: string;
+      count?: number;
       stream?: string;
+      total?: number;
       provider_budget?: ProviderBudgetProgress;
       collection_rate?: CollectionRateProgress;
     }
