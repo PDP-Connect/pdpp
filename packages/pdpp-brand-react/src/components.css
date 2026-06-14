@@ -1634,9 +1634,9 @@
   outline: none;
 }
 .rr-x-help > summary:focus-visible {
-  outline: 2px solid var(--ring);
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
   outline-offset: 2px;
-  border-radius: var(--radius-control);
+  border-radius: 2px;
 }
 .rr-x-help > summary::-webkit-details-marker {
   display: none;
@@ -1644,9 +1644,8 @@
 .rr-x-help__body {
   position: absolute;
   z-index: 50;
-  /* Visually connect to the trigger: overlap by 4px so it reads as attached,
-     not a detached floating tooltip. */
-  top: calc(100% + 4px);
+  /* 2px gap — close enough to read as anchored to the trigger, not floating */
+  top: calc(100% + 2px);
   /* P1: anchor to the RIGHT edge of the operators link so the popup extends
      leftward (into the feed area), not rightward into the inspector column.
      right:0 means "flush with the right edge of the relative-positioned
@@ -1657,10 +1656,13 @@
   width: min(360px, calc(100vw - 32px));
   max-width: min(360px, calc(100vw - 32px));
   /* Ink Carbon card treatment: --card bg, hairline --border-strong, menu
-     shadow, comfortable padding, radius 0 (square paper). */
+     shadow, comfortable padding, radius 0 (square paper).
+     border-top uses --primary at low opacity so the card reads visually
+     anchored to its trigger (the primary-colored "operators" summary). */
   padding: 14px 16px;
   background: var(--card);
   border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
   border-radius: 0;
   box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
               0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
@@ -1721,24 +1723,53 @@
   color: var(--foreground);
 }
 
-/* ─── Compiled-call line ─── */
+/* ─── Compiled-call line — quiet disclosure, engineers one step away ─── */
 .rr-x-compiled {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  /* <details> element: sits below the feed controls as a calm affordance */
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
 }
 .rr-x-compiled__label {
+  /* <summary> cursor for the disclosure */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
   font-family: var(--font-mono);
   font-size: 9.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  opacity: 0.7;
+  outline: none;
+  user-select: none;
+}
+.rr-x-compiled__label::-webkit-details-marker {
+  display: none;
+}
+.rr-x-compiled__label::before {
+  content: "›";
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.rr-x-compiled[open] .rr-x-compiled__label::before {
+  transform: rotate(90deg);
+}
+.rr-x-compiled__label:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+  opacity: 1;
 }
 .rr-x-compiled .rr-copyid {
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: left;
   color: var(--foreground);
+  margin-top: 6px;
+  display: block;
 }
 
 /* ─── Count + lens-description line ─── */
@@ -1755,32 +1786,33 @@
   max-width: 70ch;
 }
 
-/* ─── Warnings, in the system's voice ─── */
+/* ─── Warnings — calm product notice, plain language leads ─── */
 .rr-x-warn {
-  border: 1px solid var(--border-strong);
+  /* Stripe-style inline notice: hairline border, card background, no state color */
+  border-left: 2px solid var(--border-strong);
   background: var(--card);
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 }
-/* The status code (e.g. "partial fan in") is a protocol-emitted label, not an
-   owner action and not an Endorse, so it reads as a quiet mono eyebrow — NOT a
-   state color. Ink Carbon: state colors (--warning/--success/--destructive)
-   live only inside .pdpp-endorse; free-floating status text stays neutral. */
+/* The human message is the headline — legible, plain language, sentence-case */
+.rr-x-warn__msg {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+/* The machine code is secondary — present for engineers/reviewers but not shouting.
+   Ink Carbon: state colors live only inside .pdpp-endorse; free-floating neutral. */
 .rr-x-warn__line {
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
   color: var(--muted-foreground);
-}
-.rr-x-warn__msg {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted-foreground);
-  overflow-wrap: anywhere;
+  opacity: 0.6;
 }
 
 /* ─── Day groups ─── */
@@ -2290,19 +2322,11 @@
   opacity: 0.7;
 }
 
-/* ─── P1: Compiled call line — demote on mobile ───────────────────
-   The GET /v1/records?… line is machine-parity reference, not the
-   primary reading surface. At ≤640px collapse it behind a <details>
-   so it doesn't dominate the phone layout. */
+/* ─── P1: Compiled call line — native <details> on all viewports ──────
+   The element is now a <details> disclosure everywhere; on mobile it
+   simply inherits the same collapsed-by-default behaviour with tighter
+   label text. No JS toggle needed. */
 @media (max-width: 640px) {
-  .rr-x-compiled {
-    /* Wrap into a collapsible — JS toggles .is-collapsed on user tap.
-       Without JS (SSR) it stays visible but smaller. */
-    font-size: 0.85em;
-    opacity: 0.75;
-    border-top: 1px solid var(--border);
-    padding-top: 8px;
-  }
   .rr-x-compiled__label {
     font-size: 8.5px;
   }
@@ -2343,28 +2367,31 @@
 /* ─── P1: Connect page — command copy card mobile/desktop treatment ──
    Desktop (>640px): compact single-line pill — items-center keeps the
    copy icon vertically centered on one line; no stacking.
-   Mobile (≤640px): code block and copy button stack vertically;
-   copy button gets a minimum 44px touch target; left border becomes top. */
+   Mobile (≤640px): code block and copy button are a tight attached block;
+   code wraps cleanly, copy icon is inline-centered (not a separate tall row). */
 @media (max-width: 640px) {
   .rr-copy-row__cmd {
-    flex-direction: column;
+    /* Keep as row on mobile: code fills left, copy icon stays right — compact block */
+    flex-direction: row;
     align-items: stretch;
   }
-  /* On mobile the code text wraps so it needs vertical padding to breathe */
+  /* Wrapping mono text: normal whitespace, tighter padding than desktop */
   .rr-copy-row__text {
     white-space: normal;
     overflow-x: hidden;
-    padding-top: 10px;
-    padding-bottom: 10px;
-    line-height: 1.5;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    line-height: 1.45;
+    word-break: break-all;
   }
-  /* Left divider → top divider when stacked */
+  /* Copy icon stays attached on right; shrink-0 keeps it from squishing */
   .rr-copy-row__btn {
-    border-left: none !important;
-    border-top: 1px solid var(--border) !important;
-    min-height: 44px;
-    justify-content: center;
-    width: 100%;
+    /* Keep left border (vertical divider) — button stays side-attached */
+    align-self: stretch;
+    align-items: center;
+    min-width: 44px;
+    /* 44px touch target via padding instead of fixed height so it scales with text */
+    padding: 0 10px;
   }
 }
 

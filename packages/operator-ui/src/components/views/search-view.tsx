@@ -50,14 +50,14 @@ export function SearchView({
         <label className="mb-1 block" htmlFor="jump-q">
           <span className="pdpp-eyebrow text-muted-foreground">Artifact id</span>
         </label>
-        {/* Input-group: shared border, no gap — input and Go read as one unit.
-            The input gets rounded-r-none so its right border merges with the
-            button's left edge; button gets rounded-l-none + negative margin to
-            collapse the double border into a single hairline. */}
+        {/* Input-group: single-unit control — input and Go share one border outline.
+            Input: right side square (rounded-r-none), no right border (border-r-0).
+            Button: left side square (rounded-l-none), inherits the shared border via
+            outline variant; -ml-px collapses any sub-pixel gap. Both h-8 baseline. */}
         <div className="flex min-w-0">
           <Input
             autoFocus
-            className="flex-1 rounded-r-none focus-visible:z-10"
+            className="flex-1 rounded-r-none border-r-0 focus-visible:z-10"
             defaultValue={query}
             id="jump-q"
             name="q"
@@ -65,10 +65,10 @@ export function SearchView({
             type="search"
           />
           <Button
-            className="-ml-px rounded-l-none border-l-0 focus-visible:z-10"
-            size="sm"
+            className="-ml-px h-8 rounded-l-none px-3 text-sm focus-visible:z-10"
+            size="default"
             type="submit"
-            variant="default"
+            variant="outline"
           >
             Go
           </Button>

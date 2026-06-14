@@ -1048,15 +1048,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
               </button>
             </div>
           )}
-
-          <div className="rr-x-compiled">
-            <span className="rr-x-compiled__label">
-              {clientSide
-                ? "the same call any client makes (+ client-side filters):"
-                : "the same call any client makes:"}
-            </span>
-            <CopyMono text={compiled} />
-          </div>
         </div>
 
         <p className="rr-x-pulse__note">
@@ -1067,10 +1058,20 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
 
         {dedupeWarnings(data.warnings).map((w) => (
           <div className="rr-x-warn" key={`${w.code}:${w.message}`}>
-            <span className="rr-x-warn__line">{w.code.replace(UNDERSCORE_RE, " ")}</span>
             <span className="rr-x-warn__msg">{w.message}</span>
+            <span className="rr-x-warn__line" title={w.code}>
+              {w.code.replace(UNDERSCORE_RE, " ")}
+            </span>
           </div>
         ))}
+
+        {/* Quiet disclosure — exact call reachable for engineers/reviewers, not dominant */}
+        <details className="rr-x-compiled">
+          <summary className="rr-x-compiled__label">
+            {clientSide ? "the same call any client makes (+ client-side filters)" : "the same call any client makes"}
+          </summary>
+          <CopyMono text={compiled} />
+        </details>
 
         <div className="rr-x-days">
           {dayGroups.length === 0 ? (
