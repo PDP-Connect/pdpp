@@ -117,7 +117,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
-      return "Upload an owner-exported file. Submit again with another export to add another import connection.";
+      return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
     case "manual_upload_pending":
       return "This source imports an owner-provided file. The connector declares the import shape, but the dashboard file-capture step is not packaged yet.";
     case "provider_auth_deployment_blocked":

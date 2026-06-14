@@ -36,6 +36,8 @@ const SOURCE_JOURNEY_COPY = /source journey/i;
 const SUPPORT_FACT_TEST_ID = /data-testid="source-support-fact"/;
 const RECOMMENDED_NEXT_COPY = /Recommended next/;
 const SUPPORT_DETAIL_DISCLOSURE = /<details[\s\S]*?Why this, and what to expect/;
+const EXISTING_SOURCE_REUSE = /data-testid="existing-source-reuse"/;
+const SAME_IDENTITY_COPY = /same account, profile, device, or\s+source identity/;
 const MANIFEST_GENERATED_COPY = /generated from the connector manifest/;
 const VALIDATES_BEFORE_COMMIT_COPY = /validates before committing/i;
 const COVERAGE_RECEIPT_COPY = /coverage receipt|coverage provenance/i;
@@ -88,6 +90,9 @@ test("source card keeps the support fact distinct from the recommended next acti
   assert.match(src, RECOMMENDED_NEXT_COPY);
   // Detail stays one low-noise disclosure away, not inline noise.
   assert.match(src, SUPPORT_DETAIL_DISCLOSURE);
+  // Existing manual/import sources are offered before creating another source.
+  assert.match(src, EXISTING_SOURCE_REUSE);
+  assert.match(src, SAME_IDENTITY_COPY);
 });
 
 // ── 2. Manual/upload page is a coverage-assistant start ─────────────────────

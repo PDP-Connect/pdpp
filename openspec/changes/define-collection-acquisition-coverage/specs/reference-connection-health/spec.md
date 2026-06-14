@@ -18,6 +18,15 @@ declares them blocking.
 - **AND** the projection SHALL NOT label the connection as failed solely because
   the source requires owner action for newer data.
 
+#### Scenario: Manual artifact source needs an owner reminder
+
+- **WHEN** an owner wants periodic prompting for a source that requires a new
+  owner artifact
+- **THEN** the reminder SHALL be represented as owner attention or notification
+  cadence for the source
+- **AND** it SHALL NOT be represented as an automatic connector run schedule
+  unless the run can collect new data without a new owner artifact.
+
 #### Scenario: Import succeeds with missing media
 
 - **WHEN** an acquisition batch accepts records but reports missing optional

@@ -38,6 +38,15 @@ connection when the owner is strengthening coverage for the same logical source.
 - **AND** it SHALL preserve a distinct acquisition-batch receipt for the new
   artifact.
 
+#### Scenario: Existing manual source is visible during add-source
+
+- **WHEN** an owner starts the add-source flow for a connector that already has
+  manual/upload connections
+- **THEN** the reference SHALL offer those existing connections as import targets
+  before asking the owner to create another source identity
+- **AND** it SHALL still provide an explicit path to create a distinct source
+  for a different account, profile, device, or source identity.
+
 ### Requirement: Same-stream writes from multiple acquisition paths SHALL be explicit and non-destructive
 
 When multiple acquisition paths write to the same stream for one connection, the reference SHALL preserve record identity, acquisition provenance, and coverage claim attribution.

@@ -10,6 +10,15 @@ import {
   sourceSetupStatus,
 } from "../lib/source-setup-presentation.ts";
 
+export interface ExistingSourceSetupLink {
+  connectionId: string;
+  displayName: string;
+  latestImportFile: string | null;
+  latestImportStatus: string | null;
+  status: string | null;
+  totalRecords: number;
+}
+
 function sortSourceCatalog(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return [...catalog].sort((a, b) => {
     const rank = sourceSetupRank(a) - sourceSetupRank(b);
@@ -94,10 +103,73 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
   );
 }
 
-function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
+function ExistingSourceReuse({
+  entry,
+  sources,
+}: {
+  entry: ConnectorCatalogEntry;
+  sources: readonly ExistingSourceSetupLink[];
+}) {
+  if (entry.disposition !== "manual_upload_connect" || sources.length === 0) {
+    return null;
+  }
+  return (
+    <div
+      className="mt-3 grid gap-2 rounded-md border border-border/80 bg-background/70 p-3"
+      data-testid="existing-source-reuse"
+    >
+      <p className="pdpp-eyebrow text-muted-foreground">Existing sources</p>
+      <p className="pdpp-caption text-muted-foreground">
+        Import another file into an existing source when the export belongs to the same account, profile, device, or
+        source identity.
+      </p>
+      <ul className="grid gap-2">
+        {sources.map((source) => (
+          <li
+            className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border/70 bg-muted/20 px-3 py-2"
+            key={source.connectionId}
+          >
+            <div className="min-w-0">
+              <p className="pdpp-caption font-medium text-foreground">{source.displayName}</p>
+              <p className="pdpp-caption text-muted-foreground">
+                {new Intl.NumberFormat("en-US").format(source.totalRecords)} records
+                {source.latestImportFile ? ` · latest: ${source.latestImportFile}` : ""}
+                {source.latestImportStatus ? ` · ${source.latestImportStatus}` : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+                href={`/dashboard/connect/status/${encodeURIComponent(source.connectionId)}`}
+              >
+                View source
+              </Link>
+              <Link
+                className={buttonVariants({ variant: "default", size: "sm" })}
+                href={`/dashboard/connect/manual-upload/${encodeURIComponent(entry.connectorKey)}?connection_id=${encodeURIComponent(source.connectionId)}`}
+              >
+                Import into this source
+              </Link>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SourceSetupCard({
+  entry,
+  existingSources,
+}: {
+  entry: ConnectorCatalogEntry;
+  existingSources: readonly ExistingSourceSetupLink[];
+}) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
   const guidance = sourceSetupGuidance(entry);
+  const actionLabel =
+    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action?.label;
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -121,6 +193,7 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
           </summary>
           <p className="pdpp-caption mt-1 text-muted-foreground">{guidance}</p>
         </details>
+        <ExistingSourceReuse entry={entry} sources={existingSources} />
         <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
       </div>
       <div className="flex flex-col items-end justify-start gap-1">
@@ -128,7 +201,7 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
           <>
             <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
             <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
-              {action.label}
+              {actionLabel}
             </Link>
           </>
         ) : (
@@ -144,10 +217,12 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
 export function SourceSetupCatalog({
   action,
   catalog,
+  existingSourcesByConnector,
   query,
 }: {
   action: string;
   catalog: readonly ConnectorCatalogEntry[];
+  existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
   query: string;
 }) {
   const filtered = filterSourceCatalog(catalog, query);
@@ -168,7 +243,11 @@ export function SourceSetupCatalog({
       {filtered.length > 0 ? (
         <ul className="grid gap-3">
           {filtered.map((entry) => (
-            <SourceSetupCard entry={entry} key={entry.connectorKey} />
+            <SourceSetupCard
+              entry={entry}
+              existingSources={existingSourcesByConnector?.[entry.connectorKey] ?? []}
+              key={entry.connectorKey}
+            />
           ))}
         </ul>
       ) : (

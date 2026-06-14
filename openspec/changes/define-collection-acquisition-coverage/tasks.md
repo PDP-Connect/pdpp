@@ -38,6 +38,7 @@
   - [x] 2.11c Same-stream historical-plus-current acquisition is covered by the owner-artifact plus provider-API fixture that preserves record-level acquisition provenance.
 - [x] 2.12 Support owner-artifact variant parity for WhatsApp chat exports: `.txt` without media and `.zip` with media both validate through the connector parser, with media presence recorded as coverage evidence rather than overclaimed attachment.
 - [x] 2.13 Allow repeat owner-artifact imports to target an existing manual/upload source while new account/profile/device/source identities create distinct owner-facing connections.
+- [x] 2.14 Surface existing manual/upload sources in Add Source so repeat imports can target the right source without retyping the source name.
 
 ## 3. Connector Pilots
 
@@ -52,6 +53,7 @@
 - [x] 4.2 Defer parser-upgrade reprocessing queues until at least two owner-artifact connectors prove the batch model.
 - [x] 4.3 Defer watched-folder automation until the manual/share/upload flow is owner-accepted.
 - [x] 4.4 Defer device-backup extraction implementation until platform-specific support can be proven end-to-end.
+- [x] 4.5 Defer manual-source reminder cadence to a separate owner-attention/notification tranche; do not model reminders as automatic connector run schedules.
 
 ## 5. Validation
 

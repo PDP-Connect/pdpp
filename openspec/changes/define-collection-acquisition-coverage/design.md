@@ -154,6 +154,9 @@ The critical edge states are part of the ideal UI, not polish:
 - repeated exports for the same logical source can be added to the existing
   connection, while a different account, profile, device, or source identity
   uses a distinct connection;
+- the Add Source flow offers existing manual/import sources as reuse targets so
+  the owner does not have to remember and retype a source name for another
+  export from the same identity;
 - stale manual export is shown as stale coverage, not a failed sync;
 - provider-supported export variants such as "with media" and "without media"
   are accepted when the parser can safely validate them, with media coverage
@@ -166,6 +169,13 @@ The critical edge states are part of the ideal UI, not polish:
 - overlapping historical import plus current sync can populate the same stream
   only with explicit provenance and idempotent keys;
 - revoked or paused connections remain visible with a re-connect or resume path.
+
+Manual/exported-data sources also need owner reminders, but those reminders are
+not connector run schedules. The SLVP shape is a coverage reminder such as
+"remind me monthly to export this chat again", backed by notification/attention
+state and scoped to the source. A scheduler row that repeatedly runs a
+manual-upload connector without a new artifact would overclaim automation and
+create noise.
 
 This interaction model is the part validated against prior art. Final visual
 craft, exact copy, animation, and responsive behavior remain implementation
