@@ -60,7 +60,7 @@ import {
   type RecordsExplorerData,
 } from "@pdpp/operator-ui/components/views/records-explorer-view";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildCompiledQuery,
   hasClientSideTokens,
@@ -963,8 +963,8 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           <div className="rr-x-searchrow">
             <IcInput
               className="rr-x-search"
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
+              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
                 if (e.key === "Enter") {
                   commitQuery();
                 }
