@@ -26,9 +26,11 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 // VIEW_FILE is now the live Ink Carbon sources view (replaced records-list-view.tsx).
 const VIEW_FILE = fileURLToPath(new URL("../../records/sources-view.tsx", import.meta.url));
-const DASHBOARD_PAGE_FILE = `${HERE}../../page.tsx`;
 const RECORDS_PAGE_FILE = `${HERE}../../records/page.tsx`;
 const RECORDS_ADD_PAGE_FILE = `${HERE}../../records/add/page.tsx`;
+const ROUTES_FILE = fileURLToPath(
+  new URL("../../../../../../../packages/operator-ui/src/components/views/routes.ts", import.meta.url)
+);
 const SHELL_FILE = `${HERE}../shell.tsx`;
 const CONNECT_PAGE_FILE = `${HERE}../../connect/page.tsx`;
 const SOURCE_SETUP_CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
@@ -39,7 +41,7 @@ const HERO_FILE = fileURLToPath(
   new URL("../../../../../../../packages/operator-ui/src/components/overview-hero.tsx", import.meta.url)
 );
 
-const OVERVIEW_ADD_SOURCE_ROUTE_RE = /addSourceHref=\{dashboardRoutes\.section\.addSource\}/;
+const ROUTES_ADD_SOURCE_RE = /addSource: `\$\{basePath\}\/records\/add`/;
 // sources-view.tsx add-source path (the empty-state and footer links both point here)
 const ADD_SOURCE_HREF_CONST_RE = /ADD_SOURCE_HREF = "\/dashboard\/records\/add"/;
 const ADD_SOURCE_LINK_RE = /href=\{ADD_SOURCE_HREF\}/;
@@ -50,6 +52,10 @@ const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
 // Sync, Reauthorize, and Revoke are three separate actions in the passport foot
 const SYNC_ACTION_RE = /Sync now/;
 const REAUTHORIZE_ACTION_RE = /Reauthorize/;
+const MANUAL_UPLOAD_ADD_EXPORT_RE = /Add another export/;
+const MANUAL_UPLOAD_REPROCESS_RE = /Reprocess all exports/;
+const MANUAL_UPLOAD_DETAILS_RE = /Source details/;
+const MANUAL_UPLOAD_CONNECTION_ID_PARAM_RE = /connection_id/;
 const REVOKE_ACTION_RE = /data-testid="sources-revoke-ceremony"/;
 // The view does not render the raw action_target spine field — it routes via detailHref
 const RAW_ACTION_TARGET_RE = /href=\{.*action_target/;
@@ -81,11 +87,11 @@ const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Sourc
 
 test("blank overview offers an Add-source CTA, not a grant CTA", async () => {
   const src = await readFile(HERO_FILE, "utf8");
-  const page = await readFile(DASHBOARD_PAGE_FILE, "utf8");
+  const routes = await readFile(ROUTES_FILE, "utf8");
   assert.ok(src.includes("addSourceHref"), "empty overview must accept an add-source target");
   assert.ok(src.includes("Add a data source"), "empty overview must name source setup");
   assert.ok(!src.includes("Start a grant to begin ingesting"), "a grant must not be the ingestion CTA");
-  assert.match(page, OVERVIEW_ADD_SOURCE_ROUTE_RE);
+  assert.match(routes, ROUTES_ADD_SOURCE_RE);
 });
 
 test("Sources view always links to the add-source route, including when empty", async () => {
@@ -133,6 +139,15 @@ test("the sources passport foot has three distinct actions: Sync, Reauthorize, a
   // The next_action CTA never links to the raw action_target spine field —
   // it always routes via the in-app detailHref.
   assert.doesNotMatch(src, RAW_ACTION_TARGET_RE);
+});
+
+test("manual/upload sources present import actions, not generic sync or reauthorize copy", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  const model = await readFile(`${HERE}../../records/sources-view-model.ts`, "utf8");
+  assert.match(view, MANUAL_UPLOAD_ADD_EXPORT_RE);
+  assert.match(view, MANUAL_UPLOAD_REPROCESS_RE);
+  assert.match(view, MANUAL_UPLOAD_DETAILS_RE);
+  assert.match(model, MANUAL_UPLOAD_CONNECTION_ID_PARAM_RE);
 });
 
 test("Sources page projects through toSourcesView, not the full catalog picker", async () => {

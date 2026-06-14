@@ -25,6 +25,7 @@ interface Props {
   force?: boolean;
   idleLabel?: string;
   initialRunning: boolean;
+  runningLabel?: string;
   title?: string;
   variant?: "default" | "destructive" | "outline";
 }
@@ -42,6 +43,7 @@ export function SyncNowButton({
   force = false,
   idleLabel = "Sync now",
   initialRunning,
+  runningLabel = "Syncing…",
   title,
   variant = "default",
 }: Props) {
@@ -101,14 +103,14 @@ export function SyncNowButton({
   return (
     <div className="flex flex-col items-end gap-1">
       <IcButton
-        aria-label={running ? `Sync in progress for ${displayName}` : `${idleLabel} for ${displayName}`}
+        aria-label={running ? `${runningLabel} for ${displayName}` : `${idleLabel} for ${displayName}`}
         disabled={running || isPending}
         onClick={handleClick}
         size="sm"
         title={title}
         variant={toIcVariant(variant)}
       >
-        {running ? "Syncing…" : idleLabel}
+        {running ? runningLabel : idleLabel}
       </IcButton>
       {toast ? (
         <span

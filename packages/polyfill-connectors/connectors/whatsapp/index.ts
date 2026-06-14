@@ -16,8 +16,8 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { type EmittedMessage, runConnector } from "../../src/connector-runtime.ts";
+import { basename, join } from "node:path";
+import { type EmittedMessage, type ProgressExtra, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import {
   makeReferenceBlobUploader,
@@ -31,6 +31,7 @@ import { validateRecord } from "./schemas.ts";
 
 type EmitRecord = (stream: string, record: Record<string, unknown>) => Promise<void>;
 type EmitEvent = (event: EmittedMessage) => Promise<void>;
+type EmitProgress = (message: string, extra?: ProgressExtra) => Promise<void>;
 type FingerprintCursor = ReturnType<typeof openFingerprintCursor>;
 interface RequestedStreams {
   has(stream: string): boolean;
@@ -43,6 +44,9 @@ interface WhatsAppCursors {
 const SUPPORTED_EXPORT_EXTENSIONS = [".txt", ".zip"] as const;
 const MAX_DISCOVERY_DEPTH = 3;
 const MAX_DISCOVERY_ENTRIES = 10_000;
+const MESSAGE_PROGRESS_INTERVAL = 500;
+const ATTACHMENT_PROGRESS_INTERVAL = 25;
+const STREAM_PRIORITY = ["chats", "messages", "attachments"] as const;
 
 function isSupportedExportFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
@@ -82,6 +86,10 @@ function contentTypeForFileName(fileName: string): string {
     return "application/pdf";
   }
   return "application/octet-stream";
+}
+
+function firstRequestedStream(requested: RequestedStreams): string {
+  return STREAM_PRIORITY.find((stream) => requested.has(stream)) ?? "chats";
 }
 
 function uploadBlob(args: {
@@ -158,8 +166,12 @@ async function emitChatRecord(
 async function emitMessageRecords(
   parsed: ParsedWhatsAppChat,
   messagesCursor: FingerprintCursor,
-  emitRecord: EmitRecord
-): Promise<void> {
+  emitRecord: EmitRecord,
+  progress: EmitProgress,
+  exportOrdinal: number,
+  exportTotal: number
+): Promise<{ emitted: number; processed: number }> {
+  let emitted = 0;
   for (let i = 0; i < parsed.messages.length; i++) {
     const m = parsed.messages[i];
     if (!m) {
@@ -175,28 +187,63 @@ async function emitMessageRecords(
     };
     if (messagesCursor.shouldEmit(record)) {
       await emitRecord("messages", record);
+      emitted += 1;
+    }
+    const processed = i + 1;
+    if (processed % MESSAGE_PROGRESS_INTERVAL === 0 || processed === parsed.messages.length) {
+      await progress(
+        `Processed ${processed} of ${parsed.messages.length} WhatsApp messages from export ${exportOrdinal} of ${exportTotal}.`,
+        {
+          count: processed,
+          stream: "messages",
+          total: parsed.messages.length,
+        }
+      );
     }
   }
+  return { emitted, processed: parsed.messages.length };
 }
 
 async function parseExportFile(
-  importDir: string,
   fileName: string,
-  emit: EmitEvent
+  emit: EmitEvent,
+  progress: EmitProgress,
+  exportOrdinal: number,
+  exportTotal: number,
+  skipStream: string
 ): Promise<ParsedWhatsAppChat | null> {
-  const content = await readFile(join(importDir, fileName)).catch((): Buffer => Buffer.alloc(0));
+  await progress(`Reading WhatsApp export ${exportOrdinal} of ${exportTotal}.`, {
+    count: exportOrdinal,
+    total: exportTotal,
+  });
+  const content = await readFile(fileName).catch((): Buffer => Buffer.alloc(0));
   if (content.length === 0) {
+    await emit({
+      message: `Skipped WhatsApp export ${exportOrdinal} of ${exportTotal}: the file is empty or unreadable.`,
+      reason: "empty_export",
+      stream: skipStream,
+      type: "SKIP_RESULT",
+    });
     return null;
   }
-  const artifact = extractWhatsAppChatArtifact(fileName, content);
+  const artifact = extractWhatsAppChatArtifact(basename(fileName), content);
   if (!artifact) {
     await emit({
-      type: "PROGRESS",
-      message: `Skipped ${fileName}: not a supported WhatsApp chat export`,
+      message: `Skipped WhatsApp export ${exportOrdinal} of ${exportTotal}: not a supported chat export.`,
+      reason: "unsupported_export",
+      stream: skipStream,
+      type: "SKIP_RESULT",
     });
     return null;
   }
   const parsed = parseWhatsAppChatFile(artifact.chatFileName, artifact.text);
+  await progress(
+    `Parsed WhatsApp export ${exportOrdinal} of ${exportTotal}: ${parsed.messages.length} messages and ${artifact.mediaFileCount} media file(s).`,
+    {
+      count: exportOrdinal,
+      total: exportTotal,
+    }
+  );
   return { ...parsed, attachments: artifact.mediaFiles };
 }
 
@@ -215,9 +262,17 @@ function findAttachmentMessageId(parsed: ParsedWhatsAppChat, filename: string): 
 async function emitAttachmentRecords(
   parsed: ParsedWhatsAppChat,
   attachmentsCursor: FingerprintCursor,
-  emitRecord: EmitRecord
-): Promise<void> {
-  for (const attachment of parsed.attachments) {
+  emitRecord: EmitRecord,
+  progress: EmitProgress,
+  exportOrdinal: number,
+  exportTotal: number
+): Promise<{ emitted: number; processed: number }> {
+  let emitted = 0;
+  for (let index = 0; index < parsed.attachments.length; index++) {
+    const attachment = parsed.attachments[index];
+    if (!attachment) {
+      continue;
+    }
     const id = attachmentRecordId(parsed.chatId, attachment.filename, attachment.bytes);
     const contentType = contentTypeForFileName(attachment.filename);
     const contentSha256 = createHash("sha256").update(attachment.bytes).digest("hex");
@@ -253,8 +308,21 @@ async function emitAttachmentRecords(
     };
     if (attachmentsCursor.shouldEmit(record)) {
       await emitRecord("attachments", record);
+      emitted += 1;
+    }
+    const processed = index + 1;
+    if (processed % ATTACHMENT_PROGRESS_INTERVAL === 0 || processed === parsed.attachments.length) {
+      await progress(
+        `Processed ${processed} of ${parsed.attachments.length} WhatsApp media file(s) from export ${exportOrdinal} of ${exportTotal}.`,
+        {
+          count: processed,
+          stream: "attachments",
+          total: parsed.attachments.length,
+        }
+      );
     }
   }
+  return { emitted, processed: parsed.attachments.length };
 }
 
 function openWhatsAppCursors(state: Record<string, unknown>): WhatsAppCursors {
@@ -273,38 +341,66 @@ async function discoverImportFilesOrThrow(importDir: string): Promise<string[]> 
   }
 }
 
-async function emitNoExports(importDir: string, emit: EmitEvent): Promise<void> {
+async function emitNoExports(emit: EmitEvent, skipStream: string): Promise<void> {
   await emit({
-    message: `No .txt or .zip exports in ${importDir}. Export chats from WhatsApp and drop files here.`,
+    message: "No WhatsApp .txt or .zip exports are available for this source. Add an export and run again.",
     reason: "no_exports_found",
-    stream: "chats",
+    stream: skipStream,
     type: "SKIP_RESULT",
   });
 }
 
 async function emitParsedExport(
-  fileName: string,
   parsed: ParsedWhatsAppChat,
   requested: RequestedStreams,
   cursors: WhatsAppCursors,
   emit: EmitEvent,
-  emitRecord: EmitRecord
-): Promise<void> {
+  emitRecord: EmitRecord,
+  progress: EmitProgress,
+  exportOrdinal: number,
+  exportTotal: number
+): Promise<{ attachments: number; messages: number; records: number }> {
   const first = parsed.messages[0]?.sent_at || null;
   const last = parsed.messages.at(-1)?.sent_at || null;
+  let records = 0;
   if (requested.has("chats")) {
     await emitChatRecord(parsed, first, last, cursors.chats, emitRecord);
+    records += 1;
+    await progress(`Imported chat metadata for WhatsApp export ${exportOrdinal} of ${exportTotal}.`, {
+      count: exportOrdinal,
+      stream: "chats",
+      total: exportTotal,
+    });
   }
   if (requested.has("messages")) {
-    await emitMessageRecords(parsed, cursors.messages, emitRecord);
+    const summary = await emitMessageRecords(
+      parsed,
+      cursors.messages,
+      emitRecord,
+      progress,
+      exportOrdinal,
+      exportTotal
+    );
+    records += summary.emitted;
   }
   if (requested.has("attachments")) {
-    await emitAttachmentRecords(parsed, cursors.attachments, emitRecord);
+    const summary = await emitAttachmentRecords(
+      parsed,
+      cursors.attachments,
+      emitRecord,
+      progress,
+      exportOrdinal,
+      exportTotal
+    );
+    records += summary.emitted;
   }
   await emit({
-    message: `Imported ${fileName}: ${parsed.messages.length} messages`,
+    message: `Imported WhatsApp export ${exportOrdinal} of ${exportTotal}: ${parsed.messages.length} messages and ${parsed.attachments.length} media file(s).`,
+    count: exportOrdinal,
+    total: exportTotal,
     type: "PROGRESS",
   });
+  return { attachments: parsed.attachments.length, messages: parsed.messages.length, records };
 }
 
 function pruneRequestedCursors(requested: RequestedStreams, cursors: WhatsAppCursors): void {
@@ -338,7 +434,7 @@ async function emitRequestedState(
 runConnector({
   name: "whatsapp",
   validateRecord,
-  async collect({ requested, state, emit, emitRecord }) {
+  async collect({ requested, state, emit, emitRecord, progress }) {
     const importDir = process.env.WHATSAPP_EXPORT_DIR || join(homedir(), ".pdpp/imports/whatsapp");
 
     // Per-record fingerprint cursors — one per stream — seeded from the prior
@@ -349,19 +445,46 @@ runConnector({
     // not changed and carries unchanged fingerprints forward into the next
     // STATE write so they are not re-emitted on the following run either.
     const cursors = openWhatsAppCursors(state);
+    const skipStream = firstRequestedStream(requested);
 
     const files = await discoverImportFilesOrThrow(importDir);
+    await progress(`Found ${files.length} WhatsApp export file(s) to inspect.`, {
+      count: files.length,
+      total: files.length,
+    });
     if (!files.length) {
-      await emitNoExports(importDir, emit);
+      await emitNoExports(emit, skipStream);
       return;
     }
 
-    for (const f of files) {
-      const parsed = await parseExportFile("", f, emit);
+    let importedExports = 0;
+    let totalAttachments = 0;
+    let totalMessages = 0;
+    let totalRecords = 0;
+    for (let index = 0; index < files.length; index++) {
+      const f = files[index];
+      if (!f) {
+        continue;
+      }
+      const exportOrdinal = index + 1;
+      const parsed = await parseExportFile(f, emit, progress, exportOrdinal, files.length, skipStream);
       if (!parsed) {
         continue;
       }
-      await emitParsedExport(f, parsed, requested, cursors, emit, emitRecord);
+      const summary = await emitParsedExport(
+        parsed,
+        requested,
+        cursors,
+        emit,
+        emitRecord,
+        progress,
+        exportOrdinal,
+        files.length
+      );
+      importedExports += 1;
+      totalAttachments += summary.attachments;
+      totalMessages += summary.messages;
+      totalRecords += summary.records;
     }
 
     // Drop fingerprints for chats/messages that disappeared from the export
@@ -370,5 +493,12 @@ runConnector({
 
     // Emit STATE checkpoints so fingerprint maps survive into the next run.
     await emitRequestedState(requested, cursors, emit);
+    await progress(
+      `Finished WhatsApp import: ${importedExports} export(s), ${totalMessages} messages, ${totalAttachments} media file(s).`,
+      {
+        count: totalRecords,
+        total: totalRecords,
+      }
+    );
   },
 });

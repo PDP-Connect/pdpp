@@ -69,6 +69,12 @@ function records(messages: readonly EmittedMessage[], stream: string): Record<st
     .map((message) => message.data);
 }
 
+function progressMessages(messages: readonly EmittedMessage[]): Extract<EmittedMessage, { type: "PROGRESS" }>[] {
+  return messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "PROGRESS" }> => message.type === "PROGRESS"
+  );
+}
+
 async function writeMediaZip(importRoot: string): Promise<void> {
   const stagedDir = join(importRoot, "artifact_123");
   await mkdir(stagedDir, { recursive: true });
@@ -163,6 +169,71 @@ test("WhatsApp connector imports zip media as deferred attachment records when b
       assert.equal(done.status, "succeeded");
       assert.equal(done.records_emitted, 4);
     }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("WhatsApp connector emits privacy-safe structured progress for manual imports", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-progress-"));
+  try {
+    await writeMediaZip(importRoot);
+    const { messages } = await runWhatsAppImport(importRoot);
+    const progress = progressMessages(messages);
+
+    assert.ok(progress.length >= 5);
+    assert.ok(progress.some((message) => message.message === "Found 1 WhatsApp export file(s) to inspect."));
+    assert.ok(
+      progress.some(
+        (message) =>
+          message.stream === "messages" &&
+          message.count === 2 &&
+          message.total === 2 &&
+          message.message.includes("Processed 2 of 2 WhatsApp messages")
+      )
+    );
+    assert.ok(
+      progress.some(
+        (message) =>
+          message.stream === "attachments" &&
+          message.count === 1 &&
+          message.total === 1 &&
+          message.message.includes("Processed 1 of 1 WhatsApp media file")
+      )
+    );
+
+    const progressText = progress.map((message) => message.message).join("\n");
+    assert.doesNotMatch(progressText, /Alice export|WhatsApp Chat - Alice|IMG-20240605-WA0001\.jpg/);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("WhatsApp connector reports unsupported scoped imports on a declared stream", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-skip-"));
+  try {
+    await writeFile(join(importRoot, "not-a-chat.txt"), "not a WhatsApp export");
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: WHATSAPP_ENTRYPOINT,
+      env: {
+        PDPP_OWNER_TOKEN: "",
+        PDPP_RS_URL: "",
+        RS_URL: "",
+        WHATSAPP_EXPORT_DIR: importRoot,
+      },
+      start: {
+        scope: { streams: [{ name: "messages" }] },
+        type: "START",
+      },
+    });
+    const skips = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => message.type === "SKIP_RESULT"
+    );
+    assert.equal(skips.length, 1);
+    assert.equal(skips[0]?.stream, "messages");
+    assert.equal(skips[0]?.reason, "unsupported_export");
+    assert.doesNotMatch(skips[0]?.message ?? "", /not-a-chat/);
   } finally {
     await rm(importRoot, { force: true, recursive: true });
   }

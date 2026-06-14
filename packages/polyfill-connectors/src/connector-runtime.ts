@@ -56,6 +56,7 @@ import type {
   EmittedMessage,
   InteractionRequest,
   InteractionResponse,
+  ProgressExtra,
   RecordData,
   StartMessage,
   StreamScope,
@@ -92,6 +93,7 @@ export type {
   InteractionKind,
   InteractionRequest,
   InteractionResponse,
+  ProgressExtra,
   ProviderBudgetProgress,
   RecordData,
   StartMessage,
@@ -116,7 +118,7 @@ interface BaseCollectContext {
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   /**
    * SLVP-ideal §4.3: when true, the connector MUST run its gap-recovery pass
    * then return before any forward walk / list-phase fetch. Threaded from the
@@ -649,7 +651,7 @@ export function runConnector(config: RunConnectorConfig): void {
     });
   };
 
-  const progress = (message: string, extra: { stream?: string } = {}): Promise<void> =>
+  const progress = (message: string, extra: ProgressExtra = {}): Promise<void> =>
     emit({ type: "PROGRESS", message, ...extra });
   const assist = async (req: AssistanceRequest): Promise<string> => {
     const assistance_request_id = req.assistance_request_id ?? nextAssistanceId();

@@ -6,6 +6,10 @@ import {
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
 } from "@pdpp/operator-ui/lib/connector-display";
+import {
+  canonicalConnectorKey,
+  manualUploadSetupFromManifest,
+} from "pdpp-reference-implementation/connection-setup-plan";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
@@ -64,6 +68,20 @@ function addSourceHrefForConnector(connectorId: string): string {
   return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
 }
 
+function manualUploadHrefForConnection(
+  connectorId: string,
+  connectionId: string,
+  manifest: ConnectorManifest
+): string | null {
+  const setup = manualUploadSetupFromManifest(manifest);
+  if (!setup?.importDirEnvVar) {
+    return null;
+  }
+  const connectorKey = canonicalConnectorKey(connectorId);
+  const params = new URLSearchParams({ connection_id: connectionId });
+  return `/dashboard/connect/manual-upload/${encodeURIComponent(connectorKey)}?${params.toString()}`;
+}
+
 interface ConnectorPageModel {
   /**
    * Per-stream collection facts derived from the connection summary's
@@ -87,6 +105,7 @@ interface ConnectorPageModel {
   displayName: string;
   headerCount: string;
   manifest: ConnectorManifest;
+  manualUploadHref: string | null;
   overview: ConnectorOverview;
   recentRuns: RunSummary[];
   schedule: RefSchedule | null;
@@ -249,6 +268,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     displayName,
     headerCount,
     manifest,
+    manualUploadHref: manualUploadHrefForConnection(connectorId, connectionId, manifest),
     overview,
     recentRuns,
     streams,
@@ -311,6 +331,7 @@ function ConnectorPageView({
     displayName,
     headerCount,
     manifest,
+    manualUploadHref,
     overview,
     recentRuns,
     schedule,
@@ -349,6 +370,7 @@ function ConnectorPageView({
             connectionLabelSeed={connectionLabelSeed}
             connectorId={connectorId}
             displayName={displayName}
+            manualUploadHref={manualUploadHref}
             overview={overview}
             primaryAction={primaryAction}
             renameSelector={renameSelector}
@@ -452,6 +474,7 @@ function ConnectorHeaderActions({
   connectionLabelSeed,
   connectorId,
   displayName,
+  manualUploadHref,
   overview,
   primaryAction,
   renameSelector,
@@ -463,6 +486,7 @@ function ConnectorHeaderActions({
   connectionLabelSeed: string;
   connectorId: string;
   displayName: string;
+  manualUploadHref: string | null;
   overview: ConnectorOverview;
   primaryAction: PrimaryRowAction;
   renameSelector: string;
@@ -490,6 +514,7 @@ function ConnectorHeaderActions({
         connectionId={connectionId}
         connectorId={connectorId}
         displayName={displayName}
+        manualUploadHref={manualUploadHref}
         primaryAction={primaryAction}
         revoked={revoked}
         running={running}
@@ -508,6 +533,7 @@ function ConnectorPrimaryHeaderAction({
   connectionId,
   connectorId,
   displayName,
+  manualUploadHref,
   primaryAction,
   revoked,
   running,
@@ -516,6 +542,7 @@ function ConnectorPrimaryHeaderAction({
   connectionId: string | null;
   connectorId: string;
   displayName: string;
+  manualUploadHref: string | null;
   primaryAction: PrimaryRowAction;
   revoked: boolean;
   running: boolean;
@@ -533,6 +560,29 @@ function ConnectorPrimaryHeaderAction({
     );
   }
   if (primaryAction.kind === "sync") {
+    if (manualUploadHref) {
+      return (
+        <>
+          <Link
+            className={buttonVariants({ variant: "default", size: "sm" })}
+            href={manualUploadHref}
+            title="Upload another exported file into this same source. Use Add source only for a different account or identity."
+          >
+            Add another export
+          </Link>
+          <SyncNowButton
+            connectionId={connectionId}
+            connectorId={connectorId}
+            displayName={displayName}
+            idleLabel="Reprocess all exports"
+            initialRunning={running}
+            runningLabel="Import running"
+            title="Reprocesses files already uploaded for this source. It does not add a new export."
+            variant="outline"
+          />
+        </>
+      );
+    }
     return (
       <SyncNowButton
         connectionId={connectionId}

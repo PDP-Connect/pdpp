@@ -20,6 +20,7 @@ import {
   deriveSourceStatus,
   exploreHrefFor,
   formatSchedule,
+  manualUploadHrefForSource,
   toSourceInstanceView,
 } from "./sources-view-model.ts";
 
@@ -66,6 +67,20 @@ function summary(partial: Partial<RefConnectorSummary> = {}): RefConnectorSummar
     stream_count: 2,
     total_records: 100,
     ...partial,
+  };
+}
+
+function manualUploadManifest(connectorId = "whatsapp") {
+  return {
+    connector_id: connectorId,
+    connector_key: connectorId,
+    setup: {
+      modality: "manual_or_upload",
+      manual_or_upload: {
+        import_dir_env_var: "WHATSAPP_EXPORT_DIR",
+        accepted_file_extensions: [".zip"],
+      },
+    },
   };
 }
 
@@ -156,6 +171,30 @@ test("toSourceInstanceView surfaces a revoked instance with a struck status", ()
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
   const view = toSourceInstanceView(summary({ connection_id: "conn x/y" }));
   assert.equal(view.detailHref, "/dashboard/records/conn%20x%2Fy");
+});
+
+test("manual/upload sources link to importing another file into the same source", () => {
+  const view = toSourceInstanceView(summary({ connector_id: "whatsapp", connection_id: "cin_whatsapp_1" }), {
+    manifests: [manualUploadManifest()],
+  });
+  assert.equal(view.manualUploadHref, "/dashboard/connect/manual-upload/whatsapp?connection_id=cin_whatsapp_1");
+  assert.deepEqual(
+    view.passportFields.find((field) => field.k === "auth"),
+    { k: "auth", value: "owner file import" }
+  );
+});
+
+test("manual/upload source href is absent when the connector has no packaged import binding", () => {
+  const href = manualUploadHrefForSource(summary({ connector_id: "whatsapp", connection_id: "cin_whatsapp_1" }), [
+    {
+      connector_id: "whatsapp",
+      setup: {
+        modality: "manual_or_upload",
+        manual_or_upload: { accepted_file_extensions: [".zip"] },
+      },
+    },
+  ]);
+  assert.equal(href, null);
 });
 
 function churnRow(partial: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
