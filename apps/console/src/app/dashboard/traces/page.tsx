@@ -191,6 +191,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
 
       {/* ── Split layout: list + optional peek panel ─────────────────── */}
       <div
+        className="rr-traces-split"
         style={{
           display: "grid",
           gridTemplateColumns: isPeeking ? "minmax(0, 1.4fr) minmax(0, 1fr)" : "1fr",
@@ -203,6 +204,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           {result.data.length === 0 ? (
             <TracesEmptyState hasFilters={hasFilters} />
           ) : (
+            <div className="rr-traces-table-scroll">
             <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
               <TableHeaderRow>
                 <TableHeader>Status</TableHeader>
@@ -271,6 +273,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                 );
               })}
             </Table>
+            </div>
           )}
 
           {/* ── Pagination ────────────────────────────────────────── */}

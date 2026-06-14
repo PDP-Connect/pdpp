@@ -32,6 +32,7 @@
  */
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import "./components.css";
@@ -118,7 +119,7 @@ function NavList({ pathname, onNavigate }: { onNavigate?: () => void; pathname: 
           {group.items.map((item) => {
             const active = isNavItemActive(item.href, pathname);
             return (
-              <a
+              <Link
                 aria-current={active ? "page" : undefined}
                 className={["rr-nav-item", active ? "is-active" : undefined].filter(Boolean).join(" ")}
                 href={item.href}
@@ -126,7 +127,7 @@ function NavList({ pathname, onNavigate }: { onNavigate?: () => void; pathname: 
                 onClick={onNavigate}
               >
                 <span>{item.label}</span>
-              </a>
+              </Link>
             );
           })}
         </div>
