@@ -18,8 +18,7 @@
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
-    "@pdpp/brand": "workspace:*",
-    "@pdpp/operator-ui": "workspace:*"
+    "@pdpp/brand": "workspace:*"
   },
   "peerDependencies": {
     "next": "^16.2.2",

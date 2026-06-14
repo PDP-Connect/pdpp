@@ -8,7 +8,8 @@
     "./base.css": "./base.css",
     "./docs.css": "./docs.css",
     "./ink-carbon.css": "./ink-carbon.css",
-    "./chrome": "./chrome.ts"
+    "./chrome": "./chrome.ts",
+    "./record-format": "./record-format.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
