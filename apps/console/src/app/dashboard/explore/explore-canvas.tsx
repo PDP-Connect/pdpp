@@ -59,6 +59,7 @@ import {
   explorerPeekParam,
   type RecordsExplorerData,
 } from "@pdpp/operator-ui/components/views/records-explorer-view";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ChangeEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -73,6 +74,8 @@ import type { PeekRelationships } from "./explore-peek-relationships.ts";
 const FEED_LIMIT = 50;
 const IMAGE_MIME_RE = /^image\//i;
 const UNDERSCORE_RE = /_/g;
+/** Strips the trailing `/explore` segment to derive the records section base. */
+const EXPLORE_SUFFIX_RE = /\/explore$/;
 
 /**
  * De-duplicate warnings by (code, message) so the warning list never renders
@@ -152,6 +155,26 @@ function buildHref(base: string, opts: HrefOpts): string {
   }
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
+}
+
+/**
+ * Build the full-page record detail route href from a feed entry.
+ * Route: /dashboard/records/[connector]/[stream]/[recordKey]
+ * Uses the connectionId as the connector segment when present (for identity-
+ * resolved rows); falls back to connectorId for search-hit rows that predate
+ * the connection-id binding. Mirrors `dashboardRoutes.record()`.
+ */
+function buildRecordDetailHref(
+  recordsBasePath: string,
+  entry: { connectorId: string; connectionId: string | null; stream: string; recordId: string }
+): string {
+  const routeId = entry.connectionId && entry.connectionId.length > 0 ? entry.connectionId : entry.connectorId;
+  return [
+    recordsBasePath,
+    encodeURIComponent(routeId),
+    encodeURIComponent(entry.stream),
+    encodeURIComponent(entry.recordId),
+  ].join("/");
 }
 
 // ─── Client-side feed predicate ───────────────────────────────────
@@ -468,11 +491,15 @@ function StreamFacets({
 
 function FeedRow({
   entry,
+  recordsBasePath,
   selected,
   onSelect,
   onArrow,
 }: {
   entry: ExplorerFeedEntry;
+  /** Base path for the records section (e.g. "/dashboard/records"). Used to
+   *  build the full-page record detail href for mobile push navigation. */
+  recordsBasePath: string;
   selected: boolean;
   onSelect: () => void;
   /** Arrow-key feed nav handled on the interactive row button. */
@@ -486,22 +513,11 @@ function FeedRow({
   const derived = title.kicker !== null;
   const role = entry.preview?.author ?? (entry.kind === "message" ? "message" : undefined);
   const snippet = entry.preview?.body ?? entry.preview?.amount ?? entry.summary;
-  return (
-    <button
-      className={["rr-x-row", selected ? "is-selected" : ""].filter(Boolean).join(" ")}
-      data-feed-row
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          onArrow(1);
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          onArrow(-1);
-        }
-      }}
-      type="button"
-    >
+  const detailHref = buildRecordDetailHref(recordsBasePath, entry);
+  const rowCls = ["rr-x-row", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  // Inner content is shared by both affordances so it's defined once.
+  const inner = (
+    <>
       <span className="rr-x-row__attr">
         <span className="rr-x-row__stream">{entry.stream}</span>
         <span className="rr-x-row__con">{entry.connectionDisplayName ?? entry.connectorId}</span>
@@ -517,7 +533,46 @@ function FeedRow({
           {snippet}
         </span>
       )}
-    </button>
+    </>
+  );
+  return (
+    <>
+      {/*
+       * Mobile (≤860px): tapping a feed row pushes to the full-page record
+       * detail route. No in-flow inspector stacks below the feed on touch widths.
+       * Hidden on desktop via CSS.
+       */}
+      <Link
+        aria-current={selected ? "page" : undefined}
+        className={`${rowCls} rr-x-row--mobile`}
+        data-feed-row
+        href={detailHref}
+      >
+        {inner}
+      </Link>
+      {/*
+       * Desktop (>860px): in-place selection opens the side inspector.
+       * Hidden on mobile via CSS.
+       */}
+      <button
+        aria-pressed={selected}
+        className={`${rowCls} rr-x-row--desktop`}
+        data-feed-row
+        onClick={onSelect}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            onArrow(1);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            onArrow(-1);
+          }
+        }}
+        type="button"
+      >
+        {inner}
+      </button>
+    </>
   );
 }
 
@@ -687,6 +742,10 @@ function Inspector({
 
 export function ExploreCanvas({ data, explorePath, order = "newest", peekRelationships = null }: ExploreCanvasProps) {
   const router = useRouter();
+
+  // Records section base path for mobile push-navigation row Links.
+  // e.g. "/dashboard/explore" → "/dashboard/records".
+  const recordsBasePath = `${explorePath.replace(EXPLORE_SUFFIX_RE, "")}/records`;
 
   // The facet rail is a <details> that renders CLOSED (feed-first on phones).
   // On wide viewports we open it so the disclosure state matches the always-
@@ -1100,6 +1159,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
                       key={param}
                       onArrow={(direction) => moveSelection(param, direction)}
                       onSelect={() => selectRecord(entry)}
+                      recordsBasePath={recordsBasePath}
                       selected={param === selectedPeekParam}
                     />
                   );

@@ -13,10 +13,27 @@
   align-items: start;
 }
 
+/* Mobile (≤800px): single column; detail column hidden — tap navigates to
+   the full connection detail page via the mobile <Link> affordance. */
 @media (max-width: 800px) {
   .rr-s {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
+  }
+  /* Hide the in-place detail panel — mobile uses full-page push navigation. */
+  .rr-s-detail {
+    display: none;
+  }
+  /* Show the Link affordance, hide the button affordance on mobile. */
+  .rr-s-item--desktop {
+    display: none;
+  }
+}
+
+/* Desktop (>800px): show button affordance, hide the mobile Link affordance. */
+@media (min-width: 801px) {
+  .rr-s-item--mobile {
+    display: none;
   }
 }
 
@@ -26,6 +43,13 @@
   flex-direction: column;
   border-top: 1px solid var(--border-strong);
   min-width: 0;
+}
+
+/* The mobile affordance is a <Link> (anchor) that must render identically to
+   the desktop <button>. Both share `.rr-s-item`; this resets anchor chrome. */
+a.rr-s-item {
+  text-decoration: none;
+  color: inherit;
 }
 
 .rr-s-item {

@@ -1861,6 +1861,10 @@
   transition: background var(--motion-state);
   min-width: 0;
 }
+/* Reset anchor chrome when .rr-x-row is used on an <a> (mobile push nav). */
+a.rr-x-row {
+  text-decoration: none;
+}
 .rr-x-row:hover {
   background: var(--muted);
 }
@@ -2168,11 +2172,11 @@
   }
 }
 /* ── ≤860px — the phone grammar ──
-   The feed is the primary reading surface. The facet rail folds into a
-   collapsible "Filters" disclosure pinned to the top, the feed goes full
-   width, and the inspector flows BELOW the feed (shown when a record is
-   tapped). Source order is rail → feed → inspector, so the collapsed
-   disclosure sits at the top, the feed reads next, and the inspector is last. */
+   Mobile push navigation: tapping a feed row navigates to the full-page
+   record detail route (rr-x-row--mobile Link). The inspector is hidden
+   entirely — it is never populated from mobile taps, so showing it would
+   only add dead scroll depth. Desktop button affordance also hidden.
+   The facet rail folds into a collapsible "Filters" disclosure. */
 @media (max-width: 860px) {
   /* Reveal the disclosure toggle; collapse the rail body until tapped. */
   .rr-x-rail {
@@ -2228,19 +2232,23 @@
   .rr-x-jump {
     margin-left: 0;
   }
-  /* D-7: convert the populated record inspector to a fixed bottom-sheet at phone
-     widths so it doesn't stack 4000px below the feed. The empty inspector stays
-     in document flow (source-order: rail → feed → inspector) so there's an
-     intentional placeholder at the top of the column before any record is picked.
-     Only the filled inspector becomes an overlay. */
-  .rr-x .rr-inspector:not(.rr-inspector--empty) {
-    position: fixed;
-    inset: auto 0 0 0;
-    height: 65dvh;
-    overflow-y: auto;
-    z-index: 30;
-    box-shadow: 0 -4px 24px -4px color-mix(in oklab, var(--foreground) 20%, transparent);
-    border-top: 2px solid var(--border-strong);
+  /* Mobile push nav: show the Link affordance, hide the button affordance. */
+  .rr-x-row--desktop {
+    display: none;
+  }
+  /* Hide the record inspector entirely on mobile — taps push to the full-page
+     record detail route, so the inspector is never populated here. This
+     eliminates dead scroll depth from both the empty placeholder and any
+     previously-selected filled inspector. */
+  .rr-x .rr-inspector {
+    display: none;
+  }
+}
+
+/* Desktop (>860px): show the button affordance, hide the Link affordance. */
+@media (min-width: 861px) {
+  .rr-x-row--mobile {
+    display: none;
   }
 }
 

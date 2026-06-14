@@ -153,8 +153,9 @@ function InstanceListItem({
   const cls = ["rr-s-item", selected ? "is-on" : null, instance.revoked ? "is-revoked" : null]
     .filter(Boolean)
     .join(" ");
-  return (
-    <button aria-pressed={selected} className={cls} onClick={onSelect} type="button">
+  // Inner content shared by both the mobile <Link> and the desktop <button>.
+  const inner = (
+    <>
       <span className="rr-s-item__name">{instance.displayName}</span>
       {/* The connector kind is quiet secondary metadata folded into the account
           line (row 2) so it never competes with the bold name on row 1 nor
@@ -172,7 +173,31 @@ function InstanceListItem({
         </span>
         <span className="sr-only">{instance.status.label}</span>
       </span>
-    </button>
+    </>
+  );
+  return (
+    <>
+      {/*
+       * Mobile (≤800px): a full-page push to the connection detail page.
+       * The detail column is hidden on mobile via CSS so tapping here is the
+       * only path to the detail — no stacked-below dead content.
+       */}
+      <Link
+        aria-current={selected ? "page" : undefined}
+        className={`${cls} rr-s-item--mobile`}
+        href={instance.detailHref}
+      >
+        {inner}
+      </Link>
+      {/*
+       * Desktop (>800px): in-place selection drives the right-column passport.
+       * Hidden on mobile via CSS so only one affordance is interactive at
+       * any given viewport width.
+       */}
+      <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
+        {inner}
+      </button>
+    </>
   );
 }
 
