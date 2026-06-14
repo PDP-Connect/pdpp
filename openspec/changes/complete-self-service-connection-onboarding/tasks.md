@@ -223,6 +223,7 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.7 Promote normal manual/upload transfer to streamed staged artifacts with durable status polling; invalid and duplicate uploads must not create phantom source connections, and same-named artifacts must not overwrite each other before import.
 - [x] 11.8 Import media-bearing WhatsApp zip exports as attachment records with blob references when runtime blob upload is available, or explicit deferred/failed hydration state otherwise.
 - [x] 11.9 Align WhatsApp, Console proxy, and reference route upload limits so hundreds-of-megabytes media zip exports use the normal staged browser path instead of a stale small-file fallback.
+- [x] 11.10 Admit explicitly addressed draft connections on owner-authenticated state read/write routes so manual/import first-sync checkpointing cannot fail after records were accepted but before draft activation is observed.
 
 Progress note (11.7): the normal Console import path now posts each selected
 file to a reference staged-artifact route using
@@ -255,3 +256,12 @@ and the reference staged-artifact route now align at a 1 GiB explicit
 deployment envelope. A 301 MB media zip therefore follows the normal browser
 upload/import path; import-folder handoff remains reserved for artifacts above
 that envelope.
+
+Progress note (11.10): Live WhatsApp import `run_1781411486188` accepted blobs
+and records, then failed at the final `/v1/state/:connectorId` checkpoint
+because the explicit manual-upload connection was still `draft`. The shared
+owner-authenticated state routes now mirror the ingest route's explicit
+draft-admission rule for non-grant state reads/writes. Drafts remain hidden from
+normal read/grant surfaces and still activate only after accepted records; the
+new regression proves state can be written and read for an explicit draft
+without activating it.

@@ -102,6 +102,24 @@ async function seedTwoSpotifyInstances(connectorId) {
   });
 }
 
+async function seedDraftSpotifyInstance(connectorId) {
+  const store = createSqliteConnectorInstanceStore();
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+  await store.upsert({
+    connectorInstanceId: 'cin_spotify_draft',
+    ownerSubjectId: 'owner_local',
+    connectorId: canonicalId,
+    displayName: 'Spotify - draft',
+    status: 'draft',
+    sourceKind: 'manual',
+    sourceBindingKey: 'draft_upload',
+    sourceBinding: { kind: 'manual_upload_draft' },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  return store;
+}
+
 test('owner-auth state route rejects ambiguous connector-only admission', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   try {
@@ -118,6 +136,40 @@ test('owner-auth state route rejects ambiguous connector-only admission', async 
 
     assert.equal(resp.status, 400);
     assert.equal(resp.body.error.code, 'ambiguous_connector_instance');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('owner-auth state route admits explicit draft instance for first-run checkpointing', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    const store = await seedDraftSpotifyInstance(connectorId);
+    const ownerToken = await issueOwnerToken(asUrl);
+    const draftUrl =
+      `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}?connector_instance_id=cin_spotify_draft`;
+
+    const put = await fetchJson(draftUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ state: { top_artists: { cursor: 'draft-checkpoint' } } }),
+    });
+    assert.equal(put.status, 200);
+    assert.deepEqual(put.body.state.top_artists, { cursor: 'draft-checkpoint' });
+
+    const get = await fetchJson(draftUrl, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(get.status, 200);
+    assert.deepEqual(get.body.state.top_artists, { cursor: 'draft-checkpoint' });
+    assert.equal((await store.get('cin_spotify_draft')).status, 'draft');
   } finally {
     await closeServer(server);
   }

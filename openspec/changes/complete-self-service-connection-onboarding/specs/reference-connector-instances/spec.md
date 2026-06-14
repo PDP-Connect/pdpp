@@ -26,6 +26,10 @@ connection row unless the modality's proof boundary has been satisfied.
   failure state
 - **AND** the connection SHALL become active only after first successful ingest
   accepts records for that draft
+- **AND** owner-authenticated collection state reads and writes that explicitly
+  address the draft connection id SHALL be accepted during first sync so
+  checkpoint persistence cannot fail solely because activation has not yet
+  occurred
 
 #### Scenario: Static-secret setup does not disappear after submission
 
