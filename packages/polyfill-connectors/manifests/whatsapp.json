@@ -49,10 +49,10 @@
       "import_dir_env_var": "WHATSAPP_EXPORT_DIR",
       "help_url": "https://faq.whatsapp.com/1180414079177245",
       "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export files.",
-      "large_file_fallback": "Start with one chat export. If a chat is too large for browser upload, use the server import-folder handoff for the .txt or .zip file.",
+      "large_file_fallback": "Large exports upload in the browser as staged artifacts. If an export exceeds the deployment limit, use the server import-folder handoff for the .txt or .zip file.",
       "validation": {
         "kind": "whatsapp_chat_export",
-        "max_file_bytes": 52428800
+        "max_file_bytes": 1073741824
       },
       "validation_expectations": [
         "Detected WhatsApp chat export",

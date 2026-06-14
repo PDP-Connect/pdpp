@@ -222,6 +222,7 @@ Progress note: this tranche added manifest-authored Timeline acquisition metadat
 - [x] 11.6 Move normal manual/upload transfer off Server Action multipart parsing; add connector max-size preflight, upload progress, and multi-file import into one selected source.
 - [x] 11.7 Promote normal manual/upload transfer to streamed staged artifacts with durable status polling; invalid and duplicate uploads must not create phantom source connections, and same-named artifacts must not overwrite each other before import.
 - [x] 11.8 Import media-bearing WhatsApp zip exports as attachment records with blob references when runtime blob upload is available, or explicit deferred/failed hydration state otherwise.
+- [x] 11.9 Align WhatsApp, Console proxy, and reference route upload limits so hundreds-of-megabytes media zip exports use the normal staged browser path instead of a stale small-file fallback.
 
 Progress note (11.7): the normal Console import path now posts each selected
 file to a reference staged-artifact route using
@@ -248,3 +249,9 @@ claim "with media" while dropping the bytes; records surface
 `hydration_status: "deferred"`. A real connector subprocess test stages a
 WhatsApp zip in a nested artifact directory and proves `chats`, `messages`, and
 `attachments` records are emitted through the production JSONL protocol.
+
+Progress note (11.9): WhatsApp's manifest cap, the Console proxy/body envelope,
+and the reference staged-artifact route now align at a 1 GiB explicit
+deployment envelope. A 301 MB media zip therefore follows the normal browser
+upload/import path; import-folder handoff remains reserved for artifacts above
+that envelope.

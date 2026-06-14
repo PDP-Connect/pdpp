@@ -27,7 +27,7 @@ export type MiddlewareHandler = (...args: unknown[]) => unknown;
 // config object (e.g. `{ contract: 'opId' }`), zero or more middlewares, and
 // the final handler. `H` is the adapter's own route-handler type, which is
 // bound to that adapter's `RouteRequest` / `RouteResponse`.
-export type RouteArg<H> = Readonly<{ contract?: string }> | MiddlewareHandler | H;
+export type RouteArg<H> = Readonly<{ bodyLimit?: number; contract?: string }> | MiddlewareHandler | H;
 
 // The host's PDPP error-envelope writer (defined in `server/index.js`). Writes
 // the canonical `pdpp_error` response shape and returns whatever the transport

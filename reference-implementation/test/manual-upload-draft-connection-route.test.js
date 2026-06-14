@@ -305,6 +305,20 @@ test('manual/upload setup descriptor is manifest-authored', async () => {
   });
 });
 
+test('WhatsApp manual/upload setup accepts large browser-staged media exports', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, 'whatsapp');
+    const cookie = await login(asUrl);
+    const { status, body, text } = await getSetup(asUrl, cookie, 'whatsapp');
+    assert.equal(status, 200, text);
+    assert.equal(body.object, 'manual_upload_setup');
+    assert.equal(body.connector_id, 'whatsapp');
+    assert.equal(body.max_file_bytes, 1024 * 1024 * 1024);
+    assert.ok(body.large_file_fallback.includes('staged artifacts'));
+    assert.ok(body.accepted_file_extensions.includes('.zip'));
+  });
+});
+
 test('owner upload creates an invisible draft with connection-scoped import binding', async () => {
   await withServer(async ({ asUrl, tmp }) => {
     await registerConnector(asUrl, 'google_maps');

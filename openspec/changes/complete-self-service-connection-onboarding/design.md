@@ -356,6 +356,10 @@ Large manual imports must not ride through Next Server Action multipart parsing.
 The owner UI uploads connector-accepted files directly to a reference staged
 artifact route as raw streamed file bodies, uses connector-authored
 `max_file_bytes` for client preflight, and then polls durable artifact status.
+For media-heavy manual exports such as WhatsApp `.zip` files, the normal browser
+path is the staged artifact route up to the deployment's explicit upload
+envelope; import-folder handoff is a fallback for artifacts above that envelope,
+not the normal path for hundreds-of-megabytes chat exports.
 The upload artifact exists before any source connection exists; invalid files
 and exact duplicates do not create phantom sources. A valid non-duplicate file
 creates a new source or attaches to the owner-selected compatible source, then

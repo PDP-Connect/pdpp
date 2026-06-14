@@ -28,11 +28,12 @@ const UNSAFE_FILENAME_CHARS_RE = /[^\w .-]/g;
 const CONNECTION_ID_RE = /^cin_[A-Za-z0-9_-]+$/;
 const ARTIFACT_ID_RE = /^mua_[A-Za-z0-9_-]+$/;
 const MANUAL_UPLOAD_STREAM_CONTENT_TYPE = "application/vnd.pdpp.manual-upload";
+const MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES = 1024 * 1024 * 1024;
 
 interface RouteRequest {
   readonly body?: unknown;
-  ownerSession?: { readonly sub?: string | null } | null;
   is?(type: string): string | false;
+  ownerSession?: { readonly sub?: string | null } | null;
   readonly params: Readonly<Record<string, string>>;
   readonly query?: Readonly<Record<string, unknown>>;
 }
@@ -179,8 +180,8 @@ interface ManualUploadArtifactStore {
 export interface MountRefManualUploadDraftConnectionContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
-  createRequestManualUploadArtifactStore(): ManualUploadArtifactStore;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
+  createRequestManualUploadArtifactStore(): ManualUploadArtifactStore;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
   ensureRequestId(res: RouteResponse): string;
@@ -454,6 +455,40 @@ async function writeUploadBodyToPath(
   }
 }
 
+function manualUploadArtifactNextStep(artifact: ManualUploadArtifact): Record<string, unknown> {
+  const connectionId = artifact.connectorInstanceId ?? null;
+  if (artifact.status === "staged" && connectionId) {
+    return {
+      kind: "run_connection",
+      method: "POST",
+      reason: "The import file is staged and ready to run.",
+      url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
+    };
+  }
+  if (artifact.status === "duplicate" && connectionId) {
+    return {
+      kind: "show_status",
+      method: "GET",
+      reason: "This exact artifact is already known. Review the existing coverage receipt.",
+      url: `/_ref/connections/${encodeURIComponent(connectionId)}/setup-status`,
+    };
+  }
+  if (artifact.status === "failed") {
+    return {
+      kind: "choose_another_file",
+      method: "GET",
+      reason: "The import file failed validation.",
+      url: `/_ref/connectors/${encodeURIComponent(artifact.connectorId)}/manual-upload-setup`,
+    };
+  }
+  return {
+    kind: "poll_artifact",
+    method: "GET",
+    reason: "The import file is uploaded and server-side validation is continuing.",
+    url: `/_ref/manual-upload/artifacts/${encodeURIComponent(artifact.artifactId)}`,
+  };
+}
+
 function publicArtifact(artifact: ManualUploadArtifact): Record<string, unknown> {
   const connectionId = artifact.connectorInstanceId ?? null;
   return {
@@ -468,34 +503,7 @@ function publicArtifact(artifact: ManualUploadArtifact): Record<string, unknown>
     validation: artifact.validation ?? null,
     error: artifact.error ?? null,
     batch_id: artifact.acquisitionBatchId ?? null,
-    next_step:
-      artifact.status === "staged" && connectionId
-        ? {
-            kind: "run_connection",
-            method: "POST",
-            url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
-            reason: "The import file is staged and ready to run.",
-          }
-        : artifact.status === "duplicate" && connectionId
-          ? {
-              kind: "show_status",
-              method: "GET",
-              url: `/_ref/connections/${encodeURIComponent(connectionId)}/setup-status`,
-              reason: "This exact artifact is already known. Review the existing coverage receipt.",
-            }
-          : artifact.status === "failed"
-            ? {
-                kind: "choose_another_file",
-                method: "GET",
-                url: `/_ref/connectors/${encodeURIComponent(artifact.connectorId)}/manual-upload-setup`,
-                reason: "The import file failed validation.",
-              }
-            : {
-                kind: "poll_artifact",
-                method: "GET",
-                url: `/_ref/manual-upload/artifacts/${encodeURIComponent(artifact.artifactId)}`,
-                reason: "The import file is uploaded and server-side validation is continuing.",
-              },
+    next_step: manualUploadArtifactNextStep(artifact),
   };
 }
 
@@ -534,6 +542,7 @@ async function createManualUploadDraftConnection(
   return { connection, importDir, sourceBindingKey };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: staging is the transaction boundary for validation, dedupe, target-source resolution, file movement, and artifact status updates.
 async function validateAndStageArtifact(
   ctx: MountRefManualUploadDraftConnectionContext,
   args: {
@@ -605,13 +614,8 @@ async function validateAndStageArtifact(
         })
       : null;
     const connection =
-      targetConnection != null
+      targetConnection == null
         ? {
-            connection: targetConnection,
-            importDir: readImportDirFromConnection(targetConnection),
-            targetConnection: targetConnection,
-          }
-        : {
             ...(await createManualUploadDraftConnection(ctx, {
               connectorId: args.connectorId,
               displayName: displayNameFromRequestedOrSuggested(
@@ -623,11 +627,19 @@ async function validateAndStageArtifact(
               setup: args.setup,
             })),
             targetConnection: null,
+          }
+        : {
+            connection: targetConnection,
+            importDir: readImportDirFromConnection(targetConnection),
+            targetConnection,
           };
     if (!connection.importDir) {
-      throw Object.assign(new Error(`Connection '${args.targetConnectionId}' is missing a manual-upload import directory.`), {
-        code: "manual_upload_connection_required",
-      });
+      throw Object.assign(
+        new Error(`Connection '${args.targetConnectionId}' is missing a manual-upload import directory.`),
+        {
+          code: "manual_upload_connection_required",
+        }
+      );
     }
     const finalDir = join(connection.importDir, args.artifactId);
     await mkdir(finalDir, { recursive: true });
@@ -998,7 +1010,9 @@ async function loadManualUploadTargetConnection(
   }
   if (instance.connectorId !== args.connectorId) {
     throw Object.assign(
-      new Error(`Connection '${args.targetConnectionId}' belongs to '${instance.connectorId}', not '${args.connectorId}'.`),
+      new Error(
+        `Connection '${args.targetConnectionId}' belongs to '${instance.connectorId}', not '${args.connectorId}'.`
+      ),
       { code: "connector_instance_connector_mismatch" }
     );
   }
@@ -1065,6 +1079,7 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
 function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-validation-preview",
+    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
@@ -1151,7 +1166,9 @@ function mountGetStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConn
 function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-staged-artifact",
+    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
     ctx.requireOwnerSession,
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this route coordinates streaming upload, owner target validation, staging, and async validation handoff in one request boundary.
     async (req: RouteRequest, res: RouteResponse) => {
       const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
       const connectorId = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
@@ -1242,7 +1259,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
         });
 
         setImmediate(() => {
-          void validateAndStageArtifact(ctx, {
+          validateAndStageArtifact(ctx, {
             artifactId,
             connectorId,
             displayNameRaw: rawDisplayName,
@@ -1251,7 +1268,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
             ownerSubjectId: ownerSubjectId as string,
             setup,
             targetConnectionId,
-          });
+          }).catch(() => undefined);
         });
 
         await emitManualUploadAudit(ctx, req, res, {
@@ -1299,6 +1316,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
 function mountPostDraftConnection(app: AppLike, ctx: MountRefManualUploadDraftConnectionContext): void {
   app.post(
     "/_ref/connectors/:connectorId/manual-upload-draft-connection",
+    { bodyLimit: MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       const rawConnectorId = decodeURIComponent(req.params.connectorId as string);

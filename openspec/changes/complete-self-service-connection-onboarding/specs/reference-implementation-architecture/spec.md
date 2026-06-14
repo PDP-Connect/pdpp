@@ -219,6 +219,9 @@ owner-provided artifact.
   target
 - **AND** normal setup surfaces SHALL use connector-declared file limits to
   reject oversized files before uploading when the browser can know the size
+- **AND** media-heavy manual exports within the explicit deployment upload
+  envelope SHALL be accepted by the normal staged browser upload path rather
+  than routed to an import-folder fallback
 - **AND** normal setup surfaces SHALL NOT rely on a framework Server Action
   multipart body parser for large manual-import file transfer
 - **AND** upload transfer SHALL create a durable staged artifact status before

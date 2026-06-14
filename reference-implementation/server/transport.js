@@ -639,12 +639,18 @@ export function createApp({ logger, __requestValidationAllowlistForTest } = {}) 
     //   app.post('/foo', { contract: 'fooOp' }, middleware, handler)
     // Any non-function entry that looks like a plain options object is
     // consumed here; everything else is interpreted as middleware/handler.
+    let bodyLimit = null;
     let contractOpId = null;
     const fns = [];
     for (const entry of args) {
       if (typeof entry === 'function') { fns.push(entry); continue; }
-      if (entry && typeof entry === 'object' && typeof entry.contract === 'string') {
-        contractOpId = entry.contract;
+      if (entry && typeof entry === 'object') {
+        if (typeof entry.contract === 'string') {
+          contractOpId = entry.contract;
+        }
+        if (Number.isInteger(entry.bodyLimit) && entry.bodyLimit > 0) {
+          bodyLimit = entry.bodyLimit;
+        }
         continue;
       }
     }
@@ -700,6 +706,9 @@ export function createApp({ logger, __requestValidationAllowlistForTest } = {}) 
       url: normalizePath(path),
       handler: wrappedHandler,
     };
+    if (bodyLimit) {
+      routeOptions.bodyLimit = bodyLimit;
+    }
 
     // Attach the contract-package JSON-Schema directly to the Fastify
     // route definition. The schema is informative metadata for tests,
