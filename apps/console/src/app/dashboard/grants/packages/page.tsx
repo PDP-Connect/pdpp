@@ -9,13 +9,14 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
+import { IcTimestamp } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
 
@@ -32,10 +33,10 @@ export default async function GrantPackagesIndex() {
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="grants">
+        <RecordroomShellWithPalette>
           <PageHeader title="Grant packages" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -43,7 +44,7 @@ export default async function GrantPackagesIndex() {
 
   const items = result.data;
   return (
-    <DashboardShell active="grants">
+    <RecordroomShellWithPalette>
       <PageHeader
         description="Hosted-MCP multi-source consent ceremonies issued one package per approval. Each package wraps one or more source-bounded child grants and a single bearer-token lifecycle. Revoke from the detail page to cascade across every child."
         title="Grant packages"
@@ -64,7 +65,7 @@ export default async function GrantPackagesIndex() {
           </DataList>
         )}
       </Section>
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -78,7 +79,7 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
         <div className="flex items-center gap-2">
           <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={pkg.created_at} />
+            <IcTimestamp value={pkg.created_at} />
           </span>
         </div>
       </div>

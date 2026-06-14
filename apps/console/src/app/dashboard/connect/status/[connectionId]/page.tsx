@@ -1,8 +1,8 @@
+import { buttonVariants } from "@pdpp/brand-react";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { DashboardShell } from "../../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -454,10 +454,10 @@ export default async function ConnectionSetupStatusPage({
   const refreshHref = `/dashboard/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/records">
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
             Back to Sources
           </Link>
         }
@@ -520,7 +520,7 @@ export default async function ConnectionSetupStatusPage({
             </Link>
           ) : null}
           {status.setup_kind === "manual_upload" && described.tone === "active" ? (
-            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={setupHref(status)}>
+            <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={setupHref(status)}>
               Import another file
             </Link>
           ) : null}
@@ -530,7 +530,7 @@ export default async function ConnectionSetupStatusPage({
             </Link>
           ) : null}
           {described.tone === "pending" && status.setup_state !== "awaiting_credential" ? (
-            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={refreshHref}>
+            <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={refreshHref}>
               Refresh status
             </Link>
           ) : null}
@@ -542,6 +542,6 @@ export default async function ConnectionSetupStatusPage({
           <p className="pdpp-caption text-callout-warning-fg/80">Reason: {status.last_error.reason}</p>
         </Callout>
       ) : null}
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

@@ -1,3 +1,4 @@
+import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
@@ -7,9 +8,8 @@ import {
 } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import {
   formatStreamCollectionFacts,
   indexCollectionReportByStream,
@@ -159,10 +159,10 @@ export default async function ConnectorPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShellWithPalette>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -341,7 +341,7 @@ function ConnectorPageView({
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <ConnectorHeaderActions
@@ -419,7 +419,7 @@ function ConnectorPageView({
                       {s.last_updated ? (
                         <>
                           <span aria-hidden>·</span>
-                          <Timestamp value={s.last_updated} />
+                          <IcTimestamp value={s.last_updated} />
                         </>
                       ) : null}
                     </span>
@@ -443,7 +443,7 @@ function ConnectorPageView({
         error={dangerError}
         message={dangerMessage}
       />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -474,14 +474,14 @@ function ConnectorHeaderActions({
     <>
       {running && overview.lastRun ? (
         <Link
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={`/dashboard/runs/${encodeURIComponent(overview.lastRun.run_id)}`}
         >
           Active run →
         </Link>
       ) : null}
       <Link
-        className={buttonVariants({ variant: "outline", size: "sm" })}
+        className={buttonVariants({ variant: "ghost", size: "sm" })}
         href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
       >
         All runs →
@@ -618,7 +618,7 @@ function AcquisitionBatchRow({
           ) : null}
         </div>
         <Link
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={`/dashboard/connect/status/${encodeURIComponent(connectionId)}`}
         >
           Open receipt
@@ -719,7 +719,7 @@ function RecentRunsSection({
                   <span className="font-mono text-muted-foreground text-xs">{r.run_id}</span>
                 </span>
                 <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
-                  <Timestamp value={r.first_at} />
+                  <IcTimestamp value={r.first_at} />
                   <span aria-hidden>·</span>
                   <span>{durationLabel(r.first_at, r.last_at)}</span>
                   <span aria-hidden>·</span>
@@ -884,7 +884,7 @@ function RevokedConnectionSection({ connectorId, revokedAt }: { connectorId: str
       </Link>
       {revokedAt ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">
-          Revoked <Timestamp value={revokedAt} />.
+          Revoked <IcTimestamp value={revokedAt} />.
         </p>
       ) : null}
     </Section>
@@ -981,7 +981,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
               <>
                 <dt className="text-muted-foreground">next attempt</dt>
                 <dd className="tabular-nums">
-                  <Timestamp value={summary.nextAttemptAt} />
+                  <IcTimestamp value={summary.nextAttemptAt} />
                 </dd>
               </>
             ) : null}
@@ -989,7 +989,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
               <>
                 <dt className="text-muted-foreground">last success</dt>
                 <dd className="tabular-nums">
-                  <Timestamp value={summary.lastSuccessAt} />
+                  <IcTimestamp value={summary.lastSuccessAt} />
                 </dd>
               </>
             ) : null}
@@ -1010,7 +1010,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
           {summary.cta === "view_runs" && (
             <div>
               <Link
-                className={buttonVariants({ variant: "outline", size: "sm" })}
+                className={buttonVariants({ variant: "ghost", size: "sm" })}
                 data-testid="failure-expander-view-runs"
                 href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
               >
@@ -1123,7 +1123,7 @@ function AutoPausedBannerRow({ banner, connectorId }: { banner: AutoPausedBanner
             <>
               {" "}
               <span className="pdpp-caption">
-                Next retry at <Timestamp value={banner.nextRunAt} />.
+                Next retry at <IcTimestamp value={banner.nextRunAt} />.
               </span>
             </>
           ) : null}

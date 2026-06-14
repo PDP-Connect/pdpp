@@ -1,7 +1,7 @@
 "use client";
 
+import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
 
 /**
  * Shared body for dashboard segment-level error boundaries (App Router
@@ -53,7 +53,7 @@ export function SegmentError({
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "outline", size: "sm" })} href={backHref}>
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={backHref}>
           {backLabel}
         </a>
       </div>

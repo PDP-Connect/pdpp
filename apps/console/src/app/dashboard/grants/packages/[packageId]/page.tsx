@@ -12,15 +12,15 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
+import { IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   type CumulativeClientAccess,
@@ -58,10 +58,10 @@ export default async function GrantPackageDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="grants">
+        <RecordroomShellWithPalette>
           <PageHeader title="Grant package" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -89,7 +89,7 @@ export default async function GrantPackageDetailPage({
   const subscriptionsHref = "/dashboard/event-subscriptions";
 
   return (
-    <DashboardShell active="grants">
+    <RecordroomShellWithPalette>
       <div className="pdpp-caption mb-2 text-muted-foreground">
         <Link className="underline-offset-2 hover:underline" href="/dashboard/grants/packages">
           ← Grant packages
@@ -137,13 +137,13 @@ export default async function GrantPackageDetailPage({
           <dd className="break-all font-mono text-foreground">{pkg.subject_id}</dd>
           <dt>Created</dt>
           <dd>
-            <Timestamp value={pkg.created_at} />
+            <IcTimestamp value={pkg.created_at} />
           </dd>
           {pkg.approved_at ? (
             <>
               <dt>Approved</dt>
               <dd>
-                <Timestamp value={pkg.approved_at} />
+                <IcTimestamp value={pkg.approved_at} />
               </dd>
             </>
           ) : null}
@@ -151,7 +151,7 @@ export default async function GrantPackageDetailPage({
             <>
               <dt>Revoked</dt>
               <dd>
-                <Timestamp value={pkg.revoked_at} />
+                <IcTimestamp value={pkg.revoked_at} />
               </dd>
             </>
           ) : null}
@@ -234,13 +234,13 @@ export default async function GrantPackageDetailPage({
                 grants.
               </span>
             </label>
-            <Button type="submit" variant="destructive">
+            <IcButton type="submit" variant="destructive">
               Revoke package
-            </Button>
+            </IcButton>
           </form>
         </Section>
       ) : null}
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -258,7 +258,7 @@ function ChildRow({ child }: { child: GrantPackageChild }) {
             <StatusBadge status={`member · ${memberStatus}`} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           ) : null}
           <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={child.added_at} />
+            <IcTimestamp value={child.added_at} />
           </span>
         </div>
       </div>
@@ -267,7 +267,7 @@ function ChildRow({ child }: { child: GrantPackageChild }) {
         {child.revoked_at ? (
           <>
             {" · revoked "}
-            <Timestamp value={child.revoked_at} />
+            <IcTimestamp value={child.revoked_at} />
           </>
         ) : null}
       </div>

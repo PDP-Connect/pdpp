@@ -1,9 +1,9 @@
 "use client";
 
+import { IcButton } from "@pdpp/brand-react";
 import { Callout } from "@pdpp/operator-ui/components/primitives";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
 import { type CancelRunActionResult, cancelRunAction } from "./actions.ts";
 
 /**
@@ -64,16 +64,16 @@ export function CancelRunControl({ runId }: { runId: string }) {
         <div className="flex flex-wrap items-center gap-2">
           <p className="pdpp-caption text-foreground">Cancel this run? This stops only the current run.</p>
           <div className="flex flex-wrap gap-2">
-            <Button disabled={isPending} onClick={handleConfirm} size="sm" type="button" variant="destructive">
+            <IcButton disabled={isPending} onClick={handleConfirm} size="sm" type="button" variant="destructive">
               {isPending ? "Cancelling…" : "Yes, cancel run"}
-            </Button>
-            <Button disabled={isPending} onClick={() => setConfirming(false)} size="sm" type="button" variant="outline">
+            </IcButton>
+            <IcButton disabled={isPending} onClick={() => setConfirming(false)} size="sm" type="button" variant="ghost">
               Keep running
-            </Button>
+            </IcButton>
           </div>
         </div>
       ) : (
-        <Button
+        <IcButton
           disabled={isPending}
           onClick={() => {
             setResult(null);
@@ -81,10 +81,10 @@ export function CancelRunControl({ runId }: { runId: string }) {
           }}
           size="sm"
           type="button"
-          variant="outline"
+          variant="ghost"
         >
           Cancel run
-        </Button>
+        </IcButton>
       )}
     </Callout>
   );

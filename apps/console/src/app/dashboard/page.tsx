@@ -15,8 +15,8 @@
  * live path never imports the fixtures when `demo` is absent.
  */
 
-import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { StandingOverview } from "./components/views/standing-overview.tsx";
 import { buildStandingData, type StandingHrefs, type StandingInputs } from "./components/views/standing-view-model.ts";
 import { rethrowControlFlow } from "./lib/control-flow.ts";
@@ -125,7 +125,7 @@ export default async function DashboardPage({
   const host = stripScheme(await safe(() => getReferencePublicOrigin(), "this server"));
 
   return (
-    <RecordroomShell build="pdpp 0.1.0" host={host}>
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
       <StandingOverview
         data={data}
         grantsHref={HREFS.grants}
@@ -133,6 +133,6 @@ export default async function DashboardPage({
         tokensHref={HREFS.deploymentTokens}
         tracesHref={HREFS.traces}
       />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

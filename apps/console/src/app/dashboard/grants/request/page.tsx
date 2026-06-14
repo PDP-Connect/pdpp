@@ -1,11 +1,7 @@
+import { buttonVariants, IcButton, IcInput, IcSelect, IcTimestamp } from "@pdpp/brand-react";
 import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
-import { Textarea } from "@/components/ui/textarea.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell } from "../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import {
   buildGrantRequestExamples,
   type ConnectionPinOption,
@@ -36,10 +32,10 @@ type Examples = NonNullable<Awaited<ReturnType<typeof buildGrantRequestExamples>
 function HeaderActions({ ownerLoginUrl }: { ownerLoginUrl: string }) {
   return (
     <>
-      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants#pending-approvals">
+      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/grants#pending-approvals">
         Pending approvals
       </Link>
-      <a className={buttonVariants({ variant: "outline", size: "sm" })} href={ownerLoginUrl}>
+      <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={ownerLoginUrl}>
         Owner access
       </a>
     </>
@@ -96,16 +92,17 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
         name="redirect_uri"
         placeholder="https://client.example/callback"
       />
-      <label className="grid gap-1 text-sm">
-        <span className="text-muted-foreground">Source kind</span>
-        <select
-          className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+      <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-source_kind">
+        <span className="pdpp-eyebrow">Source kind</span>
+        <IcSelect
           defaultValue={draft.sourceKind}
+          id="grant-request-source_kind"
           name="source_kind"
-        >
-          <option value="connector">connector</option>
-          <option value="provider_native">provider_native</option>
-        </select>
+          options={[
+            { label: "connector", value: "connector" },
+            { label: "provider_native", value: "provider_native" },
+          ]}
+        />
       </label>
       <FormField defaultValue={draft.sourceId} label="Source id" name="source_id" />
       <FormField defaultValue={draft.purposeCode} label="Purpose code" name="purpose_code" />
@@ -122,7 +119,8 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
       <FormField defaultValue={draft.view} label="View" name="view" />
       <label className="flex flex-col gap-1 md:col-span-2 xl:col-span-3" htmlFor="grant-request-purpose-description">
         <span className="pdpp-eyebrow">Purpose description</span>
-        <Textarea
+        <textarea
+          className="pdpp-input"
           defaultValue={draft.purposeDescription}
           id="grant-request-purpose-description"
           name="purpose_description"
@@ -166,14 +164,12 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
       <span className="pdpp-eyebrow">Connection</span>
-      <Select defaultValue={draft.connectionId} id="grant-request-connection_id" name="connection_id">
-        <option value={FAN_IN_OPTION_VALUE}>{FAN_IN_OPTION_LABEL}</option>
-        {connectionOptions.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </Select>
+      <IcSelect
+        defaultValue={draft.connectionId}
+        id="grant-request-connection_id"
+        name="connection_id"
+        options={[{ label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE }, ...connectionOptions]}
+      />
       <span className="pdpp-caption text-muted-foreground">
         Pin to one connection, or fan in across all the grant authorizes.
       </span>
@@ -184,15 +180,15 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
 function DraftFormActions() {
   return (
     <div className="flex flex-wrap gap-2 pt-2">
-      <Button formAction={saveGrantRequestDraftAction} size="sm" type="submit" variant="outline">
+      <IcButton formAction={saveGrantRequestDraftAction} size="sm" type="submit" variant="ghost">
         Save draft
-      </Button>
-      <Button formAction={registerGrantRequestClientAction} size="sm" type="submit" variant="outline">
+      </IcButton>
+      <IcButton formAction={registerGrantRequestClientAction} size="sm" type="submit" variant="ghost">
         <span className="font-mono">POST /oauth/register</span>
-      </Button>
-      <Button formAction={stageGrantRequestAction} size="sm" type="submit">
+      </IcButton>
+      <IcButton formAction={stageGrantRequestAction} size="sm" type="submit">
         <span className="font-mono">POST /oauth/par</span>
-      </Button>
+      </IcButton>
     </div>
   );
 }
@@ -251,8 +247,8 @@ function WorkspaceStateSection({ workspace }: { workspace: Workspace | null }) {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <DetailCard title="Workspace">
             <DetailRow label="id" value={<code className="break-all">{workspace.workspaceId}</code>} />
-            <DetailRow label="created" value={<Timestamp value={workspace.createdAt} />} />
-            <DetailRow label="updated" value={<Timestamp value={workspace.updatedAt} />} />
+            <DetailRow label="created" value={<IcTimestamp value={workspace.createdAt} />} />
+            <DetailRow label="updated" value={<IcTimestamp value={workspace.updatedAt} />} />
           </DetailCard>
           <DetailCard title="Registered client">
             {workspace.registeredClient ? (
@@ -286,12 +282,12 @@ function DriveConsentSection({ ownerLoginUrl, workspace }: { ownerLoginUrl: stri
     >
       <form className="flex flex-wrap items-center gap-2">
         <input name="workspace_id" type="hidden" value={workspace.workspaceId} />
-        <Button formAction={approveGrantRequestAction} size="sm" type="submit">
+        <IcButton formAction={approveGrantRequestAction} size="sm" type="submit">
           <span className="font-mono">POST /consent/approve</span>
-        </Button>
-        <Button formAction={denyGrantRequestAction} size="sm" type="submit" variant="destructive">
+        </IcButton>
+        <IcButton formAction={denyGrantRequestAction} size="sm" type="submit" variant="destructive">
           <span className="font-mono">POST /consent/deny</span>
-        </Button>
+        </IcButton>
         <Link
           className="pdpp-caption ml-2 text-muted-foreground underline-offset-2 hover:underline"
           href="/dashboard/grants#pending-approvals"
@@ -338,7 +334,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
   const ownerLoginUrl = getOwnerLoginPath();
 
   return (
-    <DashboardShell active="grants">
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={<HeaderActions ownerLoginUrl={ownerLoginUrl} />}
         breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Grant request" }]}
@@ -353,7 +349,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
       <WorkspaceStateSection workspace={workspace} />
       {workspace?.stagedRequest ? <DriveConsentSection ownerLoginUrl={ownerLoginUrl} workspace={workspace} /> : null}
       {examples ? <EquivalentsSection examples={examples} /> : null}
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -371,7 +367,7 @@ function FormField({
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor={`grant-request-${name}`}>
       <span className="pdpp-eyebrow">{label}</span>
-      <Input
+      <IcInput
         defaultValue={defaultValue}
         id={`grant-request-${name}`}
         name={name}
@@ -396,13 +392,7 @@ function FormSelect({
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor={`grant-request-${name}`}>
       <span className="pdpp-eyebrow">{label}</span>
-      <Select defaultValue={defaultValue} id={`grant-request-${name}`} name={name}>
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </Select>
+      <IcSelect defaultValue={defaultValue} id={`grant-request-${name}`} name={name} options={options} />
     </label>
   );
 }

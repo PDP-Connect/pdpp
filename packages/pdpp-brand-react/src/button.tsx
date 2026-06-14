@@ -11,6 +11,7 @@
  * Size:
  *   default — standard padding (9px 18px)
  *   sm      — compact (6px 12px)
+ *   lg      — prominent (12px 22px); for full-width primary CTAs
  *
  * This component wraps a <button> element. For link-styled buttons use
  * the existing operator-ui Button with variant="link".
@@ -30,6 +31,7 @@ const buttonVariants = cva("pdpp-btn", {
     size: {
       default: "",
       sm: "pdpp-btn--sm",
+      lg: "pdpp-btn--lg",
     },
   },
   defaultVariants: {

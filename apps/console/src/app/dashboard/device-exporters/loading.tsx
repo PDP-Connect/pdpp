@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for the device-exporters list.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function DeviceExportersLoading() {
   return (
-    <DashboardShell active="device-exporters">
+    <RecordroomShellWithPalette>
       <ListLoadingSkeleton label="device exporters" rows={5} />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

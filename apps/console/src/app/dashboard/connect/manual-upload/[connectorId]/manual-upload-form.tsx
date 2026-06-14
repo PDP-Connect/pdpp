@@ -1,7 +1,7 @@
 "use client";
 
+import { IcButton } from "@pdpp/brand-react";
 import { type FormEvent, useState } from "react";
-import { Button } from "@/components/ui/button.tsx";
 
 interface ManualUploadSetupForForm {
   accepted_file_extensions: string[];
@@ -692,12 +692,12 @@ export function ManualUploadForm({
       {state.progress ? <ProgressCard progress={state.progress} /> : null}
       {state.preview ? <PreviewCard preview={state.preview} /> : null}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={pending} name="intent" type="submit" value="import">
+        <IcButton disabled={pending} name="intent" type="submit" value="import">
           {pending ? "Importing..." : "Import file"}
-        </Button>
-        <Button disabled={pending} name="intent" type="submit" value="preview" variant="outline">
+        </IcButton>
+        <IcButton disabled={pending} name="intent" type="submit" value="preview" variant="ghost">
           {pending ? "Checking..." : "Preview only"}
-        </Button>
+        </IcButton>
       </div>
       <p className="pdpp-caption text-muted-foreground">
         Import can accept multiple files into one source. Preview checks one file without committing it.

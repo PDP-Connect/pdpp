@@ -1,9 +1,8 @@
+import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { DashboardShell } from "../../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
 import { createStaticSecretConnectionAction } from "./actions.ts";
 
@@ -66,10 +65,10 @@ export default async function StaticSecretConnectPage({
   }
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/records">
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
             Back to connections
           </Link>
         }
@@ -107,13 +106,13 @@ export default async function StaticSecretConnectPage({
         ) : (
           <form
             action={createStaticSecretConnectionAction}
-            className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4"
+            className="grid max-w-2xl gap-4 rounded-sm border border-border/80 bg-muted/20 p-4"
           >
             <input name="connector_id" type="hidden" value={setup.connector_id} />
             {setup.credential_capture.fields.map((field) => (
               <label className="grid gap-1" htmlFor={`static-secret-${field.name}`} key={field.name}>
                 <span className="pdpp-eyebrow">{field.label}</span>
-                <Input
+                <IcInput
                   autoComplete={field.autocomplete ?? (field.secret ? "off" : undefined)}
                   defaultValue={preservedValue(field)}
                   id={`static-secret-${field.name}`}
@@ -149,9 +148,9 @@ export default async function StaticSecretConnectPage({
               </p>
             ) : null}
             <div>
-              <Button type="submit">
+              <IcButton type="submit" variant="human">
                 {setup.credential_capture.submit_label ?? "Create connection and start first sync"}
-              </Button>
+              </IcButton>
             </div>
           </form>
         )}
@@ -168,6 +167,6 @@ export default async function StaticSecretConnectPage({
           one connection at a time.
         </p>
       </Callout>
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

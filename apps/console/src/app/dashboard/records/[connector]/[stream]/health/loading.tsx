@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DetailLoadingSkeleton } from "../../../../components/route-loading.tsx";
-import { DashboardShell } from "../../../../components/shell.tsx";
 
 /**
  * Route-level loading state for a stream's coverage/health detail page.
@@ -11,8 +11,8 @@ import { DashboardShell } from "../../../../components/shell.tsx";
  */
 export default function StreamHealthLoading() {
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <DetailLoadingSkeleton label="this stream's coverage" />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

@@ -1,8 +1,9 @@
+import { IcTimestamp } from "@pdpp/brand-react";
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import {
@@ -93,10 +94,10 @@ export default async function RecordDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShellWithPalette>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     // A 404/410 from the resource server is an expected end-state for a record
@@ -153,7 +154,7 @@ export default async function RecordDetailPage({
   const allParentBackLinks = mergeParentBackLinks(parentBackLinkFromMeta, childHasOneLinks);
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -163,7 +164,7 @@ export default async function RecordDetailPage({
         ]}
         description={
           <>
-            emitted_at <Timestamp className="text-foreground" value={record.emitted_at} />
+            emitted_at <IcTimestamp className="text-foreground" value={record.emitted_at} />
           </>
         }
         title={<code className="break-all font-mono">{recordId}</code>}
@@ -216,7 +217,7 @@ export default async function RecordDetailPage({
           </ul>
         </Section>
       )}
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 

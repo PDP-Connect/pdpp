@@ -1,11 +1,10 @@
 "use client";
 
+import { IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 
@@ -217,15 +216,15 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
             {schedule ? (
               <>
                 {schedule.enabled ? (
-                  <Button disabled={isPending} onClick={handlePause} size="sm" variant="outline">
+                  <IcButton disabled={isPending} onClick={handlePause} size="sm" variant="ghost">
                     Pause
-                  </Button>
+                  </IcButton>
                 ) : (
-                  <Button disabled={isPending} onClick={handleResume} size="sm" variant="outline">
+                  <IcButton disabled={isPending} onClick={handleResume} size="sm" variant="ghost">
                     Resume
-                  </Button>
+                  </IcButton>
                 )}
-                <Button
+                <IcButton
                   disabled={isPending}
                   onClick={() => {
                     setEvery(formatIntervalForInput(schedule.interval_seconds));
@@ -233,18 +232,18 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                     setEditState(editState === "editing" ? "idle" : "editing");
                   }}
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                 >
                   Edit
-                </Button>
-                <Button disabled={isPending} onClick={handleDelete} size="sm" variant="outline">
+                </IcButton>
+                <IcButton disabled={isPending} onClick={handleDelete} size="sm" variant="ghost">
                   Delete
-                </Button>
+                </IcButton>
               </>
             ) : (
-              <Button disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="outline">
+              <IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
                 Set schedule
-              </Button>
+              </IcButton>
             )}
           </div>
         </div>
@@ -277,12 +276,12 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
           )}
           {summary.last_successful_run && (
             <span>
-              Last success: <Timestamp value={summary.last_successful_run.last_at} />
+              Last success: <IcTimestamp value={summary.last_successful_run.last_at} />
             </span>
           )}
           {schedule?.last_started_at && !summary.last_successful_run && (
             <span>
-              Last attempt: <Timestamp value={schedule.last_started_at} />
+              Last attempt: <IcTimestamp value={schedule.last_started_at} />
             </span>
           )}
           <span>{summary.total_records.toLocaleString()} records</span>
@@ -412,12 +411,12 @@ function ScheduleEditor({
           />
         </label>
         <div className="flex gap-2">
-          <Button disabled={isPending} onClick={onSave} size="sm">
+          <IcButton disabled={isPending} onClick={onSave} size="sm">
             Save
-          </Button>
-          <Button disabled={isPending} onClick={onCancel} size="sm" variant="outline">
+          </IcButton>
+          <IcButton disabled={isPending} onClick={onCancel} size="sm" variant="ghost">
             Cancel
-          </Button>
+          </IcButton>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DetailLoadingSkeleton } from "../../components/route-loading.tsx";
-import { DashboardShell } from "../../components/shell.tsx";
 
 /**
  * Route-level loading state for a single connection's detail page.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../../components/shell.tsx";
  */
 export default function ConnectorDetailLoading() {
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <DetailLoadingSkeleton label="this connection" />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

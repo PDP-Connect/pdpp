@@ -1,10 +1,11 @@
+import { IcButton } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
-import { Button } from "@/components/ui/button.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import {
   BROWSER_BOUND_RUNBOOK_PATH,
@@ -83,7 +84,7 @@ export default async function DeviceExportersPage({
     const devices = diagnostics.data;
 
     return (
-      <DashboardShell active="device-exporters">
+      <RecordroomShellWithPalette>
         <PageHeader
           breadcrumbs={addConnectionBreadcrumbs}
           count={`${devices.length}`}
@@ -120,14 +121,14 @@ export default async function DeviceExportersPage({
             </DataList>
           )}
         </Section>
-      </DashboardShell>
+      </RecordroomShellWithPalette>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="device-exporters">
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -207,9 +208,9 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
         {device.status === "active" ? (
           <form action={revokeDeviceExporterAction}>
             <input name="device_id" type="hidden" value={device.device_id} />
-            <Button size="sm" type="submit" variant="destructive">
+            <IcButton size="sm" type="submit" variant="destructive">
               Revoke
-            </Button>
+            </IcButton>
           </form>
         ) : (
           <span className="pdpp-caption text-muted-foreground">Revoked {formatRelativeTime(device.revoked_at)}</span>

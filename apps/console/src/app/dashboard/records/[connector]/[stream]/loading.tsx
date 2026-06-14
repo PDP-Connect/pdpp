@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { TableLoadingSkeleton } from "../../../components/route-loading.tsx";
-import { DashboardShell } from "../../../components/shell.tsx";
 
 /**
  * Route-level loading state for a stream's records table.
@@ -14,8 +14,8 @@ import { DashboardShell } from "../../../components/shell.tsx";
  */
 export default function StreamRecordsLoading() {
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <TableLoadingSkeleton label="records" rows={8} />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

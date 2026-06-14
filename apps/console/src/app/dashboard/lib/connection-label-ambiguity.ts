@@ -12,7 +12,7 @@
  * AMBIGUOUS: two or more connections of the same connector type both fall back
  * to it, so the owner cannot tell "Amazon" from "Amazon". That is exactly the
  * condition under which the records list already appends a `· connection N`
- * ordinal (see `labelConnections` in records-list-view.tsx) and the grant-pin
+ * ordinal (see `labelConnections` in connector-row.tsx) and the grant-pin
  * select appends `· account N` (see grant-request-connection-pin.ts). This
  * module is the shared, pure source of truth for that ambiguity so the row's
  * "Label needed" hint, the ordinal subtitles, and any future surface all agree.

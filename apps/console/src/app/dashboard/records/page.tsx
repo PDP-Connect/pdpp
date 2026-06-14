@@ -19,7 +19,7 @@
  * ceremony without a live server. The live path never imports the fixtures
  * when `demo` is absent.
  */
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -82,12 +82,12 @@ export default async function RecordsIndexPage({
     // screenshot-able without a live version-stats route.
     const churnAdvisory = buildSourcesChurnAdvisory(buildSourcesDemoChurnRows(scenario));
     return (
-      <RecordroomShell build="pdpp 0.1.0" host={host}>
+      <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
         <SourcesHeader notice={`Seeded demo · ${scenario} · fictional data`} />
         {/* interactive=false: the demo never reaches a live server, so the
             mutating Sync/Revoke controls are read-only here. */}
         <SourcesView churnAdvisory={churnAdvisory} instances={instances} interactive={false} />
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   }
 
@@ -98,10 +98,10 @@ export default async function RecordsIndexPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell build="pdpp 0.1.0" host={host}>
+        <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
           <SourcesHeader />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -117,7 +117,7 @@ export default async function RecordsIndexPage({
   ).length;
 
   return (
-    <RecordroomShell build="pdpp 0.1.0" host={host}>
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
       <SourcesHeader error={params.error} message={params.message} />
       <SourcesView
         churnAdvisory={churnAdvisory}
@@ -126,7 +126,7 @@ export default async function RecordsIndexPage({
         revokeAction={revokeConnectionAction}
       />
       <RecordsPagePoller running={runningCount > 0} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

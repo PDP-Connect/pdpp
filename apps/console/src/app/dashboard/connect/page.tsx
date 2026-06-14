@@ -1,10 +1,10 @@
+import { buttonVariants, IcButton, IcField, IcInput } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
@@ -90,22 +90,20 @@ function ClientIdentityForm() {
       action={createCimdClientIdentityAction}
       className="grid gap-3 rounded-md border border-border/80 bg-muted/20 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] lg:items-end"
     >
-      <label className="grid gap-1" htmlFor="cimd-client-name">
-        <span className="pdpp-eyebrow">Client name</span>
-        <Input defaultValue="Claude Code" id="cimd-client-name" name="client_name" />
-      </label>
-      <label className="grid gap-1" htmlFor="cimd-redirect-uri">
-        <span className="pdpp-eyebrow">Redirect URI</span>
-        <Input
+      <IcField htmlFor="cimd-client-name" label="Client name">
+        <IcInput defaultValue="Claude Code" id="cimd-client-name" name="client_name" />
+      </IcField>
+      <IcField htmlFor="cimd-redirect-uri" label="Redirect URI">
+        <IcInput
           defaultValue="http://localhost:1455/callback"
           id="cimd-redirect-uri"
           name="redirect_uri"
           placeholder="http://localhost:<port>/callback"
         />
-      </label>
-      <Button size="sm" type="submit" variant="outline">
+      </IcField>
+      <IcButton size="sm" type="submit" variant="ghost">
         Create identity
-      </Button>
+      </IcButton>
     </form>
   );
 }
@@ -144,16 +142,16 @@ function ClientIdentityList({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Link
-                className={buttonVariants({ variant: selected ? "secondary" : "outline", size: "sm" })}
+                className={buttonVariants({ variant: selected ? "default" : "ghost", size: "sm" })}
                 href={`/dashboard/connect?client_identity=${encodeURIComponent(identity.document_id)}`}
               >
                 {selected ? "Selected" : "Use"}
               </Link>
               <form action={deleteCimdClientIdentityAction}>
                 <input name="document_id" type="hidden" value={identity.document_id} />
-                <Button size="sm" type="submit" variant="destructive">
+                <IcButton size="sm" type="submit" variant="destructive">
                   Revoke
-                </Button>
+                </IcButton>
               </form>
             </div>
           </li>
@@ -224,15 +222,18 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   let origin: string;
   let identities: CimdClientDocument[] = [];
   try {
-    const [resolvedOrigin, resolvedIdentities] = await Promise.all([getReferencePublicOrigin(), listCimdClientDocuments()]);
+    const [resolvedOrigin, resolvedIdentities] = await Promise.all([
+      getReferencePublicOrigin(),
+      listCimdClientDocuments(),
+    ]);
     origin = resolvedOrigin;
     identities = resolvedIdentities.data;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="connect">
+        <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -277,10 +278,10 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   ];
 
   return (
-    <DashboardShell active="connect">
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment">
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
             Deployment readiness
           </Link>
         }
@@ -356,6 +357,6 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
           bearer. Trusted local owner automation is a separate flow.
         </p>
       </Callout>
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

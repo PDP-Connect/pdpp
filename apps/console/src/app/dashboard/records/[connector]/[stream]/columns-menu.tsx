@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
-import { Popover, PopoverPopup, PopoverPortal, PopoverPositioner, PopoverTrigger } from "@/components/ui/popover.tsx";
+import { Popover, PopoverPopup, PopoverPortal, PopoverPositioner, PopoverTrigger } from "@pdpp/operator-ui/components/ui/popover";
 
 export function ColumnsMenu({
   allColumns,

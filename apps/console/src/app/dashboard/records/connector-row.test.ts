@@ -493,8 +493,11 @@ test("the Sync now button only renders inside the owner-syncable branch", async 
   assert.match(control, SYNC_BUTTON_GATED_ON_SYNC_KIND);
   // The Button must appear after the sync-kind guard within the control.
   const guardIndex = control.indexOf('action.kind === "sync"');
-  const buttonIndex = control.indexOf("<Button");
-  assert.ok(guardIndex >= 0 && buttonIndex > guardIndex, "Sync now <Button> must be gated behind the sync-kind branch");
+  const buttonIndex = control.indexOf("<IcButton");
+  assert.ok(
+    guardIndex >= 0 && buttonIndex > guardIndex,
+    "Sync now <IcButton> must be gated behind the sync-kind branch"
+  );
 });
 
 test("connector-row surfaces an honest device-wait next step for push-mode rows", async () => {
@@ -510,7 +513,7 @@ test("the non-sync primary-action surface is inert text, never a button or run h
   const control = src.slice(src.indexOf("function PrimaryRowActionControl"), src.indexOf("function ConnectorStats"));
   // Exactly one Button in the control (the sync branch); non-sync guidance is a
   // <span>.
-  const buttonCount = (control.match(/<Button/g) ?? []).length;
+  const buttonCount = (control.match(/<IcButton/g) ?? []).length;
   assert.equal(buttonCount, 1, "only the owner-syncable branch may render a Button");
   const onClickCount = (control.match(/onClick=/g) ?? []).length;
   assert.equal(onClickCount, 1, "only the owner-syncable Button may carry an onClick");

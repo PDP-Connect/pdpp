@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DetailLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for the deployment status page.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function DeploymentLoading() {
   return (
-    <DashboardShell active="deployment">
+    <RecordroomShellWithPalette>
       <DetailLoadingSkeleton label="deployment status" />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }

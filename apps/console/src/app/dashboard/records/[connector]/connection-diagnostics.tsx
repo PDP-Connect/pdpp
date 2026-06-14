@@ -1,8 +1,8 @@
+import { IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import Link from "next/link";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
 import {
   formatCollectionRateReadout,
@@ -251,7 +251,7 @@ function ProjectedStateDiagnostics({
       ) : null}
       {connectionHealth.last_success_at ? (
         <p className="pdpp-caption text-muted-foreground">
-          Last success at <Timestamp value={connectionHealth.last_success_at} />.
+          Last success at <IcTimestamp value={connectionHealth.last_success_at} />.
         </p>
       ) : (
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-no-last-success">
@@ -438,7 +438,7 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
           {source.last_ingest_at ? (
             <>
               {" · last ingest "}
-              <Timestamp value={source.last_ingest_at} />
+              <IcTimestamp value={source.last_ingest_at} />
             </>
           ) : (
             <>
@@ -452,7 +452,7 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
           {source.last_heartbeat_at ? (
             <>
               {" · "}
-              <Timestamp value={source.last_heartbeat_at} />
+              <IcTimestamp value={source.last_heartbeat_at} />
             </>
           ) : (
             " · never seen"

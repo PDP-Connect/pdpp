@@ -1,9 +1,10 @@
+import { IcTimestamp } from "@pdpp/brand-react";
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
@@ -49,10 +50,10 @@ export default async function StreamHealthPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShellWithPalette>
           <PageHeader title="Stream health" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
@@ -86,7 +87,7 @@ function StreamHealthReport({
   const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -140,10 +141,10 @@ function StreamHealthReport({
               <tr>
                 <td className={`${TD} font-mono`}>emitted_at</td>
                 <td className={`${TD} whitespace-nowrap tabular-nums`}>
-                  {emittedAt.min ? <Timestamp value={emittedAt.min} /> : <Dash />}
+                  {emittedAt.min ? <IcTimestamp value={emittedAt.min} /> : <Dash />}
                 </td>
                 <td className={`${TD} whitespace-nowrap tabular-nums`}>
-                  {emittedAt.max ? <Timestamp value={emittedAt.max} /> : <Dash />}
+                  {emittedAt.max ? <IcTimestamp value={emittedAt.max} /> : <Dash />}
                 </td>
               </tr>
               {cursorField && (
@@ -224,7 +225,7 @@ function StreamHealthReport({
           </>
         )}
       </Section>
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -234,7 +235,7 @@ function StreamHealthReport({
 // to the records segment error boundary.
 function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: string; streamName: string }) {
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -266,7 +267,7 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
           to see currently available streams.
         </p>
       </div>
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 

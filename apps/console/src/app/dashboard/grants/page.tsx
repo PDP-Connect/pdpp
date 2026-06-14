@@ -1,3 +1,4 @@
+import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
@@ -6,9 +7,8 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
@@ -66,10 +66,10 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="grants">
+        <RecordroomShellWithPalette>
           <PageHeader title="Grants" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -142,7 +142,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
       },
     },
     headerActions: (
-      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
+      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/grants/request">
         Grant request workspace
       </Link>
     ),
@@ -160,9 +160,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   };
 
   return (
-    <DashboardShell active="grants">
+    <RecordroomShellWithPalette>
       <ListWithPeekView params={viewParams} />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -180,7 +180,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         <div className="flex flex-wrap items-baseline gap-2">
           <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>
           <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={approval.created_at} />
+            <IcTimestamp value={approval.created_at} />
           </span>
           <StatusBadge status={approval.kind} />
         </div>
@@ -193,12 +193,12 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
       <form className="flex flex-wrap gap-2">
         <input name="kind" type="hidden" value={approval.kind} />
         <input name="approval_id" type="hidden" value={approval.approval_id} />
-        <Button formAction={approvePendingApprovalAction} size="sm" type="submit">
+        <IcButton formAction={approvePendingApprovalAction} size="sm" type="submit">
           Approve
-        </Button>
-        <Button formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
+        </IcButton>
+        <IcButton formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
           Deny
-        </Button>
+        </IcButton>
       </form>
     </div>
   );
@@ -227,7 +227,7 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
             ) : null}
           </div>
           <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
-            <Timestamp value={grant.last_at} />
+            <IcTimestamp value={grant.last_at} />
           </span>
         </div>
         <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">

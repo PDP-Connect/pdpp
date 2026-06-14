@@ -1,7 +1,7 @@
 "use client";
 
+import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
 
 /**
  * Dashboard error boundary (App Router convention).
@@ -27,7 +27,7 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/owner/login?return_to=%2Fdashboard">
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/owner/login?return_to=%2Fdashboard">
           Sign in again
         </a>
       </div>

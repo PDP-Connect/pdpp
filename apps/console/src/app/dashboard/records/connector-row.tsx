@@ -1,13 +1,12 @@
 "use client";
 
+import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
   type AxisChip,
   type ConnectionStatusDisplay,
@@ -414,7 +413,7 @@ function PrimaryRowActionControl({
     return (
       <Link
         aria-label={`${action.label} for ${displayName}`}
-        className={buttonVariants({ variant: "outline", size: "sm" })}
+        className={buttonVariants({ variant: "ghost", size: "sm" })}
         href={action.href}
         title={action.detail}
       >
@@ -424,14 +423,14 @@ function PrimaryRowActionControl({
   }
   if (action.kind === "sync") {
     return (
-      <Button
+      <IcButton
         aria-label={running ? `Sync in progress for ${displayName}` : `${idleLabel} for ${displayName}`}
         disabled={running || isPending}
         onClick={onSync}
         size="sm"
       >
         {running ? "Syncing…" : idleLabel}
-      </Button>
+      </IcButton>
     );
   }
   return (
@@ -831,7 +830,7 @@ function RunStatus({
         {revokedAt ? (
           <>
             <span aria-hidden>·</span>
-            <Timestamp value={revokedAt} />
+            <IcTimestamp value={revokedAt} />
           </>
         ) : null}
       </span>
@@ -1205,7 +1204,7 @@ function ConnectorFreshnessLine({
     return (
       <span className="inline-flex items-center gap-1">
         <span>last success:</span>
-        <Timestamp value={lastSuccessfulRun.last_at} />
+        <IcTimestamp value={lastSuccessfulRun.last_at} />
         <span aria-hidden>·</span>
         <span>
           {lastSuccessfulRun.event_count.toLocaleString()} event
@@ -1219,7 +1218,7 @@ function ConnectorFreshnessLine({
     return (
       <span className="inline-flex items-center gap-1">
         <span>last attempt:</span>
-        <Timestamp value={lastRun.last_at} />
+        <IcTimestamp value={lastRun.last_at} />
         <span aria-hidden>·</span>
         <span>{lastRun.status.replace(/_/g, " ")}</span>
       </span>
@@ -1238,10 +1237,10 @@ function ConnectorFreshnessLine({
       return (
         <span className="inline-flex items-center gap-1" data-testid="freshness-device-both">
           <span>last checked:</span>
-          <Timestamp value={heartbeatAt} />
+          <IcTimestamp value={heartbeatAt} />
           <span aria-hidden>·</span>
           <span>last ingest:</span>
-          <Timestamp value={ingestAt} />
+          <IcTimestamp value={ingestAt} />
         </span>
       );
     }
@@ -1249,7 +1248,7 @@ function ConnectorFreshnessLine({
       return (
         <span className="inline-flex items-center gap-1" data-testid="freshness-device-ingest">
           <span>last ingest:</span>
-          <Timestamp value={ingestAt} />
+          <IcTimestamp value={ingestAt} />
         </span>
       );
     }
@@ -1257,7 +1256,7 @@ function ConnectorFreshnessLine({
       return (
         <span className="inline-flex items-center gap-1" data-testid="freshness-device-heartbeat">
           <span>last checked:</span>
-          <Timestamp value={heartbeatAt} />
+          <IcTimestamp value={heartbeatAt} />
         </span>
       );
     }

@@ -301,6 +301,7 @@
 }
 .pdpp-btn--destructive:hover:not(:disabled) { background: var(--destructive-tint); }
 .pdpp-btn--sm { font-size: 0.75rem; padding: 6px 12px; }
+.pdpp-btn--lg { font-size: 0.92rem; padding: 12px 22px; }
 
 /* ─── Inputs + Fields ─────────────────────────────────────────────── */
 .pdpp-input {
@@ -331,6 +332,218 @@
 .pdpp-field__hint {
   font-family: var(--font-sans);
   font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+
+/* ─── Select ──────────────────────────────────────────────────────
+   base-ui Select skinned to Ink Carbon. base-ui owns: keyboard nav,
+   type-ahead, ARIA listbox, positioning, form hidden-input. We own
+   ONLY the visual chrome: trigger geometry matching IcInput, and a
+   fully styled popup that native <select> can never deliver.
+
+   Trigger: same geometry as IcInput (radius-control, hairline --border,
+   --card bg, mono font) with a typographic › caret at right.
+   Popup: radius 0, hairline --border-strong, --card bg, menu shadow
+   (the ONE elevation exception, same as dialog), mono items. */
+
+/* ── Trigger wrapper: positions the caret pseudo-element ── */
+.pdpp-select {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+}
+
+/* ── Trigger button (base-ui renders a <button>) ── */
+.pdpp-select__trigger {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  text-align: left;
+  /* Right padding leaves room for the › caret. */
+  padding: 8px 30px 8px 12px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  width: 100%;
+  cursor: pointer;
+  transition: border-color var(--motion-state);
+  /* Reset <button> chrome. */
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+}
+.pdpp-select__trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-color: var(--ring);
+}
+.pdpp-select__trigger[data-disabled],
+.pdpp-select__trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* Open state: tint the border so the trigger reads as active. */
+.pdpp-select__trigger[data-popup-open] {
+  border-color: var(--ring);
+}
+
+/* Disclosure caret — a › glyph turned a quarter-turn to point down.
+   Painted by the wrapper so it sits over the trigger at the right edge. */
+.pdpp-select::after {
+  content: "›";
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%) rotate(90deg);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+/* ── Positioner: base-ui manages z-index/position; we just anchor it ── */
+.pdpp-select-positioner {
+  z-index: 60;
+  outline: none;
+}
+
+/* ── Popup: the win — OS never styled this. radius 0, hairline, menu shadow ── */
+.pdpp-select-popup {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* Same elevation exception as IcDialog: a floating surface earns one shadow. */
+  box-shadow: 0 8px 24px -6px color-mix(in oklab, var(--foreground) 28%, transparent);
+  outline: none;
+  min-width: var(--anchor-width, 120px);
+  padding: 4px 0;
+  /* Fade on open/close (base-ui data attrs). */
+  transition: opacity var(--motion-state);
+}
+.pdpp-select-popup[data-starting-style],
+.pdpp-select-popup[data-ending-style] {
+  opacity: 0;
+}
+
+/* ── List: scrollable container for items ── */
+.pdpp-select-list {
+  max-height: 260px;
+  overflow-y: auto;
+  outline: none;
+}
+
+/* ── Item: mono, hover/highlight = --primary-tint, selected = --primary accent ── */
+.pdpp-select-item {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 7px 32px 7px 12px;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  transition: background var(--motion-state);
+  outline: none;
+  user-select: none;
+}
+/* Highlighted (keyboard or pointer hover) */
+.pdpp-select-item[data-highlighted] {
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+}
+/* Selected item */
+.pdpp-select-item[data-selected] {
+  color: var(--primary);
+}
+/* Disabled item */
+.pdpp-select-item[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── ItemIndicator: the ✓ checkmark shown for the selected item ── */
+.pdpp-select-item-indicator {
+  position: absolute;
+  right: 10px;
+  font-size: 0.75rem;
+  color: var(--primary);
+}
+
+/* ─── Timestamp ───────────────────────────────────────────────────
+   A <time> element in the mono protocol voice. Muted by default;
+   tabular-nums keeps digit columns aligned in tables and rows. The
+   relative label ("5 minutes ago") is post-mount; the absolute value
+   rides along as the title tooltip. */
+.pdpp-timestamp {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Unparseable / empty value falls back to an em dash, still muted. */
+.pdpp-timestamp--empty {
+  color: var(--muted-foreground);
+}
+
+/* ─── Dialog ──────────────────────────────────────────────────────
+   A modal surface skinned over @base-ui/react's Dialog (base-ui owns
+   focus-trap / dismissal / portal). A dialog floats above the page, so
+   it earns the ONE resting-shadow exception the kit grants modal/menu
+   surfaces — flat document surfaces never get a shadow. Square corners,
+   a hairline --border, --card paper, mono title eyebrow. */
+.pdpp-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in oklab, var(--foreground) 32%, transparent);
+  transition: opacity var(--motion-state);
+}
+.pdpp-dialog-backdrop[data-starting-style],
+.pdpp-dialog-backdrop[data-ending-style] {
+  opacity: 0;
+}
+.pdpp-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 32rem;
+  padding: 20px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* The one shadow exception: a floating modal earns soft elevation. */
+  box-shadow: 0 16px 48px -12px color-mix(in oklab, var(--foreground) 40%, transparent);
+  outline: none;
+  transition: opacity var(--motion-state), transform var(--motion-state);
+}
+.pdpp-dialog[data-starting-style],
+.pdpp-dialog[data-ending-style] {
+  opacity: 0;
+}
+/* Mono eyebrow title — protocol voice for the modal heading. */
+.pdpp-dialog__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+.pdpp-dialog__desc {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
   color: var(--muted-foreground);
 }
 

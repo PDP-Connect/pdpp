@@ -1,7 +1,7 @@
 "use client";
 
+import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect, useState } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
 import { readLastRecordsReadAt } from "./last-known-read.ts";
 
 /**
@@ -101,7 +101,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
         >
           Retry now
         </button>
-        <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/records">
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
           Reload Sources
         </a>
       </div>

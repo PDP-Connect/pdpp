@@ -12,6 +12,24 @@
  *       reference-implementation-architecture/spec.md
  */
 
+import {
+  Endorse,
+  Eyebrow,
+  IcButton,
+  IcField,
+  IcInput,
+  IcSelect,
+  IcTimestamp,
+  KV,
+  KVRow,
+  Sheet,
+  SheetBody,
+  SheetHead,
+  SheetSerial,
+  SheetTitle,
+  Typed,
+  TypedSm,
+} from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import {
   DataList,
@@ -19,7 +37,6 @@ import {
   PageHeader,
   Section,
   SplitLayout,
-  StatusBadge,
   Toolbar,
   ToolbarField,
 } from "@pdpp/operator-ui/components/primitives";
@@ -27,11 +44,8 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type ClientEventSubscriptionAttempt,
@@ -51,14 +65,48 @@ export const metadata: Metadata = {
 
 // Mirrors the SubscriptionStatus union on the server. Kept in one place so
 // the row badge tone and the status filter options stay in lockstep.
-const SUBSCRIPTION_STATUS_VOCABULARY = {
-  active: { label: "active", tone: "success" },
-  pending_verification: { label: "pending verification", tone: "warning" },
-  disabled: { label: "disabled", tone: "danger" },
-  disabled_failure: { label: "disabled · failure", tone: "danger" },
-  disabled_revoked: { label: "disabled · revoked", tone: "danger" },
-  deleted: { label: "deleted", tone: "neutral" },
-} as const;
+// Maps subscription status to Endorse variants:
+//   active             → active (green)
+//   pending_verification → expiring (amber — waiting, owner attention)
+//   disabled / disabled_failure / disabled_revoked → denied (red)
+//   deleted            → revoked (muted/struck — soft-deleted, not erased)
+function subscriptionEndorseStatus(
+  status: ClientEventSubscriptionStatus
+): "active" | "expiring" | "denied" | "revoked" {
+  switch (status) {
+    case "active":
+      return "active";
+    case "pending_verification":
+      return "expiring";
+    case "disabled":
+    case "disabled_failure":
+    case "disabled_revoked":
+      return "denied";
+    case "deleted":
+      return "revoked";
+    default:
+      return "revoked";
+  }
+}
+
+function subscriptionEndorseLabel(status: ClientEventSubscriptionStatus): string {
+  switch (status) {
+    case "active":
+      return "active";
+    case "pending_verification":
+      return "pending verification";
+    case "disabled":
+      return "disabled";
+    case "disabled_failure":
+      return "disabled · failure";
+    case "disabled_revoked":
+      return "disabled · revoked";
+    case "deleted":
+      return "deleted";
+    default:
+      return status;
+  }
+}
 
 const STATUS_FILTER_OPTIONS: { label: string; value: ClientEventSubscriptionStatus }[] = [
   { label: "active", value: "active" },
@@ -173,7 +221,7 @@ function renderPeek({
     return (
       <Section title="Subscription not found">
         <p className="pdpp-body text-muted-foreground">
-          Subscription <code className="pdpp-caption font-mono">{peekId}</code> was deleted or never existed.
+          Subscription <Typed as="code">{peekId}</Typed> was deleted or never existed.
         </p>
         <p className="pdpp-body mt-3">
           <Link className="underline-offset-2 hover:underline" href="/dashboard/event-subscriptions">
@@ -208,7 +256,7 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
       : null;
 
     return (
-      <DashboardShell active="event-subscriptions">
+      <RecordroomShellWithPalette>
         <PageHeader
           count={`${list.data.length}`}
           description="Webhook-style event subscriptions registered by clients against owner-issued grants. Operator surface is read-only with one safety-valve disable; rotate and replay remain client-owned."
@@ -240,14 +288,14 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
           }
           peek={renderPeek({ disableError: params.disableError, peek, peekId: params.peekId })}
         />
-      </DashboardShell>
+      </RecordroomShellWithPalette>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="event-subscriptions">
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -262,24 +310,21 @@ function FiltersForm({ params }: { params: ResolvedParams }) {
       {params.peekId ? <input name="peek" type="hidden" value={params.peekId} /> : null}
       <Toolbar>
         <ToolbarField label="client_id" width="min-w-[12rem]">
-          <Input defaultValue={params.clientId} name="client_id" placeholder="cli_…" />
+          <IcInput defaultValue={params.clientId} name="client_id" placeholder="cli_…" />
         </ToolbarField>
         <ToolbarField label="grant_id" width="min-w-[12rem]">
-          <Input defaultValue={params.grantId} name="grant_id" placeholder="grt_…" />
+          <IcInput defaultValue={params.grantId} name="grant_id" placeholder="grt_…" />
         </ToolbarField>
         <ToolbarField label="status" width="min-w-[10rem]">
-          <Select defaultValue={params.status} name="status">
-            <option value="">any</option>
-            {STATUS_FILTER_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </Select>
+          <IcSelect
+            defaultValue={params.status}
+            name="status"
+            options={[{ label: "any", value: "" }, ...STATUS_FILTER_OPTIONS]}
+          />
         </ToolbarField>
-        <Button className="mt-5" size="sm" type="submit">
+        <IcButton className="mt-5" size="sm" type="submit" variant="ghost">
           Filter
-        </Button>
+        </IcButton>
       </Toolbar>
     </form>
   );
@@ -303,22 +348,25 @@ function SubscriptionRow({
         scroll={false}
       >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">
+          <Typed as="code" className="break-all font-medium">
             {subscription.subscription_id}
-          </code>
+          </Typed>
           <div className="flex items-center gap-2">
-            <StatusBadge status={subscription.status} vocabulary={SUBSCRIPTION_STATUS_VOCABULARY} />
-            <span className="pdpp-caption text-muted-foreground">
-              <Timestamp value={subscription.updated_at} />
-            </span>
+            <Endorse
+              label={subscriptionEndorseLabel(subscription.status)}
+              status={subscriptionEndorseStatus(subscription.status)}
+            />
+            <TypedSm className="text-muted-foreground">
+              <IcTimestamp value={subscription.updated_at} />
+            </TypedSm>
           </div>
         </div>
         <div className="pdpp-caption mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
           <span>
-            client <code className="font-mono">{subscription.client_id}</code>
+            client <Typed as="code">{subscription.client_id}</Typed>
           </span>
           <span>
-            grant <code className="font-mono">{subscription.grant_id}</code>
+            grant <Typed as="code">{subscription.grant_id}</Typed>
           </span>
           <span>callback {subscription.callback_host}</span>
           <span>pending {subscription.pending_queue_count}</span>
@@ -338,7 +386,7 @@ function LastAttemptCell({ subscription }: { subscription: ClientEventSubscripti
   const code = subscription.last_attempt_status_code ?? "—";
   return (
     <span>
-      last attempt {okLabel} {code} · <Timestamp value={subscription.last_attempted_at} />
+      last attempt {okLabel} {code} · <IcTimestamp value={subscription.last_attempted_at} />
     </span>
   );
 }
@@ -352,57 +400,65 @@ function PeekPane({
 }) {
   const hideDisableForm = HIDE_DISABLE_FORM_STATUSES.has(subscription.status);
   return (
-    <Section
-      description={
-        <span>
+    <Sheet>
+      <SheetHead>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <SheetTitle>
+            <Typed as="code" className="break-all">
+              {subscription.subscription_id}
+            </Typed>
+          </SheetTitle>
+          <Endorse
+            label={subscriptionEndorseLabel(subscription.status)}
+            status={subscriptionEndorseStatus(subscription.status)}
+          />
+        </div>
+        <p className="pdpp-caption mt-1 text-muted-foreground">
           grant{" "}
           <Link className="underline-offset-2 hover:underline" href={dashboardRoutes.grant(subscription.grant_id)}>
-            <code className="font-mono">{subscription.grant_id}</code>
+            <SheetSerial>{subscription.grant_id}</SheetSerial>
           </Link>{" "}
-          · client <code className="font-mono">{subscription.client_id}</code>
-        </span>
-      }
-      title={
-        <span className="flex flex-wrap items-baseline gap-2">
-          <code className="pdpp-body break-all font-mono text-foreground">{subscription.subscription_id}</code>
-          <StatusBadge status={subscription.status} vocabulary={SUBSCRIPTION_STATUS_VOCABULARY} />
-        </span>
-      }
-    >
-      <dl className="pdpp-caption grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-muted-foreground">
-        <DefRow label="callback">
-          <code className="break-all font-mono text-foreground">{subscription.callback_url}</code>
-        </DefRow>
-        <DefRow label="created">
-          <Timestamp value={subscription.created_at} />
-        </DefRow>
-        <DefRow label="updated">
-          <Timestamp value={subscription.updated_at} />
-        </DefRow>
-        {subscription.disabled_at ? (
-          <DefRow label="disabled">
-            <Timestamp value={subscription.disabled_at} />
-            {subscription.disabled_reason ? (
-              <>
-                {" "}
-                <span>· reason {subscription.disabled_reason}</span>
-              </>
-            ) : null}
-          </DefRow>
-        ) : null}
-        <DefRow label="pending">{subscription.pending_queue_count}</DefRow>
-        <DefRow label="final fail">{subscription.final_failure_count}</DefRow>
-        <DefRow label="scope">{describeScope(subscription.scope)}</DefRow>
-      </dl>
+          · client <SheetSerial>{subscription.client_id}</SheetSerial>
+        </p>
+      </SheetHead>
+      <SheetBody>
+        <KV className="mb-4">
+          <KVRow k="callback">
+            <Typed as="code" className="break-all">
+              {subscription.callback_url}
+            </Typed>
+          </KVRow>
+          <KVRow k="created">
+            <IcTimestamp value={subscription.created_at} />
+          </KVRow>
+          <KVRow k="updated">
+            <IcTimestamp value={subscription.updated_at} />
+          </KVRow>
+          {subscription.disabled_at ? (
+            <KVRow k="disabled">
+              <IcTimestamp value={subscription.disabled_at} />
+              {subscription.disabled_reason ? (
+                <>
+                  {" "}
+                  · <Typed as="code">{subscription.disabled_reason}</Typed>
+                </>
+              ) : null}
+            </KVRow>
+          ) : null}
+          <KVRow k="pending">{subscription.pending_queue_count}</KVRow>
+          <KVRow k="final fail">{subscription.final_failure_count}</KVRow>
+          <KVRow k="scope">{describeScope(subscription.scope)}</KVRow>
+        </KV>
 
-      {hideDisableForm ? (
-        <DisabledNoticeCopy status={subscription.status} subscriptionId={subscription.subscription_id} />
-      ) : (
-        <DisableForm disableError={disableError} subscriptionId={subscription.subscription_id} />
-      )}
+        {hideDisableForm ? (
+          <DisabledNoticeCopy status={subscription.status} subscriptionId={subscription.subscription_id} />
+        ) : (
+          <DisableForm disableError={disableError} subscriptionId={subscription.subscription_id} />
+        )}
 
-      <RecentAttempts attempts={subscription.recent_attempts} />
-    </Section>
+        <RecentAttempts attempts={subscription.recent_attempts} />
+      </SheetBody>
+    </Sheet>
   );
 }
 
@@ -420,9 +476,9 @@ function DisabledNoticeCopy({
   subscriptionId: string;
 }) {
   const clientReenablePatch = (
-    <code className="font-mono">
+    <Typed as="code">
       PATCH /v1/event-subscriptions/{subscriptionId} {"{ enabled: true }"}
-    </code>
+    </Typed>
   );
   if (status === "disabled") {
     return (
@@ -443,9 +499,9 @@ function DisabledNoticeCopy({
   if (status === "disabled_revoked") {
     return (
       <p className="pdpp-caption mt-4 text-muted-foreground">
-        The bound grant has been revoked, so this subscription is not recoverable in place. The client's re-enable PATCH
-        is rejected with <code className="font-mono">409 grant_revoked</code>; the client would need to obtain a new
-        grant and create a new subscription.
+        The bound grant has been revoked, so this subscription is not recoverable in place. The client&apos;s re-enable
+        PATCH is rejected with <Typed as="code">409 grant_revoked</Typed>; the client would need to obtain a new grant
+        and create a new subscription.
       </p>
     );
   }
@@ -455,15 +511,6 @@ function DisabledNoticeCopy({
       This subscription has been deleted and cannot be re-enabled. The client would need to create a new subscription
       against an active grant.
     </p>
-  );
-}
-
-function DefRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <>
-      <dt className="pdpp-eyebrow self-start">{label}</dt>
-      <dd className="min-w-0 break-words">{children}</dd>
-    </>
   );
 }
 
@@ -477,10 +524,9 @@ function DisableForm({ subscriptionId, disableError }: { subscriptionId: string;
   return (
     <form action={disableSubscriptionAction} className="mt-4 flex flex-col gap-2">
       <input name="subscription_id" type="hidden" value={subscriptionId} />
-      <label className="pdpp-caption flex flex-col gap-1 text-muted-foreground" htmlFor={`reason-${subscriptionId}`}>
-        <span>reason (optional, max 256 bytes UTF-8)</span>
-        <Input defaultValue="" id={`reason-${subscriptionId}`} name="reason" placeholder="loop_suspected" />
-      </label>
+      <IcField htmlFor={`reason-${subscriptionId}`} label="Reason (optional, max 256 bytes UTF-8)">
+        <IcInput defaultValue="" id={`reason-${subscriptionId}`} name="reason" placeholder="loop_suspected" />
+      </IcField>
       <label
         className="pdpp-caption mt-1 flex items-center gap-2 text-muted-foreground"
         htmlFor={`confirm-${subscriptionId}`}
@@ -496,9 +542,9 @@ function DisableForm({ subscriptionId, disableError }: { subscriptionId: string;
           {disableError}
         </p>
       ) : null}
-      <Button size="sm" type="submit" variant="destructive">
+      <IcButton size="sm" type="submit" variant="destructive">
         Disable subscription
-      </Button>
+      </IcButton>
     </form>
   );
 }
@@ -509,20 +555,22 @@ function RecentAttempts({ attempts }: { attempts: ClientEventSubscriptionAttempt
   }
   return (
     <div className="mt-5">
-      <h3 className="pdpp-eyebrow mb-2">Recent attempts</h3>
+      <Eyebrow as="h3" className="mb-2">
+        Recent attempts
+      </Eyebrow>
       <ol className="pdpp-caption divide-y divide-border/70 border-border/70 border-y">
         {attempts.map((attempt) => (
           <li className="flex flex-wrap items-baseline justify-between gap-2 px-1 py-1.5" key={attempt.attempt_id}>
-            <span className="font-mono">
+            <Typed as="span">
               {attempt.ok ? "ok" : "fail"} {attempt.status_code ?? "—"}
-            </span>
+            </Typed>
             <span className="text-muted-foreground">{attempt.event_type}</span>
             <span className="text-muted-foreground tabular-nums">
               {attempt.latency_ms == null ? "—" : `${attempt.latency_ms}ms`}
             </span>
-            <span className="text-muted-foreground">
-              <Timestamp value={attempt.attempted_at} />
-            </span>
+            <TypedSm className="text-muted-foreground">
+              <IcTimestamp value={attempt.attempted_at} />
+            </TypedSm>
             {attempt.error ? <span className="text-destructive">err: {attempt.error}</span> : null}
           </li>
         ))}

@@ -1,9 +1,8 @@
 "use client";
 
+import { IcButton, IcInput } from "@pdpp/brand-react";
 import { useRouter } from "next/navigation";
 import { type SyntheticEvent, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import { type RunInteractionActionState, submitRunInteractionAction } from "./actions.ts";
 
 interface InteractionField {
@@ -76,7 +75,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
                   {field.label || field.name}
                   {field.required ? <span aria-hidden="true"> *</span> : null}
                 </span>
-                <Input
+                <IcInput
                   autoComplete="off"
                   id={fieldId}
                   name={field.name}
@@ -99,12 +98,12 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={isPending} size="sm" type="submit">
+        <IcButton disabled={isPending} size="sm" type="submit">
           {isPending ? "Submitting…" : submitLabel}
-        </Button>
-        <Button disabled={isPending} onClick={handleCancel} size="sm" type="button" variant="outline">
+        </IcButton>
+        <IcButton disabled={isPending} onClick={handleCancel} size="sm" type="button" variant="ghost">
           Cancel interaction
-        </Button>
+        </IcButton>
       </div>
     </form>
   );

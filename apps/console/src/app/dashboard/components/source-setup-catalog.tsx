@@ -1,7 +1,6 @@
+import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import {
   sourceSetupAction,
@@ -139,7 +138,7 @@ function ExistingSourceReuse({
             </div>
             <div className="flex flex-wrap gap-2">
               <Link
-                className={buttonVariants({ variant: "outline", size: "sm" })}
+                className={buttonVariants({ variant: "ghost", size: "sm" })}
                 href={`/dashboard/connect/status/${encodeURIComponent(source.connectionId)}`}
               >
                 View source
@@ -235,10 +234,10 @@ export function SourceSetupCatalog({
         <label className="sr-only" htmlFor="source_q">
           Search data sources
         </label>
-        <Input defaultValue={query} id="source_q" name="source_q" placeholder="Search source name or connector key" />
-        <Button size="sm" type="submit" variant="outline">
+        <IcInput defaultValue={query} id="source_q" name="source_q" placeholder="Search source name or connector key" />
+        <IcButton size="sm" type="submit" variant="ghost">
           Search
-        </Button>
+        </IcButton>
       </form>
       {filtered.length > 0 ? (
         <ul className="grid gap-3">

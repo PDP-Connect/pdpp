@@ -1,6 +1,7 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import { type ExistingSourceSetupLink, SourceSetupCatalog } from "../../components/source-setup-catalog.tsx";
 import { buildConnectorCatalog, type ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
@@ -58,16 +59,16 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
   }
   const sourceQuery = typeof params.source_q === "string" ? params.source_q.trim() : "";
   return (
-    <DashboardShell active="records">
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { href: dashboardRoutes.section.overview, label: "Dashboard" },
@@ -83,6 +84,6 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
         existingSourcesByConnector={existingSourcesByConnector}
         query={sourceQuery}
       />
-    </DashboardShell>
+    </RecordroomShellWithPalette>
   );
 }
