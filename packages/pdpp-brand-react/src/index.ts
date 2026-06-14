@@ -3,7 +3,7 @@
  *
  * Import from this barrel for all Ink Carbon primitives:
  *   import { Sheet, SheetHead, SheetTitle, Carbon, Endorse, IcButton }
- *     from "@/components/ink-carbon";
+ *     from "@pdpp/brand-react";
  *
  * CSS is imported per-component — no top-level CSS side-effect here.
  */

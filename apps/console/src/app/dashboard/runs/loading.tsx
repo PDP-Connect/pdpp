@@ -1,4 +1,4 @@
-import { RecordroomShell } from "@/components/ink-carbon/index.ts";
+import { RecordroomShell } from "@pdpp/brand-react";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 
 /**

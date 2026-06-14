@@ -15,7 +15,7 @@
  * App Router treats _-prefixed folders as private and excludes them
  * from routing, which is why /_design 404s.)
  */
-import type { Metadata } from "next";
+
 import {
   Band,
   BandCell,
@@ -58,7 +58,8 @@ import {
   Title,
   Typed,
   TypedSm,
-} from "@/components/ink-carbon/index.ts";
+} from "@pdpp/brand-react";
+import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Ink Carbon — Design showcase",

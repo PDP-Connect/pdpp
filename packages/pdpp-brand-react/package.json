@@ -1,0 +1,39 @@
+{
+  "name": "@pdpp/brand-react",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ink Carbon React component library — the framework-bound layer atop @pdpp/brand tokens. Ships .tsx sources directly (no build step); transpiled by the consuming app's Next bundler via transpilePackages. Component styling (components.css / shell.css) ships alongside the components.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./components.css": "./src/components.css",
+    "./shell.css": "./src/shell.css"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "@pdpp/brand": "workspace:*",
+    "@pdpp/operator-ui": "workspace:*"
+  },
+  "peerDependencies": {
+    "next": "^16.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "ultracite": "7.6.0"
+  }
+}

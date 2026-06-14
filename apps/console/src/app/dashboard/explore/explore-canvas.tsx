@@ -37,6 +37,18 @@
  */
 "use client";
 
+import {
+  CopyMono,
+  displayTitle,
+  IcInput,
+  RecordBody,
+  Sheet,
+  SheetBody,
+  SheetFoot,
+  SheetHead,
+  SheetSerial,
+  SheetTitle,
+} from "@pdpp/brand-react";
 import { feedDescription, feedSectionTitle } from "@pdpp/operator-ui/components/views/explorer-utils";
 import {
   type ExplorerBlobAffordance,
@@ -49,18 +61,6 @@ import {
 } from "@pdpp/operator-ui/components/views/records-explorer-view";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  CopyMono,
-  displayTitle,
-  IcInput,
-  RecordBody,
-  Sheet,
-  SheetBody,
-  SheetFoot,
-  SheetHead,
-  SheetSerial,
-  SheetTitle,
-} from "@/components/ink-carbon/index.ts";
 import {
   buildCompiledQuery,
   hasClientSideTokens,

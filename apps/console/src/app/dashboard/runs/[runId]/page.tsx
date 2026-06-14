@@ -1,9 +1,9 @@
+import { RecordroomShell } from "@pdpp/brand-react";
 import { Callout, MetaPill, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { RecordroomShell } from "@/components/ink-carbon";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";

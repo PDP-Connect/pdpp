@@ -7,6 +7,7 @@
     "./app.css": "./app.css",
     "./base.css": "./base.css",
     "./docs.css": "./docs.css",
+    "./ink-carbon.css": "./ink-carbon.css",
     "./chrome": "./chrome.ts"
   },
   "dependencies": {

@@ -33,9 +33,9 @@
  * second surface ever needs them.
  */
 
+import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
-import { RecordroomShell } from "@/components/ink-carbon/index.ts";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";

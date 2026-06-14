@@ -13,9 +13,9 @@
  * the page must never pull an inline run timeline).
  */
 
+import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { redirect } from "next/navigation";
-import { RecordroomShell } from "@/components/ink-carbon";
 import { LivePoller } from "../components/live-poller.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";

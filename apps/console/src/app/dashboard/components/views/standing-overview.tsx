@@ -13,8 +13,8 @@
  *
  * Design source: docs/design/ink-carbon/project/recordroom/rr-overview.jsx.
  */
-import { Endorse, Eyebrow, Monogram } from "@/components/ink-carbon/index.ts";
-import "@/components/ink-carbon/components.css";
+import { Endorse, Eyebrow, Monogram } from "@pdpp/brand-react";
+import "@pdpp/brand-react/components.css";
 import type { StandingData } from "./standing-view-model.ts";
 
 function HeroLine({ line }: { line: StandingData["hero"]["line"] }) {

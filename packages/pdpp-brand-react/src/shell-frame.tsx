@@ -79,8 +79,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Connect AI apps", href: "/dashboard/connect" },
       { label: "Deployment", href: "/dashboard/deployment" },
-      { label: "Device exporters", href: "/dashboard/exporters" },
-      { label: "Event subscriptions", href: "/dashboard/events" },
+      { label: "Device exporters", href: "/dashboard/device-exporters" },
+      { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
     ],
   },
   { heading: "Glance", items: [{ label: "Standing", href: "/dashboard" }] },

@@ -15,8 +15,8 @@
  * live path never imports the fixtures when `demo` is absent.
  */
 
+import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import { RecordroomShell } from "@/components/ink-carbon/index.ts";
 import { StandingOverview } from "./components/views/standing-overview.tsx";
 import { buildStandingData, type StandingHrefs, type StandingInputs } from "./components/views/standing-view-model.ts";
 import { rethrowControlFlow } from "./lib/control-flow.ts";
