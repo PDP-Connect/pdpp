@@ -172,8 +172,9 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
     <li className="py-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="pdpp-title text-foreground">{device.display_name || device.device_id}</h2>
+          {/* P1: device name on its own line, badges below with consistent gap */}
+          <h2 className="pdpp-title text-foreground">{device.display_name || device.device_id}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
             <StatusBadge status={device.status} vocabulary={DEVICE_STATUS_VOCABULARY} />
             <StatusBadge status={visibleStatus} vocabulary={DEVICE_STATUS_VOCABULARY} />
           </div>
@@ -193,7 +194,7 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
               </span>
             ) : null}
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2">
             <MetaPill label="accepted" tone="success" value={counts.accepted} />
             <MetaPill label="rejected" tone={counts.rejected > 0 ? "danger" : "neutral"} value={counts.rejected} />
             <MetaPill label="sources" value={device.source_instances.length} />
@@ -220,7 +221,8 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
       </div>
 
       {device.source_instances.length > 0 ? (
-        <ul className="mt-4 grid gap-2 lg:grid-cols-2">
+        /* P1: single column on mobile, 2-col on lg only — cards need breathing room */
+        <ul className="mt-4 grid gap-3 lg:grid-cols-2">
           {device.source_instances.map((source) => (
             <SourceInstanceCard key={source.source_instance_id} source={source} />
           ))}

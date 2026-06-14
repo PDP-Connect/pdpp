@@ -56,11 +56,14 @@ function CopyRow({ body, label, title, value }: SetupEntry) {
         <h3 className="pdpp-title text-foreground">{title}</h3>
         <p className="pdpp-caption mt-1 text-muted-foreground">{body}</p>
       </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <code className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border/80 bg-muted/30 px-3 py-2 font-mono text-foreground">
+      {/* P1: mobile — code block + copy button stack vertically, button ≥44px tap target */}
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+        <code className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-border/80 bg-muted/30 px-3 py-2 font-mono text-foreground sm:whitespace-nowrap sm:break-normal">
           {value}
         </code>
-        <CopyButton ariaLabel={`Copy ${label}`} value={value} />
+        <div className="flex justify-end sm:justify-start">
+          <CopyButton ariaLabel={`Copy ${label}`} value={value} />
+        </div>
       </div>
     </li>
   );

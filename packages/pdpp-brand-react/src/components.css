@@ -1413,7 +1413,8 @@
    ═══════════════════════════════════════════════════════════════════ */
 .rr-x {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr) 350px;
+  /* P0-3: widen inspector column (350→420px) so long IDs/values don't wrap chaotically */
+  grid-template-columns: 230px minmax(0, 1fr) 420px;
   gap: 28px;
   align-items: start;
 }
@@ -2085,7 +2086,8 @@
 }
 
 /* ─── Responsive ─── */
-@media (max-width: 1160px) {
+/* P0-3: bump breakpoint slightly to keep 3-col layout visible longer */
+@media (max-width: 1280px) {
   .rr-x {
     grid-template-columns: 200px minmax(0, 1fr);
   }
@@ -2183,21 +2185,51 @@
   }
 }
 
-/* ─── Traces table mobile (D-8 / D-9 / D-10 / D-11) ──────────────
-   At ≤640px the 5-column grid crushes headers to ~40px each, causing
-   overlap. Wrap the Table in .rr-traces-table-scroll to get horizontal
-   scroll with a comfortable minimum table width. The peek split-pane
-   (D-9) forces a 50/50 split on 390px — collapse to single-column and
-   show only the detail panel. D-11: pre/JSON blocks already have
-   overflow-x:auto from the component; no additional fix needed here.   */
-.rr-traces-table-scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
+/* ─── Traces table mobile (P0-2 / D-9) ────────────────────────────
+   P0-2: At ≤640px the 5-column table grid overflows 390px. We reflow
+   each row into a 2-line card: subject+id on top, then a wrapped meta
+   line (status · kinds · events · time). The header row is hidden
+   (labels redundant with inline ordering). No horizontal scroll.
+   D-9: collapse the peek split to single column when a detail panel
+   is open — hide the list, show the panel full-width. */
+
+/* ── Card reflow at ≤640px ── */
 @media (max-width: 640px) {
-  .rr-traces-table-scroll .pdpp-table__hrow,
+  /* Hide the desktop header row — column labels are implicit in card order */
+  .rr-traces-table-scroll .pdpp-table__hrow {
+    display: none;
+  }
+  /* Each data row becomes a flex column (card) */
   .rr-traces-table-scroll .pdpp-table__row {
-    min-width: 520px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px 0;
+    align-items: stretch;
+  }
+  /* Subject cell (second child in source order — status is first) */
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(2) {
+    order: -1; /* Subject first */
+  }
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(1) {
+    order: 0;  /* Status below subject */
+  }
+  /* Meta row: kinds + events + time wrap inline */
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(3),
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(4),
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(5) {
+    order: 1;
+    display: inline;
+  }
+  /* Wrap the trailing three cells into one flex meta line */
+  .rr-traces-table-scroll .pdpp-table__row {
+    flex-wrap: nowrap;
+  }
+  /* All cells lose their grid sizing in card mode */
+  .rr-traces-table-scroll .pdpp-table__row > * {
+    width: auto;
+    text-align: left;
+    justify-self: auto;
   }
   /* D-9: collapse the peek split to single column; hide the list, show only
      the detail panel full-width (detail panel is the second child). */
@@ -2206,6 +2238,93 @@
   }
   .rr-traces-split > *:first-child:has(+ *) {
     display: none;
+  }
+}
+
+/* ── Trace card meta line — status / kinds / events / time on one row ── */
+.rr-traces-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+/* ─── P0-3: Null / empty / bracket token de-emphasis ───────────────
+   RecordBody emits .rr-field-null / .rr-field-empty for these tokens.
+   We also cover raw bracket/null strings rendered as TypedSm inside
+   the inspector via the data-null / data-empty attributes. Muted + smaller
+   so they don't compete visually with real values. */
+.rr-field-null,
+.rr-field-empty,
+[data-field-null="true"],
+[data-field-empty="true"] {
+  color: var(--muted-foreground);
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+/* ─── P1: Compiled call line — demote on mobile ───────────────────
+   The GET /v1/records?… line is machine-parity reference, not the
+   primary reading surface. At ≤640px collapse it behind a <details>
+   so it doesn't dominate the phone layout. */
+@media (max-width: 640px) {
+  .rr-x-compiled {
+    /* Wrap into a collapsible — JS toggles .is-collapsed on user tap.
+       Without JS (SSR) it stays visible but smaller. */
+    font-size: 0.85em;
+    opacity: 0.75;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+  .rr-x-compiled__label {
+    font-size: 8.5px;
+  }
+  /* Operators help text — also secondary on mobile */
+  .rr-x-help > summary {
+    font-size: 9px;
+  }
+}
+
+/* ─── P1: Facet rail — sticky apply/close footer on mobile ─────────
+   When the rail <details> is open on mobile (≤860px), a sticky footer
+   bar with a "Close filters" affordance pins to the bottom of the open
+   rail so the user is never trapped in an endless checklist. */
+@media (max-width: 860px) {
+  .rr-x-rail[open] {
+    position: relative;
+  }
+  .rr-x-rail__close {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--card);
+    /* Sticky inside the open <details> — sticks to bottom of the element */
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+}
+/* Hide the close button on desktop (rail is always open, no toggle) */
+@media (min-width: 861px) {
+  .rr-x-rail__close {
+    display: none;
+  }
+}
+
+/* ─── P1: Connect page — command copy card mobile touch targets ─────
+   CopyRow: on mobile the code block and copy button stack vertically;
+   the copy button gets a minimum 44px touch target. */
+@media (max-width: 640px) {
+  .rr-copy-row__cmd {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .rr-copy-row__btn {
+    min-height: 44px;
+    min-width: 44px;
+    align-self: flex-end;
   }
 }
 

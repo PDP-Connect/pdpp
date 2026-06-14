@@ -93,7 +93,7 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
         placeholder="https://client.example/callback"
       />
       <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-source_kind">
-        <span className="pdpp-eyebrow">Source kind</span>
+        <span className="pdpp-caption font-medium text-muted-foreground">Source kind</span>
         <IcSelect
           defaultValue={draft.sourceKind}
           id="grant-request-source_kind"
@@ -118,7 +118,7 @@ function DraftFormFields({ connectionOptions, draft }: { connectionOptions: Conn
       <FormField defaultValue={draft.fields} label="Fields (comma-separated)" name="fields" placeholder="id, name" />
       <FormField defaultValue={draft.view} label="View" name="view" />
       <label className="flex flex-col gap-1 md:col-span-2 xl:col-span-3" htmlFor="grant-request-purpose-description">
-        <span className="pdpp-eyebrow">Purpose description</span>
+        <span className="pdpp-caption font-medium text-muted-foreground">Purpose description</span>
         <textarea
           className="pdpp-input"
           defaultValue={draft.purposeDescription}
@@ -149,7 +149,7 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
   if (connectionOptions.length <= 1) {
     return (
       <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
-        <span className="pdpp-eyebrow">Connection</span>
+        <span className="pdpp-caption font-medium text-muted-foreground">Connection</span>
         <input name="connection_id" type="hidden" value={FAN_IN_OPTION_VALUE} />
         <span
           className="pdpp-caption rounded-md border border-border/80 border-dashed bg-muted/20 px-3 py-2 text-muted-foreground"
@@ -163,7 +163,7 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
   }
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
-      <span className="pdpp-eyebrow">Connection</span>
+      <span className="pdpp-caption font-medium text-muted-foreground">Connection</span>
       <IcSelect
         defaultValue={draft.connectionId}
         id="grant-request-connection_id"
@@ -179,7 +179,8 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
 
 function DraftFormActions() {
   return (
-    <div className="flex flex-wrap justify-end gap-2 border-border/70 border-t pt-3">
+    /* P1: mobile — wrap actions, left-align on narrow screens */
+    <div className="flex flex-wrap items-center gap-2 border-border/70 border-t pt-3 sm:justify-end">
       <IcButton formAction={saveGrantRequestDraftAction} size="sm" type="submit" variant="ghost">
         Save draft
       </IcButton>
@@ -365,8 +366,9 @@ function FormField({
   placeholder?: string;
 }) {
   return (
+    // P1: use pdpp-caption label (sentence case, less noisy than all-caps eyebrow)
     <label className="flex min-w-0 flex-col gap-1" htmlFor={`grant-request-${name}`}>
-      <span className="pdpp-eyebrow">{label}</span>
+      <span className="pdpp-caption font-medium text-muted-foreground">{label}</span>
       <IcInput
         defaultValue={defaultValue}
         id={`grant-request-${name}`}
@@ -391,7 +393,7 @@ function FormSelect({
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-1" htmlFor={`grant-request-${name}`}>
-      <span className="pdpp-eyebrow">{label}</span>
+      <span className="pdpp-caption font-medium text-muted-foreground">{label}</span>
       <IcSelect defaultValue={defaultValue} id={`grant-request-${name}`} name={name} options={options} />
     </label>
   );

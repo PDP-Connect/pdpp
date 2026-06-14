@@ -955,6 +955,20 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             streamFacets={streamFacets}
           />
         </div>
+        {/* P1: sticky close affordance so users aren't trapped in the mobile rail */}
+        <div className="rr-x-rail__close">
+          <button
+            className="rr-lens"
+            onClick={() => {
+              if (railRef.current) {
+                railRef.current.open = false;
+              }
+            }}
+            type="button"
+          >
+            Close filters ✕
+          </button>
+        </div>
       </details>
 
       {/* ── Feed ── */}

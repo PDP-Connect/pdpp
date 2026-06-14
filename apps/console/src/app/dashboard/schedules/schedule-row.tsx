@@ -180,8 +180,10 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   return (
     <li>
       <div className="flex flex-col gap-2 px-3 py-3 hover:bg-muted/40">
-        {/* Top row: identity + mode + actions */}
-        <div className="flex flex-wrap items-start justify-between gap-2 sm:flex-nowrap sm:gap-4">
+        {/* Top area: identity on its own line, then actions on a separate row on mobile */}
+        {/* P0-1: at ≤640px these two sections stack vertically (flex-col) so
+            the long source/account name never shares a line with the action buttons. */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           {/* Identity */}
           <div className="min-w-0 flex-1">
             <Link className="pdpp-body font-medium text-foreground hover:underline" href={recordsHref}>
@@ -190,7 +192,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
             <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{connectorKey}</div>
           </div>
 
-          {/* Status + action buttons — pinned to the right even on mobile */}
+          {/* Status + action buttons — full-width row on mobile, right-pinned on sm+ */}
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {ineligibilityReason && (
               <span

@@ -204,29 +204,91 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           {result.data.length === 0 ? (
             <TracesEmptyState hasFilters={hasFilters} />
           ) : (
-            <div className="rr-traces-table-scroll">
-            <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
-              <TableHeaderRow>
-                <TableHeader>Status</TableHeader>
-                <TableHeader>Subject</TableHeader>
-                <TableHeader>Kinds</TableHeader>
-                <TableHeader numeric>Events</TableHeader>
-                <TableHeader numeric>Time</TableHeader>
-              </TableHeaderRow>
-              {result.data.map((trace) => {
-                const peeked = params.peek === trace.trace_id;
-                const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
-                const detailHref = `/dashboard/traces/${encodeURIComponent(trace.trace_id)}`;
-                const label = traceRowLabel(trace);
-                const kinds = trace.kinds.slice(0, 3).join(", ");
-                return (
-                  <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
-                    {/* Status */}
-                    <TableCell>
-                      <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
-                    </TableCell>
-                    {/* Subject — primary label + mono trace id below */}
-                    <TableCell>
+            <>
+              {/* Desktop table — hidden on mobile via CSS */}
+              <div className="rr-traces-table-wrap hidden sm:block">
+                <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
+                  <TableHeaderRow>
+                    <TableHeader>Status</TableHeader>
+                    <TableHeader>Subject</TableHeader>
+                    <TableHeader>Kinds</TableHeader>
+                    <TableHeader numeric>Events</TableHeader>
+                    <TableHeader numeric>Time</TableHeader>
+                  </TableHeaderRow>
+                  {result.data.map((trace) => {
+                    const peeked = params.peek === trace.trace_id;
+                    const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
+                    const label = traceRowLabel(trace);
+                    const kinds = trace.kinds.slice(0, 3).join(", ");
+                    return (
+                      <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
+                        <TableCell>
+                          <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+                        </TableCell>
+                        <TableCell>
+                          <Link href={peekHref} scroll={false} style={{ display: "block", textDecoration: "none" }}>
+                            <span
+                              style={{
+                                display: "block",
+                                fontFamily: "var(--font-sans)",
+                                fontSize: "0.875rem",
+                                fontWeight: 600,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                color: "var(--foreground)",
+                              }}
+                            >
+                              {label}
+                            </span>
+                            <TypedSm
+                              style={{
+                                display: "block",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                marginTop: 1,
+                              }}
+                            >
+                              {trace.trace_id}
+                            </TypedSm>
+                          </Link>
+                        </TableCell>
+                        <TableCell>
+                          {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
+                        </TableCell>
+                        <TableCell numeric>
+                          <TypedSm>{trace.event_count}</TypedSm>
+                        </TableCell>
+                        <TableCell numeric>
+                          <TypedSm>
+                            <IcTimestamp value={trace.last_at} />
+                          </TypedSm>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </Table>
+              </div>
+
+              {/* Mobile card list — shown only at <640px */}
+              <ul className="rr-traces-cards sm:hidden" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                {result.data.map((trace) => {
+                  const peeked = params.peek === trace.trace_id;
+                  const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
+                  const detailHref = `/dashboard/traces/${encodeURIComponent(trace.trace_id)}`;
+                  const label = traceRowLabel(trace);
+                  const kinds = trace.kinds.slice(0, 3).join(", ");
+                  return (
+                    <li
+                      key={trace.trace_id}
+                      style={{
+                        borderBottom: "1px solid var(--border)",
+                        padding: "10px 0",
+                        background: peeked ? "var(--primary-tint)" : undefined,
+                      }}
+                    >
+                      {/* Subject line */}
                       <Link href={peekHref} scroll={false} style={{ display: "block", textDecoration: "none" }}>
                         <span
                           style={{
@@ -249,31 +311,45 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
                             marginTop: 1,
+                            color: "var(--muted-foreground)",
                           }}
                         >
                           {trace.trace_id}
                         </TypedSm>
                       </Link>
-                    </TableCell>
-                    {/* Kinds */}
-                    <TableCell>
-                      {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
-                    </TableCell>
-                    {/* Event count */}
-                    <TableCell numeric>
-                      <TypedSm>{trace.event_count}</TypedSm>
-                    </TableCell>
-                    {/* Timestamp */}
-                    <TableCell numeric>
-                      <TypedSm>
-                        <IcTimestamp value={trace.last_at} />
-                      </TypedSm>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </Table>
-            </div>
+                      {/* Meta line: status · kinds · events · time */}
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                          gap: "5px 10px",
+                          marginTop: 6,
+                        }}
+                      >
+                        <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+                        {kinds ? (
+                          <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm>
+                        ) : null}
+                        <TypedSm style={{ color: "var(--muted-foreground)" }}>
+                          {trace.event_count} events
+                        </TypedSm>
+                        <TypedSm style={{ color: "var(--muted-foreground)" }}>
+                          <IcTimestamp value={trace.last_at} />
+                        </TypedSm>
+                        <Link
+                          className={buttonVariants({ variant: "ghost", size: "sm" })}
+                          href={detailHref}
+                          style={{ marginLeft: "auto", fontSize: "0.7rem", padding: "2px 8px" }}
+                        >
+                          →
+                        </Link>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
 
           {/* ── Pagination ────────────────────────────────────────── */}
