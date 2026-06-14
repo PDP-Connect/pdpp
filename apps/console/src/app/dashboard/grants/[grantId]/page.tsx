@@ -1,9 +1,9 @@
-import { RecordroomShell } from "@pdpp/brand-react";
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getGrantTimeline, lookupGrantPackageIdForGrant } from "../../lib/ref-client.ts";
@@ -41,10 +41,10 @@ export default async function GrantDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Grant" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -60,7 +60,7 @@ export default async function GrantDetailPage({
   const packageHref = packageId ? `/dashboard/grants/packages/${encodeURIComponent(packageId)}` : null;
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <TimelineDetailView
         beforeTimelineContent={
           <div className="pdpp-caption mb-6 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
@@ -86,6 +86,6 @@ export default async function GrantDetailPage({
         routes={dashboardRoutes}
         subject="grant"
       />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

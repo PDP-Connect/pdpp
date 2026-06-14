@@ -23,7 +23,6 @@ import {
   KV,
   KVRow,
   ProtocolSurface,
-  RecordroomShell,
   Sheet,
   SheetBody,
   SheetHead,
@@ -38,6 +37,7 @@ import {
   TypedSm,
 } from "@pdpp/brand-react";
 import { notFound } from "next/navigation";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getTraceTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
 
@@ -117,8 +117,8 @@ function TraceServerUnreachable({ rsUrl }: { rsUrl: string }) {
       </SheetHead>
       <SheetBody>
         <Body>
-          The dashboard could not reach its PDPP authorization server at{" "}
-          <Typed as="code">{rsUrl}</Typed>. It recovers as soon as the server responds again.
+          The dashboard could not reach its PDPP authorization server at <Typed as="code">{rsUrl}</Typed>. It recovers
+          as soon as the server responds again.
         </Body>
         <ul className="pdpp-caption mt-3 grid gap-1" style={{ color: "var(--color-muted-foreground)" }}>
           <li>Confirm the PDPP service is running in your deployment.</li>
@@ -209,10 +209,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
       </TableCell>
       <TableCell>
         <details>
-          <summary
-            className="pdpp-caption"
-            style={{ color: "var(--color-muted-foreground)", cursor: "pointer" }}
-          >
+          <summary className="pdpp-caption" style={{ color: "var(--color-muted-foreground)", cursor: "pointer" }}>
             data
           </summary>
           <pre
@@ -249,8 +246,7 @@ function ProgressGroupTableRow({ events, startIndex }: { events: SpineEvent[]; s
         <Typed as="code">run.progress_reported</Typed>
         <br />
         <TypedSm style={{ color: "var(--color-muted-foreground)" }}>
-          {events.length.toLocaleString()} reports ·{" "}
-          {typeof last.data?.message === "string" ? last.data.message : "—"}
+          {events.length.toLocaleString()} reports · {typeof last.data?.message === "string" ? last.data.message : "—"}
         </TypedSm>
       </TableCell>
       <TableCell>
@@ -264,10 +260,7 @@ function ProgressGroupTableRow({ events, startIndex }: { events: SpineEvent[]; s
       </TableCell>
       <TableCell>
         <details>
-          <summary
-            className="pdpp-caption"
-            style={{ color: "var(--color-muted-foreground)", cursor: "pointer" }}
-          >
+          <summary className="pdpp-caption" style={{ color: "var(--color-muted-foreground)", cursor: "pointer" }}>
             {events.length.toLocaleString()} individual reports
           </summary>
           <ol className="mt-2" style={{ listStyle: "none", padding: 0 }}>
@@ -301,9 +294,9 @@ export default async function TraceDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <TraceServerUnreachable rsUrl={getAsInternalUrl()} />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -337,7 +330,7 @@ export default async function TraceDetailPage({
   const cliCommand = `pdpp ref trace show ${traceId}`;
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       {/* ─── Breadcrumb ─── */}
       <nav aria-label="Breadcrumb" className="pdpp-caption mb-6" style={{ color: "var(--color-muted-foreground)" }}>
         <a href="/dashboard/traces" style={{ color: "inherit" }}>
@@ -406,7 +399,7 @@ export default async function TraceDetailPage({
       </Band>
 
       {/* ─── Pivot links ─── */}
-      {(grantIds.length > 0 || runIds.length > 0) ? (
+      {grantIds.length > 0 || runIds.length > 0 ? (
         <div className="mb-6" style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
           {grantIds.map((id) => (
             <a
@@ -421,7 +414,11 @@ export default async function TraceDetailPage({
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >
-              grant <Typed as="code" className="ml-1">{id}</Typed> →
+              grant{" "}
+              <Typed as="code" className="ml-1">
+                {id}
+              </Typed>{" "}
+              →
             </a>
           ))}
           {runIds.map((id) => (
@@ -437,7 +434,11 @@ export default async function TraceDetailPage({
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >
-              run <Typed as="code" className="ml-1">{id}</Typed> →
+              run{" "}
+              <Typed as="code" className="ml-1">
+                {id}
+              </Typed>{" "}
+              →
             </a>
           ))}
         </div>
@@ -465,13 +466,7 @@ export default async function TraceDetailPage({
             </TableHeaderRow>
             {nodes.map((node) => {
               if (node.kind === "progress-group") {
-                return (
-                  <ProgressGroupTableRow
-                    events={node.events}
-                    key={`pg-${node.start}`}
-                    startIndex={node.start}
-                  />
-                );
+                return <ProgressGroupTableRow events={node.events} key={`pg-${node.start}`} startIndex={node.start} />;
               }
               return <EventTableRow event={node.event} index={node.index} key={node.event.event_id} />;
             })}
@@ -482,7 +477,11 @@ export default async function TraceDetailPage({
           <div className="pdpp-caption mt-4" style={{ display: "flex", justifyContent: "flex-end" }}>
             <a
               href={loadMoreHref}
-              style={{ color: "var(--color-muted-foreground)", textDecoration: "underline", textUnderlineOffset: "2px" }}
+              style={{
+                color: "var(--color-muted-foreground)",
+                textDecoration: "underline",
+                textUnderlineOffset: "2px",
+              }}
             >
               load more timeline events →
             </a>
@@ -497,10 +496,7 @@ export default async function TraceDetailPage({
         </Eyebrow>
         <Sheet>
           <SheetBody>
-            <pre
-              className="pdpp-caption overflow-x-auto"
-              style={{ fontFamily: "var(--font-mono)" }}
-            >
+            <pre className="pdpp-caption overflow-x-auto" style={{ fontFamily: "var(--font-mono)" }}>
               {cliCommand}
             </pre>
           </SheetBody>
@@ -521,6 +517,6 @@ export default async function TraceDetailPage({
           raw: <Typed as="code">{rsUrl}</Typed>
         </Caption>
       </ProtocolSurface>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

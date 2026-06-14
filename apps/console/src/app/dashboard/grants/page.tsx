@@ -1,4 +1,4 @@
-import { buttonVariants, IcButton, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
@@ -7,6 +7,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -65,10 +66,10 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Grants" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -159,9 +160,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   };
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <ListWithPeekView params={viewParams} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

@@ -33,9 +33,9 @@
  * second surface ever needs them.
  */
 
-import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -104,21 +104,21 @@ export default async function RecordsExplorerPage({
       );
     }
     return (
-      <RecordroomShell build="pdpp 0.1.0" host="this server">
+      <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
         <ExploreCanvas
           data={data}
           explorePath={dashboardRoutes.section.explore}
           order={order}
           peekRelationships={peekRelationships}
         />
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell build="pdpp 0.1.0" host="this server">
+        <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;

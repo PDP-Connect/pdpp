@@ -20,7 +20,6 @@ import {
   IcInput,
   IcSelect,
   IcTimestamp,
-  RecordroomShell,
   Sheet,
   SheetBody,
   SheetHead,
@@ -37,6 +36,7 @@ import {
 } from "@pdpp/brand-react";
 import { traceRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -105,10 +105,10 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <TracesHeader />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -118,7 +118,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
   const isPeeking = Boolean(params.peek && peekEnvelope);
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <TracesHeader />
 
       {/* ── Filter band ─────────────────────────────────────────────── */}
@@ -315,7 +315,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
           />
         ) : null}
       </div>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

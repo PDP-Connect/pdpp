@@ -1,4 +1,4 @@
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 
 /**
@@ -11,8 +11,8 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
  */
 export default function RunsLoading() {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <ListLoadingSkeleton label="runs" rows={8} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

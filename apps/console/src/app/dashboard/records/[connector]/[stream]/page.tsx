@@ -1,10 +1,11 @@
-import { buttonVariants, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
 import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
 import { deriveDeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
 import type { DeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-kind";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
@@ -137,10 +138,10 @@ export default async function StreamPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
@@ -149,7 +150,7 @@ export default async function StreamPage({
       // dropped from the manifest, records-read returns 404. Render a bounded
       // honest state instead of crashing to the segment error boundary.
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader
             breadcrumbs={[
               { label: "Sources", href: "/dashboard/records" },
@@ -175,7 +176,7 @@ export default async function StreamPage({
               to see currently available streams.
             </p>
           </div>
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -256,7 +257,7 @@ export default async function StreamPage({
       : [];
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <>
@@ -378,7 +379,7 @@ export default async function StreamPage({
       )}
 
       <Pager next={nextHref} prev={prevHref} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

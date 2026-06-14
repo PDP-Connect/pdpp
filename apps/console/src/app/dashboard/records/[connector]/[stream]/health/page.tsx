@@ -1,8 +1,9 @@
-import { IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { IcTimestamp } from "@pdpp/brand-react";
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
@@ -49,10 +50,10 @@ export default async function StreamHealthPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Stream health" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
@@ -86,7 +87,7 @@ function StreamHealthReport({
   const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -224,7 +225,7 @@ function StreamHealthReport({
           </>
         )}
       </Section>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 
@@ -234,7 +235,7 @@ function StreamHealthReport({
 // to the records segment error boundary.
 function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: string; streamName: string }) {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -266,7 +267,7 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
           to see currently available streams.
         </p>
       </div>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

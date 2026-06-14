@@ -1,7 +1,8 @@
+import { buttonVariants } from "@pdpp/brand-react";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { getManualUploadSetup, RefNotFoundError } from "../../../lib/ref-client.ts";
 import { ManualUploadForm } from "./manual-upload-form.tsx";
 
@@ -82,7 +83,7 @@ export default async function ManualUploadConnectPage({
   const advancedMethods = setup.acquisition_methods.filter((method) => method.posture !== "primary");
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
@@ -138,6 +139,6 @@ export default async function ManualUploadConnectPage({
           You are importing data you already exported. There is no provider account sign-in and no deployment change.
         </p>
       </Callout>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

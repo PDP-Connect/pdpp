@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DetailLoadingSkeleton } from "../../../../components/route-loading.tsx";
-import { RecordroomShell } from "@pdpp/brand-react";
 
 /**
  * Route-level loading state for a stream's coverage/health detail page.
@@ -11,8 +11,8 @@ import { RecordroomShell } from "@pdpp/brand-react";
  */
 export default function StreamHealthLoading() {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <DetailLoadingSkeleton label="this stream's coverage" />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

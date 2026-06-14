@@ -1,7 +1,8 @@
+import { buttonVariants } from "@pdpp/brand-react";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -453,7 +454,7 @@ export default async function ConnectionSetupStatusPage({
   const refreshHref = `/dashboard/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
@@ -541,6 +542,6 @@ export default async function ConnectionSetupStatusPage({
           <p className="pdpp-caption text-callout-warning-fg/80">Reason: {status.last_error.reason}</p>
         </Callout>
       ) : null}
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

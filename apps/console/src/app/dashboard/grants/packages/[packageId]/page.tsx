@@ -12,13 +12,14 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
-import { IcButton, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
@@ -57,10 +58,10 @@ export default async function GrantPackageDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Grant package" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -88,7 +89,7 @@ export default async function GrantPackageDetailPage({
   const subscriptionsHref = "/dashboard/event-subscriptions";
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <div className="pdpp-caption mb-2 text-muted-foreground">
         <Link className="underline-offset-2 hover:underline" href="/dashboard/grants/packages">
           ← Grant packages
@@ -239,7 +240,7 @@ export default async function GrantPackageDetailPage({
           </form>
         </Section>
       ) : null}
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

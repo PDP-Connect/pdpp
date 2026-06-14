@@ -9,11 +9,12 @@ interface CommandPaletteContextValue {
   close: () => void;
   isOpen: boolean;
   open: () => void;
+  toggle: () => void;
 }
 
 const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
 
-function useCommandPalette(): CommandPaletteContextValue {
+export function useCommandPalette(): CommandPaletteContextValue {
   const context = useContext(CommandPaletteContext);
   if (!context) {
     throw new Error("Command palette components must be rendered inside <CommandPaletteProvider>");
@@ -41,6 +42,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     close: () => setOpen(false),
     isOpen,
     open: () => setOpen(true),
+    toggle: () => setOpen((o) => !o),
   };
 
   return <CommandPaletteContext.Provider value={value}>{children}</CommandPaletteContext.Provider>;

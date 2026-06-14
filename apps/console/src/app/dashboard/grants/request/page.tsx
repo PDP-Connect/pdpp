@@ -1,6 +1,7 @@
-import { buttonVariants, IcButton, IcInput, IcSelect, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcInput, IcSelect, IcTimestamp } from "@pdpp/brand-react";
 import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import {
   buildGrantRequestExamples,
   type ConnectionPinOption,
@@ -167,10 +168,7 @@ function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: C
         defaultValue={draft.connectionId}
         id="grant-request-connection_id"
         name="connection_id"
-        options={[
-          { label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE },
-          ...connectionOptions,
-        ]}
+        options={[{ label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE }, ...connectionOptions]}
       />
       <span className="pdpp-caption text-muted-foreground">
         Pin to one connection, or fan in across all the grant authorizes.
@@ -336,7 +334,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
   const ownerLoginUrl = getOwnerLoginPath();
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={<HeaderActions ownerLoginUrl={ownerLoginUrl} />}
         breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Grant request" }]}
@@ -351,7 +349,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
       <WorkspaceStateSection workspace={workspace} />
       {workspace?.stagedRequest ? <DriveConsentSection ownerLoginUrl={ownerLoginUrl} workspace={workspace} /> : null}
       {examples ? <EquivalentsSection examples={examples} /> : null}
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

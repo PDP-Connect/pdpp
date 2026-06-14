@@ -1,5 +1,5 @@
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { RecordroomShell } from "@pdpp/brand-react";
 
 /**
  * Route-level loading state for the event-subscriptions list.
@@ -10,8 +10,8 @@ import { RecordroomShell } from "@pdpp/brand-react";
  */
 export default function EventSubscriptionsLoading() {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <ListLoadingSkeleton label="event subscriptions" rows={6} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

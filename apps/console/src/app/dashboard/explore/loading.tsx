@@ -1,4 +1,4 @@
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 
 /**
@@ -12,8 +12,8 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
  */
 export default function ExploreLoading() {
   return (
-    <RecordroomShell build="pdpp 0.1.0" host="this server">
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
       <ListLoadingSkeleton label="records" rows={8} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

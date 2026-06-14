@@ -1,6 +1,6 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
@@ -17,10 +17,10 @@ export default async function SchedulesPage() {
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Schedules" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -29,7 +29,7 @@ export default async function SchedulesPage() {
   const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id != null);
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <SchedulesPoller enabled={hasActiveRun} />
       <SchedulesView
         description="Set automatic refresh cadences for your connectors. High-friction connectors (banks, browser-based) should be kept manual or low-frequency."
@@ -44,6 +44,6 @@ export default async function SchedulesPage() {
         summaries={summaries}
         unscheduledDescription="These connectors have no automatic schedule. Use 'Set schedule' to add one, or sync manually from the Records page."
       />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

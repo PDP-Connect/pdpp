@@ -1,4 +1,4 @@
-import { buttonVariants, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
@@ -8,6 +8,7 @@ import {
 } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import {
   formatStreamCollectionFacts,
@@ -158,10 +159,10 @@ export default async function ConnectorPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -340,7 +341,7 @@ function ConnectorPageView({
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <ConnectorHeaderActions
@@ -442,7 +443,7 @@ function ConnectorPageView({
         error={dangerError}
         message={dangerMessage}
       />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

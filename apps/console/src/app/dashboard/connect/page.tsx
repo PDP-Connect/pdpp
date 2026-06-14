@@ -1,8 +1,9 @@
-import { buttonVariants, IcButton, IcField, IcInput, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcField, IcInput } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
@@ -221,15 +222,18 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   let origin: string;
   let identities: CimdClientDocument[] = [];
   try {
-    const [resolvedOrigin, resolvedIdentities] = await Promise.all([getReferencePublicOrigin(), listCimdClientDocuments()]);
+    const [resolvedOrigin, resolvedIdentities] = await Promise.all([
+      getReferencePublicOrigin(),
+      listCimdClientDocuments(),
+    ]);
     origin = resolvedOrigin;
     identities = resolvedIdentities.data;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell build="pdpp 0.1.0" host="this server">
+        <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -274,7 +278,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   ];
 
   return (
-    <RecordroomShell build="pdpp 0.1.0" host="this server">
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
       <PageHeader
         actions={
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
@@ -353,6 +357,6 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
           bearer. Trusted local owner automation is a separate flow.
         </p>
       </Callout>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

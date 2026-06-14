@@ -9,12 +9,13 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
-import { IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { IcTimestamp } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
@@ -32,10 +33,10 @@ export default async function GrantPackagesIndex() {
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Grant packages" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -43,7 +44,7 @@ export default async function GrantPackagesIndex() {
 
   const items = result.data;
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         description="Hosted-MCP multi-source consent ceremonies issued one package per approval. Each package wraps one or more source-bounded child grants and a single bearer-token lifecycle. Revoke from the detail page to cascade across every child."
         title="Grant packages"
@@ -64,7 +65,7 @@ export default async function GrantPackagesIndex() {
           </DataList>
         )}
       </Section>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }
 

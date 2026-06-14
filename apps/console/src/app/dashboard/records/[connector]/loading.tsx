@@ -1,4 +1,4 @@
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DetailLoadingSkeleton } from "../../components/route-loading.tsx";
 
 /**
@@ -10,8 +10,8 @@ import { DetailLoadingSkeleton } from "../../components/route-loading.tsx";
  */
 export default function ConnectorDetailLoading() {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <DetailLoadingSkeleton label="this connection" />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

@@ -1,7 +1,8 @@
+import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants, IcButton, IcInput, RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
 import { createStaticSecretConnectionAction } from "./actions.ts";
 
@@ -64,7 +65,7 @@ export default async function StaticSecretConnectPage({
   }
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
@@ -166,6 +167,6 @@ export default async function StaticSecretConnectPage({
           one connection at a time.
         </p>
       </Callout>
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

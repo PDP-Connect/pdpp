@@ -22,7 +22,6 @@ import {
   IcTimestamp,
   KV,
   KVRow,
-  RecordroomShell,
   Sheet,
   SheetBody,
   SheetHead,
@@ -45,6 +44,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -256,7 +256,7 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
       : null;
 
     return (
-      <RecordroomShell>
+      <RecordroomShellWithPalette>
         <PageHeader
           count={`${list.data.length}`}
           description="Webhook-style event subscriptions registered by clients against owner-issued grants. Operator surface is read-only with one safety-valve disable; rotate and replay remain client-owned."
@@ -288,14 +288,14 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
           }
           peek={renderPeek({ disableError: params.disableError, peek, peekId: params.peekId })}
         />
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -319,10 +319,7 @@ function FiltersForm({ params }: { params: ResolvedParams }) {
           <IcSelect
             defaultValue={params.status}
             name="status"
-            options={[
-              { label: "any", value: "" },
-              ...STATUS_FILTER_OPTIONS,
-            ]}
+            options={[{ label: "any", value: "" }, ...STATUS_FILTER_OPTIONS]}
           />
         </ToolbarField>
         <IcButton className="mt-5" size="sm" type="submit" variant="ghost">

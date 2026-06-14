@@ -1,7 +1,8 @@
-import { buttonVariants, IcButton, IcInput, IcTimestamp, RecordroomShell } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcInput, IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
@@ -397,17 +398,17 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <PageHeader title="Tokens" />
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
   }
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <PageHeader
         actions={
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
@@ -431,6 +432,6 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       <TokensListSection highlightClientId={flow?.clientId ?? null} tokens={tokens} />
 
       {flow ? <FlowInspector examples={examples} flow={flow} format={format} /> : null}
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

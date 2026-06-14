@@ -1,4 +1,4 @@
-import { RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 
 /**
@@ -10,8 +10,8 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
  */
 export default function DeviceExportersLoading() {
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <ListLoadingSkeleton label="device exporters" rows={5} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

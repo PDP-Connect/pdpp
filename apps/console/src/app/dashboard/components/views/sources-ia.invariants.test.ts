@@ -5,20 +5,17 @@
  *
  *   1. A blank/partial dashboard has an obvious Add-source path (not a grant
  *      CTA, not a dead end).
- *   2. The Sources first screen differentiates EXISTING data from ADD-NEW
- *      account support, and surfaces a repair/reconnect path — as separate
- *      facts, so a working source never reads as inert.
+ *   2. The Sources first screen shows per-source health and surfaces Sync,
+ *      Reauthorize, and Revoke as separate, clearly-labeled actions.
  *   3. The normal Sources UI shows no developer-only strings (monorepo paths,
  *      unpublished CLI, per-account env-var jargon, internal id placeholders).
  *   4. "Connect AI apps" is a clearly separate read-access surface, not
  *      confused with adding a data source.
  *
- * Source-regex over the shipped components, mirroring the existing
- * records-list-view / connect-page invariant style: these files are JSX/React
- * server components and cannot be imported under node:test without a full
- * resolver, so we assert their critical structural copy from source. Behavioral
- * grouping/support logic is covered by source-groups.test.ts and
- * source-add-support.test.ts.
+ * Source-regex over the shipped components (sources-view.tsx + surrounding
+ * pages/shell): these files are JSX/React components and cannot be imported
+ * under node:test without a full resolver, so we assert their critical
+ * structural copy from source.
  */
 
 import assert from "node:assert/strict";
@@ -27,7 +24,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const VIEW_FILE = `${HERE}records-list-view.tsx`;
+// VIEW_FILE is now the live Ink Carbon sources view (replaced records-list-view.tsx).
+const VIEW_FILE = fileURLToPath(new URL("../../records/sources-view.tsx", import.meta.url));
 const DASHBOARD_PAGE_FILE = `${HERE}../../page.tsx`;
 const RECORDS_PAGE_FILE = `${HERE}../../records/page.tsx`;
 const RECORDS_ADD_PAGE_FILE = `${HERE}../../records/add/page.tsx`;
@@ -41,25 +39,26 @@ const HERO_FILE = fileURLToPath(
   new URL("../../../../../../../packages/operator-ui/src/components/overview-hero.tsx", import.meta.url)
 );
 
-const ADD_CONNECTION_ACTION_RE = /data-testid="add-connection-action"/;
-const ADD_SOURCE_LABEL_RE = /Add source/;
-const ADD_SOURCE_ROUTE_RE = /href=\{routes\.section\.addSource\}/;
-const ADD_CONNECTION_GATED_RE = /\{interactive \? \(\s*<Link[\s\S]*?data-testid="add-connection-action"/;
 const OVERVIEW_ADD_SOURCE_ROUTE_RE = /addSourceHref=\{dashboardRoutes\.section\.addSource\}/;
-const SOURCE_SUMMARY_TESTID_RE = /data-testid="source-accounts-summary"/;
-const YOUR_SOURCES_TITLE_RE = /title="Your sources"/;
-const GROUP_SOURCES_CALL_RE = /groupSourcesByConnector\(/;
-const SOURCE_EXISTING_STATE_RE = /data-testid="source-existing-state"/;
-const ADD_ACCOUNT_SUPPORT_RE = /data-testid="add-account-support"/;
-const SOURCE_ADD_ACCOUNT_ACTION_RE = /data-testid="source-add-account-action"/;
-const SOURCE_RECONNECT_ACTION_RE = /data-testid="source-reconnect-action"/;
-const SUPPORT_LABEL_BINDING_RE = /support\?\.supportLabel/;
-const EXISTING_DATA_COPY_RE = /with data|no records yet/;
-const TRACK_ONLY_RE = /Track only/;
-const BUILD_ADD_SUPPORT_RE = /buildSourceAddSupport/;
-const ADD_SUPPORT_PROP_RE = /addSupportByConnectorId/;
+// sources-view.tsx add-source path (the empty-state and footer links both point here)
+const ADD_SOURCE_HREF_CONST_RE = /ADD_SOURCE_HREF = "\/dashboard\/records\/add"/;
+const ADD_SOURCE_LINK_RE = /href=\{ADD_SOURCE_HREF\}/;
+const ADD_SOURCE_EMPTY_STATE_RE = /data-testid="sources-empty"/;
+// Health status is rendered as a status dot + sr-only label from the projection
+const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
+const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
+// Sync, Reauthorize, and Revoke are three separate actions in the passport foot
+const SYNC_ACTION_RE = /Sync now/;
+const REAUTHORIZE_ACTION_RE = /Reauthorize/;
+const REVOKE_ACTION_RE = /data-testid="sources-revoke-ceremony"/;
+// The view does not render the raw action_target spine field — it routes via detailHref
+const RAW_ACTION_TARGET_RE = /href=\{.*action_target/;
+// No inline source-catalog picker in the view — that belongs to /records/add
 const CONNECTION_CATALOG_IMPORT_RE = /connection-catalog/;
 const ADD_CONNECTION_GUIDANCE_RE = /AddConnectionGuidance/;
+// The sources page must load toSourcesView, not a raw catalog
+const TO_SOURCES_VIEW_RE = /toSourcesView/;
+const SOURCES_VIEW_COMPONENT_RE = /<SourcesView/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
 const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
@@ -89,13 +88,15 @@ test("blank overview offers an Add-source CTA, not a grant CTA", async () => {
   assert.match(page, OVERVIEW_ADD_SOURCE_ROUTE_RE);
 });
 
-test("Sources page header keeps a persistent interactive Add-source action", async () => {
+test("Sources view always links to the add-source route, including when empty", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_CONNECTION_ACTION_RE);
-  assert.match(src, ADD_SOURCE_LABEL_RE);
-  assert.match(src, ADD_SOURCE_ROUTE_RE);
-  // Gated on interactive so the sandbox never shows a dead button.
-  assert.match(src, ADD_CONNECTION_GATED_RE);
+  // The add-source href is a module-level constant — not baked into routes.section
+  // (sources-view is a client component that can't import server-side routes helpers).
+  assert.match(src, ADD_SOURCE_HREF_CONST_RE);
+  // Both the empty-state link and the footer link use it.
+  assert.match(src, ADD_SOURCE_LINK_RE);
+  // The empty state is clearly identified so tests + E2E can target it.
+  assert.match(src, ADD_SOURCE_EMPTY_STATE_RE);
 });
 
 test("Sources owns the add-source catalog route", async () => {
@@ -112,45 +113,33 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, OTHER_COVERAGE_PATHS_RE);
 });
 
-// ── 2. Existing data vs add-new support vs repair are distinct facts ────────
+// ── 2. Per-source health and actions are clearly separate ───────────────────
 
-test("Sources page renders a per-source 'Your sources' summary", async () => {
+test("each source row renders a health status dot and sr-only label from the projection", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, SOURCE_SUMMARY_TESTID_RE);
-  assert.match(src, YOUR_SOURCES_TITLE_RE);
-  // Driven by the pure grouping + add-support projection, not an inline catalog.
-  assert.match(src, GROUP_SOURCES_CALL_RE);
+  // Health comes from the projection (status.tone, status.label) — not hard-coded strings.
+  assert.match(src, SOURCE_STATUS_DOT_RE);
+  assert.match(src, SOURCE_STATUS_LABEL_SR_RE);
 });
 
-test("each source card keeps existing-data, add-account support, and repair as separate facts", async () => {
+test("the sources passport foot has three distinct actions: Sync, Reauthorize, and Revoke", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  // (a) existing data/health state
-  assert.match(src, SOURCE_EXISTING_STATE_RE);
-  // (b) add-account support — a fact about adding ANOTHER account, separate chip
-  assert.match(src, ADD_ACCOUNT_SUPPORT_RE);
-  // (c) one primary action: add another account when self-service…
-  assert.match(src, SOURCE_ADD_ACCOUNT_ACTION_RE);
-  // …and a reconnect/repair path when a connection needs attention.
-  assert.match(src, SOURCE_RECONNECT_ACTION_RE);
+  // (a) Sync — remotely trigger a collection run
+  assert.match(src, SYNC_ACTION_RE);
+  // (b) Reauthorize — link to connection detail (never a stub mutation at the index level)
+  assert.match(src, REAUTHORIZE_ACTION_RE);
+  // (c) Revoke — destructive, behind a confirm ceremony
+  assert.match(src, REVOKE_ACTION_RE);
+  // The next_action CTA never links to the raw action_target spine field —
+  // it always routes via the in-app detailHref.
+  assert.doesNotMatch(src, RAW_ACTION_TARGET_RE);
 });
 
-test("a working source is never labelled inert just because add-new is not self-service", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // The add-account support label is rendered from the projection's
-  // supportLabel, decoupled from the existing-state line — so a source with
-  // data and a not-self-service add state shows both, never collapsing to a
-  // single "unsupported" verdict.
-  assert.match(src, SUPPORT_LABEL_BINDING_RE);
-  // The existing-state line names the data it has independently of add support.
-  assert.match(src, EXISTING_DATA_COPY_RE);
-  // No inert "Track only"-style primary status anywhere in the view.
-  assert.doesNotMatch(src, TRACK_ONLY_RE);
-});
-
-test("Sources page loads the add-account support projection, not the catalog picker", async () => {
-  const src = await readFile(RECORDS_PAGE_FILE, "utf8");
-  assert.match(src, BUILD_ADD_SUPPORT_RE);
-  assert.match(src, ADD_SUPPORT_PROP_RE);
+test("Sources page projects through toSourcesView, not the full catalog picker", async () => {
+  const records = await readFile(RECORDS_PAGE_FILE, "utf8");
+  // page.tsx drives the view through toSourcesView (pure projection, no catalog).
+  assert.match(records, TO_SOURCES_VIEW_RE);
+  assert.match(records, SOURCES_VIEW_COMPONENT_RE);
   // The first screen must not import the full add-source catalog picker — that
   // belongs to /dashboard/records/add so existing-source monitoring stays light.
   const view = await readFile(VIEW_FILE, "utf8");

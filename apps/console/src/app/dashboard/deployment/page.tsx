@@ -1,10 +1,11 @@
+import { buttonVariants } from "@pdpp/brand-react";
 import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
 import {
   DeploymentDiagnosticsView,
   isDeploymentIndexing,
 } from "@pdpp/operator-ui/components/views/deployment-diagnostics-view";
 import Link from "next/link";
-import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs } from "../components/deployment-readiness-rows.ts";
 import { LivePoller } from "../components/live-poller.tsx";
@@ -53,14 +54,14 @@ export default async function DeploymentPage() {
 
   if (unreachable || !report) {
     return (
-      <RecordroomShell>
+      <RecordroomShellWithPalette>
         <ServerUnreachable />
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   }
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <LivePoller enabled={isDeploymentIndexing(report)} />
       <DeploymentDiagnosticsView
         actions={
@@ -75,6 +76,6 @@ export default async function DeploymentPage() {
         report={report}
         retainedBytes={retainedBytes}
       />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

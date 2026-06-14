@@ -13,9 +13,9 @@
  * the page must never pull an inline run timeline).
  */
 
-import { RecordroomShell } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { redirect } from "next/navigation";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -57,9 +57,9 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   // real data path is never touched when `demo` is absent.
   if (params.demo) {
     return (
-      <RecordroomShell>
+      <RecordroomShellWithPalette>
         <SyncsView model={DEMO_SYNCS_MODEL} seeded />
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   }
 
@@ -70,9 +70,9 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
@@ -86,9 +86,9 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   const liveRunCount = runsResult.data.filter(isLiveRun).length;
 
   return (
-    <RecordroomShell>
+    <RecordroomShellWithPalette>
       <LivePoller enabled={liveRunCount > 0} />
       <SyncsView model={model} />
-    </RecordroomShell>
+    </RecordroomShellWithPalette>
   );
 }

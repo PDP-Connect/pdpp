@@ -1,9 +1,10 @@
+import { IcButton } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
-import { IcButton, RecordroomShell } from "@pdpp/brand-react";
+import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import {
@@ -83,7 +84,7 @@ export default async function DeviceExportersPage({
     const devices = diagnostics.data;
 
     return (
-      <RecordroomShell>
+      <RecordroomShellWithPalette>
         <PageHeader
           breadcrumbs={addConnectionBreadcrumbs}
           count={`${devices.length}`}
@@ -120,14 +121,14 @@ export default async function DeviceExportersPage({
             </DataList>
           )}
         </Section>
-      </RecordroomShell>
+      </RecordroomShellWithPalette>
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <RecordroomShell>
+        <RecordroomShellWithPalette>
           <ServerUnreachable />
-        </RecordroomShell>
+        </RecordroomShellWithPalette>
       );
     }
     throw err;
