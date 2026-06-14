@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
+import { buttonVariants } from "@pdpp/operator-ui/ui/button";
 
 /**
  * Dashboard error boundary (App Router convention).

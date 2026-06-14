@@ -29,7 +29,7 @@ import {
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { useState } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import type { FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) auto minmax(0,1.2fr) minmax(0,0.9fr)";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
+import { buttonVariants } from "@pdpp/operator-ui/ui/button";
 
 /**
  * Shared body for dashboard segment-level error boundaries (App Router

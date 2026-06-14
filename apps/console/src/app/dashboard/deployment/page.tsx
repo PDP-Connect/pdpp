@@ -4,11 +4,11 @@ import {
   isDeploymentIndexing,
 } from "@pdpp/operator-ui/components/views/deployment-diagnostics-view";
 import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button.tsx";
+import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs } from "../components/deployment-readiness-rows.ts";
 import { LivePoller } from "../components/live-poller.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type DeploymentDiagnostics, getDatasetSummary, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 
@@ -53,18 +53,18 @@ export default async function DeploymentPage() {
 
   if (unreachable || !report) {
     return (
-      <DashboardShell active="deployment">
+      <RecordroomShell>
         <ServerUnreachable />
-      </DashboardShell>
+      </RecordroomShell>
     );
   }
 
   return (
-    <DashboardShell active="deployment">
+    <RecordroomShell>
       <LivePoller enabled={isDeploymentIndexing(report)} />
       <DeploymentDiagnosticsView
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment/tokens">
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment/tokens">
             Tokens
           </Link>
         }
@@ -75,6 +75,6 @@ export default async function DeploymentPage() {
         report={report}
         retainedBytes={retainedBytes}
       />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

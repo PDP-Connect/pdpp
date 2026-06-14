@@ -7,9 +7,9 @@ import {
 } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import {
   formatStreamCollectionFacts,
   indexCollectionReportByStream,
@@ -159,10 +159,10 @@ export default async function ConnectorPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShell>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
@@ -341,7 +341,7 @@ function ConnectorPageView({
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <PageHeader
         actions={
           <ConnectorHeaderActions
@@ -443,7 +443,7 @@ function ConnectorPageView({
         error={dangerError}
         message={dangerMessage}
       />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 
@@ -474,14 +474,14 @@ function ConnectorHeaderActions({
     <>
       {running && overview.lastRun ? (
         <Link
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={`/dashboard/runs/${encodeURIComponent(overview.lastRun.run_id)}`}
         >
           Active run →
         </Link>
       ) : null}
       <Link
-        className={buttonVariants({ variant: "outline", size: "sm" })}
+        className={buttonVariants({ variant: "ghost", size: "sm" })}
         href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
       >
         All runs →
@@ -618,7 +618,7 @@ function AcquisitionBatchRow({
           ) : null}
         </div>
         <Link
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={`/dashboard/connect/status/${encodeURIComponent(connectionId)}`}
         >
           Open receipt
@@ -1010,7 +1010,7 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
           {summary.cta === "view_runs" && (
             <div>
               <Link
-                className={buttonVariants({ variant: "outline", size: "sm" })}
+                className={buttonVariants({ variant: "ghost", size: "sm" })}
                 data-testid="failure-expander-view-runs"
                 href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
               >

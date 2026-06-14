@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import { Button } from "@/components/ui/button.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
 import { type ManualUploadFormState, manualUploadConnectionFormAction } from "./actions.ts";
 
 interface ManualUploadSetupForForm {

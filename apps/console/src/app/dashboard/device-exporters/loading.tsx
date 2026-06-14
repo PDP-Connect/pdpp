@@ -1,5 +1,5 @@
+import { RecordroomShell } from "@pdpp/brand-react";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for the device-exporters list.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function DeviceExportersLoading() {
   return (
-    <DashboardShell active="device-exporters">
+    <RecordroomShell>
       <ListLoadingSkeleton label="device exporters" rows={5} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
+import { buttonVariants } from "@pdpp/operator-ui/ui/button";
 import { readLastRecordsReadAt } from "./last-known-read.ts";
 
 /**

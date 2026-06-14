@@ -15,12 +15,12 @@
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { IcButton, RecordroomShell } from "@pdpp/brand-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
+import { ServerUnreachable } from "../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   type CumulativeClientAccess,
@@ -58,10 +58,10 @@ export default async function GrantPackageDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="grants">
+        <RecordroomShell>
           <PageHeader title="Grant package" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
@@ -89,7 +89,7 @@ export default async function GrantPackageDetailPage({
   const subscriptionsHref = "/dashboard/event-subscriptions";
 
   return (
-    <DashboardShell active="grants">
+    <RecordroomShell>
       <div className="pdpp-caption mb-2 text-muted-foreground">
         <Link className="underline-offset-2 hover:underline" href="/dashboard/grants/packages">
           ← Grant packages
@@ -234,13 +234,13 @@ export default async function GrantPackageDetailPage({
                 grants.
               </span>
             </label>
-            <Button type="submit" variant="destructive">
+            <IcButton type="submit" variant="destructive">
               Revoke package
-            </Button>
+            </IcButton>
           </form>
         </Section>
       ) : null}
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 

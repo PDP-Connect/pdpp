@@ -1,12 +1,12 @@
 import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
 import { deriveDeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
 import type { DeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-kind";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
+import { buttonVariants, RecordroomShell } from "@pdpp/brand-react";
+import { ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
 import {
@@ -138,10 +138,10 @@ export default async function StreamPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShell>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
@@ -150,7 +150,7 @@ export default async function StreamPage({
       // dropped from the manifest, records-read returns 404. Render a bounded
       // honest state instead of crashing to the segment error boundary.
       return (
-        <DashboardShell active="records">
+        <RecordroomShell>
           <PageHeader
             breadcrumbs={[
               { label: "Sources", href: "/dashboard/records" },
@@ -176,7 +176,7 @@ export default async function StreamPage({
               to see currently available streams.
             </p>
           </div>
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
@@ -257,7 +257,7 @@ export default async function StreamPage({
       : [];
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <PageHeader
         actions={
           <>
@@ -269,7 +269,7 @@ export default async function StreamPage({
                 selectedColumns={columns}
               />
             )}
-            <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={`${streamPath}/health`}>
+            <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={`${streamPath}/health`}>
               Stream health →
             </Link>
           </>
@@ -379,7 +379,7 @@ export default async function StreamPage({
       )}
 
       <Pager next={nextHref} prev={prevHref} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 

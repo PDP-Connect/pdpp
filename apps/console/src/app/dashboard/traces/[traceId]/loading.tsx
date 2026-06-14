@@ -1,5 +1,5 @@
+import { RecordroomShell } from "@pdpp/brand-react";
 import { DetailLoadingSkeleton } from "../../components/route-loading.tsx";
-import { DashboardShell } from "../../components/shell.tsx";
 
 /**
  * Route-level loading state for a single trace's detail page.
@@ -11,8 +11,8 @@ import { DashboardShell } from "../../components/shell.tsx";
  */
 export default function TraceDetailLoading() {
   return (
-    <DashboardShell active="traces">
+    <RecordroomShell>
       <DetailLoadingSkeleton label="this trace" />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

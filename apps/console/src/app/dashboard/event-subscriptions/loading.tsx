@@ -1,5 +1,5 @@
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
+import { RecordroomShell } from "@pdpp/brand-react";
 
 /**
  * Route-level loading state for the event-subscriptions list.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function EventSubscriptionsLoading() {
   return (
-    <DashboardShell active="event-subscriptions">
+    <RecordroomShell>
       <ListLoadingSkeleton label="event subscriptions" rows={6} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

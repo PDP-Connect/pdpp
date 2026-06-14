@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
 import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 

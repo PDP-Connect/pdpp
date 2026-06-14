@@ -1,10 +1,9 @@
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { buttonVariants, IcButton, IcInput, RecordroomShell } from "@pdpp/brand-react";
+import { ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { listOwnerIssuedClients, type OwnerIssuedClient } from "../../lib/ref-client.ts";
@@ -68,7 +67,7 @@ function OwnerAgentOnboardingCard({ entrypoint }: { entrypoint: string }) {
             pasted into chat or copied out of the dashboard.
           </p>
         </div>
-        <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment">
+        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
           Review deployment metadata
         </Link>
       </div>
@@ -105,11 +104,11 @@ function IssueCard({ flow }: { flow: FlowState | null }) {
       <form action={issueOwnerTokenAction} className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="token-name">
           <span className="pdpp-eyebrow">Debug credential name</span>
-          <Input defaultValue="" id="token-name" name="name" placeholder="e.g. local-debug" type="text" />
+          <IcInput defaultValue="" id="token-name" name="name" placeholder="e.g. local-debug" type="text" />
         </label>
-        <Button size="sm" type="submit" variant="outline">
+        <IcButton size="sm" type="submit" variant="ghost">
           Issue debug bearer
-        </Button>
+        </IcButton>
       </form>
 
       {flow?.token ? (
@@ -190,9 +189,9 @@ function IntrospectControl({ flow }: { flow: FlowState }) {
     <div>
       <form action={introspectOwnerTokenFlowAction}>
         <input name="flow_id" type="hidden" value={flow.flowId} />
-        <Button size="sm" type="submit" variant="outline">
+        <IcButton size="sm" type="submit" variant="ghost">
           Introspect this token
-        </Button>
+        </IcButton>
       </form>
       {flow.introspection ? (
         <div className="mt-3">
@@ -326,9 +325,9 @@ function TokensListSection({
               </div>
               <form action={revokeOwnerTokenAction}>
                 <input name="client_id" type="hidden" value={token.client_id} />
-                <Button size="sm" type="submit" variant="destructive">
+                <IcButton size="sm" type="submit" variant="destructive">
                   Revoke
-                </Button>
+                </IcButton>
               </form>
             </li>
           );
@@ -398,20 +397,20 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="deployment">
+        <RecordroomShell>
           <PageHeader title="Tokens" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
   }
 
   return (
-    <DashboardShell active="deployment">
+    <RecordroomShell>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment">
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
             Deployment overview
           </Link>
         }
@@ -432,6 +431,6 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       <TokensListSection highlightClientId={flow?.clientId ?? null} tokens={tokens} />
 
       {flow ? <FlowInspector examples={examples} flow={flow} format={format} /> : null}
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

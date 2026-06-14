@@ -1,5 +1,5 @@
+import { RecordroomShell } from "@pdpp/brand-react";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for the grants list.
@@ -10,8 +10,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function GrantsLoading() {
   return (
-    <DashboardShell active="grants">
+    <RecordroomShell>
       <ListLoadingSkeleton label="grants" rows={6} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

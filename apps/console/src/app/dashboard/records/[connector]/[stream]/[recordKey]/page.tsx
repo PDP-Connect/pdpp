@@ -1,8 +1,9 @@
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { RecordroomShell } from "@pdpp/brand-react";
+import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import {
@@ -93,10 +94,10 @@ export default async function RecordDetailPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShell>
           <PageHeader title="Sources" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     // A 404/410 from the resource server is an expected end-state for a record
@@ -153,7 +154,7 @@ export default async function RecordDetailPage({
   const allParentBackLinks = mergeParentBackLinks(parentBackLinkFromMeta, childHasOneLinks);
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -216,7 +217,7 @@ export default async function RecordDetailPage({
           </ul>
         </Section>
       )}
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 

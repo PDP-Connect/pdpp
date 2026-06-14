@@ -3,7 +3,7 @@
 import { Callout } from "@pdpp/operator-ui/components/primitives";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
 import { type CancelRunActionResult, cancelRunAction } from "./actions.ts";
 
 /**

@@ -5,11 +5,11 @@ import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/com
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
+import { buttonVariants, IcButton, RecordroomShell } from "@pdpp/brand-react";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { ServerUnreachable } from "../components/shell.tsx";
 import {
   type GrantSummary,
   getGrantTimeline,
@@ -66,10 +66,10 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="grants">
+        <RecordroomShell>
           <PageHeader title="Grants" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     throw err;
@@ -142,7 +142,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
       },
     },
     headerActions: (
-      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/grants/request">
+      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/grants/request">
         Grant request workspace
       </Link>
     ),
@@ -160,9 +160,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   };
 
   return (
-    <DashboardShell active="grants">
+    <RecordroomShell>
       <ListWithPeekView params={viewParams} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 
@@ -193,12 +193,12 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
       <form className="flex flex-wrap gap-2">
         <input name="kind" type="hidden" value={approval.kind} />
         <input name="approval_id" type="hidden" value={approval.approval_id} />
-        <Button formAction={approvePendingApprovalAction} size="sm" type="submit">
+        <IcButton formAction={approvePendingApprovalAction} size="sm" type="submit">
           Approve
-        </Button>
-        <Button formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
+        </IcButton>
+        <IcButton formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
           Deny
-        </Button>
+        </IcButton>
       </form>
     </div>
   );

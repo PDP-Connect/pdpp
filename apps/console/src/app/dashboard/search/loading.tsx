@@ -1,5 +1,5 @@
+import { RecordroomShell } from "@pdpp/brand-react";
 import { ListLoadingSkeleton } from "../components/route-loading.tsx";
-import { DashboardShell } from "../components/shell.tsx";
 
 /**
  * Route-level loading state for global search.
@@ -11,8 +11,8 @@ import { DashboardShell } from "../components/shell.tsx";
  */
 export default function SearchLoading() {
   return (
-    <DashboardShell active="search">
+    <RecordroomShell>
       <ListLoadingSkeleton label="search results" rows={6} />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

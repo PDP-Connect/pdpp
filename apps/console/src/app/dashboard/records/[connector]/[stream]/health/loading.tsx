@@ -1,5 +1,5 @@
 import { DetailLoadingSkeleton } from "../../../../components/route-loading.tsx";
-import { DashboardShell } from "../../../../components/shell.tsx";
+import { RecordroomShell } from "@pdpp/brand-react";
 
 /**
  * Route-level loading state for a stream's coverage/health detail page.
@@ -11,8 +11,8 @@ import { DashboardShell } from "../../../../components/shell.tsx";
  */
 export default function StreamHealthLoading() {
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <DetailLoadingSkeleton label="this stream's coverage" />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

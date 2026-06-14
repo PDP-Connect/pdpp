@@ -2,8 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
+import { Input } from "@pdpp/operator-ui/ui/input";
 import { type RenameConnectionResult, renameConnectionAction } from "./actions.ts";
 
 interface Props {

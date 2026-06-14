@@ -2,8 +2,9 @@ import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
+import { RecordroomShell } from "@pdpp/brand-react";
+import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
@@ -49,10 +50,10 @@ export default async function StreamHealthPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <RecordroomShell>
           <PageHeader title="Stream health" />
           <ServerUnreachable />
-        </DashboardShell>
+        </RecordroomShell>
       );
     }
     if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
@@ -86,7 +87,7 @@ function StreamHealthReport({
   const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
 
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -224,7 +225,7 @@ function StreamHealthReport({
           </>
         )}
       </Section>
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 
@@ -234,7 +235,7 @@ function StreamHealthReport({
 // to the records segment error boundary.
 function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: string; streamName: string }) {
   return (
-    <DashboardShell active="records">
+    <RecordroomShell>
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
@@ -266,7 +267,7 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
           to see currently available streams.
         </p>
       </div>
-    </DashboardShell>
+    </RecordroomShell>
   );
 }
 

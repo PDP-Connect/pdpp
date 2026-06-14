@@ -4,8 +4,8 @@ import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pd
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 

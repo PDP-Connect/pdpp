@@ -72,7 +72,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type RefObject, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
-import { Button } from "@/components/ui/button.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
 import {
   Dialog,
   DialogBackdrop,
@@ -80,8 +80,8 @@ import {
   DialogPopup,
   DialogPortal,
   DialogTitle,
-} from "@/components/ui/dialog.tsx";
-import { Input } from "@/components/ui/input.tsx";
+} from "@pdpp/operator-ui/ui/dialog";
+import { Input } from "@pdpp/operator-ui/ui/input";
 import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction, reportStreamReachFailureAction } from "./actions.ts";
 import {

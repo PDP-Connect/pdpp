@@ -2,7 +2,8 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/search-view";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { RecordroomShell } from "@pdpp/brand-react";
+import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
@@ -82,9 +83,9 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
 
   if (unreachable) {
     return (
-      <DashboardShell active="search">
+      <RecordroomShell>
         <ServerUnreachable />
-      </DashboardShell>
+      </RecordroomShell>
     );
   }
 
@@ -98,7 +99,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
     : null;
 
   return (
-    <DashboardShell active="search">
+    <RecordroomShell>
       <SearchView
         data={data}
         emptyHint={
@@ -112,6 +113,6 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
         query={query}
         routes={dashboardRoutes}
       />
-    </DashboardShell>
+    </RecordroomShell>
   );
 }

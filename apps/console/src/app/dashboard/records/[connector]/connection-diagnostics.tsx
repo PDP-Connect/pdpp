@@ -2,7 +2,7 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import Link from "next/link";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
 import {
   formatCollectionRateReadout,

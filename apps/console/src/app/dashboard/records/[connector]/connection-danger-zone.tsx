@@ -2,8 +2,8 @@
 
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useState } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
+import { Button } from "@pdpp/operator-ui/ui/button";
+import { Input } from "@pdpp/operator-ui/ui/input";
 import { deleteConnectionAction, revokeConnectionAction } from "./actions.ts";
 
 interface Props {

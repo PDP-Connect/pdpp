@@ -6,8 +6,8 @@ import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-d
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { Button, buttonVariants } from "@pdpp/operator-ui/ui/button";
+import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import {
   type AxisChip,
   type ConnectionStatusDisplay,
