@@ -47,6 +47,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/console/package.json apps/console/package.json
 COPY packages/operator-ui/package.json packages/operator-ui/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
+COPY packages/pdpp-brand-react/package.json packages/pdpp-brand-react/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
 COPY packages/polyfill-connectors/scripts/install-patchright-browser.mjs packages/polyfill-connectors/scripts/install-patchright-browser.mjs
