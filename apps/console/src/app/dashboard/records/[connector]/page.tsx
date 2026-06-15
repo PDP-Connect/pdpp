@@ -23,10 +23,8 @@ import {
 import {
   type AutoPausedBanner,
   deriveAutoPausedBanner,
-  deriveFailureSummary,
   derivePrimaryRowAction,
   deriveStreakDots,
-  type FailureSummary,
   type PrimaryRowAction,
   type StreakDot,
   syncActionIdleLabel,
@@ -45,6 +43,7 @@ import {
   type RefConnectorRunSummary,
   type RefConnectorSummary,
   type RefRenderedVerdict,
+  type RefRequiredAction,
   type RefSchedule,
   type RunSummary,
 } from "../../lib/ref-client.ts";
@@ -395,11 +394,9 @@ function ConnectorPageView({
   // no scattered string checks.
   const primaryAction = derivePrimaryRowAction({
     connectorId,
-    health: overview.connectionHealth ?? null,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);
-  const failureSummary = deriveFailureSummary(connectionHealth);
   const streakDots = deriveStreakDots(recentRuns);
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
 
@@ -417,6 +414,7 @@ function ConnectorPageView({
             overview={overview}
             primaryAction={primaryAction}
             renameSelector={renameSelector}
+            renderedVerdict={connectionRenderedVerdict}
             revoked={revoked}
             running={running}
             syncIdleLabel={syncIdleLabel}
@@ -438,14 +436,6 @@ function ConnectorPageView({
       {streakDots.length > 0 ? <StreakStrip connectorId={connectorId} dots={streakDots} /> : null}
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
-
-      {failureSummary ? (
-        <FailureExpander
-          connectorId={connectorId}
-          credentialUpdateHref={credentialUpdateHref}
-          summary={failureSummary}
-        />
-      ) : null}
 
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
@@ -529,6 +519,7 @@ function ConnectorHeaderActions({
   overview,
   primaryAction,
   renameSelector,
+  renderedVerdict,
   revoked,
   running,
   syncIdleLabel,
@@ -542,6 +533,7 @@ function ConnectorHeaderActions({
   overview: ConnectorOverview;
   primaryAction: PrimaryRowAction;
   renameSelector: string;
+  renderedVerdict: RefRenderedVerdict | null;
   revoked: boolean;
   running: boolean;
   syncIdleLabel: string;
@@ -562,10 +554,9 @@ function ConnectorHeaderActions({
       >
         All runs →
       </Link>
-      {/* Update credential: visible on healthy static-secret connections so the
-          owner can rotate a token without breaking the connection. Not shown for
-          browser-bound connections (session repair goes through the failure expander
-          "Log in again" CTA, not the header). */}
+      {/* Update credential: visible on static-secret connections so the owner can
+          rotate a token without breaking the connection. Browser-bound repair
+          stays on the browser-session reconnect surface. */}
       {credentialUpdateHref && !revoked && !isBrowserBoundConnector(connectorId) ? (
         <Link
           className={buttonVariants({ variant: "ghost", size: "sm" })}
@@ -578,9 +569,11 @@ function ConnectorHeaderActions({
       <ConnectorPrimaryHeaderAction
         connectionId={connectionId}
         connectorId={connectorId}
+        credentialUpdateHref={credentialUpdateHref}
         displayName={displayName}
         manualUploadHref={manualUploadHref}
         primaryAction={primaryAction}
+        renderedVerdict={renderedVerdict}
         revoked={revoked}
         running={running}
         syncIdleLabel={syncIdleLabel}
@@ -597,18 +590,22 @@ function ConnectorHeaderActions({
 function ConnectorPrimaryHeaderAction({
   connectionId,
   connectorId,
+  credentialUpdateHref,
   displayName,
   manualUploadHref,
   primaryAction,
+  renderedVerdict,
   revoked,
   running,
   syncIdleLabel,
 }: {
   connectionId: string | null;
   connectorId: string;
+  credentialUpdateHref: string | null;
   displayName: string;
   manualUploadHref: string | null;
   primaryAction: PrimaryRowAction;
+  renderedVerdict: RefRenderedVerdict | null;
   revoked: boolean;
   running: boolean;
   syncIdleLabel: string;
@@ -622,6 +619,19 @@ function ConnectorPrimaryHeaderAction({
       >
         Reconnect
       </Link>
+    );
+  }
+  const renderedAction = primaryRenderedAction(renderedVerdict);
+  if (renderedAction) {
+    return (
+      <RenderedVerdictHeaderAction
+        action={renderedAction}
+        connectionId={connectionId}
+        connectorId={connectorId}
+        credentialUpdateHref={credentialUpdateHref}
+        displayName={displayName}
+        running={running}
+      />
     );
   }
   if (primaryAction.kind === "sync") {
@@ -670,6 +680,75 @@ function ConnectorPrimaryHeaderAction({
     );
   }
   return <PrimaryActionNotice action={primaryAction} />;
+}
+
+function primaryRenderedAction(verdict: RefRenderedVerdict | null): RefRequiredAction | null {
+  return verdict?.required_actions[0] ?? null;
+}
+
+function RenderedVerdictHeaderAction({
+  action,
+  connectionId,
+  connectorId,
+  credentialUpdateHref,
+  displayName,
+  running,
+}: {
+  action: RefRequiredAction;
+  connectionId: string | null;
+  connectorId: string;
+  credentialUpdateHref: string | null;
+  displayName: string;
+  running: boolean;
+}) {
+  if (action.audience !== "owner" || action.satisfied_when.kind === "none") {
+    return (
+      <span
+        className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+        data-action-audience={action.audience}
+        data-action-kind={action.kind}
+        data-testid="detail-action-rendered-verdict-status"
+        title={action.terminal ? "This action is not owner-repairable." : "The reference is handling this action."}
+      >
+        {action.cta}
+      </span>
+    );
+  }
+  if (action.kind === "reauth") {
+    return (
+      <Link
+        className={buttonVariants({ variant: "default", size: "sm" })}
+        data-testid="detail-action-rendered-verdict"
+        href={credentialUpdateHref ?? addSourceHrefForConnector(connectorId)}
+        title="Reconnect this source while preserving its existing records, history, and schedule when supported."
+      >
+        {action.cta}
+      </Link>
+    );
+  }
+  if (action.kind === "add_info") {
+    return (
+      <Link
+        className={buttonVariants({ variant: "default", size: "sm" })}
+        data-testid="detail-action-rendered-verdict"
+        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+        title="Open the run that needs owner input."
+      >
+        {action.cta}
+      </Link>
+    );
+  }
+  return (
+    <SyncNowButton
+      connectionId={connectionId}
+      connectorId={connectorId}
+      displayName={displayName}
+      idleLabel={action.cta}
+      initialRunning={running}
+      runningLabel="Repair running"
+      title="Runs this source now to satisfy the server-owned required action for the existing connection."
+    />
+  );
 }
 
 function AcquisitionCoverageSection({
@@ -1046,118 +1125,6 @@ function errorMessage(reason: unknown): string {
     return reason.message;
   }
   return String(reason);
-}
-
-// ─── Surface 1: "What's wrong?" / "What's missing?" expander ─────────────────
-
-/**
- * Structured failure expander. Shows when health is degraded, cooling_off,
- * blocked, or needs_attention. Collapsed by default; renders as a `<details>`
- * element so it works without JS and screen-readers announce its state.
- *
- * Design: §C of `connector-health-ui-mocks-2026-05-15.md`.
- * Decision 9: `degraded` opens "What's missing?", all others open "What's wrong?".
- * Decision 10: filled-primary "Reconnect" in expander earns primary weight here
- * because the user has invested in understanding the problem.
- */
-function FailureExpander({
-  connectorId,
-  credentialUpdateHref,
-  summary,
-}: {
-  connectorId: string;
-  credentialUpdateHref: string | null;
-  summary: FailureSummary;
-}) {
-  // For static-secret connections in error state, the "Reconnect" CTA goes
-  // directly to the credential-repair form (preserves connection, replaces
-  // secret). For browser-bound connections, it goes to the browser-session
-  // reconnect page (repair mode, same connection_id). For others, fall back to
-  // the generic add-source picker.
-  const reconnectHref = credentialUpdateHref ?? addSourceHrefForConnector(connectorId);
-  let reconnectLabel = "Reconnect";
-  if (isBrowserBoundConnector(connectorId)) {
-    reconnectLabel = "Log in again";
-  } else if (credentialUpdateHref) {
-    reconnectLabel = "Re-enter credential";
-  }
-
-  return (
-    <div className="border-border/70 border-b" data-testid="failure-expander">
-      <details>
-        <summary className="pdpp-body flex cursor-pointer list-none items-center gap-2 px-4 py-3 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
-          <span
-            aria-hidden
-            className={[
-              "inline-block size-2 rounded-full",
-              summary.cta === "reconnect" ? "bg-destructive" : "bg-[color:var(--warning)]",
-            ].join(" ")}
-          />
-          <span className="font-medium">{summary.triggerLabel}</span>
-          <span className="pdpp-caption ml-auto select-none text-muted-foreground">▸</span>
-        </summary>
-
-        <div className="flex flex-col gap-4 px-4 pt-2 pb-4">
-          {/* Prose explanation */}
-          <p className="pdpp-body text-muted-foreground" data-testid="failure-expander-prose">
-            {summary.prose}
-          </p>
-
-          {/* Fact box */}
-          <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded border border-border/60 bg-muted/30 px-3 py-2">
-            {summary.reasonCode ? (
-              <>
-                <dt className="text-muted-foreground">reason code</dt>
-                <dd className="font-mono tabular-nums" data-testid="failure-expander-reason-code">
-                  {summary.reasonCode}
-                </dd>
-              </>
-            ) : null}
-            {summary.nextAttemptAt ? (
-              <>
-                <dt className="text-muted-foreground">next attempt</dt>
-                <dd className="tabular-nums">
-                  <IcTimestamp value={summary.nextAttemptAt} />
-                </dd>
-              </>
-            ) : null}
-            {summary.lastSuccessAt ? (
-              <>
-                <dt className="text-muted-foreground">last success</dt>
-                <dd className="tabular-nums">
-                  <IcTimestamp value={summary.lastSuccessAt} />
-                </dd>
-              </>
-            ) : null}
-          </dl>
-
-          {/* Primary CTA */}
-          {summary.cta === "reconnect" && (
-            <div>
-              <Link
-                className={buttonVariants({ variant: "default", size: "sm" })}
-                data-testid="failure-expander-reconnect"
-                href={reconnectHref}
-              >
-                {reconnectLabel}
-              </Link>
-            </div>
-          )}
-          {summary.cta === "view_runs" && (
-            <div>
-              <Link
-                className={buttonVariants({ variant: "ghost", size: "sm" })}
-                data-testid="failure-expander-view-runs"
-                href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
-              >
-                View runs →
-              </Link>
-            </div>
-          )}
-        </div>
-      </details>
-    </div>
-  );
 }
 
 // ─── Surface 2: 14-day streak strip ──────────────────────────────────────────

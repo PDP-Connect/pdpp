@@ -53,10 +53,10 @@
 ## 8. Render-consumer migration (surfaces stop reading `state` directly)
 
 - [x] 8.1 Forward the synthesized `RenderedVerdict` verbatim through `ref-control.ts` -> `ref-client.ts` exactly as `connection_health` is forwarded today.
-- [ ] 8.2 Migrate the dashboard list, connection header, connection detail, and owner-agent passport to render only `RenderedVerdict` fields; remove every raw `health.state`-derived pill/badge/headline/owner-action.
-- [ ] 8.3 Split the dashboard (attention layer) from the detail panel (inspection layer): mechanistic counts (gap counts, retry counts, backlog scale, `next_attempt_at`, `collection_rate`) render only in `detail`; the dashboard renders "Healthy · fresh today", never the gap count.
-- [ ] 8.4 Lift the three existing ad-hoc silence decisions (`isHealthRelevant`, `pushPayload(owner_action:"none") -> null`, `stale_assisted_refresh` info-severity) into the one `channel` computation; the push transport emits only when `channel === "attention"` with an owner-satisfiable action; `calm`/`advisory` never push.
-- [ ] 8.5 Add a grep/lint gate over `apps/console/**` forbidding raw `health.state` reads AND raw silence decisions (any surface re-deriving "is this actionable / should I badge / should I push" from raw axes). One owner of the alarm decision: the synthesizer's `channel`.
+- [x] 8.2 Migrate the dashboard list, connection header, connection detail, and owner-agent passport to render only `RenderedVerdict` fields; remove every raw `health.state`-derived pill/badge/headline/owner-action.
+- [x] 8.3 Split the dashboard (attention layer) from the detail panel (inspection layer): mechanistic counts (gap counts, retry counts, backlog scale, `next_attempt_at`, `collection_rate`) render only in `detail`; the dashboard renders "Healthy · fresh today", never the gap count.
+- [x] 8.4 Lift the three existing ad-hoc silence decisions (`isHealthRelevant`, `pushPayload(owner_action:"none") -> null`, `stale_assisted_refresh` info-severity) into the one `channel` computation; the push transport emits only when `channel === "attention"` with an owner-satisfiable action; `calm`/`advisory` never push.
+- [x] 8.5 Add a grep/lint gate over `apps/console/**` forbidding raw `health.state` reads AND raw silence decisions (any surface re-deriving "is this actionable / should I badge / should I push" from raw axes). One owner of the alarm decision: the synthesizer's `channel`.
 
 ## 9. Runtime-vs-connection cascade guard
 

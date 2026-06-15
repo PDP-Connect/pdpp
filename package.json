@@ -58,6 +58,8 @@
     "release:dist-tag-check:test": "node --test scripts/check-dist-tag-posture.test.mjs",
     "owner-journey:acceptance": "node scripts/check-owner-journey-acceptance.mjs",
     "owner-journey:acceptance:test": "node --test scripts/check-owner-journey-acceptance.test.mjs",
+    "console:health-surface-gate": "node scripts/check-console-health-surfaces.mjs",
+    "console:health-surface-gate:test": "node --test scripts/check-console-health-surfaces.test.mjs",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",
     "reference-implementation:server": "pnpm --dir reference-implementation run server",
     "reference-implementation:server:dev": "pnpm --dir reference-implementation run dev",

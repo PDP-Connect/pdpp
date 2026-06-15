@@ -156,11 +156,7 @@ test("deriveSourceStatus: a stale-but-healthy connection carries a mandatory fre
 });
 
 test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
-  const flag = deriveRenderedSourceStatus(
-    renderedVerdict({ pill: { label: "Needs you", tone: "amber" } }),
-    health("healthy"),
-    false
-  );
+  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Needs you", tone: "amber" } }), false);
   assert.equal(flag.kind, "degraded");
   assert.equal(flag.tone, "warning");
   assert.equal(flag.label, "Needs you");
@@ -172,7 +168,6 @@ test("deriveRenderedSourceStatus carries freshness annotations from rendered ver
       annotations: [{ kind: "freshness", text: "Stale — this connector refreshes when you run it." }],
       pill: { label: "Healthy", tone: "green" },
     }),
-    healthWithFreshness("healthy", "fresh"),
     false
   );
   assert.equal(flag.kind, "healthy");
@@ -223,6 +218,29 @@ test("toSourceInstanceView reads owner CTA from rendered_verdict required action
   );
   assert.equal(view.nextAction?.label, "Refresh now");
   assert.equal(view.nextAction?.actionTarget, "connection_detail");
+});
+
+test("toSourceInstanceView does not fall back to raw health state or next_action when rendered_verdict is absent", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connection_health: {
+        ...health("needs_attention"),
+        next_action: {
+          action_target: "legacy_target",
+          attention_id: "att_legacy",
+          expires_at: null,
+          owner_action: "act_elsewhere",
+          reason_code: "legacy_action",
+          response_contract: "none",
+          source: "structured",
+        },
+      },
+      rendered_verdict: null,
+    })
+  );
+  assert.equal(view.status.kind, "unknown");
+  assert.equal(view.status.label, "Verdict unavailable");
+  assert.equal(view.nextAction, null);
 });
 
 test("toSourceInstanceView does not render maintainer or wait actions as owner CTAs", () => {

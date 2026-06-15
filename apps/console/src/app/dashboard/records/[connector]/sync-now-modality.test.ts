@@ -28,19 +28,25 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
 const IMPORTS_SHARED_CLASSIFIER =
-  /import \{ (?=[^}]*derivePrimaryRowAction)(?=[^}]*type PrimaryRowAction)[^}]+ \} from "\.\.\/\.\.\/lib\/connection-evidence\.ts"/;
+  /derivePrimaryRowAction[\s\S]*type PrimaryRowAction[\s\S]*from "\.\.\/\.\.\/lib\/connection-evidence\.ts"/;
 const DERIVES_PRIMARY_ACTION = /const primaryAction = derivePrimaryRowAction\(\{/;
-const PRIMARY_ACTION_KEYS_HEALTH = /health: overview\.connectionHealth \?\? null/;
+const PRIMARY_ACTION_KEYS_RAW_HEALTH = /derivePrimaryRowAction\(\{[\s\S]{0,220}health:/;
 const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(overview\.lastRun\?\.status\)/;
 const SYNC_BUTTON_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
-const SYNC_BRANCH_GUARD = /primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
-const COOLDOWN_BRANCH_GUARD = /primaryAction\.kind === "cooldown_wait" \? \(\s*<CooldownPrimaryAction/;
+const RENDERED_VERDICT_ACTION_HELPER = /function primaryRenderedAction\(verdict: RefRenderedVerdict \| null\)/;
+const RENDERED_VERDICT_HEADER_ACTION = /function RenderedVerdictHeaderAction/;
+const RENDERED_VERDICT_ACTION_TESTID = /data-testid="detail-action-rendered-verdict"/;
+const RENDERED_VERDICT_STATUS_TESTID = /data-testid="detail-action-rendered-verdict-status"/;
+const RENDERED_VERDICT_ACTION_PRECEDES_SYNC =
+  /const renderedAction = primaryRenderedAction\(renderedVerdict\);[\s\S]*if \(renderedAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
+const SYNC_BRANCH_GUARD = /if \(primaryAction\.kind === "sync"\)/;
+const COOLDOWN_BRANCH_GUARD = /if \(primaryAction\.kind === "cooldown_wait"\)/;
 const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
 const FORCE_BUTTON_WARNING = /Bypasses the provider-pressure cooldown/;
 const MANUAL_UPLOAD_IMPORT_LINK = /Add another export/;
 const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess all exports"/;
 const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
-const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
+const NON_SYNC_NOTICE = /return <PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
 // `emptyStreamsHint`, never shown unconditionally for every connection.
@@ -56,7 +62,7 @@ test("detail page imports the shared primary-action classifier", async () => {
 test("detail page derives its primary action from the shared classifier (no scattered string checks)", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, DERIVES_PRIMARY_ACTION);
-  assert.match(src, PRIMARY_ACTION_KEYS_HEALTH);
+  assert.doesNotMatch(src, PRIMARY_ACTION_KEYS_RAW_HEALTH);
 });
 
 test("detail page labels failed owner syncs as retryable", async () => {
@@ -65,14 +71,27 @@ test("detail page labels failed owner syncs as retryable", async () => {
   assert.match(src, SYNC_BUTTON_RECEIVES_IDLE_LABEL);
 });
 
-test("SyncNowButton renders only inside the owner-syncable branch", async () => {
+test("rendered verdict owner action owns the header before generic sync fallback", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, RENDERED_VERDICT_ACTION_HELPER);
+  assert.match(src, RENDERED_VERDICT_HEADER_ACTION);
+  assert.match(src, RENDERED_VERDICT_ACTION_TESTID);
+  assert.match(src, RENDERED_VERDICT_STATUS_TESTID);
+  assert.match(src, RENDERED_VERDICT_ACTION_PRECEDES_SYNC);
+});
+
+test("SyncNowButton renders only inside owner-actionable branches", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, SYNC_BRANCH_GUARD);
-  // Three render sites are allowed: ordinary sync, manual-upload reprocess
-  // nested under the owner-syncable branch, and the separately-named force
-  // override nested under the cooldown-only branch.
+  // Four render sites are allowed: the rendered-verdict repair action,
+  // ordinary sync, manual-upload reprocess nested under the owner-syncable
+  // branch, and the separately-named force override nested under cooldown.
   const renders = src.match(/<SyncNowButton/g) ?? [];
-  assert.equal(renders.length, 3, "expected ordinary sync, manual reprocess, and cooldown force render sites");
+  assert.equal(
+    renders.length,
+    4,
+    "expected rendered-verdict repair, ordinary sync, manual reprocess, and cooldown force render sites"
+  );
   assert.match(src, MANUAL_UPLOAD_IMPORT_LINK);
   assert.match(src, MANUAL_UPLOAD_REPROCESS_BUTTON);
   assert.match(src, MANUAL_UPLOAD_RUNNING_LABEL);

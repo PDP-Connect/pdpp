@@ -1,10 +1,9 @@
 /**
- * Source-regex guards for the three health surfaces added to the connector
- * detail page (change #14 in the ux-debt register):
+ * Source-regex guards for the connection-detail health surfaces:
  *
- *   1. "What's wrong?" / "What's missing?" expander  (§C of the mocks)
- *   2. 14-day streak strip                           (§B.2 of the mocks)
- *   3. Auto-paused banner in the run timeline        (§D.4 of the mocks)
+ *   1. one server-owned rendered verdict path for health explanation
+ *   2. 14-day streak strip
+ *   3. Auto-paused banner in the run timeline
  *
  * These are structural invariants, not behavioural tests. Behavioural
  * coverage for the pure derivation helpers lives in
@@ -22,13 +21,10 @@ const PAGE_FILE = `${HERE}page.tsx`;
 // ─── Top-level regex constants (biome useTopLevelRegex) ───────────────────────
 
 const RE_DERIVE_FAILURE_SUMMARY = /deriveFailureSummary/;
-const RE_FAILURE_SUMMARY_CONDITIONAL = /failureSummary\s*\?/;
 const RE_FAILURE_EXPANDER_COMPONENT = /<FailureExpander/;
 const RE_FAILURE_EXPANDER_TESTID = /data-testid="failure-expander"/;
-const RE_FAILURE_EXPANDER_RECONNECT_TESTID = /data-testid="failure-expander-reconnect"/;
-const RE_ADD_SOURCE_HREF = /addSourceHrefForConnector\(connectorId\)/;
-const RE_FAILURE_EXPANDER_VIEW_RUNS_TESTID = /data-testid="failure-expander-view-runs"/;
-const RE_RUNS_CONNECTOR_ID_PARAM = /\/dashboard\/runs\?connector_id=/;
+const RE_CONNECTION_DIAGNOSTICS_COMPONENT = /<ConnectionDiagnostics/;
+const RE_CONNECTION_DIAGNOSTICS_VERDICT_PROP = /renderedVerdict=\{connectionRenderedVerdict\}/;
 const RE_DERIVE_STREAK_DOTS = /deriveStreakDots/;
 const RE_STREAK_DOTS_CONDITIONAL = /streakDots\.length\s*>\s*0/;
 const RE_STREAK_STRIP_COMPONENT = /<StreakStrip/;
@@ -46,35 +42,19 @@ const RE_ACQUISITION_COVERAGE_RECEIPT_LINK = /\/dashboard\/connect\/status\//;
 const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync status/;
 const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
 
-// ─── Surface 1: failure expander ─────────────────────────────────────────────
+// ─── Surface 1: rendered-verdict health explanation ──────────────────────────
 
-test("page imports deriveFailureSummary from connection-evidence", async () => {
+test("page no longer renders the legacy raw-health failure expander", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RE_DERIVE_FAILURE_SUMMARY);
+  assert.doesNotMatch(src, RE_DERIVE_FAILURE_SUMMARY);
+  assert.doesNotMatch(src, RE_FAILURE_EXPANDER_COMPONENT);
+  assert.doesNotMatch(src, RE_FAILURE_EXPANDER_TESTID);
 });
 
-test("page renders FailureExpander when failureSummary is truthy", async () => {
+test("page routes health explanation through ConnectionDiagnostics rendered_verdict", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  // The conditional render must gate on failureSummary
-  assert.match(src, RE_FAILURE_SUMMARY_CONDITIONAL);
-  assert.match(src, RE_FAILURE_EXPANDER_COMPONENT);
-});
-
-test("failure expander has a data-testid for integration targeting", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RE_FAILURE_EXPANDER_TESTID);
-});
-
-test("failure expander reconnect CTA links to add-source flow", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RE_FAILURE_EXPANDER_RECONNECT_TESTID);
-  assert.match(src, RE_ADD_SOURCE_HREF);
-});
-
-test("failure expander view-runs CTA links to runs list filtered by connector", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RE_FAILURE_EXPANDER_VIEW_RUNS_TESTID);
-  assert.match(src, RE_RUNS_CONNECTOR_ID_PARAM);
+  assert.match(src, RE_CONNECTION_DIAGNOSTICS_COMPONENT);
+  assert.match(src, RE_CONNECTION_DIAGNOSTICS_VERDICT_PROP);
 });
 
 // ─── Surface 2: streak strip ──────────────────────────────────────────────────

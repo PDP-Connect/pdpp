@@ -29,7 +29,7 @@ import {
   canonicalConnectorKey,
   manualUploadSetupFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
-import { type FormattedNextAction, formatNextAction } from "../lib/next-action.ts";
+import type { FormattedNextAction } from "../lib/next-action.ts";
 import type {
   RefConnectionHealthSnapshot,
   RefConnectorRunSummary,
@@ -261,14 +261,19 @@ function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
  */
 export function deriveRenderedSourceStatus(
   verdict: RefRenderedVerdict | null | undefined,
-  health: RefConnectionHealthSnapshot | undefined,
   revoked: boolean
 ): SourceStatusFlag {
   if (revoked) {
     return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
   }
   if (!verdict) {
-    return deriveSourceStatus(health, false);
+    return {
+      kind: "unknown",
+      dot: "○",
+      tone: "muted",
+      label: "Verdict unavailable",
+      freshnessNote: null,
+    };
   }
   const status = VERDICT_TONE_STATUS[verdict.pill.tone];
   const freshnessNote = freshnessNoteFromVerdict(verdict);
@@ -448,10 +453,8 @@ export function toSourceInstanceView(
     name: summary.connector_display_name,
   });
 
-  const nextAction = summary.rendered_verdict
-    ? formatRenderedRequiredAction(summary.rendered_verdict)
-    : formatNextAction(summary.connection_health?.next_action ?? summary.next_action ?? null);
-  const status = deriveRenderedSourceStatus(summary.rendered_verdict, summary.connection_health, revoked);
+  const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
+  const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
 
   const streams: SourceStreamManifestRow[] = summary.streams.map((name) => ({
     name,
