@@ -1879,8 +1879,18 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const browserSurfaceMidWaitPollIntervalMs = opts.browserSurfaceMidWaitPollIntervalMs;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   // Wall-clock watchdog budget per run. Resolves from opts first, then the
-  // PDPP_MAX_RUN_WALL_CLOCK_MS env var, then a safe 1-hour default. Infinity
+  // PDPP_MAX_RUN_WALL_CLOCK_MS env var, then a safe 4-hour default. Infinity
   // disables the watchdog entirely (tests set this to avoid real timers).
+  //
+  // The watchdog exists to reclaim a HUNG run (one that never terminates), not
+  // to right-size healthy runs — so the ceiling must sit safely above the
+  // longest LEGITIMATE run. Observed live run durations (scheduler_run_history,
+  // succeeded): gmail max ~6 860 s (~1.9 h), github ~5 040 s (~1.4 h). A 1-hour
+  // default would have force-failed real gmail/github runs. 4 hours is ~2x the
+  // observed worst case with headroom; a genuinely hung run never terminates,
+  // so the wider ceiling still catches it. Tying this to a connector's
+  // `maximum_staleness_seconds` would be wrong — that is a data-freshness
+  // cadence, not a single-run duration budget.
   const maxRunWallClockMs = (() => {
     if (opts.maxRunWallClockMs !== undefined) {
       return opts.maxRunWallClockMs;
@@ -1896,7 +1906,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       return parsed;
     }
-    return 3_600_000; // 1 hour default
+    return 14_400_000; // 4 hour default (>2x longest observed legitimate run)
   })();
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
   const activeRunTraceContexts = new Map<string, SpineTraceContext>();
