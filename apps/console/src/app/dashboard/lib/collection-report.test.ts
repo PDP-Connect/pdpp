@@ -1,4 +1,7 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: Copy assertions are
+ * clearer as local regex literals in tests.
+ *
  * Unit tests for the per-stream Collection Report formatter
  * (`define-connector-progress-evidence-contract`, Tranche C, consumed by the
  * connector detail page).
@@ -32,7 +35,8 @@ const CONNECTOR_NAME_COPY = /\bgmail\b|\bchatgpt\b|\bslack\b|\bchase\b|\bspotify
 const IMPOSSIBLE_COLLECTED_FRACTION = /3 ?\/ ?2/;
 const IMPOSSIBLE_COVERED_FRACTION = /6 ?\/ ?4/;
 const CLAMPED_COPY = /clamped/i;
-const COVERED_EXCEEDED_DENOMINATOR_COPY = /accounted for 3 of 4 considered records.*more than the considered denominator/i;
+const COVERED_EXCEEDED_DENOMINATOR_COPY =
+  /accounted for 3 of 4 considered records.*more than the considered denominator/i;
 const RAW_COLLECTED_3_COPY = /\b3\b/;
 const COLLECTED_5_COPY = /collected 5/;
 

@@ -1,8 +1,8 @@
 "use client";
 
+import { IcButton, IcInput } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, ToolbarField } from "@pdpp/operator-ui/components/primitives";
-import { IcButton, IcInput } from "@pdpp/brand-react";
 import { useActionState } from "react";
 import { pdppLocalCollectorEnrollCommand, pdppLocalCollectorRunCommand } from "@/lib/pdpp-cli-command.ts";
 import { createEnrollmentCodeAction } from "./actions.ts";
@@ -74,8 +74,8 @@ export function EnrollmentForm({
           <div>
             <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the host that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector</code> command on the host with Claude Code
-              or Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
+              Run this <code className="font-mono">@pdpp/local-collector</code> command on the host with Claude Code or
+              Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
               PDPP source checkout is required. The JSON response returns <code className="font-mono">device_id</code>,{" "}
               <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code>{" "}
               &mdash; persist all three without logging the token.
@@ -92,9 +92,7 @@ export function EnrollmentForm({
           </div>
 
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">
-              2. Run a connector pass
-            </div>
+            <div className="pdpp-eyebrow text-muted-foreground">2. Run a connector pass</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
               Use the three values from the enrollment response. The command resumes from prior connector state via the
               device-scoped STATE route; re-running is safe.

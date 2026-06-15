@@ -84,16 +84,24 @@ function traceEndorseStatus(status: string): "active" | "continuous" | "expiring
   }
 }
 
-export default async function TracesPage({ searchParams }: { searchParams: Promise<Params> }) {
-  const params = await searchParams;
-  const filters = {
-    cursor: params.cursor,
-    status: params.status,
+function traceListFilters(params: Params) {
+  return {
     client_id: params.client_id,
+    cursor: params.cursor,
+    limit: 50,
     provider_id: params.provider_id,
     q: params.q,
-    limit: 50,
+    status: params.status,
   };
+}
+
+function hasActiveFilters(params: Params): boolean {
+  return Boolean(params.status || params.q || params.client_id || params.provider_id);
+}
+
+export default async function TracesPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
+  const filters = traceListFilters(params);
 
   let result: ListResponse<TraceSummary>;
   let peekEnvelope: TimelineEnvelope | null = null;
@@ -114,278 +122,29 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
     throw err;
   }
 
-  const hasFilters = Boolean(params.status || params.q || params.client_id || params.provider_id);
-  const isPeeking = Boolean(params.peek && peekEnvelope);
+  const hasFilters = hasActiveFilters(params);
+  const peekTraceId = params.peek && peekEnvelope ? params.peek : null;
+  const isPeeking = Boolean(peekTraceId);
 
   return (
     <RecordroomShellWithPalette>
       <TracesHeader />
 
-      {/* ── Filter band ─────────────────────────────────────────────── */}
-      <form
-        action="/dashboard/traces"
-        method="get"
-        style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}
-      >
-        <IcInput
-          aria-label="Search traces"
-          defaultValue={params.q ?? ""}
-          name="q"
-          placeholder="id contains…"
-          style={{ flex: "1 1 200px", maxWidth: 320 }}
-          type="search"
-        />
-        {/* Status filter — Ink Carbon select (base-ui listbox, fully styled). */}
-        <IcSelect
-          aria-label="Filter by status"
-          defaultValue={params.status ?? ""}
-          name="status"
-          options={[
-            { label: "all statuses", value: "" },
-            { label: "succeeded", value: "succeeded" },
-            { label: "failed", value: "failed" },
-            { label: "rejected", value: "rejected" },
-            { label: "started", value: "started" },
-          ]}
-          style={{ flex: "0 0 auto", minWidth: 140 }}
-        />
-        <IcButton size="sm" type="submit" variant="ghost">
-          Apply
-        </IcButton>
-        {hasFilters ? (
-          <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/traces">
-            Reset
-          </a>
-        ) : null}
-      </form>
+      <TraceFilterBand hasFilters={hasFilters} params={params} />
+      {hasFilters ? <ActiveFilterChips params={params} /> : null}
 
-      {/* ── Active filter chips ──────────────────────────────────────── */}
-      {hasFilters ? (
-        <div
-          aria-label="Active filters"
-          role="list"
-          style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}
-        >
-          {params.status ? (
-            <span role="listitem">
-              <Tag>status: {params.status}</Tag>
-            </span>
-          ) : null}
-          {params.q ? (
-            <span role="listitem">
-              <Tag>query: {params.q}</Tag>
-            </span>
-          ) : null}
-          {params.client_id ? (
-            <span role="listitem">
-              <Tag>client: {params.client_id}</Tag>
-            </span>
-          ) : null}
-          {params.provider_id ? (
-            <span role="listitem">
-              <Tag>provider: {params.provider_id}</Tag>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-
-      {/* ── Split layout: list + optional peek panel ─────────────────── */}
-      {/* On desktop (xl+): 2-column grid when peeking; 1-column otherwise.
-          On mobile (below xl): always 1-column; the peek pane is hidden via
-          `hidden xl:block` on the panel element — mobile rows navigate to
-          the full detail page instead. */}
       <div
-        className="rr-traces-split xl:grid xl:gap-6 xl:items-start"
+        className="rr-traces-split xl:grid xl:items-start xl:gap-6"
         style={{
           gridTemplateColumns: isPeeking ? "minmax(0, 1.4fr) minmax(0, 1fr)" : "1fr",
         }}
       >
-        {/* ── Traces table ──────────────────────────────────────────── */}
         <div>
-          {result.data.length === 0 ? (
-            <TracesEmptyState hasFilters={hasFilters} />
-          ) : (
-            <>
-              {/* Desktop table — hidden on mobile via CSS */}
-              <div className="rr-traces-table-wrap hidden sm:block">
-                <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
-                  <TableHeaderRow>
-                    <TableHeader>Status</TableHeader>
-                    <TableHeader>Subject</TableHeader>
-                    <TableHeader>Kinds</TableHeader>
-                    <TableHeader numeric>Events</TableHeader>
-                    <TableHeader numeric>Time</TableHeader>
-                  </TableHeaderRow>
-                  {result.data.map((trace) => {
-                    const peeked = params.peek === trace.trace_id;
-                    const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
-                    const label = traceRowLabel(trace);
-                    const kinds = trace.kinds.slice(0, 3).join(", ");
-                    return (
-                      <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
-                        <TableCell>
-                          <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
-                        </TableCell>
-                        <TableCell>
-                          <Link href={peekHref} scroll={false} style={{ display: "block", textDecoration: "none" }}>
-                            <span
-                              style={{
-                                display: "block",
-                                fontFamily: "var(--font-sans)",
-                                fontSize: "0.875rem",
-                                fontWeight: 600,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                color: "var(--foreground)",
-                              }}
-                            >
-                              {label}
-                            </span>
-                            <TypedSm
-                              style={{
-                                display: "block",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                marginTop: 1,
-                              }}
-                            >
-                              {trace.trace_id}
-                            </TypedSm>
-                          </Link>
-                        </TableCell>
-                        <TableCell>
-                          {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
-                        </TableCell>
-                        <TableCell numeric>
-                          <TypedSm>{trace.event_count}</TypedSm>
-                        </TableCell>
-                        <TableCell numeric>
-                          <TypedSm>
-                            <IcTimestamp value={trace.last_at} />
-                          </TypedSm>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </Table>
-              </div>
-
-              {/* Mobile card list — shown only at <640px */}
-              <ul className="rr-traces-cards sm:hidden" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                {result.data.map((trace) => {
-                  const detailHref = `/dashboard/traces/${encodeURIComponent(trace.trace_id)}`;
-                  const label = traceRowLabel(trace);
-                  const kinds = trace.kinds.slice(0, 3).join(", ");
-                  return (
-                    <li
-                      key={trace.trace_id}
-                      style={{
-                        borderBottom: "1px solid var(--border)",
-                        padding: "10px 0",
-                      }}
-                    >
-                      {/* Mobile card: tap anywhere navigates to full-page detail. */}
-                      <Link href={detailHref} style={{ display: "block", textDecoration: "none" }}>
-                        <span
-                          style={{
-                            display: "block",
-                            fontFamily: "var(--font-sans)",
-                            fontSize: "0.875rem",
-                            fontWeight: 600,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            color: "var(--foreground)",
-                          }}
-                        >
-                          {label}
-                        </span>
-                        <TypedSm
-                          style={{
-                            display: "block",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            marginTop: 1,
-                            color: "var(--muted-foreground)",
-                          }}
-                        >
-                          {trace.trace_id}
-                        </TypedSm>
-                        {/* Meta line: status · kinds · events · time */}
-                        <div
-                          style={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            alignItems: "center",
-                            gap: "5px 10px",
-                            marginTop: 6,
-                          }}
-                        >
-                          <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
-                          {kinds ? (
-                            <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm>
-                          ) : null}
-                          <TypedSm style={{ color: "var(--muted-foreground)" }}>
-                            {trace.event_count} events
-                          </TypedSm>
-                          <TypedSm style={{ color: "var(--muted-foreground)" }}>
-                            <IcTimestamp value={trace.last_at} />
-                          </TypedSm>
-                        </div>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          )}
-
-          {/* ── Pagination ────────────────────────────────────────── */}
-          {result.has_more || params.cursor ? (
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                justifyContent: "flex-end",
-                marginTop: 16,
-                paddingTop: 12,
-                borderTop: "1px solid var(--border)",
-              }}
-            >
-              {params.cursor ? (
-                <a
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
-                  href={listHref(params, { cursor: undefined })}
-                >
-                  ← First page
-                </a>
-              ) : null}
-              {result.has_more && result.next_cursor ? (
-                <a
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
-                  href={listHref(params, { cursor: result.next_cursor })}
-                >
-                  Next →
-                </a>
-              ) : null}
-            </div>
-          ) : null}
+          <TracesResults hasFilters={hasFilters} params={params} traces={result.data} />
+          <TracePagination params={params} result={result} />
         </div>
 
-        {/* ── Peek panel — desktop only (xl+) ────────────────────────── */}
-        {isPeeking && peekEnvelope ? (
-          <div className="hidden xl:block">
-            <TracesPeekPanel
-              cliCommand={`pdpp ref trace show ${params.peek}`}
-              envelope={peekEnvelope}
-              listParams={params}
-              traceId={params.peek!}
-            />
-          </div>
-        ) : null}
+        <TracePeekSlot envelope={peekEnvelope} isPeeking={isPeeking} params={params} traceId={peekTraceId} />
       </div>
     </RecordroomShellWithPalette>
   );
@@ -421,6 +180,313 @@ function TracesHeader() {
         provider-connect · owner device · /v1 reads · every protocol interaction recorded
       </p>
     </header>
+  );
+}
+
+function ActiveFilterChips({ params }: { params: Params }) {
+  return (
+    <ul
+      aria-label="Active filters"
+      style={{ display: "flex", flexWrap: "wrap", gap: 6, listStyle: "none", margin: "0 0 16px", padding: 0 }}
+    >
+      {params.status ? (
+        <li>
+          <Tag>status: {params.status}</Tag>
+        </li>
+      ) : null}
+      {params.q ? (
+        <li>
+          <Tag>query: {params.q}</Tag>
+        </li>
+      ) : null}
+      {params.client_id ? (
+        <li>
+          <Tag>client: {params.client_id}</Tag>
+        </li>
+      ) : null}
+      {params.provider_id ? (
+        <li>
+          <Tag>provider: {params.provider_id}</Tag>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
+function TraceFilterBand({ params, hasFilters }: { params: Params; hasFilters: boolean }) {
+  return (
+    <form
+      action="/dashboard/traces"
+      method="get"
+      style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}
+    >
+      <IcInput
+        aria-label="Search traces"
+        defaultValue={params.q ?? ""}
+        name="q"
+        placeholder="id contains…"
+        style={{ flex: "1 1 200px", maxWidth: 320 }}
+        type="search"
+      />
+      <IcSelect
+        aria-label="Filter by status"
+        defaultValue={params.status ?? ""}
+        name="status"
+        options={[
+          { label: "all statuses", value: "" },
+          { label: "succeeded", value: "succeeded" },
+          { label: "failed", value: "failed" },
+          { label: "rejected", value: "rejected" },
+          { label: "started", value: "started" },
+        ]}
+        style={{ flex: "0 0 auto", minWidth: 140 }}
+      />
+      <IcButton size="sm" type="submit" variant="ghost">
+        Apply
+      </IcButton>
+      {hasFilters ? (
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/traces">
+          Reset
+        </a>
+      ) : null}
+    </form>
+  );
+}
+
+function TracesResults({
+  traces,
+  params,
+  hasFilters,
+}: {
+  traces: TraceSummary[];
+  params: Params;
+  hasFilters: boolean;
+}) {
+  if (traces.length === 0) {
+    return <TracesEmptyState hasFilters={hasFilters} />;
+  }
+
+  return (
+    <>
+      <TracesDesktopTable params={params} traces={traces} />
+      <TracesMobileCards traces={traces} />
+    </>
+  );
+}
+
+function TracesDesktopTable({ traces, params }: { traces: TraceSummary[]; params: Params }) {
+  return (
+    <div className="rr-traces-table-wrap hidden sm:block">
+      <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
+        <TableHeaderRow>
+          <TableHeader>Status</TableHeader>
+          <TableHeader>Subject</TableHeader>
+          <TableHeader>Kinds</TableHeader>
+          <TableHeader numeric>Events</TableHeader>
+          <TableHeader numeric>Time</TableHeader>
+        </TableHeaderRow>
+        {traces.map((trace) => {
+          const peeked = params.peek === trace.trace_id;
+          const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
+          const label = traceRowLabel(trace);
+          const kinds = trace.kinds.slice(0, 3).join(", ");
+          return (
+            <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
+              <TableCell>
+                <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+              </TableCell>
+              <TableCell>
+                <TraceSubjectLink href={peekHref} label={label} traceId={trace.trace_id} />
+              </TableCell>
+              <TableCell>
+                {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
+              </TableCell>
+              <TableCell numeric>
+                <TypedSm>{trace.event_count}</TypedSm>
+              </TableCell>
+              <TableCell numeric>
+                <TypedSm>
+                  <IcTimestamp value={trace.last_at} />
+                </TypedSm>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </Table>
+    </div>
+  );
+}
+
+function TraceSubjectLink({ href, label, traceId }: { href: string; label: string; traceId: string }) {
+  return (
+    <Link href={href} scroll={false} style={{ display: "block", textDecoration: "none" }}>
+      <span
+        style={{
+          display: "block",
+          fontFamily: "var(--font-sans)",
+          fontSize: "0.875rem",
+          fontWeight: 600,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          color: "var(--foreground)",
+        }}
+      >
+        {label}
+      </span>
+      <TypedSm
+        style={{
+          display: "block",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          marginTop: 1,
+        }}
+      >
+        {traceId}
+      </TypedSm>
+    </Link>
+  );
+}
+
+function TracesMobileCards({ traces }: { traces: TraceSummary[] }) {
+  return (
+    <ul className="rr-traces-cards sm:hidden" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+      {traces.map((trace) => {
+        const detailHref = `/dashboard/traces/${encodeURIComponent(trace.trace_id)}`;
+        const label = traceRowLabel(trace);
+        const kinds = trace.kinds.slice(0, 3).join(", ");
+        return (
+          <TraceMobileCard detailHref={detailHref} key={trace.trace_id} kinds={kinds} label={label} trace={trace} />
+        );
+      })}
+    </ul>
+  );
+}
+
+function TraceMobileCard({
+  detailHref,
+  kinds,
+  label,
+  trace,
+}: {
+  detailHref: string;
+  kinds: string;
+  label: string;
+  trace: TraceSummary;
+}) {
+  return (
+    <li
+      style={{
+        borderBottom: "1px solid var(--border)",
+        padding: "10px 0",
+      }}
+    >
+      <Link href={detailHref} style={{ display: "block", textDecoration: "none" }}>
+        <span
+          style={{
+            display: "block",
+            fontFamily: "var(--font-sans)",
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            color: "var(--foreground)",
+          }}
+        >
+          {label}
+        </span>
+        <TypedSm
+          style={{
+            display: "block",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            marginTop: 1,
+            color: "var(--muted-foreground)",
+          }}
+        >
+          {trace.trace_id}
+        </TypedSm>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "5px 10px",
+            marginTop: 6,
+          }}
+        >
+          <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+          {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
+          <TypedSm style={{ color: "var(--muted-foreground)" }}>{trace.event_count} events</TypedSm>
+          <TypedSm style={{ color: "var(--muted-foreground)" }}>
+            <IcTimestamp value={trace.last_at} />
+          </TypedSm>
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+function TracePagination({ result, params }: { result: ListResponse<TraceSummary>; params: Params }) {
+  if (!(result.has_more || params.cursor)) {
+    return null;
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        justifyContent: "flex-end",
+        marginTop: 16,
+        paddingTop: 12,
+        borderTop: "1px solid var(--border)",
+      }}
+    >
+      {params.cursor ? (
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={listHref(params, { cursor: undefined })}>
+          ← First page
+        </a>
+      ) : null}
+      {result.has_more && result.next_cursor ? (
+        <a
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          href={listHref(params, { cursor: result.next_cursor })}
+        >
+          Next →
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function TracePeekSlot({
+  envelope,
+  isPeeking,
+  params,
+  traceId,
+}: {
+  envelope: TimelineEnvelope | null;
+  isPeeking: boolean;
+  params: Params;
+  traceId: string | null;
+}) {
+  if (!(isPeeking && envelope && traceId)) {
+    return null;
+  }
+
+  return (
+    <div className="hidden xl:block">
+      <TracesPeekPanel
+        cliCommand={`pdpp ref trace show ${traceId}`}
+        envelope={envelope}
+        listParams={params}
+        traceId={traceId}
+      />
+    </div>
   );
 }
 
@@ -513,9 +579,9 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
 
         {/* Event timeline — first 8 events to keep the panel compact */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {envelope.events.slice(0, 8).map((event, i) => (
+          {envelope.events.slice(0, 8).map((event) => (
             <div
-              key={i}
+              key={event.event_id}
               style={{
                 padding: "6px 0",
                 borderBottom: "1px solid var(--border)",

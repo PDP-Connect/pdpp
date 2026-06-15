@@ -174,9 +174,10 @@ function DeviceRow({ device, referenceBaseUrl }: { device: DeviceExporter; refer
   // first qualifying source instance to pre-fill the enrollment form — the owner
   // can always edit the fields in the main EnrollmentForm above if they need
   // a different binding name.
-  const reenrollSource = (device.status === "revoked" || heartbeat === "stale" || heartbeat === "never")
-    ? device.source_instances.find((s) => isSupportedLocalCollectorConnector(s.connector_id))
-    : null;
+  const reenrollSource =
+    device.status === "revoked" || heartbeat === "stale" || heartbeat === "never"
+      ? device.source_instances.find((s) => isSupportedLocalCollectorConnector(s.connector_id))
+      : null;
 
   return (
     <li className="py-4">

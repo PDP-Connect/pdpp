@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createDeviceEnrollmentCode, type DeviceEnrollmentCode, revokeDeviceExporter } from "../lib/ref-client.ts";
 import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
+import { createDeviceEnrollmentCode, type DeviceEnrollmentCode, revokeDeviceExporter } from "../lib/ref-client.ts";
 
 type EnrollmentActionState =
   | { ok: false; message: string }

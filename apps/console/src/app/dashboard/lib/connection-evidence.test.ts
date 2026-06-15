@@ -1,4 +1,7 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: This copy-heavy test
+ * suite uses local regex assertions intentionally.
+ *
  * Unit tests for the connection-evidence formatters. These cover the
  * honest-by-default rules required by tasks 6.1 and 6.5: never render
  * `0` records when evidence failed, never label coverage `complete`
@@ -1863,9 +1866,7 @@ test("deriveFailureSummary passes through last_success_at", () => {
 // and confusing. deriveFailureSummary MUST apply the same isSourcePressureCooldown
 // guard that synthesizeConnectionVerdict already applies. (spec §6.2)
 test("deriveFailureSummary blocked + source_pressure reason_code → cta is 'wait', NOT 'reconnect'", () => {
-  const result = deriveFailureSummary(
-    snapshot({ state: "blocked", reason_code: "source_pressure" })
-  );
+  const result = deriveFailureSummary(snapshot({ state: "blocked", reason_code: "source_pressure" }));
   assert.ok(result);
   assert.notEqual(result.cta, "reconnect", "source-pressure blocked must not yield reconnect CTA");
   assert.equal(result.cta, "wait");

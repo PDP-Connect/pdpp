@@ -1,4 +1,7 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: These invariant tests use
+ * local regex assertions to keep the source-contract checks readable.
+ *
  * Asserts that the device-exporters enrollment form surfaces the canonical
  * `@pdpp/local-collector` enroll / run invocations via the shared
  * helpers in apps/console/src/lib/pdpp-cli-command.ts, and exposes stable test
@@ -26,7 +29,8 @@ const ACTIONS_PATH = "apps/console/src/app/dashboard/device-exporters/actions.ts
 const COLLECTOR_ENROLL_HELPER = /pdppLocalCollectorEnrollCommand/;
 const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;
 const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector/;
-const BROWSER_COLLECTOR_MONOREPO_COPY = /PDPP monorepo checkout|pnpm --dir|packages\/polyfill-connectors|browser-collector run command/;
+const BROWSER_COLLECTOR_MONOREPO_COPY =
+  /PDPP monorepo checkout|pnpm --dir|packages\/polyfill-connectors|browser-collector run command/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
 const SUPPORTED_CONNECTORS = /COLLECTOR_RUN_CONNECTORS\s*=\s*\["claude_code",\s*"codex"\]/;

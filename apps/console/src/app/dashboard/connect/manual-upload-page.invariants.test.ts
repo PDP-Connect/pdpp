@@ -1,3 +1,4 @@
+// biome-ignore-all lint/performance/useTopLevelRegex: invariant tests read more clearly with local regex assertions.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

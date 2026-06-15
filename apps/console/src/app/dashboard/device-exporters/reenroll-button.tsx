@@ -39,7 +39,7 @@ export function ReenrollButton({
     const fullRunCommand = [
       "PDPP_LOCAL_DEVICE_ID=<device_id> \\",
       "PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\",
-      `PDPP_CONNECTION_ID=<source_instance_id> \\`,
+      "PDPP_CONNECTION_ID=<source_instance_id> \\",
       runCommand,
     ].join("\n");
 
@@ -50,9 +50,9 @@ export function ReenrollButton({
         <div>
           <div className="pdpp-eyebrow text-muted-foreground">1. Re-enroll this device</div>
           <p className="pdpp-caption mt-1 text-muted-foreground">
-            Run on the target host. The response returns{" "}
-            <code className="font-mono">device_id</code>, <code className="font-mono">device_token</code>, and{" "}
-            <code className="font-mono">source_instance_id</code> — persist all three.
+            Run on the target host. The response returns <code className="font-mono">device_id</code>,{" "}
+            <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code> —
+            persist all three.
           </p>
           <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
             <code
@@ -63,9 +63,7 @@ export function ReenrollButton({
             </code>
             <CopyButton ariaLabel="Copy re-enroll command" value={enrollCommand} />
           </div>
-          <p className="pdpp-caption mt-1 text-muted-foreground">
-            Code expires at {state.code.expires_at}
-          </p>
+          <p className="pdpp-caption mt-1 text-muted-foreground">Code expires at {state.code.expires_at}</p>
         </div>
 
         <div>
@@ -91,9 +89,7 @@ export function ReenrollButton({
 
   return (
     <div className="mt-3">
-      {state.ok === false ? (
-        <p className="pdpp-caption mb-2 text-destructive">{state.message}</p>
-      ) : null}
+      {state.ok === false ? <p className="pdpp-caption mb-2 text-destructive">{state.message}</p> : null}
       <form action={formAction}>
         <input name="connector_id" type="hidden" value={connectorId} />
         <input name="display_name" type="hidden" value="" />

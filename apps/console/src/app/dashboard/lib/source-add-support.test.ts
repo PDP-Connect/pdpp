@@ -1,4 +1,7 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: Copy assertions are
+ * clearer as local regex literals in tests.
+ *
  * Unit tests for the per-source add-account support projection.
  *
  * These prove the Sources page can keep two facts distinct for a source that

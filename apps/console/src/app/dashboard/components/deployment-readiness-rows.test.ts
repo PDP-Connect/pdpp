@@ -1,4 +1,8 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: These tests use one-off
+ * regex assertions for copy contracts; hoisting each literal would make the test
+ * intent harder to read without improving runtime behavior.
+ *
  * Pure-function tests for the deployment readiness row computations. The
  * panel itself (the React rendering) is browser-side; the row derivations
  * are deterministic given a `ServerInputs` and a browser-side probe.
@@ -9,12 +13,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  type DiskHeadroomInputs,
   diskHeadroomRow,
   diskHeadroomRows,
   embeddingCacheRow,
   overallVerdict,
   ownerPasswordRow,
-  type DiskHeadroomInputs,
   type ReadinessRow,
   referenceOriginRow,
   refreshTokenRow,
@@ -254,8 +258,10 @@ test("diskHeadroomRow hint does not suggest deleting data automatically", () => 
   });
   // The hint must never suggest automatic data deletion.
   assert.ok(
-    !(errorRow.hint ?? "").toLowerCase().includes("auto-delete") &&
-      !(errorRow.hint ?? "").toLowerCase().includes("automatically delete"),
+    !(
+      (errorRow.hint ?? "").toLowerCase().includes("auto-delete") ||
+      (errorRow.hint ?? "").toLowerCase().includes("automatically delete")
+    ),
     "hint must not suggest automatic data deletion"
   );
   assert.ok(!(errorRow.hint ?? "").includes("--volumes"), "hint must not recommend deleting Docker volumes");
@@ -325,16 +331,20 @@ test("diskHeadroomRows returns one row per entry", () => {
     ],
   });
   assert.equal(rows.length, 2);
-  assert.match(rows[0]!.check, /data/);
-  assert.equal(rows[0]!.status, "ok");
-  assert.match(rows[1]!.check, /postgres/);
-  assert.equal(rows[1]!.status, "ok");
+  const dataRow = rows[0];
+  const postgresRow = rows[1];
+  assert.ok(dataRow);
+  assert.ok(postgresRow);
+  assert.match(dataRow.check, /data/);
+  assert.equal(dataRow.status, "ok");
+  assert.match(postgresRow.check, /postgres/);
+  assert.equal(postgresRow.status, "ok");
 });
 
 test("diskHeadroomRows returns info row when empty array (no probes ran)", () => {
   const rows = diskHeadroomRows({ ...baseInputs, diskHeadroom: [] });
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.status, "info");
+  assert.equal(rows[0]?.status, "info");
 });
 
 test("diskHeadroomRows: unmeasured postgres entry shows info, not a false green", () => {
@@ -353,5 +363,5 @@ test("diskHeadroomRows: unmeasured postgres entry shows info, not a false green"
   assert.equal(rows.length, 2);
   const pgRow = rows.find((r) => r.check.includes("postgres"));
   assert.ok(pgRow, "postgres row must be present");
-  assert.equal(pgRow!.status, "info", "unmeasured entry must show info, not green");
+  assert.equal(pgRow?.status, "info", "unmeasured entry must show info, not green");
 });

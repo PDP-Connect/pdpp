@@ -52,8 +52,7 @@ const LIST_PAGE = `${HERE}page.tsx`;
 // account -> transactions to an unfiltered list.
 const LIST_DEFINES_FILTER_RE = /FILTER_PARAM_RE = \/\^filter\\\[\(\.\+\)\\\]\$\//;
 const LIST_PARSES_FILTERS = /const exactFilters = readExactFilters\(/;
-const LIST_PASSES_FILTERS_TO_QUERY =
-  /Object\.keys\(exactFilters\)\.length > 0 \? \{ filter: exactFilters \} : \{\}/;
+const LIST_PASSES_FILTERS_TO_QUERY = /Object\.keys\(exactFilters\)\.length > 0 \? \{ filter: exactFilters \} : \{\}/;
 
 // Byte-faithful replica of the page's `readExactFilters` + `FILTER_PARAM_RE`
 // (page.tsx). The real function is a non-exported local in an RSC module that
@@ -62,9 +61,7 @@ const LIST_PASSES_FILTERS_TO_QUERY =
 // URL-decoded from Next, so the keys here are the decoded `filter[<field>]`
 // forms.
 const FILTER_PARAM_RE = /^filter\[(.+)\]$/;
-function readExactFiltersReplica(
-  searchParams: Record<string, string | string[] | undefined>
-): Record<string, string> {
+function readExactFiltersReplica(searchParams: Record<string, string | string[] | undefined>): Record<string, string> {
   const filters: Record<string, string> = {};
   for (const [key, value] of Object.entries(searchParams)) {
     const match = FILTER_PARAM_RE.exec(key);
@@ -113,7 +110,11 @@ test("BEHAVIOR an empty or absent filter value yields no filter (not a blank-str
   // An empty filter value must NOT become `{account_id: ""}` — that would query
   // for the empty key instead of falling back to the unfiltered list.
   assert.deepEqual(readExactFiltersReplica({ "filter[account_id]": "" }), {}, "empty value contributes no filter");
-  assert.deepEqual(readExactFiltersReplica({ "filter[account_id]": undefined }), {}, "absent value contributes no filter");
+  assert.deepEqual(
+    readExactFiltersReplica({ "filter[account_id]": undefined }),
+    {},
+    "absent value contributes no filter"
+  );
   assert.deepEqual(readExactFiltersReplica({ "filter[account_id]": [] }), {}, "empty array contributes no filter");
 });
 
@@ -132,7 +133,11 @@ test("WIRING list page defines the filter[field] param regex", async () => {
 
 test("WIRING list page parses the incoming exact filters", async () => {
   const src = await readFile(LIST_PAGE, "utf8");
-  assert.match(src, LIST_PARSES_FILTERS, "list page must parse the search params into exactFilters via readExactFilters");
+  assert.match(
+    src,
+    LIST_PARSES_FILTERS,
+    "list page must parse the search params into exactFilters via readExactFilters"
+  );
 });
 
 test("WIRING list page passes the parsed filters to queryRecords only when present", async () => {

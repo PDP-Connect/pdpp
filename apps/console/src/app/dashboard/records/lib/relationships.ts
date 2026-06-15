@@ -390,7 +390,7 @@ export function reverseChildListLinksFromManifest(
   args: { connectionId: string; parentStream: string; parentRecordKey: string },
   alreadyLinked?: ReadonlySet<string>
 ): ReverseChildListLink[] {
-  if (!Array.isArray(connectorStreams) || !args.parentStream || !args.parentRecordKey) {
+  if (!(Array.isArray(connectorStreams) && args.parentStream && args.parentRecordKey)) {
     return [];
   }
   const seen = new Set<string>(alreadyLinked ?? []);

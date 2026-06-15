@@ -47,11 +47,11 @@ export default async function RecordDetailPage({
   let recordMetadata: StreamMetadata | null = null;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
-  type ManifestStream = {
+  interface ManifestStream {
     name: string;
     query?: { expand?: Array<{ name: string }> };
     relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
-  };
+  }
   let childManifestStream: ManifestStream | undefined;
   // All streams in this connector's manifest — used to enumerate child streams
   // whose declared `has_one` points back at the displayed (parent) stream, for

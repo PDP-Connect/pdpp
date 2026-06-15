@@ -17,8 +17,8 @@ interface ManualUploadSetupForForm {
 
 interface ExistingManualUploadSource {
   connection_id: string;
-  display_name: string;
   detail: string;
+  display_name: string;
 }
 
 interface ManualUploadPreview {
@@ -41,7 +41,7 @@ interface ManualUploadPreview {
   warnings?: string[];
 }
 
-type UploadState = {
+interface UploadState {
   message?: string;
   ok: boolean | null;
   preview?: ManualUploadPreview;
@@ -52,7 +52,7 @@ type UploadState = {
     phase: "importing" | "running" | "uploading" | "validating" | "waiting";
     totalFiles: number;
   };
-};
+}
 
 interface ValidationWire {
   date_range?: { end: string | null; start: string | null } | null;
@@ -131,7 +131,7 @@ function formatBytes(bytes: number): string {
   let unit = units[0] ?? "B";
   for (const nextUnit of units) {
     unit = nextUnit;
-    if (value < 1024 || nextUnit === units[units.length - 1]) {
+    if (value < 1024 || nextUnit === units.at(-1)) {
       break;
     }
     value /= 1024;
@@ -188,28 +188,36 @@ function PreviewCard({ preview }: { preview: ManualUploadPreview }) {
   );
 }
 
+function progressPhaseLabel(phase: NonNullable<UploadState["progress"]>["phase"]): string {
+  switch (phase) {
+    case "importing":
+      return "Importing file";
+    case "running":
+      return "Starting import";
+    case "uploading":
+      return "Uploading file";
+    case "validating":
+      return "Checking file";
+    case "waiting":
+      return "Preparing file";
+    default:
+      return "Preparing file";
+  }
+}
+
 function ProgressCard({ progress }: { progress: NonNullable<UploadState["progress"]> }) {
-  const phase =
-    progress.phase === "running"
-      ? "Starting import"
-      : progress.phase === "waiting"
-        ? "Preparing file"
-      : progress.phase === "validating"
-        ? "Checking file"
-        : progress.phase === "importing"
-          ? "Importing file"
-          : "Uploading file";
+  const phase = progressPhaseLabel(progress.phase);
   return (
     <div className="rounded-md border border-border/80 bg-background px-3 py-2" data-testid="manual-upload-progress">
       <p className="pdpp-caption font-medium text-foreground">
         {phase} {progress.currentFile} of {progress.totalFiles}
       </p>
       <p className="pdpp-caption mt-1 break-words text-muted-foreground">{progress.fileName}</p>
-      {progress.percent !== null ? (
+      {progress.percent === null ? null : (
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
           <div className="h-full bg-foreground" style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} />
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -273,7 +281,9 @@ function selectedFiles(form: HTMLFormElement): File[] {
   return Array.from(input.files ?? []);
 }
 
-function targetFromForm(form: HTMLFormElement): { connectionId: string | null; displayName: string | null } | { error: string } {
+function targetFromForm(
+  form: HTMLFormElement
+): { connectionId: string | null; displayName: string | null } | { error: string } {
   const fixed = form.elements.namedItem("connection_id");
   if (fixed instanceof HTMLInputElement && fixed.value.trim()) {
     return { connectionId: fixed.value.trim(), displayName: null };
@@ -281,7 +291,7 @@ function targetFromForm(form: HTMLFormElement): { connectionId: string | null; d
   const sourceTarget = new FormData(form).get("source_target");
   if (sourceTarget === "existing") {
     const existing = form.elements.namedItem("existing_connection_id");
-    if (!(existing instanceof HTMLSelectElement) || !existing.value.trim()) {
+    if (!(existing instanceof HTMLSelectElement && existing.value.trim())) {
       return { error: "Choose an existing source, or switch back to creating a new source." };
     }
     return { connectionId: existing.value.trim(), displayName: null };
@@ -429,6 +439,183 @@ async function startImportRun(connectionId: string): Promise<{ run_id?: string |
   return text ? (JSON.parse(text) as { run_id?: string | null }) : {};
 }
 
+type SetUploadState = (state: UploadState) => void;
+
+interface UploadTarget {
+  connectionId: string | null;
+  displayName: string | null;
+}
+
+interface PreparedSubmission {
+  files: File[];
+  intent: "import" | "preview";
+  target: UploadTarget;
+}
+
+function submitIntent(event: FormEvent<HTMLFormElement>): PreparedSubmission["intent"] {
+  const submitter = (event.nativeEvent as SubmitEvent).submitter;
+  return submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
+}
+
+function selectedFilesError(files: File[], setup: ManualUploadSetupForForm): string | null {
+  if (files.length === 0) {
+    return "Choose at least one import file.";
+  }
+  for (const file of files) {
+    const rejection = fileRejectedMessage(file, setup);
+    if (rejection) {
+      return rejection;
+    }
+  }
+  return null;
+}
+
+function prepareSubmission(
+  event: FormEvent<HTMLFormElement>,
+  setup: ManualUploadSetupForForm
+): { error: string } | PreparedSubmission {
+  const form = event.currentTarget;
+  const files = selectedFiles(form);
+  const fileError = selectedFilesError(files, setup);
+  if (fileError) {
+    return { error: fileError };
+  }
+  const target = targetFromForm(form);
+  if ("error" in target) {
+    return target;
+  }
+  const intent = submitIntent(event);
+  if (intent === "preview" && files.length !== 1) {
+    return { error: "Preview one file at a time. Import can accept multiple files into one source." };
+  }
+  return { files, intent, target };
+}
+
+function uploadProgress(
+  file: File,
+  args: {
+    currentFile: number;
+    phase: NonNullable<UploadState["progress"]>["phase"];
+    percent: number | null;
+    totalFiles: number;
+  }
+): UploadState {
+  return {
+    ok: null,
+    progress: {
+      currentFile: args.currentFile,
+      fileName: file.name,
+      percent: args.percent,
+      phase: args.phase,
+      totalFiles: args.totalFiles,
+    },
+  };
+}
+
+async function previewManualUpload(
+  setup: ManualUploadSetupForForm,
+  file: File,
+  target: UploadTarget,
+  setState: SetUploadState
+): Promise<void> {
+  setState(uploadProgress(file, { currentFile: 1, percent: null, phase: "validating", totalFiles: 1 }));
+  const preview = await sendRawFile<ManualUploadValidationPreviewWire>(
+    `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-validation-preview`,
+    file,
+    {
+      connectionId: target.connectionId,
+      displayName: target.displayName,
+      onProgress: (percent) =>
+        setState(uploadProgress(file, { currentFile: 1, percent, phase: "uploading", totalFiles: 1 })),
+    }
+  );
+  setState(validationToPreview(preview));
+}
+
+async function stageManualUploadFile(
+  setup: ManualUploadSetupForForm,
+  file: File,
+  args: {
+    connectionId: string | null;
+    displayName: string | null;
+    index: number;
+    setState: SetUploadState;
+    totalFiles: number;
+  }
+): Promise<ManualUploadArtifactWire> {
+  const currentFile = args.index + 1;
+  args.setState(uploadProgress(file, { currentFile, percent: null, phase: "importing", totalFiles: args.totalFiles }));
+  const staged = await sendRawFile<ManualUploadArtifactWire>(
+    `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
+    file,
+    {
+      contentType: "application/vnd.pdpp.manual-upload",
+      connectionId: args.connectionId,
+      displayName: args.connectionId ? null : args.displayName,
+      onProgress: (percent) =>
+        args.setState(uploadProgress(file, { currentFile, percent, phase: "uploading", totalFiles: args.totalFiles })),
+    }
+  );
+  return pollArtifactStatus(staged.artifact_id, {
+    currentFile,
+    fileName: file.name,
+    totalFiles: args.totalFiles,
+    update: (progress) => args.setState({ ok: null, progress }),
+  });
+}
+
+async function importManualUploads(
+  setup: ManualUploadSetupForForm,
+  files: File[],
+  target: UploadTarget,
+  setState: SetUploadState
+): Promise<string> {
+  let connectionId = target.connectionId;
+  let lastConnectionId: string | null = target.connectionId;
+  let shouldRun = false;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index] as File;
+    const artifact = await stageManualUploadFile(setup, file, {
+      connectionId,
+      displayName: target.displayName,
+      index,
+      setState,
+      totalFiles: files.length,
+    });
+    if (artifact.status === "failed") {
+      throw new Error(artifactFailureMessage(artifact));
+    }
+    if (artifact.status === "staged") {
+      if (!artifact.connection_id) {
+        throw new Error("Manual upload staged the file but did not return a connection id.");
+      }
+      connectionId = connectionId ?? artifact.connection_id;
+      lastConnectionId = artifact.connection_id;
+      shouldRun = true;
+    } else if (artifact.status === "duplicate" && artifact.connection_id) {
+      lastConnectionId = lastConnectionId ?? artifact.connection_id;
+    }
+  }
+  if (!lastConnectionId) {
+    throw new Error("Manual upload did not return a connection id.");
+  }
+  if (!shouldRun) {
+    return statusHref(lastConnectionId, null);
+  }
+  setState({
+    ok: null,
+    progress: {
+      currentFile: files.length,
+      fileName: files.at(-1)?.name ?? setup.display_name,
+      percent: null,
+      phase: "running",
+      totalFiles: files.length,
+    },
+  });
+  const started = await startImportRun(lastConnectionId);
+  return statusHref(lastConnectionId, started.run_id ?? null);
+}
+
 export function ManualUploadForm({
   existingSources,
   setup,
@@ -453,130 +640,19 @@ export function ManualUploadForm({
     if (pending) {
       return;
     }
-    const form = event.currentTarget;
-    const files = selectedFiles(form);
-    if (files.length === 0) {
-      setState({ ok: false, message: "Choose at least one import file." });
-      return;
-    }
-    for (const file of files) {
-      const rejection = fileRejectedMessage(file, setup);
-      if (rejection) {
-        setState({ ok: false, message: rejection });
-        return;
-      }
-    }
-    const target = targetFromForm(form);
-    if ("error" in target) {
-      setState({ ok: false, message: target.error });
-      return;
-    }
-    const submitter = (event.nativeEvent as SubmitEvent).submitter;
-    const intent = submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
-    if (intent === "preview" && files.length !== 1) {
-      setState({ ok: false, message: "Preview one file at a time. Import can accept multiple files into one source." });
+    const submission = prepareSubmission(event, setup);
+    if ("error" in submission) {
+      setState({ ok: false, message: submission.error });
       return;
     }
 
     setPending(true);
     try {
-      if (intent === "preview") {
-        const file = files[0] as File;
-        setState({
-          ok: null,
-          progress: { currentFile: 1, fileName: file.name, percent: null, phase: "validating", totalFiles: 1 },
-        });
-        const preview = await sendRawFile<ManualUploadValidationPreviewWire>(
-          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-validation-preview`,
-          file,
-          {
-            connectionId: target.connectionId,
-            displayName: target.displayName,
-            onProgress: (percent) =>
-              setState({
-                ok: null,
-                progress: { currentFile: 1, fileName: file.name, percent, phase: "uploading", totalFiles: 1 },
-              }),
-          }
-        );
-        setState(validationToPreview(preview));
+      if (submission.intent === "preview") {
+        await previewManualUpload(setup, submission.files[0] as File, submission.target, setState);
         return;
       }
-
-      let connectionId = target.connectionId;
-      let lastConnectionId: string | null = target.connectionId;
-      let shouldRun = false;
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index] as File;
-        setState({
-          ok: null,
-          progress: {
-            currentFile: index + 1,
-            fileName: file.name,
-            percent: null,
-            phase: "importing",
-            totalFiles: files.length,
-          },
-        });
-        const staged = await sendRawFile<ManualUploadArtifactWire>(
-          `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
-          file,
-          {
-            contentType: "application/vnd.pdpp.manual-upload",
-            connectionId,
-            displayName: connectionId ? null : target.displayName,
-            onProgress: (percent) =>
-              setState({
-                ok: null,
-                progress: {
-                  currentFile: index + 1,
-                  fileName: file.name,
-                  percent,
-                  phase: "uploading",
-                  totalFiles: files.length,
-                },
-              }),
-          }
-        );
-        const artifact = await pollArtifactStatus(staged.artifact_id, {
-          currentFile: index + 1,
-          fileName: file.name,
-          totalFiles: files.length,
-          update: (progress) => setState({ ok: null, progress }),
-        });
-        if (artifact.status === "failed") {
-          throw new Error(artifactFailureMessage(artifact));
-        }
-        if (artifact.status === "staged") {
-          if (!artifact.connection_id) {
-            throw new Error("Manual upload staged the file but did not return a connection id.");
-          }
-          connectionId = connectionId ?? artifact.connection_id;
-          lastConnectionId = artifact.connection_id;
-          shouldRun = true;
-        } else if (artifact.status === "duplicate" && artifact.connection_id) {
-          lastConnectionId = lastConnectionId ?? artifact.connection_id;
-        }
-      }
-      if (!lastConnectionId) {
-        throw new Error("Manual upload did not return a connection id.");
-      }
-      if (!shouldRun) {
-        window.location.href = statusHref(lastConnectionId, null);
-        return;
-      }
-      setState({
-        ok: null,
-        progress: {
-          currentFile: files.length,
-          fileName: files[files.length - 1]?.name ?? setup.display_name,
-          percent: null,
-          phase: "running",
-          totalFiles: files.length,
-        },
-      });
-      const started = await startImportRun(lastConnectionId);
-      window.location.href = statusHref(lastConnectionId, started.run_id ?? null);
+      window.location.href = await importManualUploads(setup, submission.files, submission.target, setState);
     } catch (err) {
       setState({ ok: false, message: err instanceof Error ? err.message : "Manual upload setup failed." });
     } finally {
@@ -599,9 +675,9 @@ export function ManualUploadForm({
           from the file, but the choice stays yours.
         </div>
       )}
-      {!targetConnectionId ? (
+      {targetConnectionId ? null : (
         <fieldset className="grid gap-2 rounded-md border border-border/80 bg-background px-3 py-2">
-          <legend className="px-1 pdpp-eyebrow">Import target</legend>
+          <legend className="pdpp-eyebrow px-1">Import target</legend>
           <label className="flex gap-2 text-sm">
             <input defaultChecked name="source_target" type="radio" value="new" />
             <span>Create a new source for these files</span>
@@ -632,8 +708,8 @@ export function ManualUploadForm({
             </>
           ) : null}
         </fieldset>
-      ) : null}
-      {!targetConnectionId ? (
+      )}
+      {targetConnectionId ? null : (
         <label className="grid gap-1" htmlFor="manual-upload-display-name">
           <span className="pdpp-eyebrow">New source label</span>
           <input
@@ -647,7 +723,7 @@ export function ManualUploadForm({
             Used only when creating a new source. You can rename the source later.
           </span>
         </label>
-      ) : null}
+      )}
       <label className="grid gap-1" htmlFor="manual-upload-file">
         <span className="pdpp-eyebrow">Export files</span>
         <input
@@ -680,8 +756,8 @@ export function ManualUploadForm({
       </label>
       {hasValidator ? (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If a file does not pass,
-          nothing from that file is imported.
+          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If a file does not
+          pass, nothing from that file is imported.
         </div>
       ) : null}
       {state.ok === false && state.message ? (

@@ -71,7 +71,7 @@
 
 - [x] 11.1 Fixture/test the three live journeys: ChatGPT `green / calm / "fresh today"` with NO `2532` anywhere on the dashboard and `2532` present in `detail.detail_gap_backlog`; Amazon `amber / advisory / "31 days stale" + Refresh now`; Chase `amber / advisory / "transactions stuck since Apr 22" + Retry now` whose per-stream row truthfully says the next run retries.
 - [x] 11.2 Cover the terminal / `code_fix` channel-as-status path with a synthetic fixture (no live terminal gap exists): a `code_fix`/`audience: maintainer` action renders as a status ("we're updating the connector — nothing for you to do"), never a dead owner button, and never raises `channel` to `attention`.
-- [ ] 11.3 Run the focused connection-health and rendered-verdict tests plus the composite-invariant and property tests; run `tsc` and the console lint/ultracite gate clean.
+- [x] 11.3 Run the focused connection-health and rendered-verdict tests plus the composite-invariant and property tests; run `tsc` and the console lint/ultracite gate clean.
 - [x] 11.4 Re-run `openspec validate redesign-connection-health-verdict-and-recovery --strict` and `openspec validate --all --strict` after implementation.
 
 ## 12. Calibration to the SLVP ideal

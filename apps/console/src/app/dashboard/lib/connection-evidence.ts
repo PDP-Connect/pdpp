@@ -722,54 +722,67 @@ function formatOutboxCountScale(counts: RefLocalDeviceProgress["outbox_counts"] 
  *
  * Returns the line, or `null` to render no backlog cue.
  */
+function positiveInteger(value: unknown): number {
+  return typeof value === "number" && value > 0 ? Math.floor(value) : 0;
+}
+
+function backlogCount(count: number, noun: string, isFloor: boolean | null | undefined): string {
+  return isFloor ? `at least ${count.toLocaleString()} ${noun}` : `${count.toLocaleString()} ${noun}`;
+}
+
+function formatPendingSourcePressureBacklog(backlog: RefDetailGapBacklog): string | null {
+  const pending = positiveInteger(backlog.pending);
+  if (pending === 0) {
+    return null;
+  }
+  const noun = pending === 1 ? "detail item" : "detail items";
+  const line = `${backlogCount(pending, noun, backlog.pending_is_floor)} to catch up`;
+  // The backlog's own `next_attempt_at` is its retry floor (Retry-After /
+  // cooldown), set even for manual connectors whose scheduler dispatch is null.
+  // Frame it as a resume floor, never a completion promise.
+  return backlog.next_attempt_at ? `${line} · resumes after ${backlog.next_attempt_at}` : line;
+}
+
+function formatOtherPendingBacklog(backlog: RefDetailGapBacklog): string | null {
+  const pendingOther = positiveInteger(backlog.pending_other);
+  if (pendingOther === 0) {
+    return null;
+  }
+  const noun = pendingOther === 1 ? "other detail item" : "other detail items";
+  return `${backlogCount(pendingOther, noun, backlog.pending_other_is_floor)} still pending`;
+}
+
+function formatTerminalBacklog(backlog: RefDetailGapBacklog): string | null {
+  // §6.3 (corrected by red-team §10-A): "done" requires terminal===0. If the
+  // reference reports terminal gaps, the honest copy is NOT "caught up" but
+  // "recovered everything still available; N items no longer retrievable."
+  // Older projections omit the field — treat absence/null as zero so we never
+  // emit a false caveat against servers that don't yet track terminal gaps.
+  const terminalCount = positiveInteger(backlog.terminal);
+  if (terminalCount === 0) {
+    return null;
+  }
+  const noun = terminalCount === 1 ? "item is" : "items are";
+  const recovered = positiveInteger(backlog.recovered);
+  const recoveredClause = recovered > 0 ? ` (${recovered.toLocaleString()} recovered)` : "";
+  return `recovered all still-available${recoveredClause} — ${terminalCount.toLocaleString()} ${noun} no longer retrievable at the source`;
+}
+
 function formatSourcePressureBacklogScale(backlog: RefDetailGapBacklog | null | undefined): string | null {
   // `null`/absent means the durable gap store was unreadable (unmeasured). Never
   // invent a count: stay silent and let the surrounding copy carry the state.
   if (!backlog) {
     return null;
   }
-  const pending = typeof backlog.pending === "number" && backlog.pending > 0 ? Math.floor(backlog.pending) : 0;
-  if (pending > 0) {
-    // `pending_is_floor` means the durable read was bounded and hit the bound, so
-    // `pending` is a floor, not an exact total — present it as "at least N".
-    const noun = pending === 1 ? "detail item" : "detail items";
-    const count = backlog.pending_is_floor
-      ? `at least ${pending.toLocaleString()} ${noun}`
-      : `${pending.toLocaleString()} ${noun}`;
-    const line = `${count} to catch up`;
-    // The backlog's own `next_attempt_at` is its retry floor (Retry-After /
-    // cooldown), set even for manual connectors whose scheduler dispatch is null.
-    // Frame it as a resume floor, never a completion promise.
-    return backlog.next_attempt_at ? `${line} · resumes after ${backlog.next_attempt_at}` : line;
+  const activeBacklog =
+    formatPendingSourcePressureBacklog(backlog) ?? formatOtherPendingBacklog(backlog) ?? formatTerminalBacklog(backlog);
+  if (activeBacklog) {
+    return activeBacklog;
   }
-  const pendingOther =
-    typeof backlog.pending_other === "number" && backlog.pending_other > 0 ? Math.floor(backlog.pending_other) : 0;
-  if (pendingOther > 0) {
-    const noun = pendingOther === 1 ? "other detail item" : "other detail items";
-    const count = backlog.pending_other_is_floor
-      ? `at least ${pendingOther.toLocaleString()} ${noun}`
-      : `${pendingOther.toLocaleString()} ${noun}`;
-    return `${count} still pending`;
-  }
-  // §6.3 (corrected by red-team §10-A): "done" requires terminal===0. If the
-  // reference reports terminal gaps, the honest copy is NOT "caught up" but
-  // "recovered everything still available; N items no longer retrievable."
-  // Older projections omit the field — treat absence/null as zero so we never
-  // emit a false caveat against servers that don't yet track terminal gaps.
-  const terminalCount = typeof backlog.terminal === "number" && backlog.terminal > 0 ? Math.floor(backlog.terminal) : 0;
-  if (terminalCount > 0) {
-    const noun = terminalCount === 1 ? "item is" : "items are";
-    const recoveredClause =
-      typeof backlog.recovered === "number" && backlog.recovered > 0
-        ? ` (${Math.floor(backlog.recovered).toLocaleString()} recovered)`
-        : "";
-    return `recovered all still-available${recoveredClause} — ${terminalCount.toLocaleString()} ${noun} no longer retrievable at the source`;
-  }
-
   // A readable, drained backlog (real `0`, terminal===0). When the reference
   // also produced a recovered count, surface it so the drained state reads as
   // caught-up progress rather than an empty / broken cue.
-  const recovered = typeof backlog.recovered === "number" && backlog.recovered > 0 ? Math.floor(backlog.recovered) : 0;
+  const recovered = positiveInteger(backlog.recovered);
   if (recovered > 0) {
     return `caught up — ${recovered.toLocaleString()} recovered`;
   }

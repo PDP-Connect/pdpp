@@ -21,7 +21,6 @@
  */
 
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
-import { BROWSER_BOUND_RUNBOOK_PATH } from "./connection-modality.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -203,9 +202,7 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       };
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return entry.runbookPath
-        ? { href: entry.runbookPath, label: "View runbook" }
-        : null;
+      return entry.runbookPath ? { href: entry.runbookPath, label: "View runbook" } : null;
     default:
       return entry.runbookPath ? { href: entry.runbookPath, label: "View runbook" } : null;
   }

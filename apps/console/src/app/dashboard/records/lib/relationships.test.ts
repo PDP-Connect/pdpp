@@ -186,11 +186,13 @@ test("manifest lookup tolerates URL-form connector_id and short connector_key", 
       streams: [{ name: "user" }],
     },
   ];
+  const chaseManifest = manifests[0];
+  assert.ok(chaseManifest);
 
-  assert.equal(manifestMatchesConnectorId(manifests[0]!, "chase"), true);
-  assert.equal(manifestMatchesConnectorId(manifests[0]!, "https://registry.pdpp.org/connectors/chase"), true);
-  assert.equal(manifestMatchesConnectorId(manifests[0]!, "github"), false);
-  assert.equal(manifestMatchesConnectorId(manifests[0]!, ""), false);
+  assert.equal(manifestMatchesConnectorId(chaseManifest, "chase"), true);
+  assert.equal(manifestMatchesConnectorId(chaseManifest, "https://registry.pdpp.org/connectors/chase"), true);
+  assert.equal(manifestMatchesConnectorId(chaseManifest, "github"), false);
+  assert.equal(manifestMatchesConnectorId(chaseManifest, ""), false);
   assert.equal(findManifestForConnectorId(manifests, "chase")?.connector_key, "chase");
   assert.equal(
     findManifestForConnectorId(manifests, "https://registry.pdpp.org/connectors/github")?.connector_key,
@@ -466,15 +468,9 @@ test("Chase accounts parent yields a transactions filtered-list link, never a de
   assert.equal(link.childStream, "transactions");
   assert.equal(link.foreignKey, "account_id");
   // Filtered child LIST, keyed by the parent key as the filter value.
-  assert.equal(
-    link.href,
-    "/dashboard/records/cin_029a67a16d8a252f6e3eb896/transactions?filter[account_id]=1212486749"
-  );
+  assert.equal(link.href, "/dashboard/records/cin_029a67a16d8a252f6e3eb896/transactions?filter[account_id]=1212486749");
   // Must NOT build a `.../transactions/<accountKey>` child record-detail URL.
-  assert.ok(
-    !link.href.includes("/transactions/1212486749"),
-    "must not build a child detail URL from the parent key"
-  );
+  assert.ok(!link.href.includes("/transactions/1212486749"), "must not build a child detail URL from the parent key");
 });
 
 test("reverse link is a filtered list URL with a filter[…] query, never a detail segment", () => {
@@ -496,7 +492,9 @@ test("a child-declared has_many produces no reverse link", () => {
     {
       name: "tags",
       // has_many back to the parent — must NOT yield a reverse link by this rule.
-      relationships: [{ name: "transaction", stream: "transactions", foreign_key: "transaction_id", cardinality: "has_many" }],
+      relationships: [
+        { name: "transaction", stream: "transactions", foreign_key: "transaction_id", cardinality: "has_many" },
+      ],
     },
   ];
   assert.deepEqual(
@@ -641,7 +639,11 @@ test("reverse link self-deduplicates a child stream declaring the same has_one t
 
 test("reverseChildListLinksFromManifest returns empty for missing streams or args", () => {
   assert.deepEqual(
-    reverseChildListLinksFromManifest(undefined, { connectionId: "c", parentStream: "accounts", parentRecordKey: "a1" }),
+    reverseChildListLinksFromManifest(undefined, {
+      connectionId: "c",
+      parentStream: "accounts",
+      parentRecordKey: "a1",
+    }),
     []
   );
   assert.deepEqual(
@@ -649,13 +651,20 @@ test("reverseChildListLinksFromManifest returns empty for missing streams or arg
     []
   );
   assert.deepEqual(
-    reverseChildListLinksFromManifest(CHASE_STREAMS, { connectionId: "c", parentStream: "accounts", parentRecordKey: "" }),
+    reverseChildListLinksFromManifest(CHASE_STREAMS, {
+      connectionId: "c",
+      parentStream: "accounts",
+      parentRecordKey: "",
+    }),
     []
   );
 });
 
 test("reverseChildListDedupKey is stable and distinguishes stream from field", () => {
-  assert.equal(reverseChildListDedupKey("transactions", "account_id"), reverseChildListDedupKey("transactions", "account_id"));
+  assert.equal(
+    reverseChildListDedupKey("transactions", "account_id"),
+    reverseChildListDedupKey("transactions", "account_id")
+  );
   assert.notEqual(
     reverseChildListDedupKey("transactions", "account_id"),
     reverseChildListDedupKey("transactions", "merchant_id")
@@ -721,11 +730,23 @@ test("reverseChildListEdgesFromManifest lists multiple distinct child streams an
   // declare has_one → accounts).
   const streams = [
     { name: "accounts" },
-    { name: "balances", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
-    { name: "statements", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
-    { name: "transactions", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
+    {
+      name: "balances",
+      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+    },
+    {
+      name: "statements",
+      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+    },
+    {
+      name: "transactions",
+      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+    },
     // A non-matching child (points at a different parent) must not appear.
-    { name: "merchants", relationships: [{ name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" }] },
+    {
+      name: "merchants",
+      relationships: [{ name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" }],
+    },
   ];
   assert.deepEqual(reverseChildListEdgesFromManifest(streams, "accounts"), [
     { childStream: "balances", foreignKey: "account_id" },
@@ -842,18 +863,12 @@ test("mergeParentBackLinks returns empty when there are no links", () => {
 });
 
 test("parentBackLinkDedupKey is stable and distinguishes stream from field", () => {
-  assert.equal(
-    parentBackLinkDedupKey("accounts", "account_id"),
-    parentBackLinkDedupKey("accounts", "account_id")
-  );
+  assert.equal(parentBackLinkDedupKey("accounts", "account_id"), parentBackLinkDedupKey("accounts", "account_id"));
   // Same parent stream, different field → distinct keys (the YNAB case).
   assert.notEqual(
     parentBackLinkDedupKey("accounts", "account_id"),
     parentBackLinkDedupKey("accounts", "transfer_account_id")
   );
   // Different parent stream, same field → distinct keys.
-  assert.notEqual(
-    parentBackLinkDedupKey("accounts", "account_id"),
-    parentBackLinkDedupKey("payees", "account_id")
-  );
+  assert.notEqual(parentBackLinkDedupKey("accounts", "account_id"), parentBackLinkDedupKey("payees", "account_id"));
 });

@@ -72,7 +72,8 @@ const ACT_REVALIDATE_RE = /revalidatePath\("\/dashboard\/records"\)/;
 const ACT_RUN_ACTIVE_RE = /result\.status === "run_active"/;
 const ACT_DEFAULT_ACCOUNT_RE = /result\.status === "default_account"/;
 const ACT_DELETE_REDIRECT_LIST_RE = /redirect\(recordsListHref\(message \?\? "Connection deleted\."\)\)/;
-const ACT_REVOKE_REDIRECT_LIST_RE = /redirect\(error \? dangerZoneHref\(routeId, message, error\) : recordsListHref\(message\)\)/;
+const ACT_REVOKE_REDIRECT_LIST_RE =
+  /redirect\(error \? dangerZoneHref\(routeId, message, error\) : recordsListHref\(message\)\)/;
 const ACT_DANGER_ANCHOR_RE = /#danger-zone/;
 
 async function read(file: string): Promise<string> {

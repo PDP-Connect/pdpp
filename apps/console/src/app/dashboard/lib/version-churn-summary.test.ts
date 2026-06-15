@@ -1,4 +1,7 @@
 /**
+ * biome-ignore-all lint/performance/useTopLevelRegex: Copy assertions are
+ * clearer as local regex literals in tests.
+ *
  * Behavioral tests for the pure version-churn presentation module. These run
  * in Node's test runner without a JSX resolver because the module is plain
  * TypeScript — the JSX view imports these helpers rather than re-deriving the
@@ -520,12 +523,7 @@ test("remediationGuidance is null for a none remediation", () => {
 });
 
 test("buildChurnDrilldownRows surfaces the remediation chip, action, and guidance per row", () => {
-  const built = buildChurnDrilldownRows([
-    fingerprintChaseRow(),
-    migrationRow(),
-    retentionRow(),
-    candidateRow(),
-  ]);
+  const built = buildChurnDrilldownRows([fingerprintChaseRow(), migrationRow(), retentionRow(), candidateRow()]);
   assert.equal(built.length, 4);
 
   assert.equal(built[0]?.remediationAction, "content_fingerprint_pending");
@@ -564,12 +562,7 @@ test("remediation never changes the disposition or the needs-review headline", (
 
   // The "needs review" headline counts ONLY unclassified rows, regardless of any
   // remediation on the other rows.
-  const summary = summarizeVersionChurn([
-    fingerprintChaseRow(),
-    fingerprintUsaaRow(),
-    migrationRow(),
-    retentionRow(),
-  ]);
+  const summary = summarizeVersionChurn([fingerprintChaseRow(), fingerprintUsaaRow(), migrationRow(), retentionRow()]);
   assert.ok(summary);
   assert.equal(summary.needsReview, false);
 });

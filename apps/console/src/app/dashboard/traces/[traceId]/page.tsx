@@ -76,6 +76,16 @@ function eventStatusEndorse(status: string | null): EndorseStatus {
   return "continuous";
 }
 
+function traceOverall(events: readonly SpineEvent[]): { label: string; status: EndorseStatus } {
+  if (events.some((e) => e.status === "failed" || e.status === "rejected")) {
+    return { label: "has failures", status: "denied" };
+  }
+  if (events.length > 0) {
+    return { label: "complete", status: "active" };
+  }
+  return { label: "empty", status: "continuous" };
+}
+
 // ─── Secret redaction (mirrors TimelineView) ─────────────────────────────────
 
 const SECRET_KEYS = new Set([
@@ -204,7 +214,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
       </TableCell>
       <TableCell>
         <TypedSm style={{ color: "var(--color-muted-foreground)" }}>
-          {event.occurred_at ? event.occurred_at.replace("T", " ").slice(0, 19) + "Z" : "—"}
+          {event.occurred_at ? `${event.occurred_at.replace("T", " ").slice(0, 19)}Z` : "—"}
         </TypedSm>
       </TableCell>
       <TableCell>
@@ -314,10 +324,7 @@ export default async function TraceDetailPage({
   const grantIds = collectPivotIds(envelope, "grant_id");
   const runIds = collectPivotIds(envelope, "run_id");
 
-  // Overall status: any failed → denied, else active
-  const hasFailed = events.some((e) => e.status === "failed" || e.status === "rejected");
-  const overallStatus: EndorseStatus = hasFailed ? "denied" : events.length > 0 ? "active" : "continuous";
-  const overallLabel = hasFailed ? "has failures" : events.length > 0 ? "complete" : "empty";
+  const overall = traceOverall(events);
 
   // Load-more
   const loadMoreHref =
@@ -361,7 +368,7 @@ export default async function TraceDetailPage({
               </KVRow>
             ) : null}
             <KVRow k="status">
-              <Endorse label={overallLabel} status={overallStatus} />
+              <Endorse label={overall.label} status={overall.status} />
             </KVRow>
             {first?.grant_id ? (
               <KVRow k="grant">

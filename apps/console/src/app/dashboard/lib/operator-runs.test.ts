@@ -9,9 +9,11 @@ const CONNECTION_CONTROL_PATH_SIGNATURE_RE =
   /function connectionControlPath\(connectionId: string, suffix: string\): string/;
 const CONNECTION_CONTROL_PATH_TEMPLATE_RE =
   /`\/_ref\/connections\/\$\{encodeURIComponent\(connectionId\)\}\$\{suffix\}`/;
-const RUN_CONNECTION_EXPORT_RE = /export function runConnectionNow\(connectionId: string, options: RunNowOptions = \{\}\)/;
+const RUN_CONNECTION_EXPORT_RE =
+  /export function runConnectionNow\(connectionId: string, options: RunNowOptions = \{\}\)/;
 const RUN_NOW_FORCE_BODY_RE = /body: asJson\(\{ force: true \}\)/;
-const RUN_CONNECTOR_OPTIONS_RE = /export function runConnectorNow\(connectorId: string, options: RunNowOptions = \{\}\)/;
+const RUN_CONNECTOR_OPTIONS_RE =
+  /export function runConnectorNow\(connectorId: string, options: RunNowOptions = \{\}\)/;
 const SAVE_CONNECTION_SCHEDULE_EXPORT_RE = /export function saveConnectionSchedule\(/;
 const PAUSE_CONNECTION_SCHEDULE_EXPORT_RE = /export function pauseConnectionSchedule\(connectionId: string\)/;
 const RESUME_CONNECTION_SCHEDULE_EXPORT_RE = /export function resumeConnectionSchedule\(connectionId: string\)/;
