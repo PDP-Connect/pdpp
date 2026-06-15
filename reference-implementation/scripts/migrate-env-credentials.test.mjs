@@ -133,6 +133,47 @@ test(
 );
 
 test(
+  'capture strips surrounding quotes from a quoted env value (the YNAB quote-wrap corruption)',
+  withDb(async () => {
+    const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_ynab_test', connectorId: 'ynab' });
+
+    // A `.env` line written as `YNAB_PAT='abc'` reaches process.env with the
+    // literal quotes. The migration must seal the bare token, not `'abc'` —
+    // otherwise the connector sends `Bearer 'abc'` and the provider 401s.
+    await migrateEnvCredential({
+      connectorKey: 'ynab',
+      connectorInstanceId: 'cin_ynab_test',
+      env: { YNAB_PERSONAL_ACCESS_TOKEN: `'${YNAB_SECRET}'` },
+      credentialStore,
+      connectorInstanceStore,
+      injection,
+      log: collectingLog([]),
+    });
+
+    const fragment = await resolveStaticSecretRunEnv({
+      connectorId: 'ynab',
+      connectorInstanceId: 'cin_ynab_test',
+      ownerSubjectId: 'owner_local',
+      sourceBinding: null,
+      credentialStore,
+      isStaticSecretConnector: injection.isStaticSecretConnector,
+      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+    });
+    // The stored/resolved value is the bare token — quotes stripped.
+    assert.equal(fragment.YNAB_PERSONAL_ACCESS_TOKEN, YNAB_SECRET);
+    assert.ok(
+      !fragment.YNAB_PERSONAL_ACCESS_TOKEN.startsWith("'"),
+      'stored token must not retain a leading quote'
+    );
+    assert.ok(
+      !fragment.YNAB_PERSONAL_ACCESS_TOKEN.endsWith("'"),
+      'stored token must not retain a trailing quote'
+    );
+  }),
+);
+
+test(
   'github capture uses personal_access_token kind and the documented env aliases',
   withDb(async () => {
     const { credentialStore, connectorInstanceStore } = makeStores();
@@ -355,9 +396,9 @@ test(
     await assert.rejects(
       migrateEnvCredential({
         ...base,
-        connectorKey: 'notion',
+        connectorKey: 'connector_that_does_not_exist',
         connectorInstanceId: 'cin_github_test',
-        env: { NOTION_API_TOKEN: 'synthetic' },
+        env: { SOME_TOKEN: 'synthetic' },
       }),
       (err) => err.code === 'unknown_connector',
     );

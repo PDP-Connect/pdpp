@@ -69,6 +69,14 @@ export const ENV_CREDENTIAL_SOURCES = Object.freeze({
     credentialKind: 'personal_access_token',
     secretEnvVars: Object.freeze(['YNAB_PERSONAL_ACCESS_TOKEN', 'YNAB_PAT']),
   }),
+  oura: Object.freeze({
+    credentialKind: 'personal_access_token',
+    secretEnvVars: Object.freeze(['OURA_PERSONAL_ACCESS_TOKEN']),
+  }),
+  notion: Object.freeze({
+    credentialKind: 'personal_access_token',
+    secretEnvVars: Object.freeze(['NOTION_API_TOKEN']),
+  }),
   slack: Object.freeze({
     credentialKind: 'secret_bundle',
     secretFieldEnvVars: Object.freeze({
@@ -155,11 +163,31 @@ function envNamesForSource(source) {
   return Object.values(source.secretFieldEnvVars ?? {}).flat();
 }
 
+// Normalize an env value the way a `.env` parser would: trim surrounding
+// whitespace, then strip exactly one matching pair of surrounding quotes
+// (`'…'` or `"…"`). A value sourced from a quoted env-file line
+// (`YNAB_PAT='abc'`) otherwise carries the literal quotes into the sealed
+// credential — the connector then sends `Bearer 'abc'` and the provider 401s.
+// (This is the YNAB corruption that wedged collection: the migration sealed a
+// quote-wrapped token.) Only a MATCHING pair is stripped, so a secret that
+// legitimately begins or ends with a lone quote is left untouched.
+function normalizeEnvSecretValue(raw) {
+  const trimmed = raw.trim();
+  if (
+    trimmed.length >= 2 &&
+    (trimmed[0] === "'" || trimmed[0] === '"') &&
+    trimmed[trimmed.length - 1] === trimmed[0]
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 function resolveOneEnvValue(envVars, env) {
   for (const name of envVars) {
     const value = env[name];
     if (typeof value === 'string' && value.trim().length > 0) {
-      return { envVarName: name, value };
+      return { envVarName: name, value: normalizeEnvSecretValue(value) };
     }
   }
   return null;
