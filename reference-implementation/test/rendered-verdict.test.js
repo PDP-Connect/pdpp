@@ -616,9 +616,17 @@ test('golden: Chase — amber/advisory degraded with a retryable transactions ga
     { mode: 'manual', retained_records: 1200 }
   );
   assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.channel, 'advisory');
+  const retry = v.required_actions.find((a) => a.kind === 'retry_gap');
+  assert.ok(retry);
+  assert.equal(retry.audience, 'owner');
+  assert.equal(retry.cta, 'Retry now');
+  assert.deepEqual(retry.satisfied_when, { kind: 'gap_recovered' });
+  assert.deepEqual(retry.affects, ['transactions']);
   // The transactions stream truthfully says the next run retries.
   const row = v.streams.find((s) => s.stream_id === 'transactions');
   assert.equal(row.disposition, 'resumable');
+  assert.equal(row.action_ref, v.required_actions.indexOf(retry));
   assert.match(row.statement, /next run/i);
   assert.ok(!/can't|terminal/i.test(row.statement));
 });

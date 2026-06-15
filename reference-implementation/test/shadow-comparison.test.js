@@ -214,13 +214,13 @@ const FIXTURES = [
   //
   // Old headline: "Needs you" (state:degraded → "Needs you")
   // New headline: "Needs you" (degraded with resumable disposition)
-  // Classification: deliberate_silence_correction — old had no channel concept;
-  // new routes the system-managed retry silently and stays calm (no push alarm).
+  // Classification: no headline change — old already said "Needs you", but the
+  // new verdict adds the missing advisory retry affordance without raising attention.
   {
     id: 'chase_retryable_gap',
     description: 'Chase: degraded, one retryable gap frozen ~2 months',
-    expectedClassification: 'deliberate_silence_correction',
-    reason: 'Silence correction: system will retry on its own; channel:calm (no push); gap present in detail',
+    expectedClassification: 'no_change',
+    reason: 'Owner-actionable manual retry: channel:advisory with Retry now; gap present in detail',
     snapshot: {
       state: 'degraded',
       axes: { attention: 'none', coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle', remote_surface: 'none' },
@@ -240,13 +240,18 @@ const FIXTURES = [
     },
     report: [{ stream: 'transactions', collected: 300, considered: 400, coverage_condition: 'retryable_gap', pending_detail_gaps: 1 }],
     manifestStreams: [{ name: 'transactions', required: true }],
-    refresh: null,
+    refresh: { recommendedMode: 'manual', backgroundSafe: false },
     progress: null,
     runtimeOk: true,
     assertions: (verdict) => {
       // Old says "Needs you", new also produces a non-green pill (coverage gap)
-      // but channel is calm (system handles it).
-      assert.equal(verdict.channel, 'calm', 'Chase: channel calm (system retries, owner not needed)');
+      // with an owner-actionable advisory retry affordance.
+      assert.equal(verdict.channel, 'advisory', 'Chase: channel advisory (owner can retry manual connector)');
+      const retry = verdict.required_actions.find((a) => a.kind === 'retry_gap');
+      assert.ok(retry, 'Chase: retry_gap action present');
+      assert.equal(retry.audience, 'owner', 'Chase: retry_gap is owner-actionable');
+      assert.equal(retry.cta, 'Retry now', 'Chase: retry_gap CTA is Retry now');
+      assert.deepEqual(retry.satisfied_when, { kind: 'gap_recovered' }, 'Chase: retry clears when the gap recovers');
       // Gap is present in detail
       assert.ok(
         verdict.detail.detail_gap_backlog !== null && verdict.detail.detail_gap_backlog.pending > 0,

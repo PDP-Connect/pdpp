@@ -566,6 +566,22 @@ function buildRequiredActions(
     });
   }
 
+  // Manual-refresh retryable gaps (the Chase shape): the system can recover on a
+  // future run, but there is no automatic schedule to initiate that run. Surface
+  // a non-urgent owner accelerant instead of hiding it as a calm wait.
+  if (disposition === "resumable" && actions.length === 0 && isManualRefreshOnly(refresh)) {
+    const affects = resumableStreamIds(streams);
+    actions.push({
+      kind: "retry_gap",
+      audience: "owner",
+      urgency: "verifying",
+      affects,
+      cta: "Retry now",
+      terminal: false,
+      satisfied_when: { kind: "gap_recovered" },
+    });
+  }
+
   // A recoverable gap the system will fill on its own — the calm `wait` representation
   // of deferred drain / cooldown / syncing. Only emit when nothing owner-actionable
   // already covers the work, so a `wait` never competes with a real owner action.
@@ -713,6 +729,8 @@ function buildForwardStatement(disposition: ForwardDisposition, actions: readonl
         return "Finish the prompt and collection resumes.";
       case "refresh_now":
         return "Run a refresh to bring this up to date.";
+      case "retry_gap":
+        return "Retry now to give the recoverable gap another run.";
       case "backfill":
         return "Run a backfill to fill the missing window.";
       default:
