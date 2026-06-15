@@ -1311,6 +1311,14 @@ export interface StaticSecretDraftConnection {
 }
 
 export interface StaticSecretCredentialCapture {
+  auto_resume: {
+    confirming_run: { run_id?: string; trace_id?: string } | null;
+    error_code?: string;
+    error_message?: string;
+    object: "connection_self_heal";
+    status: "active_run_exists" | "blocked" | "no_satisfied_action" | "started";
+    terminal_status?: "failed" | "succeeded";
+  } | null;
   connection_id: string;
   connector_id: string;
   connector_instance_id: string;

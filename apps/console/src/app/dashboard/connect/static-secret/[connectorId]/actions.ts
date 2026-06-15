@@ -55,6 +55,31 @@ function statusHref(connectionId: string, runId: string | null, identity?: strin
   return suffix ? `${base}?${suffix}` : base;
 }
 
+function autoResumeRunId(capture: {
+  auto_resume?: { confirming_run: { run_id?: string } | null } | null;
+}): string | null {
+  const runId = capture.auto_resume?.confirming_run?.run_id;
+  return typeof runId === "string" && runId.length > 0 ? runId : null;
+}
+
+async function runIdAfterCapture(
+  connectionId: string,
+  capture: { auto_resume?: { confirming_run: { run_id?: string } | null } | null }
+): Promise<string | null> {
+  const autoRunId = autoResumeRunId(capture);
+  if (autoRunId) {
+    return autoRunId;
+  }
+  if ("auto_resume" in capture) {
+    return null;
+  }
+  const started = (await runConnectionNow(connectionId)) as {
+    run_id?: string;
+    trace_id?: string;
+  };
+  return started.run_id ?? null;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Static-secret setup failed.";
 }
@@ -118,12 +143,9 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
       credentialKind: setup.credential_kind,
       secret,
     });
-    const started = (await runConnectionNow(connectionId)) as {
-      run_id?: string;
-      trace_id?: string;
-    };
+    const runId = await runIdAfterCapture(connectionId, captured);
     revalidatePath("/dashboard/records");
-    target = statusHref(connectionId, started.run_id ?? null, captured.identity?.account_identity ?? null);
+    target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
@@ -189,15 +211,12 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       credentialKind: setup.credential_kind,
       secret,
     });
-    const started = (await runConnectionNow(draft.connection_id)) as {
-      run_id?: string;
-      trace_id?: string;
-    };
+    const runId = await runIdAfterCapture(draft.connection_id, captured);
     revalidatePath("/dashboard/records");
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
-    target = statusHref(draft.connection_id, started.run_id ?? null, captured.identity?.account_identity ?? null);
+    target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       // Synchronous validation rejected the credential — nothing was stored, no

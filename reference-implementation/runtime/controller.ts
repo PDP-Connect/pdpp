@@ -54,6 +54,7 @@ import {
   createMidWaitSurfaceLossDetector,
 } from "./browser-surface-readiness.ts";
 import { runConnector } from "./index.js";
+import type { RequiredAction } from "./rendered-verdict.ts";
 import {
   automaticIneligibilityReason,
   automationModeCopy,
@@ -61,6 +62,7 @@ import {
   type RunAutomationMode,
   type RunTriggerKind,
 } from "./run-automation-policy.ts";
+import { type SatisfactionEvidenceBag, satisfiedOwnerActions } from "./satisfaction-watcher.ts";
 import type { RunRecord } from "./scheduler.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 import {
@@ -250,6 +252,65 @@ export interface RunNowResult {
   readonly status?: "started" | BrowserSurfaceProjection["browser_surface_status"];
   readonly trace_id: string;
   readonly trigger_kind?: RunTriggerKind;
+}
+
+export interface AutoResumeSatisfiedActionsInput {
+  awaitCompletion?: boolean;
+  connectorId: string;
+  connectorInstanceId?: string;
+  evidence: SatisfactionEvidenceBag;
+  manifest?: ConnectorManifest;
+  ownerToken?: string;
+  requiredActions: readonly RequiredAction[];
+  rsUrl?: string;
+  runId?: string;
+  scenarioId?: string;
+  traceContext?: SpineTraceContext;
+}
+
+export interface AutoResumeSatisfiedActionsResult {
+  readonly confirming_run: RunNowResult | null;
+  readonly error_code?: string;
+  readonly error_message?: string;
+  readonly object: "connection_self_heal";
+  readonly satisfied_actions: readonly RequiredAction[];
+  readonly status: "active_run_exists" | "blocked" | "no_satisfied_action" | "started";
+  readonly terminal_status?: "failed" | "succeeded";
+}
+
+function buildAutoResumeRunNowOptions(
+  input: AutoResumeSatisfiedActionsInput,
+  connectorInstanceId: string
+): RunNowOptions {
+  const options: RunNowOptions = {
+    connectorInstanceId,
+    priorityClass: "owner_interactive",
+    triggerKind: "manual",
+  };
+  if (input.manifest !== undefined) {
+    options.manifest = input.manifest;
+  }
+  if (input.ownerToken !== undefined) {
+    options.ownerToken = input.ownerToken;
+  }
+  if (input.rsUrl !== undefined) {
+    options.rsUrl = input.rsUrl;
+  }
+  if (input.runId !== undefined) {
+    options.runId = input.runId;
+  }
+  if (input.scenarioId !== undefined) {
+    options.scenarioId = input.scenarioId;
+  }
+  if (input.traceContext !== undefined) {
+    options.traceContext = input.traceContext;
+  }
+  return options;
+}
+
+function controllerErrorCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
 }
 
 function runAutomationMetadata(
@@ -464,6 +525,7 @@ export interface Controller {
    * closure) succeeds. Exposing it makes scheduled runs lease the warm surface.
    */
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager | undefined;
+  autoResumeSatisfiedActions(input: AutoResumeSatisfiedActionsInput): Promise<AutoResumeSatisfiedActionsResult>;
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
   /**
    * Owner-only single-run cancellation. Aborts only the targeted run's
@@ -3950,6 +4012,72 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return terminalStatus === "completed" ? "succeeded" : "failed";
   }
 
+  async function autoResumeSatisfiedActions(
+    input: AutoResumeSatisfiedActionsInput
+  ): Promise<AutoResumeSatisfiedActionsResult> {
+    const connectorInstanceId = input.connectorInstanceId || input.connectorId;
+    const satisfied = satisfiedOwnerActions(input.requiredActions, input.evidence);
+    if (satisfied.length === 0) {
+      return {
+        object: "connection_self_heal",
+        status: "no_satisfied_action",
+        satisfied_actions: [],
+        confirming_run: null,
+      };
+    }
+
+    const active = getActiveRun(input.connectorId, { connectorInstanceId });
+    if (active) {
+      return {
+        object: "connection_self_heal",
+        status: "active_run_exists",
+        satisfied_actions: satisfied,
+        confirming_run: {
+          run_id: active.run_id,
+          trace_id: active.trace_id,
+          status: "started",
+        },
+      };
+    }
+
+    try {
+      await reattachSatisfiedScheduleContracts(input.connectorId, connectorInstanceId, satisfied);
+      const started = await runNow(input.connectorId, buildAutoResumeRunNowOptions(input, connectorInstanceId));
+      const terminalStatus = input.awaitCompletion ? await awaitRun(started.run_id) : undefined;
+      return {
+        object: "connection_self_heal",
+        status: "started",
+        satisfied_actions: satisfied,
+        confirming_run: started,
+        ...(terminalStatus ? { terminal_status: terminalStatus } : {}),
+      };
+    } catch (err) {
+      const code = controllerErrorCode(err);
+      return {
+        object: "connection_self_heal",
+        status: "blocked",
+        satisfied_actions: satisfied,
+        confirming_run: null,
+        ...(code ? { error_code: code } : {}),
+        error_message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async function reattachSatisfiedScheduleContracts(
+    connectorId: string,
+    connectorInstanceId: string,
+    actions: readonly RequiredAction[]
+  ): Promise<void> {
+    if (!actions.some((action) => action.satisfied_when.kind === "schedule_attached_and_enabled")) {
+      return;
+    }
+    const schedule = await getSchedule(connectorId, { connectorInstanceId });
+    if (schedule && schedule.enabled !== true) {
+      await setScheduleEnabled(connectorId, true, { connectorInstanceId });
+    }
+  }
+
   function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
     const entry = activeRunInteractions.get(runId);
     if (!entry) {
@@ -4049,6 +4177,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     upsertSchedule,
     setScheduleEnabled,
     deleteSchedule,
+    autoResumeSatisfiedActions,
     awaitRun,
     drainActiveRuns,
     expireBrowserSurfaceWaits,

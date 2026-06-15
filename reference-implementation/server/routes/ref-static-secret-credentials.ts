@@ -23,6 +23,42 @@ export type StaticSecretProbeResult =
   | { readonly detail?: string | null; readonly identity: string; readonly ok: true; readonly skipped?: false }
   | { readonly code: string; readonly message: string; readonly ok: false; readonly retryable?: boolean };
 
+interface AutoResumeRequiredAction {
+  readonly affects: readonly string[];
+  readonly audience: "maintainer" | "none" | "owner";
+  readonly cta: string;
+  readonly kind:
+    | "add_info"
+    | "backfill"
+    | "code_fix"
+    | "contact_support"
+    | "reattach_schedule"
+    | "reauth"
+    | "refresh_now"
+    | "retry_gap"
+    | "wait";
+  readonly satisfied_when:
+    | { readonly kind: "attention_resolved" }
+    | { readonly kind: "backfill_window_covered" }
+    | { readonly kind: "confirming_run_succeeded" }
+    | { readonly kind: "credential_present_and_unrejected" }
+    | { readonly kind: "gap_recovered" }
+    | { readonly kind: "none" }
+    | { readonly kind: "schedule_attached_and_enabled" };
+  readonly terminal: boolean;
+  readonly urgency: "now" | "overdue" | "soon" | "verifying";
+}
+
+interface AutoResumeResult {
+  readonly confirming_run: unknown | null;
+  readonly error_code?: string;
+  readonly error_message?: string;
+  readonly object: "connection_self_heal";
+  readonly satisfied_actions: readonly AutoResumeRequiredAction[];
+  readonly status: "active_run_exists" | "blocked" | "no_satisfied_action" | "started";
+  readonly terminal_status?: "failed" | "succeeded";
+}
+
 interface RouteRequest {
   readonly body?: unknown;
   ownerSession?: { readonly sub?: string | null } | null;
@@ -99,6 +135,18 @@ export interface StaticSecretProbeContext {
 }
 
 export interface MountRefStaticSecretCredentialsContext {
+  autoResumeSatisfiedActions?(input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    evidence: {
+      credential: {
+        present: boolean;
+        rejected: boolean;
+        status: string | null;
+      };
+    };
+    requiredActions: readonly AutoResumeRequiredAction[];
+  }): Promise<AutoResumeResult> | AutoResumeResult;
   // Canonicalize a connector id/key (strip the registry prefix) so the probe
   // registry lookup matches. Optional: when absent the connector id is used as
   // given (matching the existing draft-route fallback).
@@ -168,6 +216,50 @@ function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unk
     rotated_at: meta.rotatedAt ?? null,
     revoked_at: meta.revokedAt ?? null,
   };
+}
+
+function credentialRepairAction(): AutoResumeRequiredAction {
+  return {
+    affects: [],
+    audience: "owner",
+    cta: "Reconnect this account",
+    kind: "reauth",
+    satisfied_when: { kind: "credential_present_and_unrejected" },
+    terminal: false,
+    urgency: "now",
+  };
+}
+
+async function autoResumeAfterCredentialCapture(
+  ctx: MountRefStaticSecretCredentialsContext,
+  namespace: ConnectorNamespace,
+  credential: CredentialMetadata
+): Promise<AutoResumeResult | null> {
+  if (typeof ctx.autoResumeSatisfiedActions !== "function") {
+    return null;
+  }
+  try {
+    return await ctx.autoResumeSatisfiedActions({
+      connectorId: namespace.connectorId,
+      connectorInstanceId: namespace.connectorInstanceId,
+      requiredActions: [credentialRepairAction()],
+      evidence: {
+        credential: {
+          present: credential.present === true,
+          rejected: credential.revokedAt != null || credential.status === "revoked" || credential.status === "rejected",
+          status: credential.status ?? null,
+        },
+      },
+    });
+  } catch (err) {
+    return {
+      object: "connection_self_heal",
+      status: "blocked",
+      satisfied_actions: [],
+      confirming_run: null,
+      error_message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function credentialCaptureErrorStatus(err: unknown): number {
@@ -485,6 +577,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           now,
         });
         const rotated = Boolean(previous);
+        const autoResume = await autoResumeAfterCredentialCapture(ctx, namespace, metadata);
         await emitCaptureAudit(ctx, req, res, {
           connectionId: namespace.connectorInstanceId,
           connectorId: namespace.connectorId,
@@ -499,6 +592,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           connector_instance_id: namespace.connectorInstanceId,
           connector_id: namespace.connectorId,
           credential: projectCredentialMetadata(metadata),
+          auto_resume: autoResume,
           // Non-secret account identity from a synchronous probe ("Connected as
           // {identity}"). Null when the connector has no probe (first-sync path)
           // or the probe returned no identity. Never carries the secret.

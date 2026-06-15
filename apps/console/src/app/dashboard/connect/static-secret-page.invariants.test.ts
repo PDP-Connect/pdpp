@@ -34,7 +34,9 @@ const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
 const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields\)/;
 const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
-const RUN_NOW = /runConnectionNow\(draft\.connection_id\)/;
+const AUTO_RESUME = /auto_resume/;
+const RUN_ID_AFTER_CAPTURE = /runIdAfterCapture\(/;
+const LEGACY_RUN_FALLBACK = /runConnectionNow\(connectionId\)/;
 const STATUS_SURFACE_PATH = /\/dashboard\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;
 const NO_NOTICE_REDIRECT = /notice:\s*"first_sync_started"/;
@@ -82,7 +84,9 @@ test("static-secret action redirects to the durable setup-status surface, not a 
   assert.match(src, GET_SETUP);
   assert.match(src, CREATE_DRAFT);
   assert.match(src, CAPTURE_SECRET);
-  assert.match(src, RUN_NOW);
+  assert.match(src, AUTO_RESUME);
+  assert.match(src, RUN_ID_AFTER_CAPTURE);
+  assert.match(src, LEGACY_RUN_FALLBACK);
   // The success and the draft-created-then-failed paths both land on the
   // durable per-connection status surface, keyed on the real connection id.
   assert.match(src, STATUS_SURFACE_PATH);

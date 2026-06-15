@@ -3594,6 +3594,9 @@ function buildAsApp(opts = {}) {
     // B1). Resolved at startup and injected; null/absent means every connector
     // takes the first-sync path. Never exposed to /mcp or grant-scoped reads.
     probeStaticSecretCredential: opts.staticSecretCredentialProber ?? undefined,
+    autoResumeSatisfiedActions: opts.staticSecretAutoResume === false
+      ? undefined
+      : (input) => controller.autoResumeSatisfiedActions(input),
   });
 
   mountRefStaticSecretDraftConnection(app, {
@@ -5060,6 +5063,7 @@ export async function startServer(opts = {}) {
     logger,
     providerAuthExchanger: opts.providerAuthExchanger ?? null,
     configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    staticSecretAutoResume: opts.staticSecretAutoResume,
   });
 
   // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default

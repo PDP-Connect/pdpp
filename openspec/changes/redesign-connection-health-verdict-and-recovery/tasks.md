@@ -44,11 +44,11 @@
 
 ## 7. Self-heal / auto-resume loop
 
-- [ ] 7.1 Add a `satisfied_when` watcher in the connection controller that evaluates each owner-actionable action's contract against the durable evidence the projection already reads.
-- [ ] 7.2 On a satisfied flip: re-attach the schedule (when `satisfied_when` is `schedule_attached_and_enabled`), fire exactly ONE confirming run, drain recoverable gaps, re-synthesize, and flip green — with no "now run it" step — landing on the EXISTING `connection_id` (schedule + tokens preserved). Bound the loop with the existing backoff/cooldown so it cannot storm confirming runs.
-- [ ] 7.3 Test: satisfying a `refresh_now`/`reauth` action auto-resumes onto the existing connection and flips the pill green without a separate "now run it" step.
-- [ ] 7.4 Test: an identical re-failure re-presents the SAME action with the failure reason and does NOT paint a false green.
-- [ ] 7.5 Test: partial recovery clears recovered streams' actions while keeping the unrecovered terminal/owner-blocked stream's own action.
+- [x] 7.1 Add a `satisfied_when` watcher in the connection controller that evaluates each owner-actionable action's contract against the durable evidence the projection already reads.
+- [x] 7.2 On a satisfied flip: re-attach the schedule (when `satisfied_when` is `schedule_attached_and_enabled`), fire exactly ONE confirming run, drain recoverable gaps, re-synthesize, and flip green — with no "now run it" step — landing on the EXISTING `connection_id` (schedule + tokens preserved). Bound the loop with the existing backoff/cooldown so it cannot storm confirming runs.
+- [x] 7.3 Test: satisfying a `refresh_now`/`reauth` action auto-resumes onto the existing connection and flips the pill green without a separate "now run it" step.
+- [x] 7.4 Test: an identical re-failure re-presents the SAME action with the failure reason and does NOT paint a false green.
+- [x] 7.5 Test: partial recovery clears recovered streams' actions while keeping the unrecovered terminal/owner-blocked stream's own action.
 
 ## 8. Render-consumer migration (surfaces stop reading `state` directly)
 
