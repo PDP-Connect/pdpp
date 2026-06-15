@@ -19,6 +19,7 @@ import type {
   DeviceSourceInstance,
   RefConnectionHealthSnapshot,
   RefLocalDeviceProgress,
+  RefRenderedVerdict,
   RefSchedule,
 } from "../../lib/ref-client.ts";
 
@@ -44,6 +45,8 @@ export interface ConnectionDiagnosticsProps {
    * stalled-outbox remediation. `null` for scheduler-managed connections.
    */
   localDeviceProgress: RefLocalDeviceProgress | null;
+  /** Server-owned owner-surface verdict. Current references send it; older references omit it. */
+  renderedVerdict: RefRenderedVerdict | null;
   schedule: RefSchedule | null;
   /** Optional load-error message for the schedule fetch. */
   scheduleError: string | null;
@@ -57,6 +60,7 @@ export function ConnectionDiagnostics({
   connectionHealth,
   connectionId,
   localDeviceProgress,
+  renderedVerdict,
   schedule,
   scheduleError,
   sourceInstances,
@@ -67,6 +71,7 @@ export function ConnectionDiagnostics({
       description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
       title="Diagnostics"
     >
+      {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
       <details className="group border-border/70 border-y" data-testid="diagnostics-details">
         <summary className="pdpp-body flex cursor-pointer items-center justify-between px-3 py-3 hover:bg-muted/40">
           <span className="font-medium">Projection, schedule, sources</span>
@@ -80,6 +85,7 @@ export function ConnectionDiagnostics({
               connectionHealth={connectionHealth}
               connectionId={connectionId}
               localDeviceProgress={localDeviceProgress}
+              renderedVerdict={renderedVerdict}
               sourceInstances={sourceInstances}
             />
           </DiagnosticsBlock>
@@ -98,6 +104,54 @@ export function ConnectionDiagnostics({
         </div>
       </details>
     </Section>
+  );
+}
+
+const RENDERED_VERDICT_VOCABULARY = {
+  amber: { label: "Needs you", tone: "warning" },
+  green: { label: "Healthy", tone: "success" },
+  grey: { label: "Checking", tone: "neutral" },
+  red: { label: "Can't collect", tone: "danger" },
+} as const;
+
+function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
+  const primaryAction = verdict.required_actions[0] ?? null;
+  return (
+    <div className="mb-3 flex flex-col gap-2 border-border/70 border-y px-3 py-3" data-testid="rendered-verdict">
+      <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
+        <span>Verdict:</span>
+        <span title={verdict.forward_statement}>
+          <StatusBadge status={verdict.pill.tone} vocabulary={RENDERED_VERDICT_VOCABULARY} />
+        </span>
+        <span aria-hidden>·</span>
+        <span data-testid="rendered-verdict-channel">{verdict.channel}</span>
+      </p>
+      <p className="pdpp-caption text-muted-foreground" data-testid="rendered-verdict-forward">
+        {verdict.forward_statement}
+      </p>
+      <p className="pdpp-caption text-muted-foreground" data-testid="rendered-verdict-progress">
+        {verdict.progress.headline}
+      </p>
+      {verdict.annotations.length > 0 ? (
+        <ul className="flex flex-col gap-1" data-testid="rendered-verdict-annotations">
+          {verdict.annotations.map((annotation) => (
+            <li className="pdpp-caption text-muted-foreground" key={`${annotation.kind}:${annotation.text}`}>
+              <span className="text-foreground">{annotation.kind}:</span> {annotation.text}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {primaryAction ? (
+        <p
+          className="pdpp-caption text-muted-foreground"
+          data-action-audience={primaryAction.audience}
+          data-action-kind={primaryAction.kind}
+          data-testid="rendered-verdict-primary-action"
+        >
+          Primary action: <span className="text-foreground">{primaryAction.cta}</span>
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -126,11 +180,13 @@ function ProjectedStateDiagnostics({
   connectionHealth,
   connectionId,
   localDeviceProgress,
+  renderedVerdict,
   sourceInstances,
 }: {
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string | null;
   localDeviceProgress: RefLocalDeviceProgress | null;
+  renderedVerdict: RefRenderedVerdict | null;
   sourceInstances: readonly DeviceSourceInstance[];
 }) {
   if (!connectionHealth) {
@@ -166,14 +222,18 @@ function ProjectedStateDiagnostics({
   // cooldown reads "cooling off" on both surfaces with no vocabulary drift. The
   // synthesized runbook is the badge tooltip. The raw `reason_code` still shows
   // beside it here — the detail page is the place for the underlying evidence.
-  const verdict = synthesizeConnectionVerdict(connectionHealth);
+  const legacyVerdict = synthesizeConnectionVerdict(connectionHealth);
+  const badge = renderedVerdict ? (
+    <StatusBadge status={renderedVerdict.pill.tone} vocabulary={RENDERED_VERDICT_VOCABULARY} />
+  ) : (
+    <StatusBadge status={legacyVerdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+  );
+  const badgeTitle = renderedVerdict?.forward_statement ?? legacyVerdict.runbook;
   return (
     <div className="flex flex-col gap-2">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
         <span>Health:</span>
-        <span title={verdict.runbook}>
-          <StatusBadge status={verdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
-        </span>
+        <span title={badgeTitle}>{badge}</span>
         {connectionHealth.reason_code ? (
           <>
             {" · "}

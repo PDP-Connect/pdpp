@@ -1600,7 +1600,7 @@ function StreamOverlay({
       // streamed page). We achieve that by stopping pointer events on the
       // backdrop while still allowing the explicit close button + Esc.
       modal
-      onOpenChange={(next) => {
+      onOpenChange={(next: boolean) => {
         if (!next) {
           onClose();
         }

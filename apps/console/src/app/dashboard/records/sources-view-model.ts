@@ -25,8 +25,8 @@
 
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import {
-  canonicalConnectorKey,
   type ConnectorManifestLike,
+  canonicalConnectorKey,
   manualUploadSetupFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
 import { type FormattedNextAction, formatNextAction } from "../lib/next-action.ts";
@@ -35,16 +35,20 @@ import type {
   RefConnectorRunSummary,
   RefConnectorSummary,
   RefRecordVersionStatsRow,
+  RefRenderedVerdict,
   RefSchedule,
+  RefVerdictTone,
 } from "../lib/ref-client.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
  * The status flag rendered against each instance in the list and the passport.
- * Derived from the connection-health `state` and freshness axis (plus the
- * durable revoked lifecycle flag), so the dot, the Endorse badge, and the
- * headline all read from one source of truth — and so a stale-but-healthy
- * connection discloses its staleness instead of reading bare green.
+ * Current references derive it from server-owned `RenderedVerdict.pill` plus
+ * co-required annotations; older references fall back to the legacy
+ * connection-health `state` and freshness axis. In both cases the dot, the
+ * Endorse badge, and the headline read from one source of truth — and a
+ * stale-but-healthy connection discloses its staleness instead of reading bare
+ * green.
  *
  *   ● healthy    — green dot       (state: healthy | idle)
  *   ◐ degraded   — amber half-dot  (state: degraded | cooling_off | needs_attention)
@@ -129,7 +133,7 @@ export interface SourceInstanceView {
   kind: string;
   /** Existing-source import route for manual/upload connectors. */
   manualUploadHref: string | null;
-  /** Owner CTA derived from health.next_action, or null. */
+  /** Owner CTA derived from rendered_verdict.required_actions, or null. */
   nextAction: FormattedNextAction | null;
   /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
   passportFields: SourcePassportField[];
@@ -146,6 +150,13 @@ type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
 
 const HEALTHY_STATES = new Set(["healthy", "idle"]);
 const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
+
+const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
+  green: { kind: "healthy", dot: "●", tone: "success" },
+  amber: { kind: "degraded", dot: "◐", tone: "warning" },
+  red: { kind: "blocked", dot: "⊘", tone: "destructive" },
+  grey: { kind: "unknown", dot: "○", tone: "muted" },
+};
 
 /**
  * The freshness annotation for a status flag, or `null` when the connection is
@@ -230,6 +241,57 @@ export function deriveSourceStatus(
     tone: "muted",
     label: labelWithFreshness("Unknown", freshnessNote),
     freshnessNote,
+  };
+}
+
+function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
+  return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
+}
+
+/**
+ * Render current references from the server-owned verdict. This is the owner
+ * surface migration seam: list-level status reads `pill` and annotations
+ * directly, and only older references fall back to `connection_health`.
+ */
+export function deriveRenderedSourceStatus(
+  verdict: RefRenderedVerdict | null | undefined,
+  health: RefConnectionHealthSnapshot | undefined,
+  revoked: boolean
+): SourceStatusFlag {
+  if (revoked) {
+    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
+  }
+  if (!verdict) {
+    return deriveSourceStatus(health, false);
+  }
+  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
+  const freshnessNote = freshnessNoteFromVerdict(verdict);
+  return {
+    ...status,
+    label: labelWithFreshness(verdict.pill.label, freshnessNote),
+    freshnessNote,
+  };
+}
+
+/**
+ * Current references carry ordered, typed required actions on the rendered
+ * verdict. Only owner-satisfiable actions become a dashboard CTA; maintainer
+ * work and wait states are status/detail facts, not dead owner buttons.
+ */
+function formatRenderedRequiredAction(verdict: RefRenderedVerdict | null | undefined): FormattedNextAction | null {
+  if (!verdict) {
+    return null;
+  }
+  const action = verdict.required_actions[0] ?? null;
+  if (!action || action.audience !== "owner" || action.satisfied_when.kind === "none") {
+    return null;
+  }
+  return {
+    actionTarget: "connection_detail",
+    caveat: null,
+    label: action.cta,
+    notificationHint: null,
+    variant: "structured",
   };
 }
 
@@ -331,7 +393,7 @@ export function manualUploadHrefForSource(
   manifests: readonly SourceManifestLike[] | undefined
 ): string | null {
   const connectionId = summary.connection_id ?? summary.connector_instance_id ?? null;
-  if (!connectionId || !manifests) {
+  if (!(connectionId && manifests)) {
     return null;
   }
   const manifest = manifests.find((candidate) => manifestMatchesConnectorId(candidate, summary.connector_id));
@@ -380,8 +442,10 @@ export function toSourceInstanceView(
     name: summary.connector_display_name,
   });
 
-  const nextAction = formatNextAction(summary.connection_health?.next_action ?? summary.next_action ?? null);
-  const status = deriveSourceStatus(summary.connection_health, revoked);
+  const nextAction = summary.rendered_verdict
+    ? formatRenderedRequiredAction(summary.rendered_verdict)
+    : formatNextAction(summary.connection_health?.next_action ?? summary.next_action ?? null);
+  const status = deriveRenderedSourceStatus(summary.rendered_verdict, summary.connection_health, revoked);
 
   const streams: SourceStreamManifestRow[] = summary.streams.map((name) => ({
     name,

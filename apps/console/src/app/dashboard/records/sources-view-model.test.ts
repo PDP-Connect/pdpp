@@ -13,10 +13,12 @@ import type {
   RefConnectionHealthSnapshot,
   RefConnectorSummary,
   RefRecordVersionStatsRow,
+  RefRenderedVerdict,
   RefSchedule,
 } from "../lib/ref-client.ts";
 import {
   buildSourcesChurnAdvisory,
+  deriveRenderedSourceStatus,
   deriveSourceStatus,
   exploreHrefFor,
   formatSchedule,
@@ -28,6 +30,9 @@ const EXPLORE_HREF_RE = /^\/dashboard\/explore\?connection=conn_1&stream=/;
 const CHURN_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions/;
 const CHURN_CLASSIFIED_RE = /classified/;
 const CHURN_NEEDS_REVIEW_RE = /needs review/;
+const ANY_FRESHNESS_SEPARATOR_RE = /·/;
+const STALE_LABEL_RE = /stale/;
+const STALE_SUFFIX_RE = /· stale$/;
 
 const EMPTY_AXES = {
   attention: {} as RefConnectionHealthSnapshot["axes"]["attention"],
@@ -66,6 +71,28 @@ function summary(partial: Partial<RefConnectorSummary> = {}): RefConnectorSummar
     streams: ["messages", "threads"],
     stream_count: 2,
     total_records: 100,
+    ...partial,
+  };
+}
+
+function renderedVerdict(partial: Partial<RefRenderedVerdict> = {}): RefRenderedVerdict {
+  return {
+    annotations: [],
+    channel: "calm",
+    detail: {},
+    forward_statement: "Collection is current.",
+    pill: { label: "Healthy", tone: "green" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Retained records are available.",
+      last_refreshed_at: null,
+      mode: "scheduled",
+      records_committed_last_run: null,
+      retained_records: 100,
+    },
+    required_actions: [],
+    streams: [],
+    trace: {},
     ...partial,
   };
 }
@@ -123,22 +150,122 @@ test("deriveSourceStatus: a stale-but-healthy connection carries a mandatory fre
   const flag = deriveSourceStatus(healthWithFreshness("healthy", "stale"), false);
   assert.equal(flag.kind, "healthy");
   assert.equal(flag.freshnessNote, "stale");
-  assert.match(flag.label, /stale/);
+  assert.match(flag.label, STALE_LABEL_RE);
   assert.equal(flag.label, "Healthy · stale");
+});
+
+test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
+  const flag = deriveRenderedSourceStatus(
+    renderedVerdict({ pill: { label: "Needs you", tone: "amber" } }),
+    health("healthy"),
+    false
+  );
+  assert.equal(flag.kind, "degraded");
+  assert.equal(flag.tone, "warning");
+  assert.equal(flag.label, "Needs you");
+});
+
+test("deriveRenderedSourceStatus carries freshness annotations from rendered verdict", () => {
+  const flag = deriveRenderedSourceStatus(
+    renderedVerdict({
+      annotations: [{ kind: "freshness", text: "Stale — this connector refreshes when you run it." }],
+      pill: { label: "Healthy", tone: "green" },
+    }),
+    healthWithFreshness("healthy", "fresh"),
+    false
+  );
+  assert.equal(flag.kind, "healthy");
+  assert.equal(flag.freshnessNote, "Stale — this connector refreshes when you run it.");
+  assert.equal(flag.label, "Healthy · Stale — this connector refreshes when you run it.");
+});
+
+test("toSourceInstanceView reads status from rendered_verdict when present", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connection_health: health("healthy"),
+      rendered_verdict: renderedVerdict({ pill: { label: "Can't collect", tone: "red" } }),
+    })
+  );
+  assert.equal(view.status.kind, "blocked");
+  assert.equal(view.status.label, "Can't collect");
+});
+
+test("toSourceInstanceView reads owner CTA from rendered_verdict required actions", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connection_health: {
+        ...health("needs_attention"),
+        next_action: {
+          action_target: "legacy_target",
+          attention_id: "att_legacy",
+          expires_at: null,
+          owner_action: "act_elsewhere",
+          reason_code: "legacy_action",
+          response_contract: "none",
+          source: "structured",
+        },
+      },
+      rendered_verdict: renderedVerdict({
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    })
+  );
+  assert.equal(view.nextAction?.label, "Refresh now");
+  assert.equal(view.nextAction?.actionTarget, "connection_detail");
+});
+
+test("toSourceInstanceView does not render maintainer or wait actions as owner CTAs", () => {
+  for (const action of [
+    {
+      affects: [],
+      audience: "maintainer",
+      cta: "We're updating this connector",
+      kind: "code_fix",
+      satisfied_when: { kind: "none" },
+      terminal: true,
+      urgency: "soon",
+    },
+    {
+      affects: [],
+      audience: "none",
+      cta: "Waiting for the next retry window",
+      kind: "wait",
+      satisfied_when: { kind: "none" },
+      terminal: false,
+      urgency: "verifying",
+    },
+  ] as const) {
+    const view = toSourceInstanceView(
+      summary({
+        rendered_verdict: renderedVerdict({ required_actions: [action] }),
+      })
+    );
+    assert.equal(view.nextAction, null);
+  }
 });
 
 test("deriveSourceStatus: every non-fresh state carries a freshness annotation, fresh carries none", () => {
   for (const state of ["healthy", "idle", "degraded", "blocked", "unknown"] as const) {
     const stale = deriveSourceStatus(healthWithFreshness(state, "stale"), false);
     assert.equal(stale.freshnessNote, "stale", `${state} stale should annotate`);
-    assert.match(stale.label, /· stale$/, `${state} stale label should disclose`);
+    assert.match(stale.label, STALE_SUFFIX_RE, `${state} stale label should disclose`);
 
     const unknownFreshness = deriveSourceStatus(healthWithFreshness(state, "unknown"), false);
     assert.equal(unknownFreshness.freshnessNote, "freshness unknown", `${state} unknown-freshness should annotate`);
 
     const fresh = deriveSourceStatus(healthWithFreshness(state, "fresh"), false);
     assert.equal(fresh.freshnessNote, null, `${state} fresh should NOT annotate`);
-    assert.doesNotMatch(fresh.label, /·/, `${state} fresh label should be bare`);
+    assert.doesNotMatch(fresh.label, ANY_FRESHNESS_SEPARATOR_RE, `${state} fresh label should be bare`);
   }
 });
 

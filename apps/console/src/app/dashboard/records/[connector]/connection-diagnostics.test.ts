@@ -79,6 +79,17 @@ const PAGE_ALL_SETTLED = /Promise\.allSettled/;
 const PAGE_SCHEDULE_ERROR_BINDING = /scheduleError = errorMessage/;
 const PAGE_SOURCES_ERROR_BINDING = /sourceInstancesError = errorMessage/;
 const PAGE_MOUNTS_DIAGNOSTICS = /<ConnectionDiagnostics/;
+const PAGE_PASSES_RENDERED_VERDICT = /renderedVerdict=\{connectionRenderedVerdict\}/;
+const PAGE_MAPS_RENDERED_VERDICT = /connectionRenderedVerdict: summary\.rendered_verdict \?\? null/;
+
+const RENDERED_VERDICT_TESTID = /data-testid="rendered-verdict"/;
+const RENDERED_VERDICT_CHANNEL_TESTID = /data-testid="rendered-verdict-channel"/;
+const RENDERED_VERDICT_FORWARD_TESTID = /data-testid="rendered-verdict-forward"/;
+const RENDERED_VERDICT_PROGRESS_TESTID = /data-testid="rendered-verdict-progress"/;
+const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
+const RENDERED_VERDICT_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
+const PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT = /renderedVerdict: RefRenderedVerdict \| null/;
+const PROJECTED_STATE_PREFERS_RENDERED_VERDICT = /renderedVerdict \?/;
 
 const AXES_TESTID = /data-testid="diagnostics-axes"/;
 const AXIS_CHIPS_HELPER = /summarizeAxisChips/;
@@ -108,6 +119,28 @@ test("connection-diagnostics renders the outbox axis as a colored chip, the sour
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, AXES_TESTID);
   assert.match(src, AXIS_CHIPS_HELPER);
+});
+
+test("connector detail page threads rendered_verdict into diagnostics", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, PAGE_MAPS_RENDERED_VERDICT);
+  assert.match(src, PAGE_PASSES_RENDERED_VERDICT);
+});
+
+test("connection-diagnostics renders the server-owned rendered verdict summary", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, RENDERED_VERDICT_TESTID);
+  assert.match(src, RENDERED_VERDICT_CHANNEL_TESTID);
+  assert.match(src, RENDERED_VERDICT_FORWARD_TESTID);
+  assert.match(src, RENDERED_VERDICT_PROGRESS_TESTID);
+  assert.match(src, RENDERED_VERDICT_PRIMARY_ACTION_TESTID);
+  assert.match(src, RENDERED_VERDICT_VOCABULARY);
+});
+
+test("projected-state diagnostics prefer rendered verdict for the headline badge when available", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT);
+  assert.match(src, PROJECTED_STATE_PREFERS_RENDERED_VERDICT);
 });
 
 test("connection-diagnostics applies the axis tone to visible chip classes", async () => {

@@ -44,6 +44,7 @@ import {
   type RefConnectionHealthSnapshot,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
+  type RefRenderedVerdict,
   type RefSchedule,
   type RunSummary,
 } from "../../lib/ref-client.ts";
@@ -124,6 +125,7 @@ interface ConnectorPageModel {
    * operator starts blank instead of re-typing a meaningless default.
    */
   connectionLabelSeed: string;
+  connectionRenderedVerdict: RefRenderedVerdict | null;
   connectorId: string;
   connectorInstanceId: string | null;
   deviceLabels: string[];
@@ -286,6 +288,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     collectionFactsByStream,
     connectionHealth: summary.connection_health ?? null,
     connectionId,
+    connectionRenderedVerdict: summary.rendered_verdict ?? null,
     connectorId,
     connectorInstanceId,
     connectionLabelSeed,
@@ -348,6 +351,7 @@ function ConnectorPageView({
   const {
     collectionFactsByStream,
     connectionHealth,
+    connectionRenderedVerdict,
     connectionId,
     connectorId,
     connectorInstanceId,
@@ -447,6 +451,7 @@ function ConnectorPageView({
         connectionHealth={connectionHealth}
         connectionId={connectorInstanceId ?? connectionId}
         localDeviceProgress={overview.localDeviceProgress ?? null}
+        renderedVerdict={connectionRenderedVerdict}
         schedule={schedule}
         scheduleError={scheduleError}
         sourceInstances={sourceInstances}
@@ -1070,11 +1075,12 @@ function FailureExpander({
   // reconnect page (repair mode, same connection_id). For others, fall back to
   // the generic add-source picker.
   const reconnectHref = credentialUpdateHref ?? addSourceHrefForConnector(connectorId);
-  const reconnectLabel = isBrowserBoundConnector(connectorId)
-    ? "Log in again"
-    : credentialUpdateHref
-      ? "Re-enter credential"
-      : "Reconnect";
+  let reconnectLabel = "Reconnect";
+  if (isBrowserBoundConnector(connectorId)) {
+    reconnectLabel = "Log in again";
+  } else if (credentialUpdateHref) {
+    reconnectLabel = "Re-enter credential";
+  }
 
   return (
     <div className="border-border/70 border-b" data-testid="failure-expander">

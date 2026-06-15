@@ -460,6 +460,12 @@ export interface RefConnectorSummary {
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
+  /**
+   * Server-owned owner-surface verdict. Current reference builds send this
+   * alongside `connection_health`; older builds omit it and the console falls
+   * back to the legacy snapshot rather than inventing a verdict.
+   */
+  rendered_verdict?: RefRenderedVerdict | null;
   retained_bytes?: RefRetainedBytesBreakdown | null;
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   revoked_at?: string | null;
@@ -469,6 +475,87 @@ export interface RefConnectorSummary {
   streams: string[];
   total_records: number;
   total_retained_bytes?: number | null;
+}
+
+export type RefVerdictTone = "amber" | "green" | "grey" | "red";
+export type RefRenderedChannel = "advisory" | "attention" | "calm";
+
+export interface RefVerdictPill {
+  label: "Can't collect" | "Checking" | "Healthy" | "Needs you";
+  tone: RefVerdictTone;
+}
+
+export interface RefVerdictAnnotation {
+  kind: "activity" | "attention" | "coverage" | "freshness" | "outbox" | "schedule";
+  text: string;
+}
+
+export type RefRequiredActionKind =
+  | "add_info"
+  | "backfill"
+  | "code_fix"
+  | "contact_support"
+  | "reattach_schedule"
+  | "reauth"
+  | "refresh_now"
+  | "retry_gap"
+  | "wait";
+
+export type RefActionAudience = "maintainer" | "none" | "owner";
+export type RefActionUrgency = "now" | "overdue" | "soon" | "verifying";
+
+export interface RefSatisfactionContract {
+  kind:
+    | "attention_resolved"
+    | "backfill_window_covered"
+    | "confirming_run_succeeded"
+    | "credential_present_and_unrejected"
+    | "gap_recovered"
+    | "none"
+    | "schedule_attached_and_enabled";
+}
+
+export interface RefRequiredAction {
+  affects: readonly string[];
+  audience: RefActionAudience;
+  cta: string;
+  kind: RefRequiredActionKind;
+  satisfied_when: RefSatisfactionContract;
+  terminal: boolean;
+  urgency: RefActionUrgency;
+}
+
+export interface RefRenderedProgress {
+  gaps_drained_last_run: number | null;
+  headline: string;
+  last_refreshed_at: string | null;
+  mode: "deferred" | "local_device" | "manual" | "scheduled";
+  records_committed_last_run: number | null;
+  retained_records: number | null;
+}
+
+export interface RefVerdictStreamRow {
+  action_ref: number | null;
+  collected: number | null;
+  considered: number | null;
+  coverage: RefCoverageAxis;
+  disposition: RefForwardDisposition;
+  statement: string;
+  stream_id: string;
+}
+
+export interface RefRenderedVerdict {
+  annotations: readonly RefVerdictAnnotation[];
+  channel: RefRenderedChannel;
+  /** Owner-only inspection layer; rendered only on detail/diagnostic surfaces. */
+  detail: unknown;
+  forward_statement: string;
+  pill: RefVerdictPill;
+  progress: RefRenderedProgress;
+  required_actions: readonly RefRequiredAction[];
+  streams: readonly RefVerdictStreamRow[];
+  /** Owner-only calibration diagnostic; never grant-scoped. */
+  trace: unknown;
 }
 
 /**
@@ -2013,17 +2100,17 @@ export async function revokeGrantPackage(packageId: string): Promise<GrantPackag
  * completes the shell is invisible to all list/read surfaces.
  */
 export interface BrowserEnrollmentShell {
-  object: "browser_enrollment_shell";
   connection_id: string;
-  connector_instance_id: string;
   connector_id: string;
+  connector_instance_id: string;
   display_name: string;
-  status: "draft";
   enrollment_expires_at: string;
   next_step: {
     kind: "browser_enrollment_run";
     reason: string;
   };
+  object: "browser_enrollment_shell";
+  status: "draft";
 }
 
 /**
@@ -2032,18 +2119,12 @@ export interface BrowserEnrollmentShell {
  * Owner-session cookie required. Returns a draft connection_id + TTL that the
  * browser-session connect page uses to start an enrollment run.
  */
-export async function createBrowserEnrollmentShell(
-  connectorId: string
-): Promise<BrowserEnrollmentShell> {
-  return (await refFetch(
-    `/_ref/connectors/${encodeURIComponent(connectorId)}/browser-enrollment-shell`,
-    undefined,
-    {
-      body: "{}",
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }
-  )) as BrowserEnrollmentShell;
+export async function createBrowserEnrollmentShell(connectorId: string): Promise<BrowserEnrollmentShell> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/browser-enrollment-shell`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as BrowserEnrollmentShell;
 }
 
 /**
@@ -2054,13 +2135,9 @@ export async function createBrowserEnrollmentShell(
 export async function abandonBrowserEnrollmentShell(
   connectionId: string
 ): Promise<{ object: "enrollment_abandoned"; connection_id: string; connector_id: string; status: string }> {
-  return (await refFetch(
-    `/_ref/connections/${encodeURIComponent(connectionId)}/abandon-enrollment`,
-    undefined,
-    {
-      body: "{}",
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }
-  )) as { object: "enrollment_abandoned"; connection_id: string; connector_id: string; status: string };
+  return (await refFetch(`/_ref/connections/${encodeURIComponent(connectionId)}/abandon-enrollment`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as { object: "enrollment_abandoned"; connection_id: string; connector_id: string; status: string };
 }
