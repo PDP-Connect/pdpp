@@ -109,11 +109,17 @@ function buildCountsLine(entry: RefCollectionReportEntry): { label: string | nul
     const clampedNumerator = Math.min(collected, entry.considered).toLocaleString();
     if (typeof entry.covered === "number" && Number.isFinite(entry.covered)) {
       const covered = Math.min(entry.covered, entry.considered).toLocaleString();
-      const overCovered = entry.covered > entry.considered || overReported;
+      const overCovered = entry.covered > entry.considered;
+      if (overCovered) {
+        return {
+          label: `${covered} / ${considered} covered · ${collectedText} collected`,
+          title: `This run accounted for ${entry.covered.toLocaleString()} of ${considered} considered records for this stream — more than the considered denominator, so the displayed covered fraction is clamped to ${considered} / ${considered}. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
+        };
+      }
       return {
         label: `${covered} / ${considered} covered · ${collectedText} collected`,
-        title: overCovered
-          ? `This run accounted for ${entry.covered.toLocaleString()} of ${considered} considered records for this stream — more than the considered denominator, so the displayed fraction is clamped to ${considered} / ${considered}. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`
+        title: overReported
+          ? `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}, which is more than the ${considered} it considered; covered also includes records deliberately suppressed because they were unchanged.`
           : `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
       };
     }

@@ -29,6 +29,12 @@ const FABRICATED_42_FRACTION = /42 ?\/ ?42/;
 const CLAIMS_COMPLETE_COPY = /\bcomplete\b/i;
 const HOSTED_SERVICE_COPY = /\bwe['’]?ll\b|\bwe sync\b|\bour service\b|\bnightly\b|sign up/i;
 const CONNECTOR_NAME_COPY = /\bgmail\b|\bchatgpt\b|\bslack\b|\bchase\b|\bspotify\b/i;
+const IMPOSSIBLE_COLLECTED_FRACTION = /3 ?\/ ?2/;
+const IMPOSSIBLE_COVERED_FRACTION = /6 ?\/ ?4/;
+const CLAMPED_COPY = /clamped/i;
+const COVERED_EXCEEDED_DENOMINATOR_COPY = /accounted for 3 of 4 considered records.*more than the considered denominator/i;
+const RAW_COLLECTED_3_COPY = /\b3\b/;
+const COLLECTED_5_COPY = /collected 5/;
 
 function entry(overrides: Partial<RefCollectionReportEntry>): RefCollectionReportEntry {
   return {
@@ -99,10 +105,10 @@ test("THE CLAMP: collected > considered never renders an impossible fraction (ph
     entry({ stream: "items", collected: 3, considered: 2, coverage_condition: "complete" })
   );
   assert.equal(facts.countsLabel, "2 / 2 collected");
-  assert.doesNotMatch(facts.countsLabel ?? "", /3 ?\/ ?2/);
+  assert.doesNotMatch(facts.countsLabel ?? "", IMPOSSIBLE_COLLECTED_FRACTION);
   // The raw count is preserved, never silently dropped.
-  assert.match(facts.countsTitle, /3/);
-  assert.match(facts.countsTitle, /clamped/i);
+  assert.match(facts.countsTitle, RAW_COLLECTED_3_COPY);
+  assert.match(facts.countsTitle, CLAMPED_COPY);
 });
 
 test("THE CLAMP: covered > considered is clamped too, raw covered preserved in the title", () => {
@@ -110,8 +116,17 @@ test("THE CLAMP: covered > considered is clamped too, raw covered preserved in t
     entry({ stream: "items", collected: 5, considered: 4, covered: 6, coverage_condition: "complete" })
   );
   assert.equal(facts.countsLabel, "4 / 4 covered · 5 collected");
-  assert.doesNotMatch(facts.countsLabel ?? "", /6 ?\/ ?4/);
-  assert.match(facts.countsTitle, /clamped/i);
+  assert.doesNotMatch(facts.countsLabel ?? "", IMPOSSIBLE_COVERED_FRACTION);
+  assert.match(facts.countsTitle, CLAMPED_COPY);
+});
+
+test("THE CLAMP: collected over-report does not imply covered exceeded the denominator", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({ stream: "items", collected: 5, considered: 4, covered: 3, coverage_condition: "partial" })
+  );
+  assert.equal(facts.countsLabel, "3 / 4 covered · 5 collected");
+  assert.doesNotMatch(facts.countsTitle, COVERED_EXCEEDED_DENOMINATOR_COPY);
+  assert.match(facts.countsTitle, COLLECTED_5_COPY);
 });
 
 test("a known covered numerator renders covered / considered without hiding the collected count", () => {
