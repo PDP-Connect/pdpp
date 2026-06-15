@@ -246,16 +246,24 @@ test('reference connector summaries keep revoked connections visible for owner m
 // equality so the drift check compares the load-bearing projection, not the wall
 // clock.
 function withoutObservedAt(summary) {
-  if (!summary || !summary.connection_health || !Array.isArray(summary.connection_health.conditions)) {
-    return summary;
+  return stripObservedAt(summary);
+}
+
+function stripObservedAt(value) {
+  if (Array.isArray(value)) {
+    return value.map(stripObservedAt);
   }
-  return {
-    ...summary,
-    connection_health: {
-      ...summary.connection_health,
-      conditions: summary.connection_health.conditions.map(({ observed_at: _observed, ...rest }) => rest),
-    },
-  };
+  if (value && typeof value === 'object') {
+    const output = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === 'observed_at') {
+        continue;
+      }
+      output[key] = stripObservedAt(nested);
+    }
+    return output;
+  }
+  return value;
 }
 
 test('getConnectorSummaryForRoute resolves one connection by stable identity and matches its list entry', withTmpDb(async () => {
@@ -380,4 +388,16 @@ test('connection summary surfaces a recovered count from the durable count-by-st
   assert.equal(backlog.pending, 1, 'pending is the still-pending source-pressure gap, distinct from recovered');
   // recovered must be a real count, never aliased to pending.
   assert.notEqual(backlog.recovered, backlog.pending);
+
+  assert.ok(work.rendered_verdict, 'owner wire summary carries the synthesized rendered_verdict');
+  assert.equal(
+    work.rendered_verdict.detail.detail_gap_backlog.recovered,
+    2,
+    'owner-only rendered_verdict detail carries the recovered backlog count',
+  );
+  assert.equal(
+    work.rendered_verdict.progress.gaps_drained_last_run,
+    null,
+    'all-time recovered count is not mislabeled as last-run progress',
+  );
 }));

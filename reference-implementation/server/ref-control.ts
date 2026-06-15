@@ -3370,13 +3370,16 @@ async function projectConnectorSummaryForInstance(
     localDeviceBacked: instance.sourceKind === "local_device",
     refresh,
     scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
-    hasDrainedDetailGaps: recoveredCount !== null && recoveredCount > 0,
+    hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
   });
   const progressEvidence = buildProgressEvidence({
     mode,
     retainedRecords: live.totalRecords,
     recordsCommittedLastRun: null,
-    gapsDrainedLastRun: recoveredCount !== null && recoveredCount > 0 ? recoveredCount : null,
+    // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
+    // per-run delta. Keep the exact count in owner-only detail; do not relabel it
+    // as "last run" progress.
+    gapsDrainedLastRun: null,
     lastRefreshedAt: freshness.captured_at ?? null,
   });
   const renderedVerdict = synthesizeConnectorVerdict({
@@ -3546,13 +3549,16 @@ export async function getConnectorDetail(
     localDeviceBacked: detailLocalDeviceBacked,
     refresh: detailRefresh,
     scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
-    hasDrainedDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,
+    hasRecoveredDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,
   });
   const detailProgressEvidence = buildProgressEvidence({
     mode: detailMode,
     retainedRecords: live.totalRecords,
     recordsCommittedLastRun: null,
-    gapsDrainedLastRun: detailRecoveredCount !== null && detailRecoveredCount > 0 ? detailRecoveredCount : null,
+    // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
+    // per-run delta. Keep the exact count in owner-only detail; do not relabel it
+    // as "last run" progress.
+    gapsDrainedLastRun: null,
     lastRefreshedAt: freshness.captured_at ?? null,
   });
   const renderedVerdict = synthesizeConnectorVerdict({

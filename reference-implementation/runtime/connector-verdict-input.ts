@@ -137,12 +137,12 @@ export function progressMode(input: {
   readonly localDeviceBacked: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly scheduled: boolean;
-  readonly hasDrainedDetailGaps: boolean;
+  readonly hasRecoveredDetailGaps: boolean;
 }): ProgressMode {
   if (input.localDeviceBacked) {
     return "local_device";
   }
-  if (input.scheduled && input.hasDrainedDetailGaps) {
+  if (input.scheduled && input.hasRecoveredDetailGaps) {
     return "deferred";
   }
   if (isManualRefreshOnly(input.refresh)) {
