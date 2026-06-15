@@ -1998,3 +1998,69 @@ export async function revokeGrantPackage(packageId: string): Promise<GrantPackag
     throw err;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Browser-enrollment shell: in-dashboard browser-bound connector setup
+// ---------------------------------------------------------------------------
+
+/**
+ * Response from POST /_ref/connectors/:connectorId/browser-enrollment-shell.
+ *
+ * Creates a draft connection shell for a browser-bound connector. This is the
+ * Plaid link_token analog: a short-lived (2h), owner-session-only draft row
+ * that the in-dashboard neko browser flow transitions to active once the owner
+ * completes login and the connector captures a valid session. Until enrollment
+ * completes the shell is invisible to all list/read surfaces.
+ */
+export interface BrowserEnrollmentShell {
+  object: "browser_enrollment_shell";
+  connection_id: string;
+  connector_instance_id: string;
+  connector_id: string;
+  display_name: string;
+  status: "draft";
+  enrollment_expires_at: string;
+  next_step: {
+    kind: "browser_enrollment_run";
+    reason: string;
+  };
+}
+
+/**
+ * Create a browser-enrollment shell for a browser-bound connector.
+ *
+ * Owner-session cookie required. Returns a draft connection_id + TTL that the
+ * browser-session connect page uses to start an enrollment run.
+ */
+export async function createBrowserEnrollmentShell(
+  connectorId: string
+): Promise<BrowserEnrollmentShell> {
+  return (await refFetch(
+    `/_ref/connectors/${encodeURIComponent(connectorId)}/browser-enrollment-shell`,
+    undefined,
+    {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }
+  )) as BrowserEnrollmentShell;
+}
+
+/**
+ * Abandon (retire) a browser-enrollment shell when the owner cancels setup.
+ * No-op if the shell is already revoked. Typed 409 if enrollment is already
+ * complete (shell is active).
+ */
+export async function abandonBrowserEnrollmentShell(
+  connectionId: string
+): Promise<{ object: "enrollment_abandoned"; connection_id: string; connector_id: string; status: string }> {
+  return (await refFetch(
+    `/_ref/connections/${encodeURIComponent(connectionId)}/abandon-enrollment`,
+    undefined,
+    {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }
+  )) as { object: "enrollment_abandoned"; connection_id: string; connector_id: string; status: string };
+}

@@ -21,6 +21,7 @@
  */
 
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
+import { BROWSER_BOUND_RUNBOOK_PATH } from "./connection-modality.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -87,7 +88,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return { label: "Add now", tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg" };
     case "browser_collector_manual":
       return {
-        label: "Packaged path pending",
+        label: "Needs local setup",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "static_secret_connect":
@@ -112,7 +113,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "browser_bound_runbook":
       return {
-        label: "Packaged path pending",
+        label: "Needs local setup",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "local_collector_unproven":
@@ -137,7 +138,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable; the packaged in-dashboard add path is still pending.";
+      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
@@ -149,7 +150,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "Browser setup will move into the dashboard. Existing collected data remains usable; the packaged in-dashboard add path is still pending.";
+      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
     case "local_collector_unproven":
       return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
     case "provider_auth_proof_gated":
@@ -189,8 +190,24 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       };
     case "provider_auth_deployment_blocked":
       return { href: "/dashboard/deployment", label: "Open deployment" };
+    case "browser_bound_runbook":
+    case "browser_collector_manual":
+      // The in-dashboard neko browser flow is tracked but not yet deployed.
+      // Return a real forward action pointing at the browser-session connect
+      // page so the owner is never left at a blank wall. Once neko is
+      // confirmed deployed this route renders the embedded login surface;
+      // before that it shows the honest runbook path.
+      return {
+        href: `/dashboard/connect/browser-session/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Connect by logging in",
+      };
+    case "local_collector_unproven":
+    case "provider_auth_proof_gated":
+      return entry.runbookPath
+        ? { href: entry.runbookPath, label: "View runbook" }
+        : null;
     default:
-      return null;
+      return entry.runbookPath ? { href: entry.runbookPath, label: "View runbook" } : null;
   }
 }
 

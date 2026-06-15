@@ -31,6 +31,7 @@ import {
   type StreakDot,
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
+import { isBrowserBoundConnector } from "../../lib/connection-modality.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
@@ -78,6 +79,18 @@ function updateCredentialHref(connectorId: string, connectionId: string): string
   const key = canonicalConnectorKey(connectorId);
   const params = new URLSearchParams({ connection_id: connectionId });
   return `/dashboard/connect/static-secret/${encodeURIComponent(key)}?${params.toString()}`;
+}
+
+/**
+ * Build the "Reconnect" href for a browser-bound connection that needs
+ * re-authentication. Uses the browser-session connect page in repair mode
+ * (?connectionId=<existing>), so the owner's records, history, and schedule
+ * are preserved (Plaid update-mode equivalent).
+ */
+function browserSessionReconnectHref(connectorId: string, connectionId: string): string {
+  const key = canonicalConnectorKey(connectorId);
+  const params = new URLSearchParams({ connectionId });
+  return `/dashboard/connect/browser-session/${encodeURIComponent(key)}?${params.toString()}`;
 }
 
 function manualUploadHrefForConnection(
@@ -359,10 +372,17 @@ function ConnectorPageView({
   const renameSelector = connectorInstanceId ?? connectionId;
   // Static-secret connections support in-place credential update/repair.
   // Use connectorInstanceId when available (same connection the route is tracking).
-  const credentialUpdateHref =
-    staticSecretCredentialCaptureFromManifest(manifest) === null
-      ? null
-      : updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
+  // Browser-bound connections use the browser-session reconnect page instead —
+  // same connection_id preserved (Plaid update-mode), different surface.
+  const credentialUpdateHref = (() => {
+    if (staticSecretCredentialCaptureFromManifest(manifest) !== null) {
+      return updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
+    }
+    if (isBrowserBoundConnector(connectorId)) {
+      return browserSessionReconnectHref(connectorId, connectorInstanceId ?? connectionId);
+    }
+    return null;
+  })();
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
   // connections get Sync now, while push-mode local-collector connections render
@@ -538,8 +558,10 @@ function ConnectorHeaderActions({
         All runs →
       </Link>
       {/* Update credential: visible on healthy static-secret connections so the
-          owner can rotate a token without breaking the connection. */}
-      {credentialUpdateHref && !revoked ? (
+          owner can rotate a token without breaking the connection. Not shown for
+          browser-bound connections (session repair goes through the failure expander
+          "Log in again" CTA, not the header). */}
+      {credentialUpdateHref && !revoked && !isBrowserBoundConnector(connectorId) ? (
         <Link
           className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={credentialUpdateHref}
@@ -1044,10 +1066,15 @@ function FailureExpander({
 }) {
   // For static-secret connections in error state, the "Reconnect" CTA goes
   // directly to the credential-repair form (preserves connection, replaces
-  // secret). For non-static-secret connections, fall back to the generic
-  // add-source picker as before.
+  // secret). For browser-bound connections, it goes to the browser-session
+  // reconnect page (repair mode, same connection_id). For others, fall back to
+  // the generic add-source picker.
   const reconnectHref = credentialUpdateHref ?? addSourceHrefForConnector(connectorId);
-  const reconnectLabel = credentialUpdateHref ? "Re-enter credential" : "Reconnect";
+  const reconnectLabel = isBrowserBoundConnector(connectorId)
+    ? "Log in again"
+    : credentialUpdateHref
+      ? "Re-enter credential"
+      : "Reconnect";
 
   return (
     <div className="border-border/70 border-b" data-testid="failure-expander">

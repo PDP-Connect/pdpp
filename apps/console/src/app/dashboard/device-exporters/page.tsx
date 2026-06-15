@@ -21,6 +21,7 @@ import {
 } from "../lib/ref-client.ts";
 import { revokeDeviceExporterAction } from "./actions.ts";
 import { EnrollmentForm } from "./enrollment-form.tsx";
+import { ReenrollButton } from "./reenroll-button.tsx";
 import {
   classifyHeartbeatFreshness,
   formatLastError,
@@ -116,7 +117,7 @@ export default async function DeviceExportersPage({
           ) : (
             <DataList ariaLabel="Local device exporters">
               {devices.map((device) => (
-                <DeviceRow device={device} key={device.device_id} />
+                <DeviceRow device={device} key={device.device_id} referenceBaseUrl={referenceBaseUrl} />
               ))}
             </DataList>
           )}
@@ -163,10 +164,19 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
   );
 }
 
-function DeviceRow({ device }: { device: DeviceExporter }) {
+function DeviceRow({ device, referenceBaseUrl }: { device: DeviceExporter; referenceBaseUrl: string }) {
   const heartbeat = classifyHeartbeatFreshness(device.last_heartbeat_at, device.stale);
   const counts = summarizeIngestCounts(device);
   const visibleStatus = device.status === "revoked" ? "revoked" : heartbeat;
+
+  // Re-enroll affordance: shown when the device is stale or revoked and has at
+  // least one source instance for a packaged local-collector connector. Uses the
+  // first qualifying source instance to pre-fill the enrollment form — the owner
+  // can always edit the fields in the main EnrollmentForm above if they need
+  // a different binding name.
+  const reenrollSource = (device.status === "revoked" || heartbeat === "stale" || heartbeat === "never")
+    ? device.source_instances.find((s) => isSupportedLocalCollectorConnector(s.connector_id))
+    : null;
 
   return (
     <li className="py-4">
@@ -219,6 +229,14 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
           )}
         </div>
       </div>
+
+      {reenrollSource ? (
+        <ReenrollButton
+          connectorId={reenrollSource.connector_id}
+          localBindingName={reenrollSource.local_binding_name}
+          referenceBaseUrl={referenceBaseUrl}
+        />
+      ) : null}
 
       {device.source_instances.length > 0 ? (
         /* P1: single column on mobile, 2-col on lg only — cards need breathing room */
