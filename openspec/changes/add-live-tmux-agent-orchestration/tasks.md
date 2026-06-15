@@ -20,7 +20,7 @@ stays byte-for-byte unchanged.
   a run without it is byte-identical in behavior to today.
 - [ ] 2.2 Add `invoke_claude_interactive()` alongside `invoke_claude_main()`: same artifact
   dir, git snapshot, and signal handling, but launch `claude` WITHOUT `--print` and WITHOUT
-  `--no-session-persistence`, WITH `--session-name "$lane"`, passing the prompt as a
+  `--no-session-persistence`, WITH a deterministic `--session-id "$session_id"` (resumable via `claude --resume`) and an optional `--name "$lane"` display label, passing the prompt as a
   positional argument (read from the tmux PTY, not piped stdin). Verify: spawn one
   interactive Claude worker in `--tmux` mode and confirm the pane stays alive after the
   first turn ends (does not exit).
@@ -35,7 +35,7 @@ stays byte-for-byte unchanged.
 
 ## 3. M2 — `session_id` in `status.json`
 
-- [ ] 3.1 In `--interactive` mode write the resumable `session_id` (the `--session-name`
+- [ ] 3.1 In `--interactive` mode write the resumable `session_id` (the `--session-id` value
   value / resolved session id) into `status.json`. Verify: `status.json` contains the field
   after launch.
 - [ ] 3.2 Surface `session_id` through `scripts/workstreams-status.mjs` /

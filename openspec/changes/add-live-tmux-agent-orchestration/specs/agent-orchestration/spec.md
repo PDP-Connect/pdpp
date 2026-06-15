@@ -92,7 +92,7 @@ revision SHALL always end with the owner reviewing and gating the merge — neve
 #### Scenario: Resume a Claude session after pane exit
 
 - **WHEN** an interactive worker's pane has exited but its session file persists
-- **THEN** the owner SHALL resume it by name with `claude -r "<lane>"` and a revision
+- **THEN** the owner SHALL resume it with `claude --resume "<session-id>"` and a revision
   message
 - **AND** the resumed session SHALL carry the prior conversation history.
 
@@ -100,9 +100,12 @@ revision SHALL always end with the owner reviewing and gating the merge — neve
 
 - **WHEN** a Codex worker's pane has exited
 - **THEN** the owner SHALL resume it with `codex resume` (by id or `--last`) or branch it
-  with `codex fork`
-- **AND** if live `paste-buffer` injection is unconfirmed for Codex, the owner SHALL fall
-  back to file-based handoff: write the revision to disk and instruct the worker to read it.
+  with `codex fork` (both CLI subcommands exist).
+- **AND** live in-pane revision (PTY `paste-buffer` injection) and Codex idle detection are
+  UNPROVEN: until task 7.1 confirms them empirically, the spec makes NO normative claim that
+  Codex supports live steer/revise, and the owner SHALL use file-based handoff (write the
+  revision to disk, instruct the resumed worker to read it). The playbook's Codex-worker
+  prohibition SHALL NOT be relaxed for live-control until task 7.1 passes.
 
 #### Scenario: Revision ends with owner review, not auto-merge
 
@@ -112,10 +115,17 @@ revision SHALL always end with the owner reviewing and gating the merge — neve
 
 ### Requirement: Worker readiness SHALL be detected from the session JSONL idle marker, never from screen patterns
 
-The harness SHALL detect "the worker's turn has ended / it is waiting for input" by reading
-the worker's session JSONL for the turn-end marker (`stop_reason: "end_turn"` as the last
-event for Claude; the equivalent Codex JSONL marker). It SHALL NOT decide readiness by
-matching a prompt glyph in `capture-pane` output.
+The harness SHALL detect "the worker's turn has ended / it is waiting for input" via a
+PER-PROVIDER idle adapter, never by matching a prompt glyph in `capture-pane` output. Each
+adapter reads that provider's own session-state signal:
+- **Claude (verified):** the worker's session JSONL last event carries `stop_reason:
+  "end_turn"`.
+- **Codex (pending):** Codex's idle marker/schema is NOT assumed to match Claude's; the
+  Codex adapter SHALL be defined only after task 7.1 empirically confirms Codex's actual
+  session-state signal. Until then no Codex live-idle claim is made.
+- **Gemini (deferred):** no idle adapter; Gemini remains fire-and-forget.
+
+A provider without a verified idle adapter SHALL NOT be driven in live-control mode.
 
 #### Scenario: Idle probe fires on the JSONL turn-end marker
 
@@ -221,7 +231,11 @@ default model/effort SHALL be downshifted one step and the decision recorded in
 ### Requirement: The live-control mode SHALL be additive and opt-in
 
 The live-control behavior SHALL be gated behind an opt-in `--interactive` mode. The default
-fire-and-forget `--print` path SHALL be unchanged for every existing caller of the harness.
+fire-and-forget `--print` invocation (flags, prompt-on-stdin, artifact/recovery/status
+behavior) SHALL be unchanged for every existing caller. The clawmeter launch gate is a
+NEW-LANE-LAUNCH admission policy (it MAY refuse to start a lane or downshift its tier); it
+does NOT alter how an admitted `--print` lane runs, so it does not conflict with the
+default-path-unchanged guarantee.
 
 #### Scenario: Default callers are unaffected
 
@@ -235,4 +249,8 @@ fire-and-forget `--print` path SHALL be unchanged for every existing caller of t
 - **WHEN** a caller invokes the harness with `--interactive`
 - **THEN** the worker SHALL be launched WITHOUT `--print` and WITHOUT
   `--no-session-persistence`
-- **AND** WITH `--session-name "<lane>"` so the session is resumable by name.
+- **AND** WITH a deterministic `--session-id "<uuid>"` (the addressable resume
+  handle; `claude --resume <session-id>` continues it) and an optional
+  `--name "<lane>"` display label. (`claude --help`: `-n, --name <name>` is a
+  display name; `--session-id <uuid>` is the resumable identity; there is no
+  `--session-name` flag.)

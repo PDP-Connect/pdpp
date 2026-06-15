@@ -84,7 +84,7 @@ is no shared runtime between providers — they coordinate only through files an
 Today's invocation is `claude --print --no-session-persistence ...` with stdout
 redirected to `transcript.log`. `--print` makes the session one-shot (no live PTY to type
 into); `--no-session-persistence` writes no resumable session file; the redirect means the
-pane shows nothing live. Dropping the two flags, adding `--session-name "$lane"`, and
+pane shows nothing live. Dropping the two flags, setting a deterministic `--session-id "$session_id"` (+ optional `--name "$lane"` for display), and
 passing the prompt as a positional argument (not piped stdin) makes capabilities c, d, e,
 and f real in one function change. Capabilities a and b already work. This is the smallest
 change that unlocks live control.
@@ -152,7 +152,7 @@ downshift the default model/effort one step and record it in `status.json`.
 
 `--interactive` mode routes to a new `invoke_claude_interactive()` alongside the existing
 `invoke_claude_main()`. Same artifact dir, git snapshot, and signal handling; the only diff
-is the invocation: no `--print`, no `--no-session-persistence`, add `--session-name
+is the invocation: no `--print`, no `--no-session-persistence`, set `--session-id <uuid>` (+ optional `--name <lane>`
 "$lane"`, pass the prompt as a positional argument (read from the tmux PTY, not piped).
 The existing `--tmux` flag already creates the window. `wait-worker-idle.sh <lane>` polls
 the session JSONL for `stop_reason: "end_turn"`. `status.json` gains a `session_id` field
@@ -162,7 +162,7 @@ pane exited). A reaper `kill-window`s and finalizes `status.json`.
 
 ```
 owner Claude session
-  ├─ tmux: spawn ws-<lane> ──> claude (interactive, --session-name <lane>)  [worktree A]
+  ├─ tmux: spawn ws-<lane> ──> claude (interactive, --session-id <uuid>)  [worktree A]
   │                       └─> codex  (interactive / resume-able)            [worktree B]
   ├─ capture-pane / pipe-pane ── live stream (b)
   ├─ paste-buffer + Enter ────── steer / revise (c, d)   ←─ idle probe (JSONL stop_reason)
@@ -208,12 +208,12 @@ ergonomics layer to adopt after the spike, not a replacement for the substrate.
 | (a) Spawn into a tmux pane | `tmux new-window` + CLI invocation | Yes — already works | 95% | None; `--tmux` already does it |
 | (b) Watch live stream | `capture-pane -p -S -N` / `pipe-pane` | Yes — already works | 95% | None; replace redirect-only with live capture |
 | (c) Attach + steer / interrupt | `paste-buffer` + `Enter`; `C-c` | Yes, with `--interactive` (M1) | 80% | Requires dropping `--print`; `C-c` risks partial tool state |
-| (d) Revise before teardown | live pane or resume by name/id | Yes, with `--interactive` + `--session-name` (M1) | 80% (Claude); ~70% (Codex) | Codex `resume`/`fork` exists (better than prior 65%) but `paste-buffer` PTY injection needs empirical confirmation |
+| (d) Revise before teardown | live pane or resume by name/id | Yes, with `--interactive` + `--session-id` (M1) | 80% (Claude); ~70% (Codex) | Codex `resume`/`fork` exists (better than prior 65%) but `paste-buffer` PTY injection needs empirical confirmation |
 | (e) Survive compaction | tmux daemon + JSONL + `session_id` | Yes, with M1 + M2 | 85% | Needs `session_id` in `status.json`; else manual JSONL scan |
 | (f) Reap when done | `kill-window` + status finalize | Yes, with wrapper or manual | 75% | Auto-finalize of `status.json` needs the interactive wrapper |
 | Cross-provider (Claude+Codex) | one owner, per-provider panes | Yes (Gemini deferred) | 75% | Codex revise unverified empirically; Gemini fire-and-forget only |
 
-The two flags are the entire blocker for c/d/e/f. Drop them, add `--session-name`, and four
+The two flags are the entire blocker for c/d/e/f. Drop them, set `--session-id`, and four
 of six capabilities become real; a and b already work.
 
 **Honest caveats (not overstated):** Codex interactive revision via `paste-buffer` is

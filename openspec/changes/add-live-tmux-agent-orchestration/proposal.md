@@ -64,7 +64,7 @@ safety boundary (NO autonomous merge — the owner gates integration); clawmeter
 launch (no non-essential lanes at `--check` exit 2 or `projected_at_reset >= ~95%`).
 
 The build is additive on `claude-workstream.sh`: a new `--interactive` mode (drops
-`--print` + `--no-session-persistence`, adds `--session-name`), a `wait-worker-idle.sh`
+`--print` + `--no-session-persistence`, sets a deterministic `--session-id`), a `wait-worker-idle.sh`
 idle-probe helper, `session_id` in `status.json`, a `revise` convenience command, and a
 reaper. This change also **poses one build-vs-adopt decision for the Codex RI owner**:
 build the ~55-line in-house `--interactive` extension, adopt Maniple (the existing MCP
