@@ -6,6 +6,7 @@ import {
   classifyRunEventNotification,
   isWithinQuietWindow,
   projectNotificationDelivery,
+  shouldFanoutRenderedVerdict,
 } from '../server/notification-policy.js';
 
 test('notification policy classifies owner assistance as action-required', () => {
@@ -40,6 +41,40 @@ test('notification policy keeps ordinary progress informational', () => {
     'informational',
   );
   assert.equal(classifyRunEventNotification({ event_type: 'run.completed' }), 'informational');
+});
+
+test('rendered verdict push policy only interrupts on attention with owner-satisfiable primary action', () => {
+  const action = {
+    audience: 'owner',
+    satisfied_when: { kind: 'credential_present_and_unrejected' },
+  };
+  assert.equal(
+    shouldFanoutRenderedVerdict({ channel: 'attention', required_actions: [action] }),
+    true,
+  );
+  assert.equal(
+    shouldFanoutRenderedVerdict({ channel: 'advisory', required_actions: [action] }),
+    false,
+  );
+  assert.equal(
+    shouldFanoutRenderedVerdict({ channel: 'calm', required_actions: [action] }),
+    false,
+  );
+  assert.equal(
+    shouldFanoutRenderedVerdict({
+      channel: 'attention',
+      required_actions: [{ audience: 'maintainer', satisfied_when: { kind: 'none' } }],
+    }),
+    false,
+  );
+  assert.equal(
+    shouldFanoutRenderedVerdict({
+      channel: 'attention',
+      required_actions: [{ audience: 'owner', satisfied_when: { kind: 'none' } }],
+    }),
+    false,
+  );
+  assert.equal(shouldFanoutRenderedVerdict(null), false);
 });
 
 test('notification delivery keeps dashboard inbox durable while quieting informational push', () => {

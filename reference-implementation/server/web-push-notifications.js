@@ -5,6 +5,7 @@ import {
   NOTIFICATION_TIERS,
   classifyAssistanceNotification,
   projectNotificationDelivery,
+  shouldFanoutRenderedVerdict,
 } from './notification-policy.js';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
@@ -821,6 +822,7 @@ export function buildEscalationPushPayload({ connectorDisplayName, reason, conne
  * @param {string} args.ownerSubjectId
  * @param {'blocked'|'needs_attention'} args.reason
  * @param {string} [args.connectionUrl]
+ * @param {object|null} [args.renderedVerdict]
  * @param {object} [args.log]
  */
 export async function fanoutEscalationWebPush({
@@ -831,10 +833,14 @@ export async function fanoutEscalationWebPush({
   ownerSubjectId,
   reason,
   connectionUrl = '/dashboard',
+  renderedVerdict,
   log = console,
 }) {
   if (!config.enabled) {
     return { attempted: 0, sent: 0, unavailable: true };
+  }
+  if (renderedVerdict !== undefined && !shouldFanoutRenderedVerdict(renderedVerdict)) {
+    return { attempted: 0, sent: 0, unavailable: false, suppressed: true };
   }
   const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
   if (!normalizedOwnerSubjectId) {

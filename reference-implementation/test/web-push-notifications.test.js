@@ -18,6 +18,7 @@ import {
   createPostgresWebPushSubscriptionStore,
   createSqliteWebPushSubscriptionStore,
   fanoutAssistanceWebPush,
+  fanoutEscalationWebPush,
   fanoutPendingInteractionWebPush,
   fanoutTestWebPush,
   resolveWebPushModuleApi,
@@ -909,6 +910,80 @@ test('410 Gone revokes the subscription but still leaves out-of-band state untou
   const stillActive = await store.list('owner_local');
   assert.equal(stillActive.length, 0, 'subscription is revoked after 410');
   assert.equal(JSON.stringify(attentionLikeState), before);
+});
+
+test('fanoutEscalationWebPush: rendered verdict channel suppresses non-attention pushes', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/calm-verdict'), {});
+  let sendCount = 0;
+
+  const result = await fanoutEscalationWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    connectorDisplayName: 'ChatGPT',
+    ownerSubjectId: 'owner_local',
+    reason: 'needs_attention',
+    renderedVerdict: {
+      channel: 'calm',
+      required_actions: [
+        {
+          audience: 'owner',
+          satisfied_when: { kind: 'credential_present_and_unrejected' },
+        },
+      ],
+    },
+    log: { warn() {} },
+    sender: async () => {
+      sendCount += 1;
+    },
+  });
+
+  assert.deepEqual(result, { attempted: 0, sent: 0, unavailable: false, suppressed: true });
+  assert.equal(sendCount, 0);
+});
+
+test('fanoutEscalationWebPush: rendered attention verdict sends to owner subscriptions', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/attention-verdict'), {});
+  const sent = [];
+
+  const result = await fanoutEscalationWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    connectorDisplayName: 'Gmail',
+    ownerSubjectId: 'owner_local',
+    reason: 'needs_attention',
+    connectionUrl: '/dashboard/records/cin_gmail',
+    renderedVerdict: {
+      channel: 'attention',
+      required_actions: [
+        {
+          audience: 'owner',
+          satisfied_when: { kind: 'credential_present_and_unrejected' },
+        },
+      ],
+    },
+    log: { warn() {} },
+    sender: async (subscription, payload) => {
+      sent.push({ endpoint: subscription.endpoint, payload });
+    },
+  });
+
+  assert.equal(result.attempted, 1);
+  assert.equal(result.sent, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].payload.type, 'pdpp.escalation');
+  assert.equal(sent[0].payload.url, '/dashboard/records/cin_gmail');
 });
 
 // ─── classifyPushFanoutOutcome ────────────────────────────────────────────

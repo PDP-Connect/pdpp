@@ -5655,8 +5655,23 @@ function createReferenceSchedulerManager({
       // announcedBlockedClass + notifiedNeedsHumanSkips). Errors are swallowed
       // so a push delivery failure never crashes the scheduler loop.
       onHumanRequiredStateEscalation: async ({ connectorId, connectorInstanceId, reason }) => {
-        const connectorDisplayName = connectorId;
-        const connectionUrl = `/dashboard/deployment`;
+        let connectorDisplayName = connectorId;
+        let connectionUrl = `/dashboard/deployment`;
+        let renderedVerdict = null;
+        const routeId = connectorInstanceId || connectorId;
+        try {
+          const summary = await getConnectorSummaryForRoute(routeId, controller);
+          if (summary) {
+            connectorDisplayName = summary.display_name || summary.connector_display_name || connectorId;
+            connectionUrl = `/dashboard/records/${encodeURIComponent(summary.connection_id || routeId)}`;
+            renderedVerdict = summary.rendered_verdict ?? null;
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger?.warn?.(
+            `[scheduler] verdict projection failed for escalation ${connectorId}/${routeId}; suppressing push: ${message}`,
+          );
+        }
         try {
           await fanoutEscalationWebPush({
             config: webPushConfig,
@@ -5665,6 +5680,7 @@ function createReferenceSchedulerManager({
             ownerSubjectId,
             reason,
             connectionUrl,
+            renderedVerdict,
             log: logger,
           });
         } catch (err) {

@@ -62,6 +62,22 @@ export function classifyRunEventNotification(input = {}) {
   return NOTIFICATION_TIERS.INFORMATIONAL;
 }
 
+export function shouldFanoutRenderedVerdict(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') {
+    return false;
+  }
+  if (verdict.channel !== 'attention') {
+    return false;
+  }
+  const [primary] = Array.isArray(verdict.required_actions) ? verdict.required_actions : [];
+  return Boolean(
+    primary
+      && primary.audience === 'owner'
+      && primary.satisfied_when
+      && primary.satisfied_when.kind !== 'none'
+  );
+}
+
 export function projectNotificationDelivery({
   channelOptedIn = false,
   now = new Date(),
