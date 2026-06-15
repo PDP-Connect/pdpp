@@ -2024,7 +2024,7 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
  * its own." Absent/unknown evidence is treated as schedulable (the pre-change
  * behavior), so staleness still degrades.
  */
-function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
+export function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
   if (!refresh) {
     return false;
   }
@@ -2042,7 +2042,7 @@ function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefin
  * or any manual-refresh-only connector, is not assisted-refresh. The projection
  * trusts the caller's flags and never re-reads the manifest.
  */
-function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
+export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
   if (!refresh || isManualRefreshOnly(refresh)) {
     return false;
   }
