@@ -1,14 +1,14 @@
 ## 1. Spec and design
 
-- [ ] 1.1 Confirm the proposal, design, and spec deltas read against the converged design `docs/research/slvp-connector-health-FINAL-design-2026-06-15.md` (honesty invariants kept verbatim, agency/silence layer folded in).
-- [ ] 1.2 Validate the change with `openspec validate redesign-connection-health-verdict-and-recovery --strict`.
-- [ ] 1.3 Validate the whole spec set with `openspec validate --all --strict`.
+- [x] 1.1 Confirm the proposal, design, and spec deltas read against the converged design `docs/research/slvp-connector-health-FINAL-design-2026-06-15.md` (honesty invariants kept verbatim, agency/silence layer folded in).
+- [x] 1.2 Validate the change with `openspec validate redesign-connection-health-verdict-and-recovery --strict`.
+- [x] 1.3 Validate the whole spec set with `openspec validate --all --strict`.
 
 ## 2. Stop the active lies today (additive on `connection-health.ts`, no synthesizer yet)
 
-- [ ] 2.1 In the per-stream chip composer, clamp `collected = min(collected, considered)` so an impossible "3/2 collected" can never render; add a focused test that a `collected > considered` input renders a clamped chip.
-- [ ] 2.2 Make the `case "healthy"` header render a disposition-aware statement (reuse the existing stale-freshness guidance) instead of a hardcoded "current and complete", so a stale-but-healthy connection does not claim completeness; test the stale-healthy case.
-- [ ] 2.3 Make `deriveSourceStatus` append a mandatory freshness annotation whenever the freshness axis is not `fresh`, and correct its doc comment; test that every non-`fresh` projection carries a `freshness` annotation.
+- [x] 2.1 In the per-stream chip composer, clamp `collected = min(collected, considered)` so an impossible "3/2 collected" can never render; add a focused test that a `collected > considered` input renders a clamped chip.
+- [x] 2.2 Make the `case "healthy"` header render a disposition-aware statement (reuse the existing stale-freshness guidance) instead of a hardcoded "current and complete", so a stale-but-healthy connection does not claim completeness; test the stale-healthy case.
+- [x] 2.3 Make `deriveSourceStatus` append a mandatory freshness annotation whenever the freshness axis is not `fresh`, and correct its doc comment; test that every non-`fresh` projection carries a `freshness` annotation.
 
 ## 3. The synthesizer (`synthesizeRenderedVerdict`) — the one verdict, honesty AND silence
 
