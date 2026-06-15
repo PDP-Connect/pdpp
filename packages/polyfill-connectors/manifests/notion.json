@@ -12,6 +12,30 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "Notion internal integration token",
+      "description": "Use a Notion internal integration token for the workspace this connection should collect. The integration must be connected to the pages you want to collect.",
+      "submit_label": "Create Notion connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "Notion integration token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://www.notion.so/profile/integrations",
+          "help_text": "Create an internal integration at notion.so/profile/integrations, then paste the token here. The integration must be connected to the pages you want to collect.",
+          "env": [
+            "NOTION_API_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {

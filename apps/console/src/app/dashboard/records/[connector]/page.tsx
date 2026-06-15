@@ -6,12 +6,13 @@ import {
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
 } from "@pdpp/operator-ui/lib/connector-display";
+import Link from "next/link";
+import { notFound } from "next/navigation";
 import {
   canonicalConnectorKey,
   manualUploadSetupFromManifest,
+  staticSecretCredentialCaptureFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
-import Link from "next/link";
-import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import {
@@ -66,6 +67,17 @@ const RECENT_RUNS_LIMIT = 10;
 
 function addSourceHrefForConnector(connectorId: string): string {
   return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
+}
+
+/**
+ * Build the "Update credential" / "Repair" href for an existing static-secret
+ * connection. Reuses the same setup form in replace-credential mode, preserving
+ * connection_id, records, history, and schedule.
+ */
+function updateCredentialHref(connectorId: string, connectionId: string): string {
+  const key = canonicalConnectorKey(connectorId);
+  const params = new URLSearchParams({ connection_id: connectionId });
+  return `/dashboard/connect/static-secret/${encodeURIComponent(key)}?${params.toString()}`;
 }
 
 function manualUploadHrefForConnection(
@@ -345,6 +357,12 @@ function ConnectorPageView({
   // Stable rename selector: prefer the explicit instance id, fall back to the
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
+  // Static-secret connections support in-place credential update/repair.
+  // Use connectorInstanceId when available (same connection the route is tracking).
+  const credentialUpdateHref =
+    staticSecretCredentialCaptureFromManifest(manifest) === null
+      ? null
+      : updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
   // connections get Sync now, while push-mode local-collector connections render
@@ -369,6 +387,7 @@ function ConnectorPageView({
             connectionId={connectorInstanceId}
             connectionLabelSeed={connectionLabelSeed}
             connectorId={connectorId}
+            credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
             manualUploadHref={manualUploadHref}
             overview={overview}
@@ -396,7 +415,13 @@ function ConnectorPageView({
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
 
-      {failureSummary ? <FailureExpander connectorId={connectorId} summary={failureSummary} /> : null}
+      {failureSummary ? (
+        <FailureExpander
+          connectorId={connectorId}
+          credentialUpdateHref={credentialUpdateHref}
+          summary={failureSummary}
+        />
+      ) : null}
 
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
@@ -473,6 +498,7 @@ function ConnectorHeaderActions({
   connectionId,
   connectionLabelSeed,
   connectorId,
+  credentialUpdateHref,
   displayName,
   manualUploadHref,
   overview,
@@ -485,6 +511,7 @@ function ConnectorHeaderActions({
   connectionId: string | null;
   connectionLabelSeed: string;
   connectorId: string;
+  credentialUpdateHref: string | null;
   displayName: string;
   manualUploadHref: string | null;
   overview: ConnectorOverview;
@@ -510,6 +537,17 @@ function ConnectorHeaderActions({
       >
         All runs →
       </Link>
+      {/* Update credential: visible on healthy static-secret connections so the
+          owner can rotate a token without breaking the connection. */}
+      {credentialUpdateHref && !revoked ? (
+        <Link
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          href={credentialUpdateHref}
+          title="Replace the stored credential for this connection. Records, history, and schedule are preserved."
+        >
+          Update credential
+        </Link>
+      ) : null}
       <ConnectorPrimaryHeaderAction
         connectionId={connectionId}
         connectorId={connectorId}
@@ -995,7 +1033,22 @@ function errorMessage(reason: unknown): string {
  * Decision 10: filled-primary "Reconnect" in expander earns primary weight here
  * because the user has invested in understanding the problem.
  */
-function FailureExpander({ connectorId, summary }: { connectorId: string; summary: FailureSummary }) {
+function FailureExpander({
+  connectorId,
+  credentialUpdateHref,
+  summary,
+}: {
+  connectorId: string;
+  credentialUpdateHref: string | null;
+  summary: FailureSummary;
+}) {
+  // For static-secret connections in error state, the "Reconnect" CTA goes
+  // directly to the credential-repair form (preserves connection, replaces
+  // secret). For non-static-secret connections, fall back to the generic
+  // add-source picker as before.
+  const reconnectHref = credentialUpdateHref ?? addSourceHrefForConnector(connectorId);
+  const reconnectLabel = credentialUpdateHref ? "Re-enter credential" : "Reconnect";
+
   return (
     <div className="border-border/70 border-b" data-testid="failure-expander">
       <details>
@@ -1051,9 +1104,9 @@ function FailureExpander({ connectorId, summary }: { connectorId: string; summar
               <Link
                 className={buttonVariants({ variant: "default", size: "sm" })}
                 data-testid="failure-expander-reconnect"
-                href={addSourceHrefForConnector(connectorId)}
+                href={reconnectHref}
               >
-                Reconnect
+                {reconnectLabel}
               </Link>
             </div>
           )}

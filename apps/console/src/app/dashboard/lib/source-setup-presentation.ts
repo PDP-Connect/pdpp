@@ -120,8 +120,14 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       // Existing data keeps working; there is just no shipped owner add path.
       // Agreed label — kills the last "not self-service" string on the surface.
       return { label: "Existing data only", tone: "border-border bg-muted/30 text-muted-foreground" };
+    case "api_network_unsupported":
+      // In-app setup not yet wired but connector exists; honest label with path
+      // available in the guidance line below.
+      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
     default:
-      return { label: "Not supported yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+      // unknown_unsupported and any future unclassified disposition.
+      // "Setup path pending" is honest and removes the dead-end "Not supported yet".
+      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
 }
 
@@ -151,9 +157,15 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
         : "Provider authorization is not fully wired yet.";
     case "api_network_unsupported":
-      return "We're still building in-app setup for this source. It's listed so you know it's planned, not missing.";
+      return entry.runbookPath
+        ? `In-app setup is not wired yet, but a manual runbook exists at ${entry.runbookPath}. It's listed here so you know it's planned, not missing.`
+        : "In-app setup for this source is not wired yet. It's listed so you know it's planned, not missing. Check the operator docs for any available manual path.";
     default:
-      return "In-app setup for this source isn't available yet. It's listed so you know it's on the roadmap.";
+      // unknown_unsupported and any future unclassified disposition: never a
+      // blank wall. Give the owner at least a direction.
+      return entry.runbookPath
+        ? `In-app setup is not available yet. A runbook may help: ${entry.runbookPath}.`
+        : "In-app setup for this source isn't available yet. Check the operator docs or open a support request to learn about the expected timeline.";
   }
 }
 

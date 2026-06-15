@@ -12,6 +12,31 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "YNAB personal access token",
+      "description": "Use a YNAB Personal Access Token for the budget account this connection should collect.",
+      "submit_label": "Create YNAB connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "YNAB Personal Access Token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://app.ynab.com/settings/developer",
+          "help_text": "Create a Personal Access Token in your YNAB developer settings, then paste it here.",
+          "env": [
+            "YNAB_PERSONAL_ACCESS_TOKEN",
+            "YNAB_PAT"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {

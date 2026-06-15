@@ -77,6 +77,85 @@ function collectSetupFields(setup: StaticSecretSetup, formData: FormData): Recor
   return fields;
 }
 
+// Credential replacement on an EXISTING connection — preserves connection_id,
+// history, schedule, and records. Architecturally identical to the capture step
+// in createStaticSecretConnectionAction, but skips draft-connection creation and
+// fires a sync run on the existing connection instead. This is the server side
+// of the "Update credential" / "Repair" flow (Plaid re-link pattern).
+export async function replaceStaticSecretCredentialAction(formData: FormData) {
+  const connectorId = asString(formData.get("connector_id"));
+  const connectionId = asString(formData.get("connection_id"));
+  await requireDashboardAccess(`/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}`);
+  if (!connectionId) {
+    redirect(pageHref(connectorId, { error: "Connection ID is required for credential replacement." }));
+  }
+  const setup = await getStaticSecretSetup(connectorId).catch((err) => {
+    redirect(pageHrefWithConnectionId(connectorId, connectionId, { error: errorMessage(err) }));
+  });
+  if (setup.deployment_readiness.state !== "ready") {
+    redirect(
+      pageHrefWithConnectionId(connectorId, connectionId, {
+        error: setup.deployment_readiness.guidance ?? "Credential storage is not ready.",
+      })
+    );
+  }
+  const secretField = firstSecretField(setup);
+  if (!secretField) {
+    redirect(
+      pageHrefWithConnectionId(connectorId, connectionId, { error: "Connector setup is missing a secret field." })
+    );
+  }
+  const secret = asString(formData.get(secretField.name));
+  if (!secret) {
+    redirect(pageHrefWithConnectionId(connectorId, connectionId, { error: "Provider secret is required." }));
+  }
+  const setupFields = collectSetupFields(setup, formData);
+
+  let target: string;
+  try {
+    const captured = await captureStaticSecretCredential({
+      connectionId,
+      credentialKind: setup.credential_kind,
+      secret,
+    });
+    const started = (await runConnectionNow(connectionId)) as {
+      run_id?: string;
+      trace_id?: string;
+    };
+    revalidatePath("/dashboard/records");
+    target = statusHref(connectionId, started.run_id ?? null, captured.identity?.account_identity ?? null);
+  } catch (err) {
+    if (err instanceof StaticSecretValidationError) {
+      target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
+    } else {
+      target = pageHrefWithConnectionId(connectorId, connectionId, { error: errorMessage(err) });
+    }
+  }
+  redirect(target);
+}
+
+function pageHrefWithConnectionId(
+  connectorId: string,
+  connectionId: string,
+  extraParams: Record<string, string> = {}
+): string {
+  const query = new URLSearchParams({ connection_id: connectionId, ...extraParams });
+  return `/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}?${query.toString()}`;
+}
+
+function formRetryHrefWithConnectionId(
+  connectorId: string,
+  connectionId: string,
+  error: string,
+  setupFields: Record<string, string>
+): string {
+  const params: Record<string, string> = { error };
+  for (const [name, value] of Object.entries(setupFields)) {
+    params[`field_${name}`] = value;
+  }
+  return pageHrefWithConnectionId(connectorId, connectionId, params);
+}
+
 export async function createStaticSecretConnectionAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
   await requireDashboardAccess(`/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}`);

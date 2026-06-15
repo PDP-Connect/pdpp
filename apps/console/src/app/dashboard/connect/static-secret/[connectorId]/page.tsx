@@ -4,7 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
-import { createStaticSecretConnectionAction } from "./actions.ts";
+import { createStaticSecretConnectionAction, replaceStaticSecretCredentialAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,9 @@ interface PageParams {
 }
 
 interface PageSearchParams {
+  // When present, the form is in "replace credential" mode for an existing
+  // connection — preserves connection_id, history, schedule, and records.
+  connectionId?: string;
   error?: string;
 }
 
@@ -50,7 +53,11 @@ export default async function StaticSecretConnectPage({
   const resolvedSearchParams = await searchParams;
   const pageParams: PageSearchParams = {
     error: firstValue(resolvedSearchParams.error),
+    connectionId: firstValue(resolvedSearchParams.connection_id),
   };
+  // Repair/update mode: a connection_id in the query means the owner is
+  // replacing the credential on an existing connection, not creating a new one.
+  const isReplaceMode = Boolean(pageParams.connectionId);
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
 
   // After a validation failure the action redirects back here with the owner's
@@ -64,17 +71,27 @@ export default async function StaticSecretConnectPage({
     return firstValue(resolvedSearchParams[`field_${field.name}`]);
   }
 
+  const pageTitle = isReplaceMode ? `Update ${setup.display_name} credential` : `Add ${setup.display_name}`;
+  const pageDescription = isReplaceMode
+    ? "Replace the stored credential for this connection. Records, history, and schedule are preserved — only the sealed secret is updated."
+    : "Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
+  const backHref =
+    isReplaceMode && pageParams.connectionId
+      ? `/dashboard/records/${encodeURIComponent(pageParams.connectionId)}`
+      : "/dashboard/records";
+  const backLabel = isReplaceMode ? "Back to connection" : "Back to connections";
+
   return (
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
-            Back to connections
+          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={backHref}>
+            {backLabel}
           </Link>
         }
-        breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: `Add ${setup.display_name}` }]}
-        description="Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials."
-        title={`Add ${setup.display_name}`}
+        breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: pageTitle }]}
+        description={pageDescription}
+        title={pageTitle}
       />
 
       <div className="mb-5 grid gap-2">{pageParams.error ? <InlineNotice message={pageParams.error} /> : null}</div>
@@ -105,10 +122,13 @@ export default async function StaticSecretConnectPage({
           </Callout>
         ) : (
           <form
-            action={createStaticSecretConnectionAction}
+            action={isReplaceMode ? replaceStaticSecretCredentialAction : createStaticSecretConnectionAction}
             className="grid max-w-2xl gap-4 rounded-sm border border-border/80 bg-muted/20 p-4"
           >
             <input name="connector_id" type="hidden" value={setup.connector_id} />
+            {isReplaceMode && pageParams.connectionId ? (
+              <input name="connection_id" type="hidden" value={pageParams.connectionId} />
+            ) : null}
             {setup.credential_capture.fields.map((field) => (
               <label className="grid gap-1" htmlFor={`static-secret-${field.name}`} key={field.name}>
                 <span className="pdpp-eyebrow">{field.label}</span>
@@ -149,24 +169,35 @@ export default async function StaticSecretConnectPage({
             ) : null}
             <div>
               <IcButton type="submit" variant="human">
-                {setup.credential_capture.submit_label ?? "Create connection and start first sync"}
+                {isReplaceMode
+                  ? "Update credential and run sync"
+                  : (setup.credential_capture.submit_label ?? "Create connection and start first sync")}
               </IcButton>
             </div>
           </form>
         )}
       </Section>
 
-      <Callout
-        className="mt-5"
-        description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
-        surface="human"
-        title="Add another account without changing deployment settings"
-      >
-        <p className="pdpp-caption text-muted-foreground">
-          The deployment only needs an instance-level credential key provider. Account credentials are captured here for
-          one connection at a time.
-        </p>
-      </Callout>
+      {isReplaceMode ? (
+        <Callout
+          className="mt-5"
+          description="Replacing the credential does not affect your collected records, schedule, or connection history. The connection resumes with the new credential on the next sync."
+          surface="human"
+          title="Records and history are preserved"
+        />
+      ) : (
+        <Callout
+          className="mt-5"
+          description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
+          surface="human"
+          title="Add another account without changing deployment settings"
+        >
+          <p className="pdpp-caption text-muted-foreground">
+            The deployment only needs an instance-level credential key provider. Account credentials are captured here
+            for one connection at a time.
+          </p>
+        </Callout>
+      )}
     </RecordroomShellWithPalette>
   );
 }

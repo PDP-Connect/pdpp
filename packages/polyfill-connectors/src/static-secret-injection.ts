@@ -82,6 +82,8 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
  *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
  *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
+ *   - oura/index.ts auth.required: OURA_PERSONAL_ACCESS_TOKEN
+ *   - notion/index.ts auth.required: NOTION_API_TOKEN
  *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
  *
  * A connector absent from this registry is NOT a static-secret connector for
@@ -111,6 +113,14 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
         slack_token: ["SLACK_TOKEN"],
         slack_cookie: ["SLACK_COOKIE"],
       },
+    }),
+    oura: freezeStaticSecretDescriptor({
+      credentialKind: "personal_access_token",
+      secretEnvVars: ["OURA_PERSONAL_ACCESS_TOKEN"],
+    }),
+    notion: freezeStaticSecretDescriptor({
+      credentialKind: "personal_access_token",
+      secretEnvVars: ["NOTION_API_TOKEN"],
     }),
     reddit: freezeStaticSecretDescriptor({
       credentialKind: "secret_bundle",

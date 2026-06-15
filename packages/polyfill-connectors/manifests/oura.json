@@ -12,6 +12,30 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "Oura personal access token",
+      "description": "Use an Oura Ring personal access token for the account this connection should collect.",
+      "submit_label": "Create Oura connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "Oura personal access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://cloud.ouraring.com/personal-access-tokens",
+          "help_text": "Create a personal access token in your Oura account developer settings, then paste it here.",
+          "env": [
+            "OURA_PERSONAL_ACCESS_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {

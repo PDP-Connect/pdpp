@@ -27,6 +27,50 @@
       }
     ]
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "secret_bundle",
+      "label": "Slack workspace credentials",
+      "description": "Paste the session credentials from your Slack browser session. These are captured and sealed per-connection; the deployment does not need env vars.",
+      "submit_label": "Create Slack connection and start first sync",
+      "fields": [
+        {
+          "name": "slack_workspace",
+          "label": "Slack workspace domain",
+          "type": "text",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "off",
+          "placeholder": "myteam (from myteam.slack.com)",
+          "help_text": "Enter just the subdomain — e.g. 'myteam' from myteam.slack.com.",
+          "env": ["SLACK_WORKSPACE"]
+        },
+        {
+          "name": "slack_token",
+          "label": "Slack session token (xoxc-…)",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
+          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "env": ["SLACK_TOKEN"]
+        },
+        {
+          "name": "slack_cookie",
+          "label": "Slack 'd' cookie",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
+          "env": ["SLACK_COOKIE"]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "credentials"
