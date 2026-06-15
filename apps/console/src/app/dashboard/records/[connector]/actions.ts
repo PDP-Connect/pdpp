@@ -9,6 +9,7 @@ import {
   deleteConnectorSchedule,
   pauseConnectionSchedule,
   pauseConnectorSchedule,
+  reactivateConnection,
   resumeConnectionSchedule,
   resumeConnectorSchedule,
   revokeConnection,
@@ -235,6 +236,46 @@ export async function revokeConnectionAction(formData: FormData) {
   revalidatePath("/dashboard/records");
   revalidatePath(`/dashboard/records/${encodeURIComponent(routeId)}`);
   redirect(error ? dangerZoneHref(routeId, message, error) : recordsListHref(message));
+}
+
+/**
+ * Owner-reactivate a revoked connection from the console. The clean inverse of
+ * `revokeConnectionAction`: re-verifies the owner session, then calls the
+ * shared owner-session `POST /_ref/connections/:id/reactivate` route. Flips
+ * the connection back to active, clears `revoked_at`, resumes future
+ * collection — all already-collected records, grants, schedule, and history
+ * are preserved. Credential freshness is handled on the next collection run.
+ *
+ * The `not_revoked` typed outcome (connection was already active) is messaged
+ * in place rather than thrown. On success, redirects to the connections list
+ * with a data-preserving confirmation message.
+ */
+export async function reactivateConnectionAction(formData: FormData) {
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId;
+  await requireDashboardAccess(recordsListHref());
+  if (!connectionId) {
+    redirect(recordsListHref(undefined, "This connection has no addressable id to reactivate."));
+  }
+
+  let message: string | undefined;
+  let error: string | undefined;
+  try {
+    const result = await reactivateConnection(connectionId);
+    if (result.status === "reactivated") {
+      message = "Connection reactivated. Collection will resume on the next scheduled run.";
+    } else if (result.status === "not_revoked") {
+      message = "This connection was already active — no change was made.";
+    } else {
+      error = "Connection not found. It may have been deleted.";
+    }
+  } catch (err) {
+    error = errorMessage(err);
+  }
+
+  revalidatePath("/dashboard/records");
+  revalidatePath(`/dashboard/records/${encodeURIComponent(routeId)}`);
+  redirect(error ? recordsListHref(message, error) : recordsListHref(message));
 }
 
 /**

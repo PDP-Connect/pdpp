@@ -2,20 +2,27 @@ import { describeError } from "./describe-error.ts";
 
 /**
  * Pure mappings for the owner-session connection control responses
- * (`POST /_ref/connections/:id/revoke` and `DELETE /_ref/connections/:id`),
- * factored out of `operator-runs.ts` so they can be unit tested directly under
- * `node --test` without pulling in the server-only fetch helpers
- * (`owner-token.ts` imports `server-only`, which throws outside the React
- * Server runtime).
+ * (`POST /_ref/connections/:id/revoke`, `POST /_ref/connections/:id/reactivate`,
+ * and `DELETE /_ref/connections/:id`), factored out of `operator-runs.ts` so
+ * they can be unit tested directly under `node --test` without pulling in the
+ * server-only fetch helpers (`owner-token.ts` imports `server-only`, which
+ * throws outside the React Server runtime).
  *
  * These routes share the same connector-instance store primitives + typed
- * errors as the owner-agent bearer revoke/delete routes. The console surfaces
- * each typed outcome honestly rather than flattening it into a generic error:
+ * errors as the owner-agent bearer revoke/reactivate/delete routes. The
+ * console surfaces each typed outcome honestly rather than flattening it into
+ * a generic error:
  *
  *   Revoke:
  *     - `200` → `revoked`
  *     - `400 connector_instance_inactive` → `already_revoked` (repeat revoke;
  *       the connection is not active so there is nothing new to revoke)
+ *
+ *   Reactivate:
+ *     - `200` → `reactivated`
+ *     - `409 connector_instance_not_revoked` → `not_revoked` (connection is
+ *       already active; nothing to reactivate)
+ *     - `404 connector_instance_not_found` → `not_found`
  *
  *   Delete:
  *     - `200` → `deleted`
@@ -30,6 +37,33 @@ export type RevokeConnectionOutcome = "revoked" | "already_revoked";
 
 export interface RevokeConnectionResult {
   status: RevokeConnectionOutcome;
+}
+
+export type ReactivateConnectionOutcome = "reactivated" | "not_revoked" | "not_found";
+
+export interface ReactivateConnectionResult {
+  status: ReactivateConnectionOutcome;
+}
+
+/**
+ * Map a reactivate response `(status, body, errorCode)` to a typed outcome, or
+ * throw a described error for any status that is not a documented outcome.
+ */
+export function classifyReactivateConnectionResponse(
+  status: number,
+  body: unknown,
+  errorCode: string | null
+): ReactivateConnectionResult {
+  if (status === 200) {
+    return { status: "reactivated" };
+  }
+  if (status === 409 && errorCode === "connector_instance_not_revoked") {
+    return { status: "not_revoked" };
+  }
+  if (status === 404 && errorCode === "connector_instance_not_found") {
+    return { status: "not_found" };
+  }
+  throw new Error(describeError(body, `connection reactivate failed (${status})`));
 }
 
 export type DeleteConnectionOutcome = "deleted" | "run_active" | "default_account" | "not_found";

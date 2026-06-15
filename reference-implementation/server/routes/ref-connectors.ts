@@ -105,8 +105,8 @@ interface TraceContext {
 }
 
 // Connection-scoped soft-flip result returned by the shared store
-// `updateStatus` primitive. The owner-session revoke route reuses the same
-// primitive the owner-agent bearer revoke route uses — no new destructive
+// `updateStatus` primitive. Both the owner-session revoke and reactivate
+// routes reuse the same primitive — no new destructive
 // semantic is introduced here.
 interface RevokedInstance {
   readonly connectorInstanceId?: string | null;
@@ -129,6 +129,7 @@ interface ConnectionDeleteSummary {
 
 interface OwnerNamespaceOptions {
   readonly allowDefaultAccount?: boolean;
+  readonly allowStatuses?: readonly string[];
   readonly connectorInstanceId?: string | null;
   readonly ownerSubjectId?: string;
 }
@@ -176,13 +177,16 @@ export interface MountRefConnectorsContext {
     enabled: boolean,
     options: { connectorInstanceId?: string | null }
   ): Promise<unknown>;
-  // Connection-scoped soft-flip revoke primitive — the SAME store `updateStatus`
-  // method the owner-agent bearer revoke route uses. Flips exactly one connector
-  // instance to status `revoked`, zero cascade; the namespace is owner-verified
-  // before this is called.
+  // Connection-scoped soft-flip primitive — the SAME store `updateStatus`
+  // method the owner-agent bearer revoke and reactivate routes use. Flips
+  // exactly one connector instance to the target status, zero cascade; the
+  // namespace is owner-verified before this is called. Reactivate passes
+  // `{ status: 'active', revokedAt: null }` to clear the revoke stamp.
   updateConnectorInstanceStatus(
     connectorInstanceId: string,
-    options: { status: "revoked"; updatedAt: string; revokedAt: string }
+    options:
+      | { status: "revoked"; updatedAt: string; revokedAt: string }
+      | { status: "active"; updatedAt: string; revokedAt: null }
   ): Promise<RevokedInstance> | RevokedInstance;
   upsertSchedule(
     connectorId: string,
@@ -845,8 +849,8 @@ async function emitConnectionControlAudit(
     connectorKey?: string | null;
     deletionSummary?: ConnectionDeleteSummary | null;
     error?: unknown;
-    eventType: "owner_agent.connection.revoke" | "owner_agent.connection.delete";
-    operation: "revoke" | "delete";
+    eventType: "owner_agent.connection.revoke" | "owner_agent.connection.delete" | "owner_agent.connection.reactivate";
+    operation: "revoke" | "delete" | "reactivate";
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
   }
@@ -997,6 +1001,90 @@ export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsCo
           error: err,
           eventType: "owner_agent.connection.delete",
           operation: "delete",
+          outcome: "failed",
+          ownerSubjectId,
+        });
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// POST /_ref/connections/:connectorInstanceId/reactivate — owner-session
+// reactivate of one revoked connection. Resolves through the shared namespace
+// resolver with `allowStatuses: ['revoked']` so only a revoked instance is
+// accepted (active → connector_instance_inactive → re-labeled
+// connector_instance_not_revoked 409; foreign/unknown → not_found 404). Flips
+// the instance from `revoked` to `active`, clears `revoked_at`, and emits a
+// non-secret reactivate audit. Zero cascade: already-collected records, grants,
+// schedule, and spine evidence are untouched. Credential freshness is delegated
+// to the next collection run exactly as Plaid's update-mode pattern does.
+export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnectorsContext): void {
+  app.post(
+    "/_ref/connections/:connectorInstanceId/reactivate",
+    { contract: "refReactivateConnection" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const ownerSubjectId = ctx.getOwnerSubjectId(req);
+      let connectionId: string | null = null;
+      let connectorKey: string | null = null;
+      try {
+        const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+        connectionId = connectorInstanceId;
+        // Resolve with allowStatuses: ['revoked'] — ownership is verified,
+        // active connections surface as connector_instance_inactive (400) which
+        // we re-label as connector_instance_not_revoked (409).
+        let namespace: ConnectorNamespace;
+        try {
+          namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
+            allowStatuses: ["revoked"],
+          });
+        } catch (resolveErr) {
+          const code = (resolveErr as { code?: unknown })?.code;
+          if (code === "connector_instance_inactive") {
+            ctx.pdppError(
+              res,
+              409,
+              "connector_instance_not_revoked",
+              `Connection '${connectorInstanceId}' is not revoked; only revoked connections can be reactivated.`
+            );
+            return;
+          }
+          throw resolveErr;
+        }
+        connectionId = namespace.connectorInstanceId;
+        connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+        const stamp = ctx.now ? ctx.now() : new Date().toISOString();
+        const reactivated = await Promise.resolve(
+          ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+            status: "active",
+            updatedAt: stamp,
+            revokedAt: null,
+          })
+        );
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          eventType: "owner_agent.connection.reactivate",
+          operation: "reactivate",
+          outcome: "succeeded",
+          ownerSubjectId,
+        });
+        res.status(200).json({
+          object: "ref_connection_reactivate",
+          connection_id: connectionId,
+          connector_id: connectorKey,
+          connector_key: connectorKey,
+          status: reactivated.status ?? "active",
+          reactivated_at: stamp,
+        });
+      } catch (err) {
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          error: err,
+          eventType: "owner_agent.connection.reactivate",
+          operation: "reactivate",
           outcome: "failed",
           ownerSubjectId,
         });

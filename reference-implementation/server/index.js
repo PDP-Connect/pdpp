@@ -388,6 +388,7 @@ import {
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
+  mountRefConnectionReactivate,
   mountRefConnectionRevoke,
   mountRefConnectionRun,
   mountRefConnectionScheduleDelete,
@@ -422,6 +423,7 @@ import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
 import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
 import { mountOwnerConnectionRevoke } from './routes/owner-connection-revoke.ts';
+import { mountOwnerConnectionReactivate } from './routes/owner-connection-reactivate.ts';
 import { mountOwnerConnectionDelete } from './routes/owner-connection-delete.ts';
 import { mountOwnerConnectionDiagnostics } from './routes/owner-connection-diagnostics.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
@@ -3736,15 +3738,17 @@ function buildAsApp(opts = {}) {
   mountRefConnectorScheduleDelete(app, refConnectorsContext);
   mountRefConnectionScheduleDelete(app, refConnectorsContext);
 
-  // Owner-session connection revoke + delete — cookie-authed siblings of the
-  // owner-agent bearer routes (`mountOwnerConnectionRevoke` /
-  // `mountOwnerConnectionDelete` below). They give the operator console a way to
-  // revoke (stop future collection, preserve records) and delete (erase exactly
-  // one connection's records/state, refuse active runs + default-account) one
-  // configured connection without an owner-agent bearer, reusing the SAME store
-  // primitives and emitting the SAME audit event types. See
+  // Owner-session connection revoke + reactivate + delete — cookie-authed
+  // siblings of the owner-agent bearer routes. They give the operator console
+  // a way to revoke (stop future collection, preserve records), reactivate
+  // (reverse a revoke, resume collection for the same connection, preserve all
+  // records), and delete (erase exactly one connection's records/state, refuse
+  // active runs + default-account) one configured connection without an
+  // owner-agent bearer, reusing the SAME store primitives and emitting the SAME
+  // audit event types. See
   // openspec/changes/add-console-connection-revoke-delete-controls.
   mountRefConnectionRevoke(app, refConnectorsContext);
+  mountRefConnectionReactivate(app, refConnectorsContext);
   mountRefConnectionDelete(app, refConnectorsContext);
 
   if (!nativeMode) {
@@ -4361,6 +4365,44 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     handleError,
     listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
+  });
+
+  // POST /v1/owner/connections/:connectionId/reactivate and
+  // POST /v1/owner/connectors/:connectorId/reactivate are the bearer-authed
+  // owner-agent connection-REACTIVATE routes: the clean inverse of revoke.
+  // Flips a single `revoked` connection back to `active`, clears `revoked_at`,
+  // and resumes future collection. Already-collected records, grants, schedule,
+  // and audit spine are untouched — zero cascade. Ownership is enforced by the
+  // namespace resolver with `allowStatuses: ['revoked']` BEFORE any mutation
+  // (foreign/unknown id → 404; non-revoked id → connector_instance_not_revoked
+  // 409). Credential freshness is delegated to the next collection run.
+  mountOwnerConnectionReactivate(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    // Returns all revoked connections for a given owner+connector. Used by the
+    // connector-only reactivate route to find the single revoked connection to
+    // flip back to active. Filters listByOwner (which includes revoked rows) by
+    // connector id and revoked status client-side — avoids a new SQL query for
+    // a rare control-path. The owner-list page bound is generous (LIST_LIMIT in
+    // the store) but that is acceptable for a control-path that runs rarely.
+    listRevokedConnectionsForConnector: ({ ownerSubjectId, connectorId }) =>
+      createRequestConnectorInstanceStore()
+        .listByOwner(ownerSubjectId)
+        .filter((inst) => inst.connectorId === connectorId && inst.status === 'revoked'),
     pdppError,
     projectBindingForWire,
     requireOwner,

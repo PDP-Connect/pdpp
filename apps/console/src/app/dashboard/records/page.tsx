@@ -12,7 +12,7 @@
  * them with the pure `toSourcesView` mapping. The route id is unchanged
  * (`/dashboard/records`); redirects + tests pin it. The Sync and Revoke
  * mutations bind to the same server actions the prior surface used
- * (`runConnectorNowAction`, `revokeConnectionAction`).
+ * (`runConnectorNowAction`, `revokeConnectionAction`, `reactivateConnectionAction`).
  *
  * A DEV-ONLY seeded demo (`?demo=mixed|healthy|attention`, blocked in
  * production) lets a reviewer screenshot every status flag and the revoke
@@ -25,7 +25,7 @@ import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listRecordVersionStats, type RefConnectorSummary } from "../lib/ref-client.ts";
 import { listConnectorManifests } from "../lib/rs-client.ts";
-import { revokeConnectionAction } from "./[connector]/actions.ts";
+import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 import { SourcesView } from "./sources-view.tsx";
 import { buildSourcesChurnAdvisory, type SourcesChurnAdvisory, toSourcesView } from "./sources-view-model.ts";
@@ -129,6 +129,7 @@ export default async function RecordsIndexPage({
         churnAdvisory={churnAdvisory}
         instances={instances}
         interactive={true}
+        reactivateAction={reactivateConnectionAction}
         revokeAction={revokeConnectionAction}
       />
       <RecordsPagePoller running={runningCount > 0} />

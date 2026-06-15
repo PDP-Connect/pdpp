@@ -68,6 +68,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   default_account_delete_unsupported: 409,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
+  connector_instance_not_revoked: 409,
   connector_instance_selector_required: 400,
   connector_instance_store_required: 500,
   owner_subject_required: 400,

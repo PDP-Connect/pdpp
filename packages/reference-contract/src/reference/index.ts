@@ -510,6 +510,20 @@ const OwnerConnectionRevokeSchema = {
   required: ["object", "connection_id", "connector_id", "connector_key", "status", "revoked_at"],
 };
 
+const OwnerConnectionReactivateSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connection_reactivate" },
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    status: { const: "active" },
+    reactivated_at: { type: "string" },
+  },
+  required: ["object", "connection_id", "connector_id", "connector_key", "status", "reactivated_at"],
+};
+
 // Non-secret deletion summary returned by the owner-agent connection-DELETE
 // routes. Carries counts + stable identifiers only — never record contents,
 // secrets, or per-record detail. `deleted_record_count` /
@@ -1810,6 +1824,34 @@ export const referenceManifests = [
     },
   },
   {
+    id: "ownerReactivateConnection",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/reactivate",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `ownerRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionReactivateSchema, description: "Reactivated" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerReactivateConnector",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/reactivate",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+    summary:
+      "Owner-agent bearer: reactivate a connector's revoked connection addressed by `connector_id`. Auto-selects the only revoked connection for that connector. When more than one connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `revoked` to `active` (zero cascade). Owner bearers only.",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionReactivateSchema, description: "Reactivated" },
+      ...CommonErrors,
+    },
+  },
+  {
     id: "ownerDeleteConnection",
     method: "DELETE",
     path: "/v1/owner/connections/{connectionId}",
@@ -2232,6 +2274,17 @@ export const referenceManifests = [
       "Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter.",
     request: { params: ConnectorInstanceIdParamSchema },
     responses: { 200: { description: "Revoked" }, ...CommonErrors },
+  },
+  {
+    id: "refReactivateConnection",
+    method: "POST",
+    path: "/_ref/connections/{connectorInstanceId}/reactivate",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary:
+      "Owner-session: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `refRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerReactivateConnection` route under a cookie auth adapter.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { description: "Reactivated" }, ...CommonErrors },
   },
   {
     id: "refDeleteConnection",

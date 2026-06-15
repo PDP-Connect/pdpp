@@ -1,9 +1,11 @@
 import { type CancelRunResult, cancelRunErrorCode, classifyCancelRunResponse } from "./cancel-run-result.ts";
 import {
   classifyDeleteConnectionResponse,
+  classifyReactivateConnectionResponse,
   classifyRevokeConnectionResponse,
   connectionControlErrorCode,
   type DeleteConnectionResult,
+  type ReactivateConnectionResult,
   type RevokeConnectionResult,
 } from "./connection-control-result.ts";
 import { describeError } from "./describe-error.ts";
@@ -13,6 +15,8 @@ export type { CancelRunOutcome, CancelRunResult } from "./cancel-run-result.ts";
 export type {
   DeleteConnectionOutcome,
   DeleteConnectionResult,
+  ReactivateConnectionOutcome,
+  ReactivateConnectionResult,
   RevokeConnectionOutcome,
   RevokeConnectionResult,
 } from "./connection-control-result.ts";
@@ -419,6 +423,23 @@ export async function revokeConnection(connectionId: string): Promise<RevokeConn
   });
   const body = await readBody(response);
   return classifyRevokeConnectionResponse(response.status, body, connectionControlErrorCode(body));
+}
+
+/**
+ * Owner-reactivate one revoked connection via the owner-session
+ * `POST /_ref/connections/:id/reactivate` route. The clean inverse of revoke:
+ * flips the connection back to `active`, clears `revoked_at`, and resumes
+ * future collection. Already-collected records, grants, and schedule are
+ * untouched — zero cascade. Credential freshness is delegated to the next
+ * collection run. Returns a typed outcome (`not_revoked` if the connection was
+ * already active) so the console can message in place.
+ */
+export async function reactivateConnection(connectionId: string): Promise<ReactivateConnectionResult> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/reactivate"), {
+    method: "POST",
+  });
+  const body = await readBody(response);
+  return classifyReactivateConnectionResponse(response.status, body, connectionControlErrorCode(body));
 }
 
 /**

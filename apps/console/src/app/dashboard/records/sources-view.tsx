@@ -18,6 +18,12 @@
  *     The destructive variant is reserved for it; the warm copper `human`
  *     variant is reserved for owner-consent acts (none here are consent, so the
  *     foot uses default/ghost/destructive only — copper would mis-signal).
+ *   - Reactivate is the real server action `reactivateConnectionAction`. Shown
+ *     on REVOKED connections only; it is the clean inverse of revoke (flips
+ *     status back to active, clears revoked_at, resumes collection) without
+ *     erasing any collected data. Copy is SLVP-honest: shows the retained
+ *     record count and notes that credential freshness may need attention on
+ *     the next run for OAuth/account connections.
  *   - Reauthorize has no dedicated server action at the index level; it links
  *     to the connection detail page (the always-safe target where reauth lives)
  *     and is labeled as a navigation, not a stubbed mutation.
@@ -59,8 +65,10 @@ interface SourcesViewProps {
    */
   churnAdvisory?: SourcesChurnAdvisory | null;
   instances: SourceInstanceView[];
-  /** Whether the real Sync/Revoke mutations are wired (live) or read-only. */
+  /** Whether the real Sync/Revoke/Reactivate mutations are wired (live) or read-only. */
   interactive: boolean;
+  /** The real server action behind the Reactivate button (live binding only). */
+  reactivateAction?: (formData: FormData) => void | Promise<void>;
   /** The real server action behind the Revoke ceremony (live binding only). */
   revokeAction?: (formData: FormData) => void | Promise<void>;
 }
@@ -69,7 +77,7 @@ type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "
 
 const ADD_SOURCE_HREF = "/dashboard/records/add";
 
-export function SourcesView({ churnAdvisory, instances, interactive, revokeAction }: SourcesViewProps) {
+export function SourcesView({ churnAdvisory, instances, interactive, reactivateAction, revokeAction }: SourcesViewProps) {
   const activeInstances = instances.filter((i) => !i.revoked);
   const revokedInstances = instances.filter((i) => i.revoked);
 
@@ -128,7 +136,12 @@ export function SourcesView({ churnAdvisory, instances, interactive, revokeActio
 
         {selected ? (
           <div className="rr-s-detail">
-            <InstancePassport instance={selected} interactive={interactive} revokeAction={revokeAction} />
+            <InstancePassport
+              instance={selected}
+              interactive={interactive}
+              reactivateAction={reactivateAction}
+              revokeAction={revokeAction}
+            />
             <StreamManifest instance={selected} />
           </div>
         ) : null}
@@ -228,10 +241,12 @@ function InstanceListItem({
 function InstancePassport({
   instance,
   interactive,
+  reactivateAction,
   revokeAction,
 }: {
   instance: SourceInstanceView;
   interactive: boolean;
+  reactivateAction?: (formData: FormData) => void | Promise<void>;
   revokeAction?: (formData: FormData) => void | Promise<void>;
 }) {
   return (
@@ -268,7 +283,12 @@ function InstancePassport({
       </SheetBody>
 
       <SheetFoot>
-        <PassportActions instance={instance} interactive={interactive} revokeAction={revokeAction} />
+        <PassportActions
+          instance={instance}
+          interactive={interactive}
+          reactivateAction={reactivateAction}
+          revokeAction={revokeAction}
+        />
       </SheetFoot>
     </Sheet>
   );
@@ -342,16 +362,19 @@ function NextActionCta({
 function PassportActions({
   instance,
   interactive,
+  reactivateAction,
   revokeAction,
 }: {
   instance: SourceInstanceView;
   interactive: boolean;
+  reactivateAction?: (formData: FormData) => void | Promise<void>;
   revokeAction?: (formData: FormData) => void | Promise<void>;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
+  const [confirmingReactivate, setConfirmingReactivate] = useState(false);
   const manualUploadHref = instance.manualUploadHref;
 
   const handleSync = useCallback(() => {
@@ -437,6 +460,18 @@ function PassportActions({
             Revoke
           </IcButton>
         ) : null}
+
+        {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
+          <IcButton
+            onClick={() => setConfirmingReactivate((v) => !v)}
+            size="sm"
+            type="button"
+            variant="default"
+            data-testid="sources-reactivate-btn"
+          >
+            Reactivate
+          </IcButton>
+        ) : null}
       </div>
 
       {confirmingRevoke && revokeAction && instance.connectionId ? (
@@ -459,6 +494,30 @@ function PassportActions({
             </IcButton>
             <IcButton size="sm" type="submit" variant="destructive">
               Confirm revoke
+            </IcButton>
+          </div>
+        </form>
+      ) : null}
+
+      {confirmingReactivate && reactivateAction && instance.connectionId ? (
+        <form action={reactivateAction} className="rr-s-revoke" data-testid="sources-reactivate-ceremony">
+          <input name="connection_id" type="hidden" value={instance.connectionId} />
+          <p className="rr-s-revoke__copy">
+            Reactivate resumes collection for this connection. Your{" "}
+            {instance.totalRecords > 0
+              ? `${instance.totalRecords.toLocaleString()} collected record${instance.totalRecords === 1 ? "" : "s"} are`
+              : "collected records are"}{" "}
+            preserved — nothing is erased. Collection will resume on the next scheduled run.
+            {instance.status.kind !== "revoked" || !instance.revoked
+              ? null
+              : " If your session or credential has expired, the first run may surface an auth error — use the connection detail to update it."}
+          </p>
+          <div className="rr-s-revoke__row">
+            <IcButton onClick={() => setConfirmingReactivate(false)} size="sm" type="button" variant="ghost">
+              Cancel
+            </IcButton>
+            <IcButton size="sm" type="submit" variant="default" data-testid="sources-reactivate-confirm">
+              Reactivate
             </IcButton>
           </div>
         </form>
