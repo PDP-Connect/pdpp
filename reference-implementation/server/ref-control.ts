@@ -34,6 +34,13 @@ import {
   type OutboxStalledCause,
   rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
+import {
+  buildProgressEvidence,
+  type ManifestStreamLike as VerdictManifestStreamLike,
+  progressMode,
+  synthesizeConnectorVerdict,
+} from "../runtime/connector-verdict-input.ts";
+import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
@@ -433,6 +440,14 @@ export interface ConnectorSummary {
   readonly connector_display_name: string;
   readonly connector_id: string;
   readonly connector_instance_id: string;
+  /**
+   * Synthesized owner verdict — the single object every owner-facing surface
+   * renders. Computed server-side by `synthesizeConnectorVerdict`; forwarded
+   * verbatim alongside `connection_health` exactly as the design specifies.
+   * `detail` and `trace` are owner-only; use `toGrantScopedVerdict` before
+   * forwarding to grant-scoped clients.
+   */
+  readonly rendered_verdict: RenderedVerdict;
   readonly display_name: string;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
@@ -474,6 +489,8 @@ export interface ConnectorDetail {
   readonly collection_report: readonly CollectionReportEntry[];
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
+  /** See {@link ConnectorSummary.rendered_verdict}. */
+  readonly rendered_verdict: RenderedVerdict;
   readonly connector_id: string;
   readonly display_name: string;
   readonly freshness: Freshness;
@@ -3347,6 +3364,28 @@ async function projectConnectorSummaryForInstance(
     manifestStreams: manifest.streams ?? [],
     refreshPolicy,
   });
+  const refresh = buildRefreshEvidence(refreshPolicy);
+  const recoveredCount = detailGaps.recovered;
+  const mode = progressMode({
+    localDeviceBacked: instance.sourceKind === "local_device",
+    refresh,
+    scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
+    hasDrainedDetailGaps: recoveredCount !== null && recoveredCount > 0,
+  });
+  const progressEvidence = buildProgressEvidence({
+    mode,
+    retainedRecords: live.totalRecords,
+    recordsCommittedLastRun: null,
+    gapsDrainedLastRun: recoveredCount !== null && recoveredCount > 0 ? recoveredCount : null,
+    lastRefreshedAt: freshness.captured_at ?? null,
+  });
+  const renderedVerdict = synthesizeConnectorVerdict({
+    snapshot: connectionHealth,
+    report: collectionReport,
+    manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
+    refresh,
+    progress: progressEvidence,
+  });
   return {
     acquisition_coverage: acquisitionCoverage,
     collection_report: collectionReport,
@@ -3359,6 +3398,7 @@ async function projectConnectorSummaryForInstance(
     local_device_progress: localDeviceProgress,
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
+    rendered_verdict: renderedVerdict,
     retained_bytes: live.retainedBytes,
     revoked_at: instance.revokedAt ?? null,
     streams: (manifest.streams || []).map((stream) => stream.name),
@@ -3499,6 +3539,29 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     refreshPolicy,
   });
+  const detailRefresh = buildRefreshEvidence(refreshPolicy);
+  const detailRecoveredCount = detailGaps.recovered;
+  const detailLocalDeviceBacked = outbox.heartbeats.length > 0;
+  const detailMode = progressMode({
+    localDeviceBacked: detailLocalDeviceBacked,
+    refresh: detailRefresh,
+    scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
+    hasDrainedDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,
+  });
+  const detailProgressEvidence = buildProgressEvidence({
+    mode: detailMode,
+    retainedRecords: live.totalRecords,
+    recordsCommittedLastRun: null,
+    gapsDrainedLastRun: detailRecoveredCount !== null && detailRecoveredCount > 0 ? detailRecoveredCount : null,
+    lastRefreshedAt: freshness.captured_at ?? null,
+  });
+  const renderedVerdict = synthesizeConnectorVerdict({
+    snapshot: connectionHealth,
+    report: collectionReport,
+    manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
+    refresh: detailRefresh,
+    progress: detailProgressEvidence,
+  });
   return {
     object: "ref_connector_detail",
     acquisition_coverage: null,
@@ -3509,6 +3572,7 @@ export async function getConnectorDetail(
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
+    rendered_verdict: renderedVerdict,
     total_records: live.totalRecords,
     freshness,
     schedule,

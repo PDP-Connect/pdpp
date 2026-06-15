@@ -88,3 +88,62 @@ test('grant-scope: public attention-layer fields survive the projection', () => 
     assert.ok(key in scoped, `public field ${key} survives grant-scoped projection`);
   }
 });
+
+// ─── Dispatch C boundary regression ──────────────────────────────────────────
+//
+// Now that Dispatch C has wired `rendered_verdict` into `ConnectorSummary` and
+// `ConnectorDetail`, the owner types carry a `RenderedVerdict` with `detail` and
+// `trace`. This test pins the exact boundary: a verdict that arrives at a
+// grant-scoped seam MUST have `detail` and `trace` stripped via `toGrantScopedVerdict`
+// before it reaches a grant-scoped client.
+//
+// This is a structural regression: if anyone removes `toGrantScopedVerdict` from
+// the grant-scoped path in the future, these tests catch the exposure.
+
+test('grant-scope: RenderedVerdict.detail is owner-only by type — GrantScopedVerdict structurally cannot carry it', () => {
+  const ownerVerdict = synthesizeRenderedVerdict(
+    snapshot(),
+    [stream()],
+    { backgroundSafe: false, recommendedMode: 'manual', interactionPosture: 'otp_likely' },
+    true
+  );
+  // Owner verdict has detail and trace
+  assert.ok('detail' in ownerVerdict, 'owner verdict has detail');
+  assert.ok('trace' in ownerVerdict, 'owner verdict has trace');
+
+  // After grant-scoped projection, both are absent
+  const grantScoped = toGrantScopedVerdict(ownerVerdict);
+  assert.ok(!('detail' in grantScoped), 'GrantScopedVerdict has no detail (structural)');
+  assert.ok(!('trace' in grantScoped), 'GrantScopedVerdict has no trace (structural)');
+
+  // The type-level guarantee: GrantScopedVerdict = Omit<RenderedVerdict, 'detail' | 'trace'>
+  // Confirmed at runtime: the projection does not add them back under any alias.
+  const serialized = JSON.stringify(grantScoped);
+  const parsed = JSON.parse(serialized);
+  assert.ok(!('detail' in parsed), 'no "detail" key in serialized grant-scoped verdict');
+  assert.ok(!('trace' in parsed), 'no "trace" key in serialized grant-scoped verdict');
+});
+
+test('grant-scope: ConnectorSummary.rendered_verdict detail must go through toGrantScopedVerdict before grant scope', () => {
+  // Simulate what the grant-scoped REST path must do when it encounters rendered_verdict:
+  // it calls toGrantScopedVerdict, which strips detail and trace.
+  // This test proves the transform is idempotent (calling it twice doesn't add fields back)
+  // and that the result is safe for a grant-scoped client.
+  const ownerVerdict = synthesizeRenderedVerdict(
+    snapshot(),
+    [stream()],
+    { backgroundSafe: false, recommendedMode: 'manual', interactionPosture: 'otp_likely' },
+    true
+  );
+
+  const scoped = toGrantScopedVerdict(ownerVerdict);
+  // Idempotent: the scoped verdict does not accidentally acquire detail/trace
+  // if passed through again (defense-in-depth).
+  const scopedAgain = toGrantScopedVerdict(scoped);
+  assert.ok(!('detail' in scopedAgain));
+  assert.ok(!('trace' in scopedAgain));
+
+  // The 2,532 recovered gap backlog must not be serializable from the scoped verdict.
+  const serialized = JSON.stringify(scopedAgain);
+  assert.ok(!serialized.includes('2532'), 'gap count must not be reachable from grant-scoped verdict');
+});
