@@ -59,11 +59,7 @@ export interface ManifestStreamLike {
   readonly required?: boolean;
 }
 
-const RETRYABLE_COVERAGE: ReadonlySet<CoverageAxis> = new Set<CoverageAxis>([
-  "retryable_gap",
-  "partial",
-  "gaps",
-]);
+const RETRYABLE_COVERAGE: ReadonlySet<CoverageAxis> = new Set<CoverageAxis>(["retryable_gap", "partial", "gaps"]);
 
 /** A coverage axis the next ordinary run can still fill (vs. a terminal loss). */
 function isRetryableCoverage(axis: CoverageAxis): boolean {
@@ -186,11 +182,5 @@ export function synthesizeConnectorVerdict(input: {
   readonly runtimeOk?: boolean;
 }): RenderedVerdict {
   const streams = buildStreamRollups(input.report, input.manifestStreams, input.snapshot);
-  return synthesizeRenderedVerdict(
-    input.snapshot,
-    streams,
-    input.refresh,
-    input.runtimeOk ?? true,
-    input.progress
-  );
+  return synthesizeRenderedVerdict(input.snapshot, streams, input.refresh, input.runtimeOk ?? true, input.progress);
 }
