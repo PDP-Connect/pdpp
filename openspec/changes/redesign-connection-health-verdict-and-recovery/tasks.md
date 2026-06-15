@@ -52,7 +52,7 @@
 
 ## 8. Render-consumer migration (surfaces stop reading `state` directly)
 
-- [ ] 8.1 Forward the synthesized `RenderedVerdict` verbatim through `ref-control.ts` -> `ref-client.ts` exactly as `connection_health` is forwarded today.
+- [x] 8.1 Forward the synthesized `RenderedVerdict` verbatim through `ref-control.ts` -> `ref-client.ts` exactly as `connection_health` is forwarded today.
 - [ ] 8.2 Migrate the dashboard list, connection header, connection detail, and owner-agent passport to render only `RenderedVerdict` fields; remove every raw `health.state`-derived pill/badge/headline/owner-action.
 - [ ] 8.3 Split the dashboard (attention layer) from the detail panel (inspection layer): mechanistic counts (gap counts, retry counts, backlog scale, `next_attempt_at`, `collection_rate`) render only in `detail`; the dashboard renders "Healthy · fresh today", never the gap count.
 - [ ] 8.4 Lift the three existing ad-hoc silence decisions (`isHealthRelevant`, `pushPayload(owner_action:"none") -> null`, `stale_assisted_refresh` info-severity) into the one `channel` computation; the push transport emits only when `channel === "attention"` with an owner-satisfiable action; `calm`/`advisory` never push.
