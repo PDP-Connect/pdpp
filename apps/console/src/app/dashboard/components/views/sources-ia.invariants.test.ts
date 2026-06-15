@@ -51,6 +51,9 @@ const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
 const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
 const RENDERED_VERDICT_STATUS_RE = /deriveRenderedSourceStatus\(summary\.rendered_verdict/;
 const RENDERED_VERDICT_ACTION_RE = /formatRenderedRequiredAction\(summary\.rendered_verdict\)/;
+const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(response\.runtime\)/;
+const RUNTIME_ADVISORY_PROP_RE = /runtimeAdvisory=\{runtimeAdvisory\}/;
+const RUNTIME_ADVISORY_RENDER_RE = /data-testid="sources-runtime-advisory"/;
 const INSPECTION_LAYER_FIELDS_RE = /detail_gap_backlog|next_attempt_at|collection_rate|suppressed/;
 // Sync, Reauthorize, and Revoke are three separate actions in the passport foot
 const SYNC_ACTION_RE = /Sync now/;
@@ -137,6 +140,14 @@ test("Sources projection reads rendered verdict status/action and keeps inspecti
   assert.match(model, RENDERED_VERDICT_STATUS_RE);
   assert.match(model, RENDERED_VERDICT_ACTION_RE);
   assert.doesNotMatch(view, INSPECTION_LAYER_FIELDS_RE);
+});
+
+test("Sources renders one global runtime advisory instead of per-source runtime alarms", async () => {
+  const page = await readFile(RECORDS_PAGE_FILE, "utf8");
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(page, RUNTIME_ADVISORY_MODEL_RE);
+  assert.match(page, RUNTIME_ADVISORY_PROP_RE);
+  assert.match(view, RUNTIME_ADVISORY_RENDER_RE);
 });
 
 test("the sources passport foot has three distinct actions: Sync, Reauthorize, and Revoke", async () => {

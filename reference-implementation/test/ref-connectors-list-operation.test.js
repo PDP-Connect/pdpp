@@ -123,6 +123,22 @@ test('ref.connectors.list yields empty envelope when dependency returns empty', 
   assert.deepEqual(envelope, { object: 'list', data: [] });
 });
 
+test('ref.connectors.list carries one owner-only runtime status when supplied', async () => {
+  const runtime = {
+    object: 'ref_runtime_status',
+    ok: false,
+    reason: 'controller_unavailable',
+    label: 'Collection runtime unavailable',
+    message: 'Collection is paused until the reference runtime is back.',
+  };
+  const envelope = await executeRefConnectorsList({
+    listConnectorSummaries: () => [makeItem('a')],
+    getRuntimeStatus: () => runtime,
+  });
+  assert.equal(envelope.runtime, runtime);
+  assert.equal(envelope.data.length, 1);
+});
+
 test('reference connector catalog hides manifest opt-outs', () => {
   assert.equal(
     isPublicReferenceConnector(

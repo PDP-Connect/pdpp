@@ -36,7 +36,7 @@ import {
   listRuns,
   listTraces,
   type PendingApproval,
-  type RefConnectorSummary,
+  type RefConnectorSummariesResponse,
   type RunSummary,
   refSearch,
   type TimelineEnvelope,
@@ -87,7 +87,7 @@ export interface DashboardDataSource {
   readonly kind: "live" | "sandbox";
   listConnectorManifests(): Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
-  listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>>;
+  listConnectorSummaries(): Promise<RefConnectorSummariesResponse>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
   listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
   listPendingApprovals(): Promise<ListResponse<PendingApproval>>;

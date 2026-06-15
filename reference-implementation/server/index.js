@@ -3506,6 +3506,23 @@ function buildAsApp(opts = {}) {
     listConnectorSummaries: () => listConnectorSummaries(controller),
     getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
     getConnectorDetail: (id) => getConnectorDetail(id, controller),
+    getRuntimeStatus: () =>
+      controller
+        ? {
+            object: 'ref_runtime_status',
+            ok: true,
+            reason: null,
+            label: 'Collection runtime ready',
+            message: null,
+          }
+        : {
+            object: 'ref_runtime_status',
+            ok: false,
+            reason: 'controller_unavailable',
+            label: 'Collection runtime unavailable',
+            message:
+              'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
+          },
     resolveRegisteredConnectorManifest,
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     getSchedule: async (connectorId, options) =>

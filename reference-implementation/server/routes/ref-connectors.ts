@@ -27,7 +27,10 @@ import {
   executeRefConnectorDetail,
   RefConnectorDetailNotFoundError,
 } from "../../operations/ref-connectors-detail/index.ts";
-import { executeRefConnectorsList } from "../../operations/ref-connectors-list/index.ts";
+import {
+  executeRefConnectorsList,
+  type RefConnectorsRuntimeStatus,
+} from "../../operations/ref-connectors-list/index.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -155,6 +158,7 @@ export interface MountRefConnectorsContext {
   getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
   getConnectorSummaryForRoute(routeId: string): Promise<unknown | null> | unknown | null;
   getOwnerSubjectId(req: unknown): string;
+  getRuntimeStatus(): RefConnectorsRuntimeStatus;
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
   handleError(res: unknown, err: unknown): void;
   listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
@@ -322,6 +326,7 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
             listConnectorSummaries() as unknown as ReturnType<
               Parameters<typeof executeRefConnectorsList>[0]["listConnectorSummaries"]
             >,
+          getRuntimeStatus: ctx.getRuntimeStatus,
         });
         res.json(envelope);
       } catch (err) {

@@ -28,7 +28,13 @@ import { listConnectorManifests } from "../lib/rs-client.ts";
 import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 import { SourcesView } from "./sources-view.tsx";
-import { buildSourcesChurnAdvisory, type SourcesChurnAdvisory, toSourcesView } from "./sources-view-model.ts";
+import {
+  buildSourcesChurnAdvisory,
+  buildSourcesRuntimeAdvisory,
+  type SourcesChurnAdvisory,
+  type SourcesRuntimeAdvisory,
+  toSourcesView,
+} from "./sources-view-model.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +99,7 @@ export default async function RecordsIndexPage({
   }
 
   let summaries: RefConnectorSummary[];
+  let runtimeAdvisory: SourcesRuntimeAdvisory | null = null;
   let manifests: Awaited<ReturnType<typeof listConnectorManifests>>;
   try {
     const [response, connectorManifests] = await Promise.all([
@@ -100,6 +107,7 @@ export default async function RecordsIndexPage({
       listConnectorManifests(),
     ]);
     summaries = response.data;
+    runtimeAdvisory = buildSourcesRuntimeAdvisory(response.runtime);
     manifests = connectorManifests;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
@@ -131,6 +139,7 @@ export default async function RecordsIndexPage({
         interactive={true}
         reactivateAction={reactivateConnectionAction}
         revokeAction={revokeConnectionAction}
+        runtimeAdvisory={runtimeAdvisory}
       />
       <RecordsPagePoller running={runningCount > 0} />
     </RecordroomShellWithPalette>

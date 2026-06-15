@@ -18,6 +18,7 @@ import type {
 } from "../lib/ref-client.ts";
 import {
   buildSourcesChurnAdvisory,
+  buildSourcesRuntimeAdvisory,
   deriveRenderedSourceStatus,
   deriveSourceStatus,
   exploreHrefFor,
@@ -252,6 +253,32 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
     );
     assert.equal(view.nextAction, null);
   }
+});
+
+test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {
+  assert.equal(
+    buildSourcesRuntimeAdvisory({
+      object: "ref_runtime_status",
+      ok: true,
+      reason: null,
+      label: "Collection runtime ready",
+      message: null,
+    }),
+    null
+  );
+  assert.deepEqual(
+    buildSourcesRuntimeAdvisory({
+      object: "ref_runtime_status",
+      ok: false,
+      reason: "controller_unavailable",
+      label: "Collection runtime unavailable",
+      message: null,
+    }),
+    {
+      headline: "Collection runtime unavailable",
+      note: "Saved records remain available. Collection resumes when the reference runtime is back.",
+    }
+  );
 });
 
 test("deriveSourceStatus: every non-fresh state carries a freshness annotation, fresh carries none", () => {

@@ -386,7 +386,8 @@ a.rr-s-item {
    regardless of review state: retained history is not an alarm. The eyebrow
    carries the mono protocol voice; the body is muted prose. No warning amber,
    no copper consent tone here. */
-.rr-s-churn {
+.rr-s-churn,
+.rr-s-runtime {
   margin-bottom: 16px;
   border-left: 2px solid var(--border-strong);
   padding: 10px 14px;

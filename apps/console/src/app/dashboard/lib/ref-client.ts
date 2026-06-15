@@ -477,6 +477,18 @@ export interface RefConnectorSummary {
   total_retained_bytes?: number | null;
 }
 
+export interface RefConnectorRuntimeStatus {
+  label: string;
+  message: string | null;
+  object: "ref_runtime_status";
+  ok: boolean;
+  reason: "controller_unavailable" | null;
+}
+
+export interface RefConnectorSummariesResponse extends ListResponse<RefConnectorSummary> {
+  runtime?: RefConnectorRuntimeStatus;
+}
+
 export type RefVerdictTone = "amber" | "green" | "grey" | "red";
 export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
@@ -978,7 +990,7 @@ export async function listWebPushSubscriptions(): Promise<ListResponse<WebPushSu
 
 export async function listConnectorSummaries(
   options: { connectionRouteId?: string } = {}
-): Promise<ListResponse<RefConnectorSummary>> {
+): Promise<RefConnectorSummariesResponse> {
   // When a record subpage knows the connection it wants, pass the route id so
   // the reference projects only that one connection (a 0-or-1 list) instead of
   // running the per-connection fan-out for every configured connection. Unscoped
@@ -986,7 +998,7 @@ export async function listConnectorSummaries(
   // list exactly as before.
   return (await refFetch("/_ref/connectors", {
     connection: options.connectionRouteId,
-  })) as ListResponse<RefConnectorSummary>;
+  })) as RefConnectorSummariesResponse;
 }
 
 export async function listRecordVersionStats(

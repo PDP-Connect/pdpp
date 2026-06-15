@@ -8,8 +8,9 @@
  *     here — Explore is the one reader).
  *
  * Data binding (honest, no fabrication):
- *   - Status dot/flag comes from `connection_health.state` via the shared
- *     `deriveSourceStatus` mapping (see sources-view-model.ts).
+ *   - Status dot/flag comes from the server-owned `rendered_verdict` via the
+ *     shared projection mapping (see sources-view-model.ts).
+ *   - A runtime fault renders once above the list, never as N per-source alarms.
  *   - Sync now calls the real `runConnectorNowAction` (the client variant that
  *     returns a discriminated `RunNowResult`) so a failed start surfaces as an
  *     in-place toast, never the route error boundary.
@@ -53,7 +54,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
-import type { SourceInstanceView, SourcesChurnAdvisory } from "./sources-view-model.ts";
+import type { SourceInstanceView, SourcesChurnAdvisory, SourcesRuntimeAdvisory } from "./sources-view-model.ts";
 import "./sources-view.css";
 
 interface SourcesViewProps {
@@ -71,13 +72,22 @@ interface SourcesViewProps {
   reactivateAction?: (formData: FormData) => void | Promise<void>;
   /** The real server action behind the Revoke ceremony (live binding only). */
   revokeAction?: (formData: FormData) => void | Promise<void>;
+  /** One global collection-runtime status. Runtime faults must not cascade per source. */
+  runtimeAdvisory?: SourcesRuntimeAdvisory | null;
 }
 
 type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "error"; message: string };
 
 const ADD_SOURCE_HREF = "/dashboard/records/add";
 
-export function SourcesView({ churnAdvisory, instances, interactive, reactivateAction, revokeAction }: SourcesViewProps) {
+export function SourcesView({
+  churnAdvisory,
+  instances,
+  interactive,
+  reactivateAction,
+  revokeAction,
+  runtimeAdvisory,
+}: SourcesViewProps) {
   const activeInstances = instances.filter((i) => !i.revoked);
   const revokedInstances = instances.filter((i) => i.revoked);
 
@@ -97,6 +107,7 @@ export function SourcesView({ churnAdvisory, instances, interactive, reactivateA
   return (
     <>
       {/* Advisories lead — before the list so they're not orphaned at the bottom on mobile. */}
+      {runtimeAdvisory ? <RuntimeAdvisory advisory={runtimeAdvisory} /> : null}
       {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
       <div className="rr-s">
         <aside aria-label="Sources" className="rr-s-list">
@@ -147,6 +158,16 @@ export function SourcesView({ churnAdvisory, instances, interactive, reactivateA
         ) : null}
       </div>
     </>
+  );
+}
+
+function RuntimeAdvisory({ advisory }: { advisory: SourcesRuntimeAdvisory }) {
+  return (
+    <aside className="rr-s-runtime" data-testid="sources-runtime-advisory" role="status">
+      <span className="rr-s-churn__eyebrow">collection runtime</span>
+      <p className="rr-s-churn__head">{advisory.headline}</p>
+      <p className="rr-s-churn__note">{advisory.note}</p>
+    </aside>
   );
 }
 
@@ -406,42 +427,13 @@ function PassportActions({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
       <div className="rr-s-actions">
-        {manualUploadHref ? (
-          <>
-            <Link
-              className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
-              href={manualUploadHref}
-              title="Upload another exported file into this same source. Use Add source only for a different account or identity."
-            >
-              Add another export
-            </Link>
-            <IcButton
-              aria-label={`Reprocess the uploaded export for ${instance.displayName}`}
-              disabled={syncDisabled}
-              onClick={handleSync}
-              size="sm"
-              title="Reprocesses files already uploaded for this source. It does not add a new export."
-              type="button"
-              variant="ghost"
-            >
-              {instance.isRunning ? "Import running" : isPending ? "Starting…" : "Reprocess all exports"}
-            </IcButton>
-          </>
-        ) : instance.isLocalDevicePush ? (
-          <span className="rr-s-cta__hint" data-testid="sources-sync-device-wait">
-            Data arrives when your paired device pushes it.
-          </span>
-        ) : (
-          <IcButton
-            aria-label={`Sync ${instance.displayName} now`}
-            disabled={syncDisabled}
-            onClick={handleSync}
-            size="sm"
-            type="button"
-          >
-            {isPending ? "Syncing…" : "Sync now"}
-          </IcButton>
-        )}
+        <CollectionRunAction
+          instance={instance}
+          isPending={isPending}
+          manualUploadHref={manualUploadHref}
+          onSync={handleSync}
+          syncDisabled={syncDisabled}
+        />
 
         <Link
           className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
@@ -463,11 +455,11 @@ function PassportActions({
 
         {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
           <IcButton
+            data-testid="sources-reactivate-btn"
             onClick={() => setConfirmingReactivate((v) => !v)}
             size="sm"
             type="button"
             variant="default"
-            data-testid="sources-reactivate-btn"
           >
             Reactivate
           </IcButton>
@@ -475,52 +467,20 @@ function PassportActions({
       </div>
 
       {confirmingRevoke && revokeAction && instance.connectionId ? (
-        <form action={revokeAction} className="rr-s-revoke" data-testid="sources-revoke-ceremony">
-          <input name="connection_id" type="hidden" value={instance.connectionId} />
-          <p className="rr-s-revoke__copy">
-            Revoke stops future collection for this connection. Already-collected records, grants, and audit history are
-            retained — revoke does not erase anything.
-          </p>
-          <label className="rr-s-revoke__check">
-            <input name="confirm_revoke" type="checkbox" value="yes" />
-            <span>
-              Stop future collection for <code style={{ fontFamily: "var(--font-mono)" }}>{instance.connectionId}</code>
-              ; keep its records.
-            </span>
-          </label>
-          <div className="rr-s-revoke__row">
-            <IcButton onClick={() => setConfirmingRevoke(false)} size="sm" type="button" variant="ghost">
-              Keep
-            </IcButton>
-            <IcButton size="sm" type="submit" variant="destructive">
-              Confirm revoke
-            </IcButton>
-          </div>
-        </form>
+        <RevokeCeremony
+          connectionId={instance.connectionId}
+          onCancel={() => setConfirmingRevoke(false)}
+          revokeAction={revokeAction}
+        />
       ) : null}
 
       {confirmingReactivate && reactivateAction && instance.connectionId ? (
-        <form action={reactivateAction} className="rr-s-revoke" data-testid="sources-reactivate-ceremony">
-          <input name="connection_id" type="hidden" value={instance.connectionId} />
-          <p className="rr-s-revoke__copy">
-            Reactivate resumes collection for this connection. Your{" "}
-            {instance.totalRecords > 0
-              ? `${instance.totalRecords.toLocaleString()} collected record${instance.totalRecords === 1 ? "" : "s"} are`
-              : "collected records are"}{" "}
-            preserved — nothing is erased. Collection will resume on the next scheduled run.
-            {instance.status.kind !== "revoked" || !instance.revoked
-              ? null
-              : " If your session or credential has expired, the first run may surface an auth error — use the connection detail to update it."}
-          </p>
-          <div className="rr-s-revoke__row">
-            <IcButton onClick={() => setConfirmingReactivate(false)} size="sm" type="button" variant="ghost">
-              Cancel
-            </IcButton>
-            <IcButton size="sm" type="submit" variant="default" data-testid="sources-reactivate-confirm">
-              Reactivate
-            </IcButton>
-          </div>
-        </form>
+        <ReactivateCeremony
+          connectionId={instance.connectionId}
+          instance={instance}
+          onCancel={() => setConfirmingReactivate(false)}
+          reactivateAction={reactivateAction}
+        />
       ) : null}
 
       {toast.kind === "none" ? null : (
@@ -535,6 +495,147 @@ function PassportActions({
         </div>
       )}
     </div>
+  );
+}
+
+function manualImportButtonLabel(instance: SourceInstanceView, isPending: boolean): string {
+  if (instance.isRunning) {
+    return "Import running";
+  }
+  if (isPending) {
+    return "Starting…";
+  }
+  return "Reprocess all exports";
+}
+
+function CollectionRunAction({
+  instance,
+  isPending,
+  manualUploadHref,
+  onSync,
+  syncDisabled,
+}: {
+  instance: SourceInstanceView;
+  isPending: boolean;
+  manualUploadHref: string | null;
+  onSync: () => void;
+  syncDisabled: boolean;
+}) {
+  if (manualUploadHref) {
+    return (
+      <>
+        <Link
+          className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+          href={manualUploadHref}
+          title="Upload another exported file into this same source. Use Add source only for a different account or identity."
+        >
+          Add another export
+        </Link>
+        <IcButton
+          aria-label={`Reprocess the uploaded export for ${instance.displayName}`}
+          disabled={syncDisabled}
+          onClick={onSync}
+          size="sm"
+          title="Reprocesses files already uploaded for this source. It does not add a new export."
+          type="button"
+          variant="ghost"
+        >
+          {manualImportButtonLabel(instance, isPending)}
+        </IcButton>
+      </>
+    );
+  }
+  if (instance.isLocalDevicePush) {
+    return (
+      <span className="rr-s-cta__hint" data-testid="sources-sync-device-wait">
+        Data arrives when your paired device pushes it.
+      </span>
+    );
+  }
+  return (
+    <IcButton
+      aria-label={`Sync ${instance.displayName} now`}
+      disabled={syncDisabled}
+      onClick={onSync}
+      size="sm"
+      type="button"
+    >
+      {isPending ? "Syncing…" : "Sync now"}
+    </IcButton>
+  );
+}
+
+function RevokeCeremony({
+  connectionId,
+  onCancel,
+  revokeAction,
+}: {
+  connectionId: string;
+  onCancel: () => void;
+  revokeAction: (formData: FormData) => void | Promise<void>;
+}) {
+  return (
+    <form action={revokeAction} className="rr-s-revoke" data-testid="sources-revoke-ceremony">
+      <input name="connection_id" type="hidden" value={connectionId} />
+      <p className="rr-s-revoke__copy">
+        Revoke stops future collection for this connection. Already-collected records, grants, and audit history are
+        retained — revoke does not erase anything.
+      </p>
+      <label className="rr-s-revoke__check">
+        <input name="confirm_revoke" type="checkbox" value="yes" />
+        <span>
+          Stop future collection for <code style={{ fontFamily: "var(--font-mono)" }}>{connectionId}</code>; keep its
+          records.
+        </span>
+      </label>
+      <div className="rr-s-revoke__row">
+        <IcButton onClick={onCancel} size="sm" type="button" variant="ghost">
+          Keep
+        </IcButton>
+        <IcButton size="sm" type="submit" variant="destructive">
+          Confirm revoke
+        </IcButton>
+      </div>
+    </form>
+  );
+}
+
+function reactivateCopy(instance: SourceInstanceView): string {
+  const recordCopy =
+    instance.totalRecords > 0
+      ? `${instance.totalRecords.toLocaleString()} collected record${instance.totalRecords === 1 ? "" : "s"} are`
+      : "collected records are";
+  const authCopy =
+    instance.status.kind === "revoked" && instance.revoked
+      ? " If your session or credential has expired, the first run may surface an auth error — use the connection detail to update it."
+      : "";
+  return `Reactivate resumes collection for this connection. Your ${recordCopy} preserved — nothing is erased. Collection will resume on the next scheduled run.${authCopy}`;
+}
+
+function ReactivateCeremony({
+  connectionId,
+  instance,
+  onCancel,
+  reactivateAction,
+}: {
+  connectionId: string;
+  instance: SourceInstanceView;
+  onCancel: () => void;
+  reactivateAction: (formData: FormData) => void | Promise<void>;
+}) {
+  return (
+    <form action={reactivateAction} className="rr-s-revoke" data-testid="sources-reactivate-ceremony">
+      <input name="connection_id" type="hidden" value={connectionId} />
+      <p className="rr-s-revoke__copy">{reactivateCopy(instance)}</p>
+      <div className="rr-s-revoke__row">
+        <IcButton onClick={onCancel} size="sm" type="button" variant="ghost">
+          Cancel
+        </IcButton>
+        <IcButton data-testid="sources-reactivate-confirm" size="sm" type="submit" variant="default">
+          Reactivate
+        </IcButton>
+      </div>
+    </form>
   );
 }
 

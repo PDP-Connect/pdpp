@@ -60,8 +60,8 @@
 
 ## 9. Runtime-vs-connection cascade guard
 
-- [ ] 9.1 Add the `runtime_ok` input to the synthesizer and a single global runtime indicator above the connection list; when `runtime_ok` is false, cap every per-connection `channel` at `calm` while keeping each `pill.tone` honest.
-- [ ] 9.2 Test: a dead runtime emits ONE global indicator and zero per-connection `attention` channels (no N-way cascade), and per-connection pills still reflect their own honest state.
+- [x] 9.1 Add the `runtime_ok` input to the synthesizer and a single global runtime indicator above the connection list; when `runtime_ok` is false, cap every per-connection `channel` at `calm` while keeping each `pill.tone` honest.
+- [x] 9.2 Test: a dead runtime emits ONE global indicator and zero per-connection `attention` channels (no N-way cascade), and per-connection pills still reflect their own honest state.
 
 ## 10. Grant-scope isolation
 

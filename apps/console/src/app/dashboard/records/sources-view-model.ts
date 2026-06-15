@@ -33,6 +33,7 @@ import { type FormattedNextAction, formatNextAction } from "../lib/next-action.t
 import type {
   RefConnectionHealthSnapshot,
   RefConnectorRunSummary,
+  RefConnectorRuntimeStatus,
   RefConnectorSummary,
   RefRecordVersionStatsRow,
   RefRenderedVerdict,
@@ -144,6 +145,11 @@ export interface SourceInstanceView {
   streams: SourceStreamManifestRow[];
   /** Total retained records across all streams. */
   totalRecords: number;
+}
+
+export interface SourcesRuntimeAdvisory {
+  headline: string;
+  note: string;
 }
 
 type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
@@ -495,6 +501,23 @@ export function toSourcesView(
   options: { manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView[] {
   return summaries.map((summary) => toSourceInstanceView(summary, options));
+}
+
+/**
+ * Project the one global runtime status into the Sources page advisory. Runtime
+ * faults are not per-source attention events: the rendered verdict caps every
+ * connection channel at calm, and this single banner carries the global cause.
+ */
+export function buildSourcesRuntimeAdvisory(
+  runtime: RefConnectorRuntimeStatus | null | undefined
+): SourcesRuntimeAdvisory | null {
+  if (!runtime || runtime.ok) {
+    return null;
+  }
+  return {
+    headline: runtime.label,
+    note: runtime.message ?? "Saved records remain available. Collection resumes when the reference runtime is back.",
+  };
 }
 
 /**

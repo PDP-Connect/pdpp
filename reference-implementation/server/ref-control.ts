@@ -36,9 +36,9 @@ import {
 } from "../runtime/connection-health.ts";
 import {
   buildProgressEvidence,
-  type ManifestStreamLike as VerdictManifestStreamLike,
   progressMode,
   synthesizeConnectorVerdict,
+  type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
@@ -440,14 +440,6 @@ export interface ConnectorSummary {
   readonly connector_display_name: string;
   readonly connector_id: string;
   readonly connector_instance_id: string;
-  /**
-   * Synthesized owner verdict — the single object every owner-facing surface
-   * renders. Computed server-side by `synthesizeConnectorVerdict`; forwarded
-   * verbatim alongside `connection_health` exactly as the design specifies.
-   * `detail` and `trace` are owner-only; use `toGrantScopedVerdict` before
-   * forwarding to grant-scoped clients.
-   */
-  readonly rendered_verdict: RenderedVerdict;
   readonly display_name: string;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
@@ -467,6 +459,14 @@ export interface ConnectorSummary {
    */
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
+  /**
+   * Synthesized owner verdict — the single object every owner-facing surface
+   * renders. Computed server-side by `synthesizeConnectorVerdict`; forwarded
+   * verbatim alongside `connection_health` exactly as the design specifies.
+   * `detail` and `trace` are owner-only; use `toGrantScopedVerdict` before
+   * forwarding to grant-scoped clients.
+   */
+  readonly rendered_verdict: RenderedVerdict;
   /**
    * Storage bytes by retention class. `total_retained_bytes` is kept for
    * compatibility; this breakdown lets the operator distinguish current live
@@ -489,8 +489,6 @@ export interface ConnectorDetail {
   readonly collection_report: readonly CollectionReportEntry[];
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
-  /** See {@link ConnectorSummary.rendered_verdict}. */
-  readonly rendered_verdict: RenderedVerdict;
   readonly connector_id: string;
   readonly display_name: string;
   readonly freshness: Freshness;
@@ -502,6 +500,8 @@ export interface ConnectorDetail {
   readonly next_action: NextAction | null;
   readonly object: "ref_connector_detail";
   readonly recent_runs: ConnectorRunSummary[];
+  /** See {@link ConnectorSummary.rendered_verdict}. */
+  readonly rendered_verdict: RenderedVerdict;
   readonly schedule: unknown;
   // Detail carries richer per-stream projection; the list surface
   // (ConnectorSummary) only needs the stream name array.
@@ -3259,7 +3259,47 @@ export interface ListConnectorSummariesOptions {
 interface ConnectorSummaryProjectionDeps {
   readonly controller?: ControllerLike | null | undefined;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
+  readonly runtimeOk: boolean;
   readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
+}
+
+function buildRenderedVerdictForSummary(input: {
+  readonly collectionReport: readonly CollectionReportEntry[];
+  readonly connectionHealth: ConnectionHealthSnapshot;
+  readonly freshness: Freshness;
+  readonly hasRecoveredDetailGaps: boolean;
+  readonly localDeviceBacked: boolean;
+  readonly manifestStreams: readonly VerdictManifestStreamLike[];
+  readonly refreshPolicy: unknown;
+  readonly retainedRecords: number;
+  readonly runtimeOk: boolean;
+  readonly schedule: unknown;
+}): RenderedVerdict {
+  const refresh = buildRefreshEvidence(input.refreshPolicy);
+  const mode = progressMode({
+    localDeviceBacked: input.localDeviceBacked,
+    refresh,
+    scheduled: !!(input.schedule as { enabled?: boolean } | null)?.enabled,
+    hasRecoveredDetailGaps: input.hasRecoveredDetailGaps,
+  });
+  const progressEvidence = buildProgressEvidence({
+    mode,
+    retainedRecords: input.retainedRecords,
+    recordsCommittedLastRun: null,
+    // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
+    // per-run delta. Keep the exact count in owner-only detail; do not relabel it
+    // as "last run" progress.
+    gapsDrainedLastRun: null,
+    lastRefreshedAt: input.freshness.captured_at ?? null,
+  });
+  return synthesizeConnectorVerdict({
+    snapshot: input.connectionHealth,
+    report: input.collectionReport,
+    manifestStreams: input.manifestStreams,
+    refresh,
+    progress: progressEvidence,
+    runtimeOk: input.runtimeOk,
+  });
 }
 
 // Project one configured connection into its summary, or `null` when the
@@ -3364,30 +3404,18 @@ async function projectConnectorSummaryForInstance(
     manifestStreams: manifest.streams ?? [],
     refreshPolicy,
   });
-  const refresh = buildRefreshEvidence(refreshPolicy);
   const recoveredCount = detailGaps.recovered;
-  const mode = progressMode({
-    localDeviceBacked: instance.sourceKind === "local_device",
-    refresh,
-    scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
+  const renderedVerdict = buildRenderedVerdictForSummary({
+    collectionReport,
+    connectionHealth,
+    freshness,
     hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
-  });
-  const progressEvidence = buildProgressEvidence({
-    mode,
-    retainedRecords: live.totalRecords,
-    recordsCommittedLastRun: null,
-    // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
-    // per-run delta. Keep the exact count in owner-only detail; do not relabel it
-    // as "last run" progress.
-    gapsDrainedLastRun: null,
-    lastRefreshedAt: freshness.captured_at ?? null,
-  });
-  const renderedVerdict = synthesizeConnectorVerdict({
-    snapshot: connectionHealth,
-    report: collectionReport,
+    localDeviceBacked: instance.sourceKind === "local_device",
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
-    refresh,
-    progress: progressEvidence,
+    refreshPolicy,
+    retainedRecords: live.totalRecords,
+    runtimeOk: deps.runtimeOk,
+    schedule,
   });
   return {
     acquisition_coverage: acquisitionCoverage,
@@ -3431,7 +3459,7 @@ async function loadConnectorSummaryProjectionDeps(
   // every records-dashboard poll, so the saved reads compound under the active-run
   // poll cadence.
   const sharedBrowserSurfaceReader = await loadSharedBrowserSurfaceReader();
-  return { controller, manifestsByConnectorId, sharedBrowserSurfaceReader };
+  return { controller, manifestsByConnectorId, runtimeOk: controller != null, sharedBrowserSurfaceReader };
 }
 
 export async function listConnectorSummaries(
@@ -3542,31 +3570,19 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     refreshPolicy,
   });
-  const detailRefresh = buildRefreshEvidence(refreshPolicy);
   const detailRecoveredCount = detailGaps.recovered;
   const detailLocalDeviceBacked = outbox.heartbeats.length > 0;
-  const detailMode = progressMode({
-    localDeviceBacked: detailLocalDeviceBacked,
-    refresh: detailRefresh,
-    scheduled: !!(schedule as { enabled?: boolean } | null)?.enabled,
+  const renderedVerdict = buildRenderedVerdictForSummary({
+    collectionReport,
+    connectionHealth,
+    freshness,
     hasRecoveredDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,
-  });
-  const detailProgressEvidence = buildProgressEvidence({
-    mode: detailMode,
-    retainedRecords: live.totalRecords,
-    recordsCommittedLastRun: null,
-    // `detailGaps.recovered` is a connector-wide all-time count-by-status, not a
-    // per-run delta. Keep the exact count in owner-only detail; do not relabel it
-    // as "last run" progress.
-    gapsDrainedLastRun: null,
-    lastRefreshedAt: freshness.captured_at ?? null,
-  });
-  const renderedVerdict = synthesizeConnectorVerdict({
-    snapshot: connectionHealth,
-    report: collectionReport,
+    localDeviceBacked: detailLocalDeviceBacked,
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
-    refresh: detailRefresh,
-    progress: detailProgressEvidence,
+    refreshPolicy,
+    retainedRecords: live.totalRecords,
+    runtimeOk: controller != null,
+    schedule,
   });
   return {
     object: "ref_connector_detail",

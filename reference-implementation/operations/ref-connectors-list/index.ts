@@ -60,6 +60,14 @@ export interface RefConnectorsListItem {
   readonly last_successful_run: RefConnectorsListRunSummary | null;
 }
 
+export interface RefConnectorsRuntimeStatus {
+  readonly object: "ref_runtime_status";
+  readonly ok: boolean;
+  readonly reason: "controller_unavailable" | null;
+  readonly label: string;
+  readonly message: string | null;
+}
+
 export interface RefConnectorsListDependencies {
   /**
    * Returns configured connection summaries for the route. Host
@@ -69,11 +77,19 @@ export interface RefConnectorsListDependencies {
    * canonical sort.
    */
   listConnectorSummaries(): Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
+  /**
+   * Owner-only runtime liveness for the connector-control substrate. When false,
+   * per-connection rendered verdicts are still honest about their own state but
+   * SHALL NOT cascade into N owner-attention pulls; the caller renders this one
+   * global status instead.
+   */
+  getRuntimeStatus?(): Promise<RefConnectorsRuntimeStatus> | RefConnectorsRuntimeStatus;
 }
 
 export interface RefConnectorsListEnvelope {
   readonly object: "list";
   readonly data: RefConnectorsListItem[];
+  readonly runtime?: RefConnectorsRuntimeStatus;
 }
 
 /**
@@ -87,9 +103,13 @@ export interface RefConnectorsListEnvelope {
 export async function executeRefConnectorsList(
   dependencies: RefConnectorsListDependencies,
 ): Promise<RefConnectorsListEnvelope> {
-  const summaries = await dependencies.listConnectorSummaries();
-  return {
+  const [summaries, runtime] = await Promise.all([
+    dependencies.listConnectorSummaries(),
+    dependencies.getRuntimeStatus ? dependencies.getRuntimeStatus() : Promise.resolve(undefined),
+  ]);
+  const envelope: RefConnectorsListEnvelope = {
     object: "list",
     data: [...summaries],
   };
+  return runtime ? { ...envelope, runtime } : envelope;
 }
