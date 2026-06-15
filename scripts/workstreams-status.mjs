@@ -358,7 +358,14 @@ printSection(
         const branch = lane.branch ? ` branch=${lane.branch}` : "";
         const txBytes = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
         const exitClass = lane.exitClass ? ` exit_class=${lane.exitClass}` : "";
-        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${exitClass}${recovered}${parked}`;
+        // Interactive lanes surface their resumable session id so the owner can
+        // steer/resume by handle without scanning JSONL. Print lanes are
+        // unchanged (no mode/session_id suffix).
+        const interactive =
+          lane.mode === "interactive"
+            ? ` mode=interactive session_id=${lane.sessionId || "(unknown)"}`
+            : "";
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${exitClass}${interactive}${recovered}${parked}`;
       })
 );
 
@@ -486,6 +493,8 @@ function loadWrapperLanes(wrapperDir) {
         transcriptBytes: data.transcript_bytes ?? -1,
         artifactDir: data.artifact_dir ?? "",
         transcriptFile: data.transcript_file ?? "",
+        mode: data.mode ?? "print",
+        sessionId: data.session_id ?? "",
       });
     } catch {
       // Corrupt status.json — surface as a failed lane.
@@ -502,6 +511,8 @@ function loadWrapperLanes(wrapperDir) {
         transcriptBytes: -1,
         artifactDir: "",
         transcriptFile: "",
+        mode: "print",
+        sessionId: "",
       });
     }
   }

@@ -25,6 +25,7 @@
 #     [--effort <low|medium|high|xhigh|max>] \
 #     [--no-recovery] \
 #     [--artifact-root <dir>] \
+#     [--interactive] \
 #     [--tmux] \
 #     [--tmux-session <session>]
 #
@@ -33,6 +34,7 @@
 #   --effort       unset (Claude CLI default)
 #   --artifact-root  <git-common-dir>/../tmp/workstreams/claude-wrapper/<lane>/<ts>
 #   --tmux-session main   (only relevant when --tmux is given)
+#   mode           print  (fire-and-forget; --interactive opts into a live session)
 #
 # --tmux mode:
 #   Re-execs this script (without --tmux) inside a new tmux window named
@@ -44,6 +46,21 @@
 #   The session is created headlessly if it does not already exist. Launch
 #   aborts if a window named "ws-<lane>" already exists to avoid clobbering
 #   a live prior run.
+#
+# --interactive mode (opt-in; --print fire-and-forget stays the default):
+#   Launches `claude` as a live, resumable session (no --print, session
+#   persisted) instead of the default one-shot print run. The prompt is passed
+#   as a positional argument (interactive claude reads from the PTY, not piped
+#   stdin), so the run MUST go through a tmux window — it owns the TTY and
+#   streams live output into the pane. A deterministic --session-id is minted at
+#   launch and recorded in status.json (mode:"interactive"), so the owner can
+#   steer the live pane (tmux send-keys), gate timing on scripts/wait-worker-idle.sh
+#   (JSONL stop_reason:"end_turn"), and resume after the pane exits with
+#   `claude --resume <session_id> "<msg>"`. Requires --tmux when launched from a
+#   plain shell (the script aborts a bare --interactive that has no PTY); the
+#   --tmux path re-execs this script into the window where it runs interactive.
+#   Recovery/transient-retry are print-only and do not apply to interactive
+#   sessions.
 #
 # The script is intentionally invocation-only: it does not edit the workstream
 # hub under .git/workstreams, and it does not merge. Owner reviews the diff.
@@ -65,6 +82,8 @@ artifact_root=""
 do_recovery=1
 use_tmux=0
 tmux_session_name="main"
+interactive=0
+session_id=""
 
 die() {
   echo "claude-workstream: $*" >&2
@@ -72,7 +91,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,55p' "$0"
+  sed -n '2,66p' "$0"
   exit 2
 }
 
@@ -86,6 +105,8 @@ while [[ $# -gt 0 ]]; do
     --effort) effort="${2:-}"; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; shift 2 ;;
     --no-recovery) do_recovery=0; shift ;;
+    --interactive) interactive=1; shift ;;
+    --session-id) session_id="${2:-}"; shift 2 ;;
     --tmux) use_tmux=1; shift ;;
     --tmux-session) tmux_session_name="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
@@ -108,6 +129,16 @@ case "$lane" in
   */*|*..*|"") die "invalid lane name: $lane" ;;
 esac
 
+# Interactive claude reads its prompt from the PTY and owns the terminal, so it
+# can only run inside a tmux window (which provides the TTY and the live
+# stream). Require --tmux UNLESS we are already running inside a tmux pane —
+# the --tmux path re-execs this script (without --tmux) into the window, and
+# that inner invocation is the legitimate interactive run. Refuse a bare
+# --interactive launched from a non-tmux shell rather than silently degrading.
+if [[ $interactive -eq 1 && $use_tmux -ne 1 && -z "${TMUX:-}" ]]; then
+  die "--interactive requires --tmux (interactive claude needs a tmux PTY to stream into)"
+fi
+
 # ---- tmux launch mode -------------------------------------------------------
 # Re-exec self inside a new tmux window so the claude invocation survives
 # terminal disconnection or login-session cleanup. Exits 0 immediately;
@@ -116,6 +147,13 @@ if [[ $use_tmux -eq 1 ]]; then
   command -v tmux >/dev/null 2>&1 || die "tmux not on PATH (required for --tmux)"
   window_name="ws-$lane"
   script_abs="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+  # For interactive lanes, mint the resumable session id HERE (the outer
+  # process) and pass it through so the inner re-exec uses the SAME id — the
+  # owner needs a stable handle for `claude --resume` and the JSONL idle probe.
+  if [[ $interactive -eq 1 && -z "$session_id" ]]; then
+    session_id="$(cat /proc/sys/kernel/random/uuid)"
+  fi
 
   # Rebuild args without --tmux / --tmux-session for the inner invocation.
   passthrough_args=()
@@ -128,6 +166,15 @@ if [[ $use_tmux -eq 1 ]]; then
       *) passthrough_args+=("$arg") ;;
     esac
   done
+
+  # Carry the minted session id into the inner invocation unless the caller
+  # already supplied one (in which case it is already in orig_args/passthrough).
+  if [[ $interactive -eq 1 && -n "$session_id" ]]; then
+    case " ${orig_args[*]} " in
+      *" --session-id "*) ;;
+      *) passthrough_args+=(--session-id "$session_id") ;;
+    esac
+  fi
 
   # printf %q produces bash-compatible quoting for safe embedding in bash -c.
   quoted_cmd="$(printf '%q ' "$script_abs" "${passthrough_args[@]}")"
@@ -144,10 +191,22 @@ if [[ $use_tmux -eq 1 ]]; then
   tmux new-window -t "$tmux_session_name" -n "$window_name" -- bash -c "$quoted_cmd"
 
   echo "claude-workstream: lane=$lane launched in tmux ${tmux_session_name}:${window_name}"
+  if [[ $interactive -eq 1 ]]; then
+    echo "claude-workstream: mode=interactive session_id=$session_id"
+    echo "claude-workstream: idle:    scripts/wait-worker-idle.sh $lane"
+    echo "claude-workstream: resume:  claude --resume $session_id \"<msg>\""
+  fi
   echo "claude-workstream: monitor: tmux capture-pane -t '${tmux_session_name}:${window_name}' -p -S -50 | tail -20"
   echo "claude-workstream: attach:  tmux attach -t '${tmux_session_name}'"
   echo "claude-workstream: status:  pnpm workstreams:status"
   exit 0
+fi
+
+# Defensive: in the inner (non-tmux) path an interactive lane must have a
+# session id. The --tmux block always passes one through; this guards against a
+# direct interactive invocation slipping past (the guard above forbids it).
+if [[ $interactive -eq 1 && -z "$session_id" ]]; then
+  session_id="$(cat /proc/sys/kernel/random/uuid)"
 fi
 
 worktree_abs="$(cd "$worktree" && pwd)"
@@ -235,6 +294,8 @@ write_status() {
     --arg model "$model" \
     --arg effort "$effort" \
     --arg exit_class "$exit_class" \
+    --arg mode "$([[ $interactive -eq 1 ]] && echo interactive || echo print)" \
+    --arg session_id "$session_id" \
     --argjson recovered "$recovered" \
     --argjson exit_code "$exit_code" \
     --argjson transcript_bytes "$transcript_bytes" \
@@ -257,7 +318,9 @@ write_status() {
        exit_class: $exit_class,
        transcript_bytes: $transcript_bytes,
        model: $model,
-       effort: $effort
+       effort: $effort,
+       mode: $mode,
+       session_id: $session_id
      }' >"$status_json"
 }
 
@@ -384,6 +447,41 @@ invoke_claude_main() {
   return "$exit_code"
 }
 
+invoke_claude_interactive() {
+  # Live, resumable session mirroring invoke_claude_main() BUT:
+  #   - no --print (interactive REPL)
+  #   - no --no-session-persistence (the session must survive for --resume)
+  #   - +--session-id (deterministic resume handle) and +--name (display label)
+  #   - prompt passed as a POSITIONAL arg (interactive claude reads the PTY, not
+  #     piped stdin)
+  #   - NO output redirect: claude owns the PTY and streams live into the pane.
+  #     A full transcript is captured by `tmux pipe-pane` into $1 when given.
+  # Runs in the foreground of the current (tmux) shell so the pane shows it live.
+  local pipe_target="${1:-}"
+  local exit_code=0
+  local effort_args=()
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
+
+  # Also tee the live pane to a transcript file when a target is given and we
+  # are inside tmux, so the durable-artifact contract still holds.
+  if [[ -n "$pipe_target" && -n "${TMUX:-}" ]]; then
+    tmux pipe-pane -o "cat >> $(printf '%q' "$pipe_target")" 2>/dev/null || true
+  fi
+
+  cd "$worktree_abs"
+  claude \
+    --model "$model" \
+    "${effort_args[@]}" \
+    --session-id "$session_id" \
+    --name "$lane" \
+    --setting-sources user \
+    --strict-mcp-config \
+    --mcp-config "$mcp_config" \
+    --dangerously-skip-permissions \
+    "$main_prompt" || exit_code=$?
+  return "$exit_code"
+}
+
 invoke_claude_recovery() {
   local output_file="$1"
   local prompt="$2"
@@ -435,6 +533,37 @@ if [[ -n "$effort" ]]; then
   echo "claude-workstream: invoking claude (model=$model effort=$effort)…"
 else
   echo "claude-workstream: invoking claude (model=$model)…"
+fi
+
+# ---- interactive dispatch ---------------------------------------------------
+# Live, resumable session: runs in the foreground of this tmux window (it owns
+# the PTY and streams live), then finalizes status.json with the resume handle.
+# The print-only retry/recovery machinery below does not apply — an interactive
+# session is steered/resumed by the owner, not auto-reconstructed.
+if [[ $interactive -eq 1 ]]; then
+  echo "claude-workstream: mode=interactive session_id=$session_id"
+  echo "claude-workstream: idle-probe: scripts/wait-worker-idle.sh $lane"
+  echo "claude-workstream: resume:     claude --resume $session_id \"<msg>\""
+  interactive_exit=0
+  invoke_claude_interactive "$transcript" || interactive_exit=$?
+
+  trap - INT TERM HUP QUIT
+  git -C "$worktree_abs" status --short >"$git_after" 2>&1 || true
+
+  report_state="absent"
+  report_present && report_state="present"
+
+  if [[ -n "$_abort_signal_seen" ]]; then
+    final_status="aborted"
+  elif [[ $interactive_exit -ne 0 ]]; then
+    final_status="failed"
+  else
+    final_status="complete"
+  fi
+  write_status "$final_status" "$report_state" false "$interactive_exit"
+  echo "claude-workstream: status=$final_status report_state=$report_state mode=interactive session_id=$session_id exit=$interactive_exit"
+  echo "claude-workstream: status.json=$status_json"
+  exit "$interactive_exit"
 fi
 
 main_exit=0

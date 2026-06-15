@@ -15,43 +15,49 @@ stays byte-for-byte unchanged.
 
 ## 2. M1 — `--interactive` mode (drop the two flags, add a named session)
 
-- [ ] 2.1 Add an `--interactive` flag to `scripts/claude-workstream.sh` arg parsing,
+- [x] 2.1 Add an `--interactive` flag to `scripts/claude-workstream.sh` arg parsing,
   defaulting off; record the mode in `status.json`. Verify: `--help`/usage shows the flag;
   a run without it is byte-identical in behavior to today.
-- [ ] 2.2 Add `invoke_claude_interactive()` alongside `invoke_claude_main()`: same artifact
+- [x] 2.2 Add `invoke_claude_interactive()` alongside `invoke_claude_main()`: same artifact
   dir, git snapshot, and signal handling, but launch `claude` WITHOUT `--print` and WITHOUT
   `--no-session-persistence`, WITH a deterministic `--session-id "$session_id"` (resumable via `claude --resume`) and an optional `--name "$lane"` display label, passing the prompt as a
   positional argument (read from the tmux PTY, not piped stdin). Verify: spawn one
   interactive Claude worker in `--tmux` mode and confirm the pane stays alive after the
   first turn ends (does not exit).
-- [ ] 2.3 Confirm the live stream is visible in the pane (not redirected-to-file-only) via
+- [x] 2.3 Confirm the live stream is visible in the pane (not redirected-to-file-only) via
   `tmux capture-pane -t main:ws-<lane> -p -S -50`. Verify: scrollback shows live worker
   output.
-- [ ] 2.4 Send a revision into the live pane (`set-buffer`/`load-buffer` + `paste-buffer` +
-  `Enter`) and confirm the worker answers in the SAME session. Verify: the JSONL shows the
-  revision and response in one session file.
-- [ ] 2.5 Confirm resume-after-pane-exit: kill the pane, then `claude -r "<lane>" "<msg>"`
-  resumes with prior history. Verify: the resumed session continues the same conversation.
+- [x] 2.4 Send a revision into the live pane (`send-keys` / `paste-buffer` + `Enter`) and
+  confirm the worker answers in the SAME session. Verify: the JSONL shows the revision and
+  response in one session file. (Proven: send-keys "STEERED" answered in-session; JSONL
+  carried both `OK` and `STEERED` assistant turns.)
+- [x] 2.5 Confirm resume-after-pane-exit: kill the pane, then `claude --resume <session_id>
+  "<msg>"` resumes with prior history. Verify: the resumed session continues the same
+  conversation. (Proven: after `tmux kill-window`, `claude --resume <id>` recalled "OK,
+  STEERED" — both prior turns.)
 
 ## 3. M2 — `session_id` in `status.json`
 
-- [ ] 3.1 In `--interactive` mode write the resumable `session_id` (the `--session-id` value
+- [x] 3.1 In `--interactive` mode write the resumable `session_id` (the `--session-id` value
   value / resolved session id) into `status.json`. Verify: `status.json` contains the field
-  after launch.
-- [ ] 3.2 Surface `session_id` through `scripts/workstreams-status.mjs` /
+  after launch. (Proven: live status.json carried `session_id` + `mode:"interactive"`.)
+- [x] 3.2 Surface `session_id` through `scripts/workstreams-status.mjs` /
   `pnpm workstreams:status`. Verify: the status view shows the session id per live lane.
+  (Interactive lanes render ` mode=interactive session_id=<id>`; print lanes unchanged.)
 - [ ] 3.3 Simulate compaction recovery: from a clean shell, reconstruct the live lane set
   from `tmux list-windows` + `pnpm workstreams:status` + recorded `session_id`, and resume a
   lane by its id. Verify: the lane resumes without a manual JSONL scan.
 
 ## 4. M3 — JSONL idle-probe helper
 
-- [ ] 4.1 Add `scripts/wait-worker-idle.sh <lane>`: locate the worker's session JSONL under
+- [x] 4.1 Add `scripts/wait-worker-idle.sh <lane>`: locate the worker's session JSONL under
   `~/.claude/projects/<proj>/` and exit successfully when the last event carries
   `stop_reason: "end_turn"`. Do NOT match the prompt glyph. Verify: the helper exits exactly
-  when a turn ends, not before.
-- [ ] 4.2 Add a bounded timeout and a non-zero exit on timeout. Verify: a worker that never
-  goes idle within the timeout makes the helper exit non-zero.
+  when a turn ends, not before. (Probe checks the last `assistant` event's
+  `.message.stop_reason`; accepts a lane name or session-id; jq, not screen-scrape.)
+- [x] 4.2 Add a bounded timeout and a non-zero exit on timeout. Verify: a worker that never
+  goes idle within the timeout makes the helper exit non-zero. (`--timeout` default 600;
+  exit 1 on timeout — proven for both missing-JSONL and still-busy sessions.)
 - [ ] 4.3 Document the helper as the gate for steer/revise/reap timing in
   `docs/agent-workstream-playbook.md` (prefer wait-for-turn-end over interrupt). Verify: the
   playbook's send-keys section references the probe.
@@ -115,9 +121,11 @@ stays byte-for-byte unchanged.
 
 ## 10. Validation
 
-- [ ] 10.1 Run the harness smoke: a `--print` run is unchanged; an `--interactive` run
+- [x] 10.1 Run the harness smoke: a `--print` run is unchanged; an `--interactive` run
   spawns, streams, accepts a revision, resumes after pane exit, and reaps cleanly. Verify:
-  all steps pass on a real spawn.
+  all steps pass on a real spawn. (2026-06-15: existing reliability/abort/tmux suites green;
+  live sonnet lane spawned, streamed `OK`, accepted send-keys `STEERED`, idle-probe exited 0
+  on end_turn, reaped via kill-window, resumed with full prior context.)
 - [ ] 10.2 Re-run `openspec validate add-live-tmux-agent-orchestration --strict` and
   `openspec validate --all --strict` after implementation.
 
