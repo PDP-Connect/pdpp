@@ -65,7 +65,7 @@
 
 ## 10. Grant-scope isolation
 
-- [ ] 10.1 Confirm the inspection-layer `detail` and the detail-gap backlog rollup remain owner-only and are NOT exposed to grant-scoped REST/MCP reads; add a regression proving a grant-scoped read returns records but no `RenderedVerdict.detail`.
+- [x] 10.1 Confirm the inspection-layer `detail` and the detail-gap backlog rollup remain owner-only and are NOT exposed to grant-scoped REST/MCP reads; add a regression proving a grant-scoped read returns records but no `RenderedVerdict.detail`.
 
 ## 11. Live journeys + validation
 
@@ -76,9 +76,9 @@
 
 ## 12. Calibration to the SLVP ideal
 
-- [ ] 12.1 Add a non-owner-surface calibration trace for `synthesizeRenderedVerdict` test/operator review: tone cause, channel cause, suppressed evidence, detail destination, primary required action, and `satisfied_when` contract. Confirm it is not exposed to grant-scoped REST/MCP clients.
+- [x] 12.1 Add a non-owner-surface calibration trace for `synthesizeRenderedVerdict` test/operator review: tone cause, channel cause, suppressed evidence, detail destination, primary required action, and `satisfied_when` contract. Confirm it is not exposed to grant-scoped REST/MCP clients.
 - [x] 12.2 Pin golden calibration fixtures before UI migration: ChatGPT, Amazon, Chase, synthetic terminal `code_fix`, and synthetic runtime fault. Each fixture asserts both the verdict and the calibration trace.
-- [ ] 12.3 Run a shadow comparison over the live connection set before replacing owner surfaces. Classify every old-vs-new headline change as `fixed_lie`, `deliberate_silence_correction`, or `unexpected_drift`; block rollout on any `unexpected_drift`.
+- [x] 12.3 Run a shadow comparison over the live connection set before replacing owner surfaces. Classify every old-vs-new headline change as `fixed_lie`, `deliberate_silence_correction`, or `unexpected_drift`; block rollout on any `unexpected_drift`.
 - [ ] 12.4 Add DOM-level assertions for owner surfaces: no mechanistic backlog counts on the dashboard, exactly one primary action, no dead owner button for maintainer work, suppressed evidence present in `detail`, and push transport obeying `channel`.
 - [ ] 12.5 Record the calibrated thresholds and copy choices that are intentionally judgment-based — advisory-vs-attention threshold, stale/manual-refresh language, stream-priority weighting, runtime liveness sensitivity, and push eligibility — with the fixture or live evidence that justified each choice.
 

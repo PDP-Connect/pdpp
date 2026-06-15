@@ -294,7 +294,7 @@ test('5.3 content[] is a bounded readable preview, not a JSON dump', async () =>
   await server.close();
 });
 
-test('grant-scoped query_records does not add owner-only acquisition diagnostics', async () => {
+test('grant-scoped query_records does not add owner-only diagnostics', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -306,7 +306,18 @@ test('grant-scoped query_records does not add owner-only acquisition diagnostics
   assert.equal(result.structuredContent.data.data[0].id, 'o1');
 
   const serialized = JSON.stringify(result);
-  for (const forbidden of ['acquisition_coverage', 'import_receipt', 'artifact_sha256', 'media_coverage']) {
+  for (const forbidden of [
+    'acquisition_coverage',
+    'import_receipt',
+    'artifact_sha256',
+    'media_coverage',
+    'rendered_verdict',
+    'detail_gap_backlog',
+    'tone_cause',
+    'channel_cause',
+    'suppressed_evidence',
+    'satisfied_when',
+  ]) {
     assert.ok(!serialized.includes(forbidden), `${forbidden} must not appear in MCP grant-scoped reads`);
   }
 

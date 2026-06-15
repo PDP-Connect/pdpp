@@ -142,6 +142,68 @@ test('owner-wire: fresh healthy connection → green pill + calm channel', () =>
   assert.equal(verdict.required_actions.length, 0);
 });
 
+test('owner-wire: outbox unknown does not downgrade an otherwise complete non-outbox connector', () => {
+  const snapshot = {
+    ...freshHealthySnapshot(),
+    axes: {
+      ...freshHealthySnapshot().axes,
+      outbox: 'unknown',
+    },
+  };
+  const verdict = synthesizeConnectorVerdict({
+    snapshot,
+    report: collectionReport(),
+    manifestStreams: manifestStreams(),
+    refresh: null,
+    progress: null,
+  });
+
+  assert.equal(verdict.pill.tone, 'green');
+  assert.equal(verdict.pill.label, 'Healthy');
+  assert.equal(verdict.channel, 'calm');
+});
+
+test('owner-wire: denominator-only unknown stream rows do not override connection-level complete coverage', () => {
+  const verdict = synthesizeConnectorVerdict({
+    snapshot: freshHealthySnapshot(),
+    report: collectionReport({
+      collected: 5,
+      considered: 'unknown',
+      coverage_condition: 'unknown',
+      pending_detail_gaps: 0,
+    }),
+    manifestStreams: manifestStreams(),
+    refresh: null,
+    progress: null,
+  });
+
+  assert.equal(verdict.pill.tone, 'green');
+  assert.equal(verdict.pill.label, 'Healthy');
+  assert.equal(verdict.channel, 'calm');
+  assert.equal(verdict.streams[0]?.coverage, 'unknown', 'inspection row still carries unknown coverage');
+});
+
+test('owner-wire: latest-run partial sample rows do not override connection-level complete coverage', () => {
+  const verdict = synthesizeConnectorVerdict({
+    snapshot: freshHealthySnapshot(),
+    report: collectionReport({
+      collected: 1,
+      considered: 100,
+      coverage_condition: 'partial',
+      pending_detail_gaps: 0,
+    }),
+    manifestStreams: manifestStreams(),
+    refresh: null,
+    progress: null,
+  });
+
+  assert.equal(verdict.pill.tone, 'green');
+  assert.equal(verdict.pill.label, 'Healthy');
+  assert.equal(verdict.channel, 'calm');
+  assert.equal(verdict.required_actions.length, 0);
+  assert.equal(verdict.streams[0]?.coverage, 'partial', 'inspection row still carries partial coverage');
+});
+
 // ─── 8.1 — stale manual connection produces amber/advisory verdict ────────────
 
 test('owner-wire: stale manual-refresh connection → amber pill + advisory channel', () => {

@@ -315,6 +315,8 @@ test('2.5: collection_facts and collection_report are absent from grant-scoped /
     // meaningful, not vacuous).
     const { body: detail } = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`);
     assert.ok(Array.isArray(detail.collection_report) && detail.collection_report.length >= 1);
+    assert.ok(detail.rendered_verdict?.detail, 'owner surface carries rendered_verdict.detail');
+    assert.ok(detail.rendered_verdict?.trace, 'owner surface carries rendered_verdict.trace');
 
     const auth = { headers: { Authorization: `Bearer ${ownerToken}` } };
     const v1Surfaces = [
@@ -335,6 +337,22 @@ test('2.5: collection_facts and collection_report are absent from grant-scoped /
       assert.ok(
         !text.includes('collection_facts'),
         `runtime collection_facts must not appear on /v1: ${url}`
+      );
+      assert.ok(
+        !text.includes('rendered_verdict'),
+        `owner rendered_verdict must not appear on /v1: ${url}`
+      );
+      assert.ok(
+        !text.includes('detail_gap_backlog'),
+        `owner detail_gap_backlog must not appear on /v1: ${url}`
+      );
+      assert.ok(
+        !text.includes('tone_cause'),
+        `owner calibration trace must not appear on /v1: ${url}`
+      );
+      assert.ok(
+        !text.includes('satisfied_when'),
+        `owner satisfaction contract trace must not appear on /v1: ${url}`
       );
     }
   } finally {

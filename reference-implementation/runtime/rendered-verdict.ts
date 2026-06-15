@@ -385,7 +385,11 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
     case "stalled":
       return "red";
     case "unknown":
-      return "grey";
+      // `unknown` is absence of local-device/outbox evidence for many normal
+      // API/browser connectors, not proof that the connector is unhealthy.
+      // Stalled outbox evidence is still red; unknown simply does not downgrade
+      // an otherwise complete/fresh connection.
+      return "green";
     default: {
       const _never: never = snapshot.axes.outbox;
       return _never;

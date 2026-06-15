@@ -103,6 +103,22 @@ export function buildStreamRollups(
   return report.map((entry) => {
     const manifestStream = streamByName.get(entry.stream);
     const retryable = isRetryableCoverage(entry.coverage_condition) || entry.pending_detail_gaps > 0;
+    const priority = streamPriority(manifestStream);
+    // A successful connection-level coverage rollup is authoritative over a
+    // per-stream latest-run denominator/sample gap. Some connectors can prove
+    // "the run completed and no gaps remain" at the connection level even when
+    // the latest run only sampled a subset of stream rows or cannot know every
+    // stream denominator. Keep those rows visible in inspection, but do not let
+    // non-terminal per-run incompleteness turn a complete, fresh connector
+    // amber. Terminal/lost evidence remains load-bearing.
+    const connectionCompleteReportGap =
+      snapshot.axes.coverage === "complete" &&
+      entry.pending_detail_gaps === 0 &&
+      entry.coverage_condition !== "complete" &&
+      entry.coverage_condition !== "terminal_gap" &&
+      entry.coverage_condition !== "unsupported" &&
+      entry.coverage_condition !== "unavailable";
+    const effectivePriority = connectionCompleteReportGap ? "optional" : priority;
     return {
       stream_id: entry.stream,
       collected: entry.collected,
@@ -113,7 +129,7 @@ export function buildStreamRollups(
       // exposes; attribute it to a stream only when that stream is not complete,
       // so a complete stream never inherits a connection-level attention flag.
       attention_open: attentionOpen && entry.coverage_condition !== "complete",
-      priority: streamPriority(manifestStream),
+      priority: effectivePriority,
     };
   });
 }
