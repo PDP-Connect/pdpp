@@ -322,21 +322,22 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       // duplicate, so we let the error surface unchanged.
       await exec(
         `INSERT INTO controller_active_runs
-           (connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
-         VALUES ($1, $1, $2, $3, $4, $5)
+           (connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation)
+         VALUES ($1, $1, $2, $3, $4, $5, $6)
          ON CONFLICT (connector_instance_id) DO UPDATE
            SET run_id = EXCLUDED.run_id,
                connector_id = EXCLUDED.connector_id,
                trace_id = EXCLUDED.trace_id,
                scenario_id = EXCLUDED.scenario_id,
-               started_at = EXCLUDED.started_at`,
-        [connectorId, run.runId, run.traceId, run.scenarioId, run.startedAt],
+               started_at = EXCLUDED.started_at,
+               run_generation = EXCLUDED.run_generation`,
+        [connectorId, run.runId, run.traceId, run.scenarioId, run.startedAt, run.runGeneration ?? 1],
       );
     },
 
     async getActiveRun(connectorId) {
       const res = await exec(
-        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
          FROM controller_active_runs WHERE connector_instance_id = $1`,
         [connectorId],
       );
@@ -345,7 +346,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async listActiveRuns() {
       const res = await exec(
-        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
          FROM controller_active_runs`,
       );
       return res.rows.map(rowToActiveRun);
@@ -416,6 +417,7 @@ function rowToActiveRun(row) {
     connector_instance_id: row.connector_instance_id,
     connector_id: row.connector_id,
     run_id: row.run_id,
+    run_generation: typeof row.run_generation === 'number' ? row.run_generation : 1,
     trace_id: row.trace_id,
     scenario_id: row.scenario_id,
     started_at: toIso(row.started_at),

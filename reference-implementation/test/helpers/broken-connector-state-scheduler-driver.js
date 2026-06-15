@@ -168,6 +168,7 @@ export function createBrokenInMemoryConnectorStateSchedulerDriver() {
       activeRunRows.push({
         connector_id: connectorId,
         run_id: run.runId,
+        run_generation: run.runGeneration ?? 1,
         trace_id: run.traceId,
         scenario_id: run.scenarioId,
         started_at: run.startedAt,

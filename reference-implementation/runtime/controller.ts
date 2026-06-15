@@ -212,6 +212,8 @@ export interface ScheduleApi {
 export interface ActiveRun {
   readonly connector_id: string;
   readonly connector_instance_id: string;
+  /** Monotonic fencing token: increments each time a new run is admitted for this connector_instance. */
+  readonly run_generation: number;
   readonly run_id: string;
   readonly started_at: string;
   readonly trace_id: string;
@@ -614,6 +616,16 @@ const settledRunIds = new Set<string>();
 // completion never fires the watchdog. All timers are .unref()'d so they
 // don't prevent process exit during a clean shutdown.
 const activeRunWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Monotonic run-generation fencing token, keyed by connector_instance key
+// (same key as activeRuns). Incremented each time a new run is admitted for
+// a connector_instance — including when a hung/stale run is reclaimed by the
+// watchdog or 409-guard reconciliation. A zombie run from generation N cannot
+// commit once generation N+1 is active: the commit gate checks that the run's
+// generation matches the current value before writing terminal/ingest data.
+// Persisted to controller_active_runs.run_generation so the fencing token
+// survives through the DB layer (audit trail + crash-restart consistency).
+// Keys are removed when the entry is cleaned up to avoid unbounded growth.
+const runGenerations = new Map<string, number>();
 // Keyed by run_id. Interaction broker state is intentionally in-memory:
 // dashboard-submitted values satisfy the current live run only and are never
 // persisted to `.env.local`, SQLite config/state, or spine event payloads.
@@ -1507,6 +1519,7 @@ export function __resetControllerInteractionStateForTests(): void {
     clearTimeout(timer);
   }
   activeRunWatchdogTimers.clear();
+  runGenerations.clear();
   needsHumanAttention.clear();
 }
 
@@ -1869,10 +1882,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // PDPP_MAX_RUN_WALL_CLOCK_MS env var, then a safe 1-hour default. Infinity
   // disables the watchdog entirely (tests set this to avoid real timers).
   const maxRunWallClockMs = (() => {
-    if (opts.maxRunWallClockMs !== undefined) { return opts.maxRunWallClockMs; }
+    if (opts.maxRunWallClockMs !== undefined) {
+      return opts.maxRunWallClockMs;
+    }
     const envVal = process.env.PDPP_MAX_RUN_WALL_CLOCK_MS;
     if (envVal !== undefined) {
-      if (envVal === "Infinity") { return Number.POSITIVE_INFINITY; }
+      if (envVal === "Infinity") {
+        return Number.POSITIVE_INFINITY;
+      }
       const parsed = Number(envVal);
       if (!Number.isFinite(parsed) || parsed < 0) {
         throw new Error(`PDPP_MAX_RUN_WALL_CLOCK_MS must be a non-negative number or "Infinity", got ${envVal}`);
@@ -3264,10 +3281,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly traceContext: SpineTraceContext;
   }): Promise<string | null> {
     try {
+      // Advance the fencing token for this connector_instance. Any previously
+      // admitted run that somehow outlived reclaim (SIGTERM slow-exit, watchdog
+      // mid-write race) is now stale by generation and its commit is refused.
+      const prevGeneration = runGenerations.get(input.key) ?? 0;
+      const newGeneration = prevGeneration + 1;
+      runGenerations.set(input.key, newGeneration);
       await persistActiveRun({
         connector_instance_id: input.connectorInstanceId,
         connector_id: input.connectorId,
         run_id: input.runId,
+        run_generation: newGeneration,
         trace_id: input.traceContext.trace_id,
         scenario_id: input.traceContext.scenario_id,
         started_at: input.startedAt,
@@ -3276,6 +3300,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         connector_id: input.connectorId,
         connector_instance_id: input.connectorInstanceId,
         run_id: input.runId,
+        run_generation: newGeneration,
         trace_id: input.traceContext.trace_id,
         started_at: input.startedAt,
       });
@@ -3488,7 +3513,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
    */
   function assertNoConflictingActiveRun(key: string): void {
     const existing = activeRuns.get(key);
-    if (!existing) { return; }
+    if (!existing) {
+      return;
+    }
     const isStale = settledRunIds.has(existing.run_id) || !activeRunPromises.has(existing.run_id);
     if (isStale) {
       log.warn?.(
@@ -3598,17 +3625,25 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly runId: string;
     readonly traceContext: SpineTraceContext;
   }): void {
-    if (!Number.isFinite(maxRunWallClockMs) || maxRunWallClockMs <= 0) { return; }
+    if (!Number.isFinite(maxRunWallClockMs) || maxRunWallClockMs <= 0) {
+      return;
+    }
     const { browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext } = input;
     const watchdogTimer = setTimeout(() => {
       activeRunWatchdogTimers.delete(runId);
-      if (!activeRuns.has(key)) { return; }
+      if (!activeRuns.has(key)) {
+        return;
+      }
       log.warn?.(
         `[controller] watchdog: run ${runId} for ${connectorId} exceeded ${maxRunWallClockMs}ms wall-clock budget; force-finalizing`
       );
       const cancellation = activeRunCancellations.get(runId);
       if (cancellation && !cancellation.signal.aborted) {
-        try { cancellation.abort(); } catch { /* idempotent */ }
+        try {
+          cancellation.abort();
+        } catch {
+          /* idempotent */
+        }
       }
       const emitAndFinalize = async () => {
         try {
@@ -3643,7 +3678,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
         log.warn?.(`[controller] watchdog: emitAndFinalize failed for ${runId}: ${message}`);
       });
     }, maxRunWallClockMs);
-    if (watchdogTimer.unref) { watchdogTimer.unref(); }
+    if (watchdogTimer.unref) {
+      watchdogTimer.unref();
+    }
     activeRunWatchdogTimers.set(runId, watchdogTimer);
   }
 
@@ -3719,6 +3756,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
       startedAt,
       traceContext,
     });
+    // Capture this run's fencing token at admission time. The .catch() path
+    // below uses it to refuse terminal writes when a newer generation has
+    // already been admitted (zombie double-write guard).
+    const myRunGeneration = runGenerations.get(key) ?? 1;
 
     // Per-run owner-cancel controller. Aborting this signal requests
     // cancellation of only this run; the runtime cooperatively terminates the
@@ -3799,6 +3840,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
         log.error?.(
           `[controller] run failed for ${connectorId} (run_id=${runId}, trace_id=${traceContext.trace_id}): ${message}`
         );
+        // Run-generation fencing: if a newer generation has been admitted for
+        // this connector_instance (watchdog reclaimed us and started a new run),
+        // this run is a zombie. Refuse the terminal write so the zombie cannot
+        // corrupt the new run's spine stream. The watchdog already emitted the
+        // correct run_timed_out terminal under the new generation.
+        const currentGeneration = runGenerations.get(key);
+        if (currentGeneration !== undefined && currentGeneration !== myRunGeneration) {
+          log.warn?.(
+            `[controller] run_superseded: refusing launch-failure terminal for stale run ${runId} ` +
+              `(my_generation=${myRunGeneration}, current_generation=${currentGeneration})`
+          );
+          return;
+        }
         // Close the phantom-202 window: a throw before the runtime's
         // `run.started` emit (env/spawn prep) used to leave a 202-returned
         // run id with ZERO spine events — log-and-forget. Emit a typed

@@ -579,7 +579,8 @@ CREATE TABLE IF NOT EXISTS controller_active_runs (
   run_id        TEXT NOT NULL UNIQUE,
   trace_id      TEXT NOT NULL,
   scenario_id   TEXT NOT NULL,
-  started_at    TEXT NOT NULL
+  started_at    TEXT NOT NULL,
+  run_generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id
@@ -3353,6 +3354,11 @@ CREATE TABLE IF NOT EXISTS cimd_client_documents (
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL
 )`);
+  // run_generation fencing token: monotonic counter that increments each time a
+  // new run is admitted for a connector_instance. Existing rows backfill to 1
+  // (safe baseline — the column default also ensures new rows without an
+  // explicit value start at 1). See docs/research/slvp-ideal-stuck-run-liveness-2026-06-14.md §2.6 / §8.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'controller_active_runs', 'run_generation', 'INTEGER NOT NULL DEFAULT 1'));
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

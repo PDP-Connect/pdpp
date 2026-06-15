@@ -91,6 +91,7 @@ function activeRunRowToSummary(row) {
     connector_instance_id: row.connector_instance_id ?? row.connector_id,
     connector_id: row.connector_id,
     run_id: row.run_id,
+    run_generation: row.run_generation ?? 1,
     trace_id: row.trace_id,
     scenario_id: row.scenario_id,
     started_at: row.started_at,

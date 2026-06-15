@@ -5,11 +5,12 @@
 -- runNow already guards against concurrent active runs in memory, but
 -- the upsert is the durable enforcement point if a process restarts
 -- while a stale row remains.
-INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
-VALUES(?, ?, ?, ?, ?, ?)
+INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation)
+VALUES(?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(connector_instance_id) DO UPDATE SET
   connector_id = excluded.connector_id,
   run_id = excluded.run_id,
   trace_id = excluded.trace_id,
   scenario_id = excluded.scenario_id,
-  started_at = excluded.started_at
+  started_at = excluded.started_at,
+  run_generation = excluded.run_generation

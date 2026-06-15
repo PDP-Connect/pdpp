@@ -56,6 +56,7 @@ export interface ActiveRunRecord {
   readonly connector_id: string;
   readonly connector_instance_id?: string;
   readonly run_id: string;
+  readonly run_generation: number;
   readonly scenario_id: string;
   readonly started_at: string;
   readonly trace_id: string;
@@ -313,6 +314,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
         record.trace_id,
         record.scenario_id,
         record.started_at,
+        record.run_generation,
       ]);
     },
 
@@ -493,14 +495,15 @@ export function createPostgresSchedulerStore(): SchedulerStore {
 
     async upsertActiveRun(record) {
       await postgresQuery(
-        `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
-         VALUES($1, $2, $3, $4, $5, $6)
+        `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation)
+         VALUES($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (connector_instance_id) DO UPDATE
            SET connector_id = EXCLUDED.connector_id,
                run_id = EXCLUDED.run_id,
                trace_id = EXCLUDED.trace_id,
                scenario_id = EXCLUDED.scenario_id,
-               started_at = EXCLUDED.started_at`,
+               started_at = EXCLUDED.started_at,
+               run_generation = EXCLUDED.run_generation`,
         [
           record.connector_instance_id ?? record.connector_id,
           record.connector_id,
@@ -508,13 +511,14 @@ export function createPostgresSchedulerStore(): SchedulerStore {
           record.trace_id,
           record.scenario_id,
           record.started_at,
+          record.run_generation,
         ]
       );
     },
 
     async listActiveRuns() {
       const result = await postgresQuery(
-        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
          FROM controller_active_runs
          ORDER BY connector_id, connector_instance_id`
       );

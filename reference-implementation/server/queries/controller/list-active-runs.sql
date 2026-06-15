@@ -6,6 +6,6 @@
 -- by the count of registered connectors (dozens, not thousands). Used by
 -- reconcileAbandonedControllerRuns at startup to enumerate stale rows
 -- left behind when the reference server restarted mid-run.
-SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
 FROM controller_active_runs
 ORDER BY started_at ASC, connector_id ASC, connector_instance_id ASC
