@@ -544,11 +544,21 @@ export interface RefVerdictStreamRow {
   stream_id: string;
 }
 
+export interface RefSuppressedSignal {
+  detail_field: string;
+  kind: "cooldown" | "drain" | "runtime_fault" | "syncing";
+  reason: string;
+}
+
+export interface RefRenderedVerdictDetail {
+  suppressed?: readonly RefSuppressedSignal[];
+}
+
 export interface RefRenderedVerdict {
   annotations: readonly RefVerdictAnnotation[];
   channel: RefRenderedChannel;
   /** Owner-only inspection layer; rendered only on detail/diagnostic surfaces. */
-  detail: unknown;
+  detail: RefRenderedVerdictDetail;
   forward_statement: string;
   pill: RefVerdictPill;
   progress: RefRenderedProgress;

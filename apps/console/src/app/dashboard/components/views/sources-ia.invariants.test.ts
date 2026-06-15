@@ -49,6 +49,9 @@ const ADD_SOURCE_EMPTY_STATE_RE = /data-testid="sources-empty"/;
 // Health status is rendered as a status dot + sr-only label from the projection
 const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
 const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
+const RENDERED_VERDICT_STATUS_RE = /deriveRenderedSourceStatus\(summary\.rendered_verdict/;
+const RENDERED_VERDICT_ACTION_RE = /formatRenderedRequiredAction\(summary\.rendered_verdict\)/;
+const INSPECTION_LAYER_FIELDS_RE = /detail_gap_backlog|next_attempt_at|collection_rate|suppressed/;
 // Sync, Reauthorize, and Revoke are three separate actions in the passport foot
 const SYNC_ACTION_RE = /Sync now/;
 const REAUTHORIZE_ACTION_RE = /Reauthorize/;
@@ -126,6 +129,14 @@ test("each source row renders a health status dot and sr-only label from the pro
   // Health comes from the projection (status.tone, status.label) — not hard-coded strings.
   assert.match(src, SOURCE_STATUS_DOT_RE);
   assert.match(src, SOURCE_STATUS_LABEL_SR_RE);
+});
+
+test("Sources projection reads rendered verdict status/action and keeps inspection fields off the dashboard", async () => {
+  const model = await readFile(`${HERE}../../records/sources-view-model.ts`, "utf8");
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(model, RENDERED_VERDICT_STATUS_RE);
+  assert.match(model, RENDERED_VERDICT_ACTION_RE);
+  assert.doesNotMatch(view, INSPECTION_LAYER_FIELDS_RE);
 });
 
 test("the sources passport foot has three distinct actions: Sync, Reauthorize, and Revoke", async () => {

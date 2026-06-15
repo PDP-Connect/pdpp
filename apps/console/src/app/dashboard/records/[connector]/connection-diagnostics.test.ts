@@ -87,9 +87,14 @@ const RENDERED_VERDICT_CHANNEL_TESTID = /data-testid="rendered-verdict-channel"/
 const RENDERED_VERDICT_FORWARD_TESTID = /data-testid="rendered-verdict-forward"/;
 const RENDERED_VERDICT_PROGRESS_TESTID = /data-testid="rendered-verdict-progress"/;
 const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
+const RENDERED_VERDICT_USES_FIRST_PRIMARY_ACTION = /const primaryAction = verdict\.required_actions\[0\] \?\? null/;
 const RENDERED_VERDICT_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
 const PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT = /renderedVerdict: RefRenderedVerdict \| null/;
 const PROJECTED_STATE_PREFERS_RENDERED_VERDICT = /renderedVerdict \?/;
+const SUPPRESSED_EVIDENCE_COMPONENT = /function SuppressedEvidenceDiagnostics/;
+const SUPPRESSED_EVIDENCE_TESTID = /data-testid="diagnostics-suppressed-evidence"/;
+const SUPPRESSED_EVIDENCE_READS_VERDICT_DETAIL = /renderedVerdict\?\.detail\.suppressed/;
+const SUPPRESSED_EVIDENCE_DETAIL_FIELD_ATTR = /data-detail-field=\{signal\.detail_field\}/;
 
 const AXES_TESTID = /data-testid="diagnostics-axes"/;
 const AXIS_CHIPS_HELPER = /summarizeAxisChips/;
@@ -134,6 +139,7 @@ test("connection-diagnostics renders the server-owned rendered verdict summary",
   assert.match(src, RENDERED_VERDICT_FORWARD_TESTID);
   assert.match(src, RENDERED_VERDICT_PROGRESS_TESTID);
   assert.match(src, RENDERED_VERDICT_PRIMARY_ACTION_TESTID);
+  assert.match(src, RENDERED_VERDICT_USES_FIRST_PRIMARY_ACTION);
   assert.match(src, RENDERED_VERDICT_VOCABULARY);
 });
 
@@ -141,6 +147,14 @@ test("projected-state diagnostics prefer rendered verdict for the headline badge
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT);
   assert.match(src, PROJECTED_STATE_PREFERS_RENDERED_VERDICT);
+});
+
+test("connection-diagnostics renders suppressed verdict evidence only in the detail panel", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, SUPPRESSED_EVIDENCE_COMPONENT);
+  assert.match(src, SUPPRESSED_EVIDENCE_TESTID);
+  assert.match(src, SUPPRESSED_EVIDENCE_READS_VERDICT_DETAIL);
+  assert.match(src, SUPPRESSED_EVIDENCE_DETAIL_FIELD_ATTR);
 });
 
 test("connection-diagnostics applies the axis tone to visible chip classes", async () => {

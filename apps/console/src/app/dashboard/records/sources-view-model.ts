@@ -138,7 +138,7 @@ export interface SourceInstanceView {
   /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
   passportFields: SourcePassportField[];
   revoked: boolean;
-  /** Status flag (dot + Endorse) derived from health state. */
+  /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
   /** Stream manifest rows for the passport table. */
   streams: SourceStreamManifestRow[];

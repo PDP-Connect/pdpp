@@ -90,6 +90,8 @@ export function ConnectionDiagnostics({
             />
           </DiagnosticsBlock>
 
+          <SuppressedEvidenceDiagnostics renderedVerdict={renderedVerdict} />
+
           <DiagnosticsBlock title="Collection rate">
             <CollectionRateDiagnostics connectionHealth={connectionHealth} />
           </DiagnosticsBlock>
@@ -104,6 +106,31 @@ export function ConnectionDiagnostics({
         </div>
       </details>
     </Section>
+  );
+}
+
+function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: RefRenderedVerdict | null }) {
+  const suppressed = renderedVerdict?.detail.suppressed ?? [];
+  if (suppressed.length === 0) {
+    return null;
+  }
+  return (
+    <DiagnosticsBlock title="Suppressed evidence">
+      <ul
+        className="pdpp-caption flex flex-col gap-1 text-muted-foreground"
+        data-testid="diagnostics-suppressed-evidence"
+      >
+        {suppressed.map((signal) => (
+          <li
+            data-detail-field={signal.detail_field}
+            data-suppressed-kind={signal.kind}
+            key={`${signal.kind}:${signal.detail_field}`}
+          >
+            <span className="text-foreground">{signal.kind.replaceAll("_", " ")}</span>: {signal.reason}
+          </li>
+        ))}
+      </ul>
+    </DiagnosticsBlock>
   );
 }
 
