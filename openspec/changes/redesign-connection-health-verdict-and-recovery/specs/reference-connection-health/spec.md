@@ -91,11 +91,13 @@ The synthesized verdict SHALL carry a `channel` field
 `tone`, that decides whether the connection interrupts the owner. `channel` SHALL
 be orthogonal to `tone`: `tone` answers how worried to be (worst-wins over axes),
 `channel` answers whether to interrupt (a function of who can resolve the
-condition). The default `channel` SHALL be `calm`. The verdict SHALL raise
-`channel` to `advisory` only when a required action exists whose `audience` is
-`owner` and whose `satisfied_when` is owner-satisfiable, and to `attention` only
-when such an owner action is additionally the sole resolution — the system cannot
-make progress with the credentials and access it currently holds.
+condition). The default `channel` SHALL be `calm`. The verdict MAY raise
+`channel` to `advisory` for owner-actionable but non-urgent conditions,
+owner-optional accelerants, or visible status conditions whose `audience` is
+`maintainer` or `none` and that must be acknowledged without presenting a dead
+owner button. The verdict SHALL raise `channel` to `attention` only when an
+owner-satisfiable action exists and the owner is the sole resolution — the system
+cannot make progress with the credentials and access it currently holds.
 
 The attention channel SHALL NOT carry an actionless signal: when
 `channel === "attention"` the verdict SHALL contain at least one required action
