@@ -12,7 +12,11 @@ const LEGACY_STATUS_PAGE_FILE = fileURLToPath(
 
 // Hoisted to satisfy useTopLevelRegex; grouped by the surface they assert.
 const GET_SETUP = /getStaticSecretSetup\(connectorId\)/;
-const FORM_ACTION = /action=\{createStaticSecretConnectionAction\}/;
+// The form action is now mode-aware: createStaticSecretConnectionAction for new
+// connections, replaceStaticSecretCredentialAction for credential-replace mode.
+// Assert both are imported and referenced — the selector pattern is the invariant.
+const FORM_ACTION_CREATE = /createStaticSecretConnectionAction/;
+const FORM_ACTION_REPLACE = /replaceStaticSecretCredentialAction/;
 const FIELDS_MAP = /setup\.credential_capture\.fields\.map/;
 const HELP_URL = /field\.help_url/;
 const NEW_TAB = /target="_blank"/;
@@ -52,7 +56,9 @@ const LEGACY_REDIRECT = /\/dashboard\/connect\/status\/\$\{encodeURIComponent/;
 test("static-secret page is an owner-session capture form, not an agent secret prompt", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, GET_SETUP);
-  assert.match(src, FORM_ACTION);
+  // Mode-aware form actions: both create (new connection) and replace (repair/edit) must be wired.
+  assert.match(src, FORM_ACTION_CREATE);
+  assert.match(src, FORM_ACTION_REPLACE);
   assert.match(src, FIELDS_MAP);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
