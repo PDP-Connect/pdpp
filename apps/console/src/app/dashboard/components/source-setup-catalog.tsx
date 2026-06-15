@@ -41,10 +41,10 @@ function filterSourceCatalog(catalog: readonly ConnectorCatalogEntry[], query: s
 
 function pathTone(path: ConnectorAcquisitionPath): string {
   if (path.posture === "primary") {
-    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700";
+    return "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg";
   }
   if (path.posture === "advanced") {
-    return "border-amber-500/30 bg-amber-500/10 text-amber-700";
+    return "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg";
   }
   return "border-border bg-muted/30 text-muted-foreground";
 }

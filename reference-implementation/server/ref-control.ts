@@ -164,6 +164,10 @@ const NON_PUBLIC_CONNECTOR_ID_PARTS = [
   "pg_runtime_",
   "pg_canonical_",
   "pg_expand_",
+  // System backfill jobs materialise a connector_instances row during lexical
+  // indexing. These are never owner-created connections and must not surface on
+  // any owner-facing source list.
+  "pg_lexical_backfill_",
 ];
 const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
 
@@ -1203,7 +1207,13 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
   // `openspec/changes/separate-connector-catalog-from-connections/`.
   const store = getConnectorInstanceStore();
   const instances = await store.listByOwner(REFERENCE_OWNER_SUBJECT_ID);
-  return instances;
+  // Filter out system-internal connector_instances (backfill jobs, runtime
+  // stubs, etc.) that are never owner-created and must not appear on the
+  // owner-facing source list. Same pattern list as isPublicReferenceConnector.
+  return instances.filter(
+    (instance: ConnectorInstanceRow) =>
+      !NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part))
+  );
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {

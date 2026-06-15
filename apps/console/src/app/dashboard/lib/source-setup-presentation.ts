@@ -84,19 +84,37 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
 export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStatus {
   switch (entry.disposition) {
     case "local_collector_enroll":
-      return { label: "Add now", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+      return { label: "Add now", tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg" };
     case "browser_collector_manual":
-      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+      return {
+        label: "Packaged path pending",
+        tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
+      };
     case "static_secret_connect":
-      return { label: "Add account", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+      return {
+        label: "Add account",
+        tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
     case "manual_upload_connect":
-      return { label: "Import file", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+      return {
+        label: "Import file",
+        tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
     case "manual_upload_pending":
-      return { label: "Import flow pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+      return {
+        label: "Import flow pending",
+        tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
+      };
     case "provider_auth_deployment_blocked":
-      return { label: "Deployment needed", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+      return {
+        label: "Deployment needed",
+        tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
+      };
     case "browser_bound_runbook":
-      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+      return {
+        label: "Packaged path pending",
+        tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
+      };
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
       // Existing data keeps working; there is just no shipped owner add path.
@@ -133,9 +151,9 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
         : "Provider authorization is not fully wired yet.";
     case "api_network_unsupported":
-      return "This source has no owner-mediated setup path in this build. It is visible so unsupported does not look like omission.";
+      return "We're still building in-app setup for this source. It's listed so you know it's planned, not missing.";
     default:
-      return "This connector is registered without a setup path the reference can classify.";
+      return "In-app setup for this source isn't available yet. It's listed so you know it's on the roadmap.";
   }
 }
 
