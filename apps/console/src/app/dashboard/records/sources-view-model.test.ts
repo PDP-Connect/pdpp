@@ -109,9 +109,44 @@ test("deriveSourceStatus renders unknown (never green) when no projection", () =
   assert.equal(flag.tone, "muted");
 });
 
-test("revoked lifecycle overrides any health verdict", () => {
-  const flag = deriveSourceStatus(health("healthy"), true);
+function healthWithFreshness(
+  state: RefConnectionHealthSnapshot["state"],
+  freshness: RefConnectionHealthSnapshot["axes"]["freshness"]
+): RefConnectionHealthSnapshot {
+  const base = health(state);
+  return { ...base, axes: { ...base.axes, freshness } };
+}
+
+test("deriveSourceStatus: a stale-but-healthy connection carries a mandatory freshness annotation (phase 2 lie fix)", () => {
+  // An assisted scheduled connector projects `healthy` while its freshness axis
+  // is `stale`. The flag must disclose staleness, not read a bare green "Healthy".
+  const flag = deriveSourceStatus(healthWithFreshness("healthy", "stale"), false);
+  assert.equal(flag.kind, "healthy");
+  assert.equal(flag.freshnessNote, "stale");
+  assert.match(flag.label, /stale/);
+  assert.equal(flag.label, "Healthy · stale");
+});
+
+test("deriveSourceStatus: every non-fresh state carries a freshness annotation, fresh carries none", () => {
+  for (const state of ["healthy", "idle", "degraded", "blocked", "unknown"] as const) {
+    const stale = deriveSourceStatus(healthWithFreshness(state, "stale"), false);
+    assert.equal(stale.freshnessNote, "stale", `${state} stale should annotate`);
+    assert.match(stale.label, /· stale$/, `${state} stale label should disclose`);
+
+    const unknownFreshness = deriveSourceStatus(healthWithFreshness(state, "unknown"), false);
+    assert.equal(unknownFreshness.freshnessNote, "freshness unknown", `${state} unknown-freshness should annotate`);
+
+    const fresh = deriveSourceStatus(healthWithFreshness(state, "fresh"), false);
+    assert.equal(fresh.freshnessNote, null, `${state} fresh should NOT annotate`);
+    assert.doesNotMatch(fresh.label, /·/, `${state} fresh label should be bare`);
+  }
+});
+
+test("revoked lifecycle overrides any health verdict and carries no freshness note", () => {
+  const flag = deriveSourceStatus(healthWithFreshness("healthy", "stale"), true);
   assert.equal(flag.kind, "revoked");
+  assert.equal(flag.freshnessNote, null);
+  assert.equal(flag.label, "Revoked");
 });
 
 test("formatSchedule is honest about no schedule, paused, and policy-ineligible", () => {

@@ -91,6 +91,29 @@ test("a known considered denominator renders collected / considered", () => {
   assert.equal(facts.coverage.value, "partial");
 });
 
+test("THE CLAMP: collected > considered never renders an impossible fraction (phase 2 lie fix)", () => {
+  // A connector that over-reported (collected 3, considered 2) would otherwise
+  // render "3 / 2 collected" — an impossible tuple. The displayed numerator is
+  // clamped to the denominator; the raw count is disclosed in the title.
+  const facts = formatStreamCollectionFacts(
+    entry({ stream: "items", collected: 3, considered: 2, coverage_condition: "complete" })
+  );
+  assert.equal(facts.countsLabel, "2 / 2 collected");
+  assert.doesNotMatch(facts.countsLabel ?? "", /3 ?\/ ?2/);
+  // The raw count is preserved, never silently dropped.
+  assert.match(facts.countsTitle, /3/);
+  assert.match(facts.countsTitle, /clamped/i);
+});
+
+test("THE CLAMP: covered > considered is clamped too, raw covered preserved in the title", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({ stream: "items", collected: 5, considered: 4, covered: 6, coverage_condition: "complete" })
+  );
+  assert.equal(facts.countsLabel, "4 / 4 covered · 5 collected");
+  assert.doesNotMatch(facts.countsLabel ?? "", /6 ?\/ ?4/);
+  assert.match(facts.countsTitle, /clamped/i);
+});
+
 test("a known covered numerator renders covered / considered without hiding the collected count", () => {
   const facts = formatStreamCollectionFacts(
     entry({

@@ -941,6 +941,28 @@ const SOURCE_PRESSURE_REASON_CODE = "source_pressure";
 const CAUGHT_UP_LEAD_RE = /^caught up/;
 
 /**
+ * The owner-facing one-line coverage statement for a `healthy` connection.
+ *
+ * Honesty fix: a `healthy` connection is NOT necessarily fresh. The prerequisite
+ * `stale_assisted_refresh` advisory (commit 18fed97f) projects an assisted
+ * scheduled connector as healthy/idle while its freshness axis is `stale` —
+ * awaiting a scheduled refresh, not broken. The previous copy hardcoded
+ * "Required coverage is current and complete", which lies for that case (it is
+ * not *current*). We keep the complete-coverage claim (the healthy state earns
+ * it) but make currency conditional on the freshness axis, so a stale-but-healthy
+ * connection reads as awaiting refresh instead of claiming it is up to date.
+ */
+function healthyCoverageStatement(health: RefConnectionHealthSnapshot): string {
+  if (health.axes.freshness === "stale") {
+    return "Required coverage is complete, but the latest data is outside the freshness window — a refresh is due.";
+  }
+  if (health.axes.freshness === "unknown") {
+    return "Required coverage is complete; freshness could not be determined from the available evidence.";
+  }
+  return "Required coverage is current and complete.";
+}
+
+/**
  * Owner-facing pill for the records row.
  *
  * The reference server projects a single connection-health `state` over a
@@ -950,9 +972,12 @@ const CAUGHT_UP_LEAD_RE = /^caught up/;
  * one dominant verdict. The dashboard SHOULD NOT recomplect them into a
  * UX that contradicts the model. In particular:
  *
- * - "Healthy" is a health verdict. The spine emits it only when coverage
- *   is complete, freshness is fresh, backlog is clear, and projection
- *   evidence is current.
+ * - "Healthy" is a health verdict: coverage is complete, backlog is clear,
+ *   and projection evidence is current. It does NOT guarantee freshness —
+ *   an assisted scheduled connector can be healthy while stale (awaiting a
+ *   scheduled refresh; see `stale_assisted_refresh`), so the healthy headline
+ *   copy is freshness-aware (see `healthyCoverageStatement`) rather than
+ *   claiming the data is current unconditionally.
  * - The spine's `idle` is NOT a health verdict: it means "no terminal
  *   collection verdict yet, and nothing stronger is wrong." Surfacing it
  *   as "Idle" alongside "Healthy" reads as a comparable health state
@@ -996,7 +1021,7 @@ export function deriveConnectionStatusDisplay(input: {
           tone: "neutral",
         };
       }
-      return { label: "Healthy", title: "Required coverage is current and complete.", tone: "success" };
+      return { label: "Healthy", title: healthyCoverageStatement(health), tone: "success" };
     case "needs_attention":
       return {
         label: "Needs attention",
@@ -1185,7 +1210,7 @@ export function synthesizeConnectionVerdict(health: RefConnectionHealthSnapshot)
         badgeState: "healthy",
         handlingItself: true,
         suppressedBlocked: false,
-        runbook: "Required coverage is current and complete.",
+        runbook: healthyCoverageStatement(health),
       };
     default:
       return {

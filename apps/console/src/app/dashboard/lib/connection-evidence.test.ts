@@ -785,6 +785,11 @@ test("resolveRecordCountDisplay handles 0 records as honest 0 when there is no e
   assert.equal(out.reliable, true);
 });
 
+// Phase-2 healthy-headline honesty: a stale healthy connection must not claim
+// its data is current. Regexes hoisted to module scope (lint: useTopLevelRegex).
+const CURRENT_AND_COMPLETE_RE = /current and complete/i;
+const FRESHNESS_DUE_RE = /freshness window|refresh is due/i;
+
 // ─── deriveConnectionStatusDisplay: vocabulary separation ────────────────
 //
 // The records row pill must read as a health/readiness/activity verdict,
@@ -813,6 +818,50 @@ test("deriveConnectionStatusDisplay: healthy scheduled connection reads as a hea
   assert.equal(out.label, "Healthy");
   assert.equal(out.tone, "success");
   assert.equal(out.title.toLowerCase().includes("coverage"), true);
+});
+
+test("deriveConnectionStatusDisplay: stale-but-healthy connection does not claim its data is current (phase 2 lie fix)", () => {
+  // An assisted scheduled connector can project `healthy` while its freshness
+  // axis is `stale` (awaiting a scheduled refresh; see `stale_assisted_refresh`).
+  // The old copy hardcoded "Required coverage is current and complete", which
+  // lies — the data is NOT current. The headline must disclose the staleness.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "healthy",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Healthy");
+  assert.equal(out.tone, "success");
+  // Still claims completeness (the healthy state earns it) but NOT currency.
+  assert.doesNotMatch(out.title, CURRENT_AND_COMPLETE_RE);
+  assert.match(out.title, FRESHNESS_DUE_RE);
+});
+
+test("deriveConnectionStatusDisplay: fresh-and-healthy connection still reads current and complete", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "healthy",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.match(out.title, CURRENT_AND_COMPLETE_RE);
+});
+
+test("synthesizeConnectionVerdict: stale-but-healthy connection does not claim its data is current (phase 2 lie fix)", () => {
+  const verdict = synthesizeConnectionVerdict(
+    snapshot({
+      state: "healthy",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    })
+  );
+  assert.equal(verdict.badgeState, "healthy");
+  assert.doesNotMatch(verdict.runbook, CURRENT_AND_COMPLETE_RE);
+  assert.match(verdict.runbook, FRESHNESS_DUE_RE);
 });
 
 test("deriveConnectionStatusDisplay: healthy projection without durable progress reads as Ready, not Healthy", () => {

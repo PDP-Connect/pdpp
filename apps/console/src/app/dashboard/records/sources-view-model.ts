@@ -41,9 +41,10 @@ import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
  * The status flag rendered against each instance in the list and the passport.
- * Derived ONLY from the connection-health `state` (plus the durable revoked
- * lifecycle flag), so the dot, the Endorse badge, and the headline all read
- * from one source of truth.
+ * Derived from the connection-health `state` and freshness axis (plus the
+ * durable revoked lifecycle flag), so the dot, the Endorse badge, and the
+ * headline all read from one source of truth — and so a stale-but-healthy
+ * connection discloses its staleness instead of reading bare green.
  *
  *   ● healthy    — green dot       (state: healthy | idle)
  *   ◐ degraded   — amber half-dot  (state: degraded | cooling_off | needs_attention)
@@ -60,8 +61,20 @@ export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
 export interface SourceStatusFlag {
   /** Single-glyph dot for the dense list (color via `tone` token class). */
   dot: string;
+  /**
+   * Mandatory freshness annotation whenever the freshness axis is not `fresh`.
+   * `null` when the connection is fresh (or carries no freshness evidence),
+   * so a stale/unknown status can never read as a bare "Healthy" without
+   * disclosing that its data is not current. It is folded into `label`, and
+   * exposed separately so a surface can render it as its own chip.
+   */
+  freshnessNote: string | null;
   kind: SourceStatusKind;
-  /** Short human label (e.g. "Healthy", "Needs attention"). */
+  /**
+   * Short human label (e.g. "Healthy", "Needs attention"). When a
+   * `freshnessNote` applies, it is appended (e.g. "Healthy · stale") so the
+   * one string the list and passport render is never silent about staleness.
+   */
   label: string;
   tone: SourceStatusTone;
 }
@@ -135,35 +148,89 @@ const HEALTHY_STATES = new Set(["healthy", "idle"]);
 const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
 
 /**
- * Map the connection-health `state` (and the durable revoked flag) to the
- * single status flag the list dot, the Endorse badge, and the headline share.
- * Revoked is a lifecycle fact that overrides any health verdict — a revoked
- * connection reads "struck, not erased" regardless of its last health snapshot.
+ * The freshness annotation for a status flag, or `null` when the connection is
+ * fresh / carries no freshness evidence. Mandatory whenever the freshness axis
+ * is not `fresh`: a healthy connection can still be `stale` (an assisted
+ * scheduled connector awaiting a scheduled refresh; see `stale_assisted_refresh`)
+ * or `unknown`, and the status flag must disclose that rather than reading a
+ * bare "Healthy" that implies up-to-date data.
+ */
+function deriveFreshnessNote(health: RefConnectionHealthSnapshot | undefined): string | null {
+  switch (health?.axes.freshness) {
+    case "stale":
+      return "stale";
+    case "unknown":
+      return "freshness unknown";
+    default:
+      // "fresh", or no freshness evidence at all → nothing to disclose.
+      return null;
+  }
+}
+
+/** Fold a freshness note into a base label, e.g. "Healthy" + "stale" → "Healthy · stale". */
+function labelWithFreshness(base: string, note: string | null): string {
+  return note ? `${base} · ${note}` : base;
+}
+
+/**
+ * Map the connection-health `state` and freshness axis (and the durable revoked
+ * flag) to the single status flag the list dot, the Endorse badge, and the
+ * headline share. Revoked is a lifecycle fact that overrides any health verdict
+ * — a revoked connection reads "struck, not erased" regardless of its last
+ * health snapshot.
+ *
+ * Freshness is co-required, not just `state`: a connection that is healthy/idle
+ * by state can still be `stale` or `unknown` on the freshness axis, so the flag
+ * carries a mandatory `freshnessNote` (folded into `label`) whenever the
+ * freshness axis is not `fresh`. This is the Phase-2 honesty fix that stops a
+ * stale-but-healthy connection from reading as a bare green "Healthy".
  */
 export function deriveSourceStatus(
   health: RefConnectionHealthSnapshot | undefined,
   revoked: boolean
 ): SourceStatusFlag {
   if (revoked) {
-    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked" };
+    // A revoked connection is no longer collecting, so its last-known freshness
+    // is not a live signal; the struck lifecycle is the whole story.
+    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
   }
   const state = health?.state;
+  const freshnessNote = deriveFreshnessNote(health);
   if (state && HEALTHY_STATES.has(state)) {
-    return { kind: "healthy", dot: "●", tone: "success", label: "Healthy" };
+    return {
+      kind: "healthy",
+      dot: "●",
+      tone: "success",
+      label: labelWithFreshness("Healthy", freshnessNote),
+      freshnessNote,
+    };
   }
   if (state === "blocked") {
-    return { kind: "blocked", dot: "⊘", tone: "destructive", label: "Blocked" };
+    return {
+      kind: "blocked",
+      dot: "⊘",
+      tone: "destructive",
+      label: labelWithFreshness("Blocked", freshnessNote),
+      freshnessNote,
+    };
   }
   if (state && DEGRADED_STATES.has(state)) {
     return {
       kind: "degraded",
       dot: "◐",
       tone: "warning",
-      label: state === "needs_attention" ? "Needs attention" : "Degraded",
+      label: labelWithFreshness(state === "needs_attention" ? "Needs attention" : "Degraded", freshnessNote),
+      freshnessNote,
     };
   }
   // state === "unknown", or no projection at all → honest unknown, never green.
-  return { kind: "unknown", dot: "○", tone: "muted", label: "Unknown" };
+  return {
+    kind: "unknown",
+    dot: "○",
+    tone: "muted",
+    label: labelWithFreshness("Unknown", freshnessNote),
+    freshnessNote,
+  };
 }
 
 const SECONDS_PER_DAY = 86_400;

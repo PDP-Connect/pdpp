@@ -32,9 +32,12 @@ export interface StreamCollectionFacts {
   /**
    * Owner-facing coverage/count line. When the connector declared a `covered`
    * numerator, show `covered / considered covered` plus the raw collected count.
-   * Otherwise show `collected / considered`. Unknown denominators stay explicit
-   * and never become fabricated fractions. `null` when there is nothing honest
-   * to say (no collected records and no considered denominator).
+   * Otherwise show `collected / considered`. The displayed numerator is clamped
+   * to the considered denominator so an over-reported count can never render an
+   * impossible fraction (e.g. "3 / 2 collected"); the raw count is preserved in
+   * `countsTitle`. Unknown denominators stay explicit and never become
+   * fabricated fractions. `null` when there is nothing honest to say (no
+   * collected records and no considered denominator).
    */
   countsLabel: string | null;
   /** Long-form hover for the counts line. */
@@ -95,16 +98,30 @@ function buildCountsLine(entry: RefCollectionReportEntry): { label: string | nul
   const collectedText = collected.toLocaleString();
   if (typeof entry.considered === "number" && Number.isFinite(entry.considered)) {
     const considered = entry.considered.toLocaleString();
+    // Honesty clamp: the rendered fraction numerator can never exceed its
+    // denominator. A `collected > considered` input (a connector that
+    // over-reported, or a considered denominator that lagged the collected
+    // count) would otherwise render an impossible tuple like "3 / 2 collected".
+    // We clamp the displayed numerator to the denominator so the fraction
+    // stays well-formed, and the long-form title states the raw collected
+    // count verbatim so the discrepancy is disclosed, never silently dropped.
+    const overReported = collected > entry.considered;
+    const clampedNumerator = Math.min(collected, entry.considered).toLocaleString();
     if (typeof entry.covered === "number" && Number.isFinite(entry.covered)) {
-      const covered = entry.covered.toLocaleString();
+      const covered = Math.min(entry.covered, entry.considered).toLocaleString();
+      const overCovered = entry.covered > entry.considered || overReported;
       return {
         label: `${covered} / ${considered} covered · ${collectedText} collected`,
-        title: `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
+        title: overCovered
+          ? `This run accounted for ${entry.covered.toLocaleString()} of ${considered} considered records for this stream — more than the considered denominator, so the displayed fraction is clamped to ${considered} / ${considered}. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`
+          : `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
       };
     }
     return {
-      label: `${collectedText} / ${considered} collected`,
-      title: `This run collected ${collectedText} of ${considered} considered records for this stream.`,
+      label: `${clampedNumerator} / ${considered} collected`,
+      title: overReported
+        ? `This run collected ${collectedText} records for this stream — more than the ${considered} it considered, so the displayed fraction is clamped to ${considered} / ${considered}. The raw collected count is ${collectedText}.`
+        : `This run collected ${collectedText} of ${considered} considered records for this stream.`,
     };
   }
   // Unknown considered denominator: never imply a fraction. Show the raw count
