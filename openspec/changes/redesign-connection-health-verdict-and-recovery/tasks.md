@@ -80,7 +80,7 @@
 - [x] 12.2 Pin golden calibration fixtures before UI migration: ChatGPT, Amazon, Chase, synthetic terminal `code_fix`, and synthetic runtime fault. Each fixture asserts both the verdict and the calibration trace.
 - [x] 12.3 Run a shadow comparison over the live connection set before replacing owner surfaces. Classify every old-vs-new headline change as `fixed_lie`, `deliberate_silence_correction`, or `unexpected_drift`; block rollout on any `unexpected_drift`.
 - [ ] 12.4 Add DOM-level assertions for owner surfaces: no mechanistic backlog counts on the dashboard, exactly one primary action, no dead owner button for maintainer work, suppressed evidence present in `detail`, and push transport obeying `channel`.
-- [ ] 12.5 Record the calibrated thresholds and copy choices that are intentionally judgment-based — advisory-vs-attention threshold, stale/manual-refresh language, stream-priority weighting, runtime liveness sensitivity, and push eligibility — with the fixture or live evidence that justified each choice.
+- [x] 12.5 Record the calibrated thresholds and copy choices that are intentionally judgment-based — advisory-vs-attention threshold, stale/manual-refresh language, stream-priority weighting, runtime liveness sensitivity, and push eligibility — with the fixture or live evidence that justified each choice.
 
 ## 13. Owner-only residual
 
