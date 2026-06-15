@@ -74,6 +74,14 @@
 - [ ] 11.3 Run the focused connection-health and rendered-verdict tests plus the composite-invariant and property tests; run `tsc` and the console lint/ultracite gate clean.
 - [ ] 11.4 Re-run `openspec validate redesign-connection-health-verdict-and-recovery --strict` and `openspec validate --all --strict` after implementation.
 
-## 12. Owner-only residual
+## 12. Calibration to the SLVP ideal
 
-- [ ] 12.1 Owner-only live verification + Codex RI owner review: confirm against live `pdpp.vivid.fish` that the dashboard renders the three journeys correctly (no `2532` on the dashboard, Amazon/Chase advisories, ChatGPT calm), that the self-heal loop lands on the existing connection, and that Risk 1's refresh-evidence wiring holds end-to-end; record any residual as a named risk rather than leaving the change pseudo-active.
+- [ ] 12.1 Add a non-owner-surface calibration trace for `synthesizeRenderedVerdict` test/operator review: tone cause, channel cause, suppressed evidence, detail destination, primary required action, and `satisfied_when` contract. Confirm it is not exposed to grant-scoped REST/MCP clients.
+- [ ] 12.2 Pin golden calibration fixtures before UI migration: ChatGPT, Amazon, Chase, synthetic terminal `code_fix`, and synthetic runtime fault. Each fixture asserts both the verdict and the calibration trace.
+- [ ] 12.3 Run a shadow comparison over the live connection set before replacing owner surfaces. Classify every old-vs-new headline change as `fixed_lie`, `deliberate_silence_correction`, or `unexpected_drift`; block rollout on any `unexpected_drift`.
+- [ ] 12.4 Add DOM-level assertions for owner surfaces: no mechanistic backlog counts on the dashboard, exactly one primary action, no dead owner button for maintainer work, suppressed evidence present in `detail`, and push transport obeying `channel`.
+- [ ] 12.5 Record the calibrated thresholds and copy choices that are intentionally judgment-based — advisory-vs-attention threshold, stale/manual-refresh language, stream-priority weighting, runtime liveness sensitivity, and push eligibility — with the fixture or live evidence that justified each choice.
+
+## 13. Owner-only residual
+
+- [ ] 13.1 Owner-only live verification + Codex RI owner review: confirm against live `pdpp.vivid.fish` that the dashboard renders the three journeys correctly (no `2532` on the dashboard, Amazon/Chase advisories, ChatGPT calm), that the self-heal loop lands on the existing connection, and that Risk 1's refresh-evidence wiring holds end-to-end; record any residual as a named risk rather than leaving the change pseudo-active.

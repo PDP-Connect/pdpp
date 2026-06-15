@@ -296,6 +296,56 @@ and obey it. If any surface re-derives "is this actionable / should I push / sho
 I badge" from raw axes, the braid is back and both the honesty AND usefulness
 guarantees rot one PR at a time — exactly how the original divergence happened.
 
+## Calibration plan
+
+Calibration is the step that keeps the implementation aligned with the SLVP ideal
+rather than merely type-correct. The design has two classes of decisions:
+
+1. **Fixed invariants.** These are not tunable: one server-owned verdict, no raw
+   `health.state` rendering, worst-wins `tone`, `tone` orthogonal to `channel`,
+   `attention` only with an owner-satisfiable action, suppressed truth present in
+   `detail`, derived terminality, one `satisfied_when` mechanism, self-heal on the
+   existing connection, grant-scope isolation, and no runtime-fault cascade.
+2. **Calibrated judgments.** These are tuned from fixtures and live evidence:
+   advisory-vs-attention threshold, stream-priority weighting in worst-wins rollup,
+   stale windows and manual-refresh language, push eligibility, runtime liveness
+   sensitivity, and the exact owner-facing sentence for each action.
+
+The implementation SHALL expose a low-noise calibration trace for tests and
+operator review. For each verdict, the trace should answer: which evidence set the
+`tone`, which evidence set the `channel`, which evidence was suppressed from the
+attention layer, where that evidence appears in `detail`, which required action is
+primary, and which `satisfied_when` contract will clear it. The trace is not an
+owner-surface field and must not be grant-scoped; it is a build/test and operator
+diagnostic so implementers can prove the verdict is not hand-waved.
+
+Calibration proceeds in four gates:
+
+1. **Golden fixtures before UI.** The synthesizer is pinned against ChatGPT,
+   Amazon, Chase, and synthetic terminal/runtime fixtures before any surface
+   migration. The expected outputs include both verdict fields and the calibration
+   trace. This prevents UI work from hiding a bad model.
+2. **Shadow comparison against live connections.** Before replacing surfaces, run
+   the synthesizer over the live connection set and compare old vs. new headlines.
+   Any changed row must be categorized as a fixed lie, a deliberate silence
+   correction, or an unexpected drift. Unexpected drift blocks rollout.
+3. **Surface assertions, not screenshots alone.** Owner pages are tested by DOM
+   assertions for the words and absences that define the ideal: no mechanistic
+   backlog counts on the dashboard, exactly one primary action, no dead owner
+   button for maintainer work, `detail` containing suppressed evidence, and push
+   transport obeying `channel`.
+4. **Live acceptance with residual log.** After deployment, the live three-journey
+   acceptance is repeated and every residual is classified as invariant failure,
+   calibration miss, or external/live-data change. Invariant failures block
+   archive. Calibration misses become a small named tuning task with the evidence
+   that triggered it; they do not become silent drift.
+
+The calibration target is not "fewest warnings." It is "the owner only has to act
+when the owner is genuinely useful, and every action presented can actually make
+the system better." A calm dashboard that hides an owner-required fix is a failure;
+an honest dashboard that asks the owner to process self-handled internals is also a
+failure. The acceptance bar is the conjunction.
+
 ## Acceptance Checks
 
 - `openspec validate redesign-connection-health-verdict-and-recovery --strict`
@@ -317,6 +367,13 @@ guarantees rot one PR at a time — exactly how the original divergence happened
   `detail.detail_gap_backlog`; Amazon `amber / advisory / "31 days stale" +
   Refresh now`; Chase `amber / advisory / "transactions stuck since Apr 22" +
   Retry now` with a per-stream row that truthfully says the next run retries.
+- A calibration trace exists for test/operator review and explains, per verdict,
+  the tone cause, channel cause, suppressed evidence, detail destination, primary
+  action, and `satisfied_when` contract; the trace is not exposed to grant-scoped
+  clients.
+- A shadow run over live connections classifies every old-vs-new headline change as
+  fixed lie, deliberate silence correction, or unexpected drift; unexpected drift
+  blocks rollout.
 - The self-heal loop test: satisfying a `refresh_now`/`reauth` action lands on the
   existing connection, the `satisfied_when` watcher fires ONE confirming run, the
   verdict flips green with no "now run it" step, and an identical re-failure
