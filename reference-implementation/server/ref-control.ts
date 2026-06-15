@@ -3270,6 +3270,7 @@ function buildRenderedVerdictForSummary(input: {
   readonly hasRecoveredDetailGaps: boolean;
   readonly localDeviceBacked: boolean;
   readonly manifestStreams: readonly VerdictManifestStreamLike[];
+  readonly observedAt: string;
   readonly refreshPolicy: unknown;
   readonly retainedRecords: number;
   readonly runtimeOk: boolean;
@@ -3291,6 +3292,7 @@ function buildRenderedVerdictForSummary(input: {
     // as "last run" progress.
     gapsDrainedLastRun: null,
     lastRefreshedAt: input.freshness.captured_at ?? null,
+    observedAt: input.observedAt,
   });
   return synthesizeConnectorVerdict({
     snapshot: input.connectionHealth,
@@ -3347,6 +3349,7 @@ async function projectConnectorSummaryForInstance(
     getAcquisitionCoverageSummary(connectorInstanceId),
   ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
+  const nowIso = new Date().toISOString();
   // Adaptive rate controller snapshot: read from the latest run's terminal
   // event (fast path) or its most recent rate-change progress event (in-
   // progress run). `null` when no controller has fired for this connection.
@@ -3387,6 +3390,7 @@ async function projectConnectorSummaryForInstance(
     pendingDetailGapsRecovered: detailGaps.recovered,
     pendingDetailGapsTerminal: detailGaps.terminal,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
+    nowIso,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,
     unreliableSources: combineUnreliableSources(
@@ -3412,6 +3416,7 @@ async function projectConnectorSummaryForInstance(
     hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
     localDeviceBacked: instance.sourceKind === "local_device",
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
+    observedAt: nowIso,
     refreshPolicy,
     retainedRecords: live.totalRecords,
     runtimeOk: deps.runtimeOk,
@@ -3522,6 +3527,7 @@ export async function getConnectorDetail(
       getConnectorLocalCoverageAxis(connectorId, null),
     ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
+  const nowIso = new Date().toISOString();
   const collectionRate = lastRun?.run_id
     ? await readLatestCollectionRateForRun(
         lastRun.run_id,
@@ -3554,6 +3560,7 @@ export async function getConnectorDetail(
     pendingDetailGapsRecovered: detailGaps.recovered,
     pendingDetailGapsTerminal: detailGaps.terminal,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
+    nowIso,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,
     unreliableSources: combineUnreliableSources(
@@ -3579,6 +3586,7 @@ export async function getConnectorDetail(
     hasRecoveredDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,
     localDeviceBacked: detailLocalDeviceBacked,
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
+    observedAt: nowIso,
     refreshPolicy,
     retainedRecords: live.totalRecords,
     runtimeOk: controller != null,

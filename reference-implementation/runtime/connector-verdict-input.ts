@@ -174,6 +174,7 @@ export function buildProgressEvidence(input: {
   readonly recordsCommittedLastRun: number | null;
   readonly gapsDrainedLastRun: number | null;
   readonly lastRefreshedAt: string | null;
+  readonly observedAt?: string | null;
 }): ProgressEvidence {
   return {
     mode: input.mode,
@@ -181,6 +182,7 @@ export function buildProgressEvidence(input: {
     records_committed_last_run: input.recordsCommittedLastRun,
     gaps_drained_last_run: input.gapsDrainedLastRun,
     last_refreshed_at: input.lastRefreshedAt,
+    observed_at: input.observedAt ?? null,
   };
 }
 

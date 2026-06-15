@@ -261,6 +261,8 @@ export interface ProgressEvidence {
   readonly gaps_drained_last_run?: number | null;
   readonly last_refreshed_at?: string | null;
   readonly mode: ProgressMode;
+  /** Observation instant supplied by the caller; keeps this module pure. */
+  readonly observed_at?: string | null;
   readonly records_committed_last_run?: number | null;
   readonly retained_records?: number | null;
 }
@@ -669,14 +671,18 @@ const CALM_ADVISORY_KINDS: ReadonlySet<AnnotationKind> = new Set<AnnotationKind>
 function buildAnnotations(
   snapshot: ConnectionHealthSnapshot,
   channel: RenderedChannel,
-  refresh: ConnectionRefreshEvidence | null
+  refresh: ConnectionRefreshEvidence | null,
+  progress: ProgressEvidence | null,
+  actions: readonly RequiredAction[]
 ): VerdictAnnotation[] {
   const annotations: VerdictAnnotation[] = [];
 
   // Co-required freshness annotation: ALWAYS present when freshness is not fresh
-  // (honesty invariant 1). Text carries NO raw counts.
-  if (snapshot.axes.freshness !== "fresh") {
-    annotations.push({ kind: "freshness", text: freshnessAnnotationText(snapshot, refresh) });
+  // (honesty invariant 1). For fresh connections, include a quiet recency cue
+  // when the caller supplied enough evidence. Text carries NO raw mechanistic counts.
+  const freshnessText = freshnessAnnotationText(snapshot, refresh, progress, actions);
+  if (freshnessText) {
+    annotations.push({ kind: "freshness", text: freshnessText });
   }
 
   // On calm/advisory, strip any annotation kind outside freshness|schedule|activity
@@ -690,18 +696,94 @@ function buildAnnotations(
 
 function freshnessAnnotationText(
   snapshot: ConnectionHealthSnapshot,
-  refresh: ConnectionRefreshEvidence | null
-): string {
+  refresh: ConnectionRefreshEvidence | null,
+  progress: ProgressEvidence | null,
+  actions: readonly RequiredAction[]
+): string | null {
+  if (snapshot.axes.freshness === "fresh") {
+    return freshRecencyText(progress);
+  }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness is unknown — checking.";
   }
+  const retry = actions.find((action) => action.kind === "retry_gap");
+  if (retry) {
+    const affected = retry.affects[0] ?? null;
+    const since = shortMonthDay(snapshot.last_success_at);
+    if (affected && since) {
+      return `${humanizeStreamId(affected)} stuck since ${since}.`;
+    }
+  }
+  const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
   if (isManualRefreshOnly(refresh)) {
+    if (refreshedAge) {
+      return `Last refreshed ${refreshedAge}.`;
+    }
     return "Stale — this connector refreshes when you run it.";
   }
   if (isAssistedRefresh(refresh)) {
     return "Stale — refreshes on schedule; may ask for your help to catch up.";
   }
   return "Stale for this connection's freshness policy.";
+}
+
+function freshRecencyText(progress: ProgressEvidence | null): string | null {
+  const age = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
+  if (age === "today") {
+    return "Fresh today.";
+  }
+  if (age === "yesterday") {
+    return "Fresh yesterday.";
+  }
+  return null;
+}
+
+function relativeDayAge(fromIso: string | null, observedIso: string | null): string | null {
+  const from = utcDayStartMs(fromIso);
+  const observed = utcDayStartMs(observedIso);
+  if (from === null || observed === null || from > observed) {
+    return null;
+  }
+  const days = Math.floor((observed - from) / DAY_MS);
+  if (days === 0) {
+    return "today";
+  }
+  if (days === 1) {
+    return "yesterday";
+  }
+  return `${days} days ago`;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function utcDayStartMs(iso: string | null): number | null {
+  if (!iso) {
+    return null;
+  }
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  const date = new Date(ms);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function shortMonthDay(iso: string | null): string | null {
+  if (!iso) {
+    return null;
+  }
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  const date = new Date(ms);
+  return `${MONTH_LABELS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+}
+
+function humanizeStreamId(streamId: string): string {
+  const words = streamId.replace(/[_-]+/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 // ─── Forward statement ──────────────────────────────────────────────────────
@@ -1155,7 +1237,7 @@ export function synthesizeRenderedVerdict(
   }
 
   // ── annotations, statement, streams, progress ──
-  const annotations = buildAnnotations(snapshot, channel, refresh);
+  const annotations = buildAnnotations(snapshot, channel, refresh, progress, actions);
   const forwardStatement = buildForwardStatement(disposition, actions);
   const streamRows = buildStreamRows(streams, snapshot, refresh, actions);
   const renderedProgress = buildProgress(progress);

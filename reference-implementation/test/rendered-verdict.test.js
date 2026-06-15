@@ -564,11 +564,14 @@ test('golden: ChatGPT — green/calm/fresh, no 2532 on dashboard, 2532 present i
     mode: 'deferred',
     gaps_drained_last_run: 2532,
     retained_records: 126000,
+    last_refreshed_at: '2026-06-15T08:00:00.000Z',
+    observed_at: '2026-06-15T12:00:00.000Z',
   });
   // Attention layer: green/calm/no gap count.
   assert.equal(v.pill.tone, 'green');
   assert.equal(v.pill.label, 'Healthy');
   assert.equal(v.channel, 'calm');
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && /Fresh today/i.test(a.text)));
   // The acid test: 2532 must not appear on any attention-layer field.
   const attentionText = JSON.stringify({
     pill: v.pill,
@@ -595,10 +598,11 @@ test('golden: Amazon — amber/advisory, 31-days-stale freshness annotation + Re
     mode: 'manual',
     retained_records: 5000,
     last_refreshed_at: '2026-05-15T00:00:00.000Z',
+    observed_at: '2026-06-15T12:00:00.000Z',
   });
   assert.equal(v.pill.tone, 'amber');
   assert.equal(v.channel, 'advisory');
-  assert.ok(v.annotations.some((a) => a.kind === 'freshness'));
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Last refreshed 31 days ago.'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
 });
 
@@ -607,6 +611,7 @@ test('golden: Chase — amber/advisory degraded with a retryable transactions ga
     state: 'degraded',
     axes: { freshness: 'stale', coverage: 'retryable_gap' },
     forward_disposition: 'resumable',
+    last_success_at: '2026-04-22T08:00:00.000Z',
   });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -617,6 +622,7 @@ test('golden: Chase — amber/advisory degraded with a retryable transactions ga
   );
   assert.equal(v.pill.tone, 'amber');
   assert.equal(v.channel, 'advisory');
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Transactions stuck since Apr 22.'));
   const retry = v.required_actions.find((a) => a.kind === 'retry_gap');
   assert.ok(retry);
   assert.equal(retry.audience, 'owner');

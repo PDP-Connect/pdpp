@@ -255,6 +255,93 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
   }
 });
 
+test("toSourceInstanceView renders calibrated live-journey verdict copy without inspection counts", () => {
+  const chatgpt = toSourceInstanceView(
+    summary({
+      connector_id: "chatgpt",
+      connector_display_name: "ChatGPT",
+      display_name: "ChatGPT",
+      rendered_verdict: renderedVerdict({
+        annotations: [{ kind: "freshness", text: "Fresh today." }],
+        detail: {
+          suppressed: [
+            {
+              detail_field: "detail_gap_backlog",
+              kind: "drain",
+              reason: "2532 recovered gaps live in detail only",
+            },
+          ],
+        },
+        pill: { label: "Healthy", tone: "green" },
+      }),
+    })
+  );
+  assert.equal(chatgpt.status.label, "Healthy · Fresh today.");
+  assert.equal(chatgpt.nextAction, null);
+  assert.ok(!JSON.stringify(chatgpt).includes("2532"), "dashboard model must not expose drained gap counts");
+
+  const amazon = toSourceInstanceView(
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon",
+      rendered_verdict: renderedVerdict({
+        annotations: [{ kind: "freshness", text: "Last refreshed 31 days ago." }],
+        pill: { label: "Needs you", tone: "amber" },
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    })
+  );
+  assert.equal(amazon.status.label, "Needs you · Last refreshed 31 days ago.");
+  assert.equal(amazon.nextAction?.label, "Refresh now");
+
+  const chase = toSourceInstanceView(
+    summary({
+      connector_id: "chase",
+      connector_display_name: "Chase",
+      display_name: "Chase",
+      rendered_verdict: renderedVerdict({
+        annotations: [{ kind: "freshness", text: "Transactions stuck since Apr 22." }],
+        pill: { label: "Needs you", tone: "amber" },
+        required_actions: [
+          {
+            affects: ["transactions"],
+            audience: "owner",
+            cta: "Retry now",
+            kind: "retry_gap",
+            satisfied_when: { kind: "gap_recovered" },
+            terminal: false,
+            urgency: "verifying",
+          },
+        ],
+        streams: [
+          {
+            action_ref: 0,
+            collected: 300,
+            considered: 400,
+            coverage: "retryable_gap",
+            disposition: "resumable",
+            statement: "The next run is expected to fill the rest.",
+            stream_id: "transactions",
+          },
+        ],
+      }),
+    })
+  );
+  assert.equal(chase.status.label, "Needs you · Transactions stuck since Apr 22.");
+  assert.equal(chase.nextAction?.label, "Retry now");
+});
+
 test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {
   assert.equal(
     buildSourcesRuntimeAdvisory({
