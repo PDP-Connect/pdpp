@@ -934,8 +934,16 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         run_id TEXT NOT NULL UNIQUE,
         trace_id TEXT NOT NULL,
         scenario_id TEXT NOT NULL,
-        started_at TEXT NOT NULL
+        started_at TEXT NOT NULL,
+        run_generation INTEGER NOT NULL DEFAULT 1
       );
+
+      -- run_generation is the per-connection fencing token (Kleppmann): it
+      -- increments each time a run is admitted so a reclaimed zombie run from
+      -- an earlier generation cannot commit once a newer run is active. Added
+      -- via ADD COLUMN IF NOT EXISTS so pre-fencing tables backfill to 1.
+      ALTER TABLE controller_active_runs
+        ADD COLUMN IF NOT EXISTS run_generation INTEGER NOT NULL DEFAULT 1;
 
       CREATE INDEX IF NOT EXISTS idx_pg_controller_active_runs_run_id
         ON controller_active_runs(run_id);
