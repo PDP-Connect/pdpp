@@ -349,6 +349,15 @@ export interface ControllerOptions {
   // Tests substitute a fake to drive the projection without DB state.
   detailGapStore?: ConnectorDetailGapReadStore;
   logger?: ControllerLogger;
+  /**
+   * Maximum wall-clock milliseconds a single run may remain active before the
+   * watchdog force-finalizes it with a `run.failed` (reason: `run_timed_out`).
+   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 3 600 000 ms (1 hour)
+   * when neither is set. Pass `Infinity` (or set the env var to "Infinity") to
+   * disable the watchdog — useful for intentionally long runs or tests that
+   * drive timing themselves.
+   */
+  maxRunWallClockMs?: number;
   ownerClientId?: string;
   ownerSubjectId?: string;
   /**
@@ -594,6 +603,17 @@ const activeRuns = new Map<string, ActiveRun>();
 // docs/run-reconciliation-design-brief.md for the broader controller-
 // shutdown discipline this complements.
 const activeRunPromises = new Map<string, Promise<unknown>>();
+// Run IDs whose runPromise has settled but whose finalizeRunCleanup may not
+// have completed yet (race window) or — defensively — whose cleanup was
+// skipped due to an unhandled edge. Used by the 409 guard to distinguish a
+// stale in-memory entry from a genuinely live run, so a hung run that was
+// force-finalized by the watchdog never permanently blocks future run-nows.
+const settledRunIds = new Set<string>();
+// Per-run watchdog timer handles, keyed by run_id. Armed after
+// activeRunPromises.set; cleared in finalizeRunCleanup so a normal
+// completion never fires the watchdog. All timers are .unref()'d so they
+// don't prevent process exit during a clean shutdown.
+const activeRunWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Keyed by run_id. Interaction broker state is intentionally in-memory:
 // dashboard-submitted values satisfy the current live run only and are never
 // persisted to `.env.local`, SQLite config/state, or spine event payloads.
@@ -1482,6 +1502,11 @@ export function __resetControllerInteractionStateForTests(): void {
   activeRunInteractions.clear();
   activeRuns.clear();
   activeRunPromises.clear();
+  settledRunIds.clear();
+  for (const timer of activeRunWatchdogTimers.values()) {
+    clearTimeout(timer);
+  }
+  activeRunWatchdogTimers.clear();
   needsHumanAttention.clear();
 }
 
@@ -1840,6 +1865,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
     opts.browserSurfaceReadinessProbe === undefined ? null : opts.browserSurfaceReadinessProbe;
   const browserSurfaceMidWaitPollIntervalMs = opts.browserSurfaceMidWaitPollIntervalMs;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
+  // Wall-clock watchdog budget per run. Resolves from opts first, then the
+  // PDPP_MAX_RUN_WALL_CLOCK_MS env var, then a safe 1-hour default. Infinity
+  // disables the watchdog entirely (tests set this to avoid real timers).
+  const maxRunWallClockMs = (() => {
+    if (opts.maxRunWallClockMs !== undefined) { return opts.maxRunWallClockMs; }
+    const envVal = process.env.PDPP_MAX_RUN_WALL_CLOCK_MS;
+    if (envVal !== undefined) {
+      if (envVal === "Infinity") { return Number.POSITIVE_INFINITY; }
+      const parsed = Number(envVal);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`PDPP_MAX_RUN_WALL_CLOCK_MS must be a non-negative number or "Infinity", got ${envVal}`);
+      }
+      return parsed;
+    }
+    return 3_600_000; // 1 hour default
+  })();
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
   const activeRunTraceContexts = new Map<string, SpineTraceContext>();
   // Per-run owner-cancel controllers, keyed by run_id. `runNow` creates one
@@ -3306,6 +3347,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly runId: string;
     readonly traceContext: SpineTraceContext;
   }): Promise<void> {
+    // Idempotency guard: the watchdog and the run's own .finally() can both
+    // call finalizeRunCleanup. Only the first call does real work; subsequent
+    // calls are silent no-ops. We detect "already finalized" by checking
+    // whether the key is still in activeRuns (the primary liveness signal).
+    if (!activeRuns.has(input.key)) {
+      // Already cleaned up (watchdog fired first, or called twice). Ensure
+      // the settled marker is present regardless.
+      settledRunIds.add(input.runId);
+      return;
+    }
+    // Clear the watchdog timer for this run so a normal completion that beats
+    // the deadline never fires the watchdog afterwards.
+    const watchdogTimer = activeRunWatchdogTimers.get(input.runId);
+    if (watchdogTimer !== undefined) {
+      clearTimeout(watchdogTimer);
+      activeRunWatchdogTimers.delete(input.runId);
+    }
+    // Mark settled BEFORE deleting from activeRuns so the 409 guard's
+    // reconciliation window is as short as possible.
+    settledRunIds.add(input.runId);
     activeRuns.delete(input.key);
     activeRunPromises.delete(input.runId);
     activeRunTraceContexts.delete(input.runId);
@@ -3412,6 +3473,37 @@ export function createController(opts: ControllerOptions = {}): Controller {
     };
   }
 
+  /**
+   * Guards the 409 run_already_active check against stale in-memory entries.
+   *
+   * A stale entry arises when the watchdog force-finalizes a hung run but the
+   * `activeRuns` map still contains the entry (race between the watchdog's async
+   * emitAndFinalize and the next run-now call). The entry is stale when its
+   * run_id appears in `settledRunIds` (marked by finalizeRunCleanup) or when
+   * there is no corresponding `activeRunPromises` entry (promise already gone).
+   *
+   * - If stale: clears the orphaned map entries and returns (allows new run).
+   * - If live: throws 409 run_already_active.
+   * - If absent: returns (no conflict).
+   */
+  function assertNoConflictingActiveRun(key: string): void {
+    const existing = activeRuns.get(key);
+    if (!existing) { return; }
+    const isStale = settledRunIds.has(existing.run_id) || !activeRunPromises.has(existing.run_id);
+    if (isStale) {
+      log.warn?.(
+        `[controller] reclaiming stale activeRuns entry for ${existing.connector_id} (run_id=${existing.run_id}); allowing new run`
+      );
+      activeRuns.delete(key);
+      activeRunPromises.delete(existing.run_id);
+      settledRunIds.delete(existing.run_id);
+    } else {
+      throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
+        runId: existing.run_id,
+      });
+    }
+  }
+
   async function validateRunNowPreconditions(
     connectorId: string,
     options: RunNowOptions,
@@ -3421,12 +3513,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!manifest) {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
-    const existing = activeRuns.get(key);
-    if (existing) {
-      throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
-        runId: existing.run_id,
-      });
-    }
+    assertNoConflictingActiveRun(key);
 
     // Provider-pressure cooldown gate. Ordinary manual runs respect the same
     // cross-run cooldown the scheduler uses. An explicit `force: true` bypasses
@@ -3489,6 +3576,75 @@ export function createController(opts: ControllerOptions = {}): Controller {
       throw new ControllerError(`No runnable connector implementation is available for ${connectorId}`, "not_found");
     }
     return { connectorPath, manifest };
+  }
+
+  /**
+   * Arms the wall-clock watchdog for a run. If the run does not reach terminal
+   * state within `maxRunWallClockMs`, the watchdog:
+   *   1. Aborts the run's cancellation signal (requests cooperative subprocess exit).
+   *   2. Emits a typed `run.failed` (reason: `run_timed_out`) terminal spine event.
+   *   3. Calls `finalizeRunCleanup` to clear the in-memory and DB active-run entry.
+   *
+   * No-op when `maxRunWallClockMs` is not a positive finite number (Infinity disables).
+   * The timer is `.unref()`'d so it never prevents a clean process exit.
+   * `finalizeRunCleanup` is idempotent — both the watchdog and the run's own `.finally()`
+   * can call it safely.
+   */
+  function armRunWatchdog(input: {
+    readonly browserSurfaceLease: BrowserSurfaceLease | null;
+    readonly connectorId: string;
+    readonly connectorInstanceId: string;
+    readonly key: string;
+    readonly runId: string;
+    readonly traceContext: SpineTraceContext;
+  }): void {
+    if (!Number.isFinite(maxRunWallClockMs) || maxRunWallClockMs <= 0) { return; }
+    const { browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext } = input;
+    const watchdogTimer = setTimeout(() => {
+      activeRunWatchdogTimers.delete(runId);
+      if (!activeRuns.has(key)) { return; }
+      log.warn?.(
+        `[controller] watchdog: run ${runId} for ${connectorId} exceeded ${maxRunWallClockMs}ms wall-clock budget; force-finalizing`
+      );
+      const cancellation = activeRunCancellations.get(runId);
+      if (cancellation && !cancellation.signal.aborted) {
+        try { cancellation.abort(); } catch { /* idempotent */ }
+      }
+      const emitAndFinalize = async () => {
+        try {
+          if (!(await runAlreadyTerminal(runId))) {
+            await emitSpineEvent({
+              event_type: "run.failed",
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: "runtime",
+              actor_id: connectorId,
+              object_type: "run",
+              object_id: runId,
+              status: "failed",
+              run_id: runId,
+              data: {
+                source: buildRunSource(connectorId),
+                reason: "run_timed_out",
+                failure_reason: "run_timed_out",
+                records_emitted: 0,
+                message: `Run exceeded the ${maxRunWallClockMs}ms wall-clock budget and was force-terminated by the watchdog.`,
+              },
+            });
+          }
+        } catch (emitErr) {
+          const emitMessage = emitErr instanceof Error ? emitErr.message : String(emitErr);
+          log.warn?.(`[controller] watchdog: failed to emit run_timed_out terminal for ${runId}: ${emitMessage}`);
+        }
+        await finalizeRunCleanup({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
+      };
+      emitAndFinalize().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] watchdog: emitAndFinalize failed for ${runId}: ${message}`);
+      });
+    }, maxRunWallClockMs);
+    if (watchdogTimer.unref) { watchdogTimer.unref(); }
+    activeRunWatchdogTimers.set(runId, watchdogTimer);
   }
 
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
@@ -3687,6 +3843,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
         })
       );
     activeRunPromises.set(runId, runPromise);
+    // Arm the wall-clock watchdog. If runConnectorImpl hangs (never resolves
+    // or rejects), the .finally() above never fires, leaving a phantom entry
+    // in activeRuns that blocks all future run-nows with 409 until restart.
+    // armRunWatchdog bounds this: it force-finalizes the run after the budget
+    // expires and is a no-op when maxRunWallClockMs is Infinity or zero.
+    armRunWatchdog({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
 
     return { run_id: runId, trace_id: traceContext.trace_id, status: "started", ...automationMetadata };
   }
