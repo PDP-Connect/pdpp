@@ -37,6 +37,13 @@ const TEST_PROVIDER_MANIFEST = {
   version: '1.0.0',
   runtime_requirements: { bindings: { network: { required: true } } },
   capabilities: {
+    refresh_policy: {
+      recommended_mode: 'automatic',
+      recommended_interval_seconds: 900,
+      background_safe: true,
+      interaction_posture: 'credentials',
+      rationale: 'Synthetic provider can refresh with stored OAuth tokens.',
+    },
     auth: {
       kind: 'oauth',
       deployment_config: ['TEST_PROVIDER_CLIENT_ID', 'TEST_PROVIDER_CLIENT_SECRET'],
@@ -446,7 +453,7 @@ test('callback with valid code + successful inventory activates exactly one conn
   const exchanger = buildTestExchanger({
     onInventory: () => [{ accountId: 'account_alice', displayLabel: 'alice@example.com' }],
   });
-  await withServer(exchanger, {}, async ({ asUrl, rsUrl }) => {
+  await withServer(exchanger, {}, async ({ asUrl, rsUrl, server }) => {
     const session = OPEN_SESSION_COOKIE;
     const { body: initBody } = await initiateProviderAuth(asUrl, session, 'test_provider');
     const stateToken = exchanger.calls.initiate[0].state;
@@ -471,6 +478,17 @@ test('callback with valid code + successful inventory activates exactly one conn
     assert.equal(connections.length, 1);
     assert.equal(connections[0].connectorId, 'test_provider');
     assert.equal(connections[0].status, 'active');
+
+    // The activation lifecycle invariant attaches a per-connection schedule for
+    // automatic/background-safe manifests. This is independent of credential
+    // presence and keyed by the connection_id, not the connector key.
+    const schedule = await server.controller.getSchedule('test_provider', {
+      connectorInstanceId: conn.connection_id,
+    });
+    assert.ok(schedule, 'automatic provider-auth activation must attach a schedule');
+    assert.equal(schedule.connector_instance_id, conn.connection_id);
+    assert.equal(schedule.interval_seconds, 900);
+    assert.equal(schedule.enabled, true);
 
     // storeTokens was called once for the one account.
     assert.equal(exchanger.calls.store.length, 1);

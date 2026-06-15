@@ -70,7 +70,7 @@ async function withServer(fn) {
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
-    await fn({ asUrl, rsUrl });
+    await fn({ asUrl, rsUrl, server });
   } finally {
     await closeServer(server);
   }
@@ -95,7 +95,7 @@ async function withOpenServer(fn) {
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
-    await fn({ asUrl, rsUrl });
+    await fn({ asUrl, rsUrl, server });
   } finally {
     await closeServer(server);
   }
@@ -422,7 +422,7 @@ test('a failed first sync is visible with an actionable error and no secret leak
 
 test('setup status flips to active once first ingest accepts records', async () => {
   await withCredentialKey(TEST_KEY, async () => {
-    await withOpenServer(async ({ asUrl, rsUrl }) => {
+    await withOpenServer(async ({ asUrl, rsUrl, server }) => {
       await registerConnector(asUrl, 'gmail');
       const cookie = '';
       const ownerToken = await issueOwnerToken(asUrl);
@@ -443,6 +443,14 @@ test('setup status flips to active once first ingest accepts records', async () 
       assert.equal(active.body.setup_state, 'active');
       assert.equal(active.body.health_state, 'healthy');
       assert.equal(active.body.pending, false);
+
+      const schedule = await server.controller.getSchedule('gmail', {
+        connectorInstanceId: connectionId,
+      });
+      assert.ok(schedule, 'automatic static-secret activation must attach a schedule');
+      assert.equal(schedule.connector_instance_id, connectionId);
+      assert.equal(schedule.interval_seconds, 900);
+      assert.equal(schedule.enabled, true);
     });
   });
 });

@@ -70,6 +70,7 @@ import {
   parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
 import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
+import { attachActivationScheduleIfAutomatic } from './connection-activation-schedules.ts';
 import { projectStorageDisplayName, resolveRequestConnectionId } from './connection-id-request.js';
 import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
 import {
@@ -1876,6 +1877,24 @@ async function resolveRegisteredConnectorManifest(connectorId) {
   return manifest;
 }
 
+function createActivationScheduleAttacher(controller) {
+  return async (instance) => {
+    if (!instance || instance.status !== 'active') {
+      return null;
+    }
+    if (!controller) {
+      throw new Error('Cannot attach activation schedule without a connector controller');
+    }
+    const manifest = await resolveRegisteredConnectorManifest(instance.connectorId);
+    return await attachActivationScheduleIfAutomatic({
+      connectorId: instance.connectorId,
+      connectorInstanceId: instance.connectorInstanceId,
+      controller,
+      manifest,
+    });
+  };
+}
+
 function buildGrantInvalidError() {
   const err = new Error('Grant is malformed or no longer valid');
   err.code = 'grant_invalid';
@@ -3478,6 +3497,8 @@ function buildAsApp(opts = {}) {
   // capability-shaped controller / substrate dependencies; the adapter
   // owns owner-auth, namespace resolution, contract metadata, response
   // writing, and the `onScheduleMutation` callback.
+  const attachActivationScheduleForConnection = createActivationScheduleAttacher(controller);
+
   const refConnectorsContext = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
@@ -3649,7 +3670,16 @@ function buildAsApp(opts = {}) {
     handleError,
     pdppError,
     canonicalConnectorKey,
-    createRequestConnectorInstanceStore,
+    createRequestConnectorInstanceStore: () => {
+      const store = createRequestConnectorInstanceStore();
+      return {
+        upsert: async (record) => {
+          const instance = await store.upsert(record);
+          await attachActivationScheduleForConnection(instance);
+          return instance;
+        },
+      };
+    },
     resolveRegisteredConnectorManifest,
     getOwnerSubjectId,
     createTraceContext,
@@ -4008,6 +4038,8 @@ function buildRsApp(opts = {}) {
     pdppError,
   });
 
+  const attachActivationScheduleForConnection = createActivationScheduleAttacher(opts.controller);
+
   // Build rsMutationContext here so both mountRsEventSubscriptions (registered
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
   // (registered after) share the same context object.
@@ -4035,8 +4067,10 @@ function buildRsApp(opts = {}) {
     // First-ingest activation for static-secret drafts: flip draft → active
     // once a record lands. No-op on a non-draft row. See
     // add-static-secret-owner-session-connect-path design Decision 5.
-    activateDraftConnection: (connectorInstanceId) =>
-      createRequestConnectorInstanceStore().activateDraft(connectorInstanceId),
+    activateDraftConnection: async (connectorInstanceId) => {
+      const instance = await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
+      return await attachActivationScheduleForConnection(instance);
+    },
     getLatestAcquisitionBatchForConnection: async (connectorInstanceId) =>
       (await createRequestAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 1 }))[0] ?? null,
     markAcquisitionBatchCommitted: (connectorInstanceId, counts) =>

@@ -37,7 +37,7 @@
 
 ## 6. Refresh-contract creation/lifecycle invariant (Risk 1 — verify the runtime input, not just the manifest)
 
-- [ ] 6.1 Resolve the refresh contract generically from manifest `recommended_mode` + `background_safe` (NOT a per-connector branch, NOT credential presence); `automatic` ⇒ schedule attached at activation, `manual` ⇒ schedule-absence is not a defect but the connection is typed manual.
+- [x] 6.1 Resolve the refresh contract generically from manifest `recommended_mode` + `background_safe` (NOT a per-connector branch, NOT credential presence); `automatic` ⇒ schedule attached at activation, `manual` ⇒ schedule-absence is not a defect but the connection is typed manual.
 - [x] 6.2 Route a stale manual-refresh `account` connection to `owner_refresh_due` / `stale_manual_refresh`, never green; test that a stale manual account connection cannot render a green headline.
 - [x] 6.3 (Risk 1, highest-leverage) Verify that `ConnectionRefreshEvidence` actually reaches the projection at RUNTIME for amazon / chase / reddit / usaa — trace the input end-to-end, not just from the manifest — so `isManualRefreshOnly` is true for them and Amazon does not fall through to `complete` and stay green.
 - [x] 6.4 Assert the non-credential invariant against live shape: ChatGPT is `source_kind=account` + scheduled + zero credentials, so an `account ⇒ credential` invariant SHALL NOT be imposed; add a test/fixture proving a zero-credential active account connection is valid.
