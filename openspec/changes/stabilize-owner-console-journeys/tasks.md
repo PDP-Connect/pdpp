@@ -50,4 +50,4 @@
 
 - [x] Deploy only after the owner approves live-stack mutation or after the RI owner has delegated deploy authority for the tranche.
 - [x] Close the live-stack window with smoke evidence.
-- [ ] Ask the owner for a fresh walkthrough only after the tranche has real headed-browser proof and no known P0/P1 trust/task blockers in its journey row.
+- [x] Ask the owner for a fresh walkthrough only after the tranche has real headed-browser proof and no known P0/P1 trust/task blockers in its journey row.
