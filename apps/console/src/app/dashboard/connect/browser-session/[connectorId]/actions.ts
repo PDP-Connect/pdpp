@@ -62,7 +62,7 @@ async function runSetup(connectorId: string): Promise<never> {
 /**
  * Create a browser-enrollment shell for the given browser-bound connector and
  * immediately start a bounded enrollment run for it. Redirects to the run's
- * stream page so the owner sees the embedded neko browser surface.
+ * stream page so the owner sees the embedded browser surface.
  *
  * This is the server-action counterpart to the browser-session connect page's
  * "Start session" button. Two steps in one action so the owner sees the stream

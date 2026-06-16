@@ -6,7 +6,7 @@
  * SETUP (no ?connectionId): creates a fresh browser-enrollment shell
  * (POST /_ref/connectors/:connectorId/browser-enrollment-shell), starts a
  * bounded enrollment run, and redirects the owner to the run's stream page
- * where the embedded neko browser surface lets them log into the provider.
+ * where the embedded browser surface lets them log into the provider.
  * Once login is captured the shell transitions to active and collection begins.
  *
  * REPAIR (?connectionId=<existing>): skips shell creation and starts a new run
@@ -15,12 +15,7 @@
  *
  * The page is deliberately minimal — it explains what is about to happen and
  * has one primary CTA. The browser interaction itself happens in the run stream
- * page (apps/console/src/app/dashboard/runs/[runId]/stream/), which already
- * handles neko-embedded login for assisted-refresh runs.
- *
- * Neko availability: if neko is not deployed the enrollment run will surface a
- * "Waiting for a browser surface" error on the stream page. The runbook link
- * on this page gives the owner a fallback so they are never left at a dead end.
+ * page (apps/console/src/app/dashboard/runs/[runId]/stream/).
  *
  * Design reference: docs/research/slvp-ideal-browser-device-connector-setup-2026-06-14.md §3B/3C
  */
@@ -31,7 +26,7 @@ import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-di
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
-import { BROWSER_BOUND_RUNBOOK_PATH, isBrowserBoundConnector } from "../../../lib/connection-modality.ts";
+import { isBrowserBoundConnector } from "../../../lib/connection-modality.ts";
 import { startBrowserEnrollmentAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -95,8 +90,8 @@ export default async function BrowserSessionConnectPage({
         breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: pageTitle }]}
         description={
           repairMode
-            ? `Log in to ${displayName} in the hosted browser below to restore collection. Your existing records and history are preserved.`
-            : `Log in to ${displayName} in the hosted browser below. Once your session is captured, collection begins automatically.`
+            ? `Log in to ${displayName} in the secure browser to restore collection. Your existing records and history are preserved.`
+            : `Log in to ${displayName} in the secure browser. Once your session is captured, collection begins automatically.`
         }
         title={pageTitle}
       />
@@ -109,8 +104,7 @@ export default async function BrowserSessionConnectPage({
           <h2 className="pdpp-title text-foreground">How this works</h2>
           <ol className="pdpp-body mt-3 list-inside list-decimal space-y-2 text-muted-foreground">
             <li>
-              Click <strong className="text-foreground">Start session</strong> below. A hosted Chromium browser opens in
-              a new panel.
+              Click <strong className="text-foreground">Start session</strong> below. PDPP opens a secure browser panel.
             </li>
             <li>
               Log in to <strong className="text-foreground">{displayName}</strong> in that browser, exactly as you would
@@ -145,13 +139,12 @@ export default async function BrowserSessionConnectPage({
           </button>
         </form>
 
-        {/* Fallback: runbook for when neko surface isn't available */}
+        {/* Fallback guidance for when the browser panel cannot start. */}
         <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3">
           <p className="pdpp-caption text-muted-foreground">
-            <strong className="text-foreground">Browser not launching?</strong> The hosted browser requires the neko
-            surface service to be running. If the session panel shows "Waiting for a browser surface", follow the{" "}
-            browser-collector runbook at <code className="font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>{" "}
-            to run the collector locally instead. Your data is not lost either way.
+            <strong className="text-foreground">Browser not launching?</strong> Try again, or return to Sources and
+            retry from this source. If PDPP cannot start the secure browser, it will show the reason before any data is
+            changed.
           </p>
         </div>
       </div>
