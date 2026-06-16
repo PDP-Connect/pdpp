@@ -2190,7 +2190,7 @@ test("synthesizeConnectionVerdict: degraded retryable_gap reads as recoverable h
     })
   );
   assert.equal(verdict.badgeState, "degraded");
-  assert.equal(verdict.handlingItself, true, "a retryable gap fills on an ordinary run — the system is handling it");
+  assert.equal(verdict.handlingItself, true, "a retryable gap remains system-handled on ordinary runs");
   assert.match(verdict.runbook, /recoverable|stay valid/i);
   assert.match(verdict.runbook, /250/);
 });

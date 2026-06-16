@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RefConnectionHealthSnapshot, RefConnectorSummary, RefSchedule, RunSummary } from "../lib/ref-client.ts";
+import type {
+  RefConnectionHealthSnapshot,
+  RefConnectorSummary,
+  RefRenderedVerdict,
+  RefRequiredAction,
+  RefSchedule,
+  RunSummary,
+} from "../lib/ref-client.ts";
 import {
   buildSyncsViewModel,
   deriveConnectionRhythm,
@@ -12,6 +19,8 @@ import {
 // The false-prompt the source-pressure guard must never emit on a throttled
 // connection. Hoisted to module scope so the regex is compiled once.
 const RECONNECT_PROMPT_RE = /reconnect|log in/i;
+const RESUME_FALSE_REASSURANCE_RE = /fills on the next successful run|resumes normally/i;
+const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
 
 // ─── Health fixtures ──────────────────────────────────────────────────────────
@@ -46,6 +55,41 @@ function connector(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSu
     total_records: 0,
     ...overrides,
   } as RefConnectorSummary;
+}
+
+function action(overrides: Partial<RefRequiredAction> = {}): RefRequiredAction {
+  return {
+    affects: [],
+    audience: "owner",
+    cta: "Retry now",
+    kind: "retry_gap",
+    satisfied_when: { kind: "gap_recovered" },
+    terminal: false,
+    urgency: "verifying",
+    ...overrides,
+  };
+}
+
+function renderedVerdict(overrides: Partial<RefRenderedVerdict> = {}): RefRenderedVerdict {
+  return {
+    annotations: [],
+    channel: "calm",
+    detail: {},
+    forward_statement: "Current and collecting normally.",
+    pill: { label: "Healthy", tone: "green" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Current",
+      last_refreshed_at: "2026-06-13T04:00:00Z",
+      mode: "scheduled",
+      records_committed_last_run: null,
+      retained_records: 10,
+    },
+    required_actions: [],
+    streams: [],
+    trace: {},
+    ...overrides,
+  };
 }
 
 function run(overrides: Partial<RunSummary> = {}): RunSummary {
@@ -230,4 +274,172 @@ test("a failing connection holds its next and marks rows failed", () => {
   assert.equal(group?.streams[0]?.failed, true);
   assert.equal(group?.streams[0]?.next, "held");
   assert.equal(group?.streams[0]?.delta, "sync failed");
+});
+
+// ─── RenderedVerdict conformance matrix ──────────────────────────────────────
+
+test("failure cards bind terminal gaps to rendered verdict copy, never retryable prose", () => {
+  const terminalHealth = health({
+    axes: { attention: "none", coverage: "terminal_gap", freshness: "stale", outbox: "idle" },
+    reason_code: "terminal_gap",
+    state: "degraded",
+  });
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: terminalHealth,
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement: "This connector needs a code fix before it can collect again.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [
+            action({
+              audience: "maintainer",
+              cta: "Connector code needs a fix",
+              kind: "code_fix",
+              satisfied_when: { kind: "none" },
+              terminal: true,
+              urgency: "soon",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const card = model.failureCards[0];
+  assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
+  assert.equal(card?.summary.cta, "wait");
+  assert.equal(card?.summary.actionLabel, "Connector code needs a fix");
+  assert.equal(card?.summary.ownerActionRequired, false);
+  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_FALSE_REASSURANCE_RE);
+  assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.groups[0]?.health, "failing");
+});
+
+test("failure cards bind retryable gaps to the rendered Retry now action", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "none", coverage: "retryable_gap", freshness: "stale", outbox: "idle" },
+          reason_code: "retryable_gap",
+          state: "degraded",
+        }),
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement: "Retry now to give the recoverable gap another run.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [action()],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const card = model.failureCards[0];
+  assert.equal(card?.summary.prose, "Retry now to give the recoverable gap another run.");
+  assert.equal(card?.summary.cta, "connection_detail");
+  assert.equal(card?.summary.actionLabel, "Retry now");
+  assert.equal(card?.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
+  assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.groups[0]?.health, "failing");
+});
+
+test("failure cards bind stale manual refresh to Refresh now without marking health as failing", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
+          reason_code: "stale_manual_refresh",
+          state: "healthy",
+        }),
+        rendered_verdict: renderedVerdict({
+          annotations: [{ kind: "freshness", text: "Last refreshed yesterday" }],
+          channel: "advisory",
+          forward_statement: "Run a refresh to bring this up to date.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            action({
+              cta: "Refresh now",
+              kind: "refresh_now",
+              satisfied_when: { kind: "confirming_run_succeeded" },
+              urgency: "soon",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const card = model.failureCards[0];
+  assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
+  assert.equal(card?.summary.actionLabel, "Refresh now");
+  assert.equal(card?.summary.ownerActionRequired, false);
+  assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.groups[0]?.health, "ok");
+});
+
+test("failure cards bind dead-letter backlog to collector action, not resume-normally copy", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
+          reason_code: "local_exporter_dead_letter_backlog",
+          state: "degraded",
+        }),
+        rendered_verdict: renderedVerdict({
+          channel: "attention",
+          forward_statement: "Check the collector before this source can make progress.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              cta: "Check the collector",
+              kind: "add_info",
+              satisfied_when: { kind: "attention_resolved" },
+              urgency: "now",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const card = model.failureCards[0];
+  assert.equal(card?.summary.prose, "Check the collector before this source can make progress.");
+  assert.equal(card?.summary.cta, "connection_detail");
+  assert.equal(card?.summary.actionLabel, "Check the collector");
+  assert.equal(card?.summary.ownerActionRequired, true);
+  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_NORMALLY_RE);
+  assert.equal(model.band.needYourHand, 1);
+});
+
+test("healthy sources with only benign rendered verdict signals do not get a failure card", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "unknown" },
+          reason_code: "outbox_unknown",
+          state: "healthy",
+        }),
+        rendered_verdict: renderedVerdict({
+          channel: "calm",
+          forward_statement: "Current and collecting normally.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.failureCards.length, 0);
+  assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.groups[0]?.health, "ok");
 });

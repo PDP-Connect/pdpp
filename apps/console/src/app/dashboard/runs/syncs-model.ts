@@ -10,23 +10,21 @@
  *      (stream · cadence · Rhythm sparkline · last result · next).
  *
  * This module is the single source of truth for how the three real contracts
- * — `RunSummary` (the runs feed), `RefConnectorSummary.connection_health` /
- * `.schedule` (per-connection health + cadence), and `RefSchedule` — collapse
- * into that view-model. It is JSX-free and free of `Date.now()` so it stays
- * deterministically unit-testable.
+ * — `RunSummary` (the runs feed), `RefConnectorSummary.rendered_verdict`,
+ * `.connection_health` / `.schedule` (per-connection health + cadence), and
+ * `RefSchedule` — collapse into that view-model. It is JSX-free and free of
+ * `Date.now()` so it stays deterministically unit-testable.
  *
  * The hardest correctness requirement lives here: a connection that the source
  * is throttling (a self-resolving source-pressure cooldown) must read as
- * "cooling off, will retry, your data is fine" with a WAIT affordance — NEVER a
- * false "reconnect / log in again" prompt. We do NOT invent that copy: every
- * failure card binds to {@link deriveFailureSummary}, whose `cooling_off` and
- * `blocked` branches already apply the `isSourcePressureCooldown` guard. By
- * deferring to it the honesty of the copy is guaranteed by the same pure
- * function the connection-detail surface uses.
+ * self-handled — NEVER a false "reconnect / log in again" prompt. We do NOT
+ * invent that copy: current references bind the card to the server-owned
+ * `RenderedVerdict.forward_statement` and `required_actions[]`; the legacy
+ * health-snapshot path exists only for older references.
  */
 
 import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
-import type { RefConnectorSummary, RefSchedule, RunSummary } from "../lib/ref-client.ts";
+import type { RefConnectorSummary, RefRenderedVerdict, RefSchedule, RunSummary } from "../lib/ref-client.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -78,10 +76,10 @@ export interface SyncGroup {
 }
 
 /**
- * A failure card. `summary` is the verbatim {@link FailureSummary} from
- * `deriveFailureSummary` (the honest, source-pressure-guarded copy). The card
- * is a panel with an action, NOT a row — the canonical design treats a failure
- * as a thing the owner can act on, not an item in a list.
+ * A failure card. `summary` is the verbatim {@link FailureSummary} from the
+ * server-owned rendered verdict. The card is a panel with an action/status, NOT
+ * a row — the canonical design treats owner work as an explicit affordance and
+ * self-handled work as calm/detail-only.
  */
 export interface FailureCard {
   /** Durable connection identity. */
@@ -117,8 +115,9 @@ const RECENT_RUN_LIMIT = 7;
 
 /**
  * Reduce a run status to a Rhythm tick. Partial (`succeeded_with_gaps`) counts
- * as `ok` — the gap fills on the next run and existing records are valid, so it
- * is not a failure tick. Non-terminal runs are skipped by the caller.
+ * as `ok` for run-history rhythm; the rendered verdict separately owns whether
+ * any remaining gap needs owner attention. Non-terminal runs are skipped by the
+ * caller.
  */
 function runTick(status: string): SyncRhythmTick {
   if (FAILED_RUN_STATUSES.has(status)) {
@@ -167,14 +166,18 @@ function groupRunsByConnector(runs: readonly RunSummary[]): Map<string, RunSumma
 }
 
 /**
- * A connection's health is "ok" unless `deriveFailureSummary` produced a card
- * for it — i.e. unless its state warrants the "What's wrong/missing?" surface.
- * A self-resolving source-pressure cooldown DOES produce a (wait-copy) card, so
- * it reads as failing-needs-no-hand: the dot is amber but the band does not
- * count it under "need your hand" (see {@link buildHealthBand}).
+ * Legacy fallback: without `rendered_verdict`, a connection's health is "ok"
+ * unless `deriveFailureSummary` produced a card for it.
  */
 function connectionHealth(summary: FailureSummary | null): SyncGroupHealth {
   return summary ? "failing" : "ok";
+}
+
+function renderedVerdictGroupHealth(verdict: RefRenderedVerdict | null | undefined): SyncGroupHealth | null {
+  if (!verdict) {
+    return null;
+  }
+  return verdict.pill.tone === "amber" || verdict.pill.tone === "red" ? "failing" : "ok";
 }
 
 /**
@@ -330,15 +333,13 @@ function buildSyncRows(input: {
 
 /**
  * Build the health stat band. "On schedule" counts streams under healthy
- * connections. "Need your hand" counts ONLY connections whose failure card
- * carries an owner-action CTA (`reconnect`) — a source-pressure cooldown's
- * `wait` card is the system handling itself, so it is NOT a hand-needed count.
- * This keeps the band honest: a throttled connection does not inflate the
- * "needs you" number or trigger an all-clear=false alarm by itself.
+ * connections. "Need your hand" counts ONLY connections whose rendered verdict
+ * says the owner is the sole resolution. Advisory refresh/retry accelerants and
+ * source-pressure waits do not inflate that number.
  */
 function buildHealthBand(input: { groups: SyncGroup[]; failureCards: FailureCard[] }): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.streams.length, 0);
-  const needYourHand = input.failureCards.filter((c) => c.summary.cta === "reconnect").length;
+  const needYourHand = input.failureCards.filter((c) => c.summary.ownerActionRequired).length;
   return {
     onSchedule,
     needYourHand,
@@ -367,8 +368,9 @@ export function buildSyncsViewModel(input: {
     if (connector.revoked_at) {
       continue;
     }
-    const summary = deriveFailureSummary(connector.connection_health);
-    const failing = connectionHealth(summary) === "failing";
+    const summary = deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null);
+    const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
+    const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns =
       runsByConnector.get(connector.connector_id) ??
       (connector.connector_instance_id ? runsByConnector.get(connector.connector_instance_id) : undefined) ??

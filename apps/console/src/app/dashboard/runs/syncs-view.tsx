@@ -5,10 +5,9 @@
  *
  * Composes the Ink Carbon kit (Band, Table, KV, Endorse, IcButton, Rhythm) over
  * the pure {@link SyncsViewModel}. No state color is spent outside Endorse and
- * Rhythm; the only warm element is the copper (`human`) reconnect button — and
- * that button appears ONLY when the bound `FailureSummary.cta` is `reconnect`.
- * A source-pressure cooldown's `wait` card shows the next-attempt time and NO
- * button, so a throttled connection is never told to "log in again".
+ * Rhythm; the only warm element is the copper (`human`) owner-action button.
+ * Self-handled `wait` cards show status copy and NO button, so a throttled
+ * connection is never told to "log in again".
  */
 
 import {
@@ -61,16 +60,15 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
 /**
  * One failure CARD (a panel, not a row). The CTA is bound to the pre-derived
  * `FailureSummary.cta`:
- *   - `reconnect` → copper owner-action button to the connection's setup page
+ *   - `connection_detail` / `reconnect` → copper owner-action button to the connection detail page
  *   - `view_runs` → neutral link to this connection's runs
  *   - `wait`      → NO button; the next-attempt time stands in for the action
  *
- * The prose is verbatim from `deriveFailureSummary` — the source-pressure guard
- * lives there, so a cooling/throttled connection reads "the source is throttling
- * … resumes on the next scheduled attempt" and gets the `wait` branch below.
+ * The prose is verbatim from the server-owned rendered verdict when available.
  */
 function FailureCardPanel({ card }: { card: FailureCard }) {
   const { summary } = card;
+  const ownerActionLabel = summary.actionLabel ?? (summary.cta === "reconnect" ? "Reconnect" : "Open source");
   return (
     <section className="rr-fix" data-cta={summary.cta}>
       <div className="rr-fix__body">
@@ -90,10 +88,10 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
         ) : null}
       </div>
       <div className="rr-fix__act">
-        {summary.cta === "reconnect" ? (
+        {summary.cta === "connection_detail" || summary.cta === "reconnect" ? (
           <Link href={dashboardRoutes.connector(card.connectorId)}>
             <IcButton size="sm" variant="human">
-              Reconnect
+              {ownerActionLabel}
             </IcButton>
           </Link>
         ) : null}
@@ -105,7 +103,9 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
             View runs →
           </Link>
         ) : null}
-        {summary.cta === "wait" ? <Caption className="rr-fix__waiting">No action needed</Caption> : null}
+        {summary.cta === "wait" ? (
+          <Caption className="rr-fix__waiting">{summary.actionLabel ?? "No action needed"}</Caption>
+        ) : null}
       </div>
     </section>
   );

@@ -22,6 +22,8 @@ import type {
   RefDetailGapBacklog,
   RefForwardDisposition,
   RefLocalDeviceProgress,
+  RefRenderedVerdict,
+  RefRequiredAction,
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
@@ -1612,20 +1614,25 @@ export function syncStartFailureLead(phase: "before_server" | "after_server"): s
  * Pure and JSX-free so it can be unit-tested without a browser harness.
  */
 export interface FailureSummary {
+  /** Label for the primary CTA/status line. Current references source this from `RenderedVerdict.required_actions[0].cta`. */
+  actionLabel: string | null;
   /**
    * Primary remediation CTA.
-   * - `reconnect` → link to the add-source flow (credential/browser failures)
+   * - `connection_detail` → link to the connection detail page using `actionLabel`
+   * - `reconnect` → legacy link to the connection detail page (credential/browser failures)
    * - `view_runs` → link to the runs list (protocol failures, gaps)
    * - `wait` → informational, no link (cooling_off in back-off)
    */
-  cta: "reconnect" | "view_runs" | "wait";
+  cta: "connection_detail" | "reconnect" | "view_runs" | "wait";
   /** ISO timestamp of the last known success. */
   lastSuccessAt: string | null;
   /** next_attempt_at from the health snapshot — when the next retry fires. */
   nextAttemptAt: string | null;
+  /** True only when the owner is the sole resolution and the card should count under "need your hand". */
+  ownerActionRequired: boolean;
   /**
    * One or two prose sentences the operator reads first. Plain English, no
-   * codes. Mirrors the design brief's per-state copy (§C of the mocks).
+   * codes. Current references source this from `RenderedVerdict.forward_statement`.
    */
   prose: string;
   /** reason_code to show in the fact box, or null when absent. */
@@ -1634,14 +1641,62 @@ export interface FailureSummary {
   triggerLabel: "What's missing?" | "What's wrong?";
 }
 
+function renderedActionIsOwnerSatisfiable(action: RefRequiredAction | null): boolean {
+  return Boolean(action && action.audience === "owner" && action.satisfied_when.kind !== "none");
+}
+
+function triggerLabelFromRenderedVerdict(verdict: RefRenderedVerdict): FailureSummary["triggerLabel"] {
+  return verdict.channel === "attention" || verdict.pill.tone === "red" ? "What's wrong?" : "What's missing?";
+}
+
+function deriveRenderedFailureSummary(
+  health: RefConnectionHealthSnapshot,
+  verdict: RefRenderedVerdict
+): FailureSummary | null {
+  const primaryAction = verdict.required_actions[0] ?? null;
+  const ownerAction = renderedActionIsOwnerSatisfiable(primaryAction);
+  const statusAction = primaryAction != null && !ownerAction && primaryAction.kind !== "wait";
+
+  if (verdict.channel === "calm" && !ownerAction && !statusAction) {
+    return null;
+  }
+
+  let cta: FailureSummary["cta"] = "view_runs";
+  if (ownerAction) {
+    cta = "connection_detail";
+  } else if (statusAction || primaryAction?.kind === "wait") {
+    cta = "wait";
+  }
+
+  return {
+    actionLabel: primaryAction?.cta ?? (cta === "view_runs" ? "View runs" : null),
+    cta,
+    lastSuccessAt: health.last_success_at,
+    nextAttemptAt: health.next_attempt_at,
+    ownerActionRequired: ownerAction && verdict.channel === "attention",
+    prose: verdict.forward_statement,
+    reasonCode: health.reason_code,
+    triggerLabel: triggerLabelFromRenderedVerdict(verdict),
+  };
+}
+
 /**
- * Derive a `FailureSummary` from the connection health snapshot.
+ * Derive a `FailureSummary` from the server-owned rendered verdict, with a
+ * legacy health-snapshot fallback for older references that predate
+ * `rendered_verdict`.
+ *
  * Returns `null` for states that do not warrant an expander (`healthy`,
  * `idle`, `unknown`).
  */
-export function deriveFailureSummary(health: RefConnectionHealthSnapshot | null | undefined): FailureSummary | null {
+export function deriveFailureSummary(
+  health: RefConnectionHealthSnapshot | null | undefined,
+  renderedVerdict?: RefRenderedVerdict | null
+): FailureSummary | null {
   if (!health) {
     return null;
+  }
+  if (renderedVerdict) {
+    return deriveRenderedFailureSummary(health, renderedVerdict);
   }
   const { state, reason_code, next_attempt_at, last_success_at } = health;
 
@@ -1652,27 +1707,31 @@ export function deriveFailureSummary(health: RefConnectionHealthSnapshot | null 
         health.axes.coverage === "partial" ||
         health.axes.coverage === "terminal_gap";
       return {
-        triggerLabel: "What's missing?",
-        prose: hasCoverageGaps
-          ? "Some streams did not finish collecting on the last run. Data already collected is safe; the gap fills on the next successful run."
-          : "The connection ran but coverage or freshness is incomplete. Existing records are valid and collection will resume normally.",
-        reasonCode: reason_code,
-        nextAttemptAt: next_attempt_at,
-        lastSuccessAt: last_success_at,
+        actionLabel: "View runs",
         cta: "view_runs",
+        lastSuccessAt: last_success_at,
+        nextAttemptAt: next_attempt_at,
+        ownerActionRequired: false,
+        prose: hasCoverageGaps
+          ? "Some streams have a collection gap from the last run. Data already collected is retained; review the run detail for the recovery path."
+          : "The connection ran, but coverage or freshness is incomplete. Existing records are retained; review the source detail for the next step.",
+        reasonCode: reason_code,
+        triggerLabel: "What's missing?",
       };
     }
     case "cooling_off": {
       const isSourcePressure = reason_code === SOURCE_PRESSURE_REASON_CODE;
       return {
-        triggerLabel: "What's wrong?",
+        actionLabel: "No action needed",
+        cta: "wait",
+        lastSuccessAt: last_success_at,
+        nextAttemptAt: next_attempt_at,
+        ownerActionRequired: false,
         prose: isSourcePressure
           ? "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt."
           : "The scheduler entered back-off after one or more failed runs. It will retry automatically; captured progress is retained.",
         reasonCode: reason_code,
-        nextAttemptAt: next_attempt_at,
-        lastSuccessAt: last_success_at,
-        cta: "wait",
+        triggerLabel: "What's wrong?",
       };
     }
     case "blocked": {
@@ -1683,36 +1742,42 @@ export function deriveFailureSummary(health: RefConnectionHealthSnapshot | null 
       // guard here; its `cooling_off` branch already does this (see L1612).
       if (isSourcePressureCooldown(health)) {
         return {
-          triggerLabel: "What's wrong?",
+          actionLabel: "No action needed",
+          cta: "wait",
+          lastSuccessAt: last_success_at,
+          nextAttemptAt: next_attempt_at,
+          ownerActionRequired: false,
           prose:
             "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt.",
           reasonCode: reason_code,
-          nextAttemptAt: next_attempt_at,
-          lastSuccessAt: last_success_at,
-          cta: "wait",
+          triggerLabel: "What's wrong?",
         };
       }
       return {
-        triggerLabel: "What's wrong?",
+        actionLabel: "Reconnect",
+        cta: "reconnect",
+        lastSuccessAt: last_success_at,
+        nextAttemptAt: next_attempt_at,
+        ownerActionRequired: true,
         prose:
           "The connection has stopped making progress and automatic retries are paused. This usually means the credentials expired or the provider blocked the session. Reconnect to start a fresh setup, or try a manual run to see if the issue cleared on its own.",
         reasonCode: reason_code,
-        nextAttemptAt: next_attempt_at,
-        lastSuccessAt: last_success_at,
-        cta: "reconnect",
+        triggerLabel: "What's wrong?",
       };
     }
     case "needs_attention": {
       const dominantSummary = formatDominantCondition(health);
       return {
-        triggerLabel: "What's wrong?",
+        actionLabel: "Reconnect",
+        cta: "reconnect",
+        lastSuccessAt: last_success_at,
+        nextAttemptAt: next_attempt_at,
+        ownerActionRequired: true,
         prose: dominantSummary
           ? dominantSummary.label
           : "Owner action is required before this connection can make progress. Open the run detail for the exact step.",
         reasonCode: reason_code,
-        nextAttemptAt: next_attempt_at,
-        lastSuccessAt: last_success_at,
-        cta: "reconnect",
+        triggerLabel: "What's wrong?",
       };
     }
     default:
