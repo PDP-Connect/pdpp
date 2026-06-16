@@ -115,6 +115,18 @@ whose `audience` is `owner` and whose `satisfied_when.kind` is not `none`. A
 required action whose `audience` is `maintainer` or `none` SHALL render as a status
 line and SHALL NOT raise `channel` to `attention`.
 
+Maintainer/status copy SHALL be factual reference-instance copy. It SHALL NOT use
+hosted-service voice such as "we're updating it" or false reassurance such as
+"nothing for you to do" for a source that cannot currently collect. A terminal
+`code_fix` action SHALL communicate that connector code must change before the
+source can collect again.
+
+When a stream has both a `SKIP_RESULT` diagnostic and a pending `DETAIL_GAP`, the
+pending detail gap SHALL be treated as the durable retry contract for that
+stream. The diagnostic skip SHALL NOT promote the stream or connection to a
+terminal/code-fix verdict unless separate terminal evidence remains after
+correlating the same-stream pending detail gap.
+
 #### Scenario: Action urgency is separate from health tone
 
 - **WHEN** one stale connection is manual-refresh-only and otherwise healthy, and
@@ -132,6 +144,26 @@ line and SHALL NOT raise `channel` to `attention`.
 - **AND** the freshness annotation SHALL say `Last successful refresh <age>` or
   equivalent, not `Fresh <age>`, so the surface does not imply the broken connector
   is healthy.
+
+#### Scenario: Terminal code-fix status is factual and not hosted-service voice
+
+- **WHEN** a connection has terminal coverage with no owner-satisfiable recovery
+  action
+- **THEN** the verdict SHALL include a `code_fix` required action with
+  `audience: "maintainer"` and `satisfied_when.kind: "none"`
+- **AND** the status copy SHALL say that connector code needs a fix before the
+  source can collect again
+- **AND** it SHALL NOT say that "we" are updating it or that there is "nothing
+  for you to do."
+
+#### Scenario: Retryable detail gap beats same-stream skip diagnostic
+
+- **WHEN** a connector records a `SKIP_RESULT` diagnostic for a stream and also
+  records a pending `DETAIL_GAP` for the same stream
+- **THEN** the connection coverage SHALL remain retryable/resumable unless another
+  terminal gap exists outside that same-stream detail-gap contract
+- **AND** the owner surface SHALL render a degraded advisory with a retry
+  affordance, not a terminal `code_fix` status.
 
 #### Scenario: A fresh, fully self-handled connection stays calm
 

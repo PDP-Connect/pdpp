@@ -195,6 +195,22 @@ test('skip with no recovery path -> terminal_gap / terminal', () => {
   assert.equal(entry.forward_disposition, 'terminal');
 });
 
+test('pending detail gap overrides same-stream terminal-looking skip diagnostic', () => {
+  const entries = report([
+    fact({
+      stream: 'transactions',
+      collected: 100,
+      considered: 101,
+      pending_detail_gaps: 1,
+      skipped: { reason: 'qfx_download_failed' },
+    }),
+  ]);
+  const entry = entryFor(entries, 'transactions');
+  assert.equal(entry.coverage_condition, 'retryable_gap');
+  assert.equal(entry.forward_disposition, 'resumable');
+  assert.equal(entry.pending_detail_gaps, 1);
+});
+
 // ─── detail gap ────────────────────────────────────────────────────────────────
 
 test('pending detail gap -> retryable_gap / resumable, count preserved', () => {

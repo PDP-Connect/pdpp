@@ -525,7 +525,7 @@ function buildRequiredActions(
       audience: "maintainer",
       urgency: "soon",
       affects: terminalStreamIds(streams),
-      cta: "We're updating the connector — nothing for you to do",
+      cta: "Connector code needs a fix",
       terminal: true,
       satisfied_when: { kind: "none" },
     });
@@ -674,6 +674,7 @@ const CALM_ADVISORY_KINDS: ReadonlySet<AnnotationKind> = new Set<AnnotationKind>
 function buildAnnotations(
   snapshot: ConnectionHealthSnapshot,
   channel: RenderedChannel,
+  tone: VerdictTone,
   refresh: ConnectionRefreshEvidence | null,
   progress: ProgressEvidence | null,
   actions: readonly RequiredAction[]
@@ -683,7 +684,7 @@ function buildAnnotations(
   // Co-required freshness annotation: ALWAYS present when freshness is not fresh
   // (honesty invariant 1). For fresh connections, include a quiet recency cue
   // when the caller supplied enough evidence. Text carries NO raw mechanistic counts.
-  const freshnessText = freshnessAnnotationText(snapshot, refresh, progress, actions);
+  const freshnessText = freshnessAnnotationText(snapshot, tone, refresh, progress, actions);
   if (freshnessText) {
     annotations.push({ kind: "freshness", text: freshnessText });
   }
@@ -699,12 +700,13 @@ function buildAnnotations(
 
 function freshnessAnnotationText(
   snapshot: ConnectionHealthSnapshot,
+  tone: VerdictTone,
   refresh: ConnectionRefreshEvidence | null,
   progress: ProgressEvidence | null,
   actions: readonly RequiredAction[]
 ): string | null {
   if (snapshot.axes.freshness === "fresh") {
-    return freshRecencyText(snapshot, progress);
+    return freshRecencyText(tone, progress);
   }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness is unknown — checking.";
@@ -730,9 +732,9 @@ function freshnessAnnotationText(
   return "Stale for this connection's freshness policy.";
 }
 
-function freshRecencyText(snapshot: ConnectionHealthSnapshot, progress: ProgressEvidence | null): string | null {
+function freshRecencyText(tone: VerdictTone, progress: ProgressEvidence | null): string | null {
   const age = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
-  const unhealthy = snapshot.state !== "healthy" && snapshot.state !== "idle";
+  const unhealthy = tone === "amber" || tone === "red";
   if (unhealthy && age) {
     return `Last successful refresh ${age}.`;
   }
@@ -805,7 +807,7 @@ function buildForwardStatement(disposition: ForwardDisposition, actions: readonl
   if (disposition === "terminal") {
     // A terminal disposition must never imply recovery.
     if (primary?.kind === "code_fix") {
-      return "This data source needs a connector update — we're on it; nothing for you to do.";
+      return "This connector needs a code fix before it can collect again.";
     }
     return "This data can't be recovered by a future run.";
   }
@@ -1244,7 +1246,7 @@ export function synthesizeRenderedVerdict(
   }
 
   // ── annotations, statement, streams, progress ──
-  const annotations = buildAnnotations(snapshot, channel, refresh, progress, actions);
+  const annotations = buildAnnotations(snapshot, channel, tone, refresh, progress, actions);
   const forwardStatement = buildForwardStatement(disposition, actions);
   const streamRows = buildStreamRows(streams, snapshot, refresh, actions);
   const renderedProgress = buildProgress(progress);

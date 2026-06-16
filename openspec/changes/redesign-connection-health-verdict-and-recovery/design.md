@@ -411,10 +411,16 @@ failure. The acceptance bar is the conjunction.
   through to `complete`, and Amazon stays green AND mis-channelled. Asserted from
   manifests, not traced end-to-end. The refresh-contract task must verify the
   runtime input.
-- The terminal / `code_fix` channel-as-status path has zero live data (0 terminal
-  gaps). The "we're updating the connector — nothing for you to do" status is
-  designed, not exercised; the first real stale-selector failure is its acceptance
-  test.
+- The terminal / `code_fix` channel-as-status path was corrected after the first
+  live Chase terminal-gap report. It now renders as a broken-source status
+  (`Connector code needs a fix` / `This connector needs a code fix before it can
+  collect again.`) with no hosted-service "we" voice and no false reassurance
+  that a broken source is "nothing for you to do."
+- The same live Chase report exposed a projection-seam trap: Chase QFX account
+  failures emit a stream-level `SKIP_RESULT` diagnostic and a retryable
+  `DETAIL_GAP`. The `DETAIL_GAP` is the durable retry contract; the diagnostic
+  skip must not manufacture a terminal/code-fix verdict when both point at the
+  same stream. True terminal known gaps on unrelated streams still dominate.
 - The advisory-vs-attention threshold (Chase retryable, outbox-stalled) is
   principled SRE judgment, not proof. Whether `degraded`-retryable should escalate
   to a deferred push after N hours is an owner-mental-model question only live
@@ -460,9 +466,17 @@ failure. The acceptance bar is the conjunction.
   `rendered-verdict.test.js` verifies stale manual sources render
   `Healthy/advisory + Refresh now`. The remaining check is visual/live:
   Reddit/Amazon stale rows should no longer read `Needs you`.
-- **The terminal / `code_fix` channel-as-status path has zero live data.** The
-  most-cited "your action won't help" experience has no live instance; it could be
-  subtly wrong in ways only a real stale-selector failure reveals.
+- **The terminal / `code_fix` channel-as-status path now has live Chase evidence.**
+  The first real terminal/code-fix source showed the original "we're on it" copy
+  was wrong for a self-hosted reference instance. The contract now requires
+  factual connector-code wording and recent-retained-data copy as `Last successful
+  refresh <age>`, never `Fresh <age>` on a broken source.
+- **The Chase QFX path is retryable by connector contract.** The connector emits
+  `DETAIL_GAP retryable:true` for `qfx_download_failed` / `qfx_parse_failed`, so
+  the projection treats a same-stream `SKIP_RESULT` as diagnostic evidence rather
+  than terminality. If a future connector needs terminal treatment, it must emit
+  a terminal gap or explicit non-retryable recovery hint instead of relying on an
+  ambiguous skip.
 - **The advisory-vs-attention threshold is judgment, not proof** — a live-iteration
   question this design cannot fully settle from prior art.
 - **S4's `runtime_ok` is a liveness dependency**; a flaky probe could itself become

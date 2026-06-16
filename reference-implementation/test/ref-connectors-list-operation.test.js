@@ -447,6 +447,30 @@ test('connector summary connection health: terminal known_gap dominates pending 
   assert.equal(snapshot.axes.coverage, 'terminal_gap');
 });
 
+test('connector summary connection health keeps same-stream skip diagnostics retryable when a detail gap is pending', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [{ kind: 'skip_result', reason: 'qfx_download_failed', severity: 'actionable', stream: 'transactions' }],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_chase_qfx_gap',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [{ reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' }],
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'retryable_gap');
+  assert.notEqual(snapshot.forward_disposition, 'terminal');
+});
+
 test('connector summary connection health becomes unknown when durable detail-gap evidence cannot be read', () => {
   const run = {
     event_count: 3,

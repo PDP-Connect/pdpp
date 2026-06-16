@@ -1514,6 +1514,7 @@ async function processAccountDownload(
       stream: "transactions",
       reason: "qfx_download_failed",
       message: `QFX download failed for account ${progressLabel}: ${result.error}`,
+      recovery_hint: "retry_by_runtime",
       diagnostics: {
         error: result.error,
         ...accountProgressDiagnostic(accountProgress),
@@ -1536,6 +1537,7 @@ async function processAccountDownload(
       stream: "transactions",
       reason: "qfx_parse_failed",
       message: `QFX parse failed for account ${progressLabel}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      recovery_hint: "retry_by_runtime",
       diagnostics: {
         error_class: err instanceof Error ? err.constructor.name : "unknown",
         message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),

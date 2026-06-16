@@ -277,6 +277,7 @@ export type EmittedMessage =
       reason: string;
       message: string;
       diagnostics?: unknown;
+      recovery_hint?: string | { action?: string; retryable?: boolean };
     }
   | DetailGapMessage
   | DetailCoverageMessage

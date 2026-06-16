@@ -668,6 +668,29 @@ test('golden: broken but recently successful source says last successful refresh
   assert.ok(!JSON.stringify(v.annotations).includes('Fresh yesterday'));
 });
 
+test('golden: stream-level terminal gap overrides healthy-state freshness copy', () => {
+  const snap = snapshot({
+    state: 'healthy',
+    axes: { freshness: 'fresh', coverage: 'complete' },
+    forward_disposition: 'complete',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ stream_id: 'transactions', coverage: 'terminal_gap' })],
+    null,
+    true,
+    {
+      mode: 'manual',
+      retained_records: 1200,
+      last_refreshed_at: '2026-06-14T12:00:00.000Z',
+      observed_at: '2026-06-15T12:00:00.000Z',
+    }
+  );
+  assert.equal(v.pill.label, "Can't collect");
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Last successful refresh yesterday.'));
+  assert.ok(!JSON.stringify(v.annotations).includes('Fresh yesterday'));
+});
+
 test('golden: synthetic terminal code_fix — maintainer status, no dead owner button, never attention', () => {
   const snap = snapshot({
     state: 'degraded',
@@ -678,8 +701,11 @@ test('golden: synthetic terminal code_fix — maintainer status, no dead owner b
   const codeFix = v.required_actions.find((a) => a.kind === 'code_fix');
   assert.ok(codeFix);
   assert.equal(codeFix.audience, 'maintainer');
+  assert.equal(codeFix.cta, 'Connector code needs a fix');
   assert.deepEqual(codeFix.satisfied_when, { kind: 'none' });
   assert.notEqual(v.channel, 'attention'); // maintainer status never raises attention
+  assert.equal(v.forward_statement, 'This connector needs a code fix before it can collect again.');
+  assert.ok(!/we|we're|nothing for you/i.test(`${codeFix.cta} ${v.forward_statement}`));
   // No owner-audience action (no dead owner button).
   assert.ok(!v.required_actions.some((a) => a.audience === 'owner'));
 });

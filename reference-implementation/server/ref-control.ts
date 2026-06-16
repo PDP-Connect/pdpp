@@ -1403,15 +1403,63 @@ function isDegradingKnownGap(gap: unknown): boolean {
  * gaps don't degrade health per the connection-health coverage policy
  * and are ignored here.
  */
-function hasTerminalKnownGap(run: ConnectorRunSummary | null): boolean {
+function pendingDetailGapStreams(gaps: readonly PendingDetailGapSummary[] = []): ReadonlySet<string> {
+  const streams = new Set<string>();
+  for (const gap of gaps) {
+    if (gap && typeof gap.stream === "string" && gap.stream.length > 0) {
+      streams.add(gap.stream);
+    }
+  }
+  return streams;
+}
+
+function gapRecoveryAction(gap: unknown): string | null {
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return null;
+  }
+  const hint = (gap as { recovery_hint?: unknown }).recovery_hint;
+  if (typeof hint === "string") {
+    return hint;
+  }
+  if (hint && typeof hint === "object" && !Array.isArray(hint)) {
+    const action = (hint as { action?: unknown }).action;
+    return typeof action === "string" ? action : null;
+  }
+  return null;
+}
+
+function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return false;
+  }
+  const knownGap = gap as { kind?: unknown; stream?: unknown };
+  if (knownGap.kind !== "skip_result" || typeof knownGap.stream !== "string" || !pendingStreams.has(knownGap.stream)) {
+    return false;
+  }
+  const action = gapRecoveryAction(gap);
+  // A stream-level SKIP_RESULT is only a diagnostic when the same stream has a
+  // pending DETAIL_GAP: the detail gap is the durable retry contract. Do not let
+  // an older skip with an absent/unknown hint turn that retryable contract into
+  // terminal/code-fix. Explicit owner/maintainer actions remain load-bearing.
+  return action === null || action === "unknown" || action === "retry_by_runtime";
+}
+
+function hasTerminalKnownGap(
+  run: ConnectorRunSummary | null,
+  pendingDetailGaps: readonly PendingDetailGapSummary[] = []
+): boolean {
   if (!run) {
     return false;
   }
+  const pendingStreams = pendingDetailGapStreams(pendingDetailGaps);
   return run.known_gaps.some((gap) => {
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
       // Unclassified gap shape — be conservative and treat as terminal so
       // we never silently paint over evidence we can't read.
       return true;
+    }
+    if (isKnownSkipShadowedByPendingDetailGap(gap, pendingStreams)) {
+      return false;
     }
     const severity = (gap as { severity?: unknown }).severity;
     if (severity === "actionable") {
@@ -1569,7 +1617,7 @@ function mapCoverageAxis(
   manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis {
   const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
-  const hasTerminal = hasTerminalKnownGap(lastRun);
+  const hasTerminal = hasTerminalKnownGap(lastRun, pendingDetailGaps);
   const hasRetryable = lastRun ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
   // Contradictory manifest (required AND accepted-absent) takes precedence
   // over the success path so a misconfigured manifest can never paint
@@ -1827,9 +1875,16 @@ function deriveStreamCoverageCondition(
   }
   // 2. A skip is the connector's explicit statement that it did not collect the
   //    stream. The manifest's accepted-coverage claim wins; otherwise infer a
-  //    skip-consistent, never-`complete` axis.
+  //    skip-consistent, never-`complete` axis. When the same stream also carries
+  //    a pending DETAIL_GAP, that durable retry contract wins over an otherwise
+  //    terminal-looking diagnostic skip; unsupported/unavailable/deferred skip
+  //    reasons stay precise and non-green.
   if (fact.skipped) {
-    return accepted ?? mapSkipCoverageCondition(fact.skipped);
+    const skipCoverage = accepted ?? mapSkipCoverageCondition(fact.skipped);
+    if (fact.pending_detail_gaps > 0 && skipCoverage === "terminal_gap") {
+      return "retryable_gap";
+    }
+    return skipCoverage;
   }
   // 3. A pending recoverable detail gap is a retryable boundary.
   if (fact.pending_detail_gaps > 0) {
