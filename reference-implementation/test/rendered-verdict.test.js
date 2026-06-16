@@ -313,6 +313,53 @@ test('channel: attention always carries an owner-satisfiable action (S1)', () =>
   assert.ok(v.required_actions.some((a) => a.audience === 'owner' && a.satisfied_when.kind !== 'none'));
 });
 
+test('channel: stalled outbox is not calm even when coverage and disposition are complete', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
+      forward_disposition: 'complete',
+      reason_code: 'local_exporter_dead_letter_backlog',
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'red');
+  assert.equal(v.pill.label, "Can't collect");
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.forward_statement, 'Check the collector before this source can make progress.');
+  assert.equal(action.kind, 'add_info');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Check the collector');
+  assert.deepEqual(action.satisfied_when, { kind: 'attention_resolved' });
+  assert.notEqual(v.forward_statement, 'Current and collecting normally.');
+});
+
+test('channel: degraded resumable stale coverage is advisory Retry now, not calm wait', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'partial', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+      reason_code: 'orphaned_started_run',
+    }),
+    [stream({ stream_id: 'transactions', coverage: 'partial', gap_retryable: true })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.equal(action.kind, 'retry_gap');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Retry now');
+  assert.deepEqual(action.satisfied_when, { kind: 'gap_recovered' });
+});
+
 // ─── 3.6 forward statement ────────────────────────────────────────────────────
 
 test('forward_statement: terminal never claims resumed collection (inv3)', () => {

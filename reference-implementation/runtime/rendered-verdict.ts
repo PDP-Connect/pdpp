@@ -502,6 +502,14 @@ function hasOpenAttention(snapshot: ConnectionHealthSnapshot): boolean {
   return snapshot.axes.attention !== "none";
 }
 
+function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
+  return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
+}
+
+function shouldOfferRetryGapAction(snapshot: ConnectionHealthSnapshot, refresh: ConnectionRefreshEvidence | null): boolean {
+  return snapshot.state === "degraded" || isManualRefreshOnly(refresh);
+}
+
 /**
  * Build the ordered `required_actions[]`. Zero-or-many (design D8): a connection may
  * need BOTH `refresh_now` AND `reauth`. Every action's `terminal` is DERIVED from the
@@ -557,6 +565,21 @@ function buildRequiredActions(
     });
   }
 
+  // A stalled outbox means durable work is stuck outside the server. Coverage may
+  // still be "complete" because the records already accepted are valid, but the
+  // source cannot keep making progress until the owner checks the collector host.
+  if (snapshot.axes.outbox === "stalled" && disposition !== "terminal" && !hasOwnerAction(actions)) {
+    actions.push({
+      kind: "add_info",
+      audience: "owner",
+      urgency: "now",
+      affects: [],
+      cta: "Check the collector",
+      terminal: false,
+      satisfied_when: { kind: "attention_resolved" },
+    });
+  }
+
   // Manual/assisted-refresh stale: owner-refresh-due. Owner-actionable but NON-urgent
   // (the data is simply aging; the owner can accelerate but inaction is not a failure).
   if (disposition === "owner_refresh_due" && (isManualRefreshOnly(refresh) || isAssistedRefresh(refresh))) {
@@ -571,10 +594,10 @@ function buildRequiredActions(
     });
   }
 
-  // Manual-refresh retryable gaps (the Chase shape): the system can recover on a
-  // future run, but there is no automatic schedule to initiate that run. Surface
-  // a non-urgent owner accelerant instead of hiding it as a calm wait.
-  if (disposition === "resumable" && actions.length === 0 && isManualRefreshOnly(refresh)) {
+  // Degraded or manual-refresh retryable gaps: the system can recover on a
+  // future run, but the owner can explicitly ask for another attempt. Surface
+  // that non-urgent accelerant instead of hiding degraded gaps as a calm wait.
+  if (disposition === "resumable" && actions.length === 0 && shouldOfferRetryGapAction(snapshot, refresh)) {
     const affects = resumableStreamIds(streams);
     actions.push({
       kind: "retry_gap",
@@ -817,6 +840,9 @@ function buildForwardStatement(disposition: ForwardDisposition, actions: readonl
       case "reauth":
         return "Reconnect this account and collection resumes.";
       case "add_info":
+        if (primary.cta === "Check the collector") {
+          return "Check the collector before this source can make progress.";
+        }
         return "Finish the prompt and collection resumes.";
       case "refresh_now":
         return "Run a refresh to bring this up to date.";

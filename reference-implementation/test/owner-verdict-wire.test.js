@@ -78,8 +78,8 @@ function degradedRetryableSnapshot() {
       remote_surface: 'none',
     },
     badges: { stale: true, syncing: false },
-    // resumable: the system will retry on its own, so channel stays calm
-    // (a wait action, audience:none). This is the deliberate silence design.
+    // A degraded resumable gap is visible but non-urgent: the owner can ask for
+    // another attempt, so the channel is advisory instead of a calm wait.
     forward_disposition: 'resumable',
     reason_code: 'retryable_coverage_gap',
   };
@@ -224,15 +224,14 @@ test('owner-wire: stale manual-refresh connection → Healthy pill + advisory re
   assert.ok(verdict.required_actions.some((action) => action.kind === 'refresh_now'));
 });
 
-// ─── 8.1 — degraded/retryable: system handles it, channel stays calm ─────────
+// ─── 8.1 — degraded/retryable: advisory retry affordance ─────────────────────
 //
-// This is the deliberate silence design (SLVP §4): a retryable coverage gap
-// with `disposition:resumable` means the system will retry on its own. The
-// owner cannot accelerate a system-managed retry, so the synthesizer emits a
-// `wait` action (audience:none) and the channel stays `calm`. The gap is still
-// present in `detail.detail_gap_backlog`, but never alarmed on the dashboard.
+// This is the false-reassurance correction: a degraded retryable coverage gap
+// with `disposition:resumable` must stay non-urgent, but it is not actionless.
+// The owner can explicitly ask for another attempt, so the synthesizer emits a
+// `retry_gap` action and raises the channel to `advisory`, not `calm`.
 
-test('owner-wire: degraded retryable with resumable disposition → non-green pill + calm channel (system handles it)', () => {
+test('owner-wire: degraded retryable with resumable disposition → non-green pill + advisory Retry now', () => {
   const verdict = synthesizeConnectorVerdict({
     snapshot: degradedRetryableSnapshot(),
     report: collectionReport({ coverage_condition: 'retryable_gap', pending_detail_gaps: 1 }),
@@ -242,12 +241,12 @@ test('owner-wire: degraded retryable with resumable disposition → non-green pi
   });
 
   assert.notEqual(verdict.pill.tone, 'green', 'degraded retryable is not green');
-  // Channel is calm: the system retries silently; owner is not the resolution.
-  assert.equal(verdict.channel, 'calm', 'degraded retryable with resumable disposition stays calm (system handles it)');
-  // The gap must be present in detail, not alarmed.
-  const waitAction = verdict.required_actions.find((a) => a.kind === 'wait');
-  assert.ok(waitAction, 'a wait action represents the system-handled retry');
-  assert.equal(waitAction.audience, 'none', 'wait action has audience:none');
+  assert.equal(verdict.channel, 'advisory', 'degraded retryable with resumable disposition is advisory');
+  const retryAction = verdict.required_actions.find((a) => a.kind === 'retry_gap');
+  assert.ok(retryAction, 'a retry_gap action represents the recoverable gap');
+  assert.equal(retryAction.audience, 'owner', 'retry_gap action is owner-visible');
+  assert.equal(retryAction.cta, 'Retry now');
+  assert.deepEqual(retryAction.satisfied_when, { kind: 'gap_recovered' });
 });
 
 // ─── grant-scope isolation ────────────────────────────────────────────────────

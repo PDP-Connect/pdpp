@@ -172,6 +172,25 @@ correlating the same-stream pending detail gap.
 - **THEN** the verdict's `channel` SHALL be `calm`
 - **AND** the verdict SHALL carry no owner-audience required action.
 
+#### Scenario: A stalled outbox cannot be calm or say collection is normal
+
+- **WHEN** a connection has `axes.outbox: "stalled"` even though its required
+  coverage and forward disposition are otherwise complete
+- **THEN** the verdict SHALL NOT assign `channel: "calm"`
+- **AND** the verdict SHALL include an owner-audience required action telling the
+  owner to check the collector
+- **AND** the `forward_statement` SHALL NOT say that the source is current,
+  collecting normally, or self-handled.
+
+#### Scenario: A degraded resumable stale gap is advisory rather than silent
+
+- **WHEN** a connection is `degraded`, has a resumable/partial coverage gap, and
+  stale freshness
+- **THEN** the verdict SHALL assign `channel: "advisory"`
+- **AND** the verdict SHALL include a `retry_gap` required action with
+  `audience: "owner"` and `satisfied_when.kind: "gap_recovered"`
+- **AND** the degraded connection SHALL NOT collapse to a calm `wait` action.
+
 #### Scenario: Attention channel always carries an owner-satisfiable action
 
 - **WHEN** the synthesizer would emit a verdict with `channel === "attention"`
