@@ -103,58 +103,44 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
   );
 }
 
-function ExistingSourceReuse({
-  entry,
-  sources,
-}: {
-  entry: ConnectorCatalogEntry;
-  sources: readonly ExistingSourceSetupLink[];
-}) {
-  if (entry.disposition !== "manual_upload_connect" || sources.length === 0) {
+function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+      return "Local collector on the machine that has this data.";
+    case "static_secret_connect":
+      return "Provider credential captured by this instance.";
+    case "manual_upload_connect":
+      return existingSourceCount > 0
+        ? `${existingSourceCount} existing ${existingSourceCount === 1 ? "source" : "sources"} can receive another export; choose on the import page.`
+        : "Owner-exported file import.";
+    case "provider_auth_deployment_blocked":
+      return "Server provider settings are required before account setup.";
+    case "browser_collector_manual":
+    case "browser_bound_runbook":
+      return "Browser-backed setup is not packaged in this dashboard yet.";
+    default:
+      return "No owner-usable setup path in this build.";
+  }
+}
+
+function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
+  const guidance = sourceSetupGuidance(entry);
+  const hasRichImportDetail = entry.disposition === "manual_upload_connect" && entry.acquisitionPaths.length > 0;
+
+  if (!hasRichImportDetail) {
     return null;
   }
+
   return (
-    <div
-      className="mt-3 grid gap-2 rounded-md border border-border/80 bg-background/70 p-3"
-      data-testid="existing-source-reuse"
-    >
-      <p className="pdpp-eyebrow text-muted-foreground">Existing sources</p>
-      <p className="pdpp-caption text-muted-foreground">
-        Import another file into an existing source when the export belongs to the same account, profile, device, or
-        source identity.
-      </p>
-      <ul className="grid gap-2">
-        {sources.map((source) => (
-          <li
-            className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border/70 bg-muted/20 px-3 py-2"
-            key={source.connectionId}
-          >
-            <div className="min-w-0">
-              <p className="pdpp-caption font-medium text-foreground">{source.displayName}</p>
-              <p className="pdpp-caption text-muted-foreground">
-                {new Intl.NumberFormat("en-US").format(source.totalRecords)} records
-                {source.latestImportFile ? ` · latest: ${source.latestImportFile}` : ""}
-                {source.latestImportStatus ? ` · ${source.latestImportStatus}` : ""}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Link
-                className={buttonVariants({ variant: "ghost", size: "sm" })}
-                href={`/dashboard/connect/status/${encodeURIComponent(source.connectionId)}`}
-              >
-                View source
-              </Link>
-              <Link
-                className={buttonVariants({ variant: "default", size: "sm" })}
-                href={`/dashboard/connect/manual-upload/${encodeURIComponent(entry.connectorKey)}?connection_id=${encodeURIComponent(source.connectionId)}`}
-              >
-                Import into this source
-              </Link>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <details className="group mt-2" data-testid="source-setup-details">
+      <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
+        Show import options
+      </summary>
+      <div className="mt-2 grid gap-2">
+        <p className="pdpp-caption text-muted-foreground">{guidance}</p>
+        <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+      </div>
+    </details>
   );
 }
 
@@ -169,12 +155,9 @@ function SourceSetupCard({
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
-  const guidance = sourceSetupGuidance(entry);
-  const actionLabel =
-    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action?.label;
   return (
     <li
-      className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
+      className="grid gap-3 rounded-sm border border-border/80 bg-card px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto]"
       data-testid={`source-setup-${entry.connectorKey}`}
     >
       <div className="min-w-0">
@@ -188,22 +171,15 @@ function SourceSetupCard({
             {status.label}
           </span>
         </div>
-        {/* Low-noise path to detail: the support reasoning stays one disclosure away. */}
-        <details className="group mt-1">
-          <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-            Why this, and what to expect
-          </summary>
-          <p className="pdpp-caption mt-1 text-muted-foreground">{guidance}</p>
-        </details>
-        <ExistingSourceReuse entry={entry} sources={existingSources} />
-        <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+        <p className="pdpp-caption mt-1 text-muted-foreground">{sourceMethodLine(entry, existingSources.length)}</p>
+        <SourceSetupDetails entry={entry} />
       </div>
       <div className="flex flex-col items-end justify-start gap-1">
         {action ? (
           <>
-            <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
+            <span className="pdpp-eyebrow text-muted-foreground">Next</span>
             <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
-              {actionLabel}
+              {action.label}
             </Link>
           </>
         ) : (
@@ -216,6 +192,59 @@ function SourceSetupCard({
         )}
       </div>
     </li>
+  );
+}
+
+function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="server-setup-summary">
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground">
+        Server settings needed before setup ({entries.length})
+      </summary>
+      <div className="mt-3 grid gap-3">
+        <p className="pdpp-caption text-muted-foreground">
+          These sources need provider app settings on this instance before an account can be added.
+        </p>
+        <ul className="grid gap-2">
+          {entries.map((entry) => (
+            <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
+              <div className="min-w-0">
+                <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
+                <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
+              </div>
+              <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/deployment">
+                Open server settings
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
+function UnavailableSourceSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="mt-3 grid gap-2" data-testid="unavailable-source-summary">
+      {entries.map((entry) => {
+        const status = sourceSetupStatus(entry);
+        return (
+          <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
+            <div className="min-w-0">
+              <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
+              <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
+            </div>
+            <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -282,30 +311,14 @@ export function SourceSetupCatalog({
             </p>
           )}
 
-          {serverSetup.length > 0 ? (
-            <section aria-label="Requires server setup" className="grid gap-2">
-              <div>
-                <h3 className="pdpp-title text-foreground">Requires server setup</h3>
-                <p className="pdpp-caption text-muted-foreground">
-                  These sources need instance-level provider app configuration before account setup can start.
-                </p>
-              </div>
-              <SourceSetupCardList entries={serverSetup} existingSourcesByConnector={existingSourcesByConnector} />
-            </section>
-          ) : null}
+          <ServerSetupSummary entries={serverSetup} />
 
           {unavailable.length > 0 ? (
             <details className="rounded-md border border-border/80 bg-muted/20 p-3" open={hasQuery}>
               <summary className="pdpp-caption cursor-pointer text-muted-foreground">
                 Sources not available from this page ({unavailable.length})
               </summary>
-              <div className="mt-3">
-                <SourceSetupCardList
-                  entries={unavailable}
-                  existingSourcesByConnector={existingSourcesByConnector}
-                  unavailable
-                />
-              </div>
+              <UnavailableSourceSummary entries={unavailable} />
             </details>
           ) : null}
         </div>

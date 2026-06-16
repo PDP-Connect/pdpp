@@ -32,12 +32,13 @@ const MANUAL_UPLOAD_FORM_FILE = `${HERE}../../connect/manual-upload/[connectorId
 const STATUS_FILE = `${HERE}../../connect/status/[connectionId]/page.tsx`;
 
 const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
-const SOURCE_JOURNEY_COPY = /source journey/i;
+const COMPACT_METHOD_LINE = /function sourceMethodLine/;
 const SUPPORT_FACT_TEST_ID = /data-testid="source-support-fact"/;
-const RECOMMENDED_NEXT_COPY = /Recommended next/;
-const SUPPORT_DETAIL_DISCLOSURE = /<details[\s\S]*?Why this, and what to expect/;
+const NEXT_COPY = />Next</;
+const GENERIC_SUPPORT_DETAIL_COPY = /Why this, and what to expect/;
+const IMPORT_OPTIONS_DISCLOSURE = /Show import options/;
 const EXISTING_SOURCE_REUSE = /data-testid="existing-source-reuse"/;
-const SAME_IDENTITY_COPY = /same account, profile, device, or\s+source identity/;
+const SERVER_SETUP_SUMMARY = /data-testid="server-setup-summary"/;
 const MANIFEST_GENERATED_COPY = /generated from the connector manifest/;
 const VALIDATES_BEFORE_COMMIT_COPY = /validates before committing/i;
 const COVERAGE_RECEIPT_COPY = /coverage receipt|coverage provenance/i;
@@ -78,21 +79,25 @@ const IMPORT_RECEIPT_STATE_REFERENCE = /status\.import_receipt/;
 test("source catalog no longer frames itself as one status and one next action", async () => {
   const src = await readFile(CATALOG_FILE, "utf8");
   assert.doesNotMatch(src, ONE_STATUS_AND_ACTION_COPY);
-  // Journey framing: the description names a source journey.
-  assert.match(src, SOURCE_JOURNEY_COPY);
+  // The default picker is a compact decision surface: method line first,
+  // detailed acquisition paths only after import intent.
+  assert.match(src, COMPACT_METHOD_LINE);
 });
 
 test("source card keeps the support fact distinct from the recommended next action", async () => {
   const src = await readFile(CATALOG_FILE, "utf8");
   // Current support/blocked fact is its own labelled element…
   assert.match(src, SUPPORT_FACT_TEST_ID);
-  // …and the action is explicitly the recommended next step.
-  assert.match(src, RECOMMENDED_NEXT_COPY);
-  // Detail stays one low-noise disclosure away, not inline noise.
-  assert.match(src, SUPPORT_DETAIL_DISCLOSURE);
-  // Existing manual/import sources are offered before creating another source.
-  assert.match(src, EXISTING_SOURCE_REUSE);
-  assert.match(src, SAME_IDENTITY_COPY);
+  // …and the action is a compact next step, not a repeated card heading.
+  assert.match(src, NEXT_COPY);
+  // The old generic disclosure repeated on every row and made the picker noisy.
+  assert.doesNotMatch(src, GENERIC_SUPPORT_DETAIL_COPY);
+  // Import-specific detail is still available, but behind explicit import intent.
+  assert.match(src, IMPORT_OPTIONS_DISCLOSURE);
+  // The existing-vs-new source choice belongs on the import page, not in the picker.
+  assert.doesNotMatch(src, EXISTING_SOURCE_REUSE);
+  // Server prerequisites are summarized outside the primary add-now rows.
+  assert.match(src, SERVER_SETUP_SUMMARY);
 });
 
 // ── 2. Manual/upload page is a coverage-assistant start ─────────────────────

@@ -180,7 +180,7 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         label: "Import file",
       };
     case "provider_auth_deployment_blocked":
-      return { href: "/dashboard/deployment", label: "Open server setup" };
+      return { href: "/dashboard/deployment", label: "Open server settings" };
     default:
       return null;
   }

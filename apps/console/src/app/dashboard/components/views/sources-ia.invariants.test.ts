@@ -81,7 +81,10 @@ const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
 const OTHER_COVERAGE_PATHS_RE = /Other ways to add coverage/;
 const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
-const SERVER_SETUP_GROUP_RE = /Requires server setup/;
+const SERVER_SETUP_GROUP_RE = /Server settings needed before setup/;
+const SERVER_SETUP_SUMMARY_RE = /data-testid="server-setup-summary"/;
+const IMPORT_OPTIONS_DISCLOSURE_RE = /Show import options/;
+const GENERIC_WHY_THIS_RE = /Why this, and what to expect/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const FORBIDDEN_DEV_STRINGS_RE =
@@ -125,8 +128,11 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, SOURCE_ACQUISITION_PATHS_RE);
   assert.match(catalog, SOURCE_ACQUISITION_PATH_RE);
   assert.match(catalog, OTHER_COVERAGE_PATHS_RE);
+  assert.match(catalog, IMPORT_OPTIONS_DISCLOSURE_RE);
   assert.match(catalog, UNAVAILABLE_GROUP_RE);
   assert.match(catalog, SERVER_SETUP_GROUP_RE);
+  assert.match(catalog, SERVER_SETUP_SUMMARY_RE);
+  assert.doesNotMatch(catalog, GENERIC_WHY_THIS_RE);
 });
 
 // ── 2. Per-source health and actions are clearly separate ───────────────────
