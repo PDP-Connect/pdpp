@@ -396,6 +396,8 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
   switch (disposition) {
     case "complete":
       return "green";
+    case "checking":
+      return "grey";
     case "resumable":
       return "amber";
     case "owner_refresh_due":
@@ -1028,6 +1030,8 @@ function buildForwardStatement(
   }
 
   switch (disposition) {
+    case "checking":
+      return "Checking coverage before deciding what the next run should do.";
     case "resumable":
       return "The next run is expected to fill the remaining data.";
     case "owner_refresh_due":
@@ -1157,6 +1161,8 @@ function streamStatement(disposition: ForwardDisposition): string {
   switch (disposition) {
     case "complete":
       return "Complete.";
+    case "checking":
+      return "Checking coverage.";
     case "resumable":
       return "The next run is expected to fill the rest.";
     case "owner_refresh_due":

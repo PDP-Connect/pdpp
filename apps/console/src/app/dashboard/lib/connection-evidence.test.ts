@@ -21,6 +21,7 @@ import {
   formatCollectionRateReadout,
   formatCoverageAxis,
   formatDominantCondition,
+  formatForwardDisposition,
   formatFreshnessAxis,
   formatLastDurableProgress,
   formatOutboxAxis,
@@ -43,6 +44,14 @@ import type {
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
+
+test("formatForwardDisposition renders checking coverage as neutral, not resumable", () => {
+  const out = formatForwardDisposition("checking");
+  assert.equal(out?.label, "checking coverage");
+  assert.equal(out?.tone, "neutral");
+  assert.equal(out?.ownerActionNeeded, false);
+  assert.doesNotMatch(out?.title ?? "", /retry|resum/i);
+});
 
 function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
   return {

@@ -671,7 +671,13 @@ export type RefFreshnessAxis = "fresh" | "stale" | "unknown";
  * sixth axis: it answers what the next run does, distinct from current state,
  * coverage, freshness, and outbox.
  */
-export type RefForwardDisposition = "awaiting_owner" | "complete" | "owner_refresh_due" | "resumable" | "terminal";
+export type RefForwardDisposition =
+  | "awaiting_owner"
+  | "checking"
+  | "complete"
+  | "owner_refresh_due"
+  | "resumable"
+  | "terminal";
 
 export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
 

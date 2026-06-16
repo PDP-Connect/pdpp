@@ -362,7 +362,7 @@ export function summarizeAxisChips(
  * Wording stays protocol/reference-accurate: the reference describes what a
  * run on the owner's own instance is expected to do. It never promises a
  * hosted sync service ("we'll refresh nightly"), and the label is connector-
- * agnostic — the same five values mean the same thing for every connector.
+ * agnostic — the same disposition values mean the same thing for every connector.
  */
 export interface ForwardDispositionSummary {
   /**
@@ -388,12 +388,19 @@ const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositi
       "Coverage is established and fresh. A future run re-checks the source but is not expected to collect anything new or fill a gap.",
     tone: "success",
   },
+  checking: {
+    value: "checking",
+    label: "checking coverage",
+    ownerActionNeeded: false,
+    title: "Coverage evidence is not available yet. This is a checking state, not an owner-action prompt.",
+    tone: "neutral",
+  },
   resumable: {
     value: "resumable",
     label: "resumes collection",
     ownerActionNeeded: false,
     title:
-      "There is outstanding work an ordinary future run is expected to pick up — an open boundary, a retryable gap, or coverage not yet established. Records already collected stay valid; no owner action is needed.",
+      "There is outstanding work an ordinary future run is expected to pick up — an open boundary or retryable gap. Records already collected stay valid; no owner action is needed.",
     tone: "warning",
   },
   awaiting_owner: {

@@ -240,6 +240,9 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  * (`define-connector-progress-evidence-contract`).
  *
  *   - `complete`          : no outstanding gap and freshness is fresh or unknown.
+ *   - `checking`          : coverage evidence is not available yet. This is
+ *                           visibly unknown, but SHALL NOT claim a recoverable
+ *                           gap or ask the owner to retry.
  *   - `resumable`         : an outstanding gap that ordinary forward collection
  *                           or detail-gap recovery is expected to fill on a later
  *                           run without owner action.
@@ -260,6 +263,7 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  */
 export type ForwardDisposition =
   | "awaiting_owner"
+  | "checking"
   | "complete"
   | "owner_refresh_due"
   | "resumable"
@@ -994,7 +998,6 @@ export interface ComputeConnectionHealthInput {
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
-  readonly coverage: ConnectionCoverageEvidence | null;
   /**
    * Adaptive collection rate controller snapshot. Passed through verbatim from
    * the caller (the reference derives it from run-trace progress events). Pure
@@ -1002,6 +1005,7 @@ export interface ComputeConnectionHealthInput {
    * state or any axis. `null`/absent yields a `null` rollup on the snapshot.
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
+  readonly coverage: ConnectionCoverageEvidence | null;
   /**
    * Source-pressure detail-gap backlog evidence. The projection derives the
    * additive {@link DetailGapBacklog} rollup from it via
@@ -1878,10 +1882,10 @@ function remoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): C
  * the host; the console renders the deterministic command separately.
  */
 interface StalledCauseCopy {
-  readonly exporterMessage: string;
-  readonly exporterReason: string;
   readonly backlogMessage: string;
   readonly backlogReason: string;
+  readonly exporterMessage: string;
+  readonly exporterReason: string;
   readonly remediationLabel: string;
 }
 
@@ -2028,7 +2032,9 @@ export function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | 
   if (!refresh) {
     return false;
   }
-  return refresh.backgroundSafe === false || refresh.recommendedMode === "manual" || refresh.recommendedMode === "paused";
+  return (
+    refresh.backgroundSafe === false || refresh.recommendedMode === "manual" || refresh.recommendedMode === "paused"
+  );
 }
 
 /**
@@ -2078,7 +2084,12 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
         reason: CONDITION_REASON.STALE_MANUAL_REFRESH,
         message: "Retained data is stale; this manual connector needs an owner-initiated run to refresh.",
         origin: "connector",
-        remediation: { action: "retry_by_runtime", label: "Run the connector manually", retryable: true, target: "run" },
+        remediation: {
+          action: "retry_by_runtime",
+          label: "Run the connector manually",
+          retryable: true,
+          target: "run",
+        },
       });
     }
     // An assisted-refresh connector refreshes on its own schedule but may need
@@ -2135,21 +2146,21 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
  * See `define-connector-progress-evidence-contract`.
  */
 export interface ForwardDispositionInput {
+  /**
+   * Whether structured owner attention is open for the connection (missing
+   * credentials, a pending OTP, required re-consent, or a manual action).
+   */
+  readonly attentionOpen: boolean;
   /** The stream's coverage condition from the canonical {@link CoverageAxis}. */
   readonly coverage: CoverageAxis;
+  /** The connection's freshness axis from {@link FreshnessAxis}. */
+  readonly freshness: FreshnessAxis;
   /**
    * Whether the stream's outstanding gap is recoverable by an ordinary future
    * run (a pending recoverable `DETAIL_GAP` or an ordinary partial boundary).
    * Ignored when the coverage condition carries no outstanding gap.
    */
   readonly gapRetryable: boolean;
-  /**
-   * Whether structured owner attention is open for the connection (missing
-   * credentials, a pending OTP, required re-consent, or a manual action).
-   */
-  readonly attentionOpen: boolean;
-  /** The connection's freshness axis from {@link FreshnessAxis}. */
-  readonly freshness: FreshnessAxis;
   /**
    * The connection's manifest refresh-policy evidence. Used only to decide
    * whether a stale-but-complete stream is owner-refresh-due (manual / paused /
@@ -2194,8 +2205,8 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
  *
  * `complete` is only reached when the coverage condition itself carries no
  * outstanding gap — it is never inferred from collected count. A stream whose
- * considered denominator is unknown carries a non-`complete` coverage condition
- * upstream, so it cannot reach `complete` here.
+ * considered denominator is unknown carries a `checking` disposition instead of
+ * `complete` or `resumable`.
  *
  * See `define-connector-progress-evidence-contract`.
  */
@@ -2227,12 +2238,11 @@ export function deriveForwardDisposition(input: ForwardDispositionInput): Forwar
   // No outstanding gap. Before reaching `complete`, the coverage condition must
   // itself ESTABLISH completeness — never inferred from collected count. Only
   // `complete` (proven), `deferred`, and `inventory_only` (owe no further data by
-  // manifest policy) qualify. An `unknown` coverage condition (no declared
-  // considered denominator) is absence of evidence, not proof of completeness:
-  // it can never be `complete` here, so a later run is expected to establish
-  // coverage -> `resumable`. This is the honesty gate the contract requires.
+  // manifest policy) qualify. An `unknown` coverage condition is absence of
+  // evidence, not proof of completeness and not proof of a recoverable gap.
+  // Keep it in a checking disposition rather than fabricating `resumable`.
   if (input.coverage === "unknown") {
-    return "resumable";
+    return "checking";
   }
 
   // Rule 4: a complete stream on a manual-refresh-only connection whose data has
@@ -2471,7 +2481,9 @@ function pickDominantConditionId(
       // surfaces the stale `Fresh` condition so the owner sees "refresh due";
       // a paused-schedule idle surfaces the paused `ScheduleEligible` condition.
       return (
-        staleAdvisoryFreshConditionId(byType.get("Fresh")) ?? conditionId(byType.get("ScheduleEligible"), "false") ?? null
+        staleAdvisoryFreshConditionId(byType.get("Fresh")) ??
+        conditionId(byType.get("ScheduleEligible"), "false") ??
+        null
       );
     case "needs_attention":
       return failingConditionId(byType.get("AttentionClear"));
@@ -2730,8 +2742,7 @@ export function deriveOutboxAxisFromHeartbeat(
     // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
     // blocked heartbeat with none is a failed state read cleared by re-running.
     // Mirrors the device-side `last_error.kind` split.
-    const cause: OutboxStalledCause =
-      (evidence.deadLetterCount ?? 0) > 0 ? "dead_letter_backlog" : "state_read_failed";
+    const cause: OutboxStalledCause = (evidence.deadLetterCount ?? 0) > 0 ? "dead_letter_backlog" : "state_read_failed";
     return { axis: "stalled", cause, unreliable: false };
   }
 

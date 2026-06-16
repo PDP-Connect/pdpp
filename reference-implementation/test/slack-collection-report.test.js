@@ -14,7 +14,7 @@ import { buildCollectionReport } from '../server/ref-control.ts';
 //   - canvases with collected === considered  -> complete  (the new signal)
 //   - canvases with collected  <  considered  -> partial   (honest shortfall)
 //   - streams that declare NO considered (messages, workspace, users, …) stay
-//     `unknown` / `resumable` — never inferred `complete` from collected count
+//     `unknown` / `checking` — never inferred `complete` from collected count
 //   - the unsupported streams' existing SKIP_RESULT(reason: "not_available")
 //     reads `unavailable` coverage -> a `terminal` forward disposition with no
 //     extra connector code (the second half of task 4.2, true by construction).
@@ -83,7 +83,7 @@ test('slack canvases: an enumerated empty inventory (considered: 0, collected: 0
   assert.equal(entry.forward_disposition, 'complete');
 });
 
-test('slack non-canvas streams declare NO considered -> stay unknown / resumable (never inferred complete)', () => {
+test('slack non-canvas streams declare NO considered -> stay unknown / checking (never inferred complete)', () => {
   // messages / workspace / users / files / channels collect records but declare
   // no `considered` (fingerprint-suppressed or incrementally-windowed streams
   // have no honest denominator). They MUST stay `unknown`, never `complete`.
@@ -96,7 +96,7 @@ test('slack non-canvas streams declare NO considered -> stay unknown / resumable
     const entry = entryFor(entries, stream);
     assert.equal(entry.considered, 'unknown', `${stream} considered stays unknown when undeclared`);
     assert.equal(entry.coverage_condition, 'unknown', `${stream} is never inferred complete`);
-    assert.equal(entry.forward_disposition, 'resumable', `${stream} expects a later run to establish coverage`);
+    assert.equal(entry.forward_disposition, 'checking', `${stream} is checking coverage, not asking for a retry`);
   }
 });
 

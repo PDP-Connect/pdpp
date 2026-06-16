@@ -107,6 +107,17 @@ scope.
 - **AND** the chip SHALL NOT pair a "resumes collection" phrase with an `unknown`
   or `terminal` coverage disposition for the same stream.
 
+#### Scenario: Unknown coverage renders as checking rather than retryable
+
+- **WHEN** a connection has otherwise-idle collection-health inputs and coverage
+  axis `unknown`
+- **THEN** the forward disposition SHALL be `checking`, not `resumable`
+- **AND** the synthesized `pill.tone` SHALL be `grey`
+- **AND** the `pill.label` SHALL be `Checking`, not `Healthy` or `Degraded`
+- **AND** the verdict SHALL NOT include a `retry_gap` required action
+- **AND** the `forward_statement` SHALL NOT say that the next run is expected to
+  fill remaining data.
+
 ### Requirement: The verdict channel SHALL route attention separately from tone and SHALL keep actionless signals out of the attention channel
 
 The synthesized verdict SHALL carry a `channel` field

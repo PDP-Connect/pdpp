@@ -54,11 +54,12 @@ function succeededRun(overrides = {}) {
 
 // ─── every snapshot carries a disposition ────────────────────────────────────
 
-test('every snapshot carries a forward_disposition (default never-run -> resumable)', () => {
+test('every snapshot carries a forward_disposition (default never-run -> checking)', () => {
   // A never-run connection has `unknown` coverage — absence of evidence, never
-  // proof of completeness — so its disposition is `resumable`, not `complete`.
+  // proof of completeness or a recoverable gap — so its disposition is
+  // `checking`, not `complete` or `resumable`.
   const snap = computeConnectionHealth(input());
-  assert.equal(snap.forward_disposition, 'resumable');
+  assert.equal(snap.forward_disposition, 'checking');
   assert.equal(snap.state, 'idle');
 });
 
@@ -197,15 +198,16 @@ test('unsupported coverage -> terminal disposition', () => {
   assert.equal(snap.forward_disposition, 'terminal');
 });
 
-// ─── unknown denominator is never complete, even when projection is healthy-ish ─
+// ─── unknown denominator is checking, even when projection is healthy-ish ─────
 
-test('absent coverage evidence -> unknown axis -> resumable, never complete', () => {
+test('absent coverage evidence -> unknown axis -> checking, never complete or retryable', () => {
   const snap = computeConnectionHealth(
     input({ run: succeededRun(), coverage: null, freshness: { axis: 'fresh' } })
   );
   assert.equal(snap.axes.coverage, 'unknown');
   assert.notEqual(snap.forward_disposition, 'complete');
-  assert.equal(snap.forward_disposition, 'resumable');
+  assert.notEqual(snap.forward_disposition, 'resumable');
+  assert.equal(snap.forward_disposition, 'checking');
 });
 
 // ─── disposition is independent of an unreliable-projection headline ──────────
@@ -213,7 +215,7 @@ test('absent coverage evidence -> unknown axis -> resumable, never complete', ()
 test('unreliable projection does not fabricate a complete disposition', () => {
   // The headline is forced to `unknown` by an unreliable read model, but the
   // disposition still reflects the coverage evidence honestly: unknown coverage
-  // is `resumable`, never `complete`.
+  // is `checking`, never `complete`.
   const snap = computeConnectionHealth(
     input({
       run: succeededRun(),
@@ -224,4 +226,5 @@ test('unreliable projection does not fabricate a complete disposition', () => {
   );
   assert.equal(snap.state, 'unknown');
   assert.notEqual(snap.forward_disposition, 'complete');
+  assert.equal(snap.forward_disposition, 'checking');
 });

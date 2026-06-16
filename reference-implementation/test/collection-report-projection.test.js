@@ -59,7 +59,7 @@ function entryFor(entries, stream) {
 
 // ─── 2.4 the honesty gate (the single most important assertion) ───────────────
 
-test('collected records, no gaps, NO considered -> unknown coverage + resumable (never complete)', () => {
+test('collected records, no gaps, NO considered -> unknown coverage + checking (never complete)', () => {
   const entries = report([fact({ stream: 'messages', collected: 1145, considered: null })]);
   const entry = entryFor(entries, 'messages');
   assert.equal(entry.considered, 'unknown');
@@ -67,7 +67,7 @@ test('collected records, no gaps, NO considered -> unknown coverage + resumable 
   // The core dishonesty the contract removes: a clean succeeded run with no
   // considered denominator MUST NOT read `complete`.
   assert.equal(entry.coverage_condition, 'unknown');
-  assert.equal(entry.forward_disposition, 'resumable');
+  assert.equal(entry.forward_disposition, 'checking');
 });
 
 // ─── considered known: satisfied -> complete, short -> partial ────────────────
@@ -282,7 +282,7 @@ test('open attention does NOT taint a stream with no gap (complete stays complet
 
 // ─── 2.6 portable RECORD/STATE/DONE-only connector ────────────────────────────
 
-test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -> unknown / resumable', () => {
+test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -> unknown / checking', () => {
   // The portability floor: a connector that emits only RECORD/STATE/DONE
   // declares no DETAIL_COVERAGE, no considered, and no SKIP_RESULT. Its entry
   // must be a VALID report with `unknown` axes — not an error, not `complete`.
@@ -290,7 +290,7 @@ test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -
   const entry = entryFor(entries, 'posts');
   assert.equal(entry.considered, 'unknown');
   assert.equal(entry.coverage_condition, 'unknown');
-  assert.equal(entry.forward_disposition, 'resumable');
+  assert.equal(entry.forward_disposition, 'checking');
   assert.equal(entry.checkpoint, 'committed');
 });
 

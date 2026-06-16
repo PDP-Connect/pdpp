@@ -1776,9 +1776,9 @@ function buildCoverageEvidence(
 // The load-bearing honesty mechanism is the per-stream coverage gate: a stream
 // that collected records, recorded no gaps, and declared NO considered
 // denominator reads `unknown` — never `complete`. The pure `deriveForwardDisposition`
-// back-stop then maps `unknown` -> `resumable`, so collected-count alone can never
-// be projected as a completed stream. This is the Collection Report's reason for
-// existing.
+// back-stop then maps `unknown` -> `checking`, so collected-count alone can never
+// be projected as a completed stream or a recoverable gap. This is the Collection
+// Report's reason for existing.
 
 /** Considered axis: a known non-negative integer denominator, or `unknown`. */
 type ConsideredAxis = number | "unknown";

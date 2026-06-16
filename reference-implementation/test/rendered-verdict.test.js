@@ -257,6 +257,23 @@ test('tone: unknown freshness renders Checking rather than Healthy or Degraded',
   assert.notEqual(v.forward_statement, 'Current and collecting normally.');
 });
 
+test('tone: unknown coverage renders Checking and no retry action', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { coverage: 'unknown', freshness: 'fresh' },
+    forward_disposition: 'checking',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: 'unknown' })], null, true);
+  assert.equal(v.pill.tone, 'grey');
+  assert.equal(v.pill.label, 'Checking');
+  assert.equal(v.channel, 'calm');
+  assert.equal(v.forward_statement, 'Checking coverage before deciding what the next run should do.');
+  assert.deepEqual(v.required_actions, []);
+  assert.equal(v.streams[0]?.disposition, 'checking');
+  assert.equal(v.streams[0]?.statement, 'Checking coverage.');
+  assert.notEqual(v.forward_statement, 'The next run is expected to fill the remaining data.');
+});
+
 test('tone: worst axis (degrading coverage) wins over a healthy state', () => {
   const snap = snapshot({ state: 'healthy', axes: { coverage: 'retryable_gap' } });
   const v = synthesizeRenderedVerdict(
@@ -568,7 +585,7 @@ test('composite: all eleven invariants hold across representative snapshots', ()
     },
     {
       name: 'unknown',
-      snap: snapshot({ state: 'unknown', axes: { freshness: 'unknown', coverage: 'unknown', outbox: 'unknown' }, forward_disposition: 'resumable', unknown_reasons: ['x'] }),
+      snap: snapshot({ state: 'unknown', axes: { freshness: 'unknown', coverage: 'unknown', outbox: 'unknown' }, forward_disposition: 'checking', unknown_reasons: ['x'] }),
       streams: [stream({ coverage: 'unknown' })],
       refresh: null,
       ok: true,
@@ -593,7 +610,7 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
   const states = ['healthy', 'idle', 'degraded', 'needs_attention', 'cooling_off', 'blocked', 'unknown'];
   const freshnesses = ['fresh', 'stale', 'unknown'];
   const coverages = ['complete', 'partial', 'retryable_gap', 'terminal_gap', 'unknown'];
-  const dispositions = ['complete', 'resumable', 'owner_refresh_due', 'awaiting_owner', 'terminal'];
+  const dispositions = ['complete', 'checking', 'resumable', 'owner_refresh_due', 'awaiting_owner', 'terminal'];
   const attentions = ['none', 'open'];
 
   const channelByTone = new Map();
