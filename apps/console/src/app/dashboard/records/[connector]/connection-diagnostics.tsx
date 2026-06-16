@@ -798,12 +798,20 @@ function OutboxStallRemediationPanel({
           </li>
         ))}
       </ol>
-      <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-run-note">
-        Then run the collector again on {hostPhrase} (the same{" "}
-        <code className="font-mono">@pdpp/local-collector run</code> command used to enroll it) so the requeued work
-        actually drains. If <code className="font-mono">doctor</code> reports zero dead-letter rows, the stall is a
-        blocked state read, not a backlog — re-running the collector re-reads state and clears it on its own.
-      </p>
+      {verdictRemediation ? null : (
+        // Legacy fallback only: when the reference does not send cause-specific
+        // remediation, we can't tell dead-letter from state-read, so this note
+        // covers both. With a verdict remediation present the steps are already
+        // cause-correct (e.g. state_read_failed → re-run only), and this
+        // dead-letter/doctor language would REINTRODUCE the very confusion the
+        // cause-specific commands fix — so it is omitted.
+        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-run-note">
+          Then run the collector again on {hostPhrase} (the same{" "}
+          <code className="font-mono">@pdpp/local-collector run</code> command used to enroll it) so the requeued work
+          actually drains. If <code className="font-mono">doctor</code> reports zero dead-letter rows, the stall is a
+          blocked state read, not a backlog — re-running the collector re-reads state and clears it on its own.
+        </p>
+      )}
     </div>
   );
 }

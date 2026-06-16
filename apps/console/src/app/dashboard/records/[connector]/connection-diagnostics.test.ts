@@ -75,6 +75,11 @@ const REMEDIATION_DERIVES_FROM_VERDICT =
 const REMEDIATION_PREFERS_VERDICT_COMMANDS =
   /verdictRemediation\s*\?\s*verdictRemediation\.commands\.map/;
 const REMEDIATION_THREADS_VERDICT_TO_PANEL = /verdictRemediation=\{verdictRemediation\}/;
+// The legacy dead-letter/doctor run-note must be gated OFF when a cause-specific
+// verdict remediation is present — otherwise it reintroduces the very confusion
+// (doctor / dead-letter / backlog) the cause-correct commands fix.
+const RUN_NOTE_GATED_ON_LEGACY_FALLBACK =
+  /verdictRemediation \? null : \([\s\S]{0,800}diagnostics-outbox-remediation-run-note/;
 const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
@@ -294,6 +299,8 @@ test("stalled-outbox remediation PREFERS the server's cause-specific verdict com
   assert.match(src, REMEDIATION_DERIVES_FROM_VERDICT);
   assert.match(src, REMEDIATION_PREFERS_VERDICT_COMMANDS);
   assert.match(src, REMEDIATION_THREADS_VERDICT_TO_PANEL);
+  // The dead-letter run-note is suppressed under a cause-specific verdict remediation.
+  assert.match(src, RUN_NOTE_GATED_ON_LEGACY_FALLBACK);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {
