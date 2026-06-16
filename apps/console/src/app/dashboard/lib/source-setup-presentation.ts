@@ -151,19 +151,13 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_unproven":
       return "This connector needs a packaged collector path before it can be started from this dashboard.";
     case "provider_auth_proof_gated":
-      return entry.runbookPath
-        ? `Provider authorization is not packaged in this dashboard. Tracking runbook: ${entry.runbookPath}.`
-        : "Provider authorization is not packaged in this dashboard.";
+      return "Provider authorization is not packaged in this dashboard yet.";
     case "api_network_unsupported":
-      return entry.runbookPath
-        ? `This dashboard cannot add this source yet. Tracking runbook: ${entry.runbookPath}.`
-        : "This dashboard cannot add this source yet.";
+      return "This dashboard cannot add this source yet.";
     default:
       // unknown_unsupported and any future unclassified disposition: never a
       // blank wall. Give the owner at least a direction.
-      return entry.runbookPath
-        ? `This dashboard cannot add this source yet. Tracking runbook: ${entry.runbookPath}.`
-        : "This dashboard cannot add this source yet.";
+      return "This dashboard cannot add this source yet.";
   }
 }
 

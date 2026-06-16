@@ -31,7 +31,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
 import { buildSourceAddSupport, type SourceAddSupport } from "./source-add-support.ts";
-import { sourceSetupAction, sourceSetupAvailability, sourceSetupStatus } from "./source-setup-presentation.ts";
+import {
+  sourceSetupAction,
+  sourceSetupAvailability,
+  sourceSetupGuidance,
+  sourceSetupStatus,
+} from "./source-setup-presentation.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ADD_SUPPORT_FILE = `${HERE}source-add-support.ts`;
@@ -42,6 +47,7 @@ const SETUP_PRESENTATION_FILE = `${HERE}source-setup-presentation.ts`;
 const OVERRULED_DEMOTION_SENTENCE_RE = /is not self-service yet/i;
 const OVERRULED_STATUS_LABEL_RE = /Not self-service yet/;
 const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
+const RUNBOOK_COPY_RE = /runbook/i;
 
 /**
  * Forbidden owner-facing copy. Each entry is a human-readable class + the regex
@@ -56,6 +62,7 @@ const FORBIDDEN_COPY: readonly { class: string; re: RegExp }[] = [
   { class: "dead-end-action", re: /\bNo setup action yet\b/i },
   { class: "ambiguous-existing-data", re: /\bExisting data only\b/i },
   { class: "monorepo-package-path", re: /packages\//i },
+  { class: "operator-runbook-path", re: /Tracking runbook|docs\/operator/i },
   { class: "package-runner", re: /pnpm --dir/i },
   { class: "unpublished-cli", re: /\bpdpp \w/i },
   { class: "env-var-jargon", re: /PDPP_[A-Z_]+|connector_instance_id|source_instance_id|[A-Z]+_ENV_VAR|_DIR=/ },
@@ -128,6 +135,14 @@ test("only packaged add-now and server-setup dispositions expose primary actions
     }
     assert.equal(action, null, `${disposition} must not render a fake primary setup action`);
     assert.equal(availability, "not_available_here", `${disposition} must be separated from available setup`);
+  }
+});
+
+test("every first-account setup guidance line is free of forbidden copy", () => {
+  for (const disposition of ALL_DISPOSITIONS) {
+    const guidance = sourceSetupGuidance(entryForDisposition(disposition));
+    assertCleanCopy(guidance, `sourceSetupGuidance(${disposition})`);
+    assert.doesNotMatch(guidance, RUNBOOK_COPY_RE, `sourceSetupGuidance(${disposition}) must not expose runbook copy`);
   }
 });
 
