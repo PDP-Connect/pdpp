@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { isBrowserBoundConnector } from "../../../../lib/connection-modality.ts";
 import { requireDashboardAccess } from "../../../../lib/dashboard-access.ts";
-import { runConnectionNow } from "../../../../lib/operator-runs.ts";
-import { abandonBrowserEnrollmentShell, createBrowserEnrollmentShell } from "../../../../lib/ref-client.ts";
+import { createBrowserEnrollmentShell } from "../../../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,27 +50,9 @@ function readOptionalStringField(formData: FormData, name: string): string | nul
   return trimmed.length > 0 ? trimmed : null;
 }
 
-async function startRepair(connectionId: string): Promise<string> {
-  const result = (await runConnectionNow(connectionId)) as { run_id?: string };
-  const runId = result.run_id ?? "";
-  if (!runId) {
-    throw new Error("Run started but no run_id returned");
-  }
-  return runId;
-}
-
-async function startSetup(connectorId: string): Promise<string> {
+async function createSetupShell(connectorId: string): Promise<string> {
   const shell = await createBrowserEnrollmentShell(connectorId);
-  try {
-    return await startRepair(shell.connection_id);
-  } catch (err) {
-    try {
-      await abandonBrowserEnrollmentShell(shell.connection_id);
-    } catch {
-      // Best effort; TTL retirement will clean up any orphaned draft.
-    }
-    throw err;
-  }
+  return shell.connection_id;
 }
 
 export async function POST(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
@@ -107,8 +88,12 @@ export async function POST(request: Request, { params }: { params: Promise<Route
   }
 
   try {
-    const runId = existingConnectionId ? await startRepair(existingConnectionId) : await startSetup(connectorId);
-    return redirectTo(request, `/dashboard/runs/${encodeURIComponent(runId)}/stream`);
+    const connectionId = existingConnectionId ?? (await createSetupShell(connectorId));
+    const params = new URLSearchParams({
+      connection_id: connectionId,
+      draft: existingConnectionId ? "0" : "1",
+    });
+    return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to start browser session";
     return redirectTo(request, errorPath(connectorId, message));

@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}[connectorId]/page.tsx`;
 const START_ROUTE_FILE = `${HERE}[connectorId]/start/route.ts`;
+const LAUNCH_PANEL_FILE = `${HERE}[connectorId]/launch/launch-panel.tsx`;
+const LAUNCH_START_ROUTE_FILE = `${HERE}[connectorId]/launch/start/route.ts`;
 
 const SECURE_BROWSER_COPY_RE = /secure browser/;
 const OPERATOR_ARTIFACT_RE =
@@ -26,9 +28,16 @@ const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId
 const START_ROUTE_ORIGIN_RE = /if \(!originMatchesHost\(request\)\)/;
 const START_ROUTE_STRING_FIELD_RE = /readOptionalStringField\(formData, "connection_id"\)/;
 const START_ROUTE_SETUP_RE = /createBrowserEnrollmentShell\(connectorId\)/;
-const START_ROUTE_RUN_RE = /runConnectionNow\(connectionId\)/;
-const START_ROUTE_CLEANUP_RE = /abandonBrowserEnrollmentShell\(shell\.connection_id\)/;
+const START_ROUTE_LAUNCH_REDIRECT_RE = /\$\{pagePath\(connectorId\)\}\/launch\?\$\{params\.toString\(\)\}/;
+const START_ROUTE_FORBIDS_SLOW_RUN_RE = /runConnectionNow|abandonBrowserEnrollmentShell/;
 const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, request\.url\), 303\)/;
+const LAUNCH_PANEL_FETCH_RE =
+  /fetch\(`\/dashboard\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/start`/;
+const LAUNCH_PANEL_INLINE_FAILURE_RE = /Browser session did not finish starting/;
+const LAUNCH_PANEL_RUNS_FALLBACK_RE = /href="\/dashboard\/runs"/;
+const LAUNCH_START_ROUTE_RUN_RE = /runConnectionNow\(connectionId\)/;
+const LAUNCH_START_ROUTE_CLEANUP_RE = /abandonBrowserEnrollmentShell\(connectionId\)/;
+const LAUNCH_START_ROUTE_JSON_RE = /NextResponse\.json/;
 
 test("browser-session page does not send owners to operator/browser-service artifacts", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -46,14 +55,28 @@ test("browser-session start uses a normal POST route, not Server Action fetch tr
   assert.match(route, START_ROUTE_POST_RE);
 });
 
-test("browser-session start route preserves auth, setup, repair, redirect, and cleanup semantics", async () => {
+test("browser-session start route preserves auth and fast handoff semantics", async () => {
   const route = await readFile(START_ROUTE_FILE, "utf8");
 
   assert.match(route, START_ROUTE_AUTH_RE);
   assert.match(route, START_ROUTE_ORIGIN_RE);
   assert.match(route, START_ROUTE_STRING_FIELD_RE);
   assert.match(route, START_ROUTE_SETUP_RE);
-  assert.match(route, START_ROUTE_RUN_RE);
-  assert.match(route, START_ROUTE_CLEANUP_RE);
+  assert.match(route, START_ROUTE_LAUNCH_REDIRECT_RE);
+  assert.doesNotMatch(route, START_ROUTE_FORBIDS_SLOW_RUN_RE);
   assert.match(route, START_ROUTE_REDIRECT_RE);
+});
+
+test("browser-session launch page owns slow run-start and renders inline failure", async () => {
+  const panel = await readFile(LAUNCH_PANEL_FILE, "utf8");
+  const route = await readFile(LAUNCH_START_ROUTE_FILE, "utf8");
+
+  assert.match(panel, LAUNCH_PANEL_FETCH_RE);
+  assert.match(panel, LAUNCH_PANEL_INLINE_FAILURE_RE);
+  assert.match(panel, LAUNCH_PANEL_RUNS_FALLBACK_RE);
+  assert.match(route, START_ROUTE_AUTH_RE);
+  assert.match(route, START_ROUTE_ORIGIN_RE);
+  assert.match(route, LAUNCH_START_ROUTE_RUN_RE);
+  assert.match(route, LAUNCH_START_ROUTE_CLEANUP_RE);
+  assert.match(route, LAUNCH_START_ROUTE_JSON_RE);
 });
