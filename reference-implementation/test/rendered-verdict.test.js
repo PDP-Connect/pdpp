@@ -242,6 +242,21 @@ test('tone: stale-but-healthy stays health-green and carries a freshness annotat
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
 });
 
+test('tone: unknown freshness renders Checking rather than Healthy or Degraded', () => {
+  const snap = snapshot({
+    state: 'healthy',
+    axes: { freshness: 'unknown' },
+    forward_disposition: 'complete',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], null, true);
+  assert.equal(v.pill.tone, 'grey');
+  assert.equal(v.pill.label, 'Checking');
+  assert.equal(v.channel, 'calm');
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && /unknown/i.test(a.text)));
+  assert.equal(v.forward_statement, 'Checking freshness before calling this current.');
+  assert.notEqual(v.forward_statement, 'Current and collecting normally.');
+});
+
 test('tone: worst axis (degrading coverage) wins over a healthy state', () => {
   const snap = snapshot({ state: 'healthy', axes: { coverage: 'retryable_gap' } });
   const v = synthesizeRenderedVerdict(

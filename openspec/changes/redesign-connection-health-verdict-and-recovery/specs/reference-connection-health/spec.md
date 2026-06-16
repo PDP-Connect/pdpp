@@ -45,13 +45,15 @@ co-required `annotations[]` list, a derived `forward_statement`, an ordered
 
 The synthesized `pill.tone` SHALL be computed as a worst-wins rollup over the
 collection-health inputs — the base tone implied by the headline state, the worst
-per-stream coverage tone, the forward-disposition tone, the attention tone, and
-the outbox tone — and SHALL NOT be a straight read of the headline `state`.
-Freshness SHALL be co-rendered as a separate annotation and SHALL NOT by itself
-downgrade an otherwise-healthy collection-health pill. A manual-refresh source
-whose retained data is merely stale can therefore remain `green` / `Healthy` while
-its freshness annotation and optional refresh action explain that newer data is
-available.
+per-stream coverage tone, the freshness tone, the forward-disposition tone, the
+attention tone, and the outbox tone — and SHALL NOT be a straight read of the
+headline `state`. Freshness SHALL be co-rendered as a separate annotation. Stale
+freshness SHALL NOT by itself downgrade an otherwise-healthy collection-health
+pill: a manual-refresh source whose retained data is merely stale can therefore
+remain `green` / `Healthy` while its freshness annotation and optional refresh
+action explain that newer data is available. Unknown freshness, however, is
+missing evidence: when no stronger degraded signal exists, it SHALL render as
+`grey` / `Checking`, not `green` / `Healthy` or `amber` / `Degraded`.
 
 The `pill.label` SHALL be assigned from `tone` by a fixed health-label bijection
 (`green` ↔ `Healthy`, `amber` ↔ `Degraded`, `red` ↔ `Can't collect`, `grey` ↔
@@ -77,6 +79,17 @@ scope.
 - **AND** the `pill.label` SHALL remain `Healthy`, not `Needs you`
 - **AND** the verdict's `annotations[]` SHALL contain a `freshness`-kind annotation
   stating how long since the connection was fresh.
+
+#### Scenario: Unknown freshness renders as checking rather than healthy or degraded
+
+- **WHEN** a connection has otherwise-healthy collection-health inputs and
+  freshness axis `unknown`
+- **THEN** the synthesized `pill.tone` SHALL be `grey`
+- **AND** the `pill.label` SHALL be `Checking`, not `Healthy` or `Degraded`
+- **AND** the verdict's `annotations[]` SHALL contain a `freshness`-kind annotation
+  explaining that freshness is unknown
+- **AND** the `forward_statement` SHALL NOT claim the source is current or
+  collecting normally.
 
 #### Scenario: Worst axis wins over a healthy state
 

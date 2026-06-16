@@ -361,7 +361,7 @@ function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
     case "stale":
       return "green";
     case "unknown":
-      return "green";
+      return "grey";
     default: {
       const _never: never = snapshot.axes.freshness;
       return _never;
@@ -992,7 +992,11 @@ function humanizeStreamId(streamId: string): string {
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
  */
-function buildForwardStatement(disposition: ForwardDisposition, actions: readonly RequiredAction[]): string {
+function buildForwardStatement(
+  disposition: ForwardDisposition,
+  actions: readonly RequiredAction[],
+  snapshot: ConnectionHealthSnapshot
+): string {
   const primary = actions[0] ?? null;
 
   if (disposition === "terminal") {
@@ -1031,6 +1035,9 @@ function buildForwardStatement(disposition: ForwardDisposition, actions: readonl
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
+      if (snapshot.axes.freshness === "unknown") {
+        return "Checking freshness before calling this current.";
+      }
       return "Current and collecting normally.";
   }
 }
@@ -1441,7 +1448,7 @@ export function synthesizeRenderedVerdict(
 
   // ── annotations, statement, streams, progress ──
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, progress, actions);
-  const forwardStatement = buildForwardStatement(disposition, actions);
+  const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
   const streamRows = buildStreamRows(streams, snapshot, refresh, actions);
   const renderedProgress = buildProgress(progress);
 
