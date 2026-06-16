@@ -150,12 +150,7 @@ export default async function BrowserSessionConnectPage({
           <p className="pdpp-caption text-muted-foreground">
             <strong className="text-foreground">Browser not launching?</strong> The hosted browser requires the neko
             surface service to be running. If the session panel shows "Waiting for a browser surface", follow the{" "}
-            <Link
-              className="underline underline-offset-2 hover:text-foreground"
-              href={`/${BROWSER_BOUND_RUNBOOK_PATH}`}
-            >
-              browser-collector runbook
-            </Link>{" "}
+            browser-collector runbook at <code className="font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>{" "}
             to run the collector locally instead. Your data is not lost either way.
           </p>
         </div>

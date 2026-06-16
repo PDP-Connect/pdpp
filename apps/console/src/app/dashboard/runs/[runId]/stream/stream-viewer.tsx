@@ -93,6 +93,7 @@ import {
   setNekoViewportLayout,
 } from "./neko-client.ts";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
+import { fetchNekoClientConfigResponse } from "./neko-client-config.ts";
 import {
   claimPlaygroundEvent,
   createPlaygroundSeenRegistry,
@@ -3326,14 +3327,7 @@ function waitForNekoStatusPoll(): Promise<void> {
 }
 
 async function loadNekoClientConfig(clientConfigPath: string): Promise<NekoClientConfig> {
-  const response = await fetch(clientConfigPath, {
-    credentials: "same-origin",
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`n.eko client config failed with HTTP ${response.status}`);
-  }
-  const payload = (await response.json()) as NekoClientConfigResponse;
+  const payload = (await fetchNekoClientConfigResponse(clientConfigPath)) as NekoClientConfigResponse;
   return normalizeNekoClientConfig(payload);
 }
 
@@ -3377,6 +3371,7 @@ function NekoSurface({
   const presentationViewportInfoRef = useRef(presentationViewportInfo);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [configLoadRetryEpoch, setConfigLoadRetryEpoch] = useState(0);
   const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
   const [mediaDisplayable, setMediaDisplayable] = useState(false);
   const mediaDisplayableRef = useRef(false);
@@ -3417,6 +3412,7 @@ function NekoSurface({
   const softKeyboardTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
+    const retryEpoch = configLoadRetryEpoch;
     const mountNode = containerRef.current;
     if (!mountNode) {
       return;
@@ -3437,6 +3433,7 @@ function NekoSurface({
           hasLogin: Boolean(config.login),
           hasServerPath: Boolean(config.serverPath),
           hasStatusPath: Boolean(config.statusPath),
+          retryEpoch,
           serverPathLength: config.serverPath.length,
           statusPath: config.statusPath,
         });
@@ -3482,7 +3479,7 @@ function NekoSurface({
         });
       }
     };
-  }, [logDebug, session.clientConfigPath, nekoSurfaceAdapterRef]);
+  }, [configLoadRetryEpoch, logDebug, session.clientConfigPath, nekoSurfaceAdapterRef]);
 
   // Capture-phase pointer dispatch into the adapter. This is the wire
   // boundary the expert prescribed: pointer events become RemotePointerEvent
@@ -3998,6 +3995,18 @@ function NekoSurface({
             <div className="max-w-sm">
               <p className="font-medium text-foreground">The n.eko WebRTC stream did not attach.</p>
               <p className="mt-2">{error}</p>
+              <button
+                className="mt-4 rounded-md border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs hover:bg-muted"
+                onClick={() => {
+                  setError(null);
+                  setMediaReady(false);
+                  setMediaDisplayable(false);
+                  setConfigLoadRetryEpoch((epoch) => epoch + 1);
+                }}
+                type="button"
+              >
+                Retry secure browser
+              </button>
             </div>
           </div>
         ) : null}
