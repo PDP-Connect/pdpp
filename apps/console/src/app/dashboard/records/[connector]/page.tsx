@@ -30,7 +30,7 @@ import {
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
 import { isBrowserBoundConnector } from "../../lib/connection-modality.ts";
-import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
   type DeviceSourceInstance,
@@ -133,6 +133,9 @@ interface ConnectorPageModel {
   manifest: ConnectorManifest;
   manualUploadHref: string | null;
   overview: ConnectorOverview;
+  /** Public reference origin, for resolving `<provider-url>` in remediation
+   *  command templates. `null` when unavailable → command fails closed. */
+  providerOrigin: string | null;
   recentRuns: RunSummary[];
   schedule: RefSchedule | null;
   scheduleError: string | null;
@@ -241,10 +244,14 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   // never rejects (it settles each branch internally); `listStreams`/`listRuns`
   // may throw and are caught by `ConnectorPage` exactly as before, so the
   // ServerUnreachable / error-boundary behavior is unchanged.
-  const [streams, runsResp, diagnostics] = await Promise.all([
+  const [streams, runsResp, diagnostics, providerOrigin] = await Promise.all([
     listStreams(connectorId, { connectorInstanceId }),
     listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT }),
     loadConnectorDiagnostics(connectorId, connectorInstanceId),
+    // Resolve the public origin to late-bind `<provider-url>` in remediation
+    // command templates. Failure → null → the command fails closed (no broken
+    // copy-paste command), never throws and breaks the page.
+    getReferencePublicOrigin().catch(() => null),
   ]);
   const overview = toConnectorOverview(summary, streams);
   const recentRuns = runsResp.data ?? [];
@@ -297,6 +304,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     manifest,
     manualUploadHref: manualUploadHrefForConnection(connectorId, connectionId, manifest),
     overview,
+    providerOrigin,
     recentRuns,
     streams,
     totalRecords,
@@ -361,6 +369,7 @@ function ConnectorPageView({
     manifest,
     manualUploadHref,
     overview,
+    providerOrigin,
     recentRuns,
     schedule,
     scheduleError,
@@ -440,7 +449,9 @@ function ConnectorPageView({
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
         connectionId={connectorInstanceId ?? connectionId}
+        connectorId={connectorId}
         localDeviceProgress={overview.localDeviceProgress ?? null}
+        providerOrigin={providerOrigin}
         renderedVerdict={connectionRenderedVerdict}
         schedule={schedule}
         scheduleError={scheduleError}

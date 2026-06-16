@@ -19,6 +19,7 @@ import {
   pdppLocalCollectorDoctorCommand,
   pdppLocalCollectorRetryDeadLettersCommand,
   pdppLocalCollectorStatusCommand,
+  substituteCommandTemplate,
 } from "./pdpp-cli-command.ts";
 
 const NPX_CONNECT_PREFIX = /^npx -y @pdpp\/cli connect /;
@@ -187,4 +188,43 @@ test("pdppCliMonorepoCommand wraps pdpp invocations with pnpm exec", () => {
 test("pdppCliMonorepoCommand returns null for non-pdpp commands", () => {
   assert.equal(pdppCliMonorepoCommand("ls -la"), null);
   assert.equal(pdppCliMonorepoCommand(""), null);
+});
+
+test("substituteCommandTemplate resolves all three non-secret placeholders", () => {
+  const resolved = substituteCommandTemplate(
+    "npx -y @pdpp/local-collector run --base-url <provider-url> --connector <connector-id>",
+    { providerUrl: "https://pdpp.example.com", connectorId: "claude-code", connectionId: "cin_x" }
+  );
+  assert.equal(resolved, "npx -y @pdpp/local-collector run --base-url https://pdpp.example.com --connector claude-code");
+  assert.doesNotMatch(resolved ?? "", /<[a-z-]+>/);
+});
+
+test("substituteCommandTemplate resolves the connection-id placeholder", () => {
+  const resolved = substituteCommandTemplate(
+    "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id>",
+    { providerUrl: null, connectorId: null, connectionId: "cin_peregrine" }
+  );
+  assert.equal(resolved, "npx -y @pdpp/local-collector retry-dead-letters --connection-id cin_peregrine");
+});
+
+test("substituteCommandTemplate FAILS CLOSED when a placeholder is unresolved", () => {
+  // The owner-reported failure mode: a command with a literal <connection-id> in
+  // it that the owner copies and runs. We return null so the UI renders an
+  // explicit "unavailable" state instead of a broken command.
+  assert.equal(
+    substituteCommandTemplate("... --connection-id <connection-id>", {
+      providerUrl: null,
+      connectorId: null,
+      connectionId: null,
+    }),
+    null
+  );
+  assert.equal(
+    substituteCommandTemplate("run --base-url <provider-url> --connector <connector-id>", {
+      providerUrl: "https://x",
+      connectorId: null,
+      connectionId: "cin_x",
+    }),
+    null
+  );
 });

@@ -226,3 +226,36 @@ export const pdppCliCollectorRunCommand = pdppLocalCollectorRunCommand;
 export const pdppCliCollectorDoctorCommand = pdppLocalCollectorDoctorCommand;
 export const pdppCliCollectorStatusCommand = pdppLocalCollectorStatusCommand;
 export const pdppCliCollectorRetryDeadLettersCommand = pdppLocalCollectorRetryDeadLettersCommand;
+
+/**
+ * Late-bind the non-secret placeholders the runtime leaves in a remediation
+ * `command_template` (`<provider-url>`, `<connector-id>`, `<connection-id>`)
+ * with the values the console knows. The runtime owns the command SHAPE; the
+ * console owns this substitution — that is the agreed runtime/console contract.
+ *
+ * Fail-closed: if any placeholder remains unresolved (a value was unavailable),
+ * returns `null`. Callers MUST render a non-copyable "command unavailable"
+ * state rather than a broken command with literal `<...>` in it — a broken
+ * copy-paste command is exactly the owner-reported failure this prevents.
+ *
+ * Only these three non-secret placeholders are ever substituted; no base URL,
+ * token, or filesystem path is introduced that the template did not already
+ * name.
+ */
+export function substituteCommandTemplate(
+  template: string,
+  values: { connectionId: string | null; connectorId: string | null; providerUrl: string | null }
+): string | null {
+  let resolved = template;
+  if (values.providerUrl) {
+    resolved = resolved.replaceAll("<provider-url>", values.providerUrl);
+  }
+  if (values.connectorId) {
+    resolved = resolved.replaceAll("<connector-id>", values.connectorId);
+  }
+  if (values.connectionId) {
+    resolved = resolved.replaceAll("<connection-id>", values.connectionId);
+  }
+  // Fail closed on any leftover placeholder so a broken command can never be copied.
+  return /<[a-z-]+>/.test(resolved) ? null : resolved;
+}

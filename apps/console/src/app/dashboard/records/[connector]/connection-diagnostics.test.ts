@@ -80,6 +80,13 @@ const REMEDIATION_THREADS_VERDICT_TO_PANEL = /verdictRemediation=\{verdictRemedi
 // (doctor / dead-letter / backlog) the cause-correct commands fix.
 const RUN_NOTE_GATED_ON_LEGACY_FALLBACK =
   /verdictRemediation \? null : \([\s\S]{0,800}diagnostics-outbox-remediation-run-note/;
+// The verdict command template is substituted with known non-secret values, not
+// rendered literally — so the owner never copies a command with literal <…>.
+const REMEDIATION_SUBSTITUTES_TEMPLATE = /substituteCommandTemplate\(command\.command_template/;
+// Fail-closed: an unresolved command (null) renders a non-copyable "unavailable"
+// line instead of a broken command with a CopyButton.
+const REMEDIATION_FAILS_CLOSED =
+  /step\.command === null \?[\s\S]{0,300}diagnostics-outbox-remediation-command-unavailable/;
 const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
@@ -301,6 +308,9 @@ test("stalled-outbox remediation PREFERS the server's cause-specific verdict com
   assert.match(src, REMEDIATION_THREADS_VERDICT_TO_PANEL);
   // The dead-letter run-note is suppressed under a cause-specific verdict remediation.
   assert.match(src, RUN_NOTE_GATED_ON_LEGACY_FALLBACK);
+  // Verdict command templates are substituted (not rendered literally) and fail closed.
+  assert.match(src, REMEDIATION_SUBSTITUTES_TEMPLATE);
+  assert.match(src, REMEDIATION_FAILS_CLOSED);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {

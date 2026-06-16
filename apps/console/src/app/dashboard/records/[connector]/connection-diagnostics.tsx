@@ -3,7 +3,11 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import Link from "next/link";
-import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
+import {
+  pdppLocalCollectorDoctorCommand,
+  pdppLocalCollectorRetryDeadLettersCommand,
+  substituteCommandTemplate,
+} from "@/lib/pdpp-cli-command.ts";
 import {
   formatCollectionRateReadout,
   formatDominantCondition,
@@ -40,12 +44,19 @@ export interface ConnectionDiagnosticsProps {
    * null for legacy single-instance rows; the command then runs unscoped.
    */
   connectionId: string | null;
+  /** Connector type id (e.g. "chase"), used to resolve `<connector-id>` in the
+   *  remediation command template. */
+  connectorId: string | null;
   /**
    * Connection-summary local-device progress, including the count-backed
    * `outbox_counts` rollup. Used to show the scale of stuck work in the
    * stalled-outbox remediation. `null` for scheduler-managed connections.
    */
   localDeviceProgress: RefLocalDeviceProgress | null;
+  /** Public reference origin, used to resolve `<provider-url>` in the
+   *  remediation command template. `null` when unavailable → the command fails
+   *  closed to a non-copyable "unavailable" state rather than a broken command. */
+  providerOrigin: string | null;
   /** Server-owned owner-surface verdict. Current references send it; older references omit it. */
   renderedVerdict: RefRenderedVerdict | null;
   schedule: RefSchedule | null;
@@ -60,7 +71,9 @@ export interface ConnectionDiagnosticsProps {
 export function ConnectionDiagnostics({
   connectionHealth,
   connectionId,
+  connectorId,
   localDeviceProgress,
+  providerOrigin,
   renderedVerdict,
   schedule,
   scheduleError,
@@ -85,7 +98,9 @@ export function ConnectionDiagnostics({
             <ProjectedStateDiagnostics
               connectionHealth={connectionHealth}
               connectionId={connectionId}
+              connectorId={connectorId}
               localDeviceProgress={localDeviceProgress}
+              providerOrigin={providerOrigin}
               renderedVerdict={renderedVerdict}
               sourceInstances={sourceInstances}
             />
@@ -207,13 +222,17 @@ function boundHostLabels(sourceInstances: readonly DeviceSourceInstance[]): stri
 function ProjectedStateDiagnostics({
   connectionHealth,
   connectionId,
+  connectorId,
   localDeviceProgress,
+  providerOrigin,
   renderedVerdict,
   sourceInstances,
 }: {
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string | null;
+  connectorId: string | null;
   localDeviceProgress: RefLocalDeviceProgress | null;
+  providerOrigin: string | null;
   renderedVerdict: RefRenderedVerdict | null;
   sourceInstances: readonly DeviceSourceInstance[];
 }) {
@@ -326,7 +345,9 @@ function ProjectedStateDiagnostics({
       {outboxRemediation ? (
         <OutboxStallRemediationPanel
           connectionId={connectionId}
+          connectorId={connectorId}
           hostLabels={boundHostLabels(sourceInstances)}
+          providerOrigin={providerOrigin}
           remediation={outboxRemediation}
           verdictRemediation={verdictRemediation}
         />
@@ -695,11 +716,15 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
  */
 function OutboxStallRemediationPanel({
   connectionId,
+  connectorId,
   hostLabels,
+  providerOrigin,
   remediation,
   verdictRemediation,
 }: {
   connectionId: string | null;
+  connectorId: string | null;
+  providerOrigin: string | null;
   /**
    * Owner-meaningful label(s) for the host(s) bound to this connection. Names
    * the remediation target so an owner who did not set up the collector knows
@@ -720,13 +745,22 @@ function OutboxStallRemediationPanel({
   // Prefer the server-owned cause-specific steps. They already exclude the
   // dead-letter commands for causes (state_read_failed / stale_pending) that
   // have nothing to requeue — fixing the "matched: 0, nothing to do" dead end.
+  // The runtime owns the command SHAPE (a template with non-secret placeholders);
+  // the console late-binds the values it knows. A command that cannot be fully
+  // resolved renders as a non-copyable "unavailable" line (fail-closed) rather
+  // than a broken command with literal <…> in it — the agreed contract.
   // Fall back to the legacy three-step dead-letter ritual only when the
-  // reference does not send a remediation payload.
-  const steps: { caption: string; command: string; label: string }[] = verdictRemediation
+  // reference does not send a remediation payload (legacy commands are already
+  // fully resolved by the safe CLI builders).
+  const steps: { caption: string; command: string | null; label: string }[] = verdictRemediation
     ? verdictRemediation.commands.map((command) => ({
         label: command.label,
         caption: "",
-        command: command.command_template,
+        command: substituteCommandTemplate(command.command_template, {
+          connectionId,
+          connectorId,
+          providerUrl: providerOrigin,
+        }),
       }))
     : [
         {
@@ -786,15 +820,26 @@ function OutboxStallRemediationPanel({
           <li className="flex flex-col gap-0.5" key={step.label}>
             <span className="pdpp-caption font-medium text-foreground">{step.label}</span>
             {step.caption ? <span className="pdpp-caption text-muted-foreground">{step.caption}</span> : null}
-            <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
-              <code
-                className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
-                data-testid="diagnostics-outbox-remediation-command"
+            {step.command === null ? (
+              // Fail-closed: a placeholder could not be resolved. Never render a
+              // broken command with literal <…> that the owner would copy and run.
+              <p
+                className="pdpp-caption text-muted-foreground italic"
+                data-testid="diagnostics-outbox-remediation-command-unavailable"
               >
-                {step.command}
-              </code>
-              <CopyButton ariaLabel={`Copy command: ${step.label}`} value={step.command} />
-            </div>
+                Command unavailable — open this source on the host that holds the data to recover it.
+              </p>
+            ) : (
+              <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
+                <code
+                  className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
+                  data-testid="diagnostics-outbox-remediation-command"
+                >
+                  {step.command}
+                </code>
+                <CopyButton ariaLabel={`Copy command: ${step.label}`} value={step.command} />
+              </div>
+            )}
           </li>
         ))}
       </ol>
