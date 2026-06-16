@@ -208,7 +208,16 @@ export interface StandingHrefs {
  * NOT from failed runs/traces. See {@link attentionConnectionsFromConnectors}.
  */
 export interface AttentionConnection {
+  /** Owner-facing connector type, for the human label ("Chase needs you"). */
   connectorKey: string;
+  /**
+   * The records-route id that resolves to THIS exact connection — the
+   * connection identity (`connector_instance_id ?? connection_id`), NOT the
+   * connector type. Routing by connector type lands on whichever connection
+   * of that type is first, which is wrong when several accounts/devices share
+   * a type (e.g. three Claude Code devices: only peregrine is in attention).
+   */
+  routeId: string;
   /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
   what: string;
   /** The owner-resolvable action label (the CTA verb). */
@@ -414,6 +423,7 @@ export function attentionConnectionsFromConnectors(
     }
     out.push({
       connectorKey: connector.connector_id,
+      routeId: connector.connector_instance_id ?? connector.connection_id,
       what: verdict.forward_statement,
       actionLabel: action.cta,
     });
@@ -425,10 +435,10 @@ export function attentionConnectionsFromConnectors(
 
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return attention.map((a) => ({
-    id: `connection:${a.connectorKey}`,
+    id: `connection:${a.routeId}`,
     what: `${scopeHuman(a.connectorKey)} needs you`,
     why: a.what,
-    href: hrefs.connection(a.connectorKey),
+    href: hrefs.connection(a.routeId),
   }));
 }
 
@@ -463,7 +473,7 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
       kicker: "One thing needs you",
       line: { text: `${scopeHuman(only.connectorKey)} `, emphasis: "needs you", tail: "." },
       sub: only.what,
-      cta: { label: only.actionLabel, href: hrefs.connection(only.connectorKey), human: true },
+      cta: { label: only.actionLabel, href: hrefs.connection(only.routeId), human: true },
     };
   }
   return {

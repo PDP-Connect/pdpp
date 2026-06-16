@@ -139,14 +139,14 @@ test("hero is ALARM when a connection needs the owner; single → CTA routes to 
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "claude-code", what: "Check the collector before this source can make progress.", actionLabel: "Check the collector" },
+        { connectorKey: "claude-code", routeId: "ci_peregrine", what: "Check the collector before this source can make progress.", actionLabel: "Check the collector" },
       ],
     })
   );
   assert.equal(alarm.tone, "alarm");
   assert.equal(alarm.kicker, "One thing needs you");
-  // The fix: the CTA lands on the focused recovery panel, never the audit log.
-  assert.equal(alarm.cta?.href, HREFS.connection("claude-code"));
+  // The fix: the CTA lands on the focused recovery panel (exact connection), never the audit log.
+  assert.equal(alarm.cta?.href, HREFS.connection("ci_peregrine"));
   assert.notEqual(alarm.cta?.href, HREFS.traces);
   // The CTA verb is the owner-resolvable action, and the sub names the real condition.
   assert.equal(alarm.cta?.label, "Check the collector");
@@ -157,8 +157,8 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "claude-code", what: "Check the collector.", actionLabel: "Check the collector" },
-        { connectorKey: "chase", what: "Reconnect Chase.", actionLabel: "Reconnect" },
+        { connectorKey: "claude-code", routeId: "ci_peregrine", what: "Check the collector.", actionLabel: "Check the collector" },
+        { connectorKey: "chase", routeId: "cin_chase", what: "Reconnect Chase.", actionLabel: "Reconnect" },
       ],
     })
   );
@@ -185,7 +185,7 @@ test("decide wins over alarm", () => {
   } as PendingApproval;
   const both = computeHero(
     baseInputs({
-      attentionConnections: [{ connectorKey: "chase", what: "x", actionLabel: "Reconnect" }],
+      attentionConnections: [{ connectorKey: "chase", routeId: "cin_chase", what: "x", actionLabel: "Reconnect" }],
       pendingApprovals: [pending],
     })
   );
@@ -228,7 +228,7 @@ function verdict(over: Partial<NonNullable<RefConnectorSummary["rendered_verdict
 
 test("attention truth: only attention-channel connections with an owner-satisfiable action count", () => {
   const connectors: RefConnectorSummary[] = [
-    connector({ connector_id: "claude-code", rendered_verdict: verdict({}) }), // ✓ attention + owner action
+    connector({ connector_id: "claude-code", connection_id: "cin_peregrine", rendered_verdict: verdict({}) }), // ✓ attention + owner action
     connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }) }), // ✗ calm
     connector({ connector_id: "ynab", rendered_verdict: null }), // ✗ no verdict (e.g. healthy)
     connector({
@@ -248,6 +248,32 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   );
   assert.equal(attention[0]?.actionLabel, "Check the collector");
   assert.equal(attention[0]?.what, "Check the collector before this source can make progress.");
+});
+
+test("attention routeId targets the EXACT connection instance, not the connector type", () => {
+  // The multi-account seam bug: three Claude Code devices share connector_id
+  // "claude-code"; only peregrine is in attention. Routing by connector_id would
+  // resolve to whichever connection is first (e.g. healthy Simon VM). The routeId
+  // must be the connection identity (connector_instance_id ?? connection_id) so
+  // the CTA lands on the connection that actually needs the owner.
+  const connectors: RefConnectorSummary[] = [
+    connector({ connector_id: "claude-code", connection_id: "cin_simon", rendered_verdict: verdict({ channel: "calm" }) }), // healthy, first
+    connector({
+      connector_id: "claude-code",
+      connection_id: "cin_peregrine",
+      connector_instance_id: "ci_peregrine",
+      rendered_verdict: verdict({}),
+    }), // the attention one
+  ];
+  const attention = attentionConnectionsFromConnectors(connectors);
+  assert.equal(attention.length, 1);
+  // routeId is the instance id (preferred), which the records route resolves
+  // exactly — NOT the shared connector_id "claude-code".
+  assert.equal(attention[0]?.routeId, "ci_peregrine");
+  assert.notEqual(attention[0]?.routeId, "claude-code");
+  // And the hero CTA href uses that exact-connection routeId.
+  const hero = computeHero(baseInputs({ attentionConnections: attention }));
+  assert.equal(hero.cta?.href, HREFS.connection("ci_peregrine"));
 });
 
 test("hero ALARMs on a stale projection even with no failures", () => {
