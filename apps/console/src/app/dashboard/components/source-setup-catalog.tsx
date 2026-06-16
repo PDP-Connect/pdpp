@@ -2,12 +2,7 @@ import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
-import {
-  sourceSetupAction,
-  sourceSetupGuidance,
-  sourceSetupRank,
-  sourceSetupStatus,
-} from "../lib/source-setup-presentation.ts";
+import { sourceSetupAction, sourceSetupRank, sourceSetupStatus } from "../lib/source-setup-presentation.ts";
 
 export interface ExistingSourceSetupLink {
   connectionId: string;
@@ -166,9 +161,11 @@ function SourceSetupCard({
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
-  const guidance = sourceSetupGuidance(entry);
+  if (!action) {
+    throw new Error(`Source setup card has no forward action: ${entry.connectorKey}`);
+  }
   const actionLabel =
-    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action?.label;
+    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action.label;
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -186,28 +183,14 @@ function SourceSetupCard({
           </span>
         </div>
         {/* Low-noise path to detail: the support reasoning stays one disclosure away. */}
-        <details className="group mt-1">
-          <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-            Why this, and what to expect
-          </summary>
-          <p className="pdpp-caption mt-1 text-muted-foreground">{guidance}</p>
-        </details>
         <ExistingSourceReuse entry={entry} sources={existingSources} />
         <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
       </div>
       <div className="flex flex-col items-end justify-start gap-1">
-        {action ? (
-          <>
-            <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
-            <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
-              {actionLabel}
-            </Link>
-          </>
-        ) : (
-          <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
-            No setup action yet
-          </span>
-        )}
+        <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
+        <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
+          {actionLabel}
+        </Link>
       </div>
     </li>
   );

@@ -26,16 +26,18 @@
  */
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
+import { buildConnectorCatalog, type CatalogManifestLike, type ConnectorCatalogEntry } from "./connection-catalog.ts";
 import { buildSourceAddSupport, type SourceAddSupport } from "./source-add-support.ts";
-import { sourceSetupStatus } from "./source-setup-presentation.ts";
+import { sourceSetupAction, sourceSetupStatus } from "./source-setup-presentation.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ADD_SUPPORT_FILE = `${HERE}source-add-support.ts`;
 const SETUP_PRESENTATION_FILE = `${HERE}source-setup-presentation.ts`;
+const REPO_ROOT = new URL("../../../../../../", import.meta.url);
+const MANIFESTS_DIR = new URL("packages/polyfill-connectors/manifests/", REPO_ROOT);
 
 // The three exact overruled phrases, hoisted to module scope (project lint:
 // useTopLevelRegex). These must never survive in a comment-stripped label.
@@ -51,6 +53,9 @@ const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
 const FORBIDDEN_COPY: readonly { class: string; re: RegExp }[] = [
   { class: "overruled-demotion", re: /not self-service/i },
   { class: "inert-tracking", re: /\bTrack only\b/i },
+  { class: "dead-action", re: /No setup action/i },
+  { class: "coming-soon", re: /coming soon|not yet|not available yet|not implemented/i },
+  { class: "pending-copy", re: /\bpending\b/i },
   { class: "monorepo-package-path", re: /packages\//i },
   { class: "package-runner", re: /pnpm --dir/i },
   { class: "unpublished-cli", re: /\bpdpp \w/i },
@@ -97,6 +102,19 @@ function assertCleanCopy(label: string, where: string): void {
   }
 }
 
+async function loadCommittedManifests(): Promise<CatalogManifestLike[]> {
+  const files = await readdir(fileURLToPath(MANIFESTS_DIR));
+  const manifests: CatalogManifestLike[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const raw = await readFile(fileURLToPath(new URL(file, MANIFESTS_DIR)), "utf8");
+    manifests.push(JSON.parse(raw) as CatalogManifestLike);
+  }
+  return manifests;
+}
+
 // ── Layer 1: behavioral — rendered labels carry no forbidden copy ────────────
 
 test("every first-account setup status label is free of forbidden copy", () => {
@@ -104,6 +122,32 @@ test("every first-account setup status label is free of forbidden copy", () => {
     const status = sourceSetupStatus(entryForDisposition(disposition));
     assertCleanCopy(status.label, `sourceSetupStatus(${disposition})`);
   }
+});
+
+test("every committed add-source catalog card has a forward action or acquisition path", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const deadEnds = catalog.filter((entry) => !sourceSetupAction(entry) && entry.acquisitionPaths.length === 0);
+
+  assert.deepEqual(
+    deadEnds.map((entry) => `${entry.connectorKey}:${entry.disposition}`),
+    [],
+    "add-source cards must never render a dead status label with no forward action"
+  );
+});
+
+test("formerly dead add-source cards resolve to concrete setup actions", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const actions = new Map(catalog.map((entry) => [entry.connectorKey, sourceSetupAction(entry)?.label ?? null]));
+
+  assert.equal(actions.get("apple-health"), "Import an export");
+  assert.equal(actions.get("ical"), "Import an export");
+  assert.equal(actions.get("google-takeout"), "Import an export");
+  assert.equal(actions.get("imessage"), "Import an export");
+  assert.equal(actions.get("pocket"), "Import an export");
+  assert.equal(actions.get("twitter-archive"), "Import an export");
+  assert.equal(actions.get("slack"), "Set up source");
+  assert.equal(actions.get("spotify"), "Set up source");
+  assert.equal(actions.get("strava"), "Set up source");
 });
 
 test("the agreed add-account labels are exactly the realignment-plan vocabulary", () => {
@@ -129,9 +173,9 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
   assert.ok(labels.length > 0, "projection must produce at least one label");
   const AGREED = new Set([
     "Add another account",
-    "Packaged path pending",
+    "Needs packaged path",
     "Adding another account needs deployment setup",
-    "Existing data only",
+    "Needs setup proof",
   ]);
   for (const label of labels) {
     assertCleanCopy(label, "addAccountSupport label");
