@@ -222,6 +222,14 @@ export interface AttentionConnection {
   what: string;
   /** The owner-resolvable action label (the CTA verb). */
   actionLabel: string;
+  /**
+   * True when the action is a DEVICE-LOCAL recovery — the owner runs commands on
+   * the host that holds the data; the dashboard cannot perform it. The CTA then
+   * only NAVIGATES to where the commands are shown, so its label must read as
+   * navigation ("See what to do"), never restate the action as if a click runs
+   * it (which sends the owner in a circle).
+   */
+  deviceLocal: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -424,6 +432,7 @@ export function attentionConnectionsFromConnectors(
     out.push({
       connectorKey: connector.connector_id,
       routeId: connector.connector_instance_id ?? connector.connection_id,
+      deviceLocal: action.remediation?.target.kind === "local_device",
       what: verdict.forward_statement,
       actionLabel: action.cta,
     });
@@ -473,7 +482,15 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
       kicker: "One thing needs you",
       line: { text: `${scopeHuman(only.connectorKey)} `, emphasis: "needs you", tail: "." },
       sub: only.what,
-      cta: { label: only.actionLabel, href: hrefs.connection(only.routeId), human: true },
+      // A device-local recovery is not performed by clicking — the CTA only
+      // navigates to where the commands are. Use a navigation label ("See what
+      // to do") so the owner doesn't click expecting the dashboard to run it.
+      // A dashboard-actionable verdict (reauth, refresh) keeps its action verb.
+      cta: {
+        label: only.deviceLocal ? "See what to do" : only.actionLabel,
+        href: hrefs.connection(only.routeId),
+        human: true,
+      },
     };
   }
   return {

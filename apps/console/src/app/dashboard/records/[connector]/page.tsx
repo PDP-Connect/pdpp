@@ -738,6 +738,28 @@ function RenderedVerdictHeaderAction({
     );
   }
   if (action.kind === "add_info") {
+    // A device-local recovery (stalled outbox: the owner runs commands on the
+    // host that holds the data) is NOT navigable — there is nothing to click in
+    // the dashboard, because the dashboard cannot run a command on the owner's
+    // device. Linking it to /runs sends the owner in a circle (detail → runs →
+    // detail) chasing a button that can't act. Render it as non-clickable
+    // guidance that points to the recovery commands in the diagnostics panel
+    // below, the only place the owner can actually act.
+    if (action.remediation?.target.kind === "local_device") {
+      return (
+        <span
+          className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+          data-action-kind={action.kind}
+          data-action-target="local_device"
+          data-testid="detail-action-rendered-verdict-device-local"
+          title="Run the recovery commands shown in Diagnostics below, on the host that holds this source's data."
+        >
+          {action.cta} — see the commands in Diagnostics below
+        </span>
+      );
+    }
+    // A non-device add_info genuinely lives on a run (e.g. an OTP/response the
+    // owner provides in the run view), so the runs link is correct there.
     return (
       <Link
         className={buttonVariants({ variant: "default", size: "sm" })}

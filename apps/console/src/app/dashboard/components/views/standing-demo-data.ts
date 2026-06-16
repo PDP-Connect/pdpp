@@ -199,6 +199,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
         {
           connectorKey: "claude-code",
           routeId: "cin_demo_claude_code",
+          deviceLocal: true,
           what: "Check the collector before this source can make progress.",
           actionLabel: "Check the collector",
         },

@@ -135,30 +135,54 @@ test("hero is DECIDE when an approval is pending", () => {
   assert.equal(hero.cta?.href, HREFS.grants);
 });
 
-test("hero is ALARM when a connection needs the owner; single → CTA routes to its recovery panel, NOT /traces", () => {
+test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate the action)", () => {
+  // The loop bug: a device-local action ("Retry dead letters, then re-run the
+  // collector") rendered as a clickable button on the hero, the panel, AND the
+  // runs page — clicking just bounced between pages because the dashboard can't
+  // run a device command. The CTA must read as navigation, route to the recovery
+  // panel (exact connection), and the action itself lives in the sub/panel.
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "claude-code", routeId: "ci_peregrine", what: "Check the collector before this source can make progress.", actionLabel: "Check the collector" },
+        {
+          connectorKey: "claude-code",
+          routeId: "ci_peregrine",
+          deviceLocal: true,
+          what: "Check the collector before this source can make progress.",
+          actionLabel: "Retry dead letters, then re-run the collector",
+        },
       ],
     })
   );
   assert.equal(alarm.tone, "alarm");
   assert.equal(alarm.kicker, "One thing needs you");
-  // The fix: the CTA lands on the focused recovery panel (exact connection), never the audit log.
   assert.equal(alarm.cta?.href, HREFS.connection("ci_peregrine"));
   assert.notEqual(alarm.cta?.href, HREFS.traces);
-  // The CTA verb is the owner-resolvable action, and the sub names the real condition.
-  assert.equal(alarm.cta?.label, "Check the collector");
+  // The CTA is a NAVIGATION label, NOT the restated device action.
+  assert.equal(alarm.cta?.label, "See what to do");
+  assert.notEqual(alarm.cta?.label, "Retry dead letters, then re-run the collector");
+  // The real condition still appears in the sub line.
   assert.match(alarm.sub, /Check the collector/);
+});
+
+test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () => {
+  // A reconnect/refresh the dashboard CAN initiate keeps its action label.
+  const alarm = computeHero(
+    baseInputs({
+      attentionConnections: [
+        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "Reconnect Chase.", actionLabel: "Reconnect" },
+      ],
+    })
+  );
+  assert.equal(alarm.cta?.label, "Reconnect");
 });
 
 test("hero ALARM with several attention connections → CTA routes to the syncs triage list, not /traces", () => {
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "claude-code", routeId: "ci_peregrine", what: "Check the collector.", actionLabel: "Check the collector" },
-        { connectorKey: "chase", routeId: "cin_chase", what: "Reconnect Chase.", actionLabel: "Reconnect" },
+        { connectorKey: "claude-code", routeId: "ci_peregrine", deviceLocal: true, what: "Check the collector.", actionLabel: "Check the collector" },
+        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "Reconnect Chase.", actionLabel: "Reconnect" },
       ],
     })
   );
@@ -185,7 +209,7 @@ test("decide wins over alarm", () => {
   } as PendingApproval;
   const both = computeHero(
     baseInputs({
-      attentionConnections: [{ connectorKey: "chase", routeId: "cin_chase", what: "x", actionLabel: "Reconnect" }],
+      attentionConnections: [{ connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "x", actionLabel: "Reconnect" }],
       pendingApprovals: [pending],
     })
   );
@@ -218,7 +242,23 @@ function verdict(over: Partial<NonNullable<RefConnectorSummary["rendered_verdict
     pill: { label: "Can't collect", tone: "red" },
     forward_statement: "Check the collector before this source can make progress.",
     required_actions: [
-      { affects: [], audience: "owner", cta: "Check the collector", kind: "add_info", satisfied_when: { kind: "attention_resolved" }, terminal: false, urgency: "now" },
+      {
+        affects: [],
+        audience: "owner",
+        cta: "Check the collector",
+        kind: "add_info",
+        satisfied_when: { kind: "attention_resolved" },
+        terminal: false,
+        urgency: "now",
+        remediation: {
+          cause: "dead_letter_backlog",
+          commands: [],
+          kind: "local_collector_recovery",
+          label: "Retry dead letters, then re-run the collector",
+          summary: "",
+          target: { identity_source: "source_instance_bindings", kind: "local_device" },
+        },
+      },
     ],
     annotations: [],
     detail: undefined,
@@ -248,6 +288,9 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   );
   assert.equal(attention[0]?.actionLabel, "Check the collector");
   assert.equal(attention[0]?.what, "Check the collector before this source can make progress.");
+  // The local_device remediation target → deviceLocal true → hero/runs use a
+  // navigation CTA instead of restating the action.
+  assert.equal(attention[0]?.deviceLocal, true);
 });
 
 test("attention routeId targets the EXACT connection instance, not the connector type", () => {

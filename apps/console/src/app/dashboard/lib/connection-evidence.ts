@@ -1675,6 +1675,27 @@ function deriveRenderedFailureSummary(
     cta = "wait";
   }
 
+  // A device-local recovery (stalled outbox: the owner runs commands on the host
+  // that holds the data) is NOT performed by clicking — the button only NAVIGATES
+  // to where the commands are shown. Restating the action ("Retry dead letters,
+  // then re-run the collector") on a navigating button makes the owner click it
+  // expecting it to act, which just routes them in a circle. So when the action
+  // is device-local, the navigable label is an honest "See recovery steps", and
+  // it routes to the connection detail page where the commands live.
+  const isDeviceLocalRecovery = primaryAction?.remediation?.target.kind === "local_device";
+  if (isDeviceLocalRecovery && cta === "connection_detail") {
+    return {
+      actionLabel: "See recovery steps",
+      cta,
+      lastSuccessAt: health.last_success_at,
+      nextAttemptAt: health.next_attempt_at,
+      ownerActionRequired: false,
+      prose: verdict.forward_statement,
+      reasonCode: health.reason_code,
+      triggerLabel: triggerLabelFromRenderedVerdict(verdict),
+    };
+  }
+
   return {
     actionLabel: primaryAction?.cta ?? (cta === "view_runs" ? "View runs" : null),
     cta,

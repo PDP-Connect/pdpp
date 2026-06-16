@@ -37,6 +37,11 @@ const RENDERED_VERDICT_ACTION_HELPER = /function primaryRenderedAction\(verdict:
 const RENDERED_VERDICT_HEADER_ACTION = /function RenderedVerdictHeaderAction/;
 const RENDERED_VERDICT_ACTION_TESTID = /data-testid="detail-action-rendered-verdict"/;
 const RENDERED_VERDICT_STATUS_TESTID = /data-testid="detail-action-rendered-verdict-status"/;
+// A device-local add_info recovery is NOT navigable — it must render as
+// non-clickable guidance pointing to the Diagnostics commands, never a <Link>
+// to /runs (which sent the owner in a hero→panel→runs→panel circle).
+const DEVICE_LOCAL_GUARD = /action\.remediation\?\.target\.kind === "local_device"/;
+const DEVICE_LOCAL_TESTID = /data-testid="detail-action-rendered-verdict-device-local"/;
 const RENDERED_VERDICT_ACTION_PRECEDES_SYNC =
   /const renderedAction = primaryRenderedAction\(renderedVerdict\);[\s\S]*if \(renderedAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
 const SYNC_BRANCH_GUARD = /if \(primaryAction\.kind === "sync"\)/;
@@ -104,6 +109,17 @@ test("push-mode connections get an honest non-clickable notice, not a dead butto
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, NON_SYNC_NOTICE);
   assert.match(src, DEVICE_WAIT_NOTICE_TESTID);
+});
+
+test("a device-local add_info recovery renders non-clickable guidance, not a /runs link", async () => {
+  // The loop bug: clicking "Retry dead letters, then re-run the collector" on the
+  // detail header navigated to /runs, which showed the same button, which linked
+  // back — a circle, because the dashboard cannot run a device command. The
+  // add_info branch must guard on the local_device remediation target and render
+  // the non-clickable guidance span instead.
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, DEVICE_LOCAL_GUARD);
+  assert.match(src, DEVICE_LOCAL_TESTID);
 });
 
 test("the empty-streams hint gates Sync now copy on the owner-runnable branch", async () => {
