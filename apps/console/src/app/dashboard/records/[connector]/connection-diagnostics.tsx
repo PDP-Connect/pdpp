@@ -80,13 +80,19 @@ export function ConnectionDiagnostics({
   sourceInstances,
   sourceInstancesError,
 }: ConnectionDiagnosticsProps) {
+  const opensForDeviceLocalRecovery =
+    renderedVerdict?.required_actions.some((action) => action.remediation?.target.kind === "local_device") ?? false;
   return (
     <Section
       description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
-      <details className="group border-border/70 border-y" data-testid="diagnostics-details">
+      <details
+        className="group border-border/70 border-y"
+        data-testid="diagnostics-details"
+        open={opensForDeviceLocalRecovery || undefined}
+      >
         <summary className="pdpp-body flex cursor-pointer items-center justify-between px-3 py-3 hover:bg-muted/40">
           <span className="font-medium">Projection, schedule, sources</span>
           <span className="pdpp-caption text-muted-foreground group-open:hidden">Expand</span>

@@ -112,6 +112,9 @@ const RENDERED_VERDICT_TESTID = /data-testid="rendered-verdict"/;
 const RENDERED_VERDICT_CHANNEL_TESTID = /data-testid="rendered-verdict-channel"/;
 const RENDERED_VERDICT_FORWARD_TESTID = /data-testid="rendered-verdict-forward"/;
 const RENDERED_VERDICT_PROGRESS_TESTID = /data-testid="rendered-verdict-progress"/;
+const DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY = /open=\{opensForDeviceLocalRecovery \|\| undefined\}/;
+const DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE =
+  /required_actions\.some\(\(action\) => action\.remediation\?\.target\.kind === "local_device"\)/;
 const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
 const RENDERED_VERDICT_USES_FIRST_PRIMARY_ACTION = /const primaryAction = verdict\.required_actions\[0\] \?\? null/;
 const RENDERED_VERDICT_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
@@ -325,6 +328,12 @@ test("cause-specific collector recovery explains the host-local problem in owner
   assert.match(src, REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY);
   assert.match(src, REMEDIATION_DRY_RUN_CAPTION);
   assert.match(src, REMEDIATION_UPLOADS_QUEUED_RECORDS_CAPTION);
+});
+
+test("device-local recovery opens Diagnostics so commands are immediately visible", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE);
+  assert.match(src, DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {
