@@ -76,8 +76,8 @@ buildable-from design is
   re-presents the same action with the reason (no false green).
 - Reaffirm a refresh-contract creation invariant (account => declared refresh
   contract from the manifest, NOT account => credential — ChatGPT is account +
-  scheduled + zero credentials) and route manual-refresh-stale connections to
-  `owner_refresh_due` instead of green.
+  scheduled + zero credentials) and route manual-refresh-stale connections to an
+  owner-refresh advisory while keeping collection health separate from freshness.
 - Add a collection-model-aware `RenderedProgress` (records committed + gaps
   drained) replacing `records_emitted` as the productivity signal, and split the
   owner dashboard (attention layer) from the full-fidelity `detail` panel

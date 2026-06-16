@@ -90,7 +90,7 @@ const ASSISTED_REFRESH = { backgroundSafe: true, interactionPosture: 'manual_act
 // gate fired; this re-checks the externally-observable invariants on the result.
 
 const TONE_RANK = { green: 0, grey: 1, amber: 2, red: 3 };
-const TONE_TO_LABEL = { green: 'Healthy', grey: 'Checking', amber: 'Needs you', red: "Can't collect" };
+const TONE_TO_LABEL = { green: 'Healthy', grey: 'Checking', amber: 'Degraded', red: "Can't collect" };
 const CALM_ADVISORY_KINDS = new Set(['freshness', 'schedule', 'activity']);
 const BASE_STATE_TONE = {
   healthy: 'green',
@@ -189,16 +189,18 @@ test('tone: healthy + fresh + complete is green/Healthy', () => {
   assert.equal(v.channel, 'calm');
 });
 
-test('tone: stale-but-healthy rolls amber and carries a freshness annotation (inv1)', () => {
+test('tone: stale-but-healthy stays health-green and carries a freshness annotation (inv1)', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale' },
     forward_disposition: 'owner_refresh_due',
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
-  assert.ok(TONE_RANK[v.pill.tone] >= TONE_RANK.amber, 'never green while stale');
-  assert.notEqual(v.pill.tone, 'green');
+  assert.equal(v.pill.tone, 'green');
+  assert.equal(v.pill.label, 'Healthy');
+  assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness'));
+  assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
 });
 
 test('tone: worst axis (degrading coverage) wins over a healthy state', () => {
@@ -210,7 +212,7 @@ test('tone: worst axis (degrading coverage) wins over a healthy state', () => {
     true
   );
   assert.equal(v.pill.tone, 'amber'); // not the state-implied green
-  assert.equal(v.pill.label, 'Needs you');
+  assert.equal(v.pill.label, 'Degraded');
 });
 
 test('coverage: optional stale stream annotates but does not downgrade the pill', () => {
@@ -252,11 +254,15 @@ test('streams: collected is clamped to considered — no 3/2 (inv2)', () => {
 
 // ─── 3.4 channel orthogonality ────────────────────────────────────────────────
 
-test('channel: same amber tone, different channel by who can fix it (orthogonality)', () => {
-  // Manual-refresh stale → advisory.
-  const manualStale = synthesizeRenderedVerdict(
-    snapshot({ state: 'idle', axes: { freshness: 'stale' }, forward_disposition: 'owner_refresh_due' }),
-    [stream()],
+test('channel: same amber health tone can still carry advisory or attention by who can fix it', () => {
+  // Retryable manual gap → advisory.
+  const retryable = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { freshness: 'stale', coverage: 'retryable_gap' },
+      forward_disposition: 'resumable',
+    }),
+    [stream({ coverage: 'retryable_gap', gap_retryable: true })],
     MANUAL_REFRESH,
     true
   );
@@ -272,11 +278,11 @@ test('channel: same amber tone, different channel by who can fix it (orthogonali
     MANUAL_REFRESH,
     true
   );
-  assert.equal(manualStale.channel, 'advisory');
+  assert.equal(retryable.channel, 'advisory');
   assert.equal(rejected.channel, 'attention');
   // Same tone, different channel — orthogonal.
-  assert.equal(manualStale.pill.tone, rejected.pill.tone);
-  assert.equal(manualStale.pill.tone, 'amber');
+  assert.equal(retryable.pill.tone, rejected.pill.tone);
+  assert.equal(retryable.pill.tone, 'amber');
 });
 
 test('channel: a fresh fully self-handled connection stays calm with no owner action', () => {
@@ -588,7 +594,7 @@ test('golden: ChatGPT — green/calm/fresh, no 2532 on dashboard, 2532 present i
   assert.ok(v.detail.suppressed.some((s) => s.kind === 'drain'));
 });
 
-test('golden: Amazon — amber/advisory, 31-days-stale freshness annotation + Refresh now', () => {
+test('golden: Amazon/Reddit stale manual — health remains Healthy, advisory Refresh now', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale', coverage: 'complete' },
@@ -600,13 +606,14 @@ test('golden: Amazon — amber/advisory, 31-days-stale freshness annotation + Re
     last_refreshed_at: '2026-05-15T00:00:00.000Z',
     observed_at: '2026-06-15T12:00:00.000Z',
   });
-  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.tone, 'green');
+  assert.equal(v.pill.label, 'Healthy');
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Last refreshed 31 days ago.'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
 });
 
-test('golden: Chase — amber/advisory degraded with a retryable transactions gap', () => {
+test('golden: Chase — degraded/advisory with a retryable transactions gap', () => {
   const snap = snapshot({
     state: 'degraded',
     axes: { freshness: 'stale', coverage: 'retryable_gap' },
@@ -621,6 +628,7 @@ test('golden: Chase — amber/advisory degraded with a retryable transactions ga
     { mode: 'manual', retained_records: 1200 }
   );
   assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Transactions stuck since Apr 22.'));
   const retry = v.required_actions.find((a) => a.kind === 'retry_gap');
@@ -635,6 +643,29 @@ test('golden: Chase — amber/advisory degraded with a retryable transactions ga
   assert.equal(row.action_ref, v.required_actions.indexOf(retry));
   assert.match(row.statement, /next run/i);
   assert.ok(!/can't|terminal/i.test(row.statement));
+});
+
+test('golden: broken but recently successful source says last successful refresh, not Fresh yesterday', () => {
+  const snap = snapshot({
+    state: 'blocked',
+    axes: { freshness: 'fresh', coverage: 'terminal_gap' },
+    forward_disposition: 'terminal',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ stream_id: 'transactions', coverage: 'terminal_gap' })],
+    null,
+    true,
+    {
+      mode: 'manual',
+      retained_records: 1200,
+      last_refreshed_at: '2026-06-14T12:00:00.000Z',
+      observed_at: '2026-06-15T12:00:00.000Z',
+    }
+  );
+  assert.equal(v.pill.label, "Can't collect");
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Last successful refresh yesterday.'));
+  assert.ok(!JSON.stringify(v.annotations).includes('Fresh yesterday'));
 });
 
 test('golden: synthetic terminal code_fix — maintainer status, no dead owner button, never attention', () => {

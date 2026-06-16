@@ -38,7 +38,7 @@
 ## 6. Refresh-contract creation/lifecycle invariant (Risk 1 — verify the runtime input, not just the manifest)
 
 - [x] 6.1 Resolve the refresh contract generically from manifest `recommended_mode` + `background_safe` (NOT a per-connector branch, NOT credential presence); `automatic` ⇒ schedule attached at activation, `manual` ⇒ schedule-absence is not a defect but the connection is typed manual.
-- [x] 6.2 Route a stale manual-refresh `account` connection to `owner_refresh_due` / `stale_manual_refresh`, never green; test that a stale manual account connection cannot render a green headline.
+- [x] 6.2 Route a stale manual-refresh `account` connection to `owner_refresh_due` / `stale_manual_refresh` while keeping collection health separate from freshness; test that a stale-but-otherwise-healthy manual account connection renders `Healthy` with a freshness annotation and refresh affordance.
 - [x] 6.3 (Risk 1, highest-leverage) Verify that `ConnectionRefreshEvidence` actually reaches the projection at RUNTIME for amazon / chase / reddit / usaa — trace the input end-to-end, not just from the manifest — so `isManualRefreshOnly` is true for them and Amazon does not fall through to `complete` and stay green.
 - [x] 6.4 Assert the non-credential invariant against live shape: ChatGPT is `source_kind=account` + scheduled + zero credentials, so an `account ⇒ credential` invariant SHALL NOT be imposed; add a test/fixture proving a zero-credential active account connection is valid.
 
@@ -69,7 +69,7 @@
 
 ## 11. Live journeys + validation
 
-- [x] 11.1 Fixture/test the three live journeys: ChatGPT `green / calm / "fresh today"` with NO `2532` anywhere on the dashboard and `2532` present in `detail.detail_gap_backlog`; Amazon `amber / advisory / "31 days stale" + Refresh now`; Chase `amber / advisory / "transactions stuck since Apr 22" + Retry now` whose per-stream row truthfully says the next run retries.
+- [x] 11.1 Fixture/test the three live journeys: ChatGPT `green / calm / "fresh today"` with NO `2532` anywhere on the dashboard and `2532` present in `detail.detail_gap_backlog`; stale manual-refresh sources such as Amazon/Reddit `green / advisory / "last refreshed …" + Refresh now`; Chase `amber / advisory / "transactions stuck since Apr 22" + Retry now` whose per-stream row truthfully says the next run retries.
 - [x] 11.2 Cover the terminal / `code_fix` channel-as-status path with a synthetic fixture (no live terminal gap exists): a `code_fix`/`audience: maintainer` action renders as a status ("we're updating the connector — nothing for you to do"), never a dead owner button, and never raises `channel` to `attention`.
 - [x] 11.3 Run the focused connection-health and rendered-verdict tests plus the composite-invariant and property tests; run `tsc` and the console lint/ultracite gate clean.
 - [x] 11.4 Re-run `openspec validate redesign-connection-health-verdict-and-recovery --strict` and `openspec validate --all --strict` after implementation.
@@ -84,4 +84,5 @@
 
 ## 13. Owner-only residual
 
+- [x] 13.0 Correct the live sources-confusion verdict contract: separate collection health from freshness and owner action urgency; stale-but-healthy sources render `Healthy` with a freshness annotation and optional refresh action, amber health renders `Degraded`, and `Needs you` is reserved for attention-channel owner action presentation.
 - [ ] 13.1 Owner-only live verification + Codex RI owner review: confirm against live `pdpp.vivid.fish` that the dashboard renders the three journeys correctly (no `2532` on the dashboard, Amazon/Chase advisories, ChatGPT calm), that the self-heal loop lands on the existing connection, and that Risk 1's refresh-evidence wiring holds end-to-end; record any residual as a named risk rather than leaving the change pseudo-active.

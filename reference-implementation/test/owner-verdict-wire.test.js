@@ -204,9 +204,9 @@ test('owner-wire: latest-run partial sample rows do not override connection-leve
   assert.equal(verdict.streams[0]?.coverage, 'partial', 'inspection row still carries partial coverage');
 });
 
-// ─── 8.1 — stale manual connection produces amber/advisory verdict ────────────
+// ─── 8.1 — stale manual connection produces healthy/advisory verdict ──────────
 
-test('owner-wire: stale manual-refresh connection → amber pill + advisory channel', () => {
+test('owner-wire: stale manual-refresh connection → Healthy pill + advisory refresh action', () => {
   const verdict = synthesizeConnectorVerdict({
     snapshot: staleManualSnapshot(),
     report: collectionReport(),
@@ -215,16 +215,13 @@ test('owner-wire: stale manual-refresh connection → amber pill + advisory chan
     progress: null,
   });
 
-  // Stale manual → not green; must be amber or worse
-  assert.notEqual(verdict.pill.tone, 'green', 'stale manual is not green');
-  // Channel must be advisory or attention (owner is the resolution for manual refresh)
-  assert.ok(
-    verdict.channel === 'advisory' || verdict.channel === 'attention',
-    `stale manual channel should be advisory or attention, got ${verdict.channel}`
-  );
+  assert.equal(verdict.pill.tone, 'green');
+  assert.equal(verdict.pill.label, 'Healthy');
+  assert.equal(verdict.channel, 'advisory');
   // Must carry a freshness annotation
   const freshnessAnnotation = verdict.annotations.find((a) => a.kind === 'freshness');
   assert.ok(freshnessAnnotation, 'stale verdict carries a freshness annotation');
+  assert.ok(verdict.required_actions.some((action) => action.kind === 'refresh_now'));
 });
 
 // ─── 8.1 — degraded/retryable: system handles it, channel stays calm ─────────

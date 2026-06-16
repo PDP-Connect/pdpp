@@ -11,12 +11,13 @@
  *
  * The two load-bearing axes of the verdict are orthogonal (design D1):
  *
- *   - `tone`    answers "how worried" — a worst-wins rollup over every health axis.
+ *   - `tone`    answers collection health — a worst-wins rollup over health axes.
  *   - `channel` answers "whether to interrupt the owner" — a function of WHO can
  *               resolve the condition, computed in the SAME pass AFTER `tone`.
  *
- * The same `tone` can carry different `channel`s (Amazon-stale is `amber/advisory`;
- * a revoked credential is `amber/attention`). A runtime fault caps every
+ * Freshness is a co-rendered axis, not a health label: Reddit-stale can remain
+ * `green/advisory` with a refresh affordance, while a retryable Chase gap is
+ * `amber/advisory` and a revoked credential is `amber/attention`. A runtime fault caps every
  * per-connection `channel` at `calm` while leaving each `tone` honest (design D7 /
  * invariant S4) so one dead scheduler never produces N false attention pulls.
  *
@@ -42,16 +43,18 @@ import {
 // ─── Public verdict types ──────────────────────────────────────────────────
 
 /**
- * Worst-wins honesty tone. Orthogonal to {@link RenderedChannel}: it answers "how
- * worried to be", never "whether to interrupt". `grey` is the unknown/checking tone.
+ * Worst-wins collection-health tone. Orthogonal to {@link RenderedChannel}: it
+ * answers "is collection healthy?", never "whether to interrupt". `grey` is the
+ * unknown/checking tone.
  */
 export type VerdictTone = "amber" | "green" | "grey" | "red";
 
 /**
- * Fixed `tone ↔ label` bijection. Each tone maps to exactly one label and a label
- * never appears under a different tone (honesty invariant 6).
+ * Fixed health-label bijection. Action-demand language ("Needs you") is reserved
+ * for `channel === "attention"` and owner-satisfiable required actions, not for
+ * stale freshness or other advisory states.
  */
-export type VerdictLabel = "Can't collect" | "Checking" | "Healthy" | "Needs you";
+export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy";
 
 export interface VerdictPill {
   readonly label: VerdictLabel;
@@ -274,7 +277,7 @@ const TONE_RANK: Record<VerdictTone, number> = { green: 0, grey: 1, amber: 2, re
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
   green: "Healthy",
   grey: "Checking",
-  amber: "Needs you",
+  amber: "Degraded",
   red: "Can't collect",
 };
 
@@ -307,14 +310,14 @@ function baseStateTone(state: ConnectionHealthSnapshot["state"]): VerdictTone {
   }
 }
 
-function freshnessTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
+function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
   switch (snapshot.axes.freshness) {
     case "fresh":
       return "green";
     case "stale":
-      return "amber";
+      return "green";
     case "unknown":
-      return "grey";
+      return "green";
     default: {
       const _never: never = snapshot.axes.freshness;
       return _never;
@@ -352,7 +355,7 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
     case "resumable":
       return "amber";
     case "owner_refresh_due":
-      return "amber";
+      return "green";
     case "awaiting_owner":
       return "amber";
     case "terminal":
@@ -701,7 +704,7 @@ function freshnessAnnotationText(
   actions: readonly RequiredAction[]
 ): string | null {
   if (snapshot.axes.freshness === "fresh") {
-    return freshRecencyText(progress);
+    return freshRecencyText(snapshot, progress);
   }
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness is unknown — checking.";
@@ -727,8 +730,12 @@ function freshnessAnnotationText(
   return "Stale for this connection's freshness policy.";
 }
 
-function freshRecencyText(progress: ProgressEvidence | null): string | null {
+function freshRecencyText(snapshot: ConnectionHealthSnapshot, progress: ProgressEvidence | null): string | null {
   const age = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
+  const unhealthy = snapshot.state !== "healthy" && snapshot.state !== "idle";
+  if (unhealthy && age) {
+    return `Last successful refresh ${age}.`;
+  }
   if (age === "today") {
     return "Fresh today.";
   }
@@ -1217,7 +1224,7 @@ export function synthesizeRenderedVerdict(
   const disposition = connectionDisposition(snapshot, streams, refresh);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
     { axis: "state", tone: baseStateTone(snapshot.state) },
-    { axis: "freshness", tone: freshnessTone(snapshot) },
+    { axis: "freshness", tone: freshnessHealthTone(snapshot) },
     { axis: "coverage", tone: worstStreamCoverageTone(streams) },
     { axis: "disposition", tone: dispositionTone(disposition) },
     { axis: "attention", tone: attentionTone(snapshot) },

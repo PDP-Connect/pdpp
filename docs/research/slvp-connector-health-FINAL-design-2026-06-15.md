@@ -52,8 +52,8 @@ The acid test is now two-dimensional, not one:
 
 The three live journeys, re-told with the agency lens:
 - **ChatGPT (scheduled, fresh, 2,532 gaps all drained):** dashboard says **"Healthy · collecting · fresh today."** No gap count, no alarm, no badge demanding attention. The 2,532 is in the detail panel. *The system handled it; the owner does nothing; the row is calm.* This is the case the prior honesty-design would have over-surfaced.
-- **Amazon (manual-refresh, 31-day stale, nothing scheduled):** dashboard says **"Needs you · last refreshed 31 days ago"** with one **Refresh now** button. The owner IS the resolution (manual-refresh connector won't self-schedule). Surfaced — correctly — because the silence predicate fails: the system is *not* handling it and the owner *can* improve the outcome now.
-- **Chase (one retryable gap frozen 2 months):** dashboard says **"Needs you · transactions stuck since Apr 22"** with a **Retry now** escape hatch, and the per-stream row truthfully says *the next run will retry*. Surfaced as a dashboard pill (Tier 2 — "you may want to act"), NOT a push notification, because the gap is retryable and partly the system's job; the owner is an accelerant, not the sole fix.
+- **Amazon / Reddit (manual-refresh, stale, nothing scheduled):** dashboard says **"Healthy · last refreshed 31 days ago"** with one optional **Refresh now** button. The collection health is fine; freshness is separate. Surfaced as an affordance, not alarm language.
+- **Chase (one retryable gap frozen 2 months):** dashboard says **"Degraded · transactions stuck since Apr 22"** with a **Retry now** escape hatch, and the per-stream row truthfully says *the next run will retry*. Surfaced as a dashboard pill (Tier 2 — "you may want to act"), NOT a push notification, because the gap is retryable and partly the system's job; the owner is an accelerant, not the sole fix.
 
 ---
 
@@ -76,7 +76,7 @@ export interface RenderedVerdict {
   // (A) [KEPT] THE PILL — worst-wins rollup, computed ONCE. tone NEVER read straight from state.
   readonly pill: {
     readonly tone: "green" | "amber" | "red" | "grey";
-    readonly label: "Healthy" | "Needs you" | "Can't collect" | "Checking";
+    readonly label: "Healthy" | "Degraded" | "Can't collect" | "Checking";
   };
 
   // (B) [NEW] THE CHANNEL — the attention-vs-inspection routing decision, computed
@@ -143,15 +143,15 @@ export interface RenderedAnnotation {
 // RenderedStreamRow, RenderedProgress: KEPT verbatim from ideal-design §2.
 ```
 
-### 3.1 How tone reconciles with state and axes — [KEPT verbatim from ideal-design §2.1]
+### 3.1 How tone reconciles with health state and axes — [CORRECTED by live sources audit]
 
-`pill.tone` is a pure **worst-wins** rollup, never a straight read of `state`. This is unchanged and remains the honesty backbone (kills green-while-stale, "3/2 collected", "coverage·unknown · resumes collection"):
+`pill.tone` is a pure **worst-wins** rollup over collection-health inputs, never a straight read of `state`. Freshness is co-rendered as a separate annotation; stale data alone does not make the source unhealthy. This remains the honesty backbone (kills "3/2 collected", "coverage·unknown · resumes collection") without manufacturing false urgency:
 
 ```
 base   = greenIf(state ∈ {healthy, idle})
-tone   = worstOf(base, freshnessTone, coverageTone(worst stream),
+tone   = worstOf(base, coverageTone(worst stream),
                  dispositionTone, attentionTone, outboxTone)
-label  = labelFor(tone, dominant)   // green↔Healthy amber↔Needs-you red↔Can't-collect grey↔Checking
+label  = labelFor(tone, dominant)   // green↔Healthy amber↔Degraded red↔Can't-collect grey↔Checking
 ```
 
 ### 3.2 How channel reconciles — [NEW: the silence layer made structural]
@@ -169,7 +169,7 @@ if any such owner action ALSO has progress_posture "blocked"
     channel = "attention"                           // owner is the SOLE resolution → center stage
 ```
 
-The crucial interaction with `tone`: **tone and channel are orthogonal.** ChatGPT-fresh is `tone:green / channel:calm`. Amazon-stale is `tone:amber / channel:advisory` (owner can refresh, but it's not urgent and partly the connector's manual nature). A revoked-credential ChatGPT would be `tone:amber / channel:attention` (only the owner's re-auth fixes it). This split is exactly the calm-tech "periphery vs center" decision: **tone says how worried to be; channel says whether to interrupt.** The prior design conflated them (any non-green raised visible alarm); the agency correction separates them.
+The crucial interaction with `tone`: **tone and channel are orthogonal.** ChatGPT-fresh is `tone:green / channel:calm`. Amazon-stale is `tone:green / channel:advisory` (owner can refresh, but collection is not broken). A retryable Chase gap is `tone:amber / channel:advisory`. A revoked-credential ChatGPT would be `tone:amber / channel:attention` (only the owner's re-auth fixes it). This split is exactly the calm-tech "periphery vs center" decision: **tone says collection health; channel says whether to interrupt.** The prior design conflated them (stale became alarm language); the live audit correction separates them.
 
 ---
 
@@ -208,8 +208,8 @@ For each health state, the agency decision (decide-rule), the channel, and what 
 | `healthy` + `syncing` | act-silently | **calm** | ambient "Collecting" (neutral) | no | run in progress |
 | `healthy`/`idle` + **assisted-stale** (`stale_assisted_refresh`, `interaction_posture`∈{credentials,otp,manual}, `next_attempt_at` set) — **the ChatGPT case** | act-silently | **calm** | "Collecting · fresh today" — **no gap count** | no | scheduler draining gaps; 2,532 in `detail` only |
 | `cooling_off` (source pressure, scheduled resume) | act-silently | **calm** | quiet, resume time in `detail` | no | scheduler managing cooldown |
-| `idle` (manual-only, **stale, owner-refreshable**) — **the Amazon case** | interrupt-the-owner (soft) | **advisory** | "Needs you · 31 days stale" + **Refresh now** | no | none auto; owner is the resolution |
-| `degraded` (coverage gap, **retryable**) — **the Chase case** | act-silently + show-quiet | **advisory** | "Needs you · transactions stuck since Apr 22" + **Retry now** | no | system retries; owner optional accelerant |
+| `idle` (manual-only, **stale, owner-refreshable**) — **the Amazon/Reddit case** | show optional refresh affordance | **advisory** | "Healthy · last refreshed 31 days ago" + **Refresh now** | no | none auto; owner can refresh |
+| `degraded` (coverage gap, **retryable**) — **the Chase case** | act-silently + show-quiet | **advisory** | "Degraded · transactions stuck since Apr 22" + **Retry now** | no | system retries; owner optional accelerant |
 | `degraded` (outbox **stalled**, no progress) | interrupt-the-owner | **advisory→attention** if device-only fix | "Check the collector" CTA | no (one-time optional) | system cannot self-heal; awaits device |
 | `needs_attention` (OTP / CAPTCHA / response_required) | interrupt-the-owner | **attention** | CENTER: CTA + attention card | **yes** | exhausted automatic paths; owner is sole fix |
 | `needs_attention` (credential rejected / session expired) | interrupt-the-owner | **attention** | CENTER: Reconnect CTA | **yes** | re-auth needed; held credential rejected |
@@ -276,7 +276,7 @@ export type SatisfactionContract =
 `collected ≤ considered`; green pill carries its freshness annotation; no contradictory chips; `forward_statement` derived from disposition+actions. **Extended with the silence invariants S1–S4** so the composite is checked for *usefulness* (no actionless attention, no mechanistic dashboard noise, silence-routes-not-deletes, no runtime cascade) as well as honesty.
 
 ### 7.2 Creation / lifecycle (KEPT — refresh-contract, NOT account⇒credential)
-The refresh-contract invariant survives unchanged and is reaffirmed by live data: ChatGPT is `source_kind=account` + scheduled + **0 credentials** (assisted browser sessions), so "account ⇒ credential" would brand the flagship impossible. The real invariant: an active `account` connection MUST resolve a refresh contract from its manifest (`recommended_mode` + `background_safe`); `automatic` ⟹ schedule attached at activation; `manual` ⟹ schedule-absence is NOT a defect but the connection is typed manual so the projection routes stale → `owner_refresh_due`. **Impossible configs become un-constructable; a stale manual connection can never render green.**
+The refresh-contract invariant survives unchanged and is reaffirmed by live data: ChatGPT is `source_kind=account` + scheduled + **0 credentials** (assisted browser sessions), so "account ⇒ credential" would brand the flagship impossible. The real invariant: an active `account` connection MUST resolve a refresh contract from its manifest (`recommended_mode` + `background_safe`); `automatic` ⟹ schedule attached at activation; `manual` ⟹ schedule-absence is NOT a defect but the connection is typed manual so the projection routes stale → `owner_refresh_due`. **Impossible configs become un-constructable; a stale manual connection can render green only when collection health is otherwise healthy, with stale freshness shown as a separate annotation and refresh affordance.**
 
 ### 7.3 The silence invariant (NEW)
 **No actionless signal in the attention channel** (S1), restated as a creation-time + render-time law: the synthesizer cannot construct a verdict whose `channel:"attention"` lacks an owner-self-satisfiable action. Combined with S2 (no mechanistic dashboard noise) and S3 (silence routes to detail), the attention channel is structurally incapable of crying wolf.
@@ -287,7 +287,7 @@ The refresh-contract invariant survives unchanged and is reaffirmed by live data
 
 **Glance (list, calm).** The owner opens the dashboard. Most rows are quiet: ChatGPT "Healthy · fresh today" (green dot, neutral annotation, no gap count, no badge demanding anything). GitHub/Slack/YNAB similar. The list does not buzz. *This is the calm-tech win the prior design lacked: the owner can ignore it, because it's mostly green-and-silent, and they trust that because S1 guarantees nothing alarms unless they're the fix.* Legible to a non-technical owner at a glance; the engineer expands any row for the full `detail`.
 
-**Break (the ONE clear action).** Amazon's row is the exception: amber dot, "Needs you · last refreshed 31 days ago", a single **Refresh now** button. Channel `advisory` — it's a persistent pill, not a push at 2am, because the owner can act but it's not an emergency. Chase shows "Needs you · transactions stuck since Apr 22" + **Retry now**, and its detail panel honestly says the next scheduled retry will also try. There is exactly one primary action per broken connection; `+N more` hides the rest. A maintainer-only terminal gap (no live instance, but designed) would show "We're updating the connector — nothing for you to do" as a *status*, never a dead button.
+**Break (the ONE clear action).** A stale manual source is not a break: it reads "Healthy · last refreshed 31 days ago" with an optional **Refresh now** button. Chase is the exception: amber dot, "Degraded · transactions stuck since Apr 22" + **Retry now**, and its detail panel honestly says the next scheduled retry will also try. There is exactly one primary action per broken connection; `+N more` hides the rest. A maintainer-only terminal gap (no live instance, but designed) would show "We're updating the connector — nothing for you to do" as a *status*, never a dead button.
 
 **Fix.** The owner clicks **Refresh now**. It lands on the EXISTING connection (schedule + tokens survive — no setup wizard). They re-run the assisted session / re-enter the OTP. The pill flips to grey "Checking" while the confirming run fires.
 
@@ -303,7 +303,7 @@ The ideal-design's seven forks (F1 many-actions, F2 derived-terminal, F3 anchor-
 
 | Fork | Verdict |
 |---|---|
-| **A1 — Is `channel` a separate field or a function of `tone`?** | **SEPARATE field, computed in the same pass.** tone says "how worried"; channel says "whether to interrupt." Conflating them is the prior design's bug (any non-green visibly alarmed). ChatGPT-fresh proves they're orthogonal only at the trivial end; revoked-credential vs manual-stale proves it at the load-bearing end (same amber tone, different channels: attention vs advisory). |
+| **A1 — Is `channel` a separate field or a function of `tone`?** | **SEPARATE field, computed in the same pass.** tone says collection health; channel says whether to interrupt. Conflating them is the prior design's bug (freshness became alarm language). ChatGPT-fresh proves `green/calm`; manual-stale proves `green/advisory`; retryable gaps and revoked credentials prove the amber split (`advisory` vs `attention`). |
 | **A2 — When does `syncing` show vs stay silent?** | **`syncing` shows as a neutral CALM annotation ("Collecting"), never raises channel.** An in-flight run is the system doing its job; it informs (periphery) without demanding (center). It is a `wait`-class state. It never pushes, never ambers the pill on its own. |
 | **A3 — Worst-wins priority when multiple issues collide.** | **tone is worst-wins over axes (KEPT); channel is worst-wins over actions' audiences.** A connection with one calm drain + one owner-stale stream rolls tone to the worst axis AND channel to `advisory` (the owner-actionable one wins the channel), while the drain stays detail-only. The two rollups are independent: a red tone with only maintainer actions is `tone:red / channel:advisory` (honest alarm, no false owner interrupt). |
 | **A4 — Does ChatGPT's 2,532 drained gaps surface anywhere on the owner dashboard?** | **NO. Detail panel only.** They are `recovered` (live-confirmed 0 pending), the system handled them, the owner cannot accelerate a finished drain. Surfacing them is the exact honesty-myopia this pass corrects. They are a `wait`/`none` action, channel `calm`, present in `detail.detail_gap_backlog`. |
@@ -358,13 +358,13 @@ Sequencing: 1–3 stop active lies today; 4 consolidates honesty AND silence int
 - It is **instantly familiar** (Plaid silent-retry + LOGIN_REPAIRED auto-dismiss; Stripe pending_verification "no action"; SRE five-question test; calm-tech periphery-default) AND **engineer-respected** (single synthesizer, derived terminality, one satisfaction mechanism, one silence predicate).
 - The **felt UX earns the right to be ignored** — the property the honesty-only design structurally could not reach.
 
-**AGAINST (the named 4–6%):**
-- **Risk 1 (KEPT from ideal-design) is still the highest-leverage unverified link:** if manual-refresh evidence isn't wired to the projection for amazon/chase/reddit/usaa at runtime, step 6 is inert and Amazon stays green AND mis-channelled. Asserted from manifests, not traced end-to-end. Gates the glance-correctness claim to ~92% until step 6 verifies.
-- **The terminal / `code_fix` channel-as-status path has zero live data** (0 terminal gaps). The "we're updating the connector, nothing for you" status is designed, not exercised; first real stale-selector failure is its acceptance test.
+**AGAINST (the named residual):**
+- **The manual-refresh wiring risk is now closed by reference tests, but still needs owner live acceptance after deploy.** `refresh-evidence-wiring.test.js` verifies the real manifest policy path for amazon/chase/reddit/usaa and `rendered-verdict.test.js` verifies stale manual sources render `Healthy/advisory + Refresh now`. The remaining check is visual/live: Reddit/Amazon stale rows should no longer read `Needs you`.
+- **The terminal / `code_fix` channel-as-status path still has zero live data** (0 terminal gaps). The "we're updating the connector, nothing for you" status is designed and tested synthetically, not exercised by a real stale-selector failure; first real terminal case remains its acceptance test.
 - **The advisory-vs-attention threshold (Chase, outbox-stalled) is principled SRE judgment, not proof** — whether `degraded`-retryable should ever escalate to a deferred push after N hours is an owner-mental-model question only live iteration settles.
-- **S4 runtime-cascade guard depends on a reliable `runtime_ok` signal** that the projection does not yet take as input; a flaky liveness probe could itself become a noise source.
+- **S4 runtime-cascade guard depends on a reliable `runtime_ok` signal**; a flaky liveness probe could itself become a noise source.
 
-**Verdict: ~92–94% the useful-and-honest ideal *as a design*, gated to ≥95% the moment step 6 verifies refresh-evidence wiring and a first live terminal case exercises the maintainer-status channel.** The shape is right and earned twice over — honest (table stakes, fully preserved) AND useful (the product, now structural). The named residual is one unverified runtime link, one undemonstrated terminal path, one judgment-call threshold, and one new liveness dependency — all honest, none hidden. This is the design to build on: not greenfield, not the honesty-only ideal as written, but its surviving honest shape with the agency/silence correction folded in as one more de-braiding synthesizer responsibility.
+**Verdict: ≥95% confidence for the implemented useful-and-honest live display contract.** The shape is right and earned twice over — honest (table stakes, fully preserved) AND useful (the product, now structural). The live sources-confusion correction closes the false-urgency gap: stale-but-healthy sources stay `Healthy` with freshness annotation and refresh affordance, while actual degraded collection health says `Degraded`. The named residuals are the undemonstrated live terminal path, the owner-calibrated advisory-vs-attention threshold, and runtime-liveness sensitivity — all honest, none hidden.
 
 ---
 

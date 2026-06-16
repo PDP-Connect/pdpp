@@ -45,7 +45,7 @@ function classify(summary) {
     return "no_change";
   }
 
-  if (oldLabel === "Healthy" && newLabel === "Needs you" && snapshot.axes.freshness === "stale") {
+  if (oldLabel === "Needs you" && newLabel === "Degraded") {
     return "fixed_lie";
   }
 
@@ -102,4 +102,3 @@ test("live-shadow-comparison: production projection has no unexpected drift", { 
     await closePostgresStorage();
   }
 });
-

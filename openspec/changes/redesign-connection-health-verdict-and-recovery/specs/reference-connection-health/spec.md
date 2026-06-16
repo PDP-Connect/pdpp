@@ -41,16 +41,24 @@ co-required `annotations[]` list, a derived `forward_statement`, an ordered
 - **THEN** it SHALL return an identical `RenderedVerdict` both times
 - **AND** it SHALL NOT read a clock, perform I/O, or depend on call order.
 
-### Requirement: The verdict pill tone SHALL be a worst-wins rollup that carries co-required freshness
+### Requirement: The verdict pill SHALL represent collection health, while freshness and action urgency SHALL remain separate
 
 The synthesized `pill.tone` SHALL be computed as a worst-wins rollup over the
-headline state and every health axis — the base tone implied by the state, the
-freshness tone, the worst per-stream coverage tone, the forward-disposition tone,
-the attention tone, and the outbox tone — and SHALL NOT be a straight read of the
-headline `state`. The `pill.label` SHALL be assigned from `tone` by a fixed
-bijection (`green` ↔ `Healthy`, `amber` ↔ `Needs you`, `red` ↔ `Can't collect`,
-`grey` ↔ `Checking`); the same tone SHALL always map to the same label and a label
-SHALL NOT appear under a different tone.
+collection-health inputs — the base tone implied by the headline state, the worst
+per-stream coverage tone, the forward-disposition tone, the attention tone, and
+the outbox tone — and SHALL NOT be a straight read of the headline `state`.
+Freshness SHALL be co-rendered as a separate annotation and SHALL NOT by itself
+downgrade an otherwise-healthy collection-health pill. A manual-refresh source
+whose retained data is merely stale can therefore remain `green` / `Healthy` while
+its freshness annotation and optional refresh action explain that newer data is
+available.
+
+The `pill.label` SHALL be assigned from `tone` by a fixed health-label bijection
+(`green` ↔ `Healthy`, `amber` ↔ `Degraded`, `red` ↔ `Can't collect`, `grey` ↔
+`Checking`); the same tone SHALL always map to the same label and a label SHALL
+NOT appear under a different tone. The phrase `Needs you` SHALL NOT be used as a
+health label; it is reserved for owner-attention/action presentation when
+`channel === "attention"` and an owner-satisfiable required action exists.
 
 When the freshness axis is not `fresh`, the verdict's `annotations[]` SHALL contain
 a `freshness`-kind annotation; a non-`fresh` connection SHALL NOT render a pill
@@ -60,11 +68,13 @@ considered count, and the `forward_statement` SHALL NOT assert resumed collectio
 while a co-rendered chip reports a terminal or unknown disposition for the same
 scope.
 
-#### Scenario: Stale-but-otherwise-green connection is amber with a freshness annotation
+#### Scenario: Stale-but-otherwise-green connection stays healthy with a freshness annotation
 
 - **WHEN** a connection has headline state `healthy` or `idle` and freshness axis
   `stale`
-- **THEN** the synthesized `pill.tone` SHALL be at least `amber`, never `green`
+- **THEN** the synthesized `pill.tone` MAY remain `green` when no collection-health
+  input is degraded
+- **AND** the `pill.label` SHALL remain `Healthy`, not `Needs you`
 - **AND** the verdict's `annotations[]` SHALL contain a `freshness`-kind annotation
   stating how long since the connection was fresh.
 
@@ -74,7 +84,7 @@ scope.
   coverage axis is degrading
 - **THEN** `pill.tone` SHALL roll to the worst axis's tone rather than the
   state-implied `green`
-- **AND** the `pill.label` SHALL be the fixed-bijection label for that tone.
+- **AND** the `pill.label` SHALL be the fixed health-label for that tone.
 
 #### Scenario: No contradictory collected-over-considered chip
 
@@ -105,15 +115,23 @@ whose `audience` is `owner` and whose `satisfied_when.kind` is not `none`. A
 required action whose `audience` is `maintainer` or `none` SHALL render as a status
 line and SHALL NOT raise `channel` to `attention`.
 
-#### Scenario: Same tone, different channel by who can fix it
+#### Scenario: Action urgency is separate from health tone
 
-- **WHEN** one stale connection is manual-refresh-only and owner-refreshable, and
-  another connection of the same `amber` tone has had its credential rejected so
-  only re-auth resolves it
+- **WHEN** one stale connection is manual-refresh-only and otherwise healthy, and
+  another amber connection has had its credential rejected so only re-auth resolves it
 - **THEN** the manual-refresh connection SHALL be `channel: "advisory"` and the
   credential-rejected connection SHALL be `channel: "attention"`
-- **AND** the two SHALL share the same `pill.tone` while differing in `channel`,
-  proving `tone` and `channel` are orthogonal.
+- **AND** only the credential-rejected connection SHALL be eligible for
+  owner-attention wording such as `Needs you`.
+
+#### Scenario: Broken but recently refreshed data does not claim freshness as health
+
+- **WHEN** a connection cannot currently collect but its retained data was refreshed
+  recently
+- **THEN** the health pill SHALL be `Can't collect`
+- **AND** the freshness annotation SHALL say `Last successful refresh <age>` or
+  equivalent, not `Fresh <age>`, so the surface does not imply the broken connector
+  is healthy.
 
 #### Scenario: A fresh, fully self-handled connection stays calm
 

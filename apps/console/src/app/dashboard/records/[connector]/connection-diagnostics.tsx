@@ -135,7 +135,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
 }
 
 const RENDERED_VERDICT_VOCABULARY = {
-  amber: { label: "Needs you", tone: "warning" },
+  amber: { label: "Degraded", tone: "warning" },
   green: { label: "Healthy", tone: "success" },
   grey: { label: "Checking", tone: "neutral" },
   red: { label: "Can't collect", tone: "danger" },

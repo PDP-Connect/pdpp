@@ -53,15 +53,16 @@ credential" creation invariant and the "design against a Chase terminal
 
 Goals:
 - One server-owned `RenderedVerdict` every owner surface renders verbatim.
-- Honesty invariants enforced as a gate, not convention (no green-while-stale, no
-  impossible tuples, no terminal "resumes collection").
+- Honesty invariants enforced as a gate, not convention (no false-health tuples,
+  no impossible tuples, no terminal "resumes collection").
 - A `channel` routing field so the dashboard defaults to calm and interrupts the
   owner only when the owner is the sole resolution; self-handled signals route to
   an inspection layer, never to nothing.
 - A typed `RequiredAction[]` with derived terminality, one unified
   `satisfied_when`, and a self-heal loop that lands on the existing connection.
-- A refresh-contract creation invariant that makes manual-stale render
-  `owner_refresh_due`, never green.
+- A refresh-contract creation invariant that makes manual-stale render an
+  owner-refresh advisory without reclassifying stale freshness as broken
+  collection health.
 
 Non-Goals:
 - Rewriting the 2679-line projection. `deriveForwardDisposition` stays the sole
@@ -75,16 +76,32 @@ Non-Goals:
 
 ## Key decisions
 
+### D0 — health, freshness, and action urgency are separate display axes
+
+the owner's overnight sources-lifecycle audit identified the highest-confusion live
+failure: stale-but-healthy sources such as Reddit rendered `Needs you` while the
+same panel said the source was calm, current enough to inspect, and collecting
+normally. The original verdict design overcorrected from "do not claim complete
+freshness while stale" into "stale means alarm label." That is wrong for the
+reference operator surface. The pill now answers collection health only
+(`Healthy`, `Checking`, `Degraded`, `Can't collect`), freshness is a co-rendered
+annotation (`Fresh today`, `Last refreshed yesterday`, `Freshness unknown`), and
+`Needs you` is reserved for owner-attention/action presentation when
+`channel === "attention"` with an owner-satisfiable required action. A stale manual
+refresh source can be `Healthy · Last refreshed yesterday` with an optional
+`Refresh now`; a broken-but-recent source is `Can't collect · Last successful
+refresh yesterday`, never `Can't collect · Fresh yesterday`.
+
 ### D1 — tone and channel are orthogonal (the agency correction)
-`tone` answers "how worried" (worst-wins over axes: state, freshness, worst-stream
-coverage, disposition, attention, outbox). `channel` answers "whether to
+`tone` answers collection health (worst-wins over health axes: state,
+worst-stream coverage, disposition, attention, outbox). `channel` answers "whether to
 interrupt" (a function of who can fix it), computed in the SAME pass AFTER `tone`.
 The prior honesty-design conflated them, so any non-green visibly alarmed.
-ChatGPT-fresh is `green / calm`; Amazon-stale is `amber / advisory`; a
-revoked-credential connection is `amber / attention`. Same amber tone, different
-channel — the load-bearing split (FINAL design §3.2, fork A1). Without this the
-dashboard cannot be both honest (Amazon's amber is real) and calm (ChatGPT's amber
-would falsely alarm).
+ChatGPT-fresh is `green / calm`; Amazon-stale is `green / advisory`; a
+retryable Chase gap is `amber / advisory`; a revoked-credential connection is
+`amber / attention`. The load-bearing split (FINAL design §3.2, fork A1) is that
+tone says collection health while channel says owner interruption. Without this,
+the dashboard cannot be both honest and calm.
 
 ### D2 — terminal is DERIVED from forward_disposition, never an independent flag
 `RequiredAction.terminal === (forward_disposition === "terminal")`.
@@ -364,7 +381,7 @@ failure. The acceptance bar is the conjunction.
   asserts `tone` is worst-wins and never `labelFor(state)` directly.
 - The three live journeys render correctly: ChatGPT `green / calm /
   "fresh today"` with **no `2532` anywhere on the dashboard** and `2532` present in
-  `detail.detail_gap_backlog`; Amazon `amber / advisory / "31 days stale" +
+  `detail.detail_gap_backlog`; Amazon `green / advisory / "last refreshed ..." +
   Refresh now`; Chase `amber / advisory / "transactions stuck since Apr 22" +
   Retry now` with a per-stream row that truthfully says the next run retries.
 - A calibration trace exists for test/operator review and explains, per verdict,
@@ -424,8 +441,9 @@ failure. The acceptance bar is the conjunction.
   ad-hoc silence decisions into one predicate the synthesizer owns. Net complexity
   DOWN (Hickey-clean).
 - **tone ⊥ channel** is the precise correction to the prior design's conflation of
-  "how worried" with "whether to interrupt" — the insight that makes ChatGPT calm
-  while Amazon surfaces.
+  collection health with whether to interrupt — the insight that lets ChatGPT stay
+  calm, Amazon/Reddit stay healthy with a refresh affordance, and Chase degrade
+  without false owner-urgent language.
 - It is **instantly familiar** (Plaid silent-retry + LOGIN_REPAIRED auto-dismiss;
   Stripe `pending_verification` "no action"; Stripe `currently_due` tiering; SRE
   five-question test; calm-tech periphery-default) AND **engineer-respected**
@@ -435,26 +453,26 @@ failure. The acceptance bar is the conjunction.
   design structurally could not reach: it was honest enough to show everything, and
   showing everything trains the owner to ignore everything.
 
-**AGAINST (the named 4–6%, none hidden):**
-- **Risk 1 is a real gap, not a quibble.** Until the refresh-contract task traces
-  `ConnectionRefreshEvidence` to the projection at runtime for the manual
-  connectors, the headline fix is potentially inert and Amazon could stay green.
-  This caps the glance-correctness claim at ~92% until verified.
+**AGAINST (the named residual, none hidden):**
+- **The manual-refresh wiring risk is now closed by reference tests, but still
+  needs owner live acceptance after deploy.** `refresh-evidence-wiring.test.js`
+  verifies the real manifest policy path for amazon/chase/reddit/usaa and
+  `rendered-verdict.test.js` verifies stale manual sources render
+  `Healthy/advisory + Refresh now`. The remaining check is visual/live:
+  Reddit/Amazon stale rows should no longer read `Needs you`.
 - **The terminal / `code_fix` channel-as-status path has zero live data.** The
   most-cited "your action won't help" experience has no live instance; it could be
   subtly wrong in ways only a real stale-selector failure reveals.
 - **The advisory-vs-attention threshold is judgment, not proof** — a live-iteration
   question this design cannot fully settle from prior art.
-- **S4's `runtime_ok` is a new liveness dependency** the projection does not yet
-  take; a flaky probe could itself become noise.
+- **S4's `runtime_ok` is a liveness dependency**; a flaky probe could itself become
+  noise.
 
-**Verdict: ~92–94% the useful-and-honest ideal as a design, gated up to ≥95% the
-moment the refresh-contract task verifies refresh-evidence wiring and a first live
-terminal case exercises the maintainer-status channel.** The shape is right and
-earned twice over — honest (table stakes, fully preserved) AND useful (the product,
-now structural). The named residual is one unverified runtime link, one
-undemonstrated terminal path, one judgment-call threshold, and one new liveness
-dependency — all honest, none hidden. This is the design to build on: not
-greenfield, not the honesty-only ideal as written, but its surviving honest shape
-with the agency/silence correction folded in as one more de-braiding synthesizer
-responsibility.
+**Verdict: ≥95% confidence for the implemented useful-and-honest live display
+contract.** The shape is right and earned twice over — honest (table stakes, fully
+preserved) AND useful (the product, now structural). The live sources-confusion
+correction closes the false-urgency gap: stale-but-healthy sources stay `Healthy`
+with freshness annotation and refresh affordance, while actual degraded collection
+health says `Degraded`. The named residuals are the undemonstrated live terminal
+path, the owner-calibrated advisory-vs-attention threshold, and runtime-liveness
+sensitivity — all honest, none hidden.

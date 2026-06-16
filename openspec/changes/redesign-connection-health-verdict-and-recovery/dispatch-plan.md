@@ -9,7 +9,7 @@ for the Codex RI-owner conversation.
 ## Status
 
 - The change is **0% implemented.** The live bugs the owner reported (`succeeded · coverage unknown`,
-  green-while-stale, `3/2 collected`) are **still live** on pdpp.vivid.fish; `sources-view-model.ts`
+  false urgency, `3/2 collected`) are **still live** on pdpp.vivid.fish; `sources-view-model.ts`
   still reads `health.state` directly; `rendered-verdict.ts` does not exist.
 - The plan (proposal + design + spec deltas + tasks) is approved as SLVP-ideal-as-a-design,
   including Codex's calibration gate (phase 12). Confidence ≥95% as a design; residual is

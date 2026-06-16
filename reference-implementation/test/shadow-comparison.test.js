@@ -8,7 +8,7 @@
  *
  * Every change is classified as one of:
  *
- *   "fixed_lie"                  — old headline was dishonest (green-while-stale,
+ *   "fixed_lie"                  — old headline was dishonest (false owner urgency,
  *                                  "3/2 collected", "resumes collection" on terminal);
  *                                  new is correct. Expected and good.
  *
@@ -65,19 +65,6 @@ function deriveNewHeadline(verdict) {
 }
 
 // ─── Change classifier ────────────────────────────────────────────────────────
-
-const KNOWN_FIXED_LIES = new Set([
-  // A healthy-but-stale connection claiming "Healthy" when new verdict says "Needs you"
-  // (the green-while-stale lie) is a fixed_lie.
-  'Healthy→Needs you:stale',
-  // A cooling_off connection old UI calls "Healthy" but new correctly shows "Checking"
-  // or "Healthy" with calm channel (either is fine; same label is no-change).
-]);
-
-const KNOWN_SILENCE_CORRECTIONS = new Set([
-  // idle+fresh old says "Healthy"; new also says "Healthy" but routes to calm.
-  // No label change but channel routing improved.
-]);
 
 /**
  * Classify an old-vs-new headline change.
@@ -170,13 +157,14 @@ const FIXTURES = [
   // ── Amazon: manual-refresh, 31-day stale ──────────────────────────────────
   //
   // Old headline: "Healthy" (state:idle maps to "Healthy" in old UI)
-  // New headline: "Needs you" (stale manual → owner_refresh_due → amber/advisory)
-  // Classification: fixed_lie — old UI called a 31-day-stale manual-refresh connection "Healthy"
+  // New headline: "Healthy" (stale manual is freshness, not broken collection)
+  // Classification: deliberate_silence_correction — new adds advisory freshness
+  // and Refresh now without false owner-urgency language.
   {
     id: 'amazon_manual_stale',
     description: 'Amazon: manual-refresh, 31-day stale',
-    expectedClassification: 'fixed_lie',
-    reason: 'Fixed lie: old UI showed "Healthy" for 31-day stale manual-refresh; new shows "Needs you"',
+    expectedClassification: 'deliberate_silence_correction',
+    reason: 'Silence correction: stale manual source stays Healthy while freshness and Refresh now move to advisory detail',
     snapshot: {
       state: 'idle',
       axes: { attention: 'none', coverage: 'complete', freshness: 'stale', outbox: 'idle', remote_surface: 'none' },
@@ -200,8 +188,9 @@ const FIXTURES = [
     progress: null,
     runtimeOk: true,
     assertions: (verdict) => {
-      assert.notEqual(verdict.pill.tone, 'green', 'Amazon: not green');
-      assert.ok(verdict.channel === 'advisory' || verdict.channel === 'attention', `Amazon: advisory or attention, got ${verdict.channel}`);
+      assert.equal(verdict.pill.tone, 'green', 'Amazon: stale manual health stays green');
+      assert.equal(verdict.pill.label, 'Healthy', 'Amazon: stale manual health label stays Healthy');
+      assert.equal(verdict.channel, 'advisory', `Amazon: advisory refresh affordance, got ${verdict.channel}`);
       const refreshAction = verdict.required_actions.find((a) => a.kind === 'refresh_now');
       assert.ok(refreshAction, 'Amazon: refresh_now action present');
       // Freshness annotation must be present
@@ -213,14 +202,14 @@ const FIXTURES = [
   // ── Chase: one pending retryable gap, frozen ~2 months ───────────────────
   //
   // Old headline: "Needs you" (state:degraded → "Needs you")
-  // New headline: "Needs you" (degraded with resumable disposition)
-  // Classification: no headline change — old already said "Needs you", but the
-  // new verdict adds the missing advisory retry affordance without raising attention.
+  // New headline: "Degraded" (degraded with resumable disposition)
+  // Classification: fixed_lie — old used owner-urgent wording for an advisory
+  // retryable gap. New verdict adds the retry affordance without raising attention.
   {
     id: 'chase_retryable_gap',
     description: 'Chase: degraded, one retryable gap frozen ~2 months',
-    expectedClassification: 'no_change',
-    reason: 'Owner-actionable manual retry: channel:advisory with Retry now; gap present in detail',
+    expectedClassification: 'fixed_lie',
+    reason: 'Fixed false urgency: retryable degraded gap is Degraded/advisory with Retry now, not Needs you',
     snapshot: {
       state: 'degraded',
       axes: { attention: 'none', coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle', remote_surface: 'none' },
@@ -244,8 +233,8 @@ const FIXTURES = [
     progress: null,
     runtimeOk: true,
     assertions: (verdict) => {
-      // Old says "Needs you", new also produces a non-green pill (coverage gap)
-      // with an owner-actionable advisory retry affordance.
+      assert.equal(verdict.pill.tone, 'amber', 'Chase: amber health tone');
+      assert.equal(verdict.pill.label, 'Degraded', 'Chase: Degraded label');
       assert.equal(verdict.channel, 'advisory', 'Chase: channel advisory (owner can retry manual connector)');
       const retry = verdict.required_actions.find((a) => a.kind === 'retry_gap');
       assert.ok(retry, 'Chase: retry_gap action present');

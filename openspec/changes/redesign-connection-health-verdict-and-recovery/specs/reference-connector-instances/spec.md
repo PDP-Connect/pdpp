@@ -21,8 +21,8 @@ resolved refresh contract is `manual` — the manifest declares the connector
 manual, paused, or background-unsafe — schedule absence SHALL NOT be treated as a
 defect, but the connection SHALL be typed manual so that the connection-health
 projection routes its stale freshness to an owner-refresh advisory
-(`owner_refresh_due` / `stale_manual_refresh`) rather than to a green headline. A
-stale manual-refresh account connection SHALL NOT render green.
+(`owner_refresh_due` / `stale_manual_refresh`). Stale freshness alone SHALL NOT
+downgrade an otherwise healthy collection-health pill.
 
 The refresh contract SHALL be resolved generically from the manifest refresh-policy
 fields and SHALL NOT be keyed on a per-connector name branch or on credential
@@ -51,5 +51,5 @@ presence.
   contract is active and its retained data has aged past its freshness window
 - **THEN** schedule absence SHALL NOT be reported as a defect
 - **AND** the connection SHALL be typed manual so its stale freshness routes to an
-  owner-refresh advisory rather than a green headline, and the connection SHALL NOT
-  render green while stale.
+  owner-refresh advisory while the collection-health pill remains driven by
+  collection health rather than by freshness alone.

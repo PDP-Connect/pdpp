@@ -156,10 +156,10 @@ test("deriveSourceStatus: a stale-but-healthy connection carries a mandatory fre
 });
 
 test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
-  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Needs you", tone: "amber" } }), false);
+  const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Degraded", tone: "amber" } }), false);
   assert.equal(flag.kind, "degraded");
   assert.equal(flag.tone, "warning");
-  assert.equal(flag.label, "Needs you");
+  assert.equal(flag.label, "Degraded");
 });
 
 test("deriveRenderedSourceStatus carries freshness annotations from rendered verdict", () => {
@@ -305,7 +305,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       display_name: "Amazon",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Last refreshed 31 days ago." }],
-        pill: { label: "Needs you", tone: "amber" },
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           {
             affects: [],
@@ -320,7 +320,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       }),
     })
   );
-  assert.equal(amazon.status.label, "Needs you · Last refreshed 31 days ago.");
+  assert.equal(amazon.status.label, "Healthy · Last refreshed 31 days ago.");
   assert.equal(amazon.nextAction?.label, "Refresh now");
 
   const chase = toSourceInstanceView(
@@ -330,7 +330,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       display_name: "Chase",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Transactions stuck since Apr 22." }],
-        pill: { label: "Needs you", tone: "amber" },
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: ["transactions"],
@@ -356,7 +356,7 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
       }),
     })
   );
-  assert.equal(chase.status.label, "Needs you · Transactions stuck since Apr 22.");
+  assert.equal(chase.status.label, "Degraded · Transactions stuck since Apr 22.");
   assert.equal(chase.nextAction?.label, "Retry now");
 });
 
