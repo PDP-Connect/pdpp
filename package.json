@@ -45,6 +45,7 @@
     "agent-skill:boundary-check": "node --test scripts/agent-skill-boundary.test.mjs",
     "spec:check": "node scripts/spec-check.mjs",
     "stream-debug:summary": "node scripts/stream-debug-summary.mjs",
+    "workstreams:status": "waspflow check",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
     "cli:published-help": "node scripts/cli-acceptance-smoke.mjs published-help",
