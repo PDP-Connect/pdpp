@@ -243,6 +243,24 @@ test("toSourceInstanceView does not fall back to raw health state or next_action
   assert.equal(view.nextAction, null);
 });
 
+test("toSourceInstanceView keeps the list-facing connection name to one clear label", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon - Personal",
+      rendered_verdict: renderedVerdict({ pill: { label: "Healthy", tone: "green" } }),
+    })
+  );
+
+  assert.equal(view.displayName, "Amazon - Personal");
+  assert.equal(view.accountLine, "Connection");
+  assert.equal(view.kind, null);
+
+  const listIdentity = [view.displayName, view.accountLine, view.kind ?? ""].join(" ");
+  assert.equal((listIdentity.match(/amazon/gi) ?? []).length, 1);
+});
+
 test("toSourceInstanceView does not render maintainer or wait actions as owner CTAs", () => {
   for (const action of [
     {

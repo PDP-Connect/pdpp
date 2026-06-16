@@ -37,7 +37,7 @@
  */
 export const NORMAL_OWNER_UI_FILES = [
   "apps/console/src/app/dashboard/records/page.tsx",
-  "apps/console/src/app/dashboard/components/views/records-list-view.tsx",
+  "apps/console/src/app/dashboard/records/sources-view.tsx",
   "apps/console/src/app/dashboard/records/add/page.tsx",
   "apps/console/src/app/dashboard/components/source-setup-catalog.tsx",
   "apps/console/src/app/dashboard/lib/source-setup-presentation.ts",

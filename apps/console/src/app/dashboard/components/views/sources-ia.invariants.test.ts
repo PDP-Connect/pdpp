@@ -24,7 +24,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-// VIEW_FILE is now the live Ink Carbon sources view (replaced records-list-view.tsx).
+// VIEW_FILE is now the live Ink Carbon sources view for the Sources surface.
 const VIEW_FILE = fileURLToPath(new URL("../../records/sources-view.tsx", import.meta.url));
 const RECORDS_PAGE_FILE = `${HERE}../../records/page.tsx`;
 const RECORDS_ADD_PAGE_FILE = `${HERE}../../records/add/page.tsx`;
@@ -46,9 +46,19 @@ const ROUTES_ADD_SOURCE_RE = /addSource: `\$\{basePath\}\/records\/add`/;
 const ADD_SOURCE_HREF_CONST_RE = /ADD_SOURCE_HREF = "\/dashboard\/records\/add"/;
 const ADD_SOURCE_LINK_RE = /href=\{ADD_SOURCE_HREF\}/;
 const ADD_SOURCE_EMPTY_STATE_RE = /data-testid="sources-empty"/;
-// Health status is rendered as a status dot + sr-only label from the projection
-const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
-const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
+const CONFIGURED_SOURCES_LABEL_RE = /aria-label="Connections"/;
+const CONFIGURED_SOURCES_HEADING_RE = /Connections/;
+const CONFIGURED_SOURCES_COUNT_RE = /activeInstances\.length\.toLocaleString\(\)[\s\S]*active/;
+const CONFIGURED_SOURCES_TOP_ADD_RE = /className="rr-s-list-add"[\s\S]*href=\{ADD_SOURCE_HREF\}/;
+const SOURCES_JOURNEY_RE = /data-testid="sources-journey-map"/;
+const SOURCES_JOURNEY_EXPLORE_RE = /href=\{EXPLORE_HREF\}/;
+const SOURCES_JOURNEY_CONNECT_RE = /href=\{CONNECT_AI_APPS_HREF\}/;
+const SOURCES_JOURNEY_COPY_RE =
+  /Add and repair configured connections[\s\S]*Read and search collected records[\s\S]*Grant scoped read access to clients/;
+// Health status is rendered as the visible left-anchor for each row.
+const SOURCE_STATUS_CHIP_RE = /className="rr-s-item__status"[\s\S]*data-tone=\{instance\.status\.tone\}/;
+const SOURCE_STATUS_TONE_CLASS_RE = /`is-\$\{instance\.status\.tone\}`/;
+const SOURCE_STATUS_VISIBLE_LABEL_RE = /<span className="rr-s-item__status"[\s\S]*\{instance\.status\.label\}/;
 const RENDERED_VERDICT_STATUS_RE = /deriveRenderedSourceStatus\(summary\.rendered_verdict/;
 const RENDERED_VERDICT_ACTION_RE = /formatRenderedRequiredAction\(summary\.rendered_verdict\)/;
 const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(response\.runtime\)/;
@@ -74,8 +84,10 @@ const SOURCES_VIEW_COMPONENT_RE = /<SourcesView/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
 const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
-const SOURCE_SETUP_SECTION_RE = /title="Add data sources"/;
-const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
+const SOURCE_SETUP_SECTION_RE = /title="Add connections"/;
+const SOURCE_SETUP_BOUNDARY_COPY_RE =
+  /Add or repair connections[\s\S]*Use Explore to read collected records[\s\S]*Connect AI apps to grant scoped read access/;
+const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search connection type/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
 const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
@@ -84,10 +96,10 @@ const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const FORBIDDEN_DEV_STRINGS_RE =
   /pnpm --dir|packages\/[a-z]|PDPP monorepo checkout|env var per account|pdpp owner-agent connectors|connector_instance_id|source_instance_id|device_token/;
-const NAV_SOURCES_RE = /label: "Sources", match: \(a\) => a === "records"/;
+const NAV_SOURCES_RE = /label: "Connections", match: \(a\) => a === "records"/;
 const NAV_CONNECT_AI_APPS_RE = /label: "Connect AI apps", match: \(a\) => a === "connect"/;
 const CONNECT_PAGE_TITLE_RE = /title="Connect AI apps"/;
-const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Sources/;
+const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Connections/;
 
 // ── 1. Blank/partial dashboard has an obvious Add-source path ───────────────
 
@@ -109,6 +121,18 @@ test("Sources view always links to the add-source route, including when empty", 
   assert.match(src, ADD_SOURCE_LINK_RE);
   // The empty state is clearly identified so tests + E2E can target it.
   assert.match(src, ADD_SOURCE_EMPTY_STATE_RE);
+  assert.match(src, CONFIGURED_SOURCES_LABEL_RE);
+  assert.match(src, CONFIGURED_SOURCES_HEADING_RE);
+  assert.match(src, CONFIGURED_SOURCES_COUNT_RE);
+  assert.match(src, CONFIGURED_SOURCES_TOP_ADD_RE);
+});
+
+test("Sources first screen separates collection setup from record reading and read access", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, SOURCES_JOURNEY_RE);
+  assert.match(src, SOURCES_JOURNEY_EXPLORE_RE);
+  assert.match(src, SOURCES_JOURNEY_CONNECT_RE);
+  assert.match(src, SOURCES_JOURNEY_COPY_RE);
 });
 
 test("Sources owns the add-source catalog route", async () => {
@@ -118,6 +142,7 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(page, BUILD_CONNECTOR_CATALOG_RE);
   assert.match(page, SOURCE_SETUP_CATALOG_RE);
   assert.match(catalog, SOURCE_SETUP_SECTION_RE);
+  assert.match(catalog, SOURCE_SETUP_BOUNDARY_COPY_RE);
   assert.match(catalog, SOURCE_SEARCH_RE);
   assert.match(catalog, SOURCE_CARD_RE);
   assert.match(catalog, SOURCE_ACQUISITION_PATHS_RE);
@@ -127,11 +152,12 @@ test("Sources owns the add-source catalog route", async () => {
 
 // ── 2. Per-source health and actions are clearly separate ───────────────────
 
-test("each source row renders a health status dot and sr-only label from the projection", async () => {
+test("each source row renders one visible left-anchored health status from the projection", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   // Health comes from the projection (status.tone, status.label) — not hard-coded strings.
-  assert.match(src, SOURCE_STATUS_DOT_RE);
-  assert.match(src, SOURCE_STATUS_LABEL_SR_RE);
+  assert.match(src, SOURCE_STATUS_CHIP_RE);
+  assert.match(src, SOURCE_STATUS_TONE_CLASS_RE);
+  assert.match(src, SOURCE_STATUS_VISIBLE_LABEL_RE);
 });
 
 test("Sources projection reads rendered verdict status/action and keeps inspection fields off the dashboard", async () => {

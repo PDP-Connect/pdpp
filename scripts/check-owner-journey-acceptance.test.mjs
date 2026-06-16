@@ -23,6 +23,7 @@ import {
   deriveSpecifierVars,
   deriveSubcommandSurface,
   extractRenderedCommands,
+  parseCommand,
   scanForbiddenStrings,
   scanRenderedHelperReachability,
   stripComments,
@@ -333,6 +334,10 @@ test("clean-shell probe records a resolution failure as a finding", async () => 
   assert.equal(findings.length, 1);
   assert.equal(findings[0].ruleId, "clean-shell-probe-failed");
   assert.equal(probes[0].ok, false);
+});
+
+test("does not treat the shared pdpp build label as a CLI command", () => {
+  assert.equal(parseCommand("pdpp 0.1.0"), null);
 });
 
 // Helper used by several forbidden-string tests above.

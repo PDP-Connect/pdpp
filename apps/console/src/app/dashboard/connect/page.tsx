@@ -298,7 +298,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
           </Link>
         }
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Connect AI apps" }]}
-        description="Give AI apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
+        description="Give AI apps and local agents grant-scoped read access to data already in this instance. To add or manage the connections that populate it, go to Connections."
         title="Connect AI apps"
       />
 
@@ -321,14 +321,14 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       <Callout
         action={
           <Link className="underline-offset-2 hover:underline" href={dashboardRoutes.section.addSource}>
-            Add a source →
+            Add a connection →
           </Link>
         }
         title="Need more data first?"
         tone="info"
       >
         <p className="pdpp-caption text-callout-info-fg/80">
-          Source accounts are managed under Sources. Keep this page for AI app and agent read-access setup.
+          Configured connections are managed under Connections. Keep this page for AI app and agent read-access setup.
         </p>
       </Callout>
 

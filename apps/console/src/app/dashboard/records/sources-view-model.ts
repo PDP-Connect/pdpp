@@ -131,7 +131,7 @@ export interface SourceInstanceView {
   /** True when the latest run is active, so reprocessing should not start again. */
   isRunning: boolean;
   /** Connector type label (mono kind line in the list). */
-  kind: string;
+  kind: string | null;
   /** Existing-source import route for manual/upload connectors. */
   manualUploadHref: string | null;
   /** Owner CTA derived from rendered_verdict.required_actions, or null. */
@@ -372,6 +372,22 @@ function deriveAuthLine(
 }
 
 /** Format a run summary as a short "status · when" line. */
+function normalizeIdentityFacet(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function displayConnectorKind(displayName: string, kind: string): string | null {
+  const display = normalizeIdentityFacet(displayName);
+  const connector = normalizeIdentityFacet(kind);
+  if (!connector || display === connector || display.includes(connector) || connector.includes(display)) {
+    return null;
+  }
+  return kind;
+}
+
 function formatLastRun(run: RefConnectorRunSummary | null): string | null {
   if (!run) {
     return null;
@@ -452,6 +468,7 @@ export function toSourceInstanceView(
     displayName: summary.connector_display_name,
     name: summary.connector_display_name,
   });
+  const visibleKind = displayConnectorKind(displayName, kind);
 
   const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
   const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
@@ -484,8 +501,8 @@ export function toSourceInstanceView(
     connectorInstanceId,
     detailHref: `/dashboard/records/${encodeURIComponent(routeId)}`,
     displayName,
-    kind,
-    accountLine: displayName === kind ? kind : `${kind} · ${displayName}`,
+    kind: visibleKind,
+    accountLine: visibleKind ? `Connection · ${visibleKind}` : "Connection",
     revoked,
     isLocalDevicePush,
     isRunning,

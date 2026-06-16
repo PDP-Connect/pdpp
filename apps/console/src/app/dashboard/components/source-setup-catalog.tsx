@@ -112,10 +112,10 @@ function ExistingSourceReuse({
       className="mt-3 grid gap-2 rounded-md border border-border/80 bg-background/70 p-3"
       data-testid="existing-source-reuse"
     >
-      <p className="pdpp-eyebrow text-muted-foreground">Existing sources</p>
+      <p className="pdpp-eyebrow text-muted-foreground">Existing connections</p>
       <p className="pdpp-caption text-muted-foreground">
-        Import another file into an existing source when the export belongs to the same account, profile, device, or
-        source identity.
+        Import another file into an existing connection when the export belongs to the same account, profile, device, or
+        connection identity.
       </p>
       <ul className="grid gap-2">
         {sources.map((source) => (
@@ -136,13 +136,13 @@ function ExistingSourceReuse({
                 className={buttonVariants({ variant: "ghost", size: "sm" })}
                 href={`/dashboard/connect/status/${encodeURIComponent(source.connectionId)}`}
               >
-                View source
+                View connection
               </Link>
               <Link
                 className={buttonVariants({ variant: "default", size: "sm" })}
                 href={`/dashboard/connect/manual-upload/${encodeURIComponent(entry.connectorKey)}?connection_id=${encodeURIComponent(source.connectionId)}`}
               >
-                Import into this source
+                Import into this connection
               </Link>
             </div>
           </li>
@@ -164,8 +164,12 @@ function SourceSetupCard({
   if (!action) {
     throw new Error(`Source setup card has no forward action: ${entry.connectorKey}`);
   }
+  // sources-clarity's canonical noun ("connection") + add-source's non-optional
+  // action (guaranteed by the throw-guard above).
   const actionLabel =
-    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action.label;
+    entry.disposition === "manual_upload_connect" && existingSources.length > 0
+      ? "Create new connection"
+      : action.label;
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -210,14 +214,14 @@ export function SourceSetupCatalog({
   const filtered = filterSourceCatalog(catalog, query);
   return (
     <Section
-      description="Search every source this build knows about. Each card is a source journey: the source name, its recommended next action, the current support fact, and a low-noise path to the details. Repeat the same setup to add another account."
-      title="Add data sources"
+      description="Add or repair connections for this instance. Use Explore to read collected records, and Connect AI apps to grant scoped read access to clients."
+      title="Add connections"
     >
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <label className="sr-only" htmlFor="source_q">
-          Search data sources
+          Search connections
         </label>
-        <IcInput defaultValue={query} id="source_q" name="source_q" placeholder="Search source name or connector key" />
+        <IcInput defaultValue={query} id="source_q" name="source_q" placeholder="Search connection type" />
         <IcButton size="sm" type="submit" variant="ghost">
           Search
         </IcButton>
@@ -234,8 +238,7 @@ export function SourceSetupCatalog({
         </ul>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-          No connector matched <span className="font-medium text-foreground">{query}</span>. Try the source name or
-          connector key.
+          No connection type matched <span className="font-medium text-foreground">{query}</span>. Try the service name.
         </p>
       )}
     </Section>

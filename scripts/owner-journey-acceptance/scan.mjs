@@ -310,6 +310,7 @@ export function deriveSpecifierVars(src) {
 }
 
 const COMMAND_HEADS = new Set(["npx", "pdpp", "pdpp-local-collector", "claude", "codex", "node", "pnpm"]);
+const VERSION_LABEL_RE = /^\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?$/i;
 
 /**
  * Parse a normalized command string into its head, package specifier (for npx),
@@ -323,6 +324,9 @@ export function parseCommand(normalized) {
     return null;
   }
   const head = tokens[0];
+  if (head === "pdpp" && tokens.length === 2 && VERSION_LABEL_RE.test(tokens[1])) {
+    return null;
+  }
   if (!COMMAND_HEADS.has(head)) {
     return null;
   }
