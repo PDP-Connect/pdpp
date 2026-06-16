@@ -129,7 +129,7 @@ export default async function RecordsIndexPage({
 function SourcesHeader({ error, message, notice }: { error?: string; message?: string; notice?: string }) {
   return (
     <header style={{ marginBottom: 24, maxWidth: 760 }}>
-      <h1 style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em", margin: "0 0 4px" }}>Connections</h1>
+      <h1 style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em", margin: "0 0 4px" }}>Sources</h1>
       <p
         style={{
           fontFamily: "var(--font-mono)",
@@ -138,7 +138,7 @@ function SourcesHeader({ error, message, notice }: { error?: string; message?: s
           margin: 0,
         }}
       >
-        configured connections live here. read records in Explore. share scoped access from Connect AI apps.
+        your loading dock · each source pushes into your streams · nothing leaves
       </p>
       {notice ? (
         <div className="rr-s-toast" data-tone="ok" role="status" style={{ marginTop: 12 }}>

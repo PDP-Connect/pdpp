@@ -21,7 +21,6 @@
  */
 
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
-import { sourceSetupActionOverride } from "./source-setup-action-overrides.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -103,7 +102,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "manual_upload_pending":
       return {
-        label: "Needs import package",
+        label: "Import flow pending",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "provider_auth_deployment_blocked":
@@ -120,15 +119,15 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
     case "provider_auth_proof_gated":
       // Existing data keeps working; there is just no shipped owner add path.
       // Agreed label — kills the last "not self-service" string on the surface.
-      return { label: "Needs setup proof", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Existing data only", tone: "border-border bg-muted/30 text-muted-foreground" };
     case "api_network_unsupported":
-      // Connector exists, but owner setup needs an explicit path.
+      // In-app setup not yet wired but connector exists; honest label with path
       // available in the guidance line below.
-      return { label: "Needs setup path", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
     default:
       // unknown_unsupported and any future unclassified disposition.
-      // Unknown disposition: keep the card actionable through the invariant.
-      return { label: "Needs setup path", tone: "border-border bg-muted/30 text-muted-foreground" };
+      // "Setup path pending" is honest and removes the dead-end "Not supported yet".
+      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
 }
 
@@ -138,45 +137,40 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "This source collects data by driving your logged-in browser session locally. Use the browser setup path or runbook handoff to add another account.";
+      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
       return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
     case "manual_upload_pending":
-      return "This source imports an owner-provided file. The connector still needs a packaged import handler before the dashboard can accept files.";
+      return "This source imports an owner-provided file. The connector declares the import shape, but the dashboard file-capture step is not packaged yet.";
     case "provider_auth_deployment_blocked":
       return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "This source collects data by driving your logged-in browser session locally. Use the browser setup path or runbook handoff to add another account.";
+      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
     case "local_collector_unproven":
       return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
     case "provider_auth_proof_gated":
       return entry.runbookPath
-        ? `Provider authorization requires the documented runbook before owner setup. Runbook: ${entry.runbookPath}.`
-        : "Provider authorization requires a documented setup path before owner setup.";
+        ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
+        : "Provider authorization is not fully wired yet.";
     case "api_network_unsupported":
       return entry.runbookPath
-        ? `Use the documented API setup path before adding this source. Runbook: ${entry.runbookPath}.`
-        : "Use the documented API setup path before adding this source.";
+        ? `In-app setup is not wired yet, but a manual runbook exists at ${entry.runbookPath}. It's listed here so you know it's planned, not missing.`
+        : "In-app setup for this source is not wired yet. It's listed so you know it's planned, not missing. Check the operator docs for any available manual path.";
     default:
       // unknown_unsupported and any future unclassified disposition: never a
       // blank wall. Give the owner at least a direction.
       return entry.runbookPath
-        ? `Use the documented setup path before adding this source. Runbook: ${entry.runbookPath}.`
-        : "Use the documented setup path before adding this source.";
+        ? `In-app setup is not available yet. A runbook may help: ${entry.runbookPath}.`
+        : "In-app setup for this source isn't available yet. Check the operator docs or open a support request to learn about the expected timeline.";
   }
 }
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
-  const override = sourceSetupActionOverride(entry);
-  if (override) {
-    return override;
-  }
-
   switch (entry.disposition) {
     case "local_collector_enroll":
       return {
@@ -197,7 +191,7 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       return { href: "/dashboard/deployment", label: "Open deployment" };
     case "browser_bound_runbook":
     case "browser_collector_manual":
-      // The in-dashboard neko browser flow is deployment-gated.
+      // The in-dashboard neko browser flow is tracked but not yet deployed.
       // Return a real forward action pointing at the browser-session connect
       // page so the owner is never left at a blank wall. Once neko is
       // confirmed deployed this route renders the embedded login surface;
@@ -217,7 +211,7 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
 /**
  * Classify whether adding a NEW account is self-service for this disposition.
  * This is the fact the Sources page must keep distinct from "this source has
- * existing working data": a source can collect data today without supporting
+ * existing working data": a source can collect data today yet not yet support
  * self-service add-another-account (the browser-bound dispositions).
  */
 export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSupport {

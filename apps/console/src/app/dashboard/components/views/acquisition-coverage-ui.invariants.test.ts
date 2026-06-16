@@ -35,7 +35,7 @@ const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
 const SOURCE_JOURNEY_COPY = /source journey/i;
 const SUPPORT_FACT_TEST_ID = /data-testid="source-support-fact"/;
 const RECOMMENDED_NEXT_COPY = /Recommended next/;
-const REPEATED_SUPPORT_DETAIL_SUMMARY = /Why this, and what to expect/;
+const SUPPORT_DETAIL_DISCLOSURE = /<details[\s\S]*?Why this, and what to expect/;
 const EXISTING_SOURCE_REUSE = /data-testid="existing-source-reuse"/;
 const SAME_IDENTITY_COPY = /same account, profile, device, or\s+source identity/;
 const MANIFEST_GENERATED_COPY = /generated from the connector manifest/;
@@ -89,7 +89,7 @@ test("source card keeps the support fact distinct from the recommended next acti
   // …and the action is explicitly the recommended next step.
   assert.match(src, RECOMMENDED_NEXT_COPY);
   // Detail stays one low-noise disclosure away, not inline noise.
-  assert.doesNotMatch(src, REPEATED_SUPPORT_DETAIL_SUMMARY);
+  assert.match(src, SUPPORT_DETAIL_DISCLOSURE);
   // Existing manual/import sources are offered before creating another source.
   assert.match(src, EXISTING_SOURCE_REUSE);
   assert.match(src, SAME_IDENTITY_COPY);

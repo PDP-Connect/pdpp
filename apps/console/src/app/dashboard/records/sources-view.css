@@ -21,46 +21,6 @@
   min-width: 0;
 }
 
-.rr-s-list-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.rr-s-list-title {
-  margin: 0;
-  color: var(--foreground);
-  font-size: 13px;
-  font-weight: 750;
-  line-height: 1.25;
-}
-
-.rr-s-list-meta {
-  margin: 3px 0 0;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.2;
-}
-
-.rr-s-list-add {
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 8px;
-  color: var(--foreground);
-  font-size: 12px;
-  line-height: 1.2;
-  text-decoration: none;
-}
-
-.rr-s-list-add:hover {
-  background: var(--muted);
-}
-
 /* The mobile affordance is a <Link> (anchor) that must render identically to
    the desktop <button>. Both share `.rr-s-item`; this resets anchor chrome. */
 a.rr-s-item {
@@ -70,7 +30,7 @@ a.rr-s-item {
 
 .rr-s-item {
   display: grid;
-  grid-template-columns: minmax(7.5rem, 10rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 12px;
   padding: 10px 0 11px;
   background: none;
@@ -89,25 +49,6 @@ a.rr-s-item {
   background: var(--muted);
 }
 
-.rr-s-item.is-warning,
-.rr-s-item.is-destructive {
-  margin-inline: -8px;
-  padding-inline: 8px;
-  border-radius: 8px;
-}
-
-.rr-s-item.is-warning {
-  background: var(--warning-tint);
-}
-
-.rr-s-item.is-destructive {
-  background: var(--destructive-tint);
-}
-
-.rr-s-item.is-muted {
-  opacity: 0.78;
-}
-
 /* B-2 unified active treatment: left-2 --primary accent + tint fill */
 .rr-s-item.is-on {
   background: var(--primary-tint);
@@ -117,45 +58,12 @@ a.rr-s-item {
 .rr-s-item__name {
   /* The bold human name is the clear primary identity on row 1. */
   grid-row: 1;
-  grid-column: 2;
+  grid-column: 1;
   font-size: 0.875rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.rr-s-item__status {
-  grid-row: 1 / span 2;
-  grid-column: 1;
-  align-self: center;
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 4px 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.rr-s-item__status[data-tone="success"] {
-  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
-  color: var(--success);
-}
-
-.rr-s-item__status[data-tone="warning"] {
-  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
-  color: var(--warning);
-}
-
-.rr-s-item__status[data-tone="destructive"] {
-  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
-  color: var(--destructive);
 }
 
 .rr-s-item.is-revoked .rr-s-item__name {
@@ -177,7 +85,7 @@ a.rr-s-item {
   text-overflow: ellipsis;
   min-width: 0;
   grid-row: 2;
-  grid-column: 2;
+  grid-column: 1;
 }
 
 /* Connector kind — quiet secondary metadata, inline at the end of the account
@@ -199,7 +107,6 @@ a.rr-s-item {
    identity + health pair is the clean primary scan line and the dot is never
    crowded by the kind label. */
 .rr-s-item__flag {
-  display: none;
   grid-row: 1;
   grid-column: 2;
   justify-self: end;
@@ -533,7 +440,7 @@ a.rr-s-item {
   }
   /* On narrow screens let the meta line wrap rather than clip mid-word.
      The ellipsis behavior works well on desktop (wide column), but at 390px
-     the connector type clips to "· CHA…" or "OPENAI COD…" — wrapping is
+     the connector key clips to "· CHA…" or "OPENAI COD…" — wrapping is
      more honest. The grid row expands naturally; the flag column stays in
      row 1 (aligned with the name) via grid-row: 1.
      !important needed: Next.js bundles sources-view.css into both
@@ -551,52 +458,5 @@ a.rr-s-item {
 @media (min-width: 801px) {
   .rr-s-item.rr-s-item--mobile {
     display: none;
-  }
-}
-
-.rr-s-journey {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0 0 16px;
-}
-
-.rr-s-journey__step {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card);
-  padding: 10px 12px;
-  color: var(--muted-foreground);
-  text-decoration: none;
-}
-
-.rr-s-journey__step:hover {
-  background: var(--muted);
-  color: var(--foreground);
-}
-
-.rr-s-journey__step.is-current {
-  border-color: var(--foreground);
-  color: var(--foreground);
-}
-
-.rr-s-journey__label {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.rr-s-journey__copy {
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-@media (max-width: 720px) {
-  .rr-s-journey {
-    grid-template-columns: 1fr;
   }
 }

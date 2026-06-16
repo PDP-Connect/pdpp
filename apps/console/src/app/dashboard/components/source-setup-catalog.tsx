@@ -2,7 +2,12 @@ import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
-import { sourceSetupAction, sourceSetupRank, sourceSetupStatus } from "../lib/source-setup-presentation.ts";
+import {
+  sourceSetupAction,
+  sourceSetupGuidance,
+  sourceSetupRank,
+  sourceSetupStatus,
+} from "../lib/source-setup-presentation.ts";
 
 export interface ExistingSourceSetupLink {
   connectionId: string;
@@ -112,10 +117,10 @@ function ExistingSourceReuse({
       className="mt-3 grid gap-2 rounded-md border border-border/80 bg-background/70 p-3"
       data-testid="existing-source-reuse"
     >
-      <p className="pdpp-eyebrow text-muted-foreground">Existing connections</p>
+      <p className="pdpp-eyebrow text-muted-foreground">Existing sources</p>
       <p className="pdpp-caption text-muted-foreground">
-        Import another file into an existing connection when the export belongs to the same account, profile, device, or
-        connection identity.
+        Import another file into an existing source when the export belongs to the same account, profile, device, or
+        source identity.
       </p>
       <ul className="grid gap-2">
         {sources.map((source) => (
@@ -136,13 +141,13 @@ function ExistingSourceReuse({
                 className={buttonVariants({ variant: "ghost", size: "sm" })}
                 href={`/dashboard/connect/status/${encodeURIComponent(source.connectionId)}`}
               >
-                View connection
+                View source
               </Link>
               <Link
                 className={buttonVariants({ variant: "default", size: "sm" })}
                 href={`/dashboard/connect/manual-upload/${encodeURIComponent(entry.connectorKey)}?connection_id=${encodeURIComponent(source.connectionId)}`}
               >
-                Import into this connection
+                Import into this source
               </Link>
             </div>
           </li>
@@ -161,15 +166,9 @@ function SourceSetupCard({
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
-  if (!action) {
-    throw new Error(`Source setup card has no forward action: ${entry.connectorKey}`);
-  }
-  // sources-clarity's canonical noun ("connection") + add-source's non-optional
-  // action (guaranteed by the throw-guard above).
+  const guidance = sourceSetupGuidance(entry);
   const actionLabel =
-    entry.disposition === "manual_upload_connect" && existingSources.length > 0
-      ? "Create new connection"
-      : action.label;
+    entry.disposition === "manual_upload_connect" && existingSources.length > 0 ? "Create new source" : action?.label;
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -187,14 +186,28 @@ function SourceSetupCard({
           </span>
         </div>
         {/* Low-noise path to detail: the support reasoning stays one disclosure away. */}
+        <details className="group mt-1">
+          <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
+            Why this, and what to expect
+          </summary>
+          <p className="pdpp-caption mt-1 text-muted-foreground">{guidance}</p>
+        </details>
         <ExistingSourceReuse entry={entry} sources={existingSources} />
         <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
       </div>
       <div className="flex flex-col items-end justify-start gap-1">
-        <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
-        <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
-          {actionLabel}
-        </Link>
+        {action ? (
+          <>
+            <span className="pdpp-eyebrow text-muted-foreground">Recommended next</span>
+            <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
+              {actionLabel}
+            </Link>
+          </>
+        ) : (
+          <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
+            No setup action yet
+          </span>
+        )}
       </div>
     </li>
   );
@@ -214,14 +227,14 @@ export function SourceSetupCatalog({
   const filtered = filterSourceCatalog(catalog, query);
   return (
     <Section
-      description="Add or repair connections for this instance. Use Explore to read collected records, and Connect AI apps to grant scoped read access to clients."
-      title="Add connections"
+      description="Search every source this build knows about. Each card is a source journey: the source name, its recommended next action, the current support fact, and a low-noise path to the details. Repeat the same setup to add another account."
+      title="Add data sources"
     >
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <label className="sr-only" htmlFor="source_q">
-          Search connections
+          Search data sources
         </label>
-        <IcInput defaultValue={query} id="source_q" name="source_q" placeholder="Search connection type" />
+        <IcInput defaultValue={query} id="source_q" name="source_q" placeholder="Search source name or connector key" />
         <IcButton size="sm" type="submit" variant="ghost">
           Search
         </IcButton>
@@ -238,7 +251,8 @@ export function SourceSetupCatalog({
         </ul>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-          No connection type matched <span className="font-medium text-foreground">{query}</span>. Try the service name.
+          No connector matched <span className="font-medium text-foreground">{query}</span>. Try the source name or
+          connector key.
         </p>
       )}
     </Section>

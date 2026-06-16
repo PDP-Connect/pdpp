@@ -62,7 +62,7 @@ interface SourcesViewProps {
    * Quiet version-churn advisory derived from `/_ref/records/version-stats`
    * (metadata only — never record payloads). Null when no churning stream
    * crosses the risk threshold. Rendered as an informational protocol-toned
-   * footer, never an alarm; the connection detail page carries the drilldown.
+   * footer, never an alarm; the per-source detail page carries the drilldown.
    */
   churnAdvisory?: SourcesChurnAdvisory | null;
   instances: SourceInstanceView[];
@@ -79,8 +79,6 @@ interface SourcesViewProps {
 type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "error"; message: string };
 
 const ADD_SOURCE_HREF = "/dashboard/records/add";
-const EXPLORE_HREF = "/dashboard/explore";
-const CONNECT_AI_APPS_HREF = "/dashboard/connect";
 
 export function SourcesView({
   churnAdvisory,
@@ -101,8 +99,7 @@ export function SourcesView({
   if (instances.length === 0) {
     return (
       <div className="rr-s-empty" data-testid="sources-empty">
-        <SourcesJourneyMap />
-        No connections yet. <Link href={ADD_SOURCE_HREF}>Add a connection</Link>.
+        No sources yet. <Link href={ADD_SOURCE_HREF}>Add a source →</Link>
       </div>
     );
   }
@@ -112,22 +109,8 @@ export function SourcesView({
       {/* Advisories lead — before the list so they're not orphaned at the bottom on mobile. */}
       {runtimeAdvisory ? <RuntimeAdvisory advisory={runtimeAdvisory} /> : null}
       {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
-      <SourcesJourneyMap />
-
       <div className="rr-s">
-        <aside aria-label="Connections" className="rr-s-list">
-          <div className="rr-s-list-head">
-            <div>
-              <p className="rr-s-list-title">Connections</p>
-              <p className="rr-s-list-meta">
-                {activeInstances.length.toLocaleString()} active
-                {revokedInstances.length > 0 ? ` · ${revokedInstances.length.toLocaleString()} revoked` : ""}
-              </p>
-            </div>
-            <Link className="rr-s-list-add" href={ADD_SOURCE_HREF}>
-              Add connection
-            </Link>
-          </div>
+        <aside aria-label="Sources" className="rr-s-list">
           {activeInstances.map((instance) => (
             <InstanceListItem
               instance={instance}
@@ -156,9 +139,9 @@ export function SourcesView({
 
           <div className="rr-s-end">
             <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
-              add another connection →
+              add a source →
             </Link>
-            <span className="rr-s-end__note">manage connections here; inspect records in Explore</span>
+            <span className="rr-s-end__note">a source pushes into your streams · nothing leaves</span>
           </div>
         </aside>
 
@@ -175,25 +158,6 @@ export function SourcesView({
         ) : null}
       </div>
     </>
-  );
-}
-
-function SourcesJourneyMap() {
-  return (
-    <nav aria-label="Connections journey" className="rr-s-journey" data-testid="sources-journey-map">
-      <Link className="rr-s-journey__step is-current" href="/dashboard/records">
-        <span className="rr-s-journey__label">Connections</span>
-        <span className="rr-s-journey__copy">Add and repair configured connections.</span>
-      </Link>
-      <Link className="rr-s-journey__step" href={EXPLORE_HREF}>
-        <span className="rr-s-journey__label">Explore</span>
-        <span className="rr-s-journey__copy">Read and search collected records.</span>
-      </Link>
-      <Link className="rr-s-journey__step" href={CONNECT_AI_APPS_HREF}>
-        <span className="rr-s-journey__label">Connect AI apps</span>
-        <span className="rr-s-journey__copy">Grant scoped read access to clients.</span>
-      </Link>
-    </nav>
   );
 }
 
@@ -216,7 +180,7 @@ function RuntimeAdvisory({ advisory }: { advisory: SourcesRuntimeAdvisory }) {
  * stays on the muted/border palette (no warning amber, no copper consent tone)
  * regardless of `needsReview` — `needsReview` only refines the mono eyebrow
  * copy. The full per-stream drilldown (dispositions, dry-run commands) lives on
- * the connection detail page; this footer is a one-line pointer, not a re-render of
+ * the source detail page; this footer is a one-line pointer, not a re-render of
  * that table.
  */
 function ChurnAdvisory({ advisory }: { advisory: SourcesChurnAdvisory }) {
@@ -244,27 +208,19 @@ function InstanceListItem({
   onSelect: () => void;
   selected: boolean;
 }) {
-  const cls = [
-    "rr-s-item",
-    selected ? "is-on" : null,
-    instance.revoked ? "is-revoked" : null,
-    `is-${instance.status.tone}`,
-  ]
+  const cls = ["rr-s-item", selected ? "is-on" : null, instance.revoked ? "is-revoked" : null]
     .filter(Boolean)
     .join(" ");
   // Inner content shared by both the mobile <Link> and the desktop <button>.
   const inner = (
     <>
-      <span className="rr-s-item__status" data-tone={instance.status.tone}>
-        {instance.status.label}
-      </span>
       <span className="rr-s-item__name">{instance.displayName}</span>
       {/* The connector kind is quiet secondary metadata folded into the account
           line (row 2) so it never competes with the bold name on row 1 nor
           crowds / clips against the health dot at the card's right edge. */}
       <span className="rr-s-item__line">
         {instance.accountLine}
-        {instance.kind ? <span className="rr-s-item__kind">{instance.kind}</span> : null}
+        <span className="rr-s-item__kind">{instance.kind}</span>
       </span>
       <span className="rr-s-item__flag">
         {/* The dot is a decorative reinforcement of the status; the textual
@@ -571,7 +527,7 @@ function CollectionRunAction({
         <Link
           className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
           href={manualUploadHref}
-          title="Upload another exported file into this same connection. Use Add connection only for a different account or identity."
+          title="Upload another exported file into this same source. Use Add source only for a different account or identity."
         >
           Add another export
         </Link>
@@ -687,11 +643,11 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
   return (
     <div className="rr-s-manifest">
       <div className="rr-s-mini-head">
-        <h3 className="rr-s-mini-head__t">Streams on this connection</h3>
+        <h3 className="rr-s-mini-head__t">Streams on this source</h3>
         <span className="rr-s-mini-head__n">{instance.streams.length}</span>
       </div>
       {instance.streams.length === 0 ? (
-        <p className="rr-s-note">No streams declared on this connection yet.</p>
+        <p className="rr-s-note">No streams declared on this source yet.</p>
       ) : (
         <Table className="rr-s-cols" cols="minmax(0, 1.1fr) 76px 110px 64px minmax(0, 1fr)">
           <TableHeaderRow>
@@ -708,7 +664,7 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
       )}
       <p className="rr-s-note">
         Records are never read here. Click any stream to open it in Explore — the one reader. A stream's search and
-        cursor state are shown on the connection detail page.
+        cursor state are shown on the source detail page.
       </p>
     </div>
   );
