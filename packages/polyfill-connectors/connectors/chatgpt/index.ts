@@ -2765,6 +2765,19 @@ function makeConversationDetailCoverage(
     requiredKeys,
     hydratedKeys: coverage.hydratedKeys,
     gapKeys: coverage.gapKeys,
+    considered: requiredKeys.length,
+    covered: coverage.hydratedKeys.length,
+  });
+}
+
+function makeConversationListCoverage(considered: number, covered = considered): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream: "conversations",
+    stateStream: "conversations",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered,
+    covered,
   });
 }
 
@@ -3701,32 +3714,30 @@ export async function runConversationsAndMessagesStreams(
       emitConversation,
       options.detailPacing
     );
-    if (messageDetailConversations.length) {
-      // Required keys are the set the run ACCOUNTED FOR: every hydrated and
-      // per-key-gapped conversation, plus — when a cap-tail deferral folded the
-      // older tail into a backlog gap — that backlog gap's synthetic key (backed
-      // by its durable row). Without a backlog gap this is exactly
-      // `messageDetailConversations` (byte-identical to today). With one, the
-      // older tail conversations are intentionally NOT required this run; the
-      // backlog gap represents them and a later run re-lists + materializes them,
-      // so the commit gate passes with a bounded row count instead of one
-      // required key per conversation.
-      const requiredKeys: Array<string | number> = coverage.backlogGapKey
-        ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
-        : messageDetailConversations.map((c) => c.id);
-      await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
-      const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
-      deps.emit({
-        type: "STATE",
-        stream: "messages",
-        // Persist the controller's learned interval alongside the cursor so the
-        // next run warm-starts from it (warm-start, SLVP ideal §5.2).
-        cursor: {
-          last_update_time: maxMessagesUpdate || priorMessagesCursor || null,
-          ...buildChatGptPacingStateFields(deps.providerBudget),
-        },
-      });
-    }
+    // Required keys are the set the run ACCOUNTED FOR: every hydrated and
+    // per-key-gapped conversation, plus — when a cap-tail deferral folded the
+    // older tail into a backlog gap — that backlog gap's synthetic key (backed
+    // by its durable row). Without a backlog gap this is exactly
+    // `messageDetailConversations` (byte-identical to today). With one, the
+    // older tail conversations are intentionally NOT required this run; the
+    // backlog gap represents them and a later run re-lists + materializes them,
+    // so the commit gate passes with a bounded row count instead of one
+    // required key per conversation.
+    const requiredKeys: Array<string | number> = coverage.backlogGapKey
+      ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
+      : messageDetailConversations.map((c) => c.id);
+    await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
+    const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
+    deps.emit({
+      type: "STATE",
+      stream: "messages",
+      // Persist the controller's learned interval alongside the cursor so the
+      // next run warm-starts from it (warm-start, SLVP ideal §5.2).
+      cursor: {
+        last_update_time: maxMessagesUpdate || priorMessagesCursor || null,
+        ...buildChatGptPacingStateFields(deps.providerBudget),
+      },
+    });
   }
 
   if (wantsConversations) {
@@ -3739,6 +3750,7 @@ export async function runConversationsAndMessagesStreams(
       }
       await emitConversation(c, null);
     }
+    await deps.emit(makeConversationListCoverage(conversationsToSync.length));
   }
 
   if (wantsConversations && conversationsToSync.length) {
@@ -3747,6 +3759,12 @@ export async function runConversationsAndMessagesStreams(
       type: "STATE",
       stream: "conversations",
       cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
+    });
+  } else if (wantsConversations) {
+    deps.emit({
+      type: "STATE",
+      stream: "conversations",
+      cursor: { last_update_time: priorConversationsCursor || null },
     });
   }
 }

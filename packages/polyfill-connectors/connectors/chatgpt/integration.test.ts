@@ -915,6 +915,8 @@ test("runConversationsAndMessagesStreams: unsafe message content is sanitized to
     stream: "messages",
     required_keys: ["convo-with-binary-text"],
     hydrated_keys: ["convo-with-binary-text"],
+    considered: 1,
+    covered: 1,
   });
 
   const stateEvents = harness.events.filter(
@@ -2435,6 +2437,81 @@ test("runConversationsAndMessagesStreams: capped forward run covers full listed 
   assert.ok(stateIdx > coverageIdx, "messages STATE must only emit after full detail coverage");
 });
 
+test("runConversationsAndMessagesStreams: empty forward poll emits zero coverage and commits checkpoints", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        return {
+          status: 200,
+          json: { items: [], has_missing_conversations: false, total: 0 } as ChatGptJson,
+        };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    {
+      conversations: { last_update_time: "2026-06-15T00:00:00.000Z" },
+      messages: { last_update_time: "2026-06-15T00:00:00.000Z" },
+    } as CollectContext["state"],
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+
+  const coverages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.deepEqual(
+    coverages.map((coverage) => ({
+      stream: coverage.stream,
+      state_stream: coverage.state_stream,
+      considered: coverage.considered,
+      covered: coverage.covered,
+      required_keys: coverage.required_keys,
+      hydrated_keys: coverage.hydrated_keys,
+    })),
+    [
+      {
+        stream: "messages",
+        state_stream: "conversations",
+        considered: 0,
+        covered: 0,
+        required_keys: [],
+        hydrated_keys: [],
+      },
+      {
+        stream: "conversations",
+        state_stream: "conversations",
+        considered: 0,
+        covered: 0,
+        required_keys: [],
+        hydrated_keys: [],
+      },
+    ]
+  );
+  const states = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE"
+  );
+  assert.deepEqual(
+    states.map((state) => [state.stream, state.cursor]),
+    [
+      ["messages", { last_update_time: "2026-06-15T00:00:00.000Z" }],
+      ["conversations", { last_update_time: "2026-06-15T00:00:00.000Z" }],
+    ]
+  );
+});
+
 // ─── task 16: bounded cap-tail deferral materialization ──────────────────────
 
 test("resolveChatGptMaxTailDeferralGapsPerRun: default-off, explicit, and fetch-cap-derived", () => {
@@ -2915,6 +2992,8 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
     stream: "messages",
     required_keys: ["convo-gap"],
     hydrated_keys: [],
+    considered: 1,
+    covered: 0,
     gap_keys: ["convo-gap"],
   });
 
