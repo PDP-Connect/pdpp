@@ -574,7 +574,7 @@ const LOCAL_COLLECTOR_REMEDIATION_TARGET: ActionRemediationTarget = {
 function localCollectorRunCommand(): ActionRemediationCommand {
   return {
     kind: "local_collector_run",
-    label: "Re-run collector",
+    label: "Run the local collector again",
     command_template: LOCAL_COLLECTOR_RUN_COMMAND,
   };
 }
@@ -582,7 +582,7 @@ function localCollectorRunCommand(): ActionRemediationCommand {
 function localCollectorDoctorCommand(): ActionRemediationCommand {
   return {
     kind: "local_collector_doctor",
-    label: "Inspect collector",
+    label: "Check local collector health",
     command_template: LOCAL_COLLECTOR_DOCTOR_COMMAND,
   };
 }
@@ -590,7 +590,7 @@ function localCollectorDoctorCommand(): ActionRemediationCommand {
 function localCollectorRetryPreviewCommand(): ActionRemediationCommand {
   return {
     kind: "local_collector_retry_dead_letters_preview",
-    label: "Preview dead-letter retry",
+    label: "Check what will be retried",
     command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_COMMAND,
   };
 }
@@ -598,7 +598,7 @@ function localCollectorRetryPreviewCommand(): ActionRemediationCommand {
 function localCollectorRetryApplyCommand(): ActionRemediationCommand {
   return {
     kind: "local_collector_retry_dead_letters_apply",
-    label: "Retry dead letters",
+    label: "Prepare failed uploads for retry",
     command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_APPLY_COMMAND,
   };
 }
@@ -643,8 +643,9 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
       return {
         kind: "local_collector_recovery",
         cause,
-        label: "Re-run the collector on the host",
-        summary: "Re-run the collector on the host to clear the blocked state read.",
+        label: "Run the local collector again",
+        summary:
+          "The server cannot read the collector's last state from that host. Run the local collector again there.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [localCollectorRunCommand()],
       };
@@ -652,8 +653,8 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
       return {
         kind: "local_collector_recovery",
         cause,
-        label: "Retry dead letters, then re-run the collector",
-        summary: "Retry the dead-lettered rows, then re-run the collector on the host to drain them.",
+        label: "Recover local collector uploads",
+        summary: "The local collector has saved records on its host that did not upload to this server.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [localCollectorRetryPreviewCommand(), localCollectorRetryApplyCommand(), localCollectorRunCommand()],
       };
@@ -661,8 +662,8 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
       return {
         kind: "local_collector_recovery",
         cause,
-        label: "Re-run the collector on the host",
-        summary: "Re-run the collector on the host to resume draining pending work.",
+        label: "Run the local collector again",
+        summary: "The local collector has queued work that stopped moving. Run it again on that host.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [localCollectorRunCommand()],
       };
@@ -670,8 +671,8 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
       return {
         kind: "local_collector_recovery",
         cause,
-        label: "Inspect the local collector on the host",
-        summary: "Inspect the local collector backlog before this source can make progress.",
+        label: "Check the local collector",
+        summary: "The local collector is not making progress. Check it on the host that holds the data.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [localCollectorDoctorCommand()],
       };

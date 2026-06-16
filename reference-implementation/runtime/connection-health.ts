@@ -1894,37 +1894,37 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
     case "state_read_failed":
       return {
         exporterMessage:
-          "Local exporter is blocked reading prior state. Re-run the collector on the host to clear it; there is nothing to requeue.",
+          "The local collector cannot read its last saved state. Run it again on the host; there are no failed uploads to retry.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STATE_READ_FAILED,
-        backlogMessage: "Local-device outbox is blocked on a failed state read, not a backlog.",
+        backlogMessage: "The local collector is blocked reading saved state, not waiting on failed uploads.",
         backlogReason: CONDITION_REASON.OUTBOX_STATE_READ_FAILED,
-        remediationLabel: "Re-run the local collector on the host to clear the blocked state read",
+        remediationLabel: "Run the local collector again on the host",
       };
     case "dead_letter_backlog":
       return {
         exporterMessage:
-          "Local exporter has dead-lettered records. Retry the dead letters, then re-run the collector on the host to drain them.",
+          "The local collector has saved records that failed to upload. Prepare those uploads for retry, then run the collector again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
-        backlogMessage: "Local-device outbox has dead-lettered records waiting to be retried and re-run.",
+        backlogMessage: "The local collector has saved failed uploads waiting to be retried.",
         backlogReason: CONDITION_REASON.OUTBOX_DEAD_LETTER_BACKLOG,
-        remediationLabel: "Retry dead letters, then re-run the local collector on the host",
+        remediationLabel: "Recover local collector uploads",
       };
     case "stale_pending":
       return {
         exporterMessage:
-          "Local exporter has pending work but stopped sending heartbeats. Re-run the collector on the host to resume draining.",
+          "The local collector has queued work but stopped checking in. Run it again on the host to resume uploads.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALE_PENDING,
-        backlogMessage: "Local-device outbox has pending work that stopped draining (no recent heartbeat).",
+        backlogMessage: "The local collector has queued work that stopped moving.",
         backlogReason: CONDITION_REASON.OUTBOX_STALE_PENDING,
-        remediationLabel: "Re-run the local collector on the host to resume draining pending work",
+        remediationLabel: "Run the local collector again on the host",
       };
     default:
       return {
-        exporterMessage: "Local exporter work is stalled or blocked.",
+        exporterMessage: "The local collector is not making progress.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
-        backlogMessage: "Local-device outbox work appears stalled.",
+        backlogMessage: "The local collector has work that appears stalled.",
         backlogReason: CONDITION_REASON.OUTBOX_STALLED,
-        remediationLabel: "Inspect the local collector backlog",
+        remediationLabel: "Check the local collector",
       };
   }
 }

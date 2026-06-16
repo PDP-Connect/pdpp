@@ -1239,15 +1239,15 @@ test('local exporter: state_read_failed renders re-run copy, not generic stalled
   const exporter = findCondition(snap, 'LocalExporterAvailable');
   assert.equal(exporter?.status, 'false');
   assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED);
-  assert.match(exporter?.message ?? '', /blocked reading prior state/i);
-  assert.match(exporter?.message ?? '', /nothing to requeue/i);
+  assert.match(exporter?.message ?? '', /cannot read its last saved state/i);
+  assert.match(exporter?.message ?? '', /no failed uploads to retry/i);
   // Cause-matched remediation names the host re-run, not a generic "inspect".
-  assert.match(exporter?.remediation?.label ?? '', /re-run the local collector/i);
+  assert.match(exporter?.remediation?.label ?? '', /run the local collector again/i);
   const backlog = findCondition(snap, 'BacklogClear');
   assert.equal(backlog?.reason, CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED);
 });
 
-test('local exporter: dead_letter_backlog renders retry-then-rerun copy', () => {
+test('local exporter: dead_letter_backlog renders owner-readable failed-upload copy', () => {
   const snap = computeConnectionHealth(
     input({
       run: run(),
@@ -1259,8 +1259,10 @@ test('local exporter: dead_letter_backlog renders retry-then-rerun copy', () => 
   assert.equal(snap.state, 'degraded');
   const exporter = findCondition(snap, 'LocalExporterAvailable');
   assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG);
-  assert.match(exporter?.message ?? '', /dead-lettered records/i);
-  assert.match(exporter?.remediation?.label ?? '', /retry dead letters.*re-run/i);
+  assert.match(exporter?.message ?? '', /saved records that failed to upload/i);
+  assert.match(exporter?.remediation?.label ?? '', /recover local collector uploads/i);
+  assert.doesNotMatch(exporter?.message ?? '', /dead[- ]letter/i);
+  assert.doesNotMatch(exporter?.remediation?.label ?? '', /dead[- ]letter/i);
   assert.equal(
     findCondition(snap, 'BacklogClear')?.reason,
     CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG,
@@ -1278,7 +1280,7 @@ test('local exporter: stale_pending names the stopped heartbeat, not a backlog',
   );
   const exporter = findCondition(snap, 'LocalExporterAvailable');
   assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING);
-  assert.match(exporter?.message ?? '', /stopped sending heartbeats/i);
+  assert.match(exporter?.message ?? '', /queued work but stopped checking in/i);
 });
 
 test('local exporter: stalled with no cause falls back to generic copy', () => {
@@ -1292,7 +1294,7 @@ test('local exporter: stalled with no cause falls back to generic copy', () => {
   );
   const exporter = findCondition(snap, 'LocalExporterAvailable');
   assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALLED);
-  assert.match(exporter?.message ?? '', /stalled or blocked/i);
+  assert.match(exporter?.message ?? '', /not making progress/i);
 });
 
 test('local exporter: a cause is ignored unless the axis is actually stalled', () => {

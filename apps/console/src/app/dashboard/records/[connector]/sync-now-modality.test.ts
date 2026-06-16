@@ -112,11 +112,11 @@ test("push-mode connections get an honest non-clickable notice, not a dead butto
 });
 
 test("a device-local add_info recovery renders non-clickable guidance, not a /runs link", async () => {
-  // The loop bug: clicking "Retry dead letters, then re-run the collector" on the
-  // detail header navigated to /runs, which showed the same button, which linked
-  // back — a circle, because the dashboard cannot run a device command. The
-  // add_info branch must guard on the local_device remediation target and render
-  // the non-clickable guidance span instead.
+  // The loop bug: clicking a device-local recovery action on the detail header
+  // navigated to /runs, which showed the same button, which linked back — a
+  // circle, because the dashboard cannot run a device command. The add_info
+  // branch must guard on the local_device remediation target and render the
+  // non-clickable guidance span instead.
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, DEVICE_LOCAL_GUARD);
   assert.match(src, DEVICE_LOCAL_TESTID);

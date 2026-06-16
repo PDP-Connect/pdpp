@@ -4,10 +4,10 @@ import type {
   GrantSummary,
   OwnerIssuedClient,
   PendingApproval,
+  RefConnectorSummary,
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
-import type { RefConnectorSummary } from "../../lib/ref-client.ts";
 import {
   attentionConnectionsFromConnectors,
   buildStandingData,
@@ -38,6 +38,7 @@ const NOW = new Date("2026-06-13T12:00:00Z");
 const CALM_SUB_RE = /1 token can act as you/;
 const BEARER_HOW_RE = /2 active tokens/;
 const LATELY_READ_RE = /read 412 records/;
+const SAVED_RECORDS_RE = /saved records/;
 
 function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
   return {
@@ -136,11 +137,9 @@ test("hero is DECIDE when an approval is pending", () => {
 });
 
 test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate the action)", () => {
-  // The loop bug: a device-local action ("Retry dead letters, then re-run the
-  // collector") rendered as a clickable button on the hero, the panel, AND the
-  // runs page — clicking just bounced between pages because the dashboard can't
-  // run a device command. The CTA must read as navigation, route to the recovery
-  // panel (exact connection), and the action itself lives in the sub/panel.
+  // Device-local recovery cannot run from the dashboard. The CTA must read as
+  // navigation, route to the recovery panel (exact connection), and leave the
+  // actual host command in the panel.
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
@@ -148,8 +147,8 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
           connectorKey: "claude-code",
           routeId: "ci_peregrine",
           deviceLocal: true,
-          what: "Check the collector before this source can make progress.",
-          actionLabel: "Retry dead letters, then re-run the collector",
+          what: "The local collector has saved records on its host that did not upload to this server.",
+          actionLabel: "Recover local collector uploads",
         },
       ],
     })
@@ -160,9 +159,9 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
   assert.notEqual(alarm.cta?.href, HREFS.traces);
   // The CTA is a NAVIGATION label, NOT the restated device action.
   assert.equal(alarm.cta?.label, "See what to do");
-  assert.notEqual(alarm.cta?.label, "Retry dead letters, then re-run the collector");
+  assert.notEqual(alarm.cta?.label, "Recover local collector uploads");
   // The real condition still appears in the sub line.
-  assert.match(alarm.sub, /Check the collector/);
+  assert.match(alarm.sub, SAVED_RECORDS_RE);
 });
 
 test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () => {
@@ -170,7 +169,13 @@ test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () 
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "Reconnect Chase.", actionLabel: "Reconnect" },
+        {
+          connectorKey: "chase",
+          routeId: "cin_chase",
+          deviceLocal: false,
+          what: "Reconnect Chase.",
+          actionLabel: "Reconnect",
+        },
       ],
     })
   );
@@ -181,8 +186,20 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
   const alarm = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "claude-code", routeId: "ci_peregrine", deviceLocal: true, what: "Check the collector.", actionLabel: "Check the collector" },
-        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "Reconnect Chase.", actionLabel: "Reconnect" },
+        {
+          connectorKey: "claude-code",
+          routeId: "ci_peregrine",
+          deviceLocal: true,
+          what: "Check the collector.",
+          actionLabel: "Check the collector",
+        },
+        {
+          connectorKey: "chase",
+          routeId: "cin_chase",
+          deviceLocal: false,
+          what: "Reconnect Chase.",
+          actionLabel: "Reconnect",
+        },
       ],
     })
   );
@@ -209,7 +226,9 @@ test("decide wins over alarm", () => {
   } as PendingApproval;
   const both = computeHero(
     baseInputs({
-      attentionConnections: [{ connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "x", actionLabel: "Reconnect" }],
+      attentionConnections: [
+        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "x", actionLabel: "Reconnect" },
+      ],
       pendingApprovals: [pending],
     })
   );
@@ -236,7 +255,9 @@ function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
   };
 }
 
-function verdict(over: Partial<NonNullable<RefConnectorSummary["rendered_verdict"]>>): RefConnectorSummary["rendered_verdict"] {
+function verdict(
+  over: Partial<NonNullable<RefConnectorSummary["rendered_verdict"]>>
+): RefConnectorSummary["rendered_verdict"] {
   return {
     channel: "attention",
     pill: { label: "Can't collect", tone: "red" },
@@ -254,8 +275,8 @@ function verdict(over: Partial<NonNullable<RefConnectorSummary["rendered_verdict
           cause: "dead_letter_backlog",
           commands: [],
           kind: "local_collector_recovery",
-          label: "Retry dead letters, then re-run the collector",
-          summary: "",
+          label: "Recover local collector uploads",
+          summary: "The local collector has saved records on its host that did not upload to this server.",
           target: { identity_source: "source_instance_bindings", kind: "local_device" },
         },
       },
@@ -275,7 +296,15 @@ test("attention truth: only attention-channel connections with an owner-satisfia
       connector_id: "maintainer-only",
       rendered_verdict: verdict({
         required_actions: [
-          { affects: [], audience: "maintainer", cta: "Connector code needs a fix", kind: "code_fix", satisfied_when: { kind: "none" }, terminal: true, urgency: "now" },
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "now",
+          },
         ],
       }),
     }), // ✗ attention but no owner-satisfiable action (S1 — code_fix is the maintainer's, not the owner's)
@@ -300,7 +329,11 @@ test("attention routeId targets the EXACT connection instance, not the connector
   // must be the connection identity (connector_instance_id ?? connection_id) so
   // the CTA lands on the connection that actually needs the owner.
   const connectors: RefConnectorSummary[] = [
-    connector({ connector_id: "claude-code", connection_id: "cin_simon", rendered_verdict: verdict({ channel: "calm" }) }), // healthy, first
+    connector({
+      connector_id: "claude-code",
+      connection_id: "cin_simon",
+      rendered_verdict: verdict({ channel: "calm" }),
+    }), // healthy, first
     connector({
       connector_id: "claude-code",
       connection_id: "cin_peregrine",

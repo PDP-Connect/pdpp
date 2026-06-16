@@ -133,7 +133,7 @@ async function seedHealthyDrainedHeartbeat() {
   });
 }
 
-// A blocked heartbeat carrying dead-lettered records: the outbox axis derives
+// A blocked heartbeat carrying failed-upload records: the outbox axis derives
 // to `stalled` with cause `dead_letter_backlog`, so the verdict must not fire.
 async function seedDeadLetterHeartbeat() {
   const store = getDefaultDeviceExporterStore();

@@ -70,10 +70,8 @@ const OUTBOX_REMEDIATION_PASSES_PROGRESS = /summarizeOutboxStallRemediation\(con
 // mapping verdictRemediation.commands → the rendered steps. This is what fixes
 // the owner-reported "retry-dead-letters returned matched: 0" dead end for the
 // state_read_failed cause (whose commands carry only the re-run step).
-const REMEDIATION_DERIVES_FROM_VERDICT =
-  /required_actions\.find\(\(action\) => action\.remediation\)\?\.remediation/;
-const REMEDIATION_PREFERS_VERDICT_COMMANDS =
-  /verdictRemediation\s*\?\s*verdictRemediation\.commands\.map/;
+const REMEDIATION_DERIVES_FROM_VERDICT = /required_actions\.find\(\(action\) => action\.remediation\)\?\.remediation/;
+const REMEDIATION_PREFERS_VERDICT_COMMANDS = /verdictRemediation\s*\?\s*verdictRemediation\.commands\.map/;
 const REMEDIATION_THREADS_VERDICT_TO_PANEL = /verdictRemediation=\{verdictRemediation\}/;
 // The legacy dead-letter/doctor run-note must be gated OFF when a cause-specific
 // verdict remediation is present — otherwise it reintroduces the very confusion
@@ -87,6 +85,12 @@ const REMEDIATION_SUBSTITUTES_TEMPLATE = /substituteCommandTemplate\(command\.co
 // line instead of a broken command with a CopyButton.
 const REMEDIATION_FAILS_CLOSED =
   /step\.command === null \?[\s\S]{0,300}diagnostics-outbox-remediation-command-unavailable/;
+const REMEDIATION_OWNER_EXPLANATION_HELPER = /function outboxCauseExplanation/;
+const REMEDIATION_COMMAND_CAPTION_HELPER = /function remediationCommandCaption/;
+const REMEDIATION_FAILED_UPLOAD_COPY = /saved records[\s\S]{0,120}did not upload to this server/;
+const REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY = /dashboard cannot fix that host-local queue remotely/;
+const REMEDIATION_DRY_RUN_CAPTION = /Dry run: shows the saved records that would be retried/;
+const REMEDIATION_UPLOADS_QUEUED_RECORDS_CAPTION = /uploads queued records to this server/;
 const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
@@ -311,6 +315,16 @@ test("stalled-outbox remediation PREFERS the server's cause-specific verdict com
   // Verdict command templates are substituted (not rendered literally) and fail closed.
   assert.match(src, REMEDIATION_SUBSTITUTES_TEMPLATE);
   assert.match(src, REMEDIATION_FAILS_CLOSED);
+});
+
+test("cause-specific collector recovery explains the host-local problem in owner language", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, REMEDIATION_OWNER_EXPLANATION_HELPER);
+  assert.match(src, REMEDIATION_COMMAND_CAPTION_HELPER);
+  assert.match(src, REMEDIATION_FAILED_UPLOAD_COPY);
+  assert.match(src, REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY);
+  assert.match(src, REMEDIATION_DRY_RUN_CAPTION);
+  assert.match(src, REMEDIATION_UPLOADS_QUEUED_RECORDS_CAPTION);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {

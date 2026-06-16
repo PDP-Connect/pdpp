@@ -258,9 +258,9 @@ function ProjectedStateDiagnostics({
   });
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
   // Prefer the server-owned, CAUSE-SPECIFIC remediation from the rendered verdict
-  // (state_read_failed → re-run only; dead_letter_backlog → preview/apply/re-run;
-  // stale_pending → re-run). This replaces the console's hard-coded dead-letter
-  // ritual that showed "retry-dead-letters" even when there were no dead letters
+  // (state_read_failed → run only; dead_letter_backlog → preview/apply/run;
+  // stale_pending → run). This replaces the console's hard-coded queue-recovery
+  // ritual that showed retry commands even when there were no failed uploads
   // (the owner-reported "matched: 0, nothing to do" dead end). Older references
   // that don't send `remediation` fall back to the legacy steps below.
   const verdictRemediation =
@@ -684,6 +684,37 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
   }
 }
 
+function outboxCauseExplanation(cause: RefActionRemediation["cause"], hostPhrase: string, stepCount: number): string {
+  const commandPhrase = stepCount === 1 ? "the command below" : "the commands below, in order";
+  switch (cause) {
+    case "dead_letter_backlog":
+      return `Some records were saved on ${hostPhrase}, but they did not upload to this server. This dashboard cannot fix that host-local queue remotely; run ${commandPhrase} on ${hostPhrase}.`;
+    case "state_read_failed":
+      return `The server cannot read the collector's last saved state from ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase}; no failed-upload retry is needed.`;
+    case "stale_pending":
+      return `The local collector has queued work that stopped moving on ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase}.`;
+    case "stalled_unknown":
+      return `The local collector is not making progress on ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase} to check it.`;
+    default:
+      return `The local collector needs attention on ${hostPhrase}. Run ${commandPhrase} on ${hostPhrase}.`;
+  }
+}
+
+function remediationCommandCaption(command: RefActionRemediation["commands"][number]): string {
+  switch (command.kind) {
+    case "local_collector_retry_dead_letters_preview":
+      return "Dry run: shows the saved records that would be retried. It changes nothing.";
+    case "local_collector_retry_dead_letters_apply":
+      return "Marks those saved records for another upload attempt after backing up the local database.";
+    case "local_collector_run":
+      return "Runs the collector on that host and uploads queued records to this server.";
+    case "local_collector_doctor":
+      return "Checks the local collector on that host and reports what is blocking it.";
+    default:
+      return "Run this on the host that holds the data.";
+  }
+}
+
 /**
  * Visible operator remediation for a stalled local-device outbox.
  *
@@ -753,7 +784,7 @@ function OutboxStallRemediationPanel({
   const steps: { caption: string; command: string | null; label: string }[] = verdictRemediation
     ? verdictRemediation.commands.map((command) => ({
         label: command.label,
-        caption: "",
+        caption: remediationCommandCaption(command),
         command: substituteCommandTemplate(command.command_template, {
           connectionId,
           connectorId,
@@ -778,14 +809,14 @@ function OutboxStallRemediationPanel({
           command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
         },
       ];
-  // When the verdict provides cause-specific copy, lead with its summary so the
-  // owner sees the right framing ("re-run the collector" vs "retry dead letters").
-  const introCopy = verdictRemediation?.summary ?? null;
   // Name the host when we know it; otherwise keep the honest generic phrasing.
   const hostPhrase =
     hostLabels.length === 0
       ? "the host that holds the data"
       : `the host${hostLabels.length === 1 ? "" : "s"} that hold${hostLabels.length === 1 ? "s" : ""} the data (${hostLabels.join(", ")})`;
+  const explanation = verdictRemediation
+    ? outboxCauseExplanation(verdictRemediation.cause, hostPhrase, steps.length)
+    : `Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run these on ${hostPhrase}, in order:`;
   return (
     <div
       className="flex flex-col gap-1.5 border border-destructive/40 bg-destructive/5 px-3 py-2"
@@ -801,9 +832,7 @@ function OutboxStallRemediationPanel({
         </p>
       ) : null}
       <p className="pdpp-caption text-muted-foreground" title={remediation.reason ?? undefined}>
-        {introCopy
-          ? `${introCopy} Run ${steps.length === 1 ? "this" : "these"} on ${hostPhrase}${steps.length === 1 ? "" : ", in order"}:`
-          : `Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run these on ${hostPhrase}, in order:`}
+        {explanation}
       </p>
       {remediation.scale ? (
         <p
@@ -851,8 +880,8 @@ function OutboxStallRemediationPanel({
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-run-note">
           Then run the collector again on {hostPhrase} (the same{" "}
           <code className="font-mono">@pdpp/local-collector run</code> command used to enroll it) so the requeued work
-          actually drains. If <code className="font-mono">doctor</code> reports zero dead-letter rows, the stall is a
-          blocked state read, not a backlog — re-running the collector re-reads state and clears it on its own.
+          actually drains. If <code className="font-mono">doctor</code> reports zero failed-upload rows, the stall is a
+          saved-state read problem, not a backlog — running the collector again re-reads state and clears it on its own.
         </p>
       )}
     </div>

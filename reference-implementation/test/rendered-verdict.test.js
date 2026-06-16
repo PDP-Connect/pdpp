@@ -410,10 +410,13 @@ test('channel: stalled outbox state-read block asks for re-run, not dead-letter 
   assert.equal(v.pill.tone, 'red');
   assert.equal(v.pill.label, "Can't collect");
   assert.equal(v.channel, 'attention');
-  assert.equal(v.forward_statement, 'Re-run the collector on the host to clear the blocked state read.');
+  assert.equal(
+    v.forward_statement,
+    "The server cannot read the collector's last state from that host. Run the local collector again there."
+  );
   assert.equal(action.kind, 'add_info');
   assert.equal(action.audience, 'owner');
-  assert.equal(action.cta, 'Re-run the collector on the host');
+  assert.equal(action.cta, 'Run the local collector again');
   assert.deepEqual(action.satisfied_when, { kind: 'attention_resolved' });
   assert.equal(action.remediation?.kind, 'local_collector_recovery');
   assert.equal(action.remediation?.cause, 'state_read_failed');
@@ -444,13 +447,23 @@ test('channel: dead-letter stalled outbox includes retry-dead-letters before re-
   );
   const action = v.required_actions[0];
   assert.equal(v.channel, 'attention');
-  assert.equal(v.forward_statement, 'Retry the dead-lettered rows, then re-run the collector on the host to drain them.');
-  assert.equal(action.cta, 'Retry dead letters, then re-run the collector');
+  assert.equal(
+    v.forward_statement,
+    'The local collector has saved records on its host that did not upload to this server.'
+  );
+  assert.equal(action.cta, 'Recover local collector uploads');
   assert.equal(action.remediation?.cause, 'dead_letter_backlog');
+  assert.doesNotMatch(v.forward_statement, /dead[- ]letter/i);
+  assert.doesNotMatch(action.cta, /dead[- ]letter/i);
   assert.deepEqual(action.remediation?.commands.map((command) => command.kind), [
     'local_collector_retry_dead_letters_preview',
     'local_collector_retry_dead_letters_apply',
     'local_collector_run',
+  ]);
+  assert.deepEqual(action.remediation?.commands.map((command) => command.label), [
+    'Check what will be retried',
+    'Prepare failed uploads for retry',
+    'Run the local collector again',
   ]);
 });
 
@@ -472,8 +485,8 @@ test('channel: stale-pending stalled outbox asks for collector re-run only', () 
   );
   const action = v.required_actions[0];
   assert.equal(v.channel, 'attention');
-  assert.equal(v.forward_statement, 'Re-run the collector on the host to resume draining pending work.');
-  assert.equal(action.cta, 'Re-run the collector on the host');
+  assert.equal(v.forward_statement, 'The local collector has queued work that stopped moving. Run it again on that host.');
+  assert.equal(action.cta, 'Run the local collector again');
   assert.equal(action.remediation?.cause, 'stale_pending');
   assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_run']);
   assert.doesNotMatch(JSON.stringify(action), /retry-dead-letters/);

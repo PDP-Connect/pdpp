@@ -225,6 +225,21 @@ correlating the same-stream pending detail gap.
   `cause: "dead_letter_backlog"`
 - **AND** the remediation commands SHALL include the dead-letter preview, the
   dead-letter apply step, and the collector re-run step in that order.
+- **AND** the action `cta`, `forward_statement`, and owner-facing summary SHALL
+  explain that records saved on the local collector host did not upload to the
+  server
+- **AND** those primary owner-facing strings SHALL NOT use `dead-letter` as the
+  owner-visible problem name; that term MAY appear only in command names,
+  machine-readable reasons, or collapsed technical detail.
+
+#### Scenario: Focused local-collector recovery shows exact commands and why to run them
+
+- **WHEN** a local-device recovery action includes a focused remediation payload
+- **THEN** the owner surface SHALL name the host or say `the host that holds the
+  data` when the host name is unknown
+- **AND** it SHALL render the exact copyable command or commands for that cause
+- **AND** each command SHALL include a plain-language purpose so the owner does
+  not need to remember the local-collector workflow.
 
 #### Scenario: Stale-pending stalled outbox renders rerun recovery
 
