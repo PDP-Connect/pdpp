@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import {
   sourceSetupAction,
+  sourceSetupAvailability,
   sourceSetupGuidance,
   sourceSetupRank,
   sourceSetupStatus,
@@ -160,9 +161,11 @@ function ExistingSourceReuse({
 function SourceSetupCard({
   entry,
   existingSources,
+  unavailable,
 }: {
   entry: ConnectorCatalogEntry;
   existingSources: readonly ExistingSourceSetupLink[];
+  unavailable?: boolean;
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
@@ -204,12 +207,38 @@ function SourceSetupCard({
             </Link>
           </>
         ) : (
-          <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
-            No setup action yet
+          <span
+            className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground"
+            data-testid="source-unavailable-fact"
+          >
+            {unavailable ? "Not available from this page" : "No primary action"}
           </span>
         )}
       </div>
     </li>
+  );
+}
+
+function SourceSetupCardList({
+  entries,
+  existingSourcesByConnector,
+  unavailable,
+}: {
+  entries: readonly ConnectorCatalogEntry[];
+  existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
+  unavailable?: boolean;
+}) {
+  return (
+    <ul className="grid gap-3">
+      {entries.map((entry) => (
+        <SourceSetupCard
+          entry={entry}
+          existingSources={existingSourcesByConnector?.[entry.connectorKey] ?? []}
+          key={entry.connectorKey}
+          unavailable={unavailable}
+        />
+      ))}
+    </ul>
   );
 }
 
@@ -225,10 +254,14 @@ export function SourceSetupCatalog({
   query: string;
 }) {
   const filtered = filterSourceCatalog(catalog, query);
+  const available = filtered.filter((entry) => sourceSetupAvailability(entry) === "available_now");
+  const serverSetup = filtered.filter((entry) => sourceSetupAvailability(entry) === "requires_server_setup");
+  const unavailable = filtered.filter((entry) => sourceSetupAvailability(entry) === "not_available_here");
+  const hasQuery = query.trim().length > 0;
   return (
     <Section
-      description="Search every source this build knows about. Each card is a source journey: the source name, its recommended next action, the current support fact, and a low-noise path to the details. Repeat the same setup to add another account."
-      title="Add data sources"
+      description="Start with sources this dashboard can add now. Other connector entries are separated so they do not look like available setup paths."
+      title="Add data"
     >
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <label className="sr-only" htmlFor="source_q">
@@ -240,15 +273,42 @@ export function SourceSetupCatalog({
         </IcButton>
       </form>
       {filtered.length > 0 ? (
-        <ul className="grid gap-3">
-          {filtered.map((entry) => (
-            <SourceSetupCard
-              entry={entry}
-              existingSources={existingSourcesByConnector?.[entry.connectorKey] ?? []}
-              key={entry.connectorKey}
-            />
-          ))}
-        </ul>
+        <div className="grid gap-5">
+          {available.length > 0 ? (
+            <SourceSetupCardList entries={available} existingSourcesByConnector={existingSourcesByConnector} />
+          ) : (
+            <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
+              No add-now sources match <span className="font-medium text-foreground">{query}</span>.
+            </p>
+          )}
+
+          {serverSetup.length > 0 ? (
+            <section aria-label="Requires server setup" className="grid gap-2">
+              <div>
+                <h3 className="pdpp-title text-foreground">Requires server setup</h3>
+                <p className="pdpp-caption text-muted-foreground">
+                  These sources need instance-level provider app configuration before account setup can start.
+                </p>
+              </div>
+              <SourceSetupCardList entries={serverSetup} existingSourcesByConnector={existingSourcesByConnector} />
+            </section>
+          ) : null}
+
+          {unavailable.length > 0 ? (
+            <details className="rounded-md border border-border/80 bg-muted/20 p-3" open={hasQuery}>
+              <summary className="pdpp-caption cursor-pointer text-muted-foreground">
+                Sources not available from this page ({unavailable.length})
+              </summary>
+              <div className="mt-3">
+                <SourceSetupCardList
+                  entries={unavailable}
+                  existingSourcesByConnector={existingSourcesByConnector}
+                  unavailable
+                />
+              </div>
+            </details>
+          ) : null}
+        </div>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
           No connector matched <span className="font-medium text-foreground">{query}</span>. Try the source name or

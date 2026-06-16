@@ -31,7 +31,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
 import { buildSourceAddSupport, type SourceAddSupport } from "./source-add-support.ts";
-import { sourceSetupStatus } from "./source-setup-presentation.ts";
+import { sourceSetupAction, sourceSetupAvailability, sourceSetupStatus } from "./source-setup-presentation.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ADD_SUPPORT_FILE = `${HERE}source-add-support.ts`;
@@ -51,6 +51,10 @@ const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
 const FORBIDDEN_COPY: readonly { class: string; re: RegExp }[] = [
   { class: "overruled-demotion", re: /not self-service/i },
   { class: "inert-tracking", re: /\bTrack only\b/i },
+  { class: "rejected-deployment-jargon", re: /\bdeployment needed\b/i },
+  { class: "rejected-setup-jargon", re: /\bneeds setup\b|\bneeds local setup\b|\bsetup path pending\b/i },
+  { class: "dead-end-action", re: /\bNo setup action yet\b/i },
+  { class: "ambiguous-existing-data", re: /\bExisting data only\b/i },
   { class: "monorepo-package-path", re: /packages\//i },
   { class: "package-runner", re: /pnpm --dir/i },
   { class: "unpublished-cli", re: /\bpdpp \w/i },
@@ -106,6 +110,27 @@ test("every first-account setup status label is free of forbidden copy", () => {
   }
 });
 
+test("only packaged add-now and server-setup dispositions expose primary actions", () => {
+  const expectedActionDispositions = new Set<ConnectorCatalogEntry["disposition"]>([
+    "local_collector_enroll",
+    "static_secret_connect",
+    "manual_upload_connect",
+    "provider_auth_deployment_blocked",
+  ]);
+  for (const disposition of ALL_DISPOSITIONS) {
+    const entry = entryForDisposition(disposition);
+    const action = sourceSetupAction(entry);
+    const availability = sourceSetupAvailability(entry);
+    if (expectedActionDispositions.has(disposition)) {
+      assert.ok(action, `${disposition} should expose a real in-product next action`);
+      assert.notEqual(availability, "not_available_here");
+      continue;
+    }
+    assert.equal(action, null, `${disposition} must not render a fake primary setup action`);
+    assert.equal(availability, "not_available_here", `${disposition} must be separated from available setup`);
+  }
+});
+
 test("the agreed add-account labels are exactly the realignment-plan vocabulary", () => {
   // Drive the real projection with representative manifests, then assert every
   // produced label is in the agreed set and free of forbidden copy.
@@ -129,9 +154,9 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
   assert.ok(labels.length > 0, "projection must produce at least one label");
   const AGREED = new Set([
     "Add another account",
-    "Packaged path pending",
-    "Adding another account needs deployment setup",
-    "Existing data only",
+    "Add path not packaged",
+    "Server setup required to add another account",
+    "Add path not available here",
   ]);
   for (const label of labels) {
     assertCleanCopy(label, "addAccountSupport label");

@@ -19,7 +19,7 @@ const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const STATIC_SECRET_ROUTE_RE = /\/dashboard\/connect\/static-secret\/ynab/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/dashboard\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/dashboard\/connect\/manual-upload\/google-maps/;
-const PACKAGED_PATH_PENDING_RE = /^Packaged path pending$/;
+const PACKAGED_PATH_PENDING_RE = /^Add path not packaged$/;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
@@ -143,7 +143,7 @@ test("provider-auth source reports deployment prerequisite, not static-secret se
   assert.ok(support);
   assert.equal(support.support, "deployment_prerequisite");
   assert.equal(support.action, null);
-  assert.match(support.supportLabel, /deployment setup/i);
+  assert.match(support.supportLabel, /server setup/i);
   assert.doesNotMatch(support.supportLabel, /app password|credential|env var/i);
 });
 

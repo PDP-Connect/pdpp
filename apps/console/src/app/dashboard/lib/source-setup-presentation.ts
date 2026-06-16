@@ -53,6 +53,8 @@ export type AddAccountSupport =
   | "deployment_prerequisite"
   | "not_self_service";
 
+export type SourceSetupAvailability = "available_now" | "requires_server_setup" | "not_available_here";
+
 /** Owner-facing picker order: actionable dispositions first, unsupported last. */
 export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
   switch (entry.disposition) {
@@ -87,7 +89,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return { label: "Add now", tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg" };
     case "browser_collector_manual":
       return {
-        label: "Needs local setup",
+        label: "Browser setup not packaged",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "static_secret_connect":
@@ -102,32 +104,28 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "manual_upload_pending":
       return {
-        label: "Import flow pending",
+        label: "Import not packaged",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "provider_auth_deployment_blocked":
       return {
-        label: "Deployment needed",
+        label: "Server setup required",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "browser_bound_runbook":
       return {
-        label: "Needs local setup",
+        label: "Browser setup not packaged",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
       // Existing data keeps working; there is just no shipped owner add path.
-      // Agreed label — kills the last "not self-service" string on the surface.
-      return { label: "Existing data only", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
     case "api_network_unsupported":
-      // In-app setup not yet wired but connector exists; honest label with path
-      // available in the guidance line below.
-      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
     default:
       // unknown_unsupported and any future unclassified disposition.
-      // "Setup path pending" is honest and removes the dead-end "Not supported yet".
-      return { label: "Setup path pending", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
 }
 
@@ -137,35 +135,35 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
+      return "This source can collect through a logged-in browser, but this dashboard does not yet package the add-account path safely.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
       return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
     case "manual_upload_pending":
-      return "This source imports an owner-provided file. The connector declares the import shape, but the dashboard file-capture step is not packaged yet.";
+      return "This source imports an owner-provided file, but the dashboard upload step is not packaged yet.";
     case "provider_auth_deployment_blocked":
       return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "This source collects data by driving your logged-in browser session locally. Existing data is usable. To add an account or re-authenticate now, follow the browser-collector runbook. In-dashboard setup is tracked and coming.";
+      return "This source can collect through a logged-in browser, but this dashboard does not yet package the add-account path safely.";
     case "local_collector_unproven":
-      return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
+      return "This connector needs a packaged collector path before it can be started from this dashboard.";
     case "provider_auth_proof_gated":
       return entry.runbookPath
-        ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
-        : "Provider authorization is not fully wired yet.";
+        ? `Provider authorization is not packaged in this dashboard. Tracking runbook: ${entry.runbookPath}.`
+        : "Provider authorization is not packaged in this dashboard.";
     case "api_network_unsupported":
       return entry.runbookPath
-        ? `In-app setup is not wired yet, but a manual runbook exists at ${entry.runbookPath}. It's listed here so you know it's planned, not missing.`
-        : "In-app setup for this source is not wired yet. It's listed so you know it's planned, not missing. Check the operator docs for any available manual path.";
+        ? `This dashboard cannot add this source yet. Tracking runbook: ${entry.runbookPath}.`
+        : "This dashboard cannot add this source yet.";
     default:
       // unknown_unsupported and any future unclassified disposition: never a
       // blank wall. Give the owner at least a direction.
       return entry.runbookPath
-        ? `In-app setup is not available yet. A runbook may help: ${entry.runbookPath}.`
-        : "In-app setup for this source isn't available yet. Check the operator docs or open a support request to learn about the expected timeline.";
+        ? `This dashboard cannot add this source yet. Tracking runbook: ${entry.runbookPath}.`
+        : "This dashboard cannot add this source yet.";
   }
 }
 
@@ -188,23 +186,22 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         label: "Import file",
       };
     case "provider_auth_deployment_blocked":
-      return { href: "/dashboard/deployment", label: "Open deployment" };
-    case "browser_bound_runbook":
-    case "browser_collector_manual":
-      // The in-dashboard neko browser flow is tracked but not yet deployed.
-      // Return a real forward action pointing at the browser-session connect
-      // page so the owner is never left at a blank wall. Once neko is
-      // confirmed deployed this route renders the embedded login surface;
-      // before that it shows the honest runbook path.
-      return {
-        href: `/dashboard/connect/browser-session/${encodeURIComponent(entry.connectorKey)}`,
-        label: "Connect by logging in",
-      };
-    case "local_collector_unproven":
-    case "provider_auth_proof_gated":
-      return entry.runbookPath ? { href: entry.runbookPath, label: "View runbook" } : null;
+      return { href: "/dashboard/deployment", label: "Open server setup" };
     default:
-      return entry.runbookPath ? { href: entry.runbookPath, label: "View runbook" } : null;
+      return null;
+  }
+}
+
+export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {
+  switch (entry.disposition) {
+    case "local_collector_enroll":
+    case "static_secret_connect":
+    case "manual_upload_connect":
+      return "available_now";
+    case "provider_auth_deployment_blocked":
+      return "requires_server_setup";
+    default:
+      return "not_available_here";
   }
 }
 

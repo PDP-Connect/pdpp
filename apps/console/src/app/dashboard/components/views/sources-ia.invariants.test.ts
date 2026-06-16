@@ -74,12 +74,14 @@ const SOURCES_VIEW_COMPONENT_RE = /<SourcesView/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
 const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
-const SOURCE_SETUP_SECTION_RE = /title="Add data sources"/;
+const SOURCE_SETUP_SECTION_RE = /title="Add data"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
 const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
 const OTHER_COVERAGE_PATHS_RE = /Other ways to add coverage/;
+const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
+const SERVER_SETUP_GROUP_RE = /Requires server setup/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const FORBIDDEN_DEV_STRINGS_RE =
@@ -123,6 +125,8 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, SOURCE_ACQUISITION_PATHS_RE);
   assert.match(catalog, SOURCE_ACQUISITION_PATH_RE);
   assert.match(catalog, OTHER_COVERAGE_PATHS_RE);
+  assert.match(catalog, UNAVAILABLE_GROUP_RE);
+  assert.match(catalog, SERVER_SETUP_GROUP_RE);
 });
 
 // ── 2. Per-source health and actions are clearly separate ───────────────────
