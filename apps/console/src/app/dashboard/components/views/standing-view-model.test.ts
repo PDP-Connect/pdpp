@@ -7,7 +7,9 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
+import type { RefConnectorSummary } from "../../lib/ref-client.ts";
 import {
+  attentionConnectionsFromConnectors,
   buildStandingData,
   computeHero,
   grantEndorseStatus,
@@ -21,9 +23,11 @@ import {
 
 const HREFS: StandingHrefs = {
   grants: "/dashboard/grants",
+  runs: "/dashboard/runs",
   traces: "/dashboard/traces",
   deployment: "/dashboard/deployment",
   deploymentTokens: "/dashboard/deployment/tokens",
+  connection: (id) => `/dashboard/records/${id}`,
   grant: (id) => `/dashboard/grants/${id}`,
   run: (id) => `/dashboard/runs/${id}`,
   trace: (id) => `/dashboard/traces/${id}`,
@@ -61,7 +65,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
-    attentionCount: 0,
+    attentionConnections: [],
     ...over,
   };
 }
@@ -131,19 +135,119 @@ test("hero is DECIDE when an approval is pending", () => {
   assert.equal(hero.cta?.href, HREFS.grants);
 });
 
-test("hero is ALARM when attention count > 0, decide wins over alarm", () => {
-  const run = { run_id: "r1", connector_id: "current_activity", failure_reason: "expired" } as RunSummary;
-  const alarm = computeHero(baseInputs({ failedRuns: [run], attentionCount: 1 }));
+test("hero is ALARM when a connection needs the owner; single → CTA routes to its recovery panel, NOT /traces", () => {
+  const alarm = computeHero(
+    baseInputs({
+      attentionConnections: [
+        { connectorKey: "claude-code", what: "Check the collector before this source can make progress.", actionLabel: "Check the collector" },
+      ],
+    })
+  );
   assert.equal(alarm.tone, "alarm");
+  assert.equal(alarm.kicker, "One thing needs you");
+  // The fix: the CTA lands on the focused recovery panel, never the audit log.
+  assert.equal(alarm.cta?.href, HREFS.connection("claude-code"));
+  assert.notEqual(alarm.cta?.href, HREFS.traces);
+  // The CTA verb is the owner-resolvable action, and the sub names the real condition.
+  assert.equal(alarm.cta?.label, "Check the collector");
+  assert.match(alarm.sub, /Check the collector/);
+});
 
+test("hero ALARM with several attention connections → CTA routes to the syncs triage list, not /traces", () => {
+  const alarm = computeHero(
+    baseInputs({
+      attentionConnections: [
+        { connectorKey: "claude-code", what: "Check the collector.", actionLabel: "Check the collector" },
+        { connectorKey: "chase", what: "Reconnect Chase.", actionLabel: "Reconnect" },
+      ],
+    })
+  );
+  assert.equal(alarm.tone, "alarm");
+  assert.equal(alarm.kicker, "2 things need you");
+  assert.equal(alarm.cta?.href, HREFS.runs);
+  assert.notEqual(alarm.cta?.href, HREFS.traces);
+});
+
+test("failed runs/traces alone do NOT drive the alarm — only the rendered-verdict attention set does", () => {
+  // The old bug: a failed YNAB trace inflated the alarm while YNAB was healthy.
+  const run = { run_id: "r1", connector_id: "current_activity", failure_reason: "expired" } as RunSummary;
+  const trace = { trace_id: "t1", client_id: "ynab" } as TraceSummary;
+  const hero = computeHero(baseInputs({ failedRuns: [run], failedTraces: [trace], attentionConnections: [] }));
+  assert.notEqual(hero.tone, "alarm");
+});
+
+test("decide wins over alarm", () => {
   const pending = {
     object: "approval",
     approval_id: "a1",
     created_at: NOW.toISOString(),
     kind: "consent",
   } as PendingApproval;
-  const both = computeHero(baseInputs({ failedRuns: [run], attentionCount: 1, pendingApprovals: [pending] }));
+  const both = computeHero(
+    baseInputs({
+      attentionConnections: [{ connectorKey: "chase", what: "x", actionLabel: "Reconnect" }],
+      pendingApprovals: [pending],
+    })
+  );
   assert.equal(both.tone, "decide");
+});
+
+// ─── attention truth (the single source the hero + /runs share) ───────────
+
+function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
+  return {
+    connection_health: {} as RefConnectorSummary["connection_health"],
+    connection_id: "cin_x",
+    connector_id: "claude-code",
+    display_name: "Claude Code",
+    freshness: {},
+    last_run: null,
+    last_successful_run: null,
+    manifest_version: null,
+    next_action: null,
+    schedule: null,
+    streams: [],
+    total_records: 0,
+    ...over,
+  };
+}
+
+function verdict(over: Partial<NonNullable<RefConnectorSummary["rendered_verdict"]>>): RefConnectorSummary["rendered_verdict"] {
+  return {
+    channel: "attention",
+    pill: { label: "Can't collect", tone: "red" },
+    forward_statement: "Check the collector before this source can make progress.",
+    required_actions: [
+      { affects: [], audience: "owner", cta: "Check the collector", kind: "add_info", satisfied_when: { kind: "attention_resolved" }, terminal: false, urgency: "now" },
+    ],
+    annotations: [],
+    detail: undefined,
+    ...over,
+  } as RefConnectorSummary["rendered_verdict"];
+}
+
+test("attention truth: only attention-channel connections with an owner-satisfiable action count", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({ connector_id: "claude-code", rendered_verdict: verdict({}) }), // ✓ attention + owner action
+    connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }) }), // ✗ calm
+    connector({ connector_id: "ynab", rendered_verdict: null }), // ✗ no verdict (e.g. healthy)
+    connector({
+      connector_id: "maintainer-only",
+      rendered_verdict: verdict({
+        required_actions: [
+          { affects: [], audience: "maintainer", cta: "Connector code needs a fix", kind: "code_fix", satisfied_when: { kind: "none" }, terminal: true, urgency: "now" },
+        ],
+      }),
+    }), // ✗ attention but no owner-satisfiable action (S1 — code_fix is the maintainer's, not the owner's)
+    connector({ connector_id: "revoked", revoked_at: "2026-06-01T00:00:00Z", rendered_verdict: verdict({}) }), // ✗ revoked
+  ];
+  const attention = attentionConnectionsFromConnectors(connectors);
+  assert.deepEqual(
+    attention.map((a) => a.connectorKey),
+    ["claude-code"]
+  );
+  assert.equal(attention[0]?.actionLabel, "Check the collector");
+  assert.equal(attention[0]?.what, "Check the collector before this source can make progress.");
 });
 
 test("hero ALARMs on a stale projection even with no failures", () => {

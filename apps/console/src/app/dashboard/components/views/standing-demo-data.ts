@@ -186,13 +186,23 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
-    attentionCount: 0,
+    attentionConnections: [],
   };
   if (scenario === "decide") {
     return { ...base, pendingApprovals: PENDING };
   }
   if (scenario === "alarm") {
-    return { ...base, failedRuns: FAILED_RUNS, attentionCount: FAILED_RUNS.length };
+    return {
+      ...base,
+      failedRuns: FAILED_RUNS,
+      attentionConnections: [
+        {
+          connectorKey: "claude-code",
+          what: "Check the collector before this source can make progress.",
+          actionLabel: "Check the collector",
+        },
+      ],
+    };
   }
   return base;
 }

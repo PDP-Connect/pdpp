@@ -18,12 +18,18 @@
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { StandingOverview } from "./components/views/standing-overview.tsx";
-import { buildStandingData, type StandingHrefs, type StandingInputs } from "./components/views/standing-view-model.ts";
+import {
+  attentionConnectionsFromConnectors,
+  buildStandingData,
+  type StandingHrefs,
+  type StandingInputs,
+} from "./components/views/standing-view-model.ts";
 import { rethrowControlFlow } from "./lib/control-flow.ts";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getReferencePublicOrigin } from "./lib/owner-token.ts";
 import {
   type GrantSummary,
+  listConnectorSummaries,
   listOwnerIssuedClients,
   type OwnerIssuedClient,
   type PendingApproval,
@@ -37,9 +43,11 @@ const SCHEME_RE = /^https?:\/\//;
 
 const HREFS: StandingHrefs = {
   grants: dashboardRoutes.section.grants,
+  runs: dashboardRoutes.section.runs,
   traces: dashboardRoutes.section.traces,
   deployment: dashboardRoutes.section.deployment,
   deploymentTokens: dashboardRoutes.section.deploymentTokens,
+  connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   grant: (id) => dashboardRoutes.grant(id),
   run: (id) => dashboardRoutes.run(id),
   trace: (id) => dashboardRoutes.trace(id),
@@ -57,31 +65,34 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, failedTracesRes, failedRunsRes, pendingRes, clientsRes] = await Promise.all([
-    safe(() => ds.getDatasetSummary(), null),
-    safe(() => ds.listGrants({ limit: 12 }), { data: [] as GrantSummary[], has_more: false, object: "list" as const }),
-    safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
-    safe(() => ds.listTraces({ status: "failed", limit: 5 }), {
-      data: [] as TraceSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safe(() => ds.listRuns({ status: "failed", limit: 5 }), {
-      data: [] as RunSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safe(() => ds.listPendingApprovals(), {
-      data: [] as PendingApproval[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safe(() => listOwnerIssuedClients(), {
-      data: [] as OwnerIssuedClient[],
-      has_more: false,
-      object: "list" as const,
-    }),
-  ]);
+  const [summary, grantsRes, tracesRes, failedTracesRes, failedRunsRes, pendingRes, clientsRes, connectorsRes] =
+    await Promise.all([
+      safe(() => ds.getDatasetSummary(), null),
+      safe(() => ds.listGrants({ limit: 12 }), { data: [] as GrantSummary[], has_more: false, object: "list" as const }),
+      safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
+      safe(() => ds.listTraces({ status: "failed", limit: 5 }), {
+        data: [] as TraceSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safe(() => ds.listRuns({ status: "failed", limit: 5 }), {
+        data: [] as RunSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safe(() => ds.listPendingApprovals(), {
+        data: [] as PendingApproval[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safe(() => listOwnerIssuedClients(), {
+        data: [] as OwnerIssuedClient[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+      safe(() => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+    ]);
 
   return {
     now: new Date(),
@@ -93,7 +104,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     failedRuns: failedRunsRes.data,
     pendingApprovals: pendingRes.data,
     bearerClients: clientsRes.data,
-    attentionCount: failedTracesRes.data.length + failedRunsRes.data.length,
+    attentionConnections: attentionConnectionsFromConnectors(connectorsRes.data),
   };
 }
 

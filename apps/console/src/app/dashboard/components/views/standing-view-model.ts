@@ -17,6 +17,7 @@ import type {
   GrantSummary,
   OwnerIssuedClient,
   PendingApproval,
+  RefConnectorSummary,
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
@@ -165,7 +166,13 @@ export interface StandingData {
 // ─── Inputs ────────────────────────────────────────────────────────────
 
 export interface StandingInputs {
-  attentionCount: number;
+  /**
+   * Connections the owner genuinely needs to act on, derived from the rendered
+   * verdict attention channel (the SAME source `/runs` uses). This — not failed
+   * runs/traces — drives the hero alarm, its count, its CTA, and the "anything
+   * wrong" list, so all four agree with `/runs`.
+   */
+  attentionConnections: AttentionConnection[];
   bearerClients: OwnerIssuedClient[];
   failedRuns: RunSummary[];
   failedTraces: TraceSummary[];
@@ -180,13 +187,32 @@ export interface StandingInputs {
 }
 
 export interface StandingHrefs {
+  /** Per-connection recovery destination — the connection detail page that
+   *  carries the focused recovery panel. NOT /traces (an audit log). */
+  connection: (connectorKey: string) => string;
   deployment: string;
   deploymentTokens: string;
   grant: (id: string) => string;
   grants: string;
   run: (id: string) => string;
+  /** The syncs/runs list — the triage destination when several connections need the owner. */
+  runs: string;
   trace: (id: string) => string;
   traces: string;
+}
+
+/**
+ * A connection the owner genuinely needs to act on — the SINGLE source of
+ * attention truth shared by the dashboard hero and `/runs`. Derived from the
+ * rendered verdict's attention channel (an owner-satisfiable required action),
+ * NOT from failed runs/traces. See {@link attentionConnectionsFromConnectors}.
+ */
+export interface AttentionConnection {
+  connectorKey: string;
+  /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
+  what: string;
+  /** The owner-resolvable action label (the CTA verb). */
+  actionLabel: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -358,22 +384,52 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
   });
 }
 
+// ─── Attention truth (shared with /runs) ──────────────────────────────────
+
+/**
+ * The SINGLE source of attention truth: connections whose rendered verdict is
+ * on the `attention` channel with an owner-satisfiable required action. This is
+ * the same predicate `/runs` uses, so the hero, its count, its CTA, and the
+ * "anything wrong" list all agree with the syncs surface — no more counting
+ * failed runs/traces (which surfaced healthy connections as "broken" and missed
+ * the genuinely-attention ones). Revoked connections are excluded.
+ */
+export function attentionConnectionsFromConnectors(
+  connectors: readonly RefConnectorSummary[]
+): AttentionConnection[] {
+  const out: AttentionConnection[] = [];
+  for (const connector of connectors) {
+    if (connector.revoked_at) {
+      continue; // revoked rows stay owner-visible but never alarm.
+    }
+    const verdict = connector.rendered_verdict;
+    if (verdict?.channel !== "attention") {
+      continue;
+    }
+    const action = verdict.required_actions.find(
+      (a) => a.audience === "owner" && a.satisfied_when.kind !== "none"
+    );
+    if (!action) {
+      continue; // attention with no owner-resolvable action is a synthesis error (S1) — never alarm the owner here.
+    }
+    out.push({
+      connectorKey: connector.connector_id,
+      what: verdict.forward_statement,
+      actionLabel: action.cta,
+    });
+  }
+  return out;
+}
+
 // ─── Attention view ("anything wrong") ───────────────────────────────────
 
-function toAttention(failedTraces: TraceSummary[], failedRuns: RunSummary[], hrefs: StandingHrefs): AttentionRowView[] {
-  const fromRuns = failedRuns.map((r) => ({
-    id: `run:${r.run_id}`,
-    what: r.connector_id ? `${scopeHuman(r.connector_id)} stopped syncing` : "A sync failed",
-    why: r.failure_reason ?? "The last run did not complete.",
-    href: hrefs.run(r.run_id),
+function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
+  return attention.map((a) => ({
+    id: `connection:${a.connectorKey}`,
+    what: `${scopeHuman(a.connectorKey)} needs you`,
+    why: a.what,
+    href: hrefs.connection(a.connectorKey),
   }));
-  const fromTraces = failedTraces.map((t) => ({
-    id: `trace:${t.trace_id}`,
-    what: `${t.client_id ?? "A reader"} could not read`,
-    why: t.failure?.reason ?? "A read attempt failed.",
-    href: hrefs.trace(t.trace_id),
-  }));
-  return [...fromRuns, ...fromTraces];
 }
 
 // ─── Hero tone (the one truth, computed from real state) ─────────────────
@@ -394,15 +450,28 @@ function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): Stan
   };
 }
 
-/** ALARM — a run or trace failed. */
-function buildFailureHero(count: number, hrefs: StandingHrefs): StandingHero {
-  const noun = count === 1 ? "thing" : "things";
+/** ALARM — one or more connections need the owner. Derived from the attention
+ *  truth, so the count, the line, and the CTA all name the SAME connections the
+ *  "anything wrong" list and `/runs` show. The CTA lands on the focused recovery
+ *  panel (single connection) or the syncs triage list (several) — never /traces. */
+function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs): StandingHero {
+  const count = attention.length;
+  const [only] = attention;
+  if (count === 1 && only) {
+    return {
+      tone: "alarm",
+      kicker: "One thing needs you",
+      line: { text: `${scopeHuman(only.connectorKey)} `, emphasis: "needs you", tail: "." },
+      sub: only.what,
+      cta: { label: only.actionLabel, href: hrefs.connection(only.connectorKey), human: true },
+    };
+  }
   return {
     tone: "alarm",
-    kicker: count === 1 ? "One thing needs you" : `${count} ${noun} need you`,
-    line: { text: "Something ", emphasis: "stopped working", tail: "." },
-    sub: "Nothing you already have is lost — but new data may not be arriving until you take a look.",
-    cta: { label: "See what's wrong", href: hrefs.traces },
+    kicker: `${count} things need you`,
+    line: { text: `${count} connections `, emphasis: "need a look", tail: "." },
+    sub: "Nothing you already have is lost — open each one to see what it needs.",
+    cta: { label: "See what needs you", href: hrefs.runs },
   };
 }
 
@@ -448,8 +517,8 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
   }
-  if (input.attentionCount > 0) {
-    return buildFailureHero(input.attentionCount, input.hrefs);
+  if (input.attentionConnections.length > 0) {
+    return buildFailureHero(input.attentionConnections, input.hrefs);
   }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
@@ -466,6 +535,6 @@ export function buildStandingData(input: StandingInputs): StandingData {
     bearers: toBearers(input.bearerClients, input.hrefs, input.now),
     relationships: toRelationships(input.grants, input.hrefs, input.now),
     lately: toLately(input.traces, input.now),
-    attention: toAttention(input.failedTraces, input.failedRuns, input.hrefs),
+    attention: toAttention(input.attentionConnections, input.hrefs),
   };
 }
