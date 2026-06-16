@@ -27,7 +27,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { isBrowserBoundConnector } from "../../../lib/connection-modality.ts";
-import { startBrowserEnrollmentAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -126,8 +125,7 @@ export default async function BrowserSessionConnectPage({
         </div>
 
         {/* Primary CTA */}
-        <form action={startBrowserEnrollmentAction}>
-          <input name="connector_id" type="hidden" value={connectorId} />
+        <form action={`/dashboard/connect/browser-session/${encodeURIComponent(connectorId)}/start`} method="post">
           {pageParams.connectionId ? (
             <input name="connection_id" type="hidden" value={pageParams.connectionId} />
           ) : null}
