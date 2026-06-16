@@ -87,10 +87,18 @@ stays byte-for-byte unchanged.
 
 ## 7. Cross-provider verification (honest per provider)
 
-- [ ] 7.1 Verify Codex live control empirically: spawn a Codex worker interactive, attempt
+- [x] 7.1 Verify Codex live control empirically: spawn a Codex worker interactive, attempt
   a `paste-buffer` revision and a `codex resume`/`fork` round-trip. Record the result. If
   `paste-buffer` injection is unreliable, document the file-based-handoff fallback as the
   Codex revise path. Verify: a written Codex pass/fail with the working revise mechanism.
+  PASSED 2026-06-15 — full round-trip (spawn → trust-steer → prompt-steer → stream →
+  `task_complete` idle → reap → `codex exec resume <SID> -o <FILE>` recalled prior-turn
+  context). Results in `tmp/workstreams/live-orchestration-spike-results.md`. Revise
+  mechanism = `codex exec resume <SID> "<prompt>" -o <FILE>` (headless, machine-readable
+  result); PTY send-keys steering worked, so file-handoff stays fallback-only. Gotchas
+  recorded: `codex | tee` fails (needs PTY → use `tmux pipe-pane`); type-text and Enter as
+  separate send-keys; rollout JSONL created on first turn; **Codex backend = headroom proxy
+  on :8787 must be up** (the build's Codex-lane admission gate, like the clawmeter gate).
 - [ ] 7.2 Keep Gemini fire-and-forget: confirm no live-control claim is wired for Gemini and
   the harness/playbook mark it unverified. Verify: grep shows no Gemini steer/revise/idle
   path; the playbook states the deferral.

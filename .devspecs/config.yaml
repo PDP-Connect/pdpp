@@ -10,12 +10,37 @@ sources:
         - docs/adrs
     - type: markdown
       paths:
+        - .claude/notes
+        - .claude/plans
+        - .claude/skills
+        - .codex/notes
+        - .codex/plans
+        - .codex/skills
         - .cursor/plans
         - .specify/memory
+        - RFCS
         - _bmad-output
+        - agents
+        - architecture
+        - design-docs
+        - docs/RFCS
+        - docs/architecture
         - docs/design
+        - docs/design-docs
         - docs/plans
+        - docs/prd
+        - docs/product-specs
+        - docs/requirements
+        - docs/rfc
+        - docs/rfcs
+        - docs/roadmaps
         - docs/specs
         - docs/technical
         - plans
+        - product-specs
+        - requirements
+        - rfc
+        - rfcs
+        - roadmaps
         - specs
+    - type: source_context

@@ -7,7 +7,7 @@
 //   - complete: all tasks done (awaiting owner archive sweep; archive is owner-only)
 //
 // Default mode prints a compact summary to stdout. Use --json to emit a
-// machine-readable shape used by workstreams-status.mjs.
+// machine-readable shape for tooling.
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
