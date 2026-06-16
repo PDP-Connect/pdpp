@@ -23,6 +23,34 @@ function redirectTo(request: Request, path: string): NextResponse {
   return NextResponse.redirect(new URL(path, request.url), 303);
 }
 
+function originMatchesHost(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    return true;
+  }
+  const host = request.headers.get("host");
+  if (!host) {
+    return false;
+  }
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+function readOptionalStringField(formData: FormData, name: string): string | null {
+  const value = formData.get(name);
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string`);
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 async function startRepair(connectionId: string): Promise<string> {
   const result = (await runConnectionNow(connectionId)) as { run_id?: string };
   const runId = result.run_id ?? "";
@@ -52,6 +80,10 @@ export async function POST(request: Request, { params }: { params: Promise<Route
 
   await requireDashboardAccess(pagePath(connectorId));
 
+  if (!originMatchesHost(request)) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
   if (!isBrowserBoundConnector(connectorId)) {
     return redirectTo(
       request,
@@ -66,7 +98,13 @@ export async function POST(request: Request, { params }: { params: Promise<Route
     formData = new FormData();
   }
 
-  const existingConnectionId = String(formData.get("connection_id") ?? "").trim();
+  let existingConnectionId: string | null;
+  try {
+    existingConnectionId = readOptionalStringField(formData, "connection_id");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Invalid browser-session form";
+    return redirectTo(request, errorPath(connectorId, message));
+  }
 
   try {
     const runId = existingConnectionId ? await startRepair(existingConnectionId) : await startSetup(connectorId);

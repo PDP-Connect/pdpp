@@ -23,8 +23,9 @@ const POST_ROUTE_TRANSPORT_RE =
   /<form action=\{`\/dashboard\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/start`\} method="post">/;
 const START_ROUTE_POST_RE = /export async function POST/;
 const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId\)\)/;
+const START_ROUTE_ORIGIN_RE = /if \(!originMatchesHost\(request\)\)/;
+const START_ROUTE_STRING_FIELD_RE = /readOptionalStringField\(formData, "connection_id"\)/;
 const START_ROUTE_SETUP_RE = /createBrowserEnrollmentShell\(connectorId\)/;
-const START_ROUTE_REPAIR_RE = /formData\.get\("connection_id"\)/;
 const START_ROUTE_RUN_RE = /runConnectionNow\(connectionId\)/;
 const START_ROUTE_CLEANUP_RE = /abandonBrowserEnrollmentShell\(shell\.connection_id\)/;
 const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, request\.url\), 303\)/;
@@ -49,8 +50,9 @@ test("browser-session start route preserves auth, setup, repair, redirect, and c
   const route = await readFile(START_ROUTE_FILE, "utf8");
 
   assert.match(route, START_ROUTE_AUTH_RE);
+  assert.match(route, START_ROUTE_ORIGIN_RE);
+  assert.match(route, START_ROUTE_STRING_FIELD_RE);
   assert.match(route, START_ROUTE_SETUP_RE);
-  assert.match(route, START_ROUTE_REPAIR_RE);
   assert.match(route, START_ROUTE_RUN_RE);
   assert.match(route, START_ROUTE_CLEANUP_RE);
   assert.match(route, START_ROUTE_REDIRECT_RE);
