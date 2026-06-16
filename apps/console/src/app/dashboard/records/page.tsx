@@ -23,7 +23,7 @@ import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroo
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { listRecordVersionStats, type RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
 import { listConnectorManifests } from "../lib/rs-client.ts";
 import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
@@ -31,29 +31,11 @@ import { SourcesView } from "./sources-view.tsx";
 import {
   buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
-  type SourcesChurnAdvisory,
   type SourcesRuntimeAdvisory,
   toSourcesView,
 } from "./sources-view-model.ts";
 
 export const dynamic = "force-dynamic";
-
-/**
- * Defensively fetch the version-churn advisory for the Sources surface. The
- * signal comes from `/_ref/records/version-stats` (metadata only — no record
- * payloads). A failed or older route degrades to no advisory rather than
- * breaking the page, exactly as the prior records-page `VersionChurnSection`
- * did. Mirrors that fetch shape (`limit: 8`); the non-`normal` risk filter and
- * the honest disposition headline live in `buildSourcesChurnAdvisory`.
- */
-async function resolveChurnAdvisory(): Promise<SourcesChurnAdvisory | null> {
-  try {
-    const churn = await listRecordVersionStats({ limit: 8 });
-    return buildSourcesChurnAdvisory(churn.data);
-  } catch {
-    return null;
-  }
-}
 
 const SCHEME_RE = /^https?:\/\//;
 
@@ -122,7 +104,6 @@ export default async function RecordsIndexPage({
   }
 
   const instances = toSourcesView(summaries, { manifests });
-  const churnAdvisory = await resolveChurnAdvisory();
   // The poller is mounted unconditionally; `running` (derived from any active
   // run) only selects the fast vs. idle cadence. Named `runningCount` to match
   // the records-poller mount invariant.
@@ -134,7 +115,6 @@ export default async function RecordsIndexPage({
     <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
       <SourcesHeader error={params.error} message={params.message} />
       <SourcesView
-        churnAdvisory={churnAdvisory}
         instances={instances}
         interactive={true}
         reactivateAction={reactivateConnectionAction}

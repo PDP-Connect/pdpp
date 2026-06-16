@@ -21,7 +21,7 @@ const PAGE_FILE = `${HERE}page.tsx`;
 
 const LISTS_CONNECTOR_SUMMARIES = /listConnectorSummaries\(\)/;
 const PROJECTS_WITH_VIEW_MODEL = /toSourcesView\(/;
-const RENDERS_SHELL = /<RecordroomShell\b/;
+const RENDERS_SHELL = /<RecordroomShellWithPalette\b/;
 const RENDERS_SOURCES_VIEW = /<SourcesView\b/;
 // The reskin intentionally dropped the streamed version-churn diagnostics and
 // the device-exporter backlog read; those belonged to the old index, not the

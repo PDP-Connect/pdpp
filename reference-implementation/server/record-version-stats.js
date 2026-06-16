@@ -299,10 +299,13 @@ export async function listRecordVersionGroundTruthForKeys({ keys } = {}) {
  * Conservative candidate predicate for the unfiltered hot path. Returns true
  * when a stream COULD classify above `normal` and therefore needs the
  * ground-truth `record_key_count` / `last_history_at`. Inputs are the
- * projection's exact (`dirty = 0`) facts; a dirty row is always a candidate
- * because its counts may be stale. The denominator uses `current` (not the
- * unavailable distinct-key count), which is an upper bound on versions-per-record
- * — so the predicate never under-includes a real non-normal stream.
+ * projection's exact (`dirty = 0`) facts. Dirty rows are intentionally NOT
+ * candidates on the unfiltered owner-dashboard path: they are surfaced as
+ * honest projection-backed advisory rows with `projection_dirty: true`, while
+ * exact verification remains available through scoped diagnostic requests. The
+ * denominator uses `current` (not the unavailable distinct-key count), which is
+ * an upper bound on versions-per-record — so the predicate never under-includes
+ * a real non-normal stream among clean projection rows.
  *
  * Mirrors the thresholds in `classifyRecordVersionChurn`: current==0 with
  * history>0, or the watch lower bound (vpr >= 5). The high-history arm is
@@ -310,7 +313,7 @@ export async function listRecordVersionGroundTruthForKeys({ keys } = {}) {
  * sufficient to avoid under-including it.
  */
 export function isVersionChurnCandidate({ dirty, currentRecordCount, recordHistoryCount } = {}) {
-  if (dirty) return true;
+  if (dirty) return false;
   const current = Number(currentRecordCount || 0);
   const history = Number(recordHistoryCount || 0);
   if (history <= 0) return false;
@@ -364,26 +367,20 @@ export async function buildRecordVersionStatsEnvelope({
     connectorInstanceId: connectorInstanceId || undefined,
     stream: stream || undefined,
   });
-  // The full-scan helper is the projection block's freshness source too; read it
-  // once and reuse so the dirty-global fallback decision and the envelope's
-  // `projection` summary agree.
+  // Read projection freshness once so candidate selection and the envelope's
+  // `projection` summary describe the same snapshot.
   const projection = await getProjection();
 
   // Hot-path optimization: an UNFILTERED request avoids the unbounded
-  // `record_changes` scan. The projection's exact (`dirty = 0`)
-  // record_history_count / record_count identify the bounded candidate set that
-  // could classify watch/high; the ground-truth COUNT(DISTINCT)/MAX is computed
-  // for that set plus any dirty rows only. record_key_count and last_history_at
-  // are NOT delta-maintainable (a normal per-ingest prune can drop the only row
-  // for a cold key or the row holding MAX(emitted_at) without setting dirty), so
-  // they must come from ground truth wherever they drive classification — but a
-  // normal, non-dirty stream needs neither and is classified from projection
-  // facts alone. A dirty GLOBAL projection (cold / rebuild pending) falls back to
-  // the full scan so a rebuilding instance is never served a thinned diagnostic.
+  // `record_changes` scan, even while the projection is dirty/rebuilding. The
+  // projection's exact (`dirty = 0`) record_history_count / record_count identify
+  // the bounded candidate set that could classify watch/high; dirty rows stay
+  // projection-backed and carry `projection_dirty` so the advisory is honest but
+  // does not turn owner navigation into a whole-history aggregate. Exact
+  // verification remains available through explicit connector_instance_id/stream
+  // diagnostic filters.
   const isUnfiltered = !connectorInstanceId && !stream;
-  const projectionGlobalDirty = Boolean(projection?.dirty);
   const useCandidatePath = isUnfiltered
-    && projectionGlobalDirty === false
     && typeof listGroundTruthForKeys === 'function';
 
   let groundTruthRows;
