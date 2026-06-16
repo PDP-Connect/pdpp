@@ -687,32 +687,30 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
 /**
  * Visible operator remediation for a stalled local-device outbox.
  *
- * The reference projects the stall and an `Inspect the local collector backlog`
- * remediation, but the dashboard cannot drain a device-local outbox remotely —
- * the host that owns the data has to run the local collector. So we surface the
- * reference's own remediation label as readable copy (not hover-only) plus the
- * exact, deterministic commands the operator runs on that host. Each command
- * carries no base URL, token, or filesystem path.
+ * The dashboard cannot drain a device-local outbox remotely — the host that
+ * owns the data has to run the local collector. So we surface a readable
+ * remediation label (not hover-only) plus the exact commands the operator runs
+ * on that host. No command carries a base URL, token, or filesystem path.
  *
- * Crucially, we surface the *recovery* flow, not just diagnosis. `doctor` only
- * reports the dead-letter rows; the operator then has to know that
- * `retry-dead-letters` is what requeues them. Leaving that as an exercise was
- * the owner-reported gap — "Check the collector host" did not tell the operator
- * which command to run. We render the collector's own documented three steps:
+ * NORMAL PATH (current references): the rendered verdict supplies a
+ * CAUSE-SPECIFIC `remediation` payload, and we render its `commands[]` in order.
+ * The runtime makes these correct per cause, so we never show the wrong steps:
+ *   - `state_read_failed` (blocked heartbeat, no real backlog) → re-run only,
+ *     NO dead-letter retry. This was the owner-reported dead end: the old code
+ *     always showed `retry-dead-letters`, which returned "matched: 0, nothing to
+ *     do" when there were no dead letters.
+ *   - `dead_letter_backlog` → preview the requeue, apply it, then re-run.
+ *   - `stale_pending` → re-run.
+ * Each command is a template with non-secret placeholders the console late-binds
+ * (`substituteCommandTemplate`); an unresolved placeholder fails CLOSED to a
+ * non-copyable "Command unavailable" line, never a broken command.
  *
- *   1. diagnose (`doctor`)
- *   2. preview the requeue (`retry-dead-letters`, dry-run by default)
- *   3. apply it (`retry-dead-letters --apply`, which backs up the DB first)
- *
- * One subtlety the earlier copy left implicit and an operator could trip on:
- * `retry-dead-letters --apply` only moves dead-lettered rows back to `pending`.
- * It does not itself ingest them — the next `@pdpp/local-collector run` pass on
- * the host drains the requeued work. The same re-run is the recovery for the
- * other cause of a stalled axis: a `blocked` heartbeat means the runner could
- * not read prior state (`state_get_failed`) and refused to advance, so there may
- * be no dead-letter rows to requeue at all — re-running the collector re-reads
- * state and clears the block. We therefore close with an explicit "run the
- * collector again" note so neither cause leaves the owner at a dead end.
+ * LEGACY FALLBACK (references predating the `remediation` payload): we cannot
+ * tell the cause apart, so we render the documented three-step dead-letter ritual
+ * (diagnose → preview requeue → apply) plus a trailing note covering both the
+ * dead-letter and the blocked-state-read cases. That note is rendered ONLY on
+ * this fallback path — under a cause-specific remediation it would reintroduce
+ * the very dead-letter confusion the cause-correct steps remove.
  */
 function OutboxStallRemediationPanel({
   connectionId,
