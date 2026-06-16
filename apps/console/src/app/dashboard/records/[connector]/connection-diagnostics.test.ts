@@ -65,6 +65,16 @@ const OUTBOX_REMEDIATION_NO_DEVICE_TOKEN = /diagnostics-outbox-remediation-comma
 const PAGE_PASSES_CONNECTION_ID = /connectionId=\{connectorInstanceId \?\? connectionId\}/;
 const OUTBOX_REMEDIATION_SCALE_TESTID = /data-testid="diagnostics-outbox-remediation-scale"/;
 const OUTBOX_REMEDIATION_PASSES_PROGRESS = /summarizeOutboxStallRemediation\(connectionHealth, localDeviceProgress\)/;
+// Cause-specific remediation: the panel must PREFER the server-owned verdict
+// remediation (cause-correct commands) over the hard-coded dead-letter ritual,
+// mapping verdictRemediation.commands → the rendered steps. This is what fixes
+// the owner-reported "retry-dead-letters returned matched: 0" dead end for the
+// state_read_failed cause (whose commands carry only the re-run step).
+const REMEDIATION_DERIVES_FROM_VERDICT =
+  /required_actions\.find\(\(action\) => action\.remediation\)\?\.remediation/;
+const REMEDIATION_PREFERS_VERDICT_COMMANDS =
+  /verdictRemediation\s*\?\s*verdictRemediation\.commands\.map/;
+const REMEDIATION_THREADS_VERDICT_TO_PANEL = /verdictRemediation=\{verdictRemediation\}/;
 const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
@@ -271,6 +281,19 @@ test("stalled-outbox remediation surfaces the actual recovery command, not just 
   // Both the dry-run preview and the --apply recovery command are present.
   assert.match(src, OUTBOX_REMEDIATION_RETRY_COMMAND);
   assert.match(src, OUTBOX_REMEDIATION_RETRY_APPLY);
+});
+
+test("stalled-outbox remediation PREFERS the server's cause-specific verdict commands over the hard-coded dead-letter ritual", async () => {
+  // The owner-reported dead end: the panel showed the 3-step dead-letter ritual
+  // (doctor → preview → requeue) even when the cause was a state-read block with
+  // NO dead letters, so `retry-dead-letters` returned "matched: 0, nothing to do."
+  // The fix: render `rendered_verdict.required_actions[].remediation.commands`,
+  // which the runtime makes cause-correct (state_read_failed → re-run only). The
+  // legacy steps remain ONLY as a fallback for references that omit remediation.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, REMEDIATION_DERIVES_FROM_VERDICT);
+  assert.match(src, REMEDIATION_PREFERS_VERDICT_COMMANDS);
+  assert.match(src, REMEDIATION_THREADS_VERDICT_TO_PANEL);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {

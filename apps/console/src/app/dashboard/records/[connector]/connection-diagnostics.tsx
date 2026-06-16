@@ -17,6 +17,7 @@ import {
 } from "../../lib/connection-evidence.ts";
 import type {
   DeviceSourceInstance,
+  RefActionRemediation,
   RefConnectionHealthSnapshot,
   RefLocalDeviceProgress,
   RefRenderedVerdict,
@@ -237,6 +238,14 @@ function ProjectedStateDiagnostics({
     isLocalDeviceBacked: Boolean(localDeviceProgress),
   });
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
+  // Prefer the server-owned, CAUSE-SPECIFIC remediation from the rendered verdict
+  // (state_read_failed → re-run only; dead_letter_backlog → preview/apply/re-run;
+  // stale_pending → re-run). This replaces the console's hard-coded dead-letter
+  // ritual that showed "retry-dead-letters" even when there were no dead letters
+  // (the owner-reported "matched: 0, nothing to do" dead end). Older references
+  // that don't send `remediation` fall back to the legacy steps below.
+  const verdictRemediation =
+    renderedVerdict?.required_actions.find((action) => action.remediation)?.remediation ?? null;
   const forwardDisposition = formatForwardDisposition(connectionHealth.forward_disposition);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
@@ -319,6 +328,7 @@ function ProjectedStateDiagnostics({
           connectionId={connectionId}
           hostLabels={boundHostLabels(sourceInstances)}
           remediation={outboxRemediation}
+          verdictRemediation={verdictRemediation}
         />
       ) : null}
       {visibleConditions.length ? (
@@ -687,6 +697,7 @@ function OutboxStallRemediationPanel({
   connectionId,
   hostLabels,
   remediation,
+  verdictRemediation,
 }: {
   connectionId: string | null;
   /**
@@ -697,31 +708,47 @@ function OutboxStallRemediationPanel({
    */
   hostLabels: readonly string[];
   remediation: NonNullable<ReturnType<typeof summarizeOutboxStallRemediation>>;
+  /**
+   * Server-owned CAUSE-SPECIFIC remediation from the rendered verdict. When
+   * present, its `commands[]` are the correct steps for the actual cause
+   * (e.g. `state_read_failed` → re-run only, no dead-letter retry). Preferred
+   * over the legacy hard-coded steps; `null` for references that predate it.
+   */
+  verdictRemediation: RefActionRemediation | null;
 }) {
   const scope = connectionId ? { connectionId } : undefined;
-  // The three documented dead-letter requeue steps, in the order the operator
-  // runs them, followed by a "run the collector again" note (rendered after the
-  // list) that drains the requeued rows and also covers the no-dead-letter
-  // blocked-state-read cause. Commands are sourced from the safe CLI builders so
-  // none can leak a base URL, token, or device-local filesystem path.
-  const steps: { caption: string; command: string; label: string }[] = [
-    {
-      label: "1. Diagnose",
-      caption: "See the dead-letter rows and outbox health.",
-      command: pdppLocalCollectorDoctorCommand(scope),
-    },
-    {
-      label: "2. Preview the requeue",
-      caption: "Dry run — shows what would be requeued, changes nothing.",
-      command: pdppLocalCollectorRetryDeadLettersCommand(scope),
-    },
-    {
-      label: "3. Requeue",
-      caption:
-        "Moves the dead-letter rows back to pending after backing up the database first. The next collector run drains them — it does not ingest on its own.",
-      command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
-    },
-  ];
+  // Prefer the server-owned cause-specific steps. They already exclude the
+  // dead-letter commands for causes (state_read_failed / stale_pending) that
+  // have nothing to requeue — fixing the "matched: 0, nothing to do" dead end.
+  // Fall back to the legacy three-step dead-letter ritual only when the
+  // reference does not send a remediation payload.
+  const steps: { caption: string; command: string; label: string }[] = verdictRemediation
+    ? verdictRemediation.commands.map((command) => ({
+        label: command.label,
+        caption: "",
+        command: command.command_template,
+      }))
+    : [
+        {
+          label: "1. Diagnose",
+          caption: "See the dead-letter rows and outbox health.",
+          command: pdppLocalCollectorDoctorCommand(scope),
+        },
+        {
+          label: "2. Preview the requeue",
+          caption: "Dry run — shows what would be requeued, changes nothing.",
+          command: pdppLocalCollectorRetryDeadLettersCommand(scope),
+        },
+        {
+          label: "3. Requeue",
+          caption:
+            "Moves the dead-letter rows back to pending after backing up the database first. The next collector run drains them — it does not ingest on its own.",
+          command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
+        },
+      ];
+  // When the verdict provides cause-specific copy, lead with its summary so the
+  // owner sees the right framing ("re-run the collector" vs "retry dead letters").
+  const introCopy = verdictRemediation?.summary ?? null;
   // Name the host when we know it; otherwise keep the honest generic phrasing.
   const hostPhrase =
     hostLabels.length === 0
@@ -733,7 +760,7 @@ function OutboxStallRemediationPanel({
       data-testid="diagnostics-outbox-remediation"
     >
       <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-outbox-remediation-label">
-        {remediation.label}
+        {verdictRemediation?.label ?? remediation.label}
       </p>
       {hostLabels.length > 0 ? (
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-host">
@@ -742,8 +769,9 @@ function OutboxStallRemediationPanel({
         </p>
       ) : null}
       <p className="pdpp-caption text-muted-foreground" title={remediation.reason ?? undefined}>
-        Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run
-        these on {hostPhrase}, in order:
+        {introCopy
+          ? `${introCopy} Run ${steps.length === 1 ? "this" : "these"} on ${hostPhrase}${steps.length === 1 ? "" : ", in order"}:`
+          : `Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run these on ${hostPhrase}, in order:`}
       </p>
       {remediation.scale ? (
         <p
@@ -757,7 +785,7 @@ function OutboxStallRemediationPanel({
         {steps.map((step) => (
           <li className="flex flex-col gap-0.5" key={step.label}>
             <span className="pdpp-caption font-medium text-foreground">{step.label}</span>
-            <span className="pdpp-caption text-muted-foreground">{step.caption}</span>
+            {step.caption ? <span className="pdpp-caption text-muted-foreground">{step.caption}</span> : null}
             <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
               <code
                 className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
