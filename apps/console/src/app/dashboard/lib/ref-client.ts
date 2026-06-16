@@ -516,6 +516,38 @@ export type RefRequiredActionKind =
 export type RefActionAudience = "maintainer" | "none" | "owner";
 export type RefActionUrgency = "now" | "overdue" | "soon" | "verifying";
 
+export type RefActionRemediationCause =
+  | "dead_letter_backlog"
+  | "stale_pending"
+  | "state_read_failed"
+  | "stalled_unknown";
+
+export type RefActionRemediationCommandKind =
+  | "local_collector_doctor"
+  | "local_collector_retry_dead_letters_apply"
+  | "local_collector_retry_dead_letters_preview"
+  | "local_collector_run";
+
+export interface RefActionRemediationCommand {
+  command_template: string;
+  kind: RefActionRemediationCommandKind;
+  label: string;
+}
+
+export interface RefActionRemediationTarget {
+  identity_source: "source_instance_bindings";
+  kind: "local_device";
+}
+
+export interface RefActionRemediation {
+  cause: RefActionRemediationCause;
+  commands: readonly RefActionRemediationCommand[];
+  kind: "local_collector_recovery";
+  label: string;
+  summary: string;
+  target: RefActionRemediationTarget;
+}
+
 export interface RefSatisfactionContract {
   kind:
     | "attention_resolved"
@@ -532,6 +564,7 @@ export interface RefRequiredAction {
   audience: RefActionAudience;
   cta: string;
   kind: RefRequiredActionKind;
+  remediation?: RefActionRemediation;
   satisfied_when: RefSatisfactionContract;
   terminal: boolean;
   urgency: RefActionUrgency;

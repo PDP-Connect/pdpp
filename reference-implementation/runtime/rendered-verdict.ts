@@ -31,6 +31,7 @@
  */
 
 import {
+  CONNECTION_CONDITION_REASONS,
   type ConnectionHealthSnapshot,
   type ConnectionRefreshEvidence,
   type CoverageAxis,
@@ -103,6 +104,47 @@ export type ActionAudience = "maintainer" | "none" | "owner";
 
 export type ActionUrgency = "now" | "overdue" | "soon" | "verifying";
 
+export type ActionRemediationKind = "local_collector_recovery";
+
+export type ActionRemediationCause = "dead_letter_backlog" | "stale_pending" | "state_read_failed" | "stalled_unknown";
+
+export type ActionRemediationCommandKind =
+  | "local_collector_doctor"
+  | "local_collector_retry_dead_letters_apply"
+  | "local_collector_retry_dead_letters_preview"
+  | "local_collector_run";
+
+export interface ActionRemediationCommand {
+  /** Safe copy-paste template; placeholders are non-secret values the console already knows. */
+  readonly command_template: string;
+  /** Stable symbolic command id so owner surfaces can substitute deployment-specific args safely. */
+  readonly kind: ActionRemediationCommandKind;
+  /** Owner-facing command label. */
+  readonly label: string;
+}
+
+export interface ActionRemediationTarget {
+  /** Owner surfaces resolve host/source labels from existing source-instance bindings. */
+  readonly identity_source: "source_instance_bindings";
+  /** The recovery runs on the device/local host that owns the collector outbox. */
+  readonly kind: "local_device";
+}
+
+export interface ActionRemediation {
+  /** Stalled local collector cause derived from connection-health conditions. */
+  readonly cause: ActionRemediationCause;
+  /** Ordered commands for this cause. State-read and stale-pending intentionally omit dead-letter commands. */
+  readonly commands: readonly ActionRemediationCommand[];
+  /** Cause-specific remediation family. */
+  readonly kind: ActionRemediationKind;
+  /** Primary owner step for focused recovery panels. */
+  readonly label: string;
+  /** One sentence explaining what the action does. */
+  readonly summary: string;
+  /** Target identity source for focused recovery panels. */
+  readonly target: ActionRemediationTarget;
+}
+
 /**
  * The one unified satisfaction contract (design D3). A single discriminated union the
  * self-heal watcher evaluates for EVERY owner-actionable kind — never per-kind bespoke
@@ -125,6 +167,8 @@ export interface RequiredAction {
   /** Non-secret owner-facing call to action. */
   readonly cta: string;
   readonly kind: RequiredActionKind;
+  /** Optional focused remediation payload for owner-action panels. */
+  readonly remediation?: ActionRemediation;
   /** The single unified satisfaction contract for this action. */
   readonly satisfied_when: SatisfactionContract;
   /**
@@ -506,8 +550,130 @@ function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
 }
 
-function shouldOfferRetryGapAction(snapshot: ConnectionHealthSnapshot, refresh: ConnectionRefreshEvidence | null): boolean {
+function shouldOfferRetryGapAction(
+  snapshot: ConnectionHealthSnapshot,
+  refresh: ConnectionRefreshEvidence | null
+): boolean {
   return snapshot.state === "degraded" || isManualRefreshOnly(refresh);
+}
+
+const LOCAL_COLLECTOR_RUN_COMMAND =
+  "npx -y @pdpp/local-collector run --base-url <provider-url> --connector <connector-id>";
+const LOCAL_COLLECTOR_DOCTOR_COMMAND = "npx -y @pdpp/local-collector doctor --connection-id <connection-id>";
+const LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_COMMAND =
+  "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id>";
+const LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_APPLY_COMMAND =
+  "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id> --apply";
+const LOCAL_COLLECTOR_REMEDIATION_TARGET: ActionRemediationTarget = {
+  kind: "local_device",
+  identity_source: "source_instance_bindings",
+};
+
+function localCollectorRunCommand(): ActionRemediationCommand {
+  return {
+    kind: "local_collector_run",
+    label: "Re-run collector",
+    command_template: LOCAL_COLLECTOR_RUN_COMMAND,
+  };
+}
+
+function localCollectorDoctorCommand(): ActionRemediationCommand {
+  return {
+    kind: "local_collector_doctor",
+    label: "Inspect collector",
+    command_template: LOCAL_COLLECTOR_DOCTOR_COMMAND,
+  };
+}
+
+function localCollectorRetryPreviewCommand(): ActionRemediationCommand {
+  return {
+    kind: "local_collector_retry_dead_letters_preview",
+    label: "Preview dead-letter retry",
+    command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_COMMAND,
+  };
+}
+
+function localCollectorRetryApplyCommand(): ActionRemediationCommand {
+  return {
+    kind: "local_collector_retry_dead_letters_apply",
+    label: "Retry dead letters",
+    command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_APPLY_COMMAND,
+  };
+}
+
+function stalledOutboxCause(snapshot: ConnectionHealthSnapshot): ActionRemediationCause {
+  const reasons = new Set(
+    snapshot.conditions
+      .filter(
+        (condition) =>
+          condition.current &&
+          (condition.type === "LocalExporterAvailable" || condition.type === "BacklogClear") &&
+          condition.status === "false"
+      )
+      .map((condition) => condition.reason)
+  );
+
+  if (
+    reasons.has(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG) ||
+    reasons.has(CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG)
+  ) {
+    return "dead_letter_backlog";
+  }
+  if (
+    reasons.has(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED) ||
+    reasons.has(CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED)
+  ) {
+    return "state_read_failed";
+  }
+  if (
+    reasons.has(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING) ||
+    reasons.has(CONNECTION_CONDITION_REASONS.OUTBOX_STALE_PENDING)
+  ) {
+    return "stale_pending";
+  }
+  return "stalled_unknown";
+}
+
+function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRemediation {
+  const cause = stalledOutboxCause(snapshot);
+  switch (cause) {
+    case "state_read_failed":
+      return {
+        kind: "local_collector_recovery",
+        cause,
+        label: "Re-run the collector on the host",
+        summary: "Re-run the collector on the host to clear the blocked state read.",
+        target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
+        commands: [localCollectorRunCommand()],
+      };
+    case "dead_letter_backlog":
+      return {
+        kind: "local_collector_recovery",
+        cause,
+        label: "Retry dead letters, then re-run the collector",
+        summary: "Retry the dead-lettered rows, then re-run the collector on the host to drain them.",
+        target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
+        commands: [localCollectorRetryPreviewCommand(), localCollectorRetryApplyCommand(), localCollectorRunCommand()],
+      };
+    case "stale_pending":
+      return {
+        kind: "local_collector_recovery",
+        cause,
+        label: "Re-run the collector on the host",
+        summary: "Re-run the collector on the host to resume draining pending work.",
+        target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
+        commands: [localCollectorRunCommand()],
+      };
+    default:
+      return {
+        kind: "local_collector_recovery",
+        cause,
+        label: "Inspect the local collector on the host",
+        summary: "Inspect the local collector backlog before this source can make progress.",
+        target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
+        commands: [localCollectorDoctorCommand()],
+      };
+  }
 }
 
 /**
@@ -569,12 +735,14 @@ function buildRequiredActions(
   // still be "complete" because the records already accepted are valid, but the
   // source cannot keep making progress until the owner checks the collector host.
   if (snapshot.axes.outbox === "stalled" && disposition !== "terminal" && !hasOwnerAction(actions)) {
+    const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
       kind: "add_info",
       audience: "owner",
       urgency: "now",
       affects: [],
-      cta: "Check the collector",
+      cta: remediation.label,
+      remediation,
       terminal: false,
       satisfied_when: { kind: "attention_resolved" },
     });
@@ -840,8 +1008,8 @@ function buildForwardStatement(disposition: ForwardDisposition, actions: readonl
       case "reauth":
         return "Reconnect this account and collection resumes.";
       case "add_info":
-        if (primary.cta === "Check the collector") {
-          return "Check the collector before this source can make progress.";
+        if (primary.remediation?.kind === "local_collector_recovery") {
+          return primary.remediation.summary;
         }
         return "Finish the prompt and collection resumes.";
       case "refresh_now":

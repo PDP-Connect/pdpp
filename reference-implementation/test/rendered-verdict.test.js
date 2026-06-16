@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CONNECTION_CONDITION_REASONS,
+} from '../runtime/connection-health.ts';
+import {
   synthesizeRenderedVerdict,
   toGrantScopedVerdict,
   VerdictInvariantError,
@@ -35,6 +38,42 @@ function credentialRejectedCondition() {
     reason: 'credential_rejected',
     status: 'false',
     severity: 'error',
+  });
+}
+
+function localExporterStalledCondition(reason, message = 'Local exporter work is stalled.') {
+  return condition({
+    type: 'LocalExporterAvailable',
+    id: `LocalExporterAvailable:${reason}`,
+    reason,
+    message,
+    origin: 'local_device',
+    status: 'false',
+    severity: 'error',
+    remediation: {
+      action: 'clear_backlog',
+      label: 'Cause-specific local collector remediation',
+      retryable: true,
+      target: 'local_device',
+    },
+  });
+}
+
+function backlogStalledCondition(reason, message = 'Local-device outbox work is stalled.') {
+  return condition({
+    type: 'BacklogClear',
+    id: `BacklogClear:${reason}`,
+    reason,
+    message,
+    origin: 'local_device',
+    status: 'false',
+    severity: 'error',
+    remediation: {
+      action: 'clear_backlog',
+      label: 'Cause-specific local collector remediation',
+      retryable: true,
+      target: 'local_device',
+    },
   });
 }
 
@@ -313,13 +352,23 @@ test('channel: attention always carries an owner-satisfiable action (S1)', () =>
   assert.ok(v.required_actions.some((a) => a.audience === 'owner' && a.satisfied_when.kind !== 'none'));
 });
 
-test('channel: stalled outbox is not calm even when coverage and disposition are complete', () => {
+test('channel: stalled outbox state-read block asks for re-run, not dead-letter retry', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
       state: 'degraded',
       axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
       forward_disposition: 'complete',
-      reason_code: 'local_exporter_dead_letter_backlog',
+      reason_code: 'local_exporter_state_read_failed',
+      conditions: [
+        localExporterStalledCondition(
+          CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED,
+          'Local exporter is blocked reading prior state. There are zero dead-letter rows to retry.'
+        ),
+        backlogStalledCondition(
+          CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED,
+          'Local-device outbox is blocked on a failed state read, not a backlog.'
+        ),
+      ],
     }),
     [stream({ coverage: 'complete' })],
     null,
@@ -329,12 +378,73 @@ test('channel: stalled outbox is not calm even when coverage and disposition are
   assert.equal(v.pill.tone, 'red');
   assert.equal(v.pill.label, "Can't collect");
   assert.equal(v.channel, 'attention');
-  assert.equal(v.forward_statement, 'Check the collector before this source can make progress.');
+  assert.equal(v.forward_statement, 'Re-run the collector on the host to clear the blocked state read.');
   assert.equal(action.kind, 'add_info');
   assert.equal(action.audience, 'owner');
-  assert.equal(action.cta, 'Check the collector');
+  assert.equal(action.cta, 'Re-run the collector on the host');
   assert.deepEqual(action.satisfied_when, { kind: 'attention_resolved' });
+  assert.equal(action.remediation?.kind, 'local_collector_recovery');
+  assert.equal(action.remediation?.cause, 'state_read_failed');
+  assert.deepEqual(action.remediation?.target, {
+    kind: 'local_device',
+    identity_source: 'source_instance_bindings',
+  });
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_run']);
   assert.notEqual(v.forward_statement, 'Current and collecting normally.');
+  assert.doesNotMatch(JSON.stringify(action), /dead[- ]letter/i);
+});
+
+test('channel: dead-letter stalled outbox includes retry-dead-letters before re-run', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
+      forward_disposition: 'complete',
+      reason_code: 'local_exporter_dead_letter_backlog',
+      conditions: [
+        localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG),
+        backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG),
+      ],
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.forward_statement, 'Retry the dead-lettered rows, then re-run the collector on the host to drain them.');
+  assert.equal(action.cta, 'Retry dead letters, then re-run the collector');
+  assert.equal(action.remediation?.cause, 'dead_letter_backlog');
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), [
+    'local_collector_retry_dead_letters_preview',
+    'local_collector_retry_dead_letters_apply',
+    'local_collector_run',
+  ]);
+});
+
+test('channel: stale-pending stalled outbox asks for collector re-run only', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
+      forward_disposition: 'complete',
+      reason_code: 'local_exporter_stale_pending',
+      conditions: [
+        localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING),
+        backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_STALE_PENDING),
+      ],
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.forward_statement, 'Re-run the collector on the host to resume draining pending work.');
+  assert.equal(action.cta, 'Re-run the collector on the host');
+  assert.equal(action.remediation?.cause, 'stale_pending');
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_run']);
+  assert.doesNotMatch(JSON.stringify(action), /retry-dead-letters/);
 });
 
 test('channel: degraded resumable stale coverage is advisory Retry now, not calm wait', () => {

@@ -178,9 +178,38 @@ correlating the same-stream pending detail gap.
   coverage and forward disposition are otherwise complete
 - **THEN** the verdict SHALL NOT assign `channel: "calm"`
 - **AND** the verdict SHALL include an owner-audience required action telling the
-  owner to check the collector
+  owner the cause-specific local collector recovery step
 - **AND** the `forward_statement` SHALL NOT say that the source is current,
   collecting normally, or self-handled.
+
+#### Scenario: State-read stalled outbox does not render dead-letter recovery
+
+- **WHEN** a stalled local-device outbox is caused by
+  `local_exporter_state_read_failed` or `outbox_state_read_failed`
+- **THEN** the primary required action SHALL tell the owner to re-run the collector
+  on the host
+- **AND** the action's focused remediation payload SHALL carry
+  `cause: "state_read_failed"` and only a local-collector run command
+- **AND** the action, remediation, and forward statement SHALL NOT tell the owner
+  to retry dead letters.
+
+#### Scenario: Dead-letter stalled outbox renders retry-then-rerun recovery
+
+- **WHEN** a stalled local-device outbox is caused by
+  `local_exporter_dead_letter_backlog` or `outbox_dead_letter_backlog`
+- **THEN** the primary required action's focused remediation payload SHALL carry
+  `cause: "dead_letter_backlog"`
+- **AND** the remediation commands SHALL include the dead-letter preview, the
+  dead-letter apply step, and the collector re-run step in that order.
+
+#### Scenario: Stale-pending stalled outbox renders rerun recovery
+
+- **WHEN** a stalled local-device outbox is caused by
+  `local_exporter_stale_pending` or `outbox_stale_pending`
+- **THEN** the primary required action's focused remediation payload SHALL carry
+  `cause: "stale_pending"`
+- **AND** the remediation commands SHALL include the collector re-run step and
+  SHALL NOT include a dead-letter retry command.
 
 #### Scenario: A degraded resumable stale gap is advisory rather than silent
 
@@ -235,6 +264,13 @@ taxonomy (`reauth`, `refresh_now`, `reattach_schedule`, `add_info`, `retry_gap`,
 `backfill`, `wait`, `code_fix`, `contact_support`), an `audience`
 (`owner` | `maintainer` | `none`), an `urgency` (`now` | `soon` | `verifying` |
 `overdue`), an `affects[]` list of stream ids, a `cta`, and a `terminal` flag.
+When the action drives a focused recovery panel, it MAY also carry an additive
+`remediation` payload naming the remediation `kind`, cause, primary label,
+summary, target identity source, and ordered non-secret command templates. Owner
+surfaces SHALL consume this payload instead of re-deriving local collector
+recovery steps from raw conditions. For local-device recovery, the target identity
+source SHALL point owner surfaces at existing source-instance bindings rather than
+inventing a host identity inside the synthesizer.
 
 The `terminal` flag SHALL be DERIVED from the forward disposition
 (`terminal === (forward_disposition === "terminal")`) and SHALL NOT be an
