@@ -649,12 +649,11 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
       {instance.streams.length === 0 ? (
         <p className="rr-s-note">No streams declared on this source yet.</p>
       ) : (
-        <Table className="rr-s-cols" cols="minmax(0, 1.1fr) 76px 110px 64px minmax(0, 1fr)">
+        <Table className="rr-s-cols" cols="minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem">
           <TableHeaderRow>
             <TableHeader>stream</TableHeader>
-            <TableHeader numeric>records</TableHeader>
-            <TableHeader>cursor</TableHeader>
-            <TableHeader>search</TableHeader>
+            <TableHeader>latest collection</TableHeader>
+            <TableHeader>coverage</TableHeader>
             <TableHeader>read in</TableHeader>
           </TableHeaderRow>
           {instance.streams.map((stream) => (
@@ -663,25 +662,49 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
         </Table>
       )}
       <p className="rr-s-note">
-        Records are never read here. Click any stream to open it in Explore — the one reader. A stream's search and
-        cursor state are shown on the source detail page.
+        Records are never read here. Stream facts come from the latest collection report when the reference has one;
+        otherwise the row says those facts are not available yet. Click any stream to open it in Explore — the one
+        reader.
       </p>
     </div>
   );
 }
 
 function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
+  const collection = stream.collection;
   return (
-    <Link className="pdpp-table__row" href={stream.exploreHref} style={{ display: "grid" }}>
+    <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
       <TableCell>
         <span className="rr-s-stream">{stream.name}</span>
       </TableCell>
-      <TableCell numeric>{stream.recordCount === null ? "—" : stream.recordCount.toLocaleString()}</TableCell>
       <TableCell>
-        <span className="rr-s-cursor">{stream.cursor ?? "—"}</span>
+        <StreamCollectionCount collection={collection} />
       </TableCell>
       <TableCell>
-        <span className="rr-s-cursor">{searchLabel(stream.searchable)}</span>
+        {collection ? (
+          <span className="rr-s-stream-chip" data-tone={collection.tone} title={collection.coverageTitle}>
+            {collection.coverageLabel}
+          </span>
+        ) : (
+          <span
+            className="rr-s-stream-chip"
+            data-tone="neutral"
+            title="The reference has not produced a per-stream collection report for this stream yet."
+          >
+            Unknown
+          </span>
+        )}
+        {collection?.dispositionLabel ? (
+          <span className="rr-s-stream-subfact" title={collection.dispositionTitle ?? undefined}>
+            {collection.dispositionLabel}
+          </span>
+        ) : null}
+        {collection && collection.pendingDetailGaps > 0 ? (
+          <span className="rr-s-stream-subfact is-warning">
+            {collection.pendingDetailGaps.toLocaleString()} pending gap{collection.pendingDetailGaps === 1 ? "" : "s"}
+          </span>
+        ) : null}
+        {collection?.skipLabel ? <span className="rr-s-stream-subfact">{collection.skipLabel}</span> : null}
       </TableCell>
       <TableCell>
         <span className="rr-s-readby">Explore →</span>
@@ -690,10 +713,20 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
   );
 }
 
-/** Honest search label: only claim "text"/"sealed" when the manifest declared it. */
-function searchLabel(searchable: boolean | null): string {
-  if (searchable === null) {
-    return "—";
+function StreamCollectionCount({ collection }: { collection: SourceInstanceView["streams"][number]["collection"] }) {
+  if (collection?.countsLabel) {
+    return (
+      <span className="rr-s-stream-fact" title={collection.countsTitle}>
+        {collection.countsLabel}
+      </span>
+    );
   }
-  return searchable ? "text" : "sealed";
+  if (collection) {
+    return (
+      <span className="rr-s-stream-fact is-muted" title={collection.countsTitle}>
+        Collection count unavailable
+      </span>
+    );
+  }
+  return <span className="rr-s-stream-fact is-muted">Collection facts not available yet</span>;
 }

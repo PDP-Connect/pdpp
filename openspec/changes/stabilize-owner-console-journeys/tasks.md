@@ -24,12 +24,12 @@
 
 ## 4. Sources Cockpit
 
-- [ ] Produce current desktop/mobile screenshots of the Sources list and one selected source detail.
-- [ ] Fix layout squish: source rows retain enough width for names and statuses at desktop sizes.
-- [ ] Fix state geometry: degraded/attention rows do not change width, corner shape, or row rhythm relative to normal rows.
-- [ ] Fix selected-state craft: highlight/accent does not touch row content.
-- [ ] Replace empty stream rows with useful facts or honest "not available yet" copy.
-- [ ] Run a headed confused-owner pass for "I know what data I have" after the fixes.
+- [x] Produce current desktop/mobile screenshots of the Sources list and one selected source detail.
+- [x] Fix layout squish: source rows retain enough width for names and statuses at desktop sizes.
+- [x] Fix state geometry: degraded/attention rows do not change width, corner shape, or row rhythm relative to normal rows.
+- [x] Fix selected-state craft: highlight/accent does not touch row content.
+- [x] Replace empty stream rows with useful facts or honest "not available yet" copy.
+- [x] Run a headed confused-owner pass for "I know what data I have" after the fixes.
 
 ## 5. Attention And Recovery Consistency
 

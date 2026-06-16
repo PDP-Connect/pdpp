@@ -8,8 +8,8 @@
 
 .rr-s {
   display: grid;
-  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
-  gap: 32px;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.7fr);
+  gap: 24px;
   align-items: start;
 }
 
@@ -32,10 +32,11 @@ a.rr-s-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 12px;
-  padding: 10px 0 11px;
+  padding: 10px 12px 11px 14px;
   background: none;
   border: 0;
   border-bottom: 1px solid var(--border);
+  border-radius: 0;
   color: inherit;
   text-align: left;
   cursor: pointer;
@@ -52,7 +53,7 @@ a.rr-s-item {
 /* B-2 unified active treatment: left-2 --primary accent + tint fill */
 .rr-s-item.is-on {
   background: var(--primary-tint);
-  box-shadow: inset 2px 0 0 var(--primary), inset 0 0 0 1px var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--primary), inset 0 0 0 1px var(--border-strong);
 }
 
 .rr-s-item__name {
@@ -288,23 +289,29 @@ a.rr-s-item {
   color: var(--muted-foreground);
 }
 
-/* D-3: stream manifest table — desktop has 5 columns; mobile collapses to 3
-   by hiding the 64px status column and the rightmost "read by" fraction so the
-   stream name + stats columns remain legible without horizontal scroll. */
+/* Stream manifest table — show useful collection facts when present, and an
+   explicit unavailable state when the reference has not produced per-stream
+   facts. No dash-only rows: empty facts are still a meaningful state. */
 .rr-s-cols {
-  --cols: minmax(0, 1.1fr) 76px 110px 64px minmax(0, 1fr);
+  --cols: minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem;
 }
 @media (max-width: 640px) {
   .rr-s-cols {
-    --cols: minmax(0, 1fr) 76px 110px;
+    --cols: minmax(0, 1fr) minmax(0, 1.25fr);
   }
-  /* Hide the 4th (status) and 5th (read-by) columns on narrow screens. */
+  /* Hide coverage + Explore columns on narrow screens; the collection column
+     still says whether facts exist, and tapping the row remains the reader. */
+  .rr-s-cols .pdpp-table__h:nth-child(3),
   .rr-s-cols .pdpp-table__h:nth-child(4),
-  .rr-s-cols .pdpp-table__h:nth-child(5),
-  .rr-s-cols .pdpp-table__row > *:nth-child(4),
-  .rr-s-cols .pdpp-table__row > *:nth-child(5) {
+  .rr-s-cols .pdpp-table__row > *:nth-child(3),
+  .rr-s-cols .pdpp-table__row > *:nth-child(4) {
     display: none;
   }
+}
+
+.rr-s-stream-row {
+  text-decoration: none;
+  color: inherit;
 }
 
 .rr-s-stream {
@@ -316,11 +323,53 @@ a.rr-s-item {
   text-overflow: ellipsis;
   color: var(--primary);
 }
-.rr-s-cursor {
-  font-family: var(--font-mono);
-  font-size: 0.69rem;
+
+.rr-s-stream-fact,
+.rr-s-stream-subfact {
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.35;
   color: var(--muted-foreground);
+}
+.rr-s-stream-fact {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-s-stream-fact.is-muted {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.rr-s-stream-subfact {
+  margin-top: 2px;
+}
+.rr-s-stream-subfact.is-warning {
+  color: var(--warning);
+}
+.rr-s-stream-chip {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  line-height: 1.35;
   white-space: nowrap;
+}
+.rr-s-stream-chip[data-tone="success"] {
+  border-color: color-mix(in oklab, var(--success) 30%, transparent);
+  background: var(--success-tint);
+  color: var(--success);
+}
+.rr-s-stream-chip[data-tone="warning"] {
+  border-color: color-mix(in oklab, var(--warning) 38%, transparent);
+  background: var(--warning-tint);
+  color: var(--warning);
+}
+.rr-s-stream-chip[data-tone="danger"] {
+  border-color: color-mix(in oklab, var(--destructive) 38%, transparent);
+  background: var(--destructive-tint);
+  color: var(--destructive);
 }
 .rr-s-readby {
   font-size: 0.75rem;

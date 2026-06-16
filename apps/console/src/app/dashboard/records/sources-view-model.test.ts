@@ -25,9 +25,11 @@ import {
   formatSchedule,
   manualUploadHrefForSource,
   toSourceInstanceView,
+  toSourcesView,
 } from "./sources-view-model.ts";
 
 const EXPLORE_HREF_RE = /^\/dashboard\/explore\?connection=conn_1&stream=/;
+const MESSAGES_STREAM_HREF_RE = /stream=messages/;
 const CHURN_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions/;
 const CHURN_CLASSIFIED_RE = /classified/;
 const CHURN_NEEDS_REVIEW_RE = /needs review/;
@@ -452,8 +454,74 @@ test("toSourceInstanceView never fabricates per-stream search/cursor", () => {
   for (const stream of view.streams) {
     assert.equal(stream.searchable, null, "search flag must be unknown, not guessed");
     assert.equal(stream.cursor, null, "cursor must be unknown, not guessed");
+    assert.equal(stream.collection, null, "collection facts must be absent when the reference did not provide them");
     assert.match(stream.exploreHref, EXPLORE_HREF_RE);
   }
+});
+
+test("toSourceInstanceView surfaces server-owned collection report facts per stream", () => {
+  const view = toSourceInstanceView(
+    summary({
+      collection_report: [
+        {
+          checkpoint: "advanced",
+          collected: 8,
+          considered: 10,
+          coverage_condition: "partial",
+          forward_disposition: "resumable",
+          pending_detail_gaps: 2,
+          skipped: null,
+          stream: "messages",
+        },
+      ],
+    })
+  );
+
+  const messages = view.streams.find((stream) => stream.name === "messages");
+  const threads = view.streams.find((stream) => stream.name === "threads");
+  assert.ok(messages?.collection, "matching streams should carry collection report facts");
+  assert.equal(messages.collection.countsLabel, "8 / 10 collected");
+  assert.equal(messages.collection.coverageLabel, "Coverage · partial");
+  assert.equal(messages.collection.dispositionLabel, "Next run: resumes collection");
+  assert.equal(messages.collection.pendingDetailGaps, 2);
+  assert.equal(messages.collection.tone, "warning");
+  assert.equal(threads?.collection, null, "streams without collection report facts stay explicitly unavailable");
+});
+
+test("toSourceInstanceView keeps collection-report-only streams visible", () => {
+  const view = toSourceInstanceView(
+    summary({
+      collection_report: [
+        {
+          checkpoint: "advanced",
+          collected: 8,
+          considered: 10,
+          coverage_condition: "partial",
+          forward_disposition: "resumable",
+          pending_detail_gaps: 2,
+          skipped: null,
+          stream: "messages",
+        },
+      ],
+      stream_count: 1,
+      streams: [],
+    })
+  );
+
+  assert.deepEqual(
+    view.streams.map((stream) => stream.name),
+    ["messages"]
+  );
+  assert.equal(view.streams[0]?.collection?.countsLabel, "8 / 10 collected");
+  assert.match(view.streams[0]?.exploreHref ?? "", MESSAGES_STREAM_HREF_RE);
+});
+
+test("toSourceInstanceView drops blank stream names", () => {
+  const view = toSourceInstanceView(summary({ stream_count: 1, streams: ["", "  ", "messages"] }));
+  assert.deepEqual(
+    view.streams.map((stream) => stream.name),
+    ["messages"]
+  );
 });
 
 test("toSourceInstanceView surfaces a revoked instance with a struck status", () => {
@@ -465,6 +533,35 @@ test("toSourceInstanceView surfaces a revoked instance with a struck status", ()
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
   const view = toSourceInstanceView(summary({ connection_id: "conn x/y" }));
   assert.equal(view.detailHref, "/dashboard/records/conn%20x%2Fy");
+});
+
+test("toSourcesView disambiguates duplicate unnamed connections without exposing ids", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon",
+      connection_id: "cin_a",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon",
+      connection_id: "cin_b",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon - Personal",
+      connection_id: "cin_named",
+    }),
+  ]);
+
+  assert.equal(views[0]?.displayName, "Amazon · account 1");
+  assert.equal(views[1]?.displayName, "Amazon · account 2");
+  assert.equal(views[0]?.accountLine, "Unnamed source");
+  assert.equal(views[2]?.displayName, "Amazon - Personal");
+  assert.equal(views[2]?.accountLine, "Amazon");
 });
 
 test("manual/upload sources link to importing another file into the same source", () => {

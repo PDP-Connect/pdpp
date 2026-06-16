@@ -75,6 +75,13 @@ For owner-console UI changes, green unit tests are not enough. A deployable tran
 4. Attention/recovery consistency: preserve the recovered single-attention truth and cause-specific remediation while routing every summary to exact source recovery.
 5. Pixel/craft pass only after the trust/task blockers above are closed.
 
+## Empty Stream Facts Decision
+
+- `/dashboard/records` already receives `RefConnectorSummary.streams`, `stream_count`, `total_records`, and optional `collection_report`. It does not receive per-stream cursor/search metadata or source-detail `StreamSummary.record_count`.
+- Source detail fetches stream summaries separately and can render per-stream `record_count` and `last_updated` alongside the connection overview.
+- Minimal fix: keep `/dashboard/records` summary-backed, derive stream row names from `streams` plus `collection_report` keys, filter blank names, and render collection facts or explicit unavailable copy. Do not add a detail-page stream fetch to the records index.
+- Tests: `sources-view-model.test.ts` pins collection-report-only streams; `sources-cockpit.invariants.test.ts` pins visible fact/unavailable copy instead of dash-only rows.
+
 ## Non-Goals
 
 - This change does not make every connector support one-click setup.

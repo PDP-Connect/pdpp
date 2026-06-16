@@ -23,12 +23,13 @@
  * a false zero or green.
  */
 
-import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,
   manualUploadSetupFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
+import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
 import type {
   RefConnectionHealthSnapshot,
@@ -86,6 +87,12 @@ export interface SourceStatusFlag {
 
 /** One row in the passport's stream manifest table. */
 export interface SourceStreamManifestRow {
+  /**
+   * Per-stream collection facts from the reference's Collection Report. Null
+   * means this reference/connector has not supplied stream-level facts yet; the
+   * UI must say that honestly instead of rendering blank columns.
+   */
+  collection: SourceStreamCollectionFacts | null;
   /** Cursor/checkpoint hint, or null when none is exposed at the index level. */
   cursor: string | null;
   /** Deep-link into Explore for this connection + stream. */
@@ -99,6 +106,18 @@ export interface SourceStreamManifestRow {
    * "sealed", which would imply a determination the data did not make.
    */
   searchable: boolean | null;
+}
+
+export interface SourceStreamCollectionFacts {
+  countsLabel: string | null;
+  countsTitle: string;
+  coverageLabel: string;
+  coverageTitle: string;
+  dispositionLabel: string | null;
+  dispositionTitle: string | null;
+  pendingDetailGaps: number;
+  skipLabel: string | null;
+  tone: "danger" | "neutral" | "success" | "warning";
 }
 
 /** A row in the passport KV block — a typed key/value pair. */
@@ -422,6 +441,30 @@ function isRevoked(summary: RefConnectorSummary): boolean {
   return summary.status === "revoked" || Boolean(summary.revoked_at);
 }
 
+function streamNamesForSource(
+  summary: RefConnectorSummary,
+  collectionFactsByStream: ReadonlyMap<string, unknown>
+): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: string | null | undefined) => {
+    const name = candidate?.trim() ?? "";
+    if (!name || seen.has(name)) {
+      return;
+    }
+    seen.add(name);
+    names.push(name);
+  };
+
+  for (const name of summary.streams) {
+    add(name);
+  }
+  for (const name of collectionFactsByStream.keys()) {
+    add(name);
+  }
+  return names;
+}
+
 /**
  * Project one `RefConnectorSummary` into a `SourceInstanceView`. Pure; takes no
  * I/O. The per-stream record counts are not pre-hydrated at the index level
@@ -430,7 +473,7 @@ function isRevoked(summary: RefConnectorSummary): boolean {
  */
 export function toSourceInstanceView(
   summary: RefConnectorSummary,
-  options: { manifests?: readonly SourceManifestLike[] } = {}
+  options: { fallbackDisambiguator?: string | null; manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView {
   const connectorId = summary.connector_id;
   const connectionId = summary.connection_id ?? null;
@@ -442,7 +485,12 @@ export function toSourceInstanceView(
     summary.last_run != null && (summary.last_run.status === "started" || summary.last_run.status === "in_progress");
   const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
 
-  const displayName = formatConnectorNameForDisplay({
+  const baseDisplayName = formatConnectorNameForDisplay({
+    connectorId,
+    displayName: summary.display_name,
+    name: summary.connector_display_name,
+  });
+  const hasFallbackLabel = isFallbackConnectionLabel({
     connectorId,
     displayName: summary.display_name,
     name: summary.connector_display_name,
@@ -453,18 +501,50 @@ export function toSourceInstanceView(
     name: summary.connector_display_name,
   });
 
+  const displayName = options.fallbackDisambiguator
+    ? `${baseDisplayName} · ${options.fallbackDisambiguator}`
+    : baseDisplayName;
+  let accountLine: string;
+  if (hasFallbackLabel) {
+    accountLine = "Unnamed source";
+  } else {
+    accountLine = kind;
+  }
   const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
   const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
 
-  const streams: SourceStreamManifestRow[] = summary.streams.map((name) => ({
-    name,
-    recordCount: null,
-    // The index summary exposes no cursor or searchable flag per stream; render
-    // them as unknown rather than guessing. The detail page hydrates these.
-    cursor: null,
-    searchable: null,
-    exploreHref: exploreHrefFor(routeId, name),
-  }));
+  const collectionFactsByStream = new Map(
+    [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [
+      stream,
+      formatStreamCollectionFacts(entry),
+    ])
+  );
+  const streams: SourceStreamManifestRow[] = streamNamesForSource(summary, collectionFactsByStream).map((name) => {
+    const facts = collectionFactsByStream.get(name) ?? null;
+    return {
+      name,
+      recordCount: null,
+      // The index summary exposes no cursor or searchable flag per stream;
+      // render them as unknown rather than guessing. Collection-report facts
+      // are server-owned and safe to show here without another read.
+      cursor: null,
+      searchable: null,
+      collection: facts
+        ? {
+            countsLabel: facts.countsLabel,
+            countsTitle: facts.countsTitle,
+            coverageLabel: `${facts.coverage.dimension} · ${facts.coverage.value}`,
+            coverageTitle: facts.coverage.title,
+            dispositionLabel: facts.disposition ? `Next run: ${facts.disposition.label}` : null,
+            dispositionTitle: facts.disposition?.title ?? null,
+            pendingDetailGaps: facts.pendingDetailGaps,
+            skipLabel: facts.skipLabel,
+            tone: facts.tone,
+          }
+        : null,
+      exploreHref: exploreHrefFor(routeId, name),
+    };
+  });
 
   const passportFields: SourcePassportField[] = [
     { k: "kind", value: kind, mono: true },
@@ -485,7 +565,7 @@ export function toSourceInstanceView(
     detailHref: `/dashboard/records/${encodeURIComponent(routeId)}`,
     displayName,
     kind,
-    accountLine: displayName === kind ? kind : `${kind} · ${displayName}`,
+    accountLine,
     revoked,
     isLocalDevicePush,
     isRunning,
@@ -503,7 +583,34 @@ export function toSourcesView(
   summaries: RefConnectorSummary[],
   options: { manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView[] {
-  return summaries.map((summary) => toSourceInstanceView(summary, options));
+  const fallbackCountByConnector = new Map<string, number>();
+  for (const summary of summaries) {
+    if (
+      isFallbackConnectionLabel({
+        connectorId: summary.connector_id,
+        displayName: summary.display_name,
+        name: summary.connector_display_name,
+      })
+    ) {
+      fallbackCountByConnector.set(summary.connector_id, (fallbackCountByConnector.get(summary.connector_id) ?? 0) + 1);
+    }
+  }
+  const fallbackOrdinalByConnector = new Map<string, number>();
+  return summaries.map((summary) => {
+    const isAmbiguousFallback =
+      (fallbackCountByConnector.get(summary.connector_id) ?? 0) > 1 &&
+      isFallbackConnectionLabel({
+        connectorId: summary.connector_id,
+        displayName: summary.display_name,
+        name: summary.connector_display_name,
+      });
+    if (!isAmbiguousFallback) {
+      return toSourceInstanceView(summary, options);
+    }
+    const ordinal = (fallbackOrdinalByConnector.get(summary.connector_id) ?? 0) + 1;
+    fallbackOrdinalByConnector.set(summary.connector_id, ordinal);
+    return toSourceInstanceView(summary, { ...options, fallbackDisambiguator: `account ${ordinal}` });
+  });
 }
 
 /**
