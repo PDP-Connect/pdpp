@@ -18,8 +18,16 @@ function errorPath(connectorId: string, message: string): string {
   return `${pagePath(connectorId)}?error=${encodeURIComponent(message)}`;
 }
 
+function publicOrigin(request: Request): string {
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? new URL(request.url).host;
+  const proto =
+    request.headers.get("x-forwarded-proto") ??
+    (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${proto}://${host}`;
+}
+
 function redirectTo(request: Request, path: string): NextResponse {
-  return NextResponse.redirect(new URL(path, request.url), 303);
+  return NextResponse.redirect(new URL(path, publicOrigin(request)), 303);
 }
 
 function originMatchesHost(request: Request): boolean {

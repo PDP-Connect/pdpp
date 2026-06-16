@@ -30,7 +30,8 @@ const START_ROUTE_STRING_FIELD_RE = /readOptionalStringField\(formData, "connect
 const START_ROUTE_SETUP_RE = /createBrowserEnrollmentShell\(connectorId\)/;
 const START_ROUTE_LAUNCH_REDIRECT_RE = /\$\{pagePath\(connectorId\)\}\/launch\?\$\{params\.toString\(\)\}/;
 const START_ROUTE_FORBIDS_SLOW_RUN_RE = /runConnectionNow|abandonBrowserEnrollmentShell/;
-const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, request\.url\), 303\)/;
+const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
+const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, publicOrigin\(request\)\), 303\)/;
 const LAUNCH_PANEL_FETCH_RE =
   /fetch\(`\/dashboard\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/start`/;
 const LAUNCH_PANEL_INLINE_FAILURE_RE = /Browser session did not finish starting/;
@@ -64,6 +65,7 @@ test("browser-session start route preserves auth and fast handoff semantics", as
   assert.match(route, START_ROUTE_SETUP_RE);
   assert.match(route, START_ROUTE_LAUNCH_REDIRECT_RE);
   assert.doesNotMatch(route, START_ROUTE_FORBIDS_SLOW_RUN_RE);
+  assert.match(route, START_ROUTE_PUBLIC_ORIGIN_RE);
   assert.match(route, START_ROUTE_REDIRECT_RE);
 });
 
