@@ -3,6 +3,7 @@
 - [x] Add the filesystem/local-DB bounded-read requirement to `local-agent-collector-completeness`.
 - [x] Add a manifest- or registry-driven regression guard for local connector whole-file and unbounded `.all()` reads.
 - [x] Add reviewed exceptions for small per-artifact reads with explicit reasons.
+- [x] Add a reviewed accumulator requirement for logical-unit summaries that must not retain raw source payloads.
 
 ## 2. High-Risk Connectors
 

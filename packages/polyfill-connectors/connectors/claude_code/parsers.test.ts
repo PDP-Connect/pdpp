@@ -142,6 +142,39 @@ test("makeEmptySessionAccumulator: nulls + zero count", () => {
   assert.equal(acc.message_count, 0);
 });
 
+test("SessionAccumulator: stores only bounded scalar summary fields", () => {
+  const acc = makeEmptySessionAccumulator("s1", "proj/a");
+  mergeSessionObservations(acc, {
+    cwd: "/home/user owner/project",
+    entrypoint: "claude",
+    gitBranch: "main",
+    userType: "human",
+    version: "1.2.3",
+  });
+  widenSessionTimeRange(acc, "2026-01-01T00:00:00.000Z", "2026-01-01T00:10:00.000Z");
+  acc.message_count += 1000;
+
+  assert.deepEqual(Object.keys(acc).sort(), [
+    "cwd",
+    "entrypoint",
+    "git_branch",
+    "id",
+    "last_event_at",
+    "message_count",
+    "project_path",
+    "started_at",
+    "user_type",
+    "version",
+  ]);
+  for (const forbidden of ["messages", "content", "transcript", "tool_outputs", "lines", "raw"]) {
+    assert.equal(forbidden in acc, false, `SessionAccumulator must not retain raw ${forbidden}`);
+  }
+  for (const [key, value] of Object.entries(acc)) {
+    assert.notEqual(Array.isArray(value), true, `${key} must not be an unbounded array`);
+    assert.ok(value === null || typeof value !== "object", `${key} must stay scalar/null`);
+  }
+});
+
 test("mergeSessionObservations: only non-null fields replace", () => {
   const acc: SessionAccumulator = makeEmptySessionAccumulator("s1", "p");
   mergeSessionObservations(acc, {

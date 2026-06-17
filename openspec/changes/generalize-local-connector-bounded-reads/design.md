@@ -21,12 +21,14 @@ Allowed patterns:
 - SQLite row iteration (`.iterate()`) for user-data tables.
 - Whole-file reads for explicitly bounded, small per-artifact files with a test-visible allowlist reason.
 - In-memory aggregation maps bounded by record cardinality and explicit caps/eviction, not by source byte size.
+- Reviewed logical-unit accumulators that store only bounded scalar fields, counters, timestamps, and previews, and have a regression test proving they do not retain raw source payloads or message/content arrays.
 
 Disallowed patterns:
 
 - `await readFile(...)` or `readFileSync(...)` on stream-eligible user data before parser or record bounds.
 - `.all()` on unbounded local database queries.
 - Full archive arrays for exports that can grow with user history.
+- Accumulators that retain raw transcript lines, message arrays, tool-output arrays, or other source-size-proportional payloads beyond the current record/parser window.
 
 ### Guard shape
 
@@ -36,6 +38,13 @@ Replace the Codex/Claude-only grep guard with a manifest-driven source-class gua
 - no unapproved `readFileSync`;
 - no unbounded `.all()` on local databases;
 - every exception has a connector, file, pattern, and reason.
+
+Accumulator shape is reviewed separately because a grep guard cannot infer
+whether a map is bounded by logical output cardinality or by raw source bytes.
+The contract is executable through connector-local tests: for example, the
+Claude Code session accumulator may keep one bounded summary per session, while
+the Codex function-call accumulator has an explicit max pending window and
+eagerly drains paired calls.
 
 This guard is not a substitute for behavioral tests. It catches class drift cheaply, while connector-specific tests prove equivalence and memory bounds.
 
@@ -59,6 +68,7 @@ This guard is not a substitute for behavioral tests. It catches class drift chea
 - `imessage` tests pass with row iteration.
 - `twitter_archive` fixtures produce equivalent records without a full archive array.
 - Slack dump tests pass after iterator conversion or documented bounded exceptions.
+- Reviewed accumulators have tests that fail if they grow raw content arrays or unbounded pending maps.
 - `pnpm --filter @pdpp/polyfill-connectors typecheck` passes.
 - `openspec validate generalize-local-connector-bounded-reads --strict` passes.
 

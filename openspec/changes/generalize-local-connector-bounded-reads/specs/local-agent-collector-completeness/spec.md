@@ -21,3 +21,10 @@ The reference implementation SHALL collect filesystem-backed and local-database-
 - **WHEN** a connector intentionally reads a whole per-artifact file into memory
 - **THEN** the connector SHALL carry a reviewed reason that the artifact is bounded enough for process memory or that a later streaming migration is explicitly deferred
 - **AND** the bounded-read regression guard SHALL fail if that exception is removed, renamed, or broadened without review.
+
+#### Scenario: Logical-unit accumulators stay bounded
+
+- **WHEN** a filesystem-class connector accumulates state across parsed records before emitting a summary stream
+- **THEN** the accumulator SHALL retain only bounded scalar fields, timestamps, counters, or previews needed for that summary
+- **AND** it SHALL NOT retain raw source lines, transcript bodies, message arrays, tool-output arrays, or other payloads proportional to source byte size
+- **AND** a connector-local regression test SHALL pin the reviewed accumulator shape or explicit cap/eviction behavior.
