@@ -234,6 +234,7 @@ import {
   getConnectorDetail,
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
+  invalidateConnectorSummariesCache,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
@@ -3523,6 +3524,7 @@ function buildAsApp(opts = {}) {
             message:
               'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
           },
+    invalidateConnectorSummariesCache,
     resolveRegisteredConnectorManifest,
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     getSchedule: async (connectorId, options) =>
@@ -4305,6 +4307,7 @@ function buildRsApp(opts = {}) {
     emitSpineEvent,
     ensureRequestId,
     getOwnerTokenSubjectId,
+    invalidateConnectorSummariesCache,
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     // Same trusted, forwarded-origin-safe RS base resolution the control
@@ -4348,6 +4351,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     handleError,
+    invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
     onScheduleMutation: opts.onScheduleMutation,
     pdppError,
@@ -4381,6 +4385,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     handleError,
+    invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
     pdppError,
     projectBindingForWire,
@@ -4418,6 +4423,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     handleError,
+    invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
     pdppError,
     projectBindingForWire,
@@ -4446,6 +4452,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     handleError,
+    invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
     // Returns all revoked connections for a given owner+connector. Used by the
     // connector-only reactivate route to find the single revoked connection to
@@ -4511,6 +4518,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     handleError,
+    invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
     pdppError,
     projectBindingForWire,

@@ -147,6 +147,7 @@ export interface MountOwnerConnectionDeleteContext {
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
@@ -373,6 +374,7 @@ function buildDeleteHandler(
       const summary = await ctx.deleteConnection(connectionId as string, { ownerSubjectId, now });
       connectionId = summary.connection_id;
       connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
+      ctx.invalidateConnectorSummariesCache?.();
 
       await emitDeleteAudit(ctx, req, res, {
         connectionId,

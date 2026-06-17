@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const PAGE_FILE = fileURLToPath(new URL("page.tsx", import.meta.url));
+const VIEW_FILE = fileURLToPath(new URL("syncs-view.tsx", import.meta.url));
 
 const REDIRECT_IMPORT_RE = /import\s+\{\s*redirect\s*\}\s+from\s+["']next\/navigation["']/;
 const PEEK_REDIRECT_RE =
@@ -25,4 +26,24 @@ test("run list peek query opens the full run detail route instead of inline deta
     "peek redirect must happen before list fetches"
   );
   assert.doesNotMatch(src, RUN_TIMELINE_FETCH_RE, "run list page must not fetch inline run timeline details");
+});
+
+test("syncs dense dynamic links opt out of automatic route prefetch", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(
+    src,
+    /href=\{dashboardRoutes\.connector\(card\.connectionId\)\}\s+prefetch=\{false\}/,
+    "owner-action source links must not prefetch dynamic source detail routes"
+  );
+  assert.match(
+    src,
+    /href=\{`\$\{dashboardRoutes\.section\.runs\}\?connector_id=\$\{encodeURIComponent\(card\.connectorId\)\}`\}\s+prefetch=\{false\}/,
+    "failure-card run filter links must not prefetch dynamic runs routes"
+  );
+  assert.match(
+    src,
+    /href=\{row\.browseHref\}\s+prefetch=\{false\}/,
+    "stream browse links must not prefetch dynamic explore routes"
+  );
 });

@@ -16,6 +16,7 @@ import { executeRefConnectorsList } from '../operations/ref-connectors-list/inde
 import { createAttention } from '../runtime/attention.ts';
 import {
   canUseConnectorWideRunSummaryFallback,
+  decideConnectorSummariesCacheRead,
   isPublicReferenceConnector,
   LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
   mapWithConcurrency,
@@ -185,6 +186,58 @@ test('connector-wide run fallback refuses runs tagged to a different browser pro
     }),
     true,
     'a browser run with the matching profile remains valid for the connection',
+  );
+});
+
+test('connector summaries cache returns stale values while refreshing in the background', () => {
+  assert.equal(decideConnectorSummariesCacheRead(undefined, 1000), 'compute');
+  assert.equal(
+    decideConnectorSummariesCacheRead(
+      {
+        freshUntil: 0,
+        generation: 1,
+        promise: Promise.resolve([]),
+        staleUntil: 0,
+      },
+      1000,
+    ),
+    'await_refresh',
+  );
+  assert.equal(
+    decideConnectorSummariesCacheRead(
+      {
+        freshUntil: 1500,
+        generation: 1,
+        staleUntil: 2000,
+        value: [],
+      },
+      1000,
+    ),
+    'return_fresh',
+  );
+  assert.equal(
+    decideConnectorSummariesCacheRead(
+      {
+        freshUntil: 900,
+        generation: 1,
+        staleUntil: 2000,
+        value: [],
+      },
+      1000,
+    ),
+    'return_stale_refresh',
+  );
+  assert.equal(
+    decideConnectorSummariesCacheRead(
+      {
+        freshUntil: 900,
+        generation: 1,
+        staleUntil: 950,
+        value: [],
+      },
+      1000,
+    ),
+    'compute',
   );
 });
 

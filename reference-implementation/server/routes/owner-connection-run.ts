@@ -124,6 +124,7 @@ export interface MountOwnerConnectionRunContext {
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
@@ -374,6 +375,7 @@ function buildRunHandler(
         connectorInstanceId: namespace.connectorInstanceId,
         force,
       });
+      ctx.invalidateConnectorSummariesCache?.();
       await emitRunAudit(ctx, req, res, {
         connectionId,
         connectorKey,

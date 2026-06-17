@@ -147,6 +147,7 @@ export interface MountOwnerConnectionRevokeContext {
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
@@ -402,6 +403,7 @@ function buildRevokeHandler(
           revokedAt: stamp,
         })
       );
+      ctx.invalidateConnectorSummariesCache?.();
       await emitRevokeAudit(ctx, req, res, {
         connectionId,
         connectorKey,

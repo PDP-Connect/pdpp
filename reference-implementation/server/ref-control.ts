@@ -3540,14 +3540,53 @@ export interface ListConnectorSummariesOptions {
 type ConnectorRunSummaryInclusion = boolean | "singleton-active";
 
 const LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS = Number(process.env.PDPP_REF_CONNECTOR_SUMMARIES_CACHE_MS ?? 5000);
+const LIST_CONNECTOR_SUMMARIES_STALE_MS = Number(process.env.PDPP_REF_CONNECTOR_SUMMARIES_STALE_MS ?? 300_000);
 
-interface ConnectorSummariesCacheEntry {
-  readonly expiresAt: number;
+export interface ConnectorSummariesCacheEntry {
+  readonly freshUntil: number;
+  readonly generation: number;
   readonly promise?: Promise<ConnectorSummary[]>;
+  readonly staleUntil: number;
   readonly value?: ConnectorSummary[];
 }
 
 const connectorSummariesCache = new Map<string, ConnectorSummariesCacheEntry>();
+let connectorSummariesCacheGeneration = 0;
+
+export function invalidateConnectorSummariesCache(): void {
+  connectorSummariesCacheGeneration += 1;
+  connectorSummariesCache.clear();
+}
+
+function connectorSummariesCacheWindow(now: number): { freshUntil: number; staleUntil: number } {
+  const freshUntil = now + LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS;
+  return {
+    freshUntil,
+    staleUntil: freshUntil + Math.max(0, LIST_CONNECTOR_SUMMARIES_STALE_MS),
+  };
+}
+
+export type ConnectorSummariesCacheDecision =
+  | "await_refresh"
+  | "compute"
+  | "return_fresh"
+  | "return_stale_refresh";
+
+export function decideConnectorSummariesCacheRead(
+  entry: ConnectorSummariesCacheEntry | undefined,
+  now: number
+): ConnectorSummariesCacheDecision {
+  if (!entry?.value) {
+    return entry?.promise ? "await_refresh" : "compute";
+  }
+  if (entry.freshUntil > now) {
+    return "return_fresh";
+  }
+  if (entry.staleUntil > now) {
+    return "return_stale_refresh";
+  }
+  return entry.promise ? "await_refresh" : "compute";
+}
 
 function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): boolean {
   // Cache only the production Postgres all-list path. SQLite test databases are
@@ -3573,6 +3612,61 @@ function connectorSummariesCacheKey(
         ? "singleton-active-runs"
         : "deep-runs";
   return `${controllerKey}:${runDepth}`;
+}
+
+function refreshConnectorSummariesCache(
+  key: string,
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummariesOptions,
+  previous?: ConnectorSummariesCacheEntry
+): Promise<ConnectorSummary[]> {
+  const generation = connectorSummariesCacheGeneration;
+  const promise = computeConnectorSummaries(controller, options);
+  const pendingEntry: ConnectorSummariesCacheEntry = previous?.value
+    ? {
+        freshUntil: previous.freshUntil,
+        generation,
+        promise,
+        staleUntil: previous.staleUntil,
+        value: previous.value,
+      }
+    : {
+        freshUntil: previous?.freshUntil ?? 0,
+        generation,
+        promise,
+        staleUntil: previous?.staleUntil ?? 0,
+      };
+  connectorSummariesCache.set(key, pendingEntry);
+  promise
+    .then((value) => {
+      if (connectorSummariesCacheGeneration !== generation) {
+        return;
+      }
+      const window = connectorSummariesCacheWindow(Date.now());
+      connectorSummariesCache.set(key, {
+        freshUntil: window.freshUntil,
+        generation,
+        staleUntil: window.staleUntil,
+        value,
+      });
+    })
+    .catch(() => {
+      const current = connectorSummariesCache.get(key);
+      if (current?.promise !== promise || current.generation !== generation) {
+        return;
+      }
+      if (current.value) {
+        connectorSummariesCache.set(key, {
+          freshUntil: 0,
+          generation,
+          staleUntil: current.staleUntil,
+          value: current.value,
+        });
+      } else {
+        connectorSummariesCache.delete(key);
+      }
+    });
+  return promise;
 }
 
 // Shared inputs for `projectConnectorSummaryForInstance`. These are the reads
@@ -3960,27 +4054,23 @@ export async function listConnectorSummaries(
     const key = connectorSummariesCacheKey(controller, options);
     const cached = connectorSummariesCache.get(key);
     const now = Date.now();
-    if (cached?.value && cached.expiresAt > now) {
-      return cached.value;
+    switch (decideConnectorSummariesCacheRead(cached, now)) {
+      case "return_fresh":
+        return cached?.value ?? [];
+      case "return_stale_refresh":
+        if (!cached?.promise) {
+          refreshConnectorSummariesCache(key, controller, options, cached);
+        }
+        return cached?.value ?? [];
+      case "await_refresh":
+        if (cached?.promise) {
+          return cached.promise;
+        }
+        break;
+      case "compute":
+        break;
     }
-    if (cached?.promise) {
-      return cached.promise;
-    }
-    const promise = computeConnectorSummaries(controller, options);
-    connectorSummariesCache.set(key, { expiresAt: now + LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS, promise });
-    try {
-      const value = await promise;
-      connectorSummariesCache.set(key, {
-        expiresAt: Date.now() + LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS,
-        value,
-      });
-      return value;
-    } catch (err) {
-      if (connectorSummariesCache.get(key)?.promise === promise) {
-        connectorSummariesCache.delete(key);
-      }
-      throw err;
-    }
+    return refreshConnectorSummariesCache(key, controller, options, cached);
   }
   return computeConnectorSummaries(controller, options);
 }

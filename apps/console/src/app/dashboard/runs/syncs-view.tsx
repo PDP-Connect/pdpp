@@ -89,7 +89,7 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
       </div>
       <div className="rr-fix__act">
         {summary.cta === "connection_detail" || summary.cta === "reconnect" ? (
-          <Link href={dashboardRoutes.connector(card.connectionId)}>
+          <Link href={dashboardRoutes.connector(card.connectionId)} prefetch={false}>
             <IcButton size="sm" variant="human">
               {ownerActionLabel}
             </IcButton>
@@ -99,6 +99,7 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
           <Link
             className="rr-link"
             href={`${dashboardRoutes.section.runs}?connector_id=${encodeURIComponent(card.connectorId)}`}
+            prefetch={false}
           >
             View runs →
           </Link>
@@ -151,7 +152,7 @@ function SyncTableRow({ row, isOpen, onToggle }: { row: SyncRow; isOpen: boolean
             <KVRow k="cadence">{row.cadence}</KVRow>
             <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
           </KV>
-          <Link className="rr-link rr-sync-detail__browse" href={row.browseHref}>
+          <Link className="rr-link rr-sync-detail__browse" href={row.browseHref} prefetch={false}>
             browse this stream →
           </Link>
         </div>

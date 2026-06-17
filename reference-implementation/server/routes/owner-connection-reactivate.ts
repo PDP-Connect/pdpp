@@ -115,6 +115,7 @@ export interface MountOwnerConnectionReactivateContext {
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
@@ -398,6 +399,7 @@ function buildReactivateHandler(
           revokedAt: null,
         })
       );
+      ctx.invalidateConnectorSummariesCache?.();
       await emitReactivateAudit(ctx, req, res, {
         connectionId,
         connectorKey,

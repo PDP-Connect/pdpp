@@ -105,6 +105,7 @@ export interface MountOwnerConnectionsContext {
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
   // Wall-clock stamp for the `updated_at` recorded on rename. Injected so the
   // route stays deterministic under test and so this module does not import a
@@ -414,6 +415,7 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
           displayName: displayName.trim(),
           updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
         });
+        ctx.invalidateConnectorSummariesCache?.();
         const schedules = await ctx.listSchedules();
         const schedulesByInstanceId = new Map<string, unknown>(
           schedules

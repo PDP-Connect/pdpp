@@ -161,6 +161,7 @@ export interface MountRefConnectorsContext {
   getRuntimeStatus(): RefConnectorsRuntimeStatus;
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
   handleError(res: unknown, err: unknown): void;
+  invalidateConnectorSummariesCache?(): void;
   listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
   now?(): string;
@@ -555,6 +556,7 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
           displayName: displayName.trim(),
           updatedAt: new Date().toISOString(),
         });
+        ctx.invalidateConnectorSummariesCache?.();
         const schedule = await ctx.getSchedule(updated.connectorId, {
           connectorInstanceId: updated.connectorInstanceId,
         });
@@ -594,6 +596,7 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
           connectorInstanceId: namespace.connectorInstanceId,
           force: readExplicitRunForce(req),
         });
+        ctx.invalidateConnectorSummariesCache?.();
         res.status(202).json(started);
       } catch (err) {
         ctx.handleError(res, err);
@@ -617,6 +620,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
           connectorInstanceId: namespace.connectorInstanceId,
           force: readExplicitRunForce(req),
         });
+        ctx.invalidateConnectorSummariesCache?.();
         res.status(202).json(started);
       } catch (err) {
         ctx.handleError(res, err);
@@ -639,6 +643,7 @@ export function mountRefConnectorScheduleUpsert(app: AppLike, ctx: MountRefConne
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         // Include policy_warning in the response so dashboard can surface
         // it without a second round-trip.
         const responseBody = result.policy_warning
@@ -666,6 +671,7 @@ export function mountRefConnectionScheduleUpsert(app: AppLike, ctx: MountRefConn
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         const responseBody = result.policy_warning
           ? { ...(result.schedule as Record<string, unknown>), policy_warning: result.policy_warning }
           : result.schedule;
@@ -690,6 +696,7 @@ export function mountRefConnectorSchedulePause(app: AppLike, ctx: MountRefConnec
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -711,6 +718,7 @@ export function mountRefConnectionSchedulePause(app: AppLike, ctx: MountRefConne
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -732,6 +740,7 @@ export function mountRefConnectorScheduleResume(app: AppLike, ctx: MountRefConne
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -753,6 +762,7 @@ export function mountRefConnectionScheduleResume(app: AppLike, ctx: MountRefConn
           connectorInstanceId: namespace.connectorInstanceId,
         });
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -778,6 +788,7 @@ export function mountRefConnectorScheduleDelete(app: AppLike, ctx: MountRefConne
           return;
         }
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.status(204).end();
       } catch (err) {
         ctx.handleError(res, err);
@@ -803,6 +814,7 @@ export function mountRefConnectionScheduleDelete(app: AppLike, ctx: MountRefConn
           return;
         }
         await ctx.onScheduleMutation?.();
+        ctx.invalidateConnectorSummariesCache?.();
         res.status(204).end();
       } catch (err) {
         ctx.handleError(res, err);
@@ -926,6 +938,7 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
             revokedAt: stamp,
           })
         );
+        ctx.invalidateConnectorSummariesCache?.();
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
@@ -979,6 +992,7 @@ export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsCo
         const summary = await ctx.deleteConnection(connectionId as string, { ownerSubjectId, now });
         connectionId = summary.connection_id;
         connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
+        ctx.invalidateConnectorSummariesCache?.();
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
@@ -1067,6 +1081,7 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
             revokedAt: null,
           })
         );
+        ctx.invalidateConnectorSummariesCache?.();
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
