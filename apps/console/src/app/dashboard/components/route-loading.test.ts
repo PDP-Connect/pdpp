@@ -45,6 +45,14 @@ const ARRAY_INDEX_KEY_RE = /key=\{\s*(?:i|index)\s*\}/;
 // Table skeleton must be table-shaped, not the generic detail skeleton.
 const TABLE_COLUMN_KEYS_RE = /columnKeys/;
 const TABLE_DEFAULT_COLUMNS_RE = /columns = 4/;
+// The resolved table leads with two fixed-shape columns (emitted_at, id) before
+// its variable data columns; the skeleton must reproduce them at their real
+// widths so the column boundaries don't shift horizontally when the table
+// paints. Pin the narrow timestamp (w-24) + mono id (w-28) leading bars and the
+// total-minus-two data-column derivation.
+const TABLE_LEADING_TIMESTAMP_RE = /emitted_at — narrow timestamp column/;
+const TABLE_LEADING_ID_RE = /id — mono identifier column/;
+const TABLE_DATA_COLUMNS_DERIVED_RE = /const dataColumns = Math\.max\(0, columns - 2\)/;
 
 function exportedSkeletonRe(name: string): RegExp {
   return new RegExp(`export function ${name}\\b`);
@@ -102,4 +110,21 @@ test("the table skeleton mirrors the resolved table geometry (header + column st
   const tableBody = src.slice(src.indexOf("export function TableLoadingSkeleton"));
   assert.match(tableBody, TABLE_COLUMN_KEYS_RE, "table skeleton must derive a column-key set");
   assert.match(tableBody, TABLE_DEFAULT_COLUMNS_RE, "table skeleton must default to a sensible column count");
+});
+
+test("the table skeleton reproduces the resolved table's two fixed leading columns", async () => {
+  const src = await source();
+  // The resolved records table always renders `emitted_at` and `id` as its two
+  // leading columns at fixed widths before any data columns. A skeleton that
+  // draws all columns equal-width shifts the column boundaries horizontally when
+  // the real table paints. Pin that the skeleton draws those two leading columns
+  // distinctly and treats `columns` as the total (leading + data) count.
+  const tableBody = src.slice(src.indexOf("export function TableLoadingSkeleton"));
+  assert.match(tableBody, TABLE_LEADING_TIMESTAMP_RE, "table skeleton must draw the emitted_at leading column");
+  assert.match(tableBody, TABLE_LEADING_ID_RE, "table skeleton must draw the id leading column");
+  assert.match(
+    tableBody,
+    TABLE_DATA_COLUMNS_DERIVED_RE,
+    "table skeleton must derive data columns as total columns minus the two leading columns"
+  );
 });

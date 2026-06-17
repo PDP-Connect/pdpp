@@ -77,9 +77,19 @@ export function ListLoadingSkeleton({
  * A skeleton for a dense record-table surface (a stream's records list). The
  * resolved page renders a header plus a desktop table / mobile list of records;
  * a generic `DetailLoadingSkeleton` (two prose blocks) is the wrong shape and
- * jumps the layout when the table paints. This mirrors the table's geometry: a
- * header bar, a column-header strip, and `rows` evenly-spaced cell rows inside
- * the same bordered container the resolved table uses.
+ * jumps the layout when the table paints. This mirrors the resolved table's
+ * geometry as closely as possible without knowing the data ahead of time: a
+ * header bar, then a column-header strip and `rows` cell rows inside the same
+ * bordered container the resolved table uses.
+ *
+ * The resolved table always leads with two fixed-shape columns — a narrow
+ * `emitted_at` timestamp and a mono `id` — before its variable data columns
+ * (`page.tsx`'s `<th>emitted_at</th><th>id</th>{columns…}`). The skeleton
+ * reproduces those two leading columns at their real widths so the column
+ * boundaries line up when the table paints, instead of the prior all-equal-width
+ * bars that shifted horizontally on resolve. `columns` is the *total* column
+ * count (the two leading columns plus data columns); it defaults to 4 — two
+ * leading + two typical default data columns — matching the common stream shape.
  */
 export function TableLoadingSkeleton({
   label,
@@ -89,9 +99,12 @@ export function TableLoadingSkeleton({
   /** What is loading, e.g. "records" — announced to assistive tech. */
   label: string;
   rows?: number;
+  /** Total column count: the two fixed leading columns plus data columns. */
   columns?: number;
 }) {
-  const columnKeys = Array.from({ length: columns }, (_, i) => `skeleton-col-${i}`);
+  // At least the two fixed leading columns; the remainder are data columns.
+  const dataColumns = Math.max(0, columns - 2);
+  const columnKeys = Array.from({ length: dataColumns }, (_, i) => `skeleton-col-${i}`);
   return (
     <div aria-busy="true" className="min-w-0">
       <span className="sr-only" role="status">
@@ -100,6 +113,10 @@ export function TableLoadingSkeleton({
       <HeaderSkeleton />
       <div className="overflow-hidden rounded-md border border-border/70">
         <div className="flex items-center gap-4 border-border/70 border-b bg-muted/40 px-3 py-2">
+          {/* emitted_at — narrow timestamp column */}
+          <Bar className="h-3 w-24 shrink-0" />
+          {/* id — mono identifier column */}
+          <Bar className="h-3 w-28 shrink-0" />
           {columnKeys.map((key) => (
             <Bar className="h-3 w-20 max-w-[18%] flex-1" key={key} />
           ))}
@@ -107,6 +124,8 @@ export function TableLoadingSkeleton({
         <div className="divide-y divide-border/70">
           {skeletonRowKeys(rows).map((rowKey) => (
             <div className="flex items-center gap-4 px-3 py-3" key={rowKey}>
+              <Bar className="h-3.5 w-24 shrink-0" />
+              <Bar className="h-3.5 w-28 shrink-0" />
               {columnKeys.map((colKey) => (
                 <Bar className="h-3.5 w-20 max-w-[18%] flex-1" key={`${rowKey}-${colKey}`} />
               ))}

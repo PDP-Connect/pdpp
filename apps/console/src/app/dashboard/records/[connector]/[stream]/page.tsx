@@ -103,18 +103,47 @@ export default async function StreamPage({
     connectorId = connection.connector_id;
     connectionId = connection.connection_id;
     connectorInstanceId = connectorInstanceIdForConnection(connection);
-    const [pageResult, manifests, streamMetadata] = await Promise.all([
+    // The parent-metadata reads depend only on the connector manifests (to
+    // enumerate which parent streams declare an expand into this child) — not on
+    // the records query or this stream's own metadata. Chaining them onto the
+    // manifests promise and folding the result into the same `Promise.all`,
+    // rather than awaiting a second batch after the first settles, lets the
+    // parent reads start the moment manifests resolve and overlap the still-
+    // in-flight records query. Same fetches, same inputs, same soft-failure
+    // handling (`.catch(() => null)`); only the composition changes, so the
+    // rendered result is identical.
+    const manifestsPromise = listConnectorManifests().catch(
+      () => [] as Awaited<ReturnType<typeof listConnectorManifests>>
+    );
+    const [pageResult, manifests, streamMetadata, parentMetadata] = await Promise.all([
       queryRecords(connectorId, streamName, {
         connectorInstanceId,
         limit: PAGE_SIZE,
         cursor: trail.at(-1),
         ...(Object.keys(exactFilters).length > 0 ? { filter: exactFilters } : {}),
       }),
-      listConnectorManifests().catch(() => []),
+      manifestsPromise,
       // Declared presentation types for THIS stream's fields, so currency
       // minor-unit cells render as money (chase `amount` → `$30.00`). Soft:
       // a metadata read failure leaves cells on plain stringification.
       getStreamMetadata(connectorId, streamName, { connectorInstanceId }).catch(() => null),
+      // The manifest is used only to prune parent metadata reads. Link semantics
+      // come from the parent streams' live `expand_capabilities`, never from
+      // payload-shaped guesses or fabricated manifest fields.
+      manifestsPromise.then((resolvedManifests) => {
+        const manifest = findManifestForConnectorId(resolvedManifests, connectorId);
+        return Promise.all(
+          candidateParentStreamsForChild(manifest?.streams, streamName).map(async (parentStream) => {
+            const metadata = await getStreamMetadata(connectorId, parentStream, { connectorInstanceId }).catch(
+              () => null
+            );
+            return {
+              parentStream,
+              expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
+            };
+          })
+        );
+      }),
     ]);
     page = pageResult;
     declaredFieldTypes = deriveDeclaredFieldTypes(streamMetadata);
@@ -122,18 +151,6 @@ export default async function StreamPage({
     connectorStreams = (connectorManifest?.streams ?? []) as ManifestStream[];
     const maybeStream = connectorStreams.find((s) => s.name === streamName);
     streamManifest = (maybeStream ?? null) as StreamManifest | null;
-    // The manifest is used only to prune parent metadata reads. Link semantics
-    // come from the parent streams' live `expand_capabilities`, never from
-    // payload-shaped guesses or fabricated manifest fields.
-    const parentMetadata = await Promise.all(
-      candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
-        const metadata = await getStreamMetadata(connectorId, parentStream, { connectorInstanceId }).catch(() => null);
-        return {
-          parentStream,
-          expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
-        };
-      })
-    );
     parentRelations = parentRelationsForChild(parentMetadata, streamName);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
