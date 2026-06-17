@@ -56,6 +56,8 @@ import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 import {
   buildDuplicateSourceReview,
+  collapseDuplicateFallbackSources,
+  type DuplicateSourceGroup,
   type DuplicateSourceReview,
   type SourceInstanceView,
   type SourcesChurnAdvisory,
@@ -97,9 +99,10 @@ export function SourcesView({
   const activeInstances = instances.filter((i) => !i.revoked);
   const revokedInstances = instances.filter((i) => i.revoked);
   const duplicateReviews = buildDuplicateSourceReview(instances);
+  const { duplicateGroups, visibleActiveInstances } = collapseDuplicateFallbackSources(instances);
 
   // Default selection: first active source, or first revoked if all are revoked.
-  const defaultId = (activeInstances[0] ?? revokedInstances[0])?.id ?? null;
+  const defaultId = (visibleActiveInstances[0] ?? duplicateGroups[0]?.items[0] ?? revokedInstances[0])?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(defaultId);
   const selected = instances.find((i) => i.id === selectedId) ?? activeInstances[0] ?? revokedInstances[0] ?? null;
 
@@ -119,12 +122,21 @@ export function SourcesView({
       {duplicateReviews.length > 0 ? <DuplicateSourcesAdvisory reviews={duplicateReviews} /> : null}
       <div className="rr-s">
         <aside aria-label="Sources" className="rr-s-list">
-          {activeInstances.map((instance) => (
+          {visibleActiveInstances.map((instance) => (
             <InstanceListItem
               instance={instance}
               key={instance.id}
               onSelect={() => setSelectedId(instance.id)}
               selected={selected?.id === instance.id}
+            />
+          ))}
+
+          {duplicateGroups.map((group) => (
+            <DuplicateSourceGroupList
+              group={group}
+              key={group.connectorId}
+              onSelect={setSelectedId}
+              selectedId={selected?.id ?? null}
             />
           ))}
 
@@ -166,6 +178,36 @@ export function SourcesView({
         ) : null}
       </div>
     </>
+  );
+}
+
+function DuplicateSourceGroupList({
+  group,
+  onSelect,
+  selectedId,
+}: {
+  group: DuplicateSourceGroup;
+  onSelect: (id: string) => void;
+  selectedId: string | null;
+}) {
+  const selectedInGroup = group.items.some((instance) => instance.id === selectedId);
+  return (
+    <details className="rr-s-duplicate-group" data-testid="sources-duplicate-group" open={selectedInGroup}>
+      <summary className="rr-s-duplicate-group__summary">
+        {group.total.toLocaleString()} unnamed {group.kind} sources
+      </summary>
+      <p className="rr-s-duplicate-group__note">
+        Open a row to label it on the detail page or revoke a setup attempt. Nothing is merged or removed automatically.
+      </p>
+      {group.items.map((instance) => (
+        <InstanceListItem
+          instance={instance}
+          key={instance.id}
+          onSelect={() => onSelect(instance.id)}
+          selected={selectedId === instance.id}
+        />
+      ))}
+    </details>
   );
 }
 

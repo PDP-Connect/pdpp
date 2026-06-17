@@ -20,6 +20,7 @@ import {
   buildSourcesChurnAdvisory,
   buildDuplicateSourceReview,
   buildSourcesRuntimeAdvisory,
+  collapseDuplicateFallbackSources,
   deriveRenderedSourceStatus,
   deriveSourceStatus,
   exploreHrefFor,
@@ -636,6 +637,85 @@ test("duplicate source review ignores revoked fallback sources", () => {
   ]);
 
   assert.equal(buildDuplicateSourceReview(views).length, 0);
+});
+
+test("duplicate fallback collapse keeps named sources visible and groups 3+ unnamed active sources", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_named",
+      connector_instance_id: "cin_named",
+      display_name: "Amazon - Personal",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_a",
+      connector_instance_id: "cin_a",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_b",
+      connector_instance_id: "cin_b",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_c",
+      connector_instance_id: "cin_c",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "gmail",
+      connector_display_name: "Gmail",
+      connection_id: "cin_gmail",
+      connector_instance_id: "cin_gmail",
+      display_name: "Gmail",
+    }),
+  ]);
+
+  const collapsed = collapseDuplicateFallbackSources(views);
+  assert.deepEqual(
+    collapsed.visibleActiveInstances.map((view) => view.id),
+    ["cin_named", "cin_gmail"]
+  );
+  assert.equal(collapsed.duplicateGroups.length, 1);
+  assert.equal(collapsed.duplicateGroups[0]?.connectorId, "amazon");
+  assert.equal(collapsed.duplicateGroups[0]?.total, 3);
+  assert.deepEqual(
+    collapsed.duplicateGroups[0]?.items.map((view) => view.displayName),
+    ["Amazon · account 1", "Amazon · account 2", "Amazon · account 3"]
+  );
+});
+
+test("duplicate fallback collapse leaves small duplicate sets visible", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_a",
+      connector_instance_id: "cin_a",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_b",
+      connector_instance_id: "cin_b",
+      display_name: "Amazon",
+    }),
+  ]);
+
+  const collapsed = collapseDuplicateFallbackSources(views);
+  assert.deepEqual(
+    collapsed.visibleActiveInstances.map((view) => view.id),
+    ["cin_a", "cin_b"]
+  );
+  assert.equal(collapsed.duplicateGroups.length, 0);
 });
 
 test("manual/upload sources link to importing another file into the same source", () => {

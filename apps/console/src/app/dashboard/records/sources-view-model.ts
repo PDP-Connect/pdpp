@@ -176,6 +176,13 @@ export interface DuplicateSourceReview {
   unnamed: number;
 }
 
+export interface DuplicateSourceGroup {
+  connectorId: string;
+  items: readonly SourceInstanceView[];
+  kind: string;
+  total: number;
+}
+
 export interface SourcesRuntimeAdvisory {
   headline: string;
   note: string;
@@ -185,6 +192,7 @@ type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
 
 const HEALTHY_STATES = new Set(["healthy", "idle"]);
 const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
+const DUPLICATE_SOURCE_GROUP_MIN_UNNAMED = 3;
 
 const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
   green: { kind: "healthy", dot: "●", tone: "success" },
@@ -618,6 +626,47 @@ export function buildDuplicateSourceReview(instances: readonly SourceInstanceVie
     });
   }
   return reviews.sort((a, b) => b.unnamed - a.unnamed || a.kind.localeCompare(b.kind));
+}
+
+export function collapseDuplicateFallbackSources(instances: readonly SourceInstanceView[]): {
+  duplicateGroups: readonly DuplicateSourceGroup[];
+  visibleActiveInstances: readonly SourceInstanceView[];
+} {
+  const activeInstances = instances.filter((instance) => !instance.revoked);
+  const byConnector = new Map<string, SourceInstanceView[]>();
+  for (const instance of activeInstances) {
+    if (!instance.needsOwnerLabel) {
+      continue;
+    }
+    const bucket = byConnector.get(instance.connectorId);
+    if (bucket) {
+      bucket.push(instance);
+    } else {
+      byConnector.set(instance.connectorId, [instance]);
+    }
+  }
+
+  const duplicateGroups: DuplicateSourceGroup[] = [];
+  const groupedIds = new Set<string>();
+  for (const [connectorId, items] of byConnector) {
+    if (items.length < DUPLICATE_SOURCE_GROUP_MIN_UNNAMED) {
+      continue;
+    }
+    for (const item of items) {
+      groupedIds.add(item.id);
+    }
+    duplicateGroups.push({
+      connectorId,
+      items,
+      kind: items[0]?.kind ?? connectorId,
+      total: items.length,
+    });
+  }
+
+  return {
+    duplicateGroups: duplicateGroups.sort((a, b) => b.total - a.total || a.kind.localeCompare(b.kind)),
+    visibleActiveInstances: activeInstances.filter((instance) => !groupedIds.has(instance.id)),
+  };
 }
 
 /** Map a list of summaries into the Sources view, preserving input order. */

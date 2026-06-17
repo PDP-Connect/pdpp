@@ -429,6 +429,44 @@ a.rr-s-item {
   display: none;
 }
 
+/* Duplicate fallback sources — active data, collapsed only when several
+   same-type sources still use generated labels. This keeps the list navigable
+   without hiding any source or implying cleanup happened automatically. */
+.rr-s-duplicate-group {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+}
+.rr-s-duplicate-group__summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  padding: 10px 12px 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.rr-s-duplicate-group__summary::before {
+  content: "▸ ";
+  font-size: 9px;
+  color: var(--muted-foreground);
+}
+.rr-s-duplicate-group[open] > .rr-s-duplicate-group__summary::before {
+  content: "▾ ";
+}
+.rr-s-duplicate-group__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-s-duplicate-group__note {
+  margin: 0;
+  padding: 0 12px 10px 14px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* Version-churn advisory — quiet, protocol-toned, informational.
    Advisories now render ABOVE the list (leads, not trails) so they are never
    orphaned at the bottom on mobile. Stays on the muted/border palette
