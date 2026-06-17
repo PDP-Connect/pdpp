@@ -159,6 +159,41 @@ function sourceFromEvent(event) {
   return null;
 }
 
+function findLatestBrowserSurfaceProjection(events) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event?.event_type?.startsWith('run.browser_surface_')) {
+      continue;
+    }
+    const projection = event.data?.browser_surface;
+    if (projection && typeof projection === 'object' && !Array.isArray(projection)) {
+      return projection;
+    }
+  }
+  return null;
+}
+
+const BROWSER_SURFACE_PROJECTION_KEYS = [
+  'browser_surface_status',
+  'browser_surface_wait_reason',
+  'browser_surface_lease_id',
+  'browser_surface_profile_key',
+];
+
+function pickBrowserSurfaceFields(projection) {
+  if (!projection) {
+    return {};
+  }
+  const out = {};
+  for (const key of BROWSER_SURFACE_PROJECTION_KEYS) {
+    const value = projection[key];
+    if (typeof value === 'string') {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function encodeEventCursor(eventSeq) {
   return eventSeq == null ? null : Buffer.from(JSON.stringify({ event_seq: Number(eventSeq) })).toString('base64url');
 }
@@ -241,6 +276,7 @@ async function summarizeRows(id, rows, aggregate = {}) {
   const sources = events.map(sourceFromEvent).filter(Boolean);
   const source = sources[0] || null;
   const connector = sources.find((candidate) => candidate.kind === 'connector') || null;
+  const browserSurface = findLatestBrowserSurfaceProjection(events);
 
   // Status projection — mirror lib/spine.ts summarizeEvents logic.
   //
@@ -309,6 +345,7 @@ async function summarizeRows(id, rows, aggregate = {}) {
     source_kind: source?.kind || null,
     status,
     trace_id: last.trace_id || null,
+    ...pickBrowserSurfaceFields(browserSurface),
   };
 }
 
