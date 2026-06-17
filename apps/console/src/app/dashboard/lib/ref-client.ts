@@ -13,6 +13,8 @@ import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCook
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface SourceObject {
+  connection_id?: string | null;
+  connector_id?: string | null;
   id: string;
   kind: "connector" | "provider_native";
 }
@@ -173,7 +175,9 @@ export interface RunSummary {
   browser_surface_profile_key?: string;
   browser_surface_status?: string;
   browser_surface_wait_reason?: string;
+  connection_id?: string | null;
   connector_id?: string | null;
+  connector_instance_id?: string | null;
   event_count: number;
   failure_reason: string | null;
   first_at: string;

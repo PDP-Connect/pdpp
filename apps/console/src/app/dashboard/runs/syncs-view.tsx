@@ -89,7 +89,7 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
       </div>
       <div className="rr-fix__act">
         {summary.cta === "connection_detail" || summary.cta === "reconnect" ? (
-          <Link href={dashboardRoutes.connector(card.connectorId)}>
+          <Link href={dashboardRoutes.connector(card.connectionId)}>
             <IcButton size="sm" variant="human">
               {ownerActionLabel}
             </IcButton>

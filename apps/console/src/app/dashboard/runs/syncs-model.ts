@@ -135,6 +135,79 @@ function runConnectorKey(run: RunSummary): string | null {
   return run.connector_id ?? run.source?.id ?? null;
 }
 
+function exactRunConnectionIds(run: RunSummary): Set<string> {
+  const ids = new Set<string>();
+  for (const value of [
+    run.connection_id,
+    run.connector_instance_id,
+    run.source?.connection_id,
+    run.source?.id,
+  ]) {
+    if (typeof value === "string" && value.length > 0) {
+      ids.add(value);
+    }
+  }
+  const profileKey = run.browser_surface_profile_key;
+  if (typeof profileKey === "string" && profileKey.length > 0) {
+    ids.add(profileKey);
+    const suffix = profileKey.split(":").at(-1);
+    if (suffix) {
+      ids.add(suffix);
+    }
+  }
+  return ids;
+}
+
+function runMatchesConnection(run: RunSummary, connector: RefConnectorSummary): boolean {
+  const connectionIds = [connector.connection_id, connector.connector_instance_id].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+  if (connectionIds.length === 0) {
+    return false;
+  }
+  const exactIds = exactRunConnectionIds(run);
+  if (!connectionIds.some((id) => exactIds.has(id))) {
+    return false;
+  }
+  const connectorKey = runConnectorKey(run);
+  return connectorKey === null || connectorKey === connector.connector_id || connectionIds.includes(connectorKey);
+}
+
+function connectorRunToRunSummary(connector: RefConnectorSummary, run: NonNullable<RefConnectorSummary["last_run"]>): RunSummary {
+  return {
+    connection_id: connector.connection_id,
+    connector_id: connector.connector_id,
+    connector_instance_id: connector.connector_instance_id ?? connector.connection_id,
+    event_count: run.event_count,
+    failure_reason: run.failure_reason,
+    first_at: run.first_at,
+    grant_id: null,
+    kinds: [],
+    last_at: run.last_at,
+    needs_input: false,
+    object: "run_summary",
+    run_id: run.run_id,
+    status: run.status,
+  };
+}
+
+function connectionRunHistory(input: {
+  connector: RefConnectorSummary;
+  runs: readonly RunSummary[];
+}): RunSummary[] {
+  const exactRuns = input.runs.filter((run) => runMatchesConnection(run, input.connector));
+  const keyed = new Map<string, RunSummary>();
+  for (const run of exactRuns) {
+    keyed.set(run.run_id, run);
+  }
+  for (const run of [input.connector.last_run, input.connector.last_successful_run]) {
+    if (run && !keyed.has(run.run_id)) {
+      keyed.set(run.run_id, connectorRunToRunSummary(input.connector, run));
+    }
+  }
+  return Array.from(keyed.values()).sort((a, b) => Date.parse(b.last_at) - Date.parse(a.last_at));
+}
+
 /**
  * Build the Rhythm ticks for a connection from its recent terminal runs,
  * oldest→newest, capped at {@link RECENT_RUN_LIMIT}. Non-terminal runs are
@@ -145,24 +218,6 @@ export function deriveConnectionRhythm(runs: readonly RunSummary[]): SyncRhythmT
   // `runs` arrive newest-first from the feed; reverse to oldest-first and cap.
   const recent = terminal.slice(0, RECENT_RUN_LIMIT).reverse();
   return recent.map((r) => runTick(r.status));
-}
-
-/** Group runs by connector key, preserving newest-first order within a key. */
-function groupRunsByConnector(runs: readonly RunSummary[]): Map<string, RunSummary[]> {
-  const byKey = new Map<string, RunSummary[]>();
-  for (const run of runs) {
-    const key = runConnectorKey(run);
-    if (!key) {
-      continue;
-    }
-    const bucket = byKey.get(key);
-    if (bucket) {
-      bucket.push(run);
-    } else {
-      byKey.set(key, [run]);
-    }
-  }
-  return byKey;
 }
 
 /**
@@ -359,7 +414,6 @@ export function buildSyncsViewModel(input: {
   connectors: readonly RefConnectorSummary[];
   runs: readonly RunSummary[];
 }): SyncsViewModel {
-  const runsByConnector = groupRunsByConnector(input.runs);
   const groups: SyncGroup[] = [];
   const failureCards: FailureCard[] = [];
 
@@ -371,10 +425,7 @@ export function buildSyncsViewModel(input: {
     const summary = deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null);
     const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
-    const connectionRuns =
-      runsByConnector.get(connector.connector_id) ??
-      (connector.connector_instance_id ? runsByConnector.get(connector.connector_instance_id) : undefined) ??
-      [];
+    const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
 
     if (summary) {
       failureCards.push({

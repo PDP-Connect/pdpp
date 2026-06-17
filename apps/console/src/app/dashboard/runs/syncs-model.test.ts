@@ -109,6 +109,20 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
   };
 }
 
+function connectorRun(overrides: Partial<NonNullable<RefConnectorSummary["last_run"]>> = {}) {
+  return {
+    event_count: 7,
+    failure_reason: null,
+    finished_at: "2026-06-13T04:00:06Z",
+    first_at: "2026-06-13T04:00:00Z",
+    last_at: "2026-06-13T04:00:06Z",
+    run_id: "run_connector_summary",
+    started_at: "2026-06-13T04:00:00Z",
+    status: "succeeded",
+    ...overrides,
+  } satisfies NonNullable<RefConnectorSummary["last_run"]>;
+}
+
 function schedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
   return {
     active_run_id: null,
@@ -215,6 +229,93 @@ test("healthy connections produce no card and count their streams on schedule", 
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
   assert.equal(model.groups[0]?.streams.length, 3);
+});
+
+test("connector-wide runs are not attributed to every same-type connection", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_amazon_a",
+        connector_id: "amazon",
+        display_name: "Amazon A",
+        streams: ["orders"],
+      }),
+      connector({
+        connection_id: "cin_amazon_b",
+        connector_id: "amazon",
+        display_name: "Amazon B",
+        streams: ["orders"],
+      }),
+    ],
+    runs: [
+      run({
+        connector_id: "amazon",
+        event_count: 99,
+        run_id: "run_connector_wide_only",
+        status: "failed",
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    model.groups.map((group) => group.streams[0]?.delta),
+    ["no recent run", "no recent run"],
+    "a connector-keyed run without exact connection identity must not paint either source"
+  );
+  assert.deepEqual(
+    model.groups.map((group) => group.streams[0]?.failed),
+    [false, false]
+  );
+});
+
+test("browser surface profile keys attribute a run only to the matching connection", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_chase_a",
+        connector_id: "chase",
+        display_name: "Chase A",
+        streams: ["transactions"],
+      }),
+      connector({
+        connection_id: "cin_chase_b",
+        connector_id: "chase",
+        display_name: "Chase B",
+        streams: ["transactions"],
+      }),
+    ],
+    runs: [
+      run({
+        browser_surface_profile_key: "chase:cin_chase_b",
+        connector_id: "chase",
+        event_count: 3,
+        run_id: "run_chase_b",
+        status: "failed",
+      }),
+    ],
+  });
+
+  assert.equal(model.groups[0]?.streams[0]?.delta, "no recent run");
+  assert.equal(model.groups[0]?.streams[0]?.failed, false);
+  assert.equal(model.groups[1]?.streams[0]?.delta, "sync failed");
+  assert.equal(model.groups[1]?.streams[0]?.failed, true);
+});
+
+test("connection summary last_run remains available without connector-wide run attribution", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_exact",
+        connector_id: "gmail",
+        last_run: connectorRun({ event_count: 42, run_id: "run_exact_summary" }),
+        streams: ["messages"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.groups[0]?.streams[0]?.delta, "+42 records");
+  assert.deepEqual(model.groups[0]?.streams[0]?.rhythm, ["ok"]);
 });
 
 test("revoked connections are excluded from the live syncs surface", () => {

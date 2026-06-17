@@ -36,7 +36,6 @@ import {
   type DeviceSourceInstance,
   getConnectorSchedule,
   listDeviceExporterSourceInstances,
-  listRuns,
   type RefAcquisitionBatchSummary,
   type RefAcquisitionCoverageSummary,
   type RefConnectionHealthSnapshot,
@@ -63,8 +62,6 @@ import { StreamCollectionFactsLine } from "./stream-collection-facts.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
 export const dynamic = "force-dynamic";
-
-const RECENT_RUNS_LIMIT = 10;
 
 function addSourceHrefForConnector(connectorId: string): string {
   return `/dashboard/records/add?source_q=${encodeURIComponent(connectorId)}`;
@@ -160,6 +157,44 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
   };
 }
 
+function toRunSummaryForConnection(
+  connectorId: string,
+  connectionId: string,
+  summary: RefConnectorRunSummary | null
+): RunSummary | null {
+  if (!summary) {
+    return null;
+  }
+  return {
+    connection_id: connectionId,
+    connector_id: connectorId,
+    connector_instance_id: connectionId,
+    event_count: summary.event_count,
+    failure_reason: summary.failure_reason,
+    first_at: summary.first_at,
+    grant_id: null,
+    kinds: [],
+    last_at: summary.last_at,
+    needs_input: false,
+    object: "run_summary",
+    run_id: summary.run_id,
+    status: summary.status,
+  };
+}
+
+function connectionRecentRuns(summary: RefConnectorSummary): RunSummary[] {
+  const byId = new Map<string, RunSummary>();
+  for (const run of [
+    toRunSummaryForConnection(summary.connector_id, summary.connection_id, summary.last_run),
+    toRunSummaryForConnection(summary.connector_id, summary.connection_id, summary.last_successful_run),
+  ]) {
+    if (run) {
+      byId.set(run.run_id, run);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => Date.parse(b.last_at) - Date.parse(a.last_at));
+}
+
 function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummary[]): ConnectorOverview {
   const lastRun = toConnectorRunRef(summary.last_run);
   const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
@@ -236,17 +271,15 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
       name: summary.connector_display_name ?? summary.display_name,
       streams: summary.streams.map((name) => ({ name })),
     } satisfies ConnectorManifest);
-  // `streams`, `recentRuns`, and `diagnostics` each depend only on the
-  // connector/instance ids resolved above — never on each other. Awaiting them
-  // in series turned the detail page into a 3-deep request waterfall against the
-  // reference deployment (the index page already avoids this shape). Race them
-  // so the second phase costs one round trip, not three. `loadConnectorDiagnostics`
-  // never rejects (it settles each branch internally); `listStreams`/`listRuns`
-  // may throw and are caught by `ConnectorPage` exactly as before, so the
-  // ServerUnreachable / error-boundary behavior is unchanged.
-  const [streams, runsResp, diagnostics, providerOrigin] = await Promise.all([
+  // `streams` and `diagnostics` each depend only on the connector/instance ids
+  // resolved above — never on each other. Awaiting them in series turned the
+  // detail page into a request waterfall against the reference deployment. Race
+  // them so the second phase costs one round trip, not several. Recent run
+  // evidence comes from the already connection-scoped summary projection below;
+  // do not fetch connector-wide runs here and present them as this source's
+  // history.
+  const [streams, diagnostics, providerOrigin] = await Promise.all([
     listStreams(connectorId, { connectorInstanceId }),
-    listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT }),
     loadConnectorDiagnostics(connectorId, connectorInstanceId),
     // Resolve the public origin to late-bind `<provider-url>` in remediation
     // command templates. Failure → null → the command fails closed (no broken
@@ -254,7 +287,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     getReferencePublicOrigin().catch(() => null),
   ]);
   const overview = toConnectorOverview(summary, streams);
-  const recentRuns = runsResp.data ?? [];
+  const recentRuns = connectionRecentRuns(summary);
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
   // Per-stream collection facts from the reference's derived `collection_report`
   // (absent on references predating the field → empty map → Streams section
@@ -442,7 +475,7 @@ function ConnectorPageView({
         title={displayName}
       />
 
-      {streakDots.length > 0 ? <StreakStrip connectorId={connectorId} dots={streakDots} /> : null}
+      {streakDots.length > 0 ? <StreakStrip dots={streakDots} /> : null}
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
 
@@ -561,7 +594,7 @@ function ConnectorHeaderActions({
       ) : null}
       <Link
         className={buttonVariants({ variant: "ghost", size: "sm" })}
-        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+        href="/dashboard/runs"
       >
         All runs →
       </Link>
@@ -759,12 +792,14 @@ function RenderedVerdictHeaderAction({
       );
     }
     // A non-device add_info genuinely lives on a run (e.g. an OTP/response the
-    // owner provides in the run view), so the runs link is correct there.
+    // owner provides in the run view). There is not yet a connection-scoped
+    // Runs filter, so use the neutral Runs surface rather than a connector-type
+    // filter that could include sibling sources.
     return (
       <Link
         className={buttonVariants({ variant: "default", size: "sm" })}
         data-testid="detail-action-rendered-verdict"
-        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+        href="/dashboard/runs"
         title="Open the run that needs owner input."
       >
         {action.cta}
@@ -923,11 +958,11 @@ function RecentRunsSection({
 }) {
   return (
     <Section
-      description="Each run is an artifact you can inspect. Click through for the full trace."
-      title={`Recent runs (${recentRuns.length})`}
+      description="Only runs already attributed to this source are listed here. Connector-wide runs stay on the Runs page."
+      title={`Known source runs (${recentRuns.length})`}
     >
       {recentRuns.length === 0 ? (
-        <p className="pdpp-caption text-muted-foreground italic">No runs yet for this connector.</p>
+        <p className="pdpp-caption text-muted-foreground italic">No attributed runs yet for this source.</p>
       ) : (
         <DataList>
           {autoPausedBanner ? (
@@ -1182,7 +1217,7 @@ function streakDotToneClass(tone: StreakDot["tone"]): string {
  * (no sparklines; symbols are scannable and accessible). Renders just below
  * the page header so the operator gets a health fingerprint before diving in.
  */
-function StreakStrip({ connectorId, dots }: { connectorId: string; dots: StreakDot[] }) {
+function StreakStrip({ dots }: { dots: StreakDot[] }) {
   const failureCount = dots.filter((d) => d.tone === "danger").length;
   const failureLabel = failureCount === 0 ? "0 failures" : `${failureCount} failure${failureCount === 1 ? "" : "s"}`;
 
@@ -1204,9 +1239,9 @@ function StreakStrip({ connectorId, dots }: { connectorId: string; dots: StreakD
       </span>
       <Link
         className="pdpp-caption ml-auto text-muted-foreground hover:text-foreground"
-        href={`/dashboard/runs?connector_id=${encodeURIComponent(connectorId)}`}
+        href="/dashboard/runs"
       >
-        {failureLabel} · All runs →
+        {failureLabel} · Open runs →
       </Link>
     </div>
   );

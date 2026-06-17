@@ -3815,22 +3815,20 @@ async function computeConnectorSummaries(
 }
 
 // Resolve one configured connection from a record-subpage route id and project
-// only that connection. The selector precedence matches the operator console's
-// `resolveConnectionForRecordsRoute`: an exact match on the stable connection
-// identity (`connectorInstanceId`) is preferred; otherwise the first configured
-// connection whose `connectorId` matches. Returns `null` when nothing resolves,
-// or when the matched connection is not a public reference connector. The
-// per-connection projection fan-out runs for the matched connection only — the
-// records subpages that resolve one connection no longer hydrate every connector.
+// only that connection. Exact stable connection identity is preferred. Connector
+// id fallback is allowed only when it is unambiguous; otherwise a connector-key
+// route would silently pick the first source and attach sibling evidence to it.
 export async function getConnectorSummaryForRoute(
   routeId: string,
   controller?: ControllerLike | null
 ): Promise<ConnectorSummary | null> {
   const rows = await listConnectorInstanceRowsForDashboard();
-  const match =
-    rows.find((instance) => instance.connectorInstanceId === routeId) ??
-    rows.find((instance) => instance.connectorId === routeId) ??
-    null;
+  const exact = rows.find((instance) => instance.connectorInstanceId === routeId) ?? null;
+  const connectorMatches = exact ? [] : rows.filter((instance) => instance.connectorId === routeId);
+  let match = exact;
+  if (match === null && connectorMatches.length === 1) {
+    match = connectorMatches[0] ?? null;
+  }
   if (match === null) {
     return null;
   }

@@ -12,8 +12,9 @@ const ROUTE_FILE = `${HERE}connection-route.ts`;
 // opening one connection's records page ran the per-connection fan-out for every
 // configured connection. These guards pin the two properties the scoping fix
 // depends on: (1) it asks the reference for ONLY the requested connection, and
-// (2) it keeps the exact match precedence (so the `connector_id`-only fallback
-// to the first match is preserved).
+// (2) it keeps exact connection identity ahead of the legacy connector-id
+// fallback. Current references decide whether connector-id fallback is
+// unambiguous server-side; the console fallback is defensive for older builds.
 
 // The resolver must pass the route id through so the reference projects ONLY
 // that connection (a 0-or-1 list)...
@@ -22,7 +23,7 @@ const SCOPED_SUMMARY_FETCH = /listConnectorSummaries\(\s*\{\s*connectionRouteId:
 const UNSCOPED_SUMMARY_FETCH = /listConnectorSummaries\(\s*\)/;
 // Exact match on connection / instance identity is preferred...
 const IDENTITY_MATCH = /summary\.connection_id === routeId \|\| summary\.connector_instance_id === routeId/;
-// ...then the first connection whose connector_id matches.
+// ...then a connector_id fallback only for the single row the reference returned.
 const CONNECTOR_ID_MATCH = /summary\.connector_id === routeId/;
 
 function resolverBody(src: string): string {
@@ -40,7 +41,7 @@ test("resolver scopes the summary fetch to the requested route id (no all-connec
   assert.doesNotMatch(body, UNSCOPED_SUMMARY_FETCH);
 });
 
-test("resolver preserves the stable-identity-first, connector_id-fallback precedence", async () => {
+test("resolver preserves stable-identity-first precedence before legacy connector_id fallback", async () => {
   const src = await readFile(ROUTE_FILE, "utf8");
   const body = resolverBody(src);
   assert.match(body, IDENTITY_MATCH);

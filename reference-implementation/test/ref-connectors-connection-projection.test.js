@@ -51,28 +51,40 @@ function seedConnector() {
 }
 
 async function seedInstances({ sourceKind = 'local_device' } = {}) {
-  const store = createSqliteConnectorInstanceStore();
-  await store.upsert({
+  await seedInstance({
     connectorInstanceId: WORK_INSTANCE_ID,
-    ownerSubjectId: 'owner_local',
-    connectorId: CONNECTOR_ID,
     displayName: 'Work laptop',
-    status: 'active',
     sourceKind,
     sourceBindingKey: 'work',
     sourceBinding: { kind: sourceKind, device: 'work' },
-    createdAt: NOW,
-    updatedAt: NOW,
   });
-  await store.upsert({
+  await seedInstance({
     connectorInstanceId: PERSONAL_INSTANCE_ID,
-    ownerSubjectId: 'owner_local',
-    connectorId: CONNECTOR_ID,
     displayName: 'Personal laptop',
-    status: 'active',
     sourceKind,
     sourceBindingKey: 'personal',
     sourceBinding: { kind: sourceKind, device: 'personal' },
+  });
+}
+
+async function seedInstance({
+  connectorInstanceId,
+  displayName,
+  sourceKind = 'local_device',
+  sourceBindingKey,
+  sourceBinding,
+  status = 'active',
+}) {
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: 'owner_local',
+    connectorId: CONNECTOR_ID,
+    displayName,
+    status,
+    sourceKind,
+    sourceBindingKey,
+    sourceBinding,
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -390,28 +402,31 @@ test('getConnectorSummaryForRoute resolves one connection by stable identity and
   );
 }));
 
-test('getConnectorSummaryForRoute falls back to the same connection the list resolves first for a connector_id', withTmpDb(async () => {
-  // When a record subpage is routed by bare connector_id (the row had no
-  // concrete connection identity), the resolver returns the FIRST configured
-  // connection of that connector — the SAME one the all-connector list places
-  // first, which is exactly what the console's prior `find` over the full list
-  // selected. The invariant is parity with the list order, not a hardcoded
-  // instance.
+test('getConnectorSummaryForRoute allows connector_id fallback only when unambiguous', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    displayName: 'Work laptop',
+    sourceKind: 'manual',
+    sourceBindingKey: 'work',
+    sourceBinding: { kind: 'manual', device: 'work' },
+  });
+
+  const scoped = await getConnectorSummaryForRoute(CONNECTOR_ID);
+  assert.ok(scoped, 'a connector_id-only route resolves when there is exactly one configured source');
+  assert.equal(scoped.connector_id, CONNECTOR_ID);
+  assert.equal(scoped.connector_instance_id, WORK_INSTANCE_ID);
+}));
+
+test('getConnectorSummaryForRoute refuses ambiguous connector_id fallback', withTmpDb(async () => {
+  // Connector-type route fallback must not pick the first configured source
+  // when several accounts/devices share a connector. Otherwise a source detail
+  // page can attach sibling run evidence to the wrong source.
   seedConnector();
   await seedInstances({ sourceKind: 'manual' });
 
-  const summaries = await listConnectorSummaries();
-  const firstForConnector = summaries.find((row) => row.connector_id === CONNECTOR_ID);
-  assert.ok(firstForConnector, 'the connector has at least one configured connection');
-
   const scoped = await getConnectorSummaryForRoute(CONNECTOR_ID);
-  assert.ok(scoped, 'a connector_id-only route still resolves a connection');
-  assert.equal(scoped.connector_id, CONNECTOR_ID);
-  assert.equal(
-    scoped.connector_instance_id,
-    firstForConnector.connector_instance_id,
-    'connector_id fallback resolves the same connection the full list resolves first',
-  );
+  assert.equal(scoped, null);
 }));
 
 test('getConnectorSummaryForRoute returns null when nothing resolves', withTmpDb(async () => {
