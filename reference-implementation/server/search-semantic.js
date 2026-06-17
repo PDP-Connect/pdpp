@@ -357,6 +357,61 @@ let backend = null;
 let activeBackfillCount = 0;
 let nextBackfillJobId = 1;
 const backfillJobs = new Map();
+const semanticQueryVectorCache = new Map();
+const DEFAULT_SEMANTIC_QUERY_VECTOR_CACHE_MS = 5 * 60 * 1000;
+const DEFAULT_SEMANTIC_QUERY_VECTOR_CACHE_MAX = 128;
+
+function semanticQueryVectorCacheTtlMs({ env = process.env } = {}) {
+  const parsed = Number.parseInt(env.PDPP_SEMANTIC_QUERY_VECTOR_CACHE_MS || '', 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return DEFAULT_SEMANTIC_QUERY_VECTOR_CACHE_MS;
+}
+
+function semanticQueryVectorCacheMax({ env = process.env } = {}) {
+  const parsed = Number.parseInt(env.PDPP_SEMANTIC_QUERY_VECTOR_CACHE_MAX || '', 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return DEFAULT_SEMANTIC_QUERY_VECTOR_CACHE_MAX;
+}
+
+function pruneSemanticQueryVectorCache(maxEntries) {
+  while (semanticQueryVectorCache.size > maxEntries) {
+    const oldestKey = semanticQueryVectorCache.keys().next().value;
+    if (!oldestKey) return;
+    semanticQueryVectorCache.delete(oldestKey);
+  }
+}
+
+async function embedSemanticQueryWithCache(input) {
+  const text = normalizeSemanticEmbeddingInput(input) ?? '';
+  const ttlMs = semanticQueryVectorCacheTtlMs();
+  const maxEntries = semanticQueryVectorCacheMax();
+  if (ttlMs === 0 || maxEntries === 0) {
+    return backend.embedQuery(text);
+  }
+
+  const key = `${hashBackendIdentity(backend)}\u0000${text}`;
+  const now = Date.now();
+  const existing = semanticQueryVectorCache.get(key);
+  if (existing && existing.expiresAt > now) {
+    // Refresh insertion order for a tiny LRU.
+    semanticQueryVectorCache.delete(key);
+    semanticQueryVectorCache.set(key, existing);
+    return existing.promise;
+  }
+
+  const promise = Promise.resolve()
+    .then(() => backend.embedQuery(text))
+    .catch((err) => {
+      semanticQueryVectorCache.delete(key);
+      throw err;
+    });
+  semanticQueryVectorCache.set(key, {
+    expiresAt: now + ttlMs,
+    promise,
+  });
+  pruneSemanticQueryVectorCache(maxEntries);
+  return promise;
+}
 
 /**
  * Configure or clear the module-scoped embedding backend. Pass null to
@@ -371,6 +426,7 @@ const backfillJobs = new Map();
  */
 export function configureSemanticBackend(b) {
   backend = b;
+  semanticQueryVectorCache.clear();
 }
 
 export function getSemanticBackend() {
@@ -2070,7 +2126,7 @@ export async function runSemanticSearch({
  * says semantic on any hits that do come back.
  */
 async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
-  const queryVector = await backend.embedQuery(normalizeSemanticEmbeddingInput(q) ?? '');
+  const queryVector = await embedSemanticQueryWithCache(q);
   const index = isPostgresStorageBackend() ? null : ensureVectorIndex();
 
   // Configurable KNN overscan — we fetch more per connector than the final

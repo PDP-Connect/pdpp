@@ -1203,6 +1203,32 @@ test('semantic indexing caps oversized text before embedding', async () => {
   });
 });
 
+test('semantic search caches repeated query embeddings for fresh searches', async () => {
+  const capturingBackend = makeEmbeddingInputCapturingBackend();
+  await withHarness({ semanticRetrievalBackend: capturingBackend }, async ({ asUrl, rsUrl }) => {
+    const reg = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(MANIFEST_A),
+    });
+    assert.equal(reg.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [
+      { id: 'cache-semantic-1', title: 'deployment failure', selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    for (let index = 0; index < 2; index += 1) {
+      const { status } = await fetchJson(
+        `${rsUrl}/v1/search/semantic?q=deployment%20failure`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(status, 200);
+    }
+    assert.equal(capturingBackend.queryInputs().length, 1);
+  });
+});
+
 test('semantic upsert with an empty field deletes only that record, not the whole scope', async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const reg = await fetch(`${asUrl}/connectors`, {

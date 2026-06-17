@@ -39,6 +39,12 @@ The scoped GIN index fixes the authorization-scope shape, but exact relevance ra
 
 This preserves the public contract: v1 lexical search is relevance-oriented and does not promise portable numeric BM25 scores or exhaustive global ranking. Requests narrowed by explicit record keys keep the exact path because the caller already supplied a bounded candidate set.
 
+### 5. Cache repeated semantic query vectors
+
+Semantic database retrieval is fast once a query vector exists; the local Transformers.js query embedding is the expensive step. The reference shall keep a small, backend-identity-keyed in-process query-vector cache with single-flight semantics so repeated semantic/hybrid requests during one navigation do not recompute the same embedding.
+
+The cache is intentionally short-lived and clears when the semantic backend changes. It does not change semantic result semantics; it reuses the same vector the backend would have produced.
+
 ## Alternatives
 
 - Increase Docker shared memory only: helpful, but insufficient. A forkable reference should not require operators to discover a container memory footgun before `/v1/search` works.
@@ -46,6 +52,7 @@ This preserves the public contract: v1 lexical search is relevance-oriented and 
 - Long-lived search-result caches: useful later, but they hide the bad query path rather than making first reads reliable.
 - Global fixed sleeps or wall-clock caps: rejected. They contradict the control-system ideal; the fix should govern concurrent work and database plan shape, not make collection/search wait arbitrarily.
 - Exact ranking over every match for broad terms: rejected for the reference default. It is accurate in a narrow scoring sense but failed the owner experience by producing 10-40 second searches on live personal-data volumes.
+- Caching full semantic search result pages first: rejected for this tranche. The measured bottleneck is query embedding generation, so caching the query vector removes duplicate CPU work while preserving fresh index reads and cursor semantics.
 
 ## Acceptance Checks
 

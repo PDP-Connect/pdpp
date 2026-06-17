@@ -11,11 +11,13 @@
 - [x] Apply bounded fan-out to lexical owner search snapshot building.
 - [x] Apply bounded fan-out to semantic owner search snapshot building.
 - [x] Add a bounded Postgres lexical candidate window before rank/snippet computation for broad searches.
+- [x] Add short-lived single-flight caching for repeated semantic query vectors.
 
 ## 3. Tests
 
 - [x] Add unit coverage for fan-out concurrency and ordering.
 - [x] Add/extend Postgres lexical tests to cover scoped index bootstrap and candidate-window lexical query success.
+- [x] Add semantic query-vector cache coverage.
 - [x] Run targeted search tests.
 - [x] Run reference TypeScript.
 - [x] Validate OpenSpec strict/all.
