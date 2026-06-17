@@ -69,7 +69,7 @@ export async function listConnectorSummaryEvidence({ connectorInstanceId } = {})
     }
     const result = await postgresQuery(
       `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-              revoked_at, total_records, stream_count,
+              revoked_at, total_records, stream_count, last_record_updated_at,
               dirty, computed_at, source_event_seq, state, last_error
          FROM connector_summary_evidence
          ${where}
@@ -83,7 +83,7 @@ export async function listConnectorSummaryEvidence({ connectorInstanceId } = {})
     ? db
       .prepare(
         `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-                revoked_at, total_records, stream_count,
+                revoked_at, total_records, stream_count, last_record_updated_at,
                 dirty, computed_at, source_event_seq, state, last_error
            FROM connector_summary_evidence
           WHERE connector_instance_id = ?
@@ -93,7 +93,7 @@ export async function listConnectorSummaryEvidence({ connectorInstanceId } = {})
     : db
       .prepare(
         `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-                revoked_at, total_records, stream_count,
+                revoked_at, total_records, stream_count, last_record_updated_at,
                 dirty, computed_at, source_event_seq, state, last_error
            FROM connector_summary_evidence
           ORDER BY connector_instance_id ASC`,
@@ -123,6 +123,7 @@ function shapeEvidenceRow(row) {
     revoked_at: row.revoked_at || null,
     total_records: Number(row.total_records || 0),
     stream_count: Number(row.stream_count || 0),
+    last_record_updated_at: row.last_record_updated_at || null,
     dirty: Number(row.dirty || 0) !== 0,
     computed_at: row.computed_at || null,
     source_event_seq: row.source_event_seq == null ? null : Number(row.source_event_seq),
@@ -288,12 +289,43 @@ async function readConnectionCountEvidence() {
   return map;
 }
 
+async function readConnectionRecordRecencyEvidence() {
+  const map = new Map();
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT connector_instance_id,
+              MAX(emitted_at) AS last_record_updated_at
+         FROM records
+        WHERE deleted = FALSE
+        GROUP BY connector_instance_id`,
+    );
+    for (const row of result.rows) {
+      map.set(row.connector_instance_id, row.last_record_updated_at || null);
+    }
+    return map;
+  }
+
+  const rows = getDb()
+    .prepare(
+      `SELECT connector_instance_id,
+              MAX(emitted_at) AS last_record_updated_at
+         FROM records
+        WHERE deleted = 0
+        GROUP BY connector_instance_id`,
+    )
+    .all();
+  for (const row of rows) {
+    map.set(row.connector_instance_id, row.last_record_updated_at || null);
+  }
+  return map;
+}
+
 /**
  * Combine identity rows with count evidence into the durable evidence shape.
  * Pure: no storage, no `now`, no synthesis. Shared by rebuild and reconcile so
  * both paths produce byte-identical evidence.
  */
-function buildEvidenceRows(instanceRows, countsByInstanceId) {
+function buildEvidenceRows(instanceRows, countsByInstanceId, recencyByInstanceId) {
   return instanceRows.map((row) => {
     const counts = countsByInstanceId.get(row.connector_instance_id) ?? {
       total_records: 0,
@@ -308,6 +340,7 @@ function buildEvidenceRows(instanceRows, countsByInstanceId) {
       revoked_at: row.revoked_at,
       total_records: counts.total_records,
       stream_count: counts.stream_count,
+      last_record_updated_at: recencyByInstanceId.get(row.connector_instance_id) || null,
     };
   });
 }
@@ -328,7 +361,8 @@ function buildEvidenceRows(instanceRows, countsByInstanceId) {
 export async function rebuildConnectorSummaryEvidence() {
   const instanceRows = await readConnectorInstanceRows();
   const counts = await readConnectionCountEvidence();
-  const evidence = buildEvidenceRows(instanceRows, counts);
+  const recencies = await readConnectionRecordRecencyEvidence();
+  const evidence = buildEvidenceRows(instanceRows, counts, recencies);
   const computedAt = nowIso();
   if (isPostgresStorageBackend()) {
     await rebuildPostgres(evidence, computedAt);
@@ -345,10 +379,10 @@ function rebuildSqlite(evidence, computedAt) {
     const upsert = db.prepare(
       `INSERT INTO connector_summary_evidence(
          connector_instance_id, connector_id, display_name, status, source_kind,
-         revoked_at, total_records, stream_count,
+         revoked_at, total_records, stream_count, last_record_updated_at,
          dirty, computed_at, source_event_seq, state, last_error
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 'fresh', NULL)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 'fresh', NULL)
        ON CONFLICT(connector_instance_id) DO UPDATE SET
          connector_id = excluded.connector_id,
          display_name = excluded.display_name,
@@ -357,6 +391,7 @@ function rebuildSqlite(evidence, computedAt) {
          revoked_at = excluded.revoked_at,
          total_records = excluded.total_records,
          stream_count = excluded.stream_count,
+         last_record_updated_at = excluded.last_record_updated_at,
          dirty = 0,
          computed_at = excluded.computed_at,
          state = 'fresh',
@@ -372,6 +407,7 @@ function rebuildSqlite(evidence, computedAt) {
         row.revoked_at,
         row.total_records,
         row.stream_count,
+        row.last_record_updated_at,
         computedAt,
       );
     }
@@ -394,10 +430,10 @@ async function rebuildPostgres(evidence, computedAt) {
       await client.query(
         `INSERT INTO connector_summary_evidence(
            connector_instance_id, connector_id, display_name, status, source_kind,
-           revoked_at, total_records, stream_count,
+           revoked_at, total_records, stream_count, last_record_updated_at,
            dirty, computed_at, source_event_seq, state, last_error
          )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, NULL, 'fresh', NULL)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, NULL, 'fresh', NULL)
          ON CONFLICT (connector_instance_id) DO UPDATE SET
            connector_id = EXCLUDED.connector_id,
            display_name = EXCLUDED.display_name,
@@ -406,6 +442,7 @@ async function rebuildPostgres(evidence, computedAt) {
            revoked_at = EXCLUDED.revoked_at,
            total_records = EXCLUDED.total_records,
            stream_count = EXCLUDED.stream_count,
+           last_record_updated_at = EXCLUDED.last_record_updated_at,
            dirty = 0,
            computed_at = EXCLUDED.computed_at,
            state = 'fresh',
@@ -419,6 +456,7 @@ async function rebuildPostgres(evidence, computedAt) {
           row.revoked_at,
           row.total_records,
           row.stream_count,
+          row.last_record_updated_at,
           computedAt,
         ],
       );
@@ -467,7 +505,8 @@ function reconcileDirtySqlite() {
     dirtyIds.has(row.connector_instance_id),
   );
   const counts = readConnectionCountEvidenceSync(db);
-  const evidence = buildEvidenceRows(instanceRows, counts);
+  const recencies = readConnectionRecordRecencyEvidenceSync(db);
+  const evidence = buildEvidenceRows(instanceRows, counts, recencies);
   const computedAt = nowIso();
   let reconciled = 0;
   db.transaction(() => {
@@ -481,6 +520,7 @@ function reconcileDirtySqlite() {
          revoked_at = ?,
          total_records = ?,
          stream_count = ?,
+         last_record_updated_at = ?,
          dirty = 0,
          computed_at = ?,
          state = 'fresh',
@@ -496,6 +536,7 @@ function reconcileDirtySqlite() {
         row.revoked_at,
         row.total_records,
         row.stream_count,
+        row.last_record_updated_at,
         computedAt,
         row.connector_instance_id,
       );
@@ -547,6 +588,23 @@ function readConnectionCountEvidenceSync(db) {
   return map;
 }
 
+function readConnectionRecordRecencyEvidenceSync(db) {
+  const map = new Map();
+  const rows = db
+    .prepare(
+      `SELECT connector_instance_id,
+              MAX(emitted_at) AS last_record_updated_at
+         FROM records
+        WHERE deleted = 0
+        GROUP BY connector_instance_id`,
+    )
+    .all();
+  for (const row of rows) {
+    map.set(row.connector_instance_id, row.last_record_updated_at || null);
+  }
+  return map;
+}
+
 async function reconcileDirtyPostgres() {
   const dirty = await postgresQuery(
     'SELECT connector_instance_id FROM connector_summary_evidence WHERE dirty <> 0',
@@ -559,7 +617,8 @@ async function reconcileDirtyPostgres() {
     dirtyIds.has(row.connector_instance_id),
   );
   const counts = await readConnectionCountEvidence();
-  const evidence = buildEvidenceRows(instanceRows, counts);
+  const recencies = await readConnectionRecordRecencyEvidence();
+  const evidence = buildEvidenceRows(instanceRows, counts, recencies);
   const liveIds = new Set(evidence.map((row) => row.connector_instance_id));
   const computedAt = nowIso();
   let reconciled = 0;
@@ -574,8 +633,9 @@ async function reconcileDirtyPostgres() {
            revoked_at = $6,
            total_records = $7,
            stream_count = $8,
+           last_record_updated_at = $9,
            dirty = 0,
-           computed_at = $9,
+           computed_at = $10,
            state = 'fresh',
            last_error = NULL
          WHERE connector_instance_id = $1`,
@@ -588,6 +648,7 @@ async function reconcileDirtyPostgres() {
           row.revoked_at,
           row.total_records,
           row.stream_count,
+          row.last_record_updated_at,
           computedAt,
         ],
       );

@@ -1420,6 +1420,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         revoked_at                TEXT,
         total_records             BIGINT NOT NULL DEFAULT 0,
         stream_count              BIGINT NOT NULL DEFAULT 0,
+        last_record_updated_at    TEXT,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         source_event_seq          BIGINT,
@@ -1428,6 +1429,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
+
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
 
       -- Outbound event subscriptions (RI extension). Client subscriptions are
       -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.

@@ -1285,7 +1285,8 @@ CREATE INDEX IF NOT EXISTS idx_retained_size_top_rows_lookup
 -- See openspec/changes/maintain-connector-summary-read-model/ for the spec
 -- delta. One maintained row per connection carrying DURABLE evidence only:
 -- identity + lifecycle (connector_id, display_name, status, source_kind,
--- revoked_at) and durable counts (total_records, stream_count). Time-relative
+-- revoked_at) and durable counts/freshness evidence (total_records,
+-- stream_count, last_record_updated_at). Time-relative
 -- and runtime-relative synthesis (freshness, connection_health,
 -- collection_report, rendered_verdict, next_action) is NEVER persisted here;
 -- it is computed on read so a cached verdict can never go dishonest.
@@ -1298,6 +1299,7 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   revoked_at                    TEXT,
   total_records                 INTEGER NOT NULL DEFAULT 0,
   stream_count                  INTEGER NOT NULL DEFAULT 0,
+  last_record_updated_at        TEXT,
   -- 1 means a mutation/ingest/run-lifecycle change happened that the
   -- maintained evidence has not yet absorbed. Reads must surface this as
   -- 'stale' rather than presenting the row as fresh truth.
@@ -3312,6 +3314,8 @@ export function initDb(path = ':memory:', opts = {}) {
   // carries no source or stream authority — record access is still governed
   // solely by active child grants.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'grant_packages', 'parent_package_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, 'connector_summary_evidence', 'last_record_updated_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => {
     raw.exec(
       `CREATE INDEX IF NOT EXISTS idx_grant_packages_parent

@@ -77,7 +77,13 @@ function seedInstanceSqlite({
 // Seeding it directly isolates this module from the full ingest + lexical
 // pipeline (which validates manifests), the same way the retained-size tests
 // rebuild from canonical rows rather than coupling to every downstream hook.
-function seedRetainedSizeStreamSqlite({ connectorInstanceId, connectorId, stream, recordCount }) {
+function seedRetainedSizeStreamSqlite({
+  connectorInstanceId,
+  connectorId,
+  stream,
+  recordCount,
+  computedAt = NOW,
+}) {
   getDb()
     .prepare(
       `INSERT INTO retained_size_stream(
@@ -88,7 +94,35 @@ function seedRetainedSizeStreamSqlite({ connectorInstanceId, connectorId, stream
          record_count = excluded.record_count,
          computed_at = excluded.computed_at`,
     )
-    .run(connectorInstanceId, connectorId, stream, recordCount, NOW);
+    .run(connectorInstanceId, connectorId, stream, recordCount, computedAt);
+}
+
+function seedRecordSqlite({
+  connectorInstanceId,
+  connectorId,
+  stream,
+  recordKey,
+  emittedAt,
+  deleted = false,
+}) {
+  getDb()
+    .prepare(
+      `INSERT INTO records(
+         connector_id, connector_instance_id, stream, record_key, record_json,
+         emitted_at, version, deleted, deleted_at
+       )
+       VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    )
+    .run(
+      connectorId,
+      connectorInstanceId,
+      stream,
+      recordKey,
+      JSON.stringify({ id: recordKey }),
+      emittedAt,
+      deleted ? 1 : 0,
+      deleted ? emittedAt : null,
+    );
 }
 
 // ── SQLite tests ─────────────────────────────────────────────────────────────
@@ -96,8 +130,49 @@ function seedRetainedSizeStreamSqlite({ connectorInstanceId, connectorId, stream
 test('rebuild derives durable identity + count evidence from canonical state', () =>
   withTempDb(async () => {
     seedInstanceSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail', displayName: 'Gmail personal' });
-    seedRetainedSizeStreamSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail', stream: 'messages', recordCount: 2 });
-    seedRetainedSizeStreamSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail', stream: 'attachments', recordCount: 1 });
+    seedRetainedSizeStreamSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordCount: 2,
+      computedAt: '2026-06-17T13:30:00.000Z',
+    });
+    seedRetainedSizeStreamSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'attachments',
+      recordCount: 1,
+      computedAt: '2026-06-17T13:45:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'msg_1',
+      emittedAt: '2026-06-17T12:30:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'msg_2',
+      emittedAt: '2026-06-17T12:45:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'attachments',
+      recordKey: 'att_1',
+      emittedAt: '2026-06-17T12:55:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'deleted_future',
+      emittedAt: '2026-06-17T14:00:00.000Z',
+      deleted: true,
+    });
 
     const rows = await rebuildConnectorSummaryEvidence();
     assert.equal(rows.length, 1);
@@ -110,6 +185,7 @@ test('rebuild derives durable identity + count evidence from canonical state', (
     assert.equal(row.revoked_at, null);
     assert.equal(row.total_records, 3);
     assert.equal(row.stream_count, 2);
+    assert.equal(row.last_record_updated_at, '2026-06-17T12:55:00.000Z');
     assert.equal(row.dirty, false);
     assert.equal(row.state, 'fresh');
     assert.equal(row.last_error, null);
@@ -122,6 +198,7 @@ test('rebuild keeps connections with zero records as honest empty evidence', () 
     assert.equal(rows.length, 1);
     assert.equal(rows[0].total_records, 0);
     assert.equal(rows[0].stream_count, 0);
+    assert.equal(rows[0].last_record_updated_at, null);
     assert.equal(rows[0].dirty, false);
     assert.equal(rows[0].state, 'fresh');
   }));
@@ -159,13 +236,47 @@ test('rebuild drops evidence rows for connections that no longer exist', () =>
 test('dirty marking flips state to stale and reconcile repairs only dirty rows', () =>
   withTempDb(async () => {
     seedInstanceSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail' });
-    seedRetainedSizeStreamSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail', stream: 'messages', recordCount: 1 });
+    seedRetainedSizeStreamSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordCount: 1,
+      computedAt: '2026-06-17T13:10:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'msg_1',
+      emittedAt: '2026-06-17T12:10:00.000Z',
+    });
     await rebuildConnectorSummaryEvidence();
     assert.equal((await getConnectorSummaryEvidence('cin_gmail_a')).total_records, 1);
 
     // A new record lands; the ingest seam would mark the connection dirty.
     // Model that by bumping the canonical retained-size count, then dirtying.
-    seedRetainedSizeStreamSqlite({ connectorInstanceId: 'cin_gmail_a', connectorId: 'gmail', stream: 'messages', recordCount: 2 });
+    seedRetainedSizeStreamSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordCount: 2,
+      computedAt: '2026-06-17T13:45:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'msg_2',
+      emittedAt: '2026-06-17T12:45:00.000Z',
+    });
+    seedRecordSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      stream: 'messages',
+      recordKey: 'deleted_future',
+      emittedAt: '2026-06-17T14:00:00.000Z',
+      deleted: true,
+    });
     await markConnectorSummaryEvidenceDirty({
       connectorInstanceId: 'cin_gmail_a',
       reason: 'record ingest changed count',
@@ -178,6 +289,7 @@ test('dirty marking flips state to stale and reconcile repairs only dirty rows',
     assert.equal(dirty.source_event_seq, 42);
     // Durable count is the pre-dirty snapshot until reconcile runs.
     assert.equal(dirty.total_records, 1);
+    assert.equal(dirty.last_record_updated_at, '2026-06-17T12:10:00.000Z');
 
     const { reconciled } = await reconcileDirtyConnectorSummaryEvidence();
     assert.equal(reconciled, 1);
@@ -185,6 +297,7 @@ test('dirty marking flips state to stale and reconcile repairs only dirty rows',
     assert.equal(clean.dirty, false);
     assert.equal(clean.state, 'fresh');
     assert.equal(clean.total_records, 2);
+    assert.equal(clean.last_record_updated_at, '2026-06-17T12:45:00.000Z');
   }));
 
 test('reconcile is a no-op when no rows are dirty', () =>
@@ -240,6 +353,7 @@ test('persisted evidence never carries synthesized health/verdict columns', () =
     ]) {
       assert.equal(columns.includes(forbidden), false, `evidence must not persist ${forbidden}`);
     }
+    assert.equal(columns.includes('last_record_updated_at'), true);
   }));
 
 // A synchronous dirty-marker shim for the SQLite host so the "connection
@@ -279,7 +393,20 @@ test(
          VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
         [instanceId, OWNER, connectorId, 'PG summary', NOW],
       );
-      await seedRetainedSizeStreamPostgres(instanceId, connectorId, 'messages', 1);
+      await seedRetainedSizeStreamPostgres(
+        instanceId,
+        connectorId,
+        'messages',
+        1,
+        '2026-06-17T13:20:00.000Z',
+      );
+      await seedRecordPostgres(
+        instanceId,
+        connectorId,
+        'messages',
+        'msg_1',
+        '2026-06-17T12:20:00.000Z',
+      );
 
       const rows = await rebuildConnectorSummaryEvidence();
       const row = rows.find((r) => r.connector_instance_id === instanceId);
@@ -287,10 +414,32 @@ test(
       assert.equal(row.connector_id, connectorId);
       assert.equal(row.total_records, 1);
       assert.equal(row.stream_count, 1);
+      assert.equal(row.last_record_updated_at, '2026-06-17T12:20:00.000Z');
       assert.equal(row.dirty, false);
       assert.equal(row.state, 'fresh');
 
-      await seedRetainedSizeStreamPostgres(instanceId, connectorId, 'messages', 2);
+      await seedRetainedSizeStreamPostgres(
+        instanceId,
+        connectorId,
+        'messages',
+        2,
+        '2026-06-17T13:50:00.000Z',
+      );
+      await seedRecordPostgres(
+        instanceId,
+        connectorId,
+        'messages',
+        'msg_2',
+        '2026-06-17T12:50:00.000Z',
+      );
+      await seedRecordPostgres(
+        instanceId,
+        connectorId,
+        'messages',
+        'deleted_future',
+        '2026-06-17T14:00:00.000Z',
+        true,
+      );
       await markConnectorSummaryEvidenceDirty({
         connectorInstanceId: instanceId,
         reason: 'pg ingest',
@@ -301,6 +450,7 @@ test(
       assert.equal(dirty.state, 'stale');
       assert.equal(dirty.source_event_seq, 7);
       assert.equal(dirty.total_records, 1);
+      assert.equal(dirty.last_record_updated_at, '2026-06-17T12:20:00.000Z');
 
       const { reconciled } = await reconcileDirtyConnectorSummaryEvidence();
       assert.ok(reconciled >= 1);
@@ -308,6 +458,7 @@ test(
       assert.equal(clean.dirty, false);
       assert.equal(clean.state, 'fresh');
       assert.equal(clean.total_records, 2);
+      assert.equal(clean.last_record_updated_at, '2026-06-17T12:50:00.000Z');
     } finally {
       await cleanupPostgres(connectorId, instanceId);
       await closePostgresStorage();
@@ -315,7 +466,7 @@ test(
   },
 );
 
-async function seedRetainedSizeStreamPostgres(instanceId, connectorId, stream, recordCount) {
+async function seedRetainedSizeStreamPostgres(instanceId, connectorId, stream, recordCount, computedAt = NOW) {
   await postgresQuery(
     `INSERT INTO retained_size_stream(
        connector_instance_id, connector_id, stream, record_count, dirty, computed_at
@@ -324,7 +475,27 @@ async function seedRetainedSizeStreamPostgres(instanceId, connectorId, stream, r
      ON CONFLICT (connector_instance_id, stream) DO UPDATE SET
        record_count = EXCLUDED.record_count,
        computed_at = EXCLUDED.computed_at`,
-    [instanceId, connectorId, stream, recordCount, NOW],
+    [instanceId, connectorId, stream, recordCount, computedAt],
+  );
+}
+
+async function seedRecordPostgres(instanceId, connectorId, stream, recordKey, emittedAt, deleted = false) {
+  await postgresQuery(
+    `INSERT INTO records(
+       connector_id, connector_instance_id, stream, record_key, record_json,
+       emitted_at, version, deleted, deleted_at, primary_key_text
+     )
+     VALUES($1, $2, $3, $4, $5::jsonb, $6, 1, $7, $8, $4)`,
+    [
+      connectorId,
+      instanceId,
+      stream,
+      recordKey,
+      JSON.stringify({ id: recordKey }),
+      emittedAt,
+      deleted,
+      deleted ? emittedAt : null,
+    ],
   );
 }
 
@@ -332,6 +503,7 @@ async function cleanupPostgres(connectorId, instanceId) {
   await postgresQuery('DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1', [instanceId]);
   await postgresQuery('DELETE FROM retained_size_stream WHERE connector_instance_id = $1', [instanceId]);
   await postgresQuery('DELETE FROM retained_size_connection WHERE connector_instance_id = $1', [instanceId]);
+  await postgresQuery('DELETE FROM records WHERE connector_instance_id = $1', [instanceId]);
   await postgresQuery('DELETE FROM connector_instances WHERE connector_instance_id = $1', [instanceId]);
   await postgresQuery('DELETE FROM connectors WHERE connector_id = $1', [connectorId]);
 }
