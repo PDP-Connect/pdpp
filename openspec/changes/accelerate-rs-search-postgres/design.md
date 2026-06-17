@@ -29,7 +29,7 @@ This is scoped to the lexical query transaction. It does not globally change Pos
 
 The current owner search path starts every per-connection/per-plan query at once. That is correct for small packages but unsafe for a personal server with broad local-agent logs and many connections.
 
-The reference shall execute Postgres per-source fan-out through a bounded work queue. The default bound is conservative and configurable. This is resource governance, not a wall-clock cap: work starts as soon as a slot is available, and no eligible work is delayed by timers.
+The reference shall execute Postgres per-source fan-out through a bounded work queue. The default bound is high enough to keep the normal Postgres pool saturated without launching every owner-visible source at once, and remains configurable. This is resource governance, not a wall-clock cap: work starts as soon as a slot is available, and no eligible work is delayed by timers.
 
 SQLite remains unchanged because the live bottleneck and shared-memory failure are Postgres-specific.
 
