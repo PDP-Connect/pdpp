@@ -55,6 +55,20 @@ Live Postgres evidence after the first search tranche showed semantic and hybrid
 
 The reference shall size per-connector semantic overscan from the requested page size, with a small duplicate-collapse cushion and a hard cap at the public maximum. For unfiltered Postgres semantic plans, the reference shall coalesce all same-connection semantic scope keys into one KNN read. Entries narrowed by record-key candidates or query filters SHALL remain separate so the filtered semantics are unchanged.
 
+### 8. Keep broad semantic retrieval on the ANN-compatible filter boundary
+
+Live Postgres `EXPLAIN ANALYZE` after decision 7 showed the residual semantic bottleneck was planner shape, not embedding generation or fan-out. The unfiltered HNSW path returned in tens of milliseconds, and connector-only HNSW remained fast. But when `connector_instance_id` and `scope_key = ANY(...)` were both present on the HNSW scan, PostgreSQL chose the `(connector_instance_id, scope_key)` btree index, exact-scanned tens of thousands of vectors for large Gmail/ChatGPT sources, and top-N sorted them. That produced about 3-4s pinned-source searches and kept broad semantic/hybrid search around 5-6s.
+
+The reference shall keep large broad 384-dimension Postgres semantic retrieval on the ANN-compatible boundary by first asking HNSW for a bounded same-connection candidate window, then applying the grant/planner scope-key filter to that materialized candidate set before results leave the database. Record-key-narrowed requests and non-production-dimension test embeddings keep the exact path so candidate narrowing and historical parity tests remain exact.
+
+A second live/test finding matters: connector-filtered HNSW is a poor plan for tiny or rare connectors because the global ANN graph may walk a large index to find enough same-connection candidates. The reference shall therefore use the retained-size stream projection as a cheap cardinality estimate. Small or unknown estimates stay on the exact scoped path; large clean estimates use the ANN candidate window. This keeps the live Gmail/ChatGPT path fast without penalizing small connectors.
+
+This is a query-shape and derived-index fix, not a new search engine. It preserves the authorization scope filter, avoids unbounded per-connector partial-index proliferation, and stays within pgvector/Postgres until measured evidence shows the reference needs a different retrieval substrate.
+
+Live partial-index proof changed the final construction. The existing btree exact path is already present but remains too slow for medium-large filtered vector slices (Gmail/ChatGPT at roughly 80k-90k semantic rows). The global HNSW graph is fast for dominant connectors and unfiltered search, but medium-selectivity connector filters still either under-return without a large candidate window or cold-scan too much of the graph. Official pgvector guidance calls out partial HNSW indexes for a small number of filtered values; PDPP applies that as a bounded reference read-model optimization, not as unbounded per-instance DDL.
+
+The reference shall therefore manage hot-source partial HNSW indexes for clean retained-size projections in the medium-large band: above a minimum row threshold, below a maximum table-share threshold, and capped to a small number of connections. This creates filtered graphs for the Gmail/ChatGPT class while avoiding indexes for tiny sources (exact is cheaper) and dominant sources (global HNSW/candidate scan is already efficient). The managed indexes are derived from retained-size projections and can be rebuilt; they are not protocol state.
+
 ## Alternatives
 
 - Increase Docker shared memory only: helpful, but insufficient. A forkable reference should not require operators to discover a container memory footgun before `/v1/search` works.
@@ -63,6 +77,7 @@ The reference shall size per-connector semantic overscan from the requested page
 - Global fixed sleeps or wall-clock caps: rejected. They contradict the control-system ideal; the fix should govern concurrent work and database plan shape, not make collection/search wait arbitrarily.
 - Exact ranking over every match for broad terms: rejected for the reference default. It is accurate in a narrow scoring sense but failed the owner experience by producing 10-40 second searches on live personal-data volumes.
 - Caching full semantic search result pages first: rejected for this tranche. The measured bottleneck is query embedding generation, so caching the query vector removes duplicate CPU work while preserving fresh index reads and cursor semantics.
+- Unbounded per-connection partial HNSW indexes or table partitioning immediately: rejected. Official pgvector guidance treats partial indexes and partitioning as valid filtered-ANN options, but unbounded per-instance DDL and table partitioning add operational and migration complexity. The measured live issue is solved by a capped hot-source partial-index set plus query-shape fallback; full partitioning can be revisited only with evidence that the bounded construction fails.
 
 ## Acceptance Checks
 

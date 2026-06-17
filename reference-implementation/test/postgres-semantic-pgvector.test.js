@@ -458,4 +458,79 @@ if (!POSTGRES_URL) {
       await closePostgresStorage();
     }
   });
+
+  test('production-dimension semantic search enforces scope after ANN candidate retrieval', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const schema = `pdpp_semvec_scope_${suffix}`;
+    const connectorId = `pgvec_scope_ann_${suffix}`;
+    const connectorInstanceId = `cin_pgvec_scope_ann_${suffix}`;
+    const bodyScope = '["messages","body"]';
+    const subjectScope = '["messages","subject"]';
+    const queryVector = deterministicVector(384, 91);
+    const adminPool = new pg.Pool({ connectionString: POSTGRES_URL });
+    try {
+      const admin = await adminPool.connect();
+      try {
+        await admin.query(`CREATE SCHEMA ${schema}`);
+        await admin.query('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public');
+      } finally {
+        admin.release();
+      }
+      await initPostgresStorage({ backend: 'postgres', databaseUrl: withSearchPath(POSTGRES_URL, schema) });
+      // Force the production-dimension broad-search path to use the ANN
+      // candidate window without requiring a large fixture.
+      await postgresQuery(
+        `INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, record_count, dirty, computed_at)
+         VALUES($1, $2, $3, $4, 0, $5)`,
+        [connectorInstanceId, connectorId, 'messages', 6000, new Date().toISOString()],
+      );
+      await postgresSemanticIndexUpsertMany({
+        connectorId,
+        connectorInstanceId,
+        stream: 'messages',
+        recordKey: 'body_match',
+        entries: [{ scopeKey: bodyScope, recordKey: 'body_match', vector: queryVector }],
+      });
+      await postgresSemanticIndexUpsertMany({
+        connectorId,
+        connectorInstanceId,
+        stream: 'messages',
+        recordKey: 'subject_match',
+        entries: [{ scopeKey: subjectScope, recordKey: 'subject_match', vector: queryVector }],
+      });
+      for (let index = 0; index < 8; index += 1) {
+        await postgresSemanticIndexUpsertMany({
+          connectorId,
+          connectorInstanceId,
+          stream: 'messages',
+          recordKey: `body_noise_${index}`,
+          entries: [{
+            scopeKey: bodyScope,
+            recordKey: `body_noise_${index}`,
+            vector: deterministicVector(384, 200 + index),
+          }],
+        });
+      }
+
+      const hits = await postgresSemanticSearch({
+        connectorId,
+        connectorInstanceId,
+        scopeKeys: [bodyScope],
+        queryVector,
+        limit: 5,
+      });
+
+      assert.ok(hits.length > 0, 'ANN candidate search returns scoped hits');
+      assert.equal(hits[0].recordKey, 'body_match', 'nearest hit survives scope filtering');
+      assert.ok(
+        hits.every((hit) => hit.scopeKey === bodyScope),
+        `all hits stay inside the requested scope: ${hits.map((hit) => hit.scopeKey).join(', ')}`,
+      );
+      assert.ok(!hits.some((hit) => hit.recordKey === 'subject_match'), 'unrequested semantic scope does not leak');
+    } finally {
+      await closePostgresStorage();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await adminPool.end();
+    }
+  });
 }

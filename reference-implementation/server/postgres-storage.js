@@ -37,10 +37,27 @@ let semanticIterativeScanSupported = false;
 // scanned exactly.
 const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
 const SEMANTIC_HNSW_INDEX_NAME = 'idx_pg_semantic_search_embedding_hnsw';
+const SEMANTIC_HOT_HNSW_INDEX_PREFIX = 'idx_pg_semantic_hnsw_hot_';
 
 function semanticVectorMigrationBatchSize() {
   const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_MIGRATION_BATCH_SIZE || '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 50_000;
+}
+
+function semanticHotHnswMinRows() {
+  const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 25_000;
+}
+
+function semanticHotHnswMaxIndexes() {
+  const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MAX_CONNECTIONS || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 32) : 8;
+}
+
+function semanticHotHnswMaxTableShare() {
+  const parsed = Number.parseFloat(process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MAX_TABLE_SHARE || '');
+  if (Number.isFinite(parsed) && parsed > 0 && parsed <= 1) return parsed;
+  return 0.1;
 }
 
 export function isPostgresSemanticVectorEmbedding() {
@@ -1545,6 +1562,70 @@ async function ensureSemanticEmbeddingHnswIndex(client, log) {
   log(`[PDPP] Semantic index migration: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
 }
 
+function sqlIdentifier(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function sqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function semanticHotHnswIndexName(connectorId, connectorInstanceId) {
+  const connector = String(connectorId || 'connector')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 24) || 'connector';
+  const instance = String(connectorInstanceId || '')
+    .replace(/^cin_/, '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 8) || createHash('sha256').update(String(connectorInstanceId || '')).digest('hex').slice(0, 8);
+  return `${SEMANTIC_HOT_HNSW_INDEX_PREFIX}${connector}_${instance}`.slice(0, 63);
+}
+
+async function ensureSemanticHotHnswIndexes(client, log = () => {}) {
+  if (!(await hasPgvectorExtension(client))) return;
+  const minRows = semanticHotHnswMinRows();
+  const maxIndexes = semanticHotHnswMaxIndexes();
+  if (maxIndexes <= 0) return;
+  const totalResult = await client.query(
+    `SELECT COUNT(*)::bigint AS n
+       FROM semantic_search_blob
+      WHERE vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS}`,
+  );
+  const totalRows = Number(totalResult.rows[0]?.n || 0);
+  if (totalRows <= 0) return;
+  const maxRows = Math.max(minRows, Math.floor(totalRows * semanticHotHnswMaxTableShare()));
+  const hot = await client.query(
+    `SELECT connector_id, connector_instance_id, SUM(record_count)::bigint AS indexed_rows
+       FROM retained_size_stream
+      WHERE dirty = 0
+      GROUP BY connector_id, connector_instance_id
+     HAVING SUM(record_count) >= $1
+        AND SUM(record_count) <= $2
+      ORDER BY SUM(record_count) DESC, connector_id ASC, connector_instance_id ASC
+      LIMIT $3`,
+    [minRows, maxRows, maxIndexes],
+  );
+  if (hot.rowCount === 0) return;
+  for (const row of hot.rows) {
+    const indexName = semanticHotHnswIndexName(row.connector_id, row.connector_instance_id);
+    log(`[PDPP] Semantic index migration: ensuring hot-source HNSW index ${indexName} (${row.connector_id}, ${row.indexed_rows} rows)`);
+    await client.query('SET max_parallel_maintenance_workers = 0');
+    try {
+      await client.query(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sqlIdentifier(indexName)}
+           ON semantic_search_blob
+           USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
+           WHERE connector_instance_id = ${sqlLiteral(row.connector_instance_id)}
+             AND vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS}`,
+      );
+    } finally {
+      await client.query('RESET max_parallel_maintenance_workers');
+    }
+  }
+}
+
 /**
  * Boot migration: move `semantic_search_blob.embedding` from the legacy JSONB
  * float-array representation to pgvector `vector` so semantic queries can use
@@ -1569,6 +1650,7 @@ async function migratePostgresSemanticEmbeddingToVector(client, log = () => {}) 
   const udtName = await postgresColumnUdtName(client, 'semantic_search_blob', 'embedding');
   if (udtName === 'vector') {
     await ensureSemanticEmbeddingHnswIndex(client, log);
+    await ensureSemanticHotHnswIndexes(client, log);
     semanticEmbeddingColumnMode = 'vector';
     semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
     return;
@@ -1629,6 +1711,7 @@ async function migratePostgresSemanticEmbeddingToVector(client, log = () => {}) 
   }
 
   await ensureSemanticEmbeddingHnswIndex(client, log);
+  await ensureSemanticHotHnswIndexes(client, log);
   semanticEmbeddingColumnMode = 'vector';
   semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
   if (total > 0) {

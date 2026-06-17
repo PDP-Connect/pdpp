@@ -18,4 +18,7 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **AND** it SHALL use database indexes shaped to the authorization scope predicates used by the search query
 - **AND** it SHALL size semantic per-source candidate work from the requested page size rather than always using the maximum page size
 - **AND** it SHALL coalesce unfiltered same-connection semantic scope reads when doing so preserves the same grant and filter semantics
+- **AND** for broad Postgres semantic reads it SHALL apply grant/planner scope filters before rows leave the database, even when it uses a bounded ANN candidate window to keep pgvector on an index-compatible plan
+- **AND** it SHALL avoid using a global ANN candidate scan for small or unestimated connector scopes when an exact scoped scan is cheaper and more complete
+- **AND** it MAY maintain bounded derived partial ANN indexes for medium-large connector scopes when retained-size projections show they are hot enough for exact scans to be slow but selective enough for a global ANN graph to be wasteful
 - **AND** it SHALL NOT rely on fixed wall-clock sleeps or request-duration caps as the primary safety mechanism

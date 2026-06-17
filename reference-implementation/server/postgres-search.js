@@ -519,6 +519,49 @@ function compareSemanticHits(a, b) {
   return a.distance - b.distance || a.connectorId.localeCompare(b.connectorId) || a.scopeKey.localeCompare(b.scopeKey) || a.recordKey.localeCompare(b.recordKey);
 }
 
+function postgresSemanticCandidateLimit(limit, { env = process.env } = {}) {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT || '', 10);
+  const configured = Number.isInteger(parsed) && parsed > 0 ? parsed : 1000;
+  const requested = Math.max(Number(limit) || 200, 1);
+  return Math.min(Math.max(configured, requested), 10_000);
+}
+
+function postgresSemanticExactMaxRows({ env = process.env } = {}) {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 5000;
+}
+
+function semanticStreamsFromScopeKeys(scopeKeys) {
+  const streams = new Set();
+  for (const scopeKey of scopeKeys || []) {
+    try {
+      const parsed = JSON.parse(scopeKey);
+      if (Array.isArray(parsed) && typeof parsed[0] === 'string' && parsed[0]) {
+        streams.add(parsed[0]);
+      }
+    } catch {}
+  }
+  return [...streams].sort();
+}
+
+async function postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys }) {
+  const streams = semanticStreamsFromScopeKeys(scopeKeys);
+  if (streams.length === 0) return null;
+  const result = await postgresQuery(
+    `SELECT COALESCE(SUM(record_count), 0)::bigint AS total,
+            COUNT(*)::integer AS matched,
+            COALESCE(MAX(dirty), 0)::integer AS max_dirty
+       FROM retained_size_stream
+      WHERE connector_instance_id = $1
+        AND stream = ANY($2::text[])`,
+    [connectorInstanceId, streams],
+  );
+  const row = result.rows[0] || {};
+  if (Number(row.matched || 0) !== streams.length) return null;
+  if (Number(row.max_dirty || 0) !== 0) return null;
+  return Number(row.total || 0);
+}
+
 async function postgresSemanticSearchVector({
   connectorInstanceId,
   scopeKeys,
@@ -542,15 +585,50 @@ async function postgresSemanticSearchVector({
     params.push(recordKeys);
     recordClause = `AND record_key = ANY($${params.length}::text[])`;
   }
+  const broadProductionSearch = dims === 384 && !Array.isArray(recordKeys);
+  const retainedEstimate = broadProductionSearch
+    ? await postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys })
+    : null;
+  const useCandidateWindow = broadProductionSearch
+    && retainedEstimate !== null
+    && retainedEstimate > postgresSemanticExactMaxRows();
+  const candidateLimit = useCandidateWindow
+    ? postgresSemanticCandidateLimit(boundedLimit)
+    : boundedLimit;
   // The HNSW default ef_search (40) would silently cap a larger overscan;
   // clamp to pgvector's [1, 1000] GUC range. Integer-validated above via
-  // boundedLimit (Number(...) || 200, Math.max 1).
-  const efSearch = Math.min(Math.max(Math.trunc(boundedLimit), 40), 1000);
+  // candidateLimit/boundedLimit (Number(...) || 200, Math.max 1).
+  const efSearch = Math.min(Math.max(Math.trunc(candidateLimit), 40), 1000);
   const result = await withPostgresTransaction(async (client) => {
     await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
     if (isPostgresSemanticIterativeScanSupported()) {
       // Keep filtered HNSW scans exact-ordered and complete (pgvector >= 0.8).
       await client.query("SET LOCAL hnsw.iterative_scan = strict_order");
+    }
+    if (useCandidateWindow) {
+      // The live Postgres planner chooses the exact (connector_instance_id,
+      // scope_key) btree path when both filters appear on the HNSW scan, which
+      // turns large Gmail/ChatGPT semantic reads into multi-second full exact
+      // scans. Keep the ANN boundary at the connector, then apply the grant
+      // scope filter to that bounded candidate set. Scope keys are still
+      // enforced before rows leave the database.
+      return client.query(
+        `WITH ann AS MATERIALIZED (
+           SELECT connector_id, connector_instance_id, scope_key, record_key,
+                  (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
+             FROM semantic_search_blob
+            WHERE connector_instance_id = $1
+              AND vector_dims(embedding) = ${dims}
+            ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
+            LIMIT $4
+         )
+         SELECT connector_id, connector_instance_id, scope_key, record_key, distance
+           FROM ann
+          WHERE scope_key = ANY($2::text[])
+          ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
+          LIMIT $5`,
+        [connectorInstanceId, scopeKeys, params[2], candidateLimit, boundedLimit],
+      );
     }
     // Secondary tie-break keys stay out of ORDER BY (they would disqualify
     // the ANN index); the <= LIMIT rows are re-sorted below under the same

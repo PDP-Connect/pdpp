@@ -15,6 +15,8 @@
 - [x] Reduce semantic per-connector overscan to the public maximum page size.
 - [x] Adapt semantic per-connector overscan to the requested page size.
 - [x] Coalesce unfiltered Postgres semantic scope reads per connection.
+- [x] Use retained-size estimates to keep small/unknown semantic scopes on exact scans and large scopes on bounded ANN candidate windows.
+- [x] Manage bounded hot-source partial HNSW indexes for medium-selectivity semantic sources.
 
 ## 3. Tests
 
@@ -22,6 +24,8 @@
 - [x] Add/extend Postgres lexical tests to cover scoped index bootstrap and candidate-window lexical query success.
 - [x] Add semantic query-vector cache coverage.
 - [x] Add semantic overscan and Postgres plan coalescing coverage.
+- [x] Add production-dimension Postgres semantic coverage proving ANN candidate retrieval still enforces requested semantic scopes.
+- [x] Prove hot-source partial HNSW indexes on the live slow semantic sources before deploy.
 - [x] Run targeted search tests.
 - [x] Run reference TypeScript.
 - [x] Validate OpenSpec strict/all.
@@ -32,3 +36,4 @@
 - [x] Verify `/v1/search?q=the&limit=5` no longer fails with shared-memory errors.
 - [x] Verify API benchmark deltas for lexical, semantic, and hybrid search.
 - [x] Record residual performance gaps for the next loop.
+- [ ] Verify API benchmark deltas after broad Postgres semantic retrieval uses ANN candidate windows instead of exact scoped vector scans.
