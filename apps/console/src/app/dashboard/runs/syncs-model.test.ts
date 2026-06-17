@@ -178,6 +178,8 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
   assert.doesNotMatch(card.summary.prose, RECONNECT_PROMPT_RE, "must not tell the owner to reconnect / log in");
   // The band must not count a self-handling cooldown under "need your hand".
   assert.equal(model.band.needYourHand, 0, "a throttled, self-resolving connection needs no hand");
+  assert.equal(model.band.needsReview, 1, "a visible wait card still counts as review, not all-clear");
+  assert.equal(model.band.allClear, false, "visible cards must not render the all-clear note");
 });
 
 test("a blocked connection with a source-pressure backlog still gets the WAIT card", () => {
@@ -226,6 +228,7 @@ test("healthy connections produce no card and count their streams on schedule", 
   });
   assert.equal(model.failureCards.length, 0);
   assert.equal(model.band.onSchedule, 3);
+  assert.equal(model.band.needsReview, 0);
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
   assert.equal(model.groups[0]?.streams.length, 3);
@@ -417,6 +420,8 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
   assert.equal(card?.summary.ownerActionRequired, false);
   assert.doesNotMatch(card?.summary.prose ?? "", RESUME_FALSE_REASSURANCE_RE);
   assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.band.needsReview, 1);
+  assert.equal(model.band.allClear, false);
   assert.equal(model.groups[0]?.health, "failing");
 });
 
@@ -446,6 +451,8 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
   assert.equal(card?.summary.actionLabel, "Retry now");
   assert.equal(card?.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
   assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.band.needsReview, 1);
+  assert.equal(model.band.allClear, false);
   assert.equal(model.groups[0]?.health, "failing");
 });
 
@@ -482,6 +489,8 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
   assert.equal(card?.summary.actionLabel, "Refresh now");
   assert.equal(card?.summary.ownerActionRequired, false);
   assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.band.needsReview, 1);
+  assert.equal(model.band.allClear, false);
   assert.equal(model.groups[0]?.health, "ok");
 });
 
@@ -519,6 +528,8 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
   assert.equal(card?.summary.ownerActionRequired, true);
   assert.doesNotMatch(card?.summary.prose ?? "", RESUME_NORMALLY_RE);
   assert.equal(model.band.needYourHand, 1);
+  assert.equal(model.band.needsReview, 1);
+  assert.equal(model.band.allClear, false);
 });
 
 test("healthy sources with only benign rendered verdict signals do not get a failure card", () => {
@@ -543,6 +554,8 @@ test("healthy sources with only benign rendered verdict signals do not get a fai
 
   assert.equal(model.failureCards.length, 0);
   assert.equal(model.band.needYourHand, 0);
+  assert.equal(model.band.needsReview, 0);
+  assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
 });
 

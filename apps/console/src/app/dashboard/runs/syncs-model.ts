@@ -123,10 +123,12 @@ export interface DuplicateSyncGroup {
 
 /** The health stat band at the top of the Syncs view. */
 export interface HealthBand {
-  /** True when every connection is healthy or self-handling — show the all-clear note. */
+  /** True when there are no visible review/action cards — show the all-clear note. */
   allClear: boolean;
   /** Count of connections that need an owner's hand (genuine reconnect/attention). */
   needYourHand: number;
+  /** Count of visible cards that need review, including advisory/code-fix cards. */
+  needsReview: number;
   /** Count of streams whose connection is healthy / on schedule. */
   onSchedule: number;
 }
@@ -448,10 +450,12 @@ function buildSyncRows(input: {
 function buildHealthBand(input: { groups: SyncGroup[]; failureCards: FailureCard[] }): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
   const needYourHand = input.failureCards.filter((c) => c.summary.ownerActionRequired).length;
+  const needsReview = input.failureCards.length;
   return {
     onSchedule,
     needYourHand,
-    allClear: needYourHand === 0,
+    needsReview,
+    allClear: needsReview === 0,
   };
 }
 

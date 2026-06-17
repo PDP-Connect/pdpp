@@ -99,7 +99,7 @@ const CHATGPT = demoCard({
 });
 
 export const DEMO_SYNCS_MODEL: SyncsViewModel = {
-  band: { onSchedule: 6, needYourHand: 1, allClear: false },
+  band: { onSchedule: 6, needYourHand: 1, needsReview: 2, allClear: false },
   duplicateGroups: [],
   failureCards: [FIRST_MERIDIAN, CHATGPT],
   groups: [

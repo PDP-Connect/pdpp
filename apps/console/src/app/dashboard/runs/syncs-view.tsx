@@ -34,18 +34,21 @@ const RESET_NOTE = "Nothing already saved is ever lost — a held connection onl
 // ─── Health stat band ─────────────────────────────────────────────────────────
 
 function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
+  const reviewValue = band.needYourHand > 0 ? band.needYourHand : band.needsReview;
+  const reviewLabel =
+    band.needYourHand > 0 ? "need your hand" : band.needsReview > 0 ? "need review" : "need attention";
   return (
     <div className="rr-sync-health">
       <Band>
         <BandCell k="streams on schedule" v={band.onSchedule} />
         <BandCell
-          className={band.needYourHand > 0 ? "is-warn" : undefined}
-          k={band.needYourHand > 0 ? "need your hand" : "need attention"}
-          v={band.needYourHand}
+          className={band.needsReview > 0 ? "is-warn" : undefined}
+          k={reviewLabel}
+          v={reviewValue}
         />
       </Band>
       <p className="rr-sync-health__note">
-        {band.allClear ? `Nothing needs you right now. ${RESET_NOTE}` : RESET_NOTE}
+        {band.allClear ? `Nothing needs you right now. ${RESET_NOTE}` : `Review the cards below. ${RESET_NOTE}`}
       </p>
     </div>
   );

@@ -57,6 +57,18 @@ test("syncs view stays server-rendered by default", async () => {
   assert.doesNotMatch(src, /useState\(/, "page-wide row disclosure state would force full-page client hydration");
 });
 
+test("syncs health band distinguishes advisory review from all-clear", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, /band\.needsReview > 0 \? "need review" : "need attention"/);
+  assert.match(src, /Review the cards below\./);
+  assert.doesNotMatch(
+    src,
+    /band\.allClear \? `Nothing needs you right now\. \$\{RESET_NOTE\}` : RESET_NOTE/,
+    "visible failure cards must not render the all-clear copy"
+  );
+});
+
 test("syncs first-paint run feed is bounded to the overview budget", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   const limitMatch = src.match(SYNCS_OVERVIEW_RUN_LIMIT_RE);
