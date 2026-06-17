@@ -3330,8 +3330,6 @@ export function initDb(path = ':memory:', opts = {}) {
   // carries no source or stream authority — record access is still governed
   // solely by active child grants.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'grant_packages', 'parent_package_id', 'TEXT'));
-  runWithSqliteBusyRetrySync(() =>
-    addColumnIfMissing(raw, 'connector_summary_evidence', 'last_record_updated_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => {
     raw.exec(
       `CREATE INDEX IF NOT EXISTS idx_grant_packages_parent
