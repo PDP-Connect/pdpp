@@ -3,6 +3,10 @@ import { isBrowserBoundConnector } from "../../../../../lib/connection-modality.
 import { requireDashboardAccess } from "../../../../../lib/dashboard-access.ts";
 import { runConnectionNow } from "../../../../../lib/operator-runs.ts";
 import { abandonBrowserEnrollmentShell } from "../../../../../lib/ref-client.ts";
+import {
+  classifyBrowserSessionLaunchResult,
+  type BrowserSessionRunStartResult,
+} from "../launch-result.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -75,14 +79,21 @@ export async function POST(request: Request, { params }: { params: Promise<Route
   const draft = readBooleanField(formData, "draft");
 
   try {
-    const result = (await runConnectionNow(connectionId)) as { run_id?: string };
-    const runId = result.run_id ?? "";
-    if (!runId) {
-      throw new Error("Run started but no run_id returned");
+    const runStart = (await runConnectionNow(connectionId)) as BrowserSessionRunStartResult;
+    const result = classifyBrowserSessionLaunchResult(runStart);
+    if (!result.ok) {
+      if (draft) {
+        try {
+          await abandonBrowserEnrollmentShell(connectionId);
+        } catch {
+          // Best effort; TTL retirement will clean up any orphaned draft.
+        }
+      }
+      return NextResponse.json({ message: result.message, run_status: result.run_status }, { status: result.status });
     }
     return NextResponse.json({
-      href: `/dashboard/runs/${encodeURIComponent(runId)}/stream`,
-      run_id: runId,
+      href: result.href,
+      run_id: result.run_id,
     });
   } catch (err) {
     if (draft) {
