@@ -1041,6 +1041,7 @@ if (!POSTGRES_URL) {
         trace_id: runTraceId,
         scenario_id: `scenario_${suffix}`,
         started_at: new Date().toISOString(),
+        run_generation: 1,
       });
       const activeRuns = await schedulerStore.listActiveRuns();
       assert.ok(activeRuns.some((run) => run.connector_id === connectorId && run.trace_id === runTraceId));
@@ -1308,6 +1309,7 @@ if (!POSTGRES_URL) {
         issuedGrantId,
       ]);
       await postgresQuery('DELETE FROM oauth_clients WHERE client_id = ANY($1::text[])', [cleanupClientIds]);
+      await postgresQuery('DELETE FROM connector_instances WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM connectors WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM blob_bindings WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM blobs WHERE connector_id = $1', [connectorId]);
@@ -1389,6 +1391,71 @@ if (!POSTGRES_URL) {
       for (const data of items) {
         await ingestRecord(connectorId, { stream, key: data.id, data });
       }
+
+      const storedSortPositions = await postgresQuery(
+        `SELECT record_key, cursor_value, primary_key_text
+           FROM records
+          WHERE connector_instance_id = $1
+            AND stream = $2
+          ORDER BY record_key ASC`,
+        [connectorInstanceId, stream],
+      );
+      assert.deepEqual(
+        storedSortPositions.rows.map((row) => [row.record_key, row.cursor_value, row.primary_key_text]),
+        [
+          ['a', '2026-04-01T00:00:00.000Z', 'a'],
+          ['b', '2026-04-02T00:00:00.000Z', 'b'],
+          ['c', '2026-04-03T00:00:00.000Z', 'c'],
+        ],
+        'Postgres ingest must persist manifest-derived cursor_value and primary_key_text for indexed reads',
+      );
+
+      await postgresQuery(
+        `UPDATE records
+            SET cursor_value = NULL
+          WHERE connector_instance_id = $1
+            AND stream = $2
+            AND record_key = 'c'`,
+        [connectorInstanceId, stream],
+      );
+      await registerConnector(manifest, { backfillRetrievalIndexes: false });
+      const backfilledSortPosition = await postgresQuery(
+        `SELECT cursor_value
+           FROM records
+          WHERE connector_instance_id = $1
+            AND stream = $2
+            AND record_key = 'c'`,
+        [connectorInstanceId, stream],
+      );
+      assert.equal(
+        backfilledSortPosition.rows[0]?.cursor_value,
+        '2026-04-03T00:00:00.000Z',
+        'manifest refresh must backfill missing stored cursor values before indexed reads rely on them',
+      );
+
+      await postgresQuery(
+        `INSERT INTO retained_size_stream(
+           connector_instance_id,
+           connector_id,
+           stream,
+           current_record_json_bytes,
+           record_history_json_bytes,
+           blob_bytes,
+           record_count,
+           record_history_count,
+           blob_count,
+           dirty,
+           computed_at
+         )
+         VALUES($1, $2, $3, 0, 0, 0, 3, 3, 0, 0, $4)
+         ON CONFLICT(connector_instance_id, stream) DO UPDATE
+           SET connector_id = EXCLUDED.connector_id,
+               record_count = EXCLUDED.record_count,
+               record_history_count = EXCLUDED.record_history_count,
+               dirty = EXCLUDED.dirty,
+               computed_at = EXCLUDED.computed_at`,
+        [connectorInstanceId, connectorId, stream, new Date().toISOString()],
+      );
 
       const canonicalConnection = await queryRecords(connectorId, stream, grant, {
         connection_id: connectorInstanceId,
@@ -1590,9 +1657,29 @@ if (!POSTGRES_URL) {
       assert.equal(
         filtered.meta?.count?.value,
         1,
-        'count must reflect filter narrowing, not the unfiltered total',
+        'count must reflect filter narrowing, not the unfiltered retained-size projection',
+      );
+
+      await postgresQuery(
+        `UPDATE retained_size_stream
+            SET record_count = 999,
+                dirty = 1
+          WHERE connector_instance_id = $1
+            AND stream = $2`,
+        [connectorInstanceId, stream],
+      );
+      const dirtyProjection = await queryRecords(connectorId, stream, grant, {
+        count: 'exact',
+        limit: 1,
+        order: 'asc',
+      }, manifest);
+      assert.equal(
+        dirtyProjection.meta?.count?.value,
+        3,
+        'dirty retained-size projections must be ignored in favor of the canonical SQL count',
       );
     } finally {
+      await postgresQuery('DELETE FROM retained_size_stream WHERE connector_instance_id = $1', [connectorInstanceId]);
       await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);

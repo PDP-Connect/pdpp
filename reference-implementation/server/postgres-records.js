@@ -340,6 +340,90 @@ function cursorValue(data, manifestStream) {
   return value === undefined || value === null ? null : String(value);
 }
 
+const manifestStreamCache = new Map();
+
+function manifestStreamCacheKey(connectorId, stream) {
+  return `${connectorId}\u0000${stream}`;
+}
+
+export function invalidatePostgresRecordManifestCache(connectorId = null) {
+  if (!connectorId) {
+    manifestStreamCache.clear();
+    return;
+  }
+  const prefix = `${connectorId}\u0000`;
+  for (const key of manifestStreamCache.keys()) {
+    if (key.startsWith(prefix)) manifestStreamCache.delete(key);
+  }
+}
+
+function normalizeManifestRow(row) {
+  if (!row?.manifest) return null;
+  if (typeof row.manifest === 'string') {
+    try {
+      return JSON.parse(row.manifest);
+    } catch {
+      return null;
+    }
+  }
+  return row.manifest;
+}
+
+async function getCachedPostgresManifestStream(connectorId, stream) {
+  const key = manifestStreamCacheKey(connectorId, stream);
+  if (manifestStreamCache.has(key)) return manifestStreamCache.get(key);
+
+  const result = await postgresQuery(
+    `SELECT manifest
+       FROM connectors
+      WHERE connector_id = $1`,
+    [connectorId],
+  );
+  const manifest = normalizeManifestRow(result.rows[0]);
+  const manifestStream = getManifestStream(manifest, stream);
+  manifestStreamCache.set(key, manifestStream);
+  return manifestStream;
+}
+
+function manifestConnectorId(manifest) {
+  const raw = manifest?.connector_key || manifest?.connector_id;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  return canonicalConnectorKey(raw) ?? raw.trim();
+}
+
+export async function postgresBackfillRecordSortPositionsForManifest(manifest) {
+  const connectorId = manifestConnectorId(manifest);
+  if (!connectorId || !Array.isArray(manifest?.streams)) {
+    return { updated: 0 };
+  }
+
+  let updated = 0;
+  for (const manifestStream of manifest.streams) {
+    const stream = typeof manifestStream?.name === 'string' ? manifestStream.name : null;
+    const cursorField = safeJsonField(manifestStream?.cursor_field);
+    if (!stream || !cursorField) continue;
+
+    const result = await postgresQuery(
+      `UPDATE records
+          SET cursor_value = CASE
+                WHEN record_json ? $3 THEN record_json ->> $3
+                ELSE NULL
+              END
+        WHERE connector_id = $1
+          AND stream = $2
+          AND deleted = FALSE
+          AND cursor_value IS DISTINCT FROM CASE
+                WHEN record_json ? $3 THEN record_json ->> $3
+                ELSE NULL
+              END`,
+      [connectorId, stream, cursorField],
+    );
+    updated += Number(result.rowCount || 0);
+  }
+  invalidatePostgresRecordManifestCache(connectorId);
+  return { updated };
+}
+
 function encodeCursor(payload) {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
@@ -513,10 +597,9 @@ function safeJsonField(field) {
 
 function recordOrderExpressions(manifestStream) {
   const cursorField = safeJsonField(manifestStream?.cursor_field);
-  const primaryField = safeJsonField(primaryKeyFieldsFor(manifestStream)[0]);
   return {
-    cursorSql: cursorField ? `(record_json->>'${cursorField}')` : 'emitted_at',
-    primarySql: primaryField ? `COALESCE(record_json->>'${primaryField}', record_key)` : 'record_key',
+    cursorSql: cursorField ? 'cursor_value' : 'emitted_at',
+    primarySql: 'primary_key_text',
   };
 }
 
@@ -798,6 +881,13 @@ export async function postgresIngestRecord(storageTarget, record) {
 
   const effectiveEmittedAt = emittedAt || nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
+  const manifestStream = op === 'delete'
+    ? null
+    : await getCachedPostgresManifestStream(connectorId, stream);
+  const storedCursorValue = op === 'delete' ? null : cursorValue(data, manifestStream);
+  const storedPrimaryKeyText = op === 'delete'
+    ? recordKey
+    : primaryKeyText(data, recordKey, manifestStream);
 
   const outcome = await withPostgresTransaction(async (client) => {
     // No-op equivalence is computed at the `jsonb` level via a server-side
@@ -887,7 +977,17 @@ export async function postgresIngestRecord(storageTarget, record) {
                cursor_value = EXCLUDED.cursor_value,
                primary_key_text = EXCLUDED.primary_key_text
          RETURNING COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes`,
-        [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, null, recordKey],
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          recordKey,
+          recordJson,
+          effectiveEmittedAt,
+          nextVersion,
+          storedCursorValue,
+          storedPrimaryKeyText,
+        ],
       );
       nextRecordJsonBytes = Number(stored.rows[0]?.record_json_bytes || 0);
       await client.query(
@@ -1188,6 +1288,9 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
     requestParams,
     countWhere,
     countParams,
+    connectorInstanceId,
+    stream,
+    effective,
   });
   if (countOutcome) {
     response.meta = mergeMetaCount(response.meta, countOutcome.count);
@@ -1217,9 +1320,48 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
  *       (#"Counts") and specs/reference-implementation-architecture/
  *       spec.md (#"Requested count is downgraded").
  */
-async function computePostgresGradedRecordCount({ requestParams, countWhere, countParams }) {
+function hasRequestFilters(requestParams) {
+  const filter = requestParams?.filter;
+  return !!filter && typeof filter === 'object' && !Array.isArray(filter) && Object.keys(filter).length > 0;
+}
+
+async function readProjectedRecordCount({ connectorInstanceId, stream, requestParams, effective }) {
+  if (hasRequestFilters(requestParams)) return null;
+  if (effective?.timeRange) return null;
+  if (Array.isArray(effective?.resources) && effective.resources.length > 0) return null;
+
+  const result = await postgresQuery(
+    `SELECT record_count
+       FROM retained_size_stream
+      WHERE connector_instance_id = $1
+        AND stream = $2
+        AND dirty = 0`,
+    [connectorInstanceId, stream],
+  );
+  const value = Number(result.rows[0]?.record_count);
+  return Number.isFinite(value) ? value : null;
+}
+
+async function computePostgresGradedRecordCount({
+  requestParams,
+  countWhere,
+  countParams,
+  connectorInstanceId,
+  stream,
+  effective,
+}) {
   const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
   if (!requested || requested === 'none') return null;
+
+  const projectedValue = await readProjectedRecordCount({
+    connectorInstanceId,
+    stream,
+    requestParams,
+    effective,
+  });
+  if (projectedValue != null) {
+    return { count: { kind: 'exact', value: projectedValue } };
+  }
 
   const result = await postgresQuery(
     `SELECT COUNT(*)::bigint AS value FROM records ${countWhere}`,

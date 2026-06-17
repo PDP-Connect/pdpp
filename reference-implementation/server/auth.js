@@ -2791,6 +2791,15 @@ export async function registerConnector(manifest, options = {}) {
     ]);
   }
 
+  if (isPostgresStorageBackend()) {
+    const {
+      invalidatePostgresRecordManifestCache,
+      postgresBackfillRecordSortPositionsForManifest,
+    } = await import('./postgres-records.js');
+    invalidatePostgresRecordManifestCache(connectorId);
+    await postgresBackfillRecordSortPositionsForManifest(storedManifest);
+  }
+
   if (options.backfillRetrievalIndexes === false) {
     return connectorId;
   }
