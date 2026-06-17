@@ -230,6 +230,11 @@ function SyncGroupBlock({
 
 function SyncsOverviewOverflow({ model }: { model: SyncsViewModel }) {
   const parts = [
+    model.hiddenReviewCardCount > 0
+      ? `${model.hiddenReviewCardCount.toLocaleString()} more review card${
+          model.hiddenReviewCardCount === 1 ? "" : "s"
+        }`
+      : null,
     model.hiddenGroupCount > 0
       ? `${model.hiddenGroupCount.toLocaleString()} more source${model.hiddenGroupCount === 1 ? "" : "s"}`
       : null,

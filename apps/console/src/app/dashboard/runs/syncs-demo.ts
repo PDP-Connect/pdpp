@@ -209,7 +209,9 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
   ],
   hiddenGroupCount: 0,
+  hiddenReviewCardCount: 0,
   hiddenStreamCount: 0,
   totalGroupCount: 4,
+  totalReviewCardCount: 2,
   totalStreamCount: 6,
 };

@@ -677,10 +677,10 @@ test("syncs overview caps stream rows while preserving exact source detail overf
     runs: [],
   });
 
-  assert.equal(model.groups[0]?.streams.length, 5);
-  assert.equal(model.groups[0]?.hiddenStreamCount, 2);
+  assert.equal(model.groups[0]?.streams.length, 3);
+  assert.equal(model.groups[0]?.hiddenStreamCount, 4);
   assert.equal(model.groups[0]?.totalStreamCount, 7);
-  assert.equal(model.hiddenStreamCount, 2);
+  assert.equal(model.hiddenStreamCount, 4);
   assert.equal(model.totalStreamCount, 7);
 });
 
@@ -696,8 +696,34 @@ test("syncs overview caps lower-priority source groups", () => {
   );
   const model = buildSyncsViewModel({ connectors, runs: [] });
 
-  assert.equal(model.groups.length, 16);
-  assert.equal(model.hiddenGroupCount, 2);
-  assert.equal(model.hiddenStreamCount, 2);
+  assert.equal(model.groups.length, 6);
+  assert.equal(model.hiddenGroupCount, 12);
+  assert.equal(model.hiddenStreamCount, 12);
   assert.equal(model.totalGroupCount, 18);
+});
+
+test("syncs overview caps visible review cards while the band counts the full review set", () => {
+  const advisoryVerdict = renderedVerdict({
+    channel: "advisory",
+    forward_statement: "Run a refresh to bring this up to date.",
+    pill: { label: "Degraded", tone: "amber" },
+    required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
+  });
+  const connectors = Array.from({ length: 8 }, (_, index) =>
+    connector({
+      connection_id: `cin_review_${index}`,
+      connector_display_name: "Source",
+      connector_id: `source_${index}`,
+      display_name: `Review Source ${index}`,
+      rendered_verdict: advisoryVerdict,
+      streams: ["records"],
+    })
+  );
+  const model = buildSyncsViewModel({ connectors, runs: [] });
+
+  assert.equal(model.failureCards.length, 6);
+  assert.equal(model.band.needsReview, 8);
+  assert.equal(model.hiddenReviewCardCount, 2);
+  assert.equal(model.totalReviewCardCount, 8);
+  assert.equal(model.band.allClear, false);
 });

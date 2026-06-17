@@ -140,16 +140,18 @@ export interface SyncsViewModel {
   failureCards: FailureCard[];
   groups: SyncGroup[];
   hiddenGroupCount: number;
+  hiddenReviewCardCount: number;
   hiddenStreamCount: number;
   totalGroupCount: number;
+  totalReviewCardCount: number;
   totalStreamCount: number;
 }
 
 const HEALTHY_RUN_STATUSES = new Set(["succeeded", "success", "completed", "succeeded_with_gaps"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]);
 const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
-const MAX_SYNC_GROUPS = 16;
-const MAX_SYNC_STREAM_ROWS_PER_GROUP = 5;
+const MAX_SYNC_GROUPS = 6;
+const MAX_SYNC_STREAM_ROWS_PER_GROUP = 3;
 const RECENT_RUN_LIMIT = 7;
 
 /**
@@ -628,8 +630,10 @@ export function buildSyncsViewModel(input: {
     failureCards,
     groups,
     hiddenGroupCount: Math.max(0, ordered.length - selected.length),
+    hiddenReviewCardCount: Math.max(0, fullFailureCards.length - failureCards.length),
     hiddenStreamCount: Math.max(0, totalStreamCount - shownStreamCount),
     totalGroupCount: projections.length,
+    totalReviewCardCount: fullFailureCards.length,
     totalStreamCount,
   };
 }
