@@ -148,6 +148,16 @@ export interface MountOwnerConnectionRevokeContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the revoke mutation commits. Injected (not imported)
+  // to match the route-family decoupling pattern and the optional
+  // `invalidateConnectorSummariesCache` above. Awaited at the call site so
+  // ordering is explicit rather than hidden in a fire-and-forget promise;
+  // best-effort and a no-op until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
@@ -404,6 +414,14 @@ function buildRevokeHandler(
         })
       );
       ctx.invalidateConnectorSummariesCache?.();
+      // Scoped, awaited dirty marking for the maintained read model: the soft
+      // revoke changed this connection's lifecycle evidence (status/revoked_at),
+      // so its summary evidence row is now stale. Instance id is known, so this
+      // is a scoped marker rather than a full-table sweep.
+      await ctx.markConnectorSummaryEvidenceDirty?.({
+        connectorInstanceId: namespace.connectorInstanceId,
+        reason: "owner revoke changed connection lifecycle evidence",
+      });
       await emitRevokeAudit(ctx, req, res, {
         connectionId,
         connectorKey,

@@ -79,6 +79,7 @@ import {
   markRetainedSizeConnectionDirty,
   markRetainedSizeStreamDirty,
 } from './retained-size-read-model.js';
+import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.js';
 import {
   buildLimitClampedWarning,
   CANONICAL_WARNING_CODES,
@@ -295,6 +296,15 @@ export async function ingestRecord(storageTarget, record) {
       } else {
         await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
       }
+      // Colocated with the retained-size delta: a changed record write moved
+      // this connection's count/stream evidence, so the maintained
+      // connector-summary read model for this exact connection is now stale.
+      // Scoped marker (instance id is known); best-effort and a no-op until the
+      // read model is warmed, so it cannot fail the durable ingest.
+      await markConnectorSummaryEvidenceDirty({
+        connectorInstanceId,
+        reason: 'record ingest changed connection count/stream evidence',
+      });
       if (op === 'delete') {
         await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
         await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
@@ -466,6 +476,17 @@ export async function ingestRecord(storageTarget, record) {
     await lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
     await semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
   }
+
+  // Colocated with the retained-size delta applied in the committed
+  // transaction above: a changed record write moved this connection's
+  // count/stream evidence, so the maintained connector-summary read model for
+  // this exact connection is now stale. Scoped marker (instance id is known);
+  // best-effort and a no-op until the read model is warmed, so a marker miss
+  // cannot fail or retroactively roll back the durable record mutation.
+  await markConnectorSummaryEvidenceDirty({
+    connectorInstanceId,
+    reason: 'record ingest changed connection count/stream evidence',
+  });
 
   // After-commit notification for client event subscriptions. Failures
   // here MUST NOT retroactively roll back the durable record mutation.

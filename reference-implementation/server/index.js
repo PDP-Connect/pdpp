@@ -238,6 +238,7 @@ import {
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.js';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
 import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.js';
 import {
@@ -4429,6 +4430,7 @@ function buildRsApp(opts = {}) {
     handleError,
     invalidateConnectorSummariesCache,
     listActiveBindingsForGrant,
+    markConnectorSummaryEvidenceDirty,
     pdppError,
     projectBindingForWire,
     requireOwner,
