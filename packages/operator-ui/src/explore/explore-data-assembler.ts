@@ -41,10 +41,10 @@ import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribu
 // Empty-query fan-out caps. Keeps the recency feed cheap on instances
 // with many connections; the user is expected to submit a query to
 // narrow further. Search-driven mode is unaffected.
-const MAX_FEED_CONNECTIONS = 12;
-const MAX_FEED_STREAMS_PER_CONNECTION = 4;
-const MAX_FEED_RECORDS_PER_STREAM = 8;
-const FEED_TOTAL_CAP = 50;
+const MAX_FEED_CONNECTIONS = 6;
+const MAX_FEED_STREAMS_PER_CONNECTION = 2;
+const MAX_FEED_RECORDS_PER_STREAM = 6;
+const FEED_TOTAL_CAP = 32;
 const TIME_RANGE_RECORDS_PER_STREAM = 50;
 const TIME_RANGE_TOTAL_CAP = 500;
 const SEARCH_PAGE_LIMIT = 25;
@@ -415,19 +415,21 @@ async function loadEmptyQueryFeed(
       fetches.push(
         (async (): Promise<StreamFetchResult> => {
           const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
-          const { metadata, warning } = await loadStreamUiMetadata(
-            dataSource,
-            summary,
-            streamName,
-            declaredFieldTypes.get(metaKey),
-            manifestFieldNames.get(metaKey)
-          );
-          const page = await dataSource.queryRecords(summary.connector_id, streamName, {
-            connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-            limit: MAX_FEED_RECORDS_PER_STREAM,
-            order: "desc",
-            window: "exact",
-          });
+          const [{ metadata, warning }, page] = await Promise.all([
+            loadStreamUiMetadata(
+              dataSource,
+              summary,
+              streamName,
+              declaredFieldTypes.get(metaKey),
+              manifestFieldNames.get(metaKey)
+            ),
+            dataSource.queryRecords(summary.connector_id, streamName, {
+              connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+              limit: MAX_FEED_RECORDS_PER_STREAM,
+              order: "desc",
+              window: "exact",
+            }),
+          ]);
           return {
             ok: true,
             entries: page.data.map((record) => {
@@ -596,19 +598,21 @@ async function loadTimeRangeFeed(
       fetches.push(
         (async (): Promise<StreamFetchResult> => {
           const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
-          const { metadata, warning } = await loadStreamUiMetadata(
-            dataSource,
-            summary,
-            streamName,
-            declaredFieldTypes.get(metaKey),
-            manifestFieldNames.get(metaKey)
-          );
-          const page = await dataSource.queryRecords(summary.connector_id, streamName, {
-            connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-            limit: TIME_RANGE_RECORDS_PER_STREAM,
-            order: "desc",
-            window: "exact",
-          });
+          const [{ metadata, warning }, page] = await Promise.all([
+            loadStreamUiMetadata(
+              dataSource,
+              summary,
+              streamName,
+              declaredFieldTypes.get(metaKey),
+              manifestFieldNames.get(metaKey)
+            ),
+            dataSource.queryRecords(summary.connector_id, streamName, {
+              connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+              limit: TIME_RANGE_RECORDS_PER_STREAM,
+              order: "desc",
+              window: "exact",
+            }),
+          ]);
           return {
             ok: true,
             entries: page.data
