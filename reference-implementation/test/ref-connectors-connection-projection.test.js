@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
+import { emitSpineEvent } from '../lib/spine.ts';
 import { getConnectorSummaryForRoute, listConnectorSummaries } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
@@ -90,6 +91,34 @@ function seedRecord({ connectorId = CONNECTOR_ID, connectorInstanceId, stream, k
        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
     )
     .run(connectorId, connectorInstanceId, stream, key, version, JSON.stringify(data), emittedAt);
+}
+
+async function seedBrowserSurfaceRun({ connectorInstanceId, runId, status, occurredAt, waitReason = null }) {
+  const profileKey = `${CONNECTOR_ID}:${connectorInstanceId}`;
+  await emitSpineEvent({
+    actor_type: 'runtime',
+    actor_id: CONNECTOR_ID,
+    event_type: status === 'succeeded' ? 'run.browser_surface_released' : 'run.browser_surface_failed',
+    object_type: 'run',
+    object_id: runId,
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: CONNECTOR_ID,
+    status: status === 'succeeded' ? 'succeeded' : status,
+    trace_id: `trc_${runId}`,
+    data: {
+      connector_id: CONNECTOR_ID,
+      source: { kind: 'connector', id: CONNECTOR_ID },
+      browser_surface: {
+        pending_run_id: runId,
+        browser_surface_status: status,
+        browser_surface_wait_reason: waitReason ?? undefined,
+        browser_surface_lease_id: `lease_${runId}`,
+        browser_surface_profile_key: profileKey,
+      },
+    },
+  });
 }
 
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
@@ -208,6 +237,41 @@ test('reference connector summaries project local-device storage records under p
 
   assert.equal(personal.total_records, 0);
   assert.equal(personal.stream_count, 0);
+}));
+
+test('connection summaries do not smear browser-surface runs across sibling connections', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'browser_collector' });
+
+  await seedBrowserSurfaceRun({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_work_surface_failed',
+    status: 'surface_failed',
+    occurredAt: '2026-05-20T12:01:00.000Z',
+    waitReason: 'surface_unhealthy',
+  });
+  await seedBrowserSurfaceRun({
+    connectorInstanceId: PERSONAL_INSTANCE_ID,
+    runId: 'run_personal_surface_failed',
+    status: 'surface_failed',
+    occurredAt: '2026-05-20T12:02:00.000Z',
+    waitReason: 'capacity_full',
+  });
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  const personal = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === PERSONAL_INSTANCE_ID,
+  );
+  assert.ok(work);
+  assert.ok(personal);
+
+  assert.equal(work.last_run?.run_id, 'run_work_surface_failed');
+  assert.equal(work.last_run?.failure_reason, 'surface_unhealthy');
+  assert.equal(personal.last_run?.run_id, 'run_personal_surface_failed');
+  assert.equal(personal.last_run?.failure_reason, 'capacity_full');
 }));
 
 test('reference connector summaries keep revoked connections visible for owner manageability', withTmpDb(async () => {

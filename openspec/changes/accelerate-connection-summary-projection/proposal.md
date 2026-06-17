@@ -1,0 +1,23 @@
+## Why
+
+The owner console repeatedly reads the full connection-summary projection during one browser navigation. On the live Postgres instance, that projection is the shared hot path behind slow `/dashboard/runs` loads and can be fetched multiple times by RSC requests.
+
+The same projection also assigned connector-scoped run evidence to every sibling connection. Repeated Amazon browser setup attempts therefore made multiple Amazon rows appear to share one run state, and Chase showed a failure from a different draft shell.
+
+## What Changes
+
+- Scope `last_run` and `last_successful_run` evidence to the exact connection when run events carry a browser-surface profile key or explicit connection identity.
+- Surface browser-surface failure reason evidence from the run summary when no terminal `run.failed` event exists.
+- Coalesce repeated full connection-summary reads on Postgres with a short-lived in-process single-flight cache.
+- Reuse connector run summary pages per connector/status during one projection so sibling connections do not repeat the same run-page query.
+
+## Capabilities
+
+Modified:
+- `reference-connector-instances`
+
+## Impact
+
+- Runtime: `reference-implementation/server/ref-control.ts`
+- Tests: connection-summary projection regression tests
+- Operator UX: fewer misleading duplicate source states and lower repeated-RSC cost for pages that consume `/_ref/connectors`

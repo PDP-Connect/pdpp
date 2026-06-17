@@ -868,6 +868,10 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
   }
   const runId = summary.id || summary.run_id || null;
   const terminalData = runId ? await readRunTerminalEventData(runId) : null;
+  const browserSurfaceFailureReason =
+    summary.status === "surface_failed"
+      ? summary.browser_surface_wait_reason || summary.browser_surface_status || "browser_surface_failed"
+      : null;
   return {
     run_id: runId || undefined,
     status: summary.status,
@@ -876,10 +880,26 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     first_at: summary.first_at,
     last_at: summary.last_at,
     event_count: summary.event_count,
-    failure_reason: summary.failure?.reason || null,
+    failure_reason: summary.failure?.reason || browserSurfaceFailureReason,
     known_gaps: readKnownGapsFromTerminalData(terminalData),
     collection_facts: readCollectionFactsFromTerminalData(terminalData),
   };
+}
+
+function runSummaryMatchesConnection(
+  summary: SpineSummary,
+  connectorInstanceId: string,
+  browserSurfaceProfileKey: string | null
+): boolean {
+  if (summary.browser_surface_profile_key) {
+    return (
+      summary.browser_surface_profile_key === browserSurfaceProfileKey ||
+      summary.browser_surface_profile_key === connectorInstanceId
+    );
+  }
+
+  const data = summary as SpineSummary & { connector_instance_id?: unknown; connection_id?: unknown };
+  return data.connector_instance_id === connectorInstanceId || data.connection_id === connectorInstanceId;
 }
 
 async function getLatestRunSummary(
@@ -891,6 +911,26 @@ async function getLatestRunSummary(
     : { sourceKind: "connector", sourceId: connectorId, limit: 1 };
   const { summaries } = await listSpineCorrelations("run", filters);
   return toConnectorRunSummary(summaries[0] ?? null);
+}
+
+async function getLatestRunSummaryForConnection({
+  browserSurfaceProfileKey,
+  connectorId,
+  connectorInstanceId,
+  listRunSummariesForConnector,
+  status = null,
+}: {
+  readonly browserSurfaceProfileKey: string | null;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly listRunSummariesForConnector: ConnectorSummaryProjectionDeps["listRunSummariesForConnector"];
+  readonly status?: string | null;
+}): Promise<ConnectorRunSummary | null> {
+  const summaries = await listRunSummariesForConnector(connectorId, status);
+  const match = summaries.find((summary) =>
+    runSummaryMatchesConnection(summary, connectorInstanceId, browserSurfaceProfileKey)
+  );
+  return toConnectorRunSummary(match ?? null);
 }
 
 async function getRetainedBytesForConnection(connectorInstanceId: string): Promise<RetainedBytesBreakdown | null> {
@@ -3305,6 +3345,32 @@ export interface ListConnectorSummariesOptions {
   readonly onInFlightChange?: (inFlight: number) => void;
 }
 
+const LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS = Number(process.env.PDPP_REF_CONNECTOR_SUMMARIES_CACHE_MS ?? 5000);
+
+interface ConnectorSummariesCacheEntry {
+  readonly expiresAt: number;
+  readonly promise?: Promise<ConnectorSummary[]>;
+  readonly value?: ConnectorSummary[];
+}
+
+const connectorSummariesCache = new Map<string, ConnectorSummariesCacheEntry>();
+
+function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): boolean {
+  // Cache only the production Postgres all-list path. SQLite test databases are
+  // frequently torn down/re-created in one process, and hook/concurrency calls
+  // are explicit diagnostics that must observe real worker behavior.
+  return (
+    isPostgresStorageBackend() &&
+    LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS > 0 &&
+    options.concurrency == null &&
+    options.onInFlightChange == null
+  );
+}
+
+function connectorSummariesCacheKey(controller?: ControllerLike | null): string {
+  return controller == null ? "no-controller" : "controller";
+}
+
 // Shared inputs for `projectConnectorSummaryForInstance`. These are the reads
 // that are identical across every connection in one request (the registered
 // manifests and the once-per-request browser-surface snapshot) plus the optional
@@ -3313,9 +3379,29 @@ export interface ListConnectorSummariesOptions {
 // path, so the two cannot drift.
 interface ConnectorSummaryProjectionDeps {
   readonly controller?: ControllerLike | null | undefined;
+  readonly listRunSummariesForConnector: (
+    connectorId: string,
+    status?: string | null
+  ) => Promise<readonly SpineSummary[]>;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   readonly runtimeOk: boolean;
   readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
+}
+
+function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
+  const cache = new Map<string, Promise<readonly SpineSummary[]>>();
+  return (connectorId, status = null) => {
+    const key = `${connectorId}\n${status ?? ""}`;
+    let promise = cache.get(key);
+    if (!promise) {
+      const filters = status
+        ? { sourceKind: "connector", sourceId: connectorId, status, limit: 64 }
+        : { sourceKind: "connector", sourceId: connectorId, limit: 64 };
+      promise = listSpineCorrelations("run", filters).then((page) => page.summaries);
+      cache.set(key, promise);
+    }
+    return promise;
+  };
 }
 
 function buildRenderedVerdictForSummary(input: {
@@ -3368,7 +3454,7 @@ async function projectConnectorSummaryForInstance(
   instance: ConnectorInstanceRow,
   deps: ConnectorSummaryProjectionDeps
 ): Promise<ConnectorSummary | null> {
-  const { controller, manifestsByConnectorId, sharedBrowserSurfaceReader } = deps;
+  const { controller, listRunSummariesForConnector, manifestsByConnectorId, sharedBrowserSurfaceReader } = deps;
   const connectorId = instance.connectorId;
   const connectorInstanceId = instance.connectorInstanceId;
   const manifest = manifestsByConnectorId.get(connectorId);
@@ -3378,6 +3464,7 @@ async function projectConnectorSummaryForInstance(
   if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
     return null;
   }
+  const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const live = await getConnectorRecordProjection(recordStorageConnectorIdForConnection(instance), connectorInstanceId);
   const [
     schedule,
@@ -3391,13 +3478,24 @@ async function projectConnectorSummaryForInstance(
     acquisitionCoverage,
   ] = await Promise.all([
     getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-    getLatestRunSummary(connectorId),
-    getLatestRunSummary(connectorId, "succeeded"),
+    getLatestRunSummaryForConnection({
+      browserSurfaceProfileKey,
+      connectorId,
+      connectorInstanceId,
+      listRunSummariesForConnector,
+    }),
+    getLatestRunSummaryForConnection({
+      browserSurfaceProfileKey,
+      connectorId,
+      connectorInstanceId,
+      listRunSummariesForConnector,
+      status: "succeeded",
+    }),
     getConnectorDetailGapProjection(connectorId, connectorInstanceId),
     getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
     getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
     getConnectorBrowserSurfaceProjection(connectorId, {
-      profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+      profileKey: browserSurfaceProfileKey,
       store: sharedBrowserSurfaceReader,
     }),
     getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
@@ -3519,10 +3617,49 @@ async function loadConnectorSummaryProjectionDeps(
   // every records-dashboard poll, so the saved reads compound under the active-run
   // poll cadence.
   const sharedBrowserSurfaceReader = await loadSharedBrowserSurfaceReader();
-  return { controller, manifestsByConnectorId, runtimeOk: controller != null, sharedBrowserSurfaceReader };
+  return {
+    controller,
+    listRunSummariesForConnector: createConnectorRunSummariesReader(),
+    manifestsByConnectorId,
+    runtimeOk: controller != null,
+    sharedBrowserSurfaceReader,
+  };
 }
 
 export async function listConnectorSummaries(
+  controller?: ControllerLike | null,
+  options: ListConnectorSummariesOptions = {}
+): Promise<ConnectorSummary[]> {
+  if (shouldCacheConnectorSummaries(options)) {
+    const key = connectorSummariesCacheKey(controller);
+    const cached = connectorSummariesCache.get(key);
+    const now = Date.now();
+    if (cached?.value && cached.expiresAt > now) {
+      return cached.value;
+    }
+    if (cached?.promise) {
+      return cached.promise;
+    }
+    const promise = computeConnectorSummaries(controller, options);
+    connectorSummariesCache.set(key, { expiresAt: now + LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS, promise });
+    try {
+      const value = await promise;
+      connectorSummariesCache.set(key, {
+        expiresAt: Date.now() + LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS,
+        value,
+      });
+      return value;
+    } catch (err) {
+      if (connectorSummariesCache.get(key)?.promise === promise) {
+        connectorSummariesCache.delete(key);
+      }
+      throw err;
+    }
+  }
+  return computeConnectorSummaries(controller, options);
+}
+
+async function computeConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
