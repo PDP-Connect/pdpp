@@ -221,6 +221,61 @@ if (!POSTGRES_URL) {
     }
   });
 
+  test('postgres lexical search returns ranked rows through the scoped candidate window', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_lexical_window_${suffix}`;
+    const connectorInstanceId = `cin_pg_lexical_window_${suffix}`;
+    const stream = 'messages';
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES
+           ($1, $2, $3, 'low', $4::jsonb, $6, 1, FALSE, 'low'),
+           ($1, $2, $3, 'high', $5::jsonb, $6, 2, FALSE, 'high')`,
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          JSON.stringify({ id: 'low', body: 'error once' }),
+          JSON.stringify({ id: 'high', body: 'error error error important' }),
+          '2026-06-01T00:00:00.000Z',
+        ],
+      );
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        recordKey: 'low',
+        fields: { body: 'error once' },
+      });
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        recordKey: 'high',
+        fields: { body: 'error error error important' },
+      });
+
+      const rows = await postgresLexicalSearch({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        searchableFields: ['body'],
+        q: 'error',
+        limit: 2,
+      });
+
+      assert.deepEqual(rows.map((row) => row.record_key), ['high', 'low']);
+    } finally {
+      await postgresQuery('DELETE FROM lexical_search_index WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test('postgres semantic startup backfill writes Postgres index without touching SQLite vector index', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_semantic_backfill_${suffix}`;

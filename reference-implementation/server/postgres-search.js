@@ -28,6 +28,14 @@ function defaultConnectorInstanceId(connectorId) {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
+function postgresLexicalCandidateLimit({ env = process.env } = {}) {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_CANDIDATE_LIMIT || '', 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.min(Math.max(parsed, 100), 10000);
+  }
+  return 1000;
+}
+
 export async function postgresLexicalIndexUpsert({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, fields }) {
   await postgresQuery(
     'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3',
@@ -189,10 +197,10 @@ export async function postgresLexicalSearch({
     ? searchableFields
     : null;
   const params = [connectorInstanceId, stream, q, Math.min(Math.max(Number(limit) || 25, 1), 100)];
-  let fieldClause = '';
+  let fieldParam = null;
   if (fields) {
     params.push(fields);
-    fieldClause = `AND lsi.field = ANY($${params.length}::text[])`;
+    fieldParam = params.length;
   }
   let recordClause = '';
   if (Array.isArray(recordKeys)) {
@@ -200,34 +208,63 @@ export async function postgresLexicalSearch({
     params.push(recordKeys);
     recordClause = `AND lsi.record_key = ANY($${params.length}::text[])`;
   }
+  const fieldClause = (alias = 'lsi') => fieldParam === null ? '' : `AND ${alias}.field = ANY($${fieldParam}::text[])`;
+  const broadCandidateWindow = !Array.isArray(recordKeys);
+  let sql;
+  if (broadCandidateWindow) {
+    params.push(postgresLexicalCandidateLimit());
+    const candidateLimitParam = params.length;
+    sql = `WITH candidates AS MATERIALIZED (
+       SELECT connector_id, stream, record_key, field, value, document
+       FROM lexical_search_index lsi
+       WHERE lsi.connector_instance_id = $1
+         AND lsi.stream = $2
+         ${fieldClause('lsi')}
+         AND lsi.document @@ plainto_tsquery('simple', $3)
+       LIMIT $${candidateLimitParam}
+     )
+     SELECT lsi.connector_id, lsi.stream, lsi.record_key, lsi.field,
+            r.emitted_at,
+            r.record_json::text AS record_json,
+            ts_rank_cd(lsi.document, plainto_tsquery('simple', $3)) AS score,
+            ts_headline('simple', lsi.value, plainto_tsquery('simple', $3),
+              'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
+     FROM candidates lsi
+     JOIN records r
+       ON r.connector_instance_id = $1
+      AND r.stream = lsi.stream
+      AND r.record_key = lsi.record_key
+     WHERE r.deleted = FALSE
+     ORDER BY score DESC, lsi.record_key ASC
+     LIMIT $4`;
+  } else {
+    sql = `SELECT lsi.connector_id, lsi.stream, lsi.record_key, lsi.field,
+            r.emitted_at,
+            r.record_json::text AS record_json,
+            ts_rank_cd(document, plainto_tsquery('simple', $3)) AS score,
+            ts_headline('simple', value, plainto_tsquery('simple', $3),
+              'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
+     FROM lexical_search_index lsi
+     JOIN records r
+       ON r.connector_instance_id = lsi.connector_instance_id
+      AND r.stream = lsi.stream
+      AND r.record_key = lsi.record_key
+     WHERE lsi.connector_instance_id = $1
+       AND lsi.stream = $2
+       ${fieldClause('lsi')}
+       ${recordClause}
+       AND document @@ plainto_tsquery('simple', $3)
+       AND r.deleted = FALSE
+     ORDER BY score DESC, lsi.record_key ASC
+     LIMIT $4`;
+  }
   const result = await withPostgresTransaction(async (client) => {
     // Parallel FTS plans allocate dynamic shared memory; Docker's default
     // /dev/shm is small enough that broad owner searches can fail with 53100.
     // Keep this scoped to the lexical read transaction rather than mutating
     // global Postgres settings.
     await client.query('SET LOCAL max_parallel_workers_per_gather = 0');
-    return client.query(
-      `SELECT lsi.connector_id, lsi.stream, lsi.record_key, lsi.field,
-              r.emitted_at,
-              r.record_json::text AS record_json,
-              ts_rank_cd(document, plainto_tsquery('simple', $3)) AS score,
-              ts_headline('simple', value, plainto_tsquery('simple', $3),
-                'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
-       FROM lexical_search_index lsi
-       JOIN records r
-         ON r.connector_instance_id = lsi.connector_instance_id
-        AND r.stream = lsi.stream
-        AND r.record_key = lsi.record_key
-       WHERE lsi.connector_instance_id = $1
-         AND lsi.stream = $2
-         ${fieldClause}
-         ${recordClause}
-         AND document @@ plainto_tsquery('simple', $3)
-         AND r.deleted = FALSE
-       ORDER BY score DESC, record_key ASC
-       LIMIT $4`,
-      params,
-    );
+    return client.query(sql, params);
   });
   return result.rows;
 }

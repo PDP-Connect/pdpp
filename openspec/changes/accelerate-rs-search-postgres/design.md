@@ -33,12 +33,19 @@ The reference shall execute Postgres per-source fan-out through a bounded work q
 
 SQLite remains unchanged because the live bottleneck and shared-memory failure are Postgres-specific.
 
+### 4. Bound the Postgres lexical ranking candidate window
+
+The scoped GIN index fixes the authorization-scope shape, but exact relevance ranking over every match in a multi-million-row source still makes broad/common terms too slow. The reference shall first collect a bounded candidate window through the scoped text-search predicate, then compute rank and snippets over that window.
+
+This preserves the public contract: v1 lexical search is relevance-oriented and does not promise portable numeric BM25 scores or exhaustive global ranking. Requests narrowed by explicit record keys keep the exact path because the caller already supplied a bounded candidate set.
+
 ## Alternatives
 
 - Increase Docker shared memory only: helpful, but insufficient. A forkable reference should not require operators to discover a container memory footgun before `/v1/search` works.
 - Replace Postgres search with an external engine now: too much operational complexity for the reference. Postgres FTS remains the lowest-incidental-complexity substrate until evidence proves it cannot meet the reference bar.
 - Long-lived search-result caches: useful later, but they hide the bad query path rather than making first reads reliable.
 - Global fixed sleeps or wall-clock caps: rejected. They contradict the control-system ideal; the fix should govern concurrent work and database plan shape, not make collection/search wait arbitrarily.
+- Exact ranking over every match for broad terms: rejected for the reference default. It is accurate in a narrow scoring sense but failed the owner experience by producing 10-40 second searches on live personal-data volumes.
 
 ## Acceptance Checks
 
