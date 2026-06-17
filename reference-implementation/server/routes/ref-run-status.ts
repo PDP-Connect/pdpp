@@ -64,6 +64,7 @@ export interface RunStatusLifecycleEvent {
   readonly data: Readonly<Record<string, unknown>> | null;
   readonly event_type: string;
   readonly occurred_at: string | null;
+  readonly status?: string | null;
   readonly trace_id: string | null;
 }
 
@@ -71,8 +72,19 @@ export type RunStatusTerminalEvent = RunStatusLifecycleEvent & {
   readonly status: "completed" | "failed" | "cancelled" | "abandoned";
 };
 
+export type BrowserSurfaceRunStatus =
+  | "cancelled"
+  | "deferred"
+  | "expired"
+  | "leased"
+  | "released"
+  | "starting_surface"
+  | "surface_failed"
+  | "waiting_for_browser_surface";
+
 export interface MountRefRunStatusContext {
   readonly controller: RunStatusController | null | undefined;
+  getLatestRunEvent?(runId: string): Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
   getRunStartedEvent(runId: string): Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
   getRunTerminalEvent(runId: string): Promise<RunStatusTerminalEvent | null> | RunStatusTerminalEvent | null;
   handleError(res: unknown, err: unknown): void;
@@ -96,7 +108,7 @@ export interface RunStatusBody {
   readonly object: "run_status";
   readonly run_id: string;
   readonly started_at: string | null;
-  readonly status: "active" | "completed" | "failed" | "cancelled" | "abandoned";
+  readonly status: "active" | "completed" | "failed" | "cancelled" | "abandoned" | BrowserSurfaceRunStatus;
   readonly terminal_reason: string | null;
   readonly trace_id: string | null;
 }
@@ -108,6 +120,30 @@ function timelineLink(runId: string): { timeline: string } {
 function readString(data: Readonly<Record<string, unknown>> | null, key: string): string | null {
   const value = data?.[key];
   return typeof value === "string" && value ? value : null;
+}
+
+function browserSurfaceProjection(event: RunStatusLifecycleEvent | null): Readonly<Record<string, unknown>> | null {
+  const value = event?.data?.browser_surface;
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Readonly<Record<string, unknown>>) : null;
+}
+
+function readBrowserSurfaceStatus(event: RunStatusLifecycleEvent | null): BrowserSurfaceRunStatus | null {
+  const value = browserSurfaceProjection(event)?.browser_surface_status;
+  return typeof value === "string" && value ? (value as BrowserSurfaceRunStatus) : null;
+}
+
+function readBrowserSurfaceReason(event: RunStatusLifecycleEvent | null): string | null {
+  const value = browserSurfaceProjection(event)?.browser_surface_wait_reason;
+  return typeof value === "string" && value ? value : null;
+}
+
+function readBrowserSurfaceConnectionId(event: RunStatusLifecycleEvent | null): string | null {
+  const profileKey = browserSurfaceProjection(event)?.browser_surface_profile_key;
+  if (typeof profileKey !== "string" || !profileKey) {
+    return null;
+  }
+  const suffix = profileKey.split(":").at(-1);
+  return suffix?.startsWith("cin_") ? suffix : null;
 }
 
 // Connector identity on spine-resolved runs: run lifecycle events stamp the
@@ -202,6 +238,45 @@ function buildStartedOnlyRunStatusBody(runId: string, started: RunStatusLifecycl
   };
 }
 
+function buildBrowserSurfaceRunStatusBody(runId: string, event: RunStatusLifecycleEvent): RunStatusBody | null {
+  if (!event.event_type.startsWith("run.browser_surface_")) {
+    return null;
+  }
+  const fallbackStatus = typeof event.status === "string" && event.status ? (event.status as BrowserSurfaceRunStatus) : null;
+  const surfaceStatus = readBrowserSurfaceStatus(event) ?? fallbackStatus;
+  if (!surfaceStatus) {
+    return null;
+  }
+  const terminal =
+    surfaceStatus === "cancelled" ||
+    surfaceStatus === "deferred" ||
+    surfaceStatus === "expired" ||
+    surfaceStatus === "released" ||
+    surfaceStatus === "surface_failed";
+  const reason = readBrowserSurfaceReason(event);
+  return {
+    completed_at: terminal ? event.occurred_at : null,
+    connector_id: readConnectorId(event),
+    connector_instance_id: readBrowserSurfaceConnectionId(event),
+    failure:
+      surfaceStatus === "surface_failed"
+        ? {
+            connector_error_message: null,
+            message: null,
+            origin: "browser_surface",
+            reason,
+          }
+        : null,
+    links: timelineLink(runId),
+    object: "run_status",
+    run_id: runId,
+    started_at: null,
+    status: surfaceStatus,
+    terminal_reason: terminal ? reason : null,
+    trace_id: event.trace_id,
+  };
+}
+
 export function mountRefRunStatus(app: AppLike, ctx: MountRefRunStatusContext): void {
   app.get("/_ref/runs/:runId", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
@@ -223,6 +298,12 @@ export function mountRefRunStatus(app: AppLike, ctx: MountRefRunStatusContext): 
       const started = await ctx.getRunStartedEvent(runId);
       if (started) {
         return res.json(buildStartedOnlyRunStatusBody(runId, started));
+      }
+
+      const latest = (await ctx.getLatestRunEvent?.(runId)) ?? null;
+      const browserSurfaceStatus = latest ? buildBrowserSurfaceRunStatusBody(runId, latest) : null;
+      if (browserSurfaceStatus) {
+        return res.json(browserSurfaceStatus);
       }
 
       return ctx.pdppError(res, 404, "not_found", `Run not found: ${runId}`, "run_id");

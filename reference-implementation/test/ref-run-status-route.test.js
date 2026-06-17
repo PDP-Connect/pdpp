@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { emitSpineEvent, getRunStartedEvent, getRunTerminalEvent } from "../lib/spine.ts";
+import { emitSpineEvent, getRunStartedEvent, getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.js";
 import { mountRefRunStatus } from "../server/routes/ref-run-status.ts";
 
@@ -85,6 +85,7 @@ function makeCtx(overrides = {}) {
 // Real-spine ctx: terminal + started lookups hit the SQLite fixture db.
 function makeSpineCtx(overrides = {}) {
   return makeCtx({
+    getLatestRunEvent: (runId) => listSpineEventsPage("run", runId, { limit: 20 }).events.at(-1) ?? null,
     getRunStartedEvent: (runId) => getRunStartedEvent(runId),
     getRunTerminalEvent: (runId) => getRunTerminalEvent(runId),
     ...overrides,
@@ -292,6 +293,54 @@ test("run-status route: started run with no terminal event and no flight state r
   assert.equal(res._body.connector_id, CONNECTOR_ID);
   assert.equal(res._body.started_at, "2026-06-10T19:05:40.278Z");
   assert.equal(res._body.completed_at, null);
+});
+
+test("run-status route: browser-surface-only failure resolves instead of dangling 404", async (t) => {
+  freshDb(t);
+  await emitSpineEvent({
+    event_type: "run.browser_surface_failed",
+    occurred_at: "2026-06-10T19:07:00.000Z",
+    trace_id: "trace_surface_failed",
+    actor_type: "runtime",
+    actor_id: "chase",
+    object_type: "run",
+    object_id: "run_surface_failed",
+    status: "surface_failed",
+    run_id: "run_surface_failed",
+    source_kind: "connector",
+    source_id: "chase",
+    data: {
+      source: { kind: "connector", id: "chase" },
+      browser_surface: {
+        pending_run_id: "run_surface_failed",
+        browser_surface_status: "surface_failed",
+        browser_surface_wait_reason: "surface_unhealthy",
+        browser_surface_lease_id: "lease_surface_failed",
+        browser_surface_profile_key: "chase:cin_expired_setup",
+      },
+    },
+  });
+
+  const app = makeApp();
+  mountRefRunStatus(app, makeSpineCtx());
+  const res = makeRes();
+  await app.routes[ROUTE]({ params: { runId: "run_surface_failed" } }, res);
+
+  assert.equal(res._status, 200);
+  assert.equal(res._body.object, "run_status");
+  assert.equal(res._body.run_id, "run_surface_failed");
+  assert.equal(res._body.status, "surface_failed");
+  assert.equal(res._body.connector_id, "chase");
+  assert.equal(res._body.connector_instance_id, "cin_expired_setup");
+  assert.equal(res._body.completed_at, "2026-06-10T19:07:00.000Z");
+  assert.equal(res._body.terminal_reason, "surface_unhealthy");
+  assert.deepEqual(res._body.failure, {
+    connector_error_message: null,
+    message: null,
+    origin: "browser_surface",
+    reason: "surface_unhealthy",
+  });
+  assert.equal(res._body.links.timeline, "/_ref/runs/run_surface_failed/timeline");
 });
 
 // ---------------------------------------------------------------------------

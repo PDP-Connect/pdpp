@@ -3285,6 +3285,10 @@ function buildAsApp(opts = {}) {
   // See openspec/changes/surface-run-handle-resolvability.
   mountRefRunStatus(app, {
     controller,
+    getLatestRunEvent: (runId) => {
+      const page = listSpineEventsPage('run', runId, { limit: 20 });
+      return page.events.at(-1) ?? null;
+    },
     getRunStartedEvent: (runId) => getRunStartedEvent(runId),
     getRunTerminalEvent: (runId) => getRunTerminalEvent(runId),
     handleError,
