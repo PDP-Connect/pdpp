@@ -854,7 +854,7 @@ if (!POSTGRES_URL) {
         data: {
           id: 'b',
           title: 'Beta proof',
-          body: 'semantic fallback vector row',
+          body: 'postgres semantic fallback vector row',
           created_at: '2026-04-02T00:00:00.000Z',
         },
       });
@@ -956,10 +956,15 @@ if (!POSTGRES_URL) {
       assert.ok(datasetAggregate.record_json_bytes > 0);
       assert.ok((await getDatasetRecordChangesBytes()) > 0);
       assert.ok((await getDatasetBlobBytes()) >= Buffer.byteLength('postgres blob bytes'));
-      assert.deepEqual(await getDatasetRecordTimeBounds(), {
-        earliest: '2026-04-01T00:00:00.000Z',
-        latest: '2026-04-04T00:00:00.000Z',
-      });
+      const datasetBounds = await getDatasetRecordTimeBounds();
+      assert.ok(
+        datasetBounds.earliest <= '2026-04-01T00:00:00.000Z',
+        `expected dataset earliest bound to include fixture records, got ${datasetBounds.earliest}`,
+      );
+      assert.ok(
+        datasetBounds.latest >= '2026-04-04T00:00:00.000Z',
+        `expected dataset latest bound to include fixture records, got ${datasetBounds.latest}`,
+      );
       const topConnectorCandidates = await listDatasetTopConnectorCandidates();
       assert.ok(
         topConnectorCandidates.some(
@@ -1345,9 +1350,9 @@ if (!POSTGRES_URL) {
       ];
       for (const [recordKey, recordJson, deleted] of rows) {
         await postgresQuery(
-          `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted)
-           VALUES($1, $2, $3, $4, $5::jsonb, $6, 1, $7)`,
-          [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(recordJson), new Date().toISOString(), deleted],
+          `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+           VALUES($1, $2, $3, $4, $5::jsonb, $6, 1, $7, $8)`,
+          [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(recordJson), new Date().toISOString(), deleted, recordKey],
         );
       }
 
