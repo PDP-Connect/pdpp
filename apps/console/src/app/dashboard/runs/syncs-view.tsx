@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Syncs view — the Recordroom presentation of the Runs route.
  *
@@ -24,11 +22,9 @@ import {
   TableCell,
   TableHeader,
   TableHeaderRow,
-  TableRow,
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import { useState } from "react";
 import type { FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) auto minmax(0,1.2fr) minmax(0,0.9fr)";
@@ -114,16 +110,13 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
 
 // ─── Sync row (one stream) ────────────────────────────────────────────────────
 
-function SyncTableRow({ row, isOpen, onToggle }: { row: SyncRow; isOpen: boolean; onToggle: () => void }) {
+function SyncTableRow({ row }: { row: SyncRow }) {
   const deltaClass = ["rr-sync-row__delta", row.quiet ? "is-quiet" : undefined, row.failed ? "is-failed" : undefined]
     .filter(Boolean)
     .join(" ");
   return (
-    <>
-      <TableRow
-        className={["rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}
-        onClick={onToggle}
-      >
+    <details className="rr-sync-row-shell">
+      <summary className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}>
         <TableCell className="rr-sync-row__stream">{row.stream}</TableCell>
         <TableCell className="rr-sync-row__cadence">{row.cadence}</TableCell>
         <TableCell>
@@ -140,24 +133,22 @@ function SyncTableRow({ row, isOpen, onToggle }: { row: SyncRow; isOpen: boolean
         <TableCell className="rr-sync-row__next" numeric>
           {row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}
         </TableCell>
-      </TableRow>
-      {isOpen ? (
-        <div className="rr-sync-detail">
-          <KV>
-            <KVRow k="last run">
-              {row.lastAt ? <IcTimestamp mode="relative" value={row.lastAt} /> : "—"}
-              {row.duration ? ` · ${row.duration}` : ""}
-            </KVRow>
-            <KVRow k="delta">{row.failed ? "0 records — cursor held" : row.delta}</KVRow>
-            <KVRow k="cadence">{row.cadence}</KVRow>
-            <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
-          </KV>
-          <Link className="rr-link rr-sync-detail__browse" href={row.browseHref} prefetch={false}>
-            browse this stream →
-          </Link>
-        </div>
-      ) : null}
-    </>
+      </summary>
+      <div className="rr-sync-detail">
+        <KV>
+          <KVRow k="last run">
+            {row.lastAt ? <IcTimestamp mode="relative" value={row.lastAt} /> : "—"}
+            {row.duration ? ` · ${row.duration}` : ""}
+          </KVRow>
+          <KVRow k="delta">{row.failed ? "0 records — cursor held" : row.delta}</KVRow>
+          <KVRow k="cadence">{row.cadence}</KVRow>
+          <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
+        </KV>
+        <Link className="rr-link rr-sync-detail__browse" href={row.browseHref} prefetch={false}>
+          browse this stream →
+        </Link>
+      </div>
+    </details>
   );
 }
 
@@ -165,12 +156,8 @@ function SyncTableRow({ row, isOpen, onToggle }: { row: SyncRow; isOpen: boolean
 
 function SyncGroupBlock({
   group,
-  openKey,
-  onToggle,
 }: {
   group: SyncGroup;
-  openKey: string | null;
-  onToggle: (key: string) => void;
 }) {
   const healthy = group.health === "ok";
   return (
@@ -193,7 +180,7 @@ function SyncGroupBlock({
         </TableHeaderRow>
         {group.streams.map((row) => {
           const key = `${group.connectionId}:${row.stream}`;
-          return <SyncTableRow isOpen={openKey === key} key={key} onToggle={() => onToggle(key)} row={row} />;
+          return <SyncTableRow key={key} row={row} />;
         })}
       </Table>
     </section>
@@ -203,9 +190,6 @@ function SyncGroupBlock({
 // ─── The view ─────────────────────────────────────────────────────────────────
 
 export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; seeded?: boolean }) {
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const toggle = (key: string) => setOpenKey((cur) => (cur === key ? null : key));
-
   return (
     <div className="rr-sync">
       <header className="rr-sync__masthead">
@@ -227,7 +211,7 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
       {model.groups.length > 0 ? (
         <div className="rr-sync__groups">
           {model.groups.map((group) => (
-            <SyncGroupBlock group={group} key={group.connectionId} onToggle={toggle} openKey={openKey} />
+            <SyncGroupBlock group={group} key={group.connectionId} />
           ))}
         </div>
       ) : (

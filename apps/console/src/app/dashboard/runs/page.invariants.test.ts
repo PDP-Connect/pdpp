@@ -47,3 +47,11 @@ test("syncs dense dynamic links opt out of automatic route prefetch", async () =
     "stream browse links must not prefetch dynamic explore routes"
   );
 });
+
+test("syncs view stays server-rendered by default", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.doesNotMatch(src, /^["']use client["'];?/m, "runs must not hydrate the entire syncs view");
+  assert.match(src, /<details className="rr-sync-row-shell">/, "row details should use native disclosure");
+  assert.doesNotMatch(src, /useState\(/, "page-wide row disclosure state would force full-page client hydration");
+});

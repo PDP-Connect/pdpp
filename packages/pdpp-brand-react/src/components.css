@@ -954,6 +954,10 @@
 }
 
 /* Sync row — composed over the kit Table (pdpp-table__row). */
+.rr-sync-row-shell { margin: 0; }
+.rr-sync-row-shell > summary { list-style: none; }
+.rr-sync-row-shell > summary::-webkit-details-marker { display: none; }
+.rr-sync-row-shell[open] .rr-sync-row { border-bottom-color: transparent; }
 .rr-sync-row { cursor: pointer; transition: background var(--motion-state); }
 .rr-sync-row:hover { background: var(--muted); }
 .rr-sync-row__stream {
