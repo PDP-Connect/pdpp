@@ -4,6 +4,7 @@
 - [x] Add SQLite and Postgres connector-summary evidence tables and migrations. (`connector_summary_evidence` in `server/db.js` + `server/postgres-storage.js`; durable evidence only — no synthesized columns.)
 - [x] Add dirty-marking and reconcile helpers mirroring the retained-size read-model pattern. (`markConnectorSummaryEvidenceDirty`, `markAllConnectorSummaryEvidenceDirty`, `reconcileDirtyConnectorSummaryEvidence` in `server/connector-summary-read-model.js`.)
 - [x] Add a full rebuild/repair path for connector-summary evidence. (`rebuildConnectorSummaryEvidence` derives from `connector_instances` + maintained `retained_size_stream`; no connector re-run, no credentials.)
+- [x] Persist retained stream and byte evidence needed by overview rows. (`stream_records_json`, `retained_bytes_json`, and `total_retained_bytes` are derived from the maintained retained-size projection in both rebuild and dirty reconcile; no freshness, verdict, health, or UI copy is stored.)
 
 ## 2. Write Hooks
 

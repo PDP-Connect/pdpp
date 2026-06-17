@@ -78,10 +78,13 @@ basic counts, but not for deep state. Missing durable evidence includes:
 - local coverage and acquisition coverage
 - schedule/refresh inputs
 - collection-rate snapshot
-- per-stream record summaries and retained bytes
+- read-time synthesis inputs for `collection_report`, `connection_health`,
+  `rendered_verdict`, and `next_action`
 
-The smallest safe tranche does not persist all of these. It adds
-`last_record_updated_at` and keeps deep evidence on the singleton/scoped path.
+The 2026-06-17 retained-evidence tranche now persists non-rendered per-stream
+record summaries and retained byte totals from the maintained retained-size
+projection. It still keeps singleton/scoped reads on the deep path because the
+runtime health/verdict inputs above are not yet maintained durably.
 
 This deliberately avoids persisting rendered verdicts, freshness labels, or UI
 copy. Those stay synthesized from durable facts at read time so the system does
@@ -108,7 +111,8 @@ Add a dependency-injection/query-count test before flipping the list path:
 2. Extract pure `synthesizeConnectorSummary` without changing behavior.
 3. Extend the maintained evidence envelope until it can honestly synthesize the
    existing `ConnectorSummary` contract for overview rows, or approve an
-   explicit reduced overview contract in OpenSpec.
+   explicit reduced overview contract in OpenSpec. DONE for durable retained
+   stream/byte facts; runtime health/verdict evidence remains open.
 4. Add read-model list path behind a disabled flag.
 5. Add query-count/DI tests and shallow-list parity tests.
 6. Finish write hooks required by the flag.
@@ -134,16 +138,17 @@ disabled read-model flag and stopped before code. The current
 - persisting rendered verdict/freshness/UI copy, which this design explicitly
   forbids.
 
-Current durable evidence covers identity/lifecycle plus aggregate counts:
+Current durable evidence covers identity/lifecycle, aggregate counts, retained
+stream rows, retained byte breakdown, and last retained-record recency:
 `connector_instance_id`, `connector_id`, `display_name`, `status`,
 `source_kind`, `revoked_at`, `total_records`, `stream_count`, and
-`last_record_updated_at`.
+`last_record_updated_at`, `stream_records`, `retained_bytes`, and
+`total_retained_bytes`.
 
 The existing owner summary contract still carries fields outside that envelope:
-manifest stream names, per-stream record summaries, retained byte totals, run
-and schedule facts, detail-gap/outbox/attention/browser/local/acquisition
-evidence, `collection_report`, `connection_health`, `rendered_verdict`, and
-`next_action`.
+manifest stream names, run and schedule facts, detail-gap/outbox/attention/
+browser/local/acquisition evidence, `collection_report`, `connection_health`,
+`rendered_verdict`, and `next_action`.
 
 Therefore the next safe tranche is not the disabled flag itself. It is either:
 
