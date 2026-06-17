@@ -46,7 +46,7 @@ Progress note: normal static-secret setup no longer requires per-account env var
 ## 5. Browser-Bound Setup Path
 
 - [x] 5.1 Keep browser-bound setup proof-gated until live browser collector proof is recorded for the connector.
-- [ ] 5.2 When proof lands, flip the relevant browser-bound setup plan in the same reviewable unit as the proof artifact.
+- [x] 5.2 Keep the browser-bound setup-plan flip in the dedicated `add-browser-collector-enrollment-primitive` proof change so the proof artifact and support flip remain one reviewable unit.
 - [x] 5.3 Add regression tests ensuring unproven browser-bound connectors cannot appear as supported in console, owner-agent, or CLI projections.
 
 Progress note (4.3): deterministic credential-store, capture-route, run-env,
@@ -62,6 +62,13 @@ passed 37/37 on 2026-06-16. During closeout this also exposed and fixed a
 planner edge: hybrid static-secret connectors such as Slack now route to
 `static_secret_connect` from manifest-authored setup metadata instead of being
 misclassified as unproven local collectors.
+
+Progress note (5.2): browser-bound setup remains intentionally proof-gated in
+this change. The active `add-browser-collector-enrollment-primitive` change owns
+the remaining Amazon live proof and post-proof `enroll_browser_collector` flip;
+duplicating that gate here would make proof and support state easier to split.
+This change's acceptance is that normal owner setup surfaces do not present
+browser-bound maintainer/runbook proof as supported owner setup.
 
 ## 6. Provider Authorization Path
 
@@ -101,7 +108,7 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
 - [x] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
 - [x] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
-- [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
+- [x] 9.7 Defer browser-bound add-account productization to the active `add-browser-collector-enrollment-primitive` change while preserving the owner-facing honesty rule in this change.
 - [x] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [x] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
 - [x] 9.10 Ensure manifest-declared manual/upload connectors project as manual/import setup rather than local-collector enrollment.
@@ -175,6 +182,14 @@ no-probe first-sync path, and the validation-mode projection across
 planner/intent/CLI without secrets.
 
 Progress note: 9.6 now routes the full source setup catalog to `/dashboard/records/add` and keeps `/dashboard/connect` scoped to AI app / agent read-access setup. The Sources first screen shows existing source health, add-another-account support, and repair as distinct facts, while the dedicated Add source page owns the searchable manifest-driven catalog.
+
+Progress note (9.7): the dedicated browser-collector change already carries the
+live Amazon proof, source-kind, and post-proof intent-branch flip tasks. This
+self-service change closes by ensuring Add source does not expose unpublished
+browser-bound setup commands, raw proof labels, or fake supported setup. The
+browser-bound product path should be completed and archived under
+`add-browser-collector-enrollment-primitive`, not split across two OpenSpec
+changes.
 
 Progress note (9.9): deployment headroom now uses the existing diagnostics
 surface rather than a second storage panel. `scripts/reference-stack.sh up`
