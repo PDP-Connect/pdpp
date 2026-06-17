@@ -249,6 +249,54 @@ test('owner-wire: degraded retryable with resumable disposition → non-green pi
   assert.deepEqual(retryAction.satisfied_when, { kind: 'gap_recovered' });
 });
 
+test('owner-wire: no terminal run but one current stream gap is coherent retryable advisory', () => {
+  const snapshot = {
+    ...degradedRetryableSnapshot(),
+    axes: {
+      attention: 'none',
+      coverage: 'retryable_gap',
+      freshness: 'unknown',
+      outbox: 'unknown',
+      remote_surface: 'idle',
+    },
+    last_success_at: null,
+    forward_disposition: 'resumable',
+    reason_code: 'temporary_unavailable',
+  };
+  const verdict = synthesizeConnectorVerdict({
+    snapshot,
+    report: [
+      {
+        stream: 'accounts',
+        collected: 0,
+        considered: 'unknown',
+        coverage_condition: 'unknown',
+        pending_detail_gaps: 0,
+      },
+      {
+        stream: 'transactions',
+        collected: 0,
+        considered: 'unknown',
+        coverage_condition: 'retryable_gap',
+        pending_detail_gaps: 1,
+      },
+    ],
+    manifestStreams: [{ name: 'accounts', required: true }, { name: 'transactions', required: true }],
+    refresh: null,
+    progress: null,
+  });
+
+  assert.equal(verdict.pill.tone, 'amber');
+  assert.equal(verdict.channel, 'advisory');
+  assert.equal(verdict.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.ok(verdict.required_actions.some((action) => action.kind === 'retry_gap'));
+  assert.equal(
+    verdict.streams.find((row) => row.stream_id === 'transactions')?.statement,
+    'The next run is expected to fill the rest.'
+  );
+  assert.notEqual(verdict.forward_statement, 'Checking coverage before deciding what the next run should do.');
+});
+
 // ─── grant-scope isolation ────────────────────────────────────────────────────
 
 test('owner-wire: toGrantScopedVerdict strips detail and trace', () => {

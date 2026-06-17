@@ -221,6 +221,32 @@ test('pending detail gap -> retryable_gap / resumable, count preserved', () => {
   assert.equal(entry.forward_disposition, 'resumable');
 });
 
+test('current pending detail gap without a terminal fact block is visible on its stream', () => {
+  const entries = report(null, {
+    manifestStreams: [{ name: 'accounts' }, { name: 'transactions' }],
+    pendingDetailGaps: [{ reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' }],
+    freshness: 'unknown',
+  });
+  const accounts = entryFor(entries, 'accounts');
+  const transactions = entryFor(entries, 'transactions');
+
+  assert.equal(accounts.coverage_condition, 'unknown');
+  assert.equal(accounts.forward_disposition, 'checking');
+  assert.equal(transactions.coverage_condition, 'retryable_gap');
+  assert.equal(transactions.pending_detail_gaps, 1);
+  assert.equal(transactions.forward_disposition, 'resumable');
+});
+
+test('current pending detail gap raises an old zero-gap fact', () => {
+  const entries = report([fact({ pending_detail_gaps: 0 })], {
+    pendingDetailGaps: [{ reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' }],
+  });
+  const entry = entryFor(entries, 'transactions');
+
+  assert.equal(entry.coverage_condition, 'retryable_gap');
+  assert.equal(entry.pending_detail_gaps, 1);
+});
+
 test('detail gap takes precedence over a satisfied considered denominator', () => {
   // Even with collected >= considered, a pending recoverable gap means the
   // stream is not yet fully covered.

@@ -2031,6 +2031,13 @@ function deriveStreamCoverageCondition(
 export function buildCollectionReport(input: {
   readonly collectionFacts: RuntimeCollectionFacts | null;
   readonly manifestStreams: readonly ManifestStream[];
+  /**
+   * Current durable pending DETAIL_GAP rows read from the gap store. Runtime
+   * `collection_facts` are run-local; these rows are the current retry contract.
+   * Threading them here keeps the per-stream report aligned with the connection
+   * rollup when a pending gap exists but no terminal run fact block is available.
+   */
+  readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
@@ -2041,6 +2048,7 @@ export function buildCollectionReport(input: {
       factByStream.set(fact.stream, fact);
     }
   }
+  const pendingGapCountByStream = pendingDetailGapCountsByStream(input.pendingDetailGaps ?? []);
   const manifestByStream = new Map<string, ManifestStream>();
   for (const stream of input.manifestStreams) {
     if (stream && typeof stream.name === "string" && stream.name && !manifestByStream.has(stream.name)) {
@@ -2050,10 +2058,10 @@ export function buildCollectionReport(input: {
   // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
   // unreported stream is an honest entry, never silently dropped (dropping reads
   // as "not owed" when it is "unknown").
-  const inScope = new Set<string>([...manifestByStream.keys(), ...factByStream.keys()]);
+  const inScope = new Set<string>([...manifestByStream.keys(), ...factByStream.keys(), ...pendingGapCountByStream.keys()]);
   const entries: CollectionReportEntry[] = [];
   for (const stream of inScope) {
-    const fact: RuntimeCollectionFact = factByStream.get(stream) ?? {
+    const baseFact: RuntimeCollectionFact = factByStream.get(stream) ?? {
       stream,
       collected: 0,
       considered: null,
@@ -2061,6 +2069,10 @@ export function buildCollectionReport(input: {
       checkpoint: null,
       pending_detail_gaps: 0,
       skipped: null,
+    };
+    const fact: RuntimeCollectionFact = {
+      ...baseFact,
+      pending_detail_gaps: Math.max(baseFact.pending_detail_gaps, pendingGapCountByStream.get(stream) ?? 0),
     };
     const manifestStream = manifestByStream.get(stream);
     const coverageCondition = deriveStreamCoverageCondition(fact, manifestStream);
@@ -2100,15 +2112,32 @@ function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly manifestStreams: readonly ManifestStream[];
+  readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
   return buildCollectionReport({
     collectionFacts: input.lastRun?.collection_facts ?? null,
     manifestStreams: input.manifestStreams,
+    pendingDetailGaps: input.pendingDetailGaps ?? [],
     freshness: input.connectionHealth.axes.freshness,
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     refresh: buildRefreshEvidence(input.refreshPolicy),
   });
+}
+
+function pendingDetailGapCountsByStream(gaps: readonly PendingDetailGapSummary[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const gap of gaps) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap) || gap.status !== "pending") {
+      continue;
+    }
+    const stream = typeof gap.stream === "string" ? gap.stream : "";
+    if (!stream) {
+      continue;
+    }
+    counts.set(stream, (counts.get(stream) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
@@ -3685,6 +3714,7 @@ async function projectConnectorSummaryForInstance(
     lastRun,
     connectionHealth,
     manifestStreams: manifest.streams ?? [],
+    pendingDetailGaps: detailGaps.gaps,
     refreshPolicy,
   });
   const recoveredCount = detailGaps.recovered;
@@ -3905,6 +3935,7 @@ export async function getConnectorDetail(
     lastRun,
     connectionHealth,
     manifestStreams: manifest.streams ?? [],
+    pendingDetailGaps: detailGaps.gaps,
     refreshPolicy,
   });
   const detailRecoveredCount = detailGaps.recovered;
