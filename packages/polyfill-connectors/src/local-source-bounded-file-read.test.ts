@@ -24,3 +24,13 @@ test("Codex session collection does not materialize the full thread table", () =
   assert.doesNotMatch(codexSource, /\.all\(\)/, "Codex collector must stream SQLite thread rows with iterate()");
   assert.match(codexSource, /\.iterate\(\)/, "Codex collector should use the SQLite row iterator");
 });
+
+test("iMessage message collection does not materialize the full chat.db result set", () => {
+  const imessageSource = readFileSync(new URL("../connectors/imessage/index.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    imessageSource,
+    /\.all\(/,
+    "iMessage collector must stream chat.db message rows with iterate(), not materialize them with .all()"
+  );
+  assert.match(imessageSource, /\.iterate\(/, "iMessage collector should use the SQLite row iterator");
+});

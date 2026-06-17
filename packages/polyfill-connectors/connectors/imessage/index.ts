@@ -50,7 +50,13 @@ function appleDateToIso(raw: number | null | undefined): string | null {
   return new Date((APPLE_EPOCH_SEC + sec) * MS_PER_SEC).toISOString();
 }
 
-function queryMessageRows(db: Database.Database, since: number): MessageRow[] {
+// Returns a lazy row iterator instead of materializing the whole result set.
+// `.iterate(since)` streams one row at a time so process memory is bounded by a
+// single row plus emitted-record bounds, never by the size of `chat.db`. The
+// SQL/query error surfaces on the first `.next()` (statement preparation is
+// eager but row stepping is lazy); the caller wraps stepping to preserve the
+// `imessage_db_query_failed` failure contract.
+function queryMessageRows(db: Database.Database, since: number): IterableIterator<MessageRow> {
   return db
     .prepare(
       `
@@ -65,7 +71,7 @@ function queryMessageRows(db: Database.Database, since: number): MessageRow[] {
         ORDER BY m.date ASC
       `
     )
-    .all(since) as MessageRow[];
+    .iterate(since) as IterableIterator<MessageRow>;
 }
 
 async function emitMessageRows({
@@ -76,7 +82,7 @@ async function emitMessageRows({
 }: {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   progress: (message: string, extra?: Record<string, unknown>) => Promise<void>;
-  rows: MessageRow[];
+  rows: Iterable<MessageRow>;
   since: number;
 }): Promise<number> {
   let latestApple = since;
@@ -98,7 +104,7 @@ async function emitMessageRows({
       latestApple = Number(r.date);
     }
     if (itemOrdinal % PROGRESS_INTERVAL_ROWS === 0) {
-      await progress(`iMessage phase=emit pass=emit stream=messages item=${itemOrdinal}/${rows.length}`, {
+      await progress(`iMessage phase=emit pass=emit stream=messages item=${itemOrdinal}`, {
         stream: "messages",
       });
     }
@@ -129,16 +135,19 @@ runConnector({
     const since = messagesState.last_apple_date ?? 0;
     await progress("iMessage phase=index pass=index stream=messages querying rows", { stream: "messages" });
 
-    let rows: MessageRow[];
+    // Row iteration is lazy: query errors surface while stepping the iterator,
+    // so the emit loop runs inside the failure boundary that maps any query
+    // failure to `imessage_db_query_failed` (and leaves STATE unemitted).
+    let latestApple: number;
     try {
-      rows = queryMessageRows(db, since);
+      const rows = queryMessageRows(db, since);
+      await progress("iMessage phase=emit pass=emit stream=messages streaming rows", { stream: "messages" });
+      latestApple = await emitMessageRows({ emitRecord, progress, rows, since });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`imessage_db_query_failed: ${msg}`);
     }
 
-    await progress(`iMessage phase=emit pass=emit stream=messages total_items=${rows.length}`, { stream: "messages" });
-    const latestApple = await emitMessageRows({ emitRecord, progress, rows, since });
     await emit({
       type: "STATE",
       stream: "messages",

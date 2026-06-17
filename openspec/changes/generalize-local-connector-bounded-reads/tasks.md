@@ -6,7 +6,7 @@
 
 ## 2. High-Risk Connectors
 
-- [ ] Convert `imessage` local database reads from unbounded `.all()` to row iteration.
+- [x] Convert `imessage` local database reads from unbounded `.all()` to row iteration.
 - [ ] Convert `twitter_archive` archive parsing away from whole-file array materialization, or stop with a documented design blocker if a safe streaming parser is not feasible in this tranche.
 - [ ] Convert large Slack dump row reads to row iteration or document bounded query exceptions.
 
