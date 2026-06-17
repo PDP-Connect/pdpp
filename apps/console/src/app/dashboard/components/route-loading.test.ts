@@ -46,12 +46,12 @@ const ARRAY_INDEX_KEY_RE = /key=\{\s*(?:i|index)\s*\}/;
 const TABLE_COLUMN_KEYS_RE = /columnKeys/;
 const TABLE_DEFAULT_COLUMNS_RE = /columns = 4/;
 // The resolved table leads with two fixed-shape columns (emitted_at, id) before
-// its variable data columns; the skeleton must reproduce them at their real
-// widths so the column boundaries don't shift horizontally when the table
-// paints. Pin the narrow timestamp (w-24) + mono id (w-28) leading bars and the
-// total-minus-two data-column derivation.
-const TABLE_LEADING_TIMESTAMP_RE = /emitted_at — narrow timestamp column/;
-const TABLE_LEADING_ID_RE = /id — mono identifier column/;
+// its variable data columns; the skeleton must reproduce those widths so the
+// column boundaries don't shift horizontally when the table paints.
+const TABLE_HEADER_TIMESTAMP_WIDTH_RE = /className="h-3 w-24 shrink-0"/;
+const TABLE_HEADER_ID_WIDTH_RE = /className="h-3 w-28 shrink-0"/;
+const TABLE_BODY_TIMESTAMP_WIDTH_RE = /className="h-3\.5 w-24 shrink-0"/;
+const TABLE_BODY_ID_WIDTH_RE = /className="h-3\.5 w-28 shrink-0"/;
 const TABLE_DATA_COLUMNS_DERIVED_RE = /const dataColumns = Math\.max\(0, columns - 2\)/;
 
 function exportedSkeletonRe(name: string): RegExp {
@@ -120,8 +120,10 @@ test("the table skeleton reproduces the resolved table's two fixed leading colum
   // the real table paints. Pin that the skeleton draws those two leading columns
   // distinctly and treats `columns` as the total (leading + data) count.
   const tableBody = src.slice(src.indexOf("export function TableLoadingSkeleton"));
-  assert.match(tableBody, TABLE_LEADING_TIMESTAMP_RE, "table skeleton must draw the emitted_at leading column");
-  assert.match(tableBody, TABLE_LEADING_ID_RE, "table skeleton must draw the id leading column");
+  assert.match(tableBody, TABLE_HEADER_TIMESTAMP_WIDTH_RE, "table skeleton header must draw emitted_at width");
+  assert.match(tableBody, TABLE_HEADER_ID_WIDTH_RE, "table skeleton header must draw id width");
+  assert.match(tableBody, TABLE_BODY_TIMESTAMP_WIDTH_RE, "table skeleton body must draw emitted_at width");
+  assert.match(tableBody, TABLE_BODY_ID_WIDTH_RE, "table skeleton body must draw id width");
   assert.match(
     tableBody,
     TABLE_DATA_COLUMNS_DERIVED_RE,
