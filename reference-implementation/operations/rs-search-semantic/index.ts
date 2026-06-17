@@ -355,6 +355,7 @@ export interface SearchSemanticDependencies {
     q: string;
     perConnectorPlans: SearchSemanticConnectorPlan[];
     isOwner: boolean;
+    pageLimit: number;
   }): Promise<SearchSemanticSnapshot> | SearchSemanticSnapshot;
   /**
    * Persist a freshly-built snapshot for cursor reuse.
@@ -1063,6 +1064,7 @@ export async function executeSearchSemantic(
       q: params.q,
       perConnectorPlans,
       isOwner,
+      pageLimit: params.limit,
     });
     snapshotId = snapshot.snapshot_id;
     await dependencies.persistSnapshot(snapshot);

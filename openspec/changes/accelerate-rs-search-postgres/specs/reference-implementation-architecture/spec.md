@@ -16,4 +16,6 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **WHEN** the reference implementation serves owner-token lexical or semantic search from a Postgres storage backend across multiple owner-visible connector instances
 - **THEN** it SHALL bound concurrent per-source database work so broad packages do not start every source query at once
 - **AND** it SHALL use database indexes shaped to the authorization scope predicates used by the search query
+- **AND** it SHALL size semantic per-source candidate work from the requested page size rather than always using the maximum page size
+- **AND** it SHALL coalesce unfiltered same-connection semantic scope reads when doing so preserves the same grant and filter semantics
 - **AND** it SHALL NOT rely on fixed wall-clock sleeps or request-duration caps as the primary safety mechanism

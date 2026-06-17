@@ -49,6 +49,12 @@ The cache is intentionally short-lived and clears when the semantic backend chan
 
 The semantic route previously requested 200 hits per connector even though the public maximum page size is 100. For broad owner searches this doubled KNN and candidate-merging work without improving the first page. The reference shall cap per-connector semantic overscan at the public maximum until a later change introduces a measured adaptive overscan policy.
 
+### 7. Adapt semantic overscan to the requested page and coalesce unfiltered scopes
+
+Live Postgres evidence after the first search tranche showed semantic and hybrid search still at about 7s p50. The bottleneck was no longer query-vector generation; warm benchmark runs still paid for multiple filtered HNSW KNN reads per connector, each asking for the public maximum of 100 hits even when the caller requested the default 25-hit page.
+
+The reference shall size per-connector semantic overscan from the requested page size, with a small duplicate-collapse cushion and a hard cap at the public maximum. For unfiltered Postgres semantic plans, the reference shall coalesce all same-connection semantic scope keys into one KNN read. Entries narrowed by record-key candidates or query filters SHALL remain separate so the filtered semantics are unchanged.
+
 ## Alternatives
 
 - Increase Docker shared memory only: helpful, but insufficient. A forkable reference should not require operators to discover a container memory footgun before `/v1/search` works.

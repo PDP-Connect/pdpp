@@ -2125,52 +2125,53 @@ export async function runSemanticSearch({
  * rows don't exist, hits are absent (empty data) but retrieval_mode still
  * says semantic on any hits that do come back.
  */
-async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
+async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner, pageLimit = 25 }) {
   const queryVector = await embedSemanticQueryWithCache(q);
   const index = isPostgresStorageBackend() ? null : ensureVectorIndex();
 
-  // Configurable KNN overscan — we fetch more per connector than the final
-  // page needs so the merged top-N is accurate. Matches the lexical
-  // snapshot's approach of caching a reasonable upper bound.
-  const PER_CONNECTOR_LIMIT = 100;
+  // Fetch enough per connector to survive field-level duplicate collapse
+  // without forcing every first page to pay for the public maximum.
+  const perConnectorLimit = resolveSemanticPerConnectorLimit(pageLimit);
 
   const perConnectorHits = await mapSearchFanout(
     perConnectorPlans,
     async ({ connectorId, planEntries }) => {
       const entryHits = [];
-      for (const entry of planEntries) {
-        if (entry.scopeKeys.length === 0) continue;
-        if (isPostgresStorageBackend()) {
-          const recordKeys = Array.isArray(entry.candidateRecordKeys)
-            ? entry.candidateRecordKeys
-            : entry.postgresCandidateFilter
+      if (isPostgresStorageBackend()) {
+        for (const request of buildPostgresSemanticPlanRequests(planEntries)) {
+          const recordKeys = Array.isArray(request.candidateRecordKeys)
+            ? request.candidateRecordKeys
+            : request.postgresCandidateFilter
               ? await buildPostgresCandidateRecordKeys({
                 connectorId,
-                connectorInstanceId: entry.connectorInstanceId,
-                streamName: entry.streamName,
-                ...entry.postgresCandidateFilter,
+                connectorInstanceId: request.connectorInstanceId,
+                streamName: request.streamName,
+                ...request.postgresCandidateFilter,
               })
               : null;
           entryHits.push(...await postgresSemanticSearch({
             connectorId,
-            connectorInstanceId: entry.connectorInstanceId,
-            scopeKeys: entry.scopeKeys,
+            connectorInstanceId: request.connectorInstanceId,
+            scopeKeys: request.scopeKeys,
             queryVector,
-            limit: PER_CONNECTOR_LIMIT,
+            limit: perConnectorLimit,
             recordKeys,
           }));
-        } else {
+        }
+      } else {
+        for (const entry of planEntries) {
+          if (entry.scopeKeys.length === 0) continue;
           entryHits.push(...await index.queryPerConnector({
             connectorId,
             connectorInstanceId: entry.connectorInstanceId,
             scopeKeys: entry.scopeKeys,
             queryVector,
-            limit: PER_CONNECTOR_LIMIT,
+            limit: perConnectorLimit,
             recordKeys: entry.candidateRecordKeys,
           }));
         }
       }
-      return entryHits.sort(compareHits).slice(0, PER_CONNECTOR_LIMIT);
+      return entryHits.sort(compareHits).slice(0, perConnectorLimit);
     },
     { isPostgres: isPostgresStorageBackend() },
   );
@@ -2346,6 +2347,55 @@ function hashBackendIdentity(b) {
   return JSON.stringify({
     identity: backendStorageIdentity(b),
   });
+}
+
+export function resolveSemanticPerConnectorLimit(pageLimit) {
+  const normalized = Math.max(1, Math.min(Number(pageLimit) || 25, 100));
+  return Math.min(100, Math.max(25, Math.ceil(normalized * 1.5), normalized + 10));
+}
+
+export function buildPostgresSemanticPlanRequests(planEntries = []) {
+  const simpleByConnection = new Map();
+  const requests = [];
+
+  for (const entry of planEntries) {
+    if (!entry || !Array.isArray(entry.scopeKeys) || entry.scopeKeys.length === 0) continue;
+    const hasCandidateRecordKeys = Array.isArray(entry.candidateRecordKeys);
+    const hasCandidateFilter = !!entry.postgresCandidateFilter;
+    if (hasCandidateRecordKeys || hasCandidateFilter) {
+      requests.push({
+        connectorInstanceId: entry.connectorInstanceId ?? null,
+        streamName: entry.streamName,
+        scopeKeys: [...new Set(entry.scopeKeys)],
+        candidateRecordKeys: entry.candidateRecordKeys,
+        postgresCandidateFilter: entry.postgresCandidateFilter,
+      });
+      continue;
+    }
+
+    const key = entry.connectorInstanceId ?? '';
+    let merged = simpleByConnection.get(key);
+    if (!merged) {
+      merged = {
+        connectorInstanceId: entry.connectorInstanceId ?? null,
+        scopeKeys: new Set(),
+      };
+      simpleByConnection.set(key, merged);
+    }
+    for (const scopeKey of entry.scopeKeys) merged.scopeKeys.add(scopeKey);
+  }
+
+  for (const merged of simpleByConnection.values()) {
+    requests.unshift({
+      connectorInstanceId: merged.connectorInstanceId,
+      streamName: null,
+      scopeKeys: [...merged.scopeKeys].sort(),
+      candidateRecordKeys: null,
+      postgresCandidateFilter: null,
+    });
+  }
+
+  return requests;
 }
 
 async function persistSemanticSnapshot(snapshot) {

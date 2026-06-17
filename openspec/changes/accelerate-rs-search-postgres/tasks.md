@@ -13,12 +13,15 @@
 - [x] Add a bounded Postgres lexical candidate window before rank/snippet computation for broad searches.
 - [x] Add short-lived single-flight caching for repeated semantic query vectors.
 - [x] Reduce semantic per-connector overscan to the public maximum page size.
+- [x] Adapt semantic per-connector overscan to the requested page size.
+- [x] Coalesce unfiltered Postgres semantic scope reads per connection.
 
 ## 3. Tests
 
 - [x] Add unit coverage for fan-out concurrency and ordering.
 - [x] Add/extend Postgres lexical tests to cover scoped index bootstrap and candidate-window lexical query success.
 - [x] Add semantic query-vector cache coverage.
+- [x] Add semantic overscan and Postgres plan coalescing coverage.
 - [x] Run targeted search tests.
 - [x] Run reference TypeScript.
 - [x] Validate OpenSpec strict/all.

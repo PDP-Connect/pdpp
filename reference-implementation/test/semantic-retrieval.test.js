@@ -45,9 +45,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildPostgresSemanticPlanRequests,
   DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS,
   makeStubBackend,
   parseSemanticSearchParams,
+  resolveSemanticPerConnectorLimit,
   resolveSemanticBackendFromEnv,
   semanticIndexDelete,
 } from '../server/search-semantic.js';
@@ -1937,6 +1939,63 @@ test('parseSemanticSearchParams accepts the v1 allowlist, rejects everything els
     () => parseSemanticSearchParams({ q: 'x', filter: { source_created_at: { gte: '2026-04-01T00:00:00Z' } } }),
     (err) => err.code === 'invalid_request' && err.param === 'streams',
   );
+});
+
+test('resolveSemanticPerConnectorLimit scales with requested page size instead of always using the public maximum', () => {
+  assert.equal(resolveSemanticPerConnectorLimit(1), 25);
+  assert.equal(resolveSemanticPerConnectorLimit(25), 38);
+  assert.equal(resolveSemanticPerConnectorLimit(50), 75);
+  assert.equal(resolveSemanticPerConnectorLimit(100), 100);
+  assert.equal(resolveSemanticPerConnectorLimit(500), 100);
+});
+
+test('buildPostgresSemanticPlanRequests merges unfiltered scopes and preserves filtered candidate requests', () => {
+  const requests = buildPostgresSemanticPlanRequests([
+    {
+      connectorInstanceId: 'cin_a',
+      streamName: 'messages',
+      scopeKeys: ['["messages","text"]'],
+    },
+    {
+      connectorInstanceId: 'cin_a',
+      streamName: 'files',
+      scopeKeys: ['["files","title"]', '["messages","text"]'],
+    },
+    {
+      connectorInstanceId: 'cin_a',
+      streamName: 'messages',
+      scopeKeys: ['["messages","text"]'],
+      candidateRecordKeys: ['rk_1'],
+    },
+    {
+      connectorInstanceId: 'cin_b',
+      streamName: 'notes',
+      scopeKeys: ['["notes","body"]'],
+    },
+  ]);
+
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[0], {
+    connectorInstanceId: 'cin_b',
+    streamName: null,
+    scopeKeys: ['["notes","body"]'],
+    candidateRecordKeys: null,
+    postgresCandidateFilter: null,
+  });
+  assert.deepEqual(requests[1], {
+    connectorInstanceId: 'cin_a',
+    streamName: null,
+    scopeKeys: ['["files","title"]', '["messages","text"]'],
+    candidateRecordKeys: null,
+    postgresCandidateFilter: null,
+  });
+  assert.deepEqual(requests[2], {
+    connectorInstanceId: 'cin_a',
+    streamName: 'messages',
+    scopeKeys: ['["messages","text"]'],
+    candidateRecordKeys: ['rk_1'],
+    postgresCandidateFilter: undefined,
+  });
 });
 
 test('semantic backend env resolver defaults to deterministic stub outside operational dev mode', () => {
