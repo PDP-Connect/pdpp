@@ -100,6 +100,7 @@ const CHATGPT = demoCard({
 
 export const DEMO_SYNCS_MODEL: SyncsViewModel = {
   band: { onSchedule: 6, needYourHand: 1, allClear: false },
+  duplicateGroups: [],
   failureCards: [FIRST_MERIDIAN, CHATGPT],
   groups: [
     {
@@ -107,6 +108,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       connectionId: "cin_nh_e3391c",
       connectorId: "northstar_hr",
       health: "ok",
+      hiddenStreamCount: 0,
       streams: [
         row({
           stream: "pay_statements",
@@ -130,12 +132,14 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
           browseHref: "/dashboard/explore?connection=cin_nh_e3391c&stream=employment",
         }),
       ],
+      totalStreamCount: 2,
     },
     {
       name: "ChatGPT — personal",
       connectionId: "cin_cg_91a0fe",
       connectorId: "chatgpt",
       health: "failing",
+      hiddenStreamCount: 0,
       streams: [
         row({
           stream: "conversations",
@@ -149,12 +153,14 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
           browseHref: "/dashboard/explore?connection=cin_cg_91a0fe&stream=conversations",
         }),
       ],
+      totalStreamCount: 1,
     },
     {
       name: "First Meridian — checking",
       connectionId: "cin_fm_206b11",
       connectorId: "first_meridian",
       health: "failing",
+      hiddenStreamCount: 0,
       streams: [
         row({
           stream: "transactions",
@@ -178,12 +184,14 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
           browseHref: "/dashboard/explore?connection=cin_fm_206b11&stream=balances",
         }),
       ],
+      totalStreamCount: 2,
     },
     {
       name: "Gmail — personal",
       connectionId: "cin_gm_410c2b",
       connectorId: "gmail",
       health: "ok",
+      hiddenStreamCount: 0,
       streams: [
         row({
           stream: "messages",
@@ -197,6 +205,11 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
           browseHref: "/dashboard/explore?connection=cin_gm_410c2b&stream=messages",
         }),
       ],
+      totalStreamCount: 1,
     },
   ],
+  hiddenGroupCount: 0,
+  hiddenStreamCount: 0,
+  totalGroupCount: 4,
+  totalStreamCount: 6,
 };

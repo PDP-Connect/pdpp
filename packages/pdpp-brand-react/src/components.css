@@ -842,10 +842,18 @@
 .rr-sync__seeded { align-self: flex-start; margin-top: 4px; }
 
 .rr-sync__fixes { display: flex; flex-direction: column; gap: 12px; }
+.rr-sync__duplicates { display: flex; flex-direction: column; gap: 10px; }
 .rr-sync__groups { display: flex; flex-direction: column; gap: 26px; }
 .rr-sync__empty {
   padding: 18px;
   border: 1px solid var(--border);
+}
+.rr-sync__overflow {
+  margin: -6px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  max-width: 78ch;
 }
 
 /* The health band holds only real stats (a balanced 2-up of numbers). The
@@ -902,6 +910,39 @@
   box-shadow: inset 0 0 0 1px var(--border-strong);
   padding: 3px 8px;
 }
+
+.rr-sync-duplicates {
+  padding: 14px 16px;
+  background: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.rr-sync-duplicates__eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rr-sync-duplicates__head {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+.rr-sync-duplicates__note {
+  margin: 5px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  max-width: 72ch;
+}
+.rr-sync-duplicates__link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.72rem;
+}
 /* At mobile the side-by-side (body | action) layout crushes both columns.
    Stack body then action full-width so Reconnect / wait badge sits clearly
    beneath the prose rather than squeezing into a narrow auto column. */
@@ -951,6 +992,12 @@
   font-size: 0.66rem;
   color: var(--muted-foreground);
   white-space: nowrap;
+}
+.rr-sync-group__overflow {
+  margin: 1px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.45;
 }
 
 /* Sync row — composed over the kit Table (pdpp-table__row). */

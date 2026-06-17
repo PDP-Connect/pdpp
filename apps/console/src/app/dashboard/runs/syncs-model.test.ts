@@ -295,10 +295,11 @@ test("browser surface profile keys attribute a run only to the matching connecti
     ],
   });
 
-  assert.equal(model.groups[0]?.streams[0]?.delta, "no recent run");
-  assert.equal(model.groups[0]?.streams[0]?.failed, false);
-  assert.equal(model.groups[1]?.streams[0]?.delta, "sync failed");
-  assert.equal(model.groups[1]?.streams[0]?.failed, true);
+  const byConnection = new Map(model.groups.map((group) => [group.connectionId, group]));
+  assert.equal(byConnection.get("cin_chase_a")?.streams[0]?.delta, "no recent run");
+  assert.equal(byConnection.get("cin_chase_a")?.streams[0]?.failed, false);
+  assert.equal(byConnection.get("cin_chase_b")?.streams[0]?.delta, "sync failed");
+  assert.equal(byConnection.get("cin_chase_b")?.streams[0]?.failed, true);
 });
 
 test("connection summary last_run remains available without connector-wide run attribution", () => {
@@ -543,4 +544,147 @@ test("healthy sources with only benign rendered verdict signals do not get a fai
   assert.equal(model.failureCards.length, 0);
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.groups[0]?.health, "ok");
+});
+
+test("syncs overview collapses repeated unnamed fallback sources", () => {
+  const amazonAdvisory = renderedVerdict({
+    channel: "advisory",
+    forward_statement: "Retry now to give the recoverable gap another run.",
+    pill: { label: "Degraded", tone: "amber" },
+    required_actions: [action()],
+  });
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_named",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon - Personal",
+        streams: ["orders", "order_items"],
+      }),
+      connector({
+        connection_id: "cin_a",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        rendered_verdict: amazonAdvisory,
+        streams: ["orders", "order_items"],
+      }),
+      connector({
+        connection_id: "cin_b",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        rendered_verdict: amazonAdvisory,
+        streams: ["orders", "order_items"],
+      }),
+      connector({
+        connection_id: "cin_c",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        rendered_verdict: amazonAdvisory,
+        streams: ["orders", "order_items"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.duplicateGroups.length, 1);
+  assert.deepEqual(
+    {
+      advisoryCount: model.duplicateGroups[0]?.advisoryCount,
+      connectorId: model.duplicateGroups[0]?.connectorId,
+      firstConnectionId: model.duplicateGroups[0]?.firstConnectionId,
+      kind: model.duplicateGroups[0]?.kind,
+      ownerActionCount: model.duplicateGroups[0]?.ownerActionCount,
+      streamCount: model.duplicateGroups[0]?.streamCount,
+      total: model.duplicateGroups[0]?.total,
+    },
+    {
+      advisoryCount: 3,
+      connectorId: "amazon",
+      firstConnectionId: "cin_a",
+      kind: "Amazon",
+      ownerActionCount: 0,
+      streamCount: 6,
+      total: 3,
+    }
+  );
+  assert.deepEqual(
+    model.groups.map((group) => group.connectionId),
+    ["cin_named"],
+    "only the named Amazon source remains expanded in the syncs overview"
+  );
+  assert.equal(model.failureCards.length, 0, "duplicate advisory cards collapse into the duplicate review note");
+  assert.equal(model.totalGroupCount, 4);
+  assert.equal(model.totalStreamCount, 8);
+  assert.equal(model.hiddenStreamCount, 6);
+});
+
+test("syncs overview keeps small duplicate fallback sets visible", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_a",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        streams: ["orders"],
+      }),
+      connector({
+        connection_id: "cin_b",
+        connector_display_name: "Amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        streams: ["orders"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.duplicateGroups.length, 0);
+  assert.deepEqual(
+    model.groups.map((group) => group.connectionId),
+    ["cin_a", "cin_b"]
+  );
+});
+
+test("syncs overview caps stream rows while preserving exact source detail overflow", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_slack",
+        connector_display_name: "Slack",
+        connector_id: "slack",
+        display_name: "Vana Slack",
+        streams: ["a", "b", "c", "d", "e", "f", "g"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.groups[0]?.streams.length, 5);
+  assert.equal(model.groups[0]?.hiddenStreamCount, 2);
+  assert.equal(model.groups[0]?.totalStreamCount, 7);
+  assert.equal(model.hiddenStreamCount, 2);
+  assert.equal(model.totalStreamCount, 7);
+});
+
+test("syncs overview caps lower-priority source groups", () => {
+  const connectors = Array.from({ length: 18 }, (_, index) =>
+    connector({
+      connection_id: `cin_${String(index).padStart(2, "0")}`,
+      connector_display_name: "Source",
+      connector_id: `source_${index}`,
+      display_name: `Source ${String(index).padStart(2, "0")}`,
+      streams: ["records"],
+    })
+  );
+  const model = buildSyncsViewModel({ connectors, runs: [] });
+
+  assert.equal(model.groups.length, 16);
+  assert.equal(model.hiddenGroupCount, 2);
+  assert.equal(model.hiddenStreamCount, 2);
+  assert.equal(model.totalGroupCount, 18);
 });

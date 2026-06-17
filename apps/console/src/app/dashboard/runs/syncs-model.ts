@@ -23,6 +23,7 @@
  * health-snapshot path exists only for older references.
  */
 
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
 import type { RefConnectorSummary, RefRenderedVerdict, RefSchedule, RunSummary } from "../lib/ref-client.ts";
 
@@ -69,10 +70,14 @@ export interface SyncGroup {
   connectorId: string;
   /** Reduced health driving the group dot. */
   health: SyncGroupHealth;
+  /** Hidden stream rows omitted from the overview; source detail remains exact. */
+  hiddenStreamCount: number;
   /** Connection display name. */
   name: string;
   /** The per-stream rows. */
   streams: SyncRow[];
+  /** Total stream count for this connection before overview truncation. */
+  totalStreamCount: number;
 }
 
 /**
@@ -92,6 +97,30 @@ export interface FailureCard {
   summary: FailureSummary;
 }
 
+/**
+ * Several active same-type sources can still carry fallback labels ("Amazon").
+ * Syncs is an operational overview, so it collapses those indistinguishable
+ * shells exactly like Sources does: no data is hidden, but the owner is sent to
+ * label/revoke/retry each concrete source instead of reading ten identical
+ * cards.
+ */
+export interface DuplicateSyncGroup {
+  /** How many of the collapsed sources currently carry a rendered verdict card. */
+  advisoryCount: number;
+  /** Connector key shared by this duplicate set. */
+  connectorId: string;
+  /** First concrete connection for a direct review link. */
+  firstConnectionId: string;
+  /** Human connector kind, e.g. "Amazon". */
+  kind: string;
+  /** How many collapsed sources need the owner's hand. */
+  ownerActionCount: number;
+  /** Streams represented by the collapsed duplicate set. */
+  streamCount: number;
+  /** Number of active fallback-labeled sources in the collapsed set. */
+  total: number;
+}
+
 /** The health stat band at the top of the Syncs view. */
 export interface HealthBand {
   /** True when every connection is healthy or self-handling — show the all-clear note. */
@@ -105,12 +134,20 @@ export interface HealthBand {
 /** The whole Syncs view-model. */
 export interface SyncsViewModel {
   band: HealthBand;
+  duplicateGroups: DuplicateSyncGroup[];
   failureCards: FailureCard[];
   groups: SyncGroup[];
+  hiddenGroupCount: number;
+  hiddenStreamCount: number;
+  totalGroupCount: number;
+  totalStreamCount: number;
 }
 
 const HEALTHY_RUN_STATUSES = new Set(["succeeded", "success", "completed", "succeeded_with_gaps"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]);
+const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
+const MAX_SYNC_GROUPS = 16;
+const MAX_SYNC_STREAM_ROWS_PER_GROUP = 5;
 const RECENT_RUN_LIMIT = 7;
 
 /**
@@ -233,6 +270,22 @@ function renderedVerdictGroupHealth(verdict: RefRenderedVerdict | null | undefin
     return null;
   }
   return verdict.pill.tone === "amber" || verdict.pill.tone === "red" ? "failing" : "ok";
+}
+
+function connectorKind(connector: RefConnectorSummary): string {
+  return formatConnectorNameForDisplay({
+    connectorId: connector.connector_id,
+    displayName: connector.connector_display_name,
+    name: connector.connector_display_name,
+  });
+}
+
+function hasFallbackConnectionLabel(connector: RefConnectorSummary): boolean {
+  return isFallbackConnectionLabel({
+    connectorId: connector.connector_id,
+    displayName: connector.display_name,
+    name: connector.connector_display_name,
+  });
 }
 
 /**
@@ -393,12 +446,102 @@ function buildSyncRows(input: {
  * source-pressure waits do not inflate that number.
  */
 function buildHealthBand(input: { groups: SyncGroup[]; failureCards: FailureCard[] }): HealthBand {
-  const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.streams.length, 0);
+  const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
   const needYourHand = input.failureCards.filter((c) => c.summary.ownerActionRequired).length;
   return {
     onSchedule,
     needYourHand,
     allClear: needYourHand === 0,
+  };
+}
+
+type SyncProjection = {
+  connector: RefConnectorSummary;
+  failing: boolean;
+  group: SyncGroup;
+  lastAtMs: number;
+  summary: FailureSummary | null;
+};
+
+function groupPriority(projection: SyncProjection): number {
+  if (projection.connector.rendered_verdict?.channel === "attention") {
+    return 0;
+  }
+  if (projection.summary?.ownerActionRequired) {
+    return 1;
+  }
+  if (projection.summary) {
+    return 2;
+  }
+  if (projection.failing) {
+    return 3;
+  }
+  return 4;
+}
+
+function compareProjection(a: SyncProjection, b: SyncProjection): number {
+  return (
+    groupPriority(a) - groupPriority(b) ||
+    b.lastAtMs - a.lastAtMs ||
+    a.group.name.localeCompare(b.group.name) ||
+    a.group.connectionId.localeCompare(b.group.connectionId)
+  );
+}
+
+function collapseDuplicateFallbackProjections(projections: readonly SyncProjection[]): {
+  duplicateGroups: DuplicateSyncGroup[];
+  visible: SyncProjection[];
+} {
+  const byConnector = new Map<string, SyncProjection[]>();
+  for (const projection of projections) {
+    if (!hasFallbackConnectionLabel(projection.connector)) {
+      continue;
+    }
+    const bucket = byConnector.get(projection.connector.connector_id);
+    if (bucket) {
+      bucket.push(projection);
+    } else {
+      byConnector.set(projection.connector.connector_id, [projection]);
+    }
+  }
+
+  const collapsedIds = new Set<string>();
+  const duplicateGroups: DuplicateSyncGroup[] = [];
+  for (const [connectorId, bucket] of byConnector) {
+    if (bucket.length < DUPLICATE_SYNC_GROUP_MIN_UNNAMED) {
+      continue;
+    }
+    const sortedBucket = [...bucket].sort(compareProjection);
+    for (const projection of sortedBucket) {
+      collapsedIds.add(projection.connector.connection_id);
+    }
+    const first = sortedBucket[0];
+    if (!first) {
+      continue;
+    }
+    duplicateGroups.push({
+      advisoryCount: sortedBucket.filter((projection) => projection.summary !== null).length,
+      connectorId,
+      firstConnectionId: first.connector.connection_id,
+      kind: connectorKind(first.connector),
+      ownerActionCount: sortedBucket.filter((projection) => projection.summary?.ownerActionRequired).length,
+      streamCount: sortedBucket.reduce((sum, projection) => sum + projection.group.totalStreamCount, 0),
+      total: sortedBucket.length,
+    });
+  }
+
+  return {
+    duplicateGroups: duplicateGroups.sort((a, b) => b.total - a.total || a.kind.localeCompare(b.kind)),
+    visible: projections.filter((projection) => !collapsedIds.has(projection.connector.connection_id)),
+  };
+}
+
+function trimGroupForOverview(group: SyncGroup): SyncGroup {
+  const streams = group.streams.slice(0, MAX_SYNC_STREAM_ROWS_PER_GROUP);
+  return {
+    ...group,
+    hiddenStreamCount: Math.max(0, group.streams.length - streams.length),
+    streams,
   };
 }
 
@@ -414,8 +557,7 @@ export function buildSyncsViewModel(input: {
   connectors: readonly RefConnectorSummary[];
   runs: readonly RunSummary[];
 }): SyncsViewModel {
-  const groups: SyncGroup[] = [];
-  const failureCards: FailureCard[] = [];
+  const projections: SyncProjection[] = [];
 
   for (const connector of input.connectors) {
     // Revoked connections are not active syncs; skip them from the live surface.
@@ -426,25 +568,64 @@ export function buildSyncsViewModel(input: {
     const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
+    const streams = buildSyncRows({ connector, connectionRuns, failing });
+    const lastAt =
+      connectionRuns[0]?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
+    const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
 
-    if (summary) {
-      failureCards.push({
+    projections.push({
+      connector,
+      failing,
+      lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
+      summary,
+      group: {
         name: connector.display_name,
         connectionId: connector.connection_id,
         connectorId: connector.connector_id,
-        summary,
-      });
-    }
-
-    groups.push({
-      name: connector.display_name,
-      connectionId: connector.connection_id,
-      connectorId: connector.connector_id,
-      health: failing ? "failing" : "ok",
-      streams: buildSyncRows({ connector, connectionRuns, failing }),
+        health: failing ? "failing" : "ok",
+        hiddenStreamCount: 0,
+        streams,
+        totalStreamCount: streams.length,
+      },
     });
   }
 
-  const band = buildHealthBand({ groups, failureCards });
-  return { band, failureCards, groups };
+  const { duplicateGroups, visible } = collapseDuplicateFallbackProjections(projections);
+  const ordered = [...visible].sort(compareProjection);
+  const selected = ordered.slice(0, MAX_SYNC_GROUPS);
+  const groups = selected.map((projection) => trimGroupForOverview(projection.group));
+  const failureCards = selected
+    .filter((projection) => projection.summary !== null)
+    .map(
+      (projection): FailureCard => ({
+        name: projection.connector.display_name,
+        connectionId: projection.connector.connection_id,
+        connectorId: projection.connector.connector_id,
+        summary: projection.summary as FailureSummary,
+      })
+    );
+  const fullGroups = projections.map((projection) => projection.group);
+  const fullFailureCards = projections
+    .filter((projection) => projection.summary !== null)
+    .map(
+      (projection): FailureCard => ({
+        name: projection.connector.display_name,
+        connectionId: projection.connector.connection_id,
+        connectorId: projection.connector.connector_id,
+        summary: projection.summary as FailureSummary,
+      })
+    );
+  const totalStreamCount = fullGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
+  const shownStreamCount = groups.reduce((sum, group) => sum + group.streams.length, 0);
+  const band = buildHealthBand({ groups: fullGroups, failureCards: fullFailureCards });
+  return {
+    band,
+    duplicateGroups,
+    failureCards,
+    groups,
+    hiddenGroupCount: Math.max(0, ordered.length - selected.length),
+    hiddenStreamCount: Math.max(0, totalStreamCount - shownStreamCount),
+    totalGroupCount: projections.length,
+    totalStreamCount,
+  };
 }

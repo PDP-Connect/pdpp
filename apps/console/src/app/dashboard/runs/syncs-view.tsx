@@ -25,7 +25,7 @@ import {
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import type { FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
+import type { DuplicateSyncGroup, FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) auto minmax(0,1.2fr) minmax(0,0.9fr)";
 
@@ -108,6 +108,36 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
   );
 }
 
+function DuplicateSyncGroupPanel({ group }: { group: DuplicateSyncGroup }) {
+  return (
+    <aside className="rr-sync-duplicates" data-testid="syncs-duplicate-group">
+      <span className="rr-sync-duplicates__eyebrow">same source type · review labels</span>
+      <p className="rr-sync-duplicates__head">
+        {group.total.toLocaleString()} unnamed {group.kind} sources are collapsed in this overview.
+      </p>
+      <p className="rr-sync-duplicates__note">
+        They still represent {group.streamCount.toLocaleString()} stream{group.streamCount === 1 ? "" : "s"}.
+        {group.ownerActionCount > 0
+          ? ` ${group.ownerActionCount.toLocaleString()} ${group.ownerActionCount === 1 ? "source needs" : "sources need"} your hand.`
+          : ""}
+        {group.advisoryCount > 0
+          ? ` ${group.advisoryCount.toLocaleString()} ${
+              group.advisoryCount === 1 ? "source has" : "sources have"
+            } the same advisory.`
+          : ""}{" "}
+        Open Sources to label, retry, or revoke each concrete source.
+      </p>
+      <Link
+        className="rr-link rr-sync-duplicates__link"
+        href={dashboardRoutes.connector(group.firstConnectionId)}
+        prefetch={false}
+      >
+        Review first unnamed source →
+      </Link>
+    </aside>
+  );
+}
+
 // ─── Sync row (one stream) ────────────────────────────────────────────────────
 
 function SyncTableRow({ row }: { row: SyncRow }) {
@@ -183,7 +213,34 @@ function SyncGroupBlock({
           return <SyncTableRow key={key} row={row} />;
         })}
       </Table>
+      {group.hiddenStreamCount > 0 ? (
+        <p className="rr-sync-group__overflow">
+          Showing {group.streams.length.toLocaleString()} of {group.totalStreamCount.toLocaleString()} streams.{" "}
+          <Link className="rr-link" href={dashboardRoutes.connector(group.connectionId)} prefetch={false}>
+            Open source detail for {group.hiddenStreamCount.toLocaleString()} more →
+          </Link>
+        </p>
+      ) : null}
     </section>
+  );
+}
+
+function SyncsOverviewOverflow({ model }: { model: SyncsViewModel }) {
+  const parts = [
+    model.hiddenGroupCount > 0
+      ? `${model.hiddenGroupCount.toLocaleString()} more source${model.hiddenGroupCount === 1 ? "" : "s"}`
+      : null,
+    model.hiddenStreamCount > 0
+      ? `${model.hiddenStreamCount.toLocaleString()} stream row${model.hiddenStreamCount === 1 ? "" : "s"}`
+      : null,
+  ].filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+  return (
+    <p className="rr-sync__overflow" data-testid="syncs-overview-overflow">
+      This overview keeps first paint small. {parts.join(" and ")} are available from the exact source detail pages.
+    </p>
   );
 }
 
@@ -208,6 +265,14 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
         </div>
       ) : null}
 
+      {model.duplicateGroups.length > 0 ? (
+        <div className="rr-sync__duplicates">
+          {model.duplicateGroups.map((group) => (
+            <DuplicateSyncGroupPanel group={group} key={group.connectorId} />
+          ))}
+        </div>
+      ) : null}
+
       {model.groups.length > 0 ? (
         <div className="rr-sync__groups">
           {model.groups.map((group) => (
@@ -219,6 +284,8 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
           <Caption>No connections sync here yet. Connect a source and its streams appear as sync rows.</Caption>
         </div>
       )}
+
+      <SyncsOverviewOverflow model={model} />
     </div>
   );
 }
