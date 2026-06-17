@@ -18,6 +18,7 @@ import type {
 } from "../lib/ref-client.ts";
 import {
   buildSourcesChurnAdvisory,
+  buildDuplicateSourceReview,
   buildSourcesRuntimeAdvisory,
   deriveRenderedSourceStatus,
   deriveSourceStatus,
@@ -562,6 +563,79 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
   assert.equal(views[0]?.accountLine, "Unnamed source");
   assert.equal(views[2]?.displayName, "Amazon - Personal");
   assert.equal(views[2]?.accountLine, "Amazon");
+});
+
+test("duplicate source review flags same-type unnamed active sources without hiding them", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_named",
+      connector_instance_id: "cin_named",
+      display_name: "Amazon - Personal",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_a",
+      connector_instance_id: "cin_a",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_b",
+      connector_instance_id: "cin_b",
+      display_name: "Amazon",
+    }),
+  ]);
+
+  assert.equal(views.length, 3, "duplicate configured sources remain visible");
+  assert.deepEqual(
+    views.map((view) => view.displayName),
+    ["Amazon - Personal", "Amazon · account 1", "Amazon · account 2"]
+  );
+  const reviews = buildDuplicateSourceReview(views);
+  assert.equal(reviews.length, 1);
+  assert.deepEqual(
+    {
+      connectorId: reviews[0]?.connectorId,
+      firstUnnamedHref: reviews[0]?.firstUnnamedHref,
+      kind: reviews[0]?.kind,
+      total: reviews[0]?.total,
+      unnamed: reviews[0]?.unnamed,
+    },
+    {
+      connectorId: "amazon",
+      firstUnnamedHref: "/dashboard/records/cin_a",
+      kind: "Amazon",
+      total: 3,
+      unnamed: 2,
+    }
+  );
+});
+
+test("duplicate source review ignores revoked fallback sources", () => {
+  const views = toSourcesView([
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_active",
+      connector_instance_id: "cin_active",
+      display_name: "Amazon",
+    }),
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      connection_id: "cin_revoked",
+      connector_instance_id: "cin_revoked",
+      display_name: "Amazon",
+      revoked_at: "2026-06-17T00:00:00Z",
+      status: "revoked",
+    }),
+  ]);
+
+  assert.equal(buildDuplicateSourceReview(views).length, 0);
 });
 
 test("manual/upload sources link to importing another file into the same source", () => {

@@ -54,7 +54,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
-import type { SourceInstanceView, SourcesChurnAdvisory, SourcesRuntimeAdvisory } from "./sources-view-model.ts";
+import {
+  buildDuplicateSourceReview,
+  type DuplicateSourceReview,
+  type SourceInstanceView,
+  type SourcesChurnAdvisory,
+  type SourcesRuntimeAdvisory,
+} from "./sources-view-model.ts";
 import "./sources-view.css";
 
 interface SourcesViewProps {
@@ -90,6 +96,7 @@ export function SourcesView({
 }: SourcesViewProps) {
   const activeInstances = instances.filter((i) => !i.revoked);
   const revokedInstances = instances.filter((i) => i.revoked);
+  const duplicateReviews = buildDuplicateSourceReview(instances);
 
   // Default selection: first active source, or first revoked if all are revoked.
   const defaultId = (activeInstances[0] ?? revokedInstances[0])?.id ?? null;
@@ -109,6 +116,7 @@ export function SourcesView({
       {/* Advisories lead — before the list so they're not orphaned at the bottom on mobile. */}
       {runtimeAdvisory ? <RuntimeAdvisory advisory={runtimeAdvisory} /> : null}
       {churnAdvisory ? <ChurnAdvisory advisory={churnAdvisory} /> : null}
+      {duplicateReviews.length > 0 ? <DuplicateSourcesAdvisory reviews={duplicateReviews} /> : null}
       <div className="rr-s">
         <aside aria-label="Sources" className="rr-s-list">
           {activeInstances.map((instance) => (
@@ -158,6 +166,30 @@ export function SourcesView({
         ) : null}
       </div>
     </>
+  );
+}
+
+function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSourceReview[] }) {
+  const primary = reviews[0];
+  if (!primary) {
+    return null;
+  }
+  const more = reviews.length > 1 ? ` ${reviews.length - 1} other source type needs the same review.` : "";
+  return (
+    <aside className="rr-s-duplicates" data-testid="sources-duplicate-review" role="note">
+      <span className="rr-s-churn__eyebrow">same source type · review labels</span>
+      <p className="rr-s-churn__head">
+        {primary.total.toLocaleString()} {primary.kind} sources are configured; {primary.unnamed.toLocaleString()}{" "}
+        {primary.unnamed === 1 ? "is" : "are"} unnamed.
+      </p>
+      <p className="rr-s-churn__note">
+        Keep multiple accounts or devices when they are intentional. Rename the ones you want to keep, or open a source
+        and revoke it if it was only a setup attempt.{more}
+      </p>
+      <Link className="rr-s-duplicates__link" href={primary.firstUnnamedHref}>
+        Review first unnamed source →
+      </Link>
+    </aside>
   );
 }
 

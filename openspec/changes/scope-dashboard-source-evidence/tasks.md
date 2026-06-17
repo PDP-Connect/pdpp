@@ -14,6 +14,7 @@
 - [x] 3.1 Route per-source recovery and action CTAs to the exact `connection_id`.
 - [x] 3.2 Stop source detail pages from rendering connector-wide run lists as per-source recent runs.
 - [x] 3.3 Keep duplicate fallback-labeled sources distinguishable without hiding legitimate multiple accounts.
+- [x] 3.4 Surface a calm duplicate-source review cue when same-type active sources include unnamed fallback labels.
 
 ## 4. Verification
 

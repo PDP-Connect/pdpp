@@ -153,6 +153,8 @@ export interface SourceInstanceView {
   kind: string;
   /** Existing-source import route for manual/upload connectors. */
   manualUploadHref: string | null;
+  /** True when the visible label is a generated fallback rather than owner-authored. */
+  needsOwnerLabel: boolean;
   /** Owner CTA derived from rendered_verdict.required_actions, or null. */
   nextAction: FormattedNextAction | null;
   /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
@@ -164,6 +166,14 @@ export interface SourceInstanceView {
   streams: SourceStreamManifestRow[];
   /** Total retained records across all streams. */
   totalRecords: number;
+}
+
+export interface DuplicateSourceReview {
+  connectorId: string;
+  firstUnnamedHref: string;
+  kind: string;
+  total: number;
+  unnamed: number;
 }
 
 export interface SourcesRuntimeAdvisory {
@@ -570,12 +580,44 @@ export function toSourceInstanceView(
     isLocalDevicePush,
     isRunning,
     manualUploadHref,
+    needsOwnerLabel: hasFallbackLabel,
     status,
     nextAction,
     streams,
     totalRecords: summary.total_records,
     passportFields,
   };
+}
+
+export function buildDuplicateSourceReview(instances: readonly SourceInstanceView[]): DuplicateSourceReview[] {
+  const byConnector = new Map<string, SourceInstanceView[]>();
+  for (const instance of instances) {
+    if (instance.revoked) {
+      continue;
+    }
+    const bucket = byConnector.get(instance.connectorId);
+    if (bucket) {
+      bucket.push(instance);
+    } else {
+      byConnector.set(instance.connectorId, [instance]);
+    }
+  }
+
+  const reviews: DuplicateSourceReview[] = [];
+  for (const [connectorId, items] of byConnector) {
+    const unnamedItems = items.filter((item) => item.needsOwnerLabel);
+    if (items.length <= 1 || unnamedItems.length === 0) {
+      continue;
+    }
+    reviews.push({
+      connectorId,
+      firstUnnamedHref: unnamedItems[0]?.detailHref ?? items[0]?.detailHref ?? "/dashboard/records",
+      kind: items[0]?.kind ?? connectorId,
+      total: items.length,
+      unnamed: unnamedItems.length,
+    });
+  }
+  return reviews.sort((a, b) => b.unnamed - a.unnamed || a.kind.localeCompare(b.kind));
 }
 
 /** Map a list of summaries into the Sources view, preserving input order. */
