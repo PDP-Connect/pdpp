@@ -17,6 +17,6 @@
 
 ## 3. Live Verification
 
-- [ ] Deploy under the live-stack mutex.
-- [ ] Re-run the RS API benchmark and record before/after numbers.
-- [ ] Re-run a browser benchmark for dashboard routes to confirm no regression.
+- [x] Deploy under the live-stack mutex.
+- [x] Re-run the RS API benchmark and record before/after numbers.
+- [x] Re-run a browser benchmark for dashboard routes to confirm no regression.
