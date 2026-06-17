@@ -2885,6 +2885,15 @@ export async function deleteRecord(storageTarget, stream, recordId) {
       } else {
         await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
       }
+      // Colocated with the retained-size delta: a record delete moved this
+      // connection's count/stream evidence, so its maintained connector-summary
+      // read model is now stale. Scoped marker (instance id known); best-effort
+      // and a no-op until the read model is warmed, so it cannot fail the
+      // durable delete.
+      await markConnectorSummaryEvidenceDirty({
+        connectorInstanceId,
+        reason: 'record delete changed connection count/stream evidence',
+      });
       await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
       await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
     }
@@ -2962,6 +2971,15 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
   if (outcome.kind === 'noop') return 0;
 
+  // The durable delta (applied inside the committed transaction above) moved
+  // this connection's count/stream evidence, so its maintained connector-summary
+  // read model is now stale. Scoped marker (instance id known); best-effort and
+  // a no-op until the read model is warmed, so it cannot fail the durable delete.
+  await markConnectorSummaryEvidenceDirty({
+    connectorInstanceId,
+    reason: 'record delete changed connection count/stream evidence',
+  });
+
   // Derived index maintenance runs after the durable commit. Failures here
   // are not allowed to retroactively roll back the durable record mutation;
   // recovery is the search-index drift detector's job.
@@ -3004,6 +3022,13 @@ export async function deleteAllRecords(storageTarget, stream) {
     const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
     if (deletedRecordCount > 0) {
       await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+      // Colocated with the retained-size delta: a bulk stream delete moved this
+      // connection's count/stream evidence, so its maintained connector-summary
+      // read model is now stale. Scoped marker (instance id known); best-effort.
+      await markConnectorSummaryEvidenceDirty({
+        connectorInstanceId,
+        reason: 'bulk stream record delete changed connection count/stream evidence',
+      });
     }
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
@@ -3025,6 +3050,13 @@ export async function deleteAllRecords(storageTarget, stream) {
   if (deletedRecordCount > 0) {
     markDatasetSummaryProjectionStale('bulk stream record delete bypassed exact dataset summary projection deltas');
     await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    // Colocated with the retained-size delta: a bulk stream delete moved this
+    // connection's count/stream evidence, so its maintained connector-summary
+    // read model is now stale. Scoped marker (instance id known); best-effort.
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId,
+      reason: 'bulk stream record delete changed connection count/stream evidence',
+    });
   }
   await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
@@ -3081,6 +3113,14 @@ export async function deleteAllRecordsForConnector(connectorId) {
     const connectorInstanceId = row.connector_instance_id;
     const stream = row.stream;
     await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    // Each (instance, stream) pair this connector produced had its count/stream
+    // evidence dropped. The instance id is known per row here, so the
+    // connector-summary read model is marked scoped per instance rather than via
+    // a full-table sweep. Best-effort; a no-op until the read model is warmed.
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId,
+      reason: 'bulk connector record delete changed connection count/stream evidence',
+    });
     await lexicalIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
   }

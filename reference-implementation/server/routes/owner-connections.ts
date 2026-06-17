@@ -106,6 +106,15 @@ export interface MountOwnerConnectionsContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the rename commits (display_name is durable summary
+  // evidence). Injected (not imported) to match the optional
+  // `invalidateConnectorSummariesCache` above; awaited, best-effort, and a no-op
+  // until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
   // Wall-clock stamp for the `updated_at` recorded on rename. Injected so the
   // route stays deterministic under test and so this module does not import a
@@ -416,6 +425,13 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
           updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
         });
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: display_name is durable summary
+        // evidence, so a rename makes this connection's row stale. Instance id
+        // is known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: connectionId,
+          reason: "owner rename changed connection display_name evidence",
+        });
         const schedules = await ctx.listSchedules();
         const schedulesByInstanceId = new Map<string, unknown>(
           schedules

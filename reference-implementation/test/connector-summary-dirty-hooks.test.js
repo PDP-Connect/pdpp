@@ -9,9 +9,14 @@
  *   - Record ingest (`ingestRecord`) dirties the matching connection's summary
  *     evidence, colocated with the retained-size delta — proving the record
  *     ingest hook (task 2.2).
- *   - The owner revoke route (`POST /v1/owner/connections/:id/revoke`) dirties
- *     that exact connection's summary evidence after the soft-revoke mutation
- *     commits — proving one async owner-mutation seam (task 2.1).
+ *   - Record delete (`deleteRecord`) and bulk stream delete (`deleteAllRecords`)
+ *     dirty the matching connection's summary evidence and ONLY that connection,
+ *     while a no-op delete leaves evidence clean — proving the record-mutation
+ *     delete hooks (task 2.2).
+ *   - The owner revoke route (`POST /v1/owner/connections/:id/revoke`) and the
+ *     owner rename route (`PATCH /v1/owner/connections/:id`, a non-revoke owner
+ *     mutation) each dirty that exact connection's summary evidence after the
+ *     mutation commits — proving the owner-mutation route seams (task 2.1).
  *
  * These hooks are scoped (`markConnectorSummaryEvidenceDirty` with a known
  * `connector_instance_id`), awaited at their call sites, and best-effort: the
@@ -37,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
-import { ingestRecord } from '../server/records.js';
+import { deleteAllRecords, deleteRecord, ingestRecord } from '../server/records.js';
 import {
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
@@ -182,6 +187,115 @@ test('no-op re-ingest does not dirty summary evidence', async () => {
   }
 });
 
+// ── Record-delete seams (task 2.2): no server needed ─────────────────────────
+
+test('deleteRecord dirties the matching connection summary evidence', async () => {
+  initDb();
+  try {
+    const instanceId = 'cin_summary_delete_record';
+    seedInstanceSqlite({ connectorInstanceId: instanceId });
+    const storageTarget = storageTargetFor(instanceId);
+
+    // Seed a record, then rebuild so evidence is clean before the delete.
+    await ingestRecord(storageTarget, {
+      stream: SPOTIFY_STREAM,
+      key: 'rec_1',
+      data: { id: 'rec_1', name: 'first' },
+      emitted_at: NOW,
+    });
+    await rebuildConnectorSummaryEvidence();
+    assert.equal((await getConnectorSummaryEvidence(instanceId)).dirty, false);
+
+    // Deleting the record moves this connection's count evidence.
+    const deleted = await deleteRecord(storageTarget, SPOTIFY_STREAM, 'rec_1');
+    assert.equal(deleted, 1, 'an existing record delete reports one row removed');
+
+    const after = await getConnectorSummaryEvidence(instanceId);
+    assert.equal(after.dirty, true, 'record delete marks the connection evidence dirty');
+    assert.equal(after.state, 'stale');
+  } finally {
+    closeDb();
+  }
+});
+
+test('deleteRecord of a missing record does not dirty summary evidence', async () => {
+  initDb();
+  try {
+    const instanceId = 'cin_summary_delete_missing';
+    seedInstanceSqlite({ connectorInstanceId: instanceId });
+    const storageTarget = storageTargetFor(instanceId);
+    await rebuildConnectorSummaryEvidence();
+    assert.equal((await getConnectorSummaryEvidence(instanceId)).dirty, false);
+
+    // No such record → the delete is a no-op and must not dirty evidence.
+    const deleted = await deleteRecord(storageTarget, SPOTIFY_STREAM, 'rec_absent');
+    assert.equal(deleted, 0, 'deleting a missing record is a no-op');
+    assert.equal(
+      (await getConnectorSummaryEvidence(instanceId)).dirty,
+      false,
+      'a no-op record delete must not dirty summary evidence',
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+test('deleteAllRecords dirties only the connection whose stream was cleared', async () => {
+  initDb();
+  try {
+    const cleared = 'cin_summary_delete_all_target';
+    const untouched = 'cin_summary_delete_all_other';
+    seedInstanceSqlite({ connectorInstanceId: cleared, displayName: 'Cleared' });
+    seedInstanceSqlite({ connectorInstanceId: untouched, displayName: 'Other' });
+
+    await ingestRecord(storageTargetFor(cleared), {
+      stream: SPOTIFY_STREAM,
+      key: 'rec_1',
+      data: { id: 'rec_1', name: 'first' },
+      emitted_at: NOW,
+    });
+    await rebuildConnectorSummaryEvidence();
+    assert.equal((await getConnectorSummaryEvidence(cleared)).dirty, false);
+    assert.equal((await getConnectorSummaryEvidence(untouched)).dirty, false);
+
+    const deletedCount = await deleteAllRecords(storageTargetFor(cleared), SPOTIFY_STREAM);
+    assert.equal(deletedCount, 1, 'one record was cleared from the stream');
+
+    assert.equal(
+      (await getConnectorSummaryEvidence(cleared)).dirty,
+      true,
+      'bulk stream delete marks the cleared connection evidence dirty',
+    );
+    assert.equal(
+      (await getConnectorSummaryEvidence(untouched)).dirty,
+      false,
+      'a sibling connection whose records were untouched stays clean (scoped marker)',
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+test('deleteAllRecords on an empty stream does not dirty summary evidence', async () => {
+  initDb();
+  try {
+    const instanceId = 'cin_summary_delete_all_empty';
+    seedInstanceSqlite({ connectorInstanceId: instanceId });
+    await rebuildConnectorSummaryEvidence();
+    assert.equal((await getConnectorSummaryEvidence(instanceId)).dirty, false);
+
+    const deletedCount = await deleteAllRecords(storageTargetFor(instanceId), SPOTIFY_STREAM);
+    assert.equal(deletedCount, 0, 'no records to clear is a no-op');
+    assert.equal(
+      (await getConnectorSummaryEvidence(instanceId)).dirty,
+      false,
+      'a no-op bulk delete must not dirty summary evidence',
+    );
+  } finally {
+    closeDb();
+  }
+});
+
 // ── Owner revoke seam (task 2.1): exercised end-to-end over the route ────────
 
 async function closeServer(server) {
@@ -304,6 +418,43 @@ test('owner revoke route dirties the revoked connection summary evidence', async
 
     const after = await getConnectorSummaryEvidence(instanceId);
     assert.equal(after.dirty, true, 'revoke marks the connection summary evidence dirty');
+    assert.equal(after.state, 'stale');
+  });
+});
+
+// ── A non-revoke owner-mutation seam (task 2.1): rename over the route ────────
+//
+// Proves the scoped marker fires for an owner mutation that is NOT revoke. The
+// rename route (`PATCH /v1/owner/connections/:connectionId`) is the simplest
+// such seam — it touches only the connector-instance store (no controller) and
+// changes durable summary evidence (display_name), so it isolates the
+// markConnectorSummaryEvidenceDirty wiring from run/schedule controller setup.
+test('owner rename route dirties the renamed connection summary evidence', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    const instanceId = 'cin_spotify_rename_summary';
+    await seedInstance({
+      connectorInstanceId: instanceId,
+      connectorId: connectorKey,
+      displayName: 'My Spotify',
+      sourceBindingKey: 'the owner@example.com',
+    });
+
+    // Warm the read model so the rename seam's scoped marker has a row to flip.
+    await rebuildConnectorSummaryEvidence();
+    assert.equal((await getConnectorSummaryEvidence(instanceId)).dirty, false);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const renamed = await fetchJson(`${rsUrl}/v1/owner/connections/${instanceId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: 'the owner personal' }),
+    });
+    assert.equal(renamed.status, 200, 'owner rename should succeed');
+
+    const after = await getConnectorSummaryEvidence(instanceId);
+    assert.equal(after.dirty, true, 'rename marks the connection summary evidence dirty');
     assert.equal(after.state, 'stale');
   });
 });

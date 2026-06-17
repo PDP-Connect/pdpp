@@ -125,6 +125,15 @@ export interface MountOwnerConnectionRunContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the run starts. Injected (not imported) to match the
+  // optional `invalidateConnectorSummariesCache` above; awaited at the call site
+  // so ordering is explicit, best-effort, and a no-op until the read model is
+  // warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
@@ -376,6 +385,14 @@ function buildRunHandler(
         force,
       });
       ctx.invalidateConnectorSummariesCache?.();
+      // Scoped, awaited dirty marking for the maintained read model: starting a
+      // run is a run-lifecycle event that changes this connection's last-run
+      // evidence. Instance id is known, so this is a scoped marker rather than a
+      // full-table sweep.
+      await ctx.markConnectorSummaryEvidenceDirty?.({
+        connectorInstanceId: namespace.connectorInstanceId,
+        reason: "owner run-now started a run for this connection",
+      });
       await emitRunAudit(ctx, req, res, {
         connectionId,
         connectorKey,

@@ -162,6 +162,16 @@ export interface MountRefConnectorsContext {
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly one
+  // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /
+  // rename / revoke / reactivate / delete). Injected (not imported) to match the
+  // optional `invalidateConnectorSummariesCache` above; awaited at each call
+  // site so ordering is explicit, best-effort, and a no-op until the read model
+  // is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
   now?(): string;
@@ -557,6 +567,11 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
           updatedAt: new Date().toISOString(),
         });
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: display_name is durable summary evidence.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: updated.connectorInstanceId,
+          reason: "ref rename changed connection display_name evidence",
+        });
         const schedule = await ctx.getSchedule(updated.connectorId, {
           connectorInstanceId: updated.connectorInstanceId,
         });
@@ -597,6 +612,12 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
           force: readExplicitRunForce(req),
         });
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
+        // that changes this connection's last-run evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref run-now started a run for this connection",
+        });
         res.status(202).json(started);
       } catch (err) {
         ctx.handleError(res, err);
@@ -621,6 +642,12 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
           force: readExplicitRunForce(req),
         });
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
+        // that changes this connection's last-run evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref run-now started a run for this connection",
+        });
         res.status(202).json(started);
       } catch (err) {
         ctx.handleError(res, err);
@@ -644,6 +671,12 @@ export function mountRefConnectorScheduleUpsert(app: AppLike, ctx: MountRefConne
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: a schedule upsert changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule upsert changed connection schedule evidence",
+        });
         // Include policy_warning in the response so dashboard can surface
         // it without a second round-trip.
         const responseBody = result.policy_warning
@@ -672,6 +705,12 @@ export function mountRefConnectionScheduleUpsert(app: AppLike, ctx: MountRefConn
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: a schedule upsert changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule upsert changed connection schedule evidence",
+        });
         const responseBody = result.policy_warning
           ? { ...(result.schedule as Record<string, unknown>), policy_warning: result.policy_warning }
           : result.schedule;
@@ -697,6 +736,12 @@ export function mountRefConnectorSchedulePause(app: AppLike, ctx: MountRefConnec
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: pausing a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule pause changed connection schedule evidence",
+        });
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -719,6 +764,12 @@ export function mountRefConnectionSchedulePause(app: AppLike, ctx: MountRefConne
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: pausing a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule pause changed connection schedule evidence",
+        });
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -741,6 +792,12 @@ export function mountRefConnectorScheduleResume(app: AppLike, ctx: MountRefConne
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: resuming a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule resume changed connection schedule evidence",
+        });
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -763,6 +820,12 @@ export function mountRefConnectionScheduleResume(app: AppLike, ctx: MountRefConn
         });
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: resuming a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule resume changed connection schedule evidence",
+        });
         res.json(schedule);
       } catch (err) {
         ctx.handleError(res, err);
@@ -789,6 +852,12 @@ export function mountRefConnectorScheduleDelete(app: AppLike, ctx: MountRefConne
         }
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: deleting a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule delete changed connection schedule evidence",
+        });
         res.status(204).end();
       } catch (err) {
         ctx.handleError(res, err);
@@ -815,6 +884,12 @@ export function mountRefConnectionScheduleDelete(app: AppLike, ctx: MountRefConn
         }
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: deleting a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref schedule delete changed connection schedule evidence",
+        });
         res.status(204).end();
       } catch (err) {
         ctx.handleError(res, err);
@@ -939,6 +1014,12 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: the soft revoke changed this
+        // connection's lifecycle evidence (status/revoked_at). Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref revoke changed connection lifecycle evidence",
+        });
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
@@ -993,6 +1074,13 @@ export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsCo
         connectionId = summary.connection_id;
         connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: the delete cascade removed this
+        // connection from canonical state, so its maintained summary row is now
+        // stale; a later reconcile drops the dirty vanished row. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: connectionId,
+          reason: "ref delete removed the connection from canonical state",
+        });
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
@@ -1082,6 +1170,12 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: reactivation flips status back to active
+        // and clears revoked_at — both durable summary evidence. Instance id known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "ref reactivate changed connection lifecycle evidence",
+        });
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,

@@ -3530,6 +3530,7 @@ function buildAsApp(opts = {}) {
               'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
           },
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     resolveRegisteredConnectorManifest,
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     getSchedule: async (connectorId, options) =>
@@ -4313,6 +4314,7 @@ function buildRsApp(opts = {}) {
     ensureRequestId,
     getOwnerTokenSubjectId,
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     // Same trusted, forwarded-origin-safe RS base resolution the control
@@ -4357,6 +4359,7 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     handleError,
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     listActiveBindingsForGrant,
     onScheduleMutation: opts.onScheduleMutation,
     pdppError,
@@ -4391,6 +4394,7 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     handleError,
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     listActiveBindingsForGrant,
     pdppError,
     projectBindingForWire,
@@ -4459,6 +4463,7 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     handleError,
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     listActiveBindingsForGrant,
     // Returns all revoked connections for a given owner+connector. Used by the
     // connector-only reactivate route to find the single revoked connection to
@@ -4525,6 +4530,7 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     handleError,
     invalidateConnectorSummariesCache,
+    markConnectorSummaryEvidenceDirty,
     listActiveBindingsForGrant,
     pdppError,
     projectBindingForWire,

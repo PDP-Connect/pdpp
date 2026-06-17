@@ -141,6 +141,15 @@ export interface MountOwnerConnectionScheduleContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the schedule mutation commits. Injected (not
+  // imported) to match the optional `invalidateConnectorSummariesCache` above;
+  // awaited at the call site so ordering is explicit, best-effort, and a no-op
+  // until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
@@ -415,6 +424,12 @@ function buildScheduleHandler(
         }
         await ctx.onScheduleMutation?.();
         ctx.invalidateConnectorSummariesCache?.();
+        // Scoped, awaited dirty marking: deleting a schedule changes this
+        // connection's schedule/refresh-policy evidence. Instance id is known.
+        await ctx.markConnectorSummaryEvidenceDirty?.({
+          connectorInstanceId: namespace.connectorInstanceId,
+          reason: "owner schedule delete changed connection schedule evidence",
+        });
         await emitScheduleAudit(ctx, req, res, {
           connectionId,
           connectorKey,
@@ -433,6 +448,12 @@ function buildScheduleHandler(
       });
       await ctx.onScheduleMutation?.();
       ctx.invalidateConnectorSummariesCache?.();
+      // Scoped, awaited dirty marking: pausing/resuming a schedule changes this
+      // connection's schedule/refresh-policy evidence. Instance id is known.
+      await ctx.markConnectorSummaryEvidenceDirty?.({
+        connectorInstanceId: namespace.connectorInstanceId,
+        reason: "owner schedule pause/resume changed connection schedule evidence",
+      });
       await emitScheduleAudit(ctx, req, res, {
         connectionId,
         connectorKey,

@@ -116,6 +116,15 @@ export interface MountOwnerConnectionReactivateContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the reactivate mutation commits. Injected (not
+  // imported) to match the optional `invalidateConnectorSummariesCache` above;
+  // awaited at the call site so ordering is explicit, best-effort, and a no-op
+  // until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
@@ -400,6 +409,12 @@ function buildReactivateHandler(
         })
       );
       ctx.invalidateConnectorSummariesCache?.();
+      // Scoped, awaited dirty marking: reactivation flips status back to active
+      // and clears revoked_at — both durable summary evidence. Instance id known.
+      await ctx.markConnectorSummaryEvidenceDirty?.({
+        connectorInstanceId: namespace.connectorInstanceId,
+        reason: "owner reactivate changed connection lifecycle evidence",
+      });
       await emitReactivateAudit(ctx, req, res, {
         connectionId,
         connectorKey,

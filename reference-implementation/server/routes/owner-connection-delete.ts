@@ -148,6 +148,16 @@ export interface MountOwnerConnectionDeleteContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the delete cascade commits. The connection no longer
+  // exists in canonical state, so a later reconcile drops the now-stale row (the
+  // reconcile pass deletes dirty rows whose connection has vanished). Injected
+  // (not imported) to match the optional `invalidateConnectorSummariesCache`
+  // above; awaited, best-effort, and a no-op until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: {
+    connectorInstanceId: string;
+    reason?: string;
+  }): Promise<void> | void;
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
@@ -375,6 +385,14 @@ function buildDeleteHandler(
       connectionId = summary.connection_id;
       connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
       ctx.invalidateConnectorSummariesCache?.();
+      // Scoped, awaited dirty marking: the delete cascade removed this connection
+      // from canonical state, so its maintained summary row is now stale. A later
+      // reconcile drops the dirty row whose connection has vanished. Instance id
+      // is known.
+      await ctx.markConnectorSummaryEvidenceDirty?.({
+        connectorInstanceId: connectionId,
+        reason: "owner delete removed the connection from canonical state",
+      });
 
       await emitDeleteAudit(ctx, req, res, {
         connectionId,
