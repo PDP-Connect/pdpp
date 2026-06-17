@@ -515,6 +515,9 @@ export function classifyConnectorSetupModality(
   ) {
     return "manual_or_upload";
   }
+  if (staticSecretCredentialCaptureFromManifest(manifest)) {
+    return "static_secret";
+  }
   const connectorModality = classifyConnectorIntentModality(manifest);
   if (connectorModality === "local_collector") {
     return "local_collector";
@@ -523,9 +526,6 @@ export function classifyConnectorSetupModality(
     return "browser_bound";
   }
   if (connectorModality === "api_network") {
-    if (staticSecretCredentialCaptureFromManifest(manifest)) {
-      return "static_secret";
-    }
     if (
       authKind === "oauth" ||
       authKind === "oauth2" ||
@@ -896,6 +896,14 @@ export function buildConnectionSetupPlan(args: {
 
   if (setupModality === "manual_or_upload") {
     return buildManualUploadSetupPlan(ctx);
+  }
+
+  if (setupModality === "static_secret") {
+    return buildStaticSecretSetupPlan(ctx);
+  }
+
+  if (setupModality === "provider_authorization") {
+    return buildProviderAuthorizationSetupPlan(ctx);
   }
 
   if (connectorModality === "local_collector") {

@@ -189,8 +189,10 @@ function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
 test("static-secret manifests are connect entries, not flatly unsupported", async () => {
   // Static-secret connectors declare their setup form in the connector manifest.
   // The catalog must route every such manifest to the static_secret_connect
-  // disposition — never the api_network_unsupported bucket — without naming the
-  // current providers in Console code.
+  // disposition — never an unsupported or enrollment bucket — without naming the
+  // current providers in Console code. Runtime modality can still be filesystem
+  // for hybrid connectors such as Slack; setup is the owner credential-capture
+  // path, not local-device enrollment.
   const manifests = await loadCommittedManifests();
   const staticSecretKeys = staticSecretManifestKeys(manifests);
   assert.ok(staticSecretKeys.length >= 1, "expected at least one committed static-secret manifest");
@@ -198,7 +200,6 @@ test("static-secret manifests are connect entries, not flatly unsupported", asyn
   for (const key of staticSecretKeys) {
     const entry = catalog.find((e) => e.connectorKey === key);
     assert.ok(entry, `${key} must be in the catalog`);
-    assert.equal(entry.modality, "api_network");
     assert.equal(entry.disposition, "static_secret_connect");
     assert.equal(entry.enrollmentKey, undefined, `${key} must not deep-link into enrollment`);
   }
@@ -378,8 +379,11 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
   assert.equal(browserCollectorEntries(catalog).length, 1, "amazon only");
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
-  // Exactly the two static-secret connectors (gmail, github).
-  assert.equal(staticSecretConnectEntries(catalog).length, 2, "gmail + github");
+  assert.equal(
+    staticSecretConnectEntries(catalog).length,
+    staticSecretManifestKeys(await loadCommittedManifests()).length,
+    "every manifest-authored static-secret connector"
+  );
   assert.ok(manualUploadConnectEntries(catalog).length >= 1, "file/import connectors");
   assert.ok(deploymentBlockedEntries(catalog).length >= 1, "provider-auth API connectors");
   assert.ok(unsupportedNetworkEntries(catalog).length >= 1);

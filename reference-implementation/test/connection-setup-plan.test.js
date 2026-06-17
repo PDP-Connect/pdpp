@@ -186,6 +186,24 @@ test('setup planner marks live-proven static-secret connectors as supported', ()
   }
 });
 
+test('setup planner treats hybrid filesystem static-secret connectors as credential capture setup', () => {
+  const plan = buildConnectionSetupPlan({
+    connectorKey: 'slack',
+    manifest: {
+      ...staticSecretManifest('slack', 'sealed_bundle'),
+      runtime_requirements: { bindings: { filesystem: { required: true }, network: { required: true } } },
+    },
+  });
+  assert.equal(plan.connectorModality, 'local_collector');
+  assert.equal(plan.setupModality, 'static_secret');
+  assert.equal(plan.supportState, 'supported');
+  assert.equal(plan.catalogDisposition, 'static_secret_connect');
+  assert.equal(plan.nextStepKind, 'capture_static_secret');
+  assert.equal(plan.ownerAgentIntent.status, 'supported');
+  assert.equal(plan.ownerAgentIntent.method, 'POST');
+  assert.equal(plan.enrollmentKey, undefined);
+});
+
 test('setup planner does not infer static-secret setup from connector id alone', () => {
   const plan = buildConnectionSetupPlan({
     connectorKey: 'gmail',

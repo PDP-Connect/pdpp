@@ -393,6 +393,14 @@ the connector manifest.
 - **Risk: owner-agent setup is mistaken for grant-scoped MCP.** Mitigation:
   owner-agent setup remains REST/control-plane only, and `/mcp` continues to
   reject owner bearers.
+- **Residual risk: contemporary Google Maps Timeline export shape.** The
+  reference has deterministic parser, validation, provenance, duplicate/stale,
+  empty/unsupported, and source-identity coverage for committed Timeline fixture
+  shapes, but an owner-gated live pilot with a contemporary Timeline export was
+  not available during closeout. If Google changes the phone export shape, the
+  validator should fail before commit with concrete remediation rather than
+  creating a source; a future owner pilot should replace this residual risk with
+  live evidence.
 
 ## Migration Plan
 

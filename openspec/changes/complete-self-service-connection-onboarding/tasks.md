@@ -35,7 +35,7 @@ Progress note: implementation centralizes the setup-plan model and points consol
       Done: STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] added to connection-setup-plan.ts;
       isStaticSecretLiveProven() gates the flip; proven connectors return supportState "supported", proofGate null,
       ownerAgentIntent.method "POST". Unproven static-secret connectors (e.g. mailbox) remain proof_gated.
-- [ ] 4.3 Prove two accounts for one static-secret connector create two active connection ids with separate credentials.
+- [x] 4.3 Prove two accounts for one static-secret connector create two active connection ids with separate credentials.
 - [x] 4.4 Update docs so connector-specific source credential env vars are fallback/dev paths, not the normal setup path.
 - [x] 4.5 Move static-secret setup form metadata into connector manifests, expose a setup descriptor with credential-key-provider readiness, and block before draft creation when no provider is configured.
 - [x] 4.6 Generate the Docker credential encryption key from `scripts/generate-secrets.sh` and keep Railway on an auto-generated template secret.
@@ -48,6 +48,20 @@ Progress note: normal static-secret setup no longer requires per-account env var
 - [x] 5.1 Keep browser-bound setup proof-gated until live browser collector proof is recorded for the connector.
 - [ ] 5.2 When proof lands, flip the relevant browser-bound setup plan in the same reviewable unit as the proof artifact.
 - [x] 5.3 Add regression tests ensuring unproven browser-bound connectors cannot appear as supported in console, owner-agent, or CLI projections.
+
+Progress note (4.3): deterministic credential-store, capture-route, run-env,
+and controller-injection tests now prove same-connector multi-account isolation:
+two Gmail connection ids retain distinct sealed secrets, route-level capture is
+per-connection, controller run env injection has no process-global collision,
+and revocation/deletion fail closed. Evidence: `node --test
+reference-implementation/test/static-secret-owner-capture-route.test.js
+reference-implementation/test/static-secret-run-credentials.test.js
+reference-implementation/test/static-secret-controller-run-injection.test.js
+reference-implementation/test/connector-instance-credential-store.test.js`
+passed 37/37 on 2026-06-16. During closeout this also exposed and fixed a
+planner edge: hybrid static-secret connectors such as Slack now route to
+`static_secret_connect` from manifest-authored setup metadata instead of being
+misclassified as unproven local collectors.
 
 ## 6. Provider Authorization Path
 
@@ -201,16 +215,38 @@ deployed image containing this tranche.
 ## 10. Google Maps Timeline Refresh UX
 
 - [x] 10.1 Promote the decided Google Maps Timeline refresh plan into connector-authored setup metadata: platform export guidance, official help links, accepted formats, validation expectations, primary/secondary acquisition methods, and large-file fallback copy.
-- [ ] 10.2 Ensure the Add source and source detail flows render Google Maps Timeline as phone-first guided import/refresh, not live OAuth sync, desktop scraping, local collector enrollment, or maintainer runbook setup.
-- [ ] 10.3 Add pre-ingest validation feedback for Timeline uploads: detected format, estimated point/segment counts, detected date range, duplicate/stale/empty status, and concrete remediation for unsupported files.
-- [ ] 10.4 Preserve one source identity across equivalent Timeline acquisition methods while recording acquisition method, source format, coverage, and import provenance per run or record batch.
+- [x] 10.2 Ensure the Add source and source detail flows render Google Maps Timeline as phone-first guided import/refresh, not live OAuth sync, desktop scraping, local collector enrollment, or maintainer runbook setup.
+- [x] 10.3 Add pre-ingest validation feedback for Timeline uploads: detected format, estimated point/segment counts, detected date range, duplicate/stale/empty status, and concrete remediation for unsupported files.
+- [x] 10.4 Preserve one source identity across equivalent Timeline acquisition methods while recording acquisition method, source format, coverage, and import provenance per run or record batch.
 - [x] 10.5 Model scheduled Takeout as an advanced/probe lane that can enable best-effort recurring imports only after the first archive proves current Timeline records, and otherwise steers back to phone export/share.
 - [x] 10.6 Keep Google Maps Data Portability as a separate provider-authorization source and prevent UI or setup-plan copy from claiming it supplies Timeline points/segments.
-- [ ] 10.7 Add owner-journey acceptance checks proving the Timeline flow contains no PDPP developer vocabulary, no repo/package-internal commands, no fake OAuth claim, and no source-specific Console UI branch.
-- [ ] 10.8 Complete an owner-gated live pilot with a contemporary Timeline export or record the parser-format residual risk before archive.
+- [x] 10.7 Add owner-journey acceptance checks proving the Timeline flow contains no PDPP developer vocabulary, no repo/package-internal commands, no fake OAuth claim, and no source-specific Console UI branch.
+- [x] 10.8 Complete an owner-gated live pilot with a contemporary Timeline export or record the parser-format residual risk before archive.
 - [x] 10.9 Add Timeline refresh governance tests proving valid uploads start validation/import without a fixed cooldown, Takeout cadence is scoped to the Takeout probe lane, and checkpoint/provenance state is recorded at the earliest coverage-safe boundary available to the parser/run model.
 
-Progress note: this tranche added manifest-authored Timeline acquisition metadata, generic manual/upload rendering, a pure Timeline artifact validator with duplicate/stale/empty/unsupported/large-file remediation, and owner-session route validation before draft creation. Valid uploads store non-secret validation evidence and acquisition provenance in the manual-upload source binding without fixed cooldown fields; Takeout appears only as an advanced probe in connector metadata. The Add source/manual upload flow is covered, but route-level duplicate/stale detection still needs connection-history inputs, source-detail refresh that reuses an existing connection/source identity remains open in 10.2/10.4, and owner live pilot remains open in 10.8.
+Progress note: this tranche added manifest-authored Timeline acquisition
+metadata, generic manual/upload rendering, a pure Timeline artifact validator
+with duplicate/stale/empty/unsupported/large-file remediation, and owner-session
+route validation before draft creation. Valid uploads store non-secret
+validation evidence and acquisition provenance in the manual-upload source
+binding without fixed cooldown fields; Takeout appears only as an advanced probe
+in connector metadata. Add source renders Google Maps Timeline through the
+generic manual/upload catalog; source detail links "Add another export" to the
+same explicit connection id; the manual upload page lets the owner choose a new
+or compatible existing source; acquisition coverage receipts record method,
+format, range, counts, media coverage, and warnings per batch. Evidence:
+`pnpm --dir packages/polyfill-connectors exec tsx --test
+connectors/google_maps/validation.test.ts src/manual-upload-validation.test.ts`
+passed 6/6; `node --test
+reference-implementation/test/manual-upload-draft-connection-route.test.js
+reference-implementation/test/manual-upload-staged-artifact-route.test.js
+reference-implementation/test/manual-upload-run-env.test.js` passed 18/18; and
+`pnpm exec tsx --test apps/console/src/app/dashboard/lib/connection-catalog.test.ts
+apps/console/src/app/dashboard/connect/manual-upload-page.invariants.test.ts
+'apps/console/src/app/dashboard/records/[connector]/page-health-surfaces.invariants.test.ts'
+scripts/check-owner-journey-acceptance.test.mjs` passed 51/51 on 2026-06-16.
+The contemporary owner Timeline export pilot was not run in this turn; that is
+recorded as a residual parser-format risk in `design.md`.
 
 ## 11. Manual/import UX Correction
 

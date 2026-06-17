@@ -555,8 +555,10 @@ test('owner-agent initiating a manual/upload connector gets a non-secret upload 
 test('owner-agent initiating provider authorization returns deployment blockers, not secrets or fake support', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
+    const oauthFixtureManifest = { ...loadPackageManifest('notion') };
+    delete oauthFixtureManifest.setup;
     await registerConnector(asUrl, {
-      ...loadPackageManifest('notion'),
+      ...oauthFixtureManifest,
       connector_id: 'fitness_oauth',
       connector_key: 'fitness_oauth',
       manifest_uri: 'https://registry.pdpp.org/connectors/fitness-oauth',
