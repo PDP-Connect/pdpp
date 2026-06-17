@@ -71,6 +71,7 @@ import {
   createSqliteConnectorInstanceStore,
 } from "./stores/connector-instance-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
+import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -3491,61 +3492,13 @@ function buildConnectorFreshness({
  */
 export const LIST_CONNECTOR_SUMMARIES_CONCURRENCY = 8;
 
-/**
- * Bounded parallel map. Preserves input order in the output, runs at
- * most `limit` workers at a time, and exposes a `peakInFlight` counter
- * via the optional `onProgress` hook so tests can prove the bound holds.
- *
- * Intentionally minimal: no dependency, no early-exit semantics, no
- * AbortSignal. Failures reject the returned promise once any in-flight
- * worker finishes; pending work is still drained to avoid hanging
- * connections, matching the prior `Promise.all` behavior.
- */
-export async function mapWithConcurrency<T, R>(
+export function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
   options: { readonly onInFlightChange?: (inFlight: number) => void } = {}
 ): Promise<R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  const effectiveLimit = Math.max(1, Math.min(limit, items.length));
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  let inFlight = 0;
-  let firstError: unknown = null;
-  const onChange = options.onInFlightChange;
-  const runOne = async (): Promise<void> => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      inFlight++;
-      onChange?.(inFlight);
-      const item = items[index];
-      if (item === undefined) {
-        continue;
-      }
-      try {
-        results[index] = await worker(item, index);
-      } catch (err) {
-        if (firstError === null) {
-          firstError = err;
-        }
-      } finally {
-        inFlight--;
-        onChange?.(inFlight);
-      }
-    }
-  };
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < effectiveLimit; i++) {
-    workers.push(runOne());
-  }
-  await Promise.all(workers);
-  if (firstError !== null) {
-    throw firstError;
-  }
-  return results;
+  return runWithConcurrency(items, limit, worker, options);
 }
 
 export interface ListConnectorSummariesOptions {
@@ -4110,7 +4063,7 @@ async function computeConnectorSummaries(
   });
   const rows = await listConnectorInstanceRowsForDashboard();
   const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
-  const summaries = await mapWithConcurrency(
+  const summaries = await runWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
     (instance): Promise<ConnectorSummary | null> =>

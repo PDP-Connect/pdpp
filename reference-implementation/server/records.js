@@ -100,6 +100,7 @@ import {
   resolveRecordIdentityForBinding,
   resolveRequestBindings,
 } from './connection-identity.js';
+import { mapWithConcurrency } from './concurrency.ts';
 import {
   SAFE_JSON_FIELD,
   assertSafeJsonField,
@@ -114,6 +115,21 @@ export { resolveRecordIdentityForBinding };
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+const FAN_IN_READ_CONCURRENCY = 8;
+
+function fanInReadConcurrency(opts) {
+  const requested = Number(opts?.concurrency);
+  return Number.isFinite(requested) && requested > 0
+    ? Math.min(Math.floor(requested), FAN_IN_READ_CONCURRENCY)
+    : FAN_IN_READ_CONCURRENCY;
+}
+
+function fanInMapOptions(opts) {
+  return typeof opts?.onInFlightChange === 'function'
+    ? { onInFlightChange: opts.onInFlightChange }
+    : {};
 }
 
 function resolveStorageConnectorId(storageTarget) {
@@ -3483,9 +3499,17 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
   let windowLatestMs = null;
   let windowBoundsAllPresent = true;
 
-  for (const binding of bindings) {
-    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-    const result = await queryRecords(target, stream, grant, perBindingParams, manifest);
+  const results = await mapWithConcurrency(
+    bindings,
+    fanInReadConcurrency(opts),
+    async (binding) => {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      return queryRecords(target, stream, grant, perBindingParams, manifest);
+    },
+    fanInMapOptions(opts),
+  );
+
+  for (const result of results) {
     if (Array.isArray(result?.data)) unioned.push(...result.data);
     if (result?.has_more) hasMoreAny = true;
     meta = mergeMetaWarnings(meta, result?.meta);
@@ -3710,9 +3734,17 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
   // key are additive because each binding sees a disjoint record set.
   const mergedBuckets = new Map();
   let mergedLimit = null;
-  for (const binding of bindings) {
-    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-    const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
+  const results = await mapWithConcurrency(
+    bindings,
+    fanInReadConcurrency(opts),
+    async (binding) => {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      return aggregateRecords(target, stream, grant, perBindingParams, manifest);
+    },
+    fanInMapOptions(opts),
+  );
+
+  for (const result of results) {
     if (!responseShape) {
       responseShape = {
         metric: result.metric,
@@ -3832,23 +3864,31 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
   // When no per-stream resolver is wired, fall back to the prior shape:
   // iterate every (binding, stream-in-grant) pair once.
   if (!resolveBindingsForStream) {
-    for (const binding of defaultBindings) {
-      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-      const perBinding = await listStreams(target, grant, manifest);
-      const wireBinding = projectBindingForWire({
-        connectorInstanceId: binding.connectorInstanceId,
-        connectorId: binding.connectorId,
-        displayName: binding.displayName,
-      });
-      for (const summary of perBinding) {
-        const decorated = { ...summary };
-        if (wireBinding?.connection_id) {
-          decorated.connection_id = wireBinding.connection_id;
-          decorated.connector_instance_id = wireBinding.connection_id;
-          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
-        }
-        summaries.push(decorated);
-      }
+    const perBindingResults = await mapWithConcurrency(
+      defaultBindings,
+      fanInReadConcurrency(opts),
+      async (binding) => {
+        const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+        const perBinding = await listStreams(target, grant, manifest);
+        const wireBinding = projectBindingForWire({
+          connectorInstanceId: binding.connectorInstanceId,
+          connectorId: binding.connectorId,
+          displayName: binding.displayName,
+        });
+        return perBinding.map((summary) => {
+          const decorated = { ...summary };
+          if (wireBinding?.connection_id) {
+            decorated.connection_id = wireBinding.connection_id;
+            decorated.connector_instance_id = wireBinding.connection_id;
+            if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+          }
+          return decorated;
+        });
+      },
+      fanInMapOptions(opts),
+    );
+    for (const perBinding of perBindingResults) {
+      summaries.push(...perBinding);
     }
     return summaries;
   }
@@ -3869,23 +3909,31 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
     }
     if (!bindingsForStream || bindingsForStream.length === 0) continue;
     const singleStreamGrant = { ...grant, streams: [streamGrant] };
-    for (const binding of bindingsForStream) {
-      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-      const perBinding = await listStreams(target, singleStreamGrant, manifest);
+    const perBindingResults = await mapWithConcurrency(
+      bindingsForStream,
+      fanInReadConcurrency(opts),
+      async (binding) => {
+        const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+        const perBinding = await listStreams(target, singleStreamGrant, manifest);
       const wireBinding = projectBindingForWire({
         connectorInstanceId: binding.connectorInstanceId,
         connectorId: binding.connectorId,
         displayName: binding.displayName,
       });
-      for (const summary of perBinding) {
+        return perBinding.map((summary) => {
         const decorated = { ...summary };
         if (wireBinding?.connection_id) {
           decorated.connection_id = wireBinding.connection_id;
           decorated.connector_instance_id = wireBinding.connection_id;
           if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
         }
-        summaries.push(decorated);
-      }
+        return decorated;
+        });
+      },
+      fanInMapOptions(opts),
+    );
+    for (const perBinding of perBindingResults) {
+      summaries.push(...perBinding);
     }
   }
   return summaries;
@@ -3898,15 +3946,29 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
  * across bindings, plus `available_connections` so callers can disambiguate
  * if they want to follow up with a `connection_id` filter.
  */
-export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest) {
+export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest, opts = {}) {
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   let recordCount = 0;
   let lastUpdated = null;
   const available = [];
-  for (const binding of bindings) {
-    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-    const summaries = await listStreams(target, { streams: grant.streams.filter((s) => s.name === streamName) }, manifest);
+  const perBindingResults = await mapWithConcurrency(
+    bindings,
+    fanInReadConcurrency(opts),
+    async (binding) => {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      const summaries = await listStreams(target, { streams: grant.streams.filter((s) => s.name === streamName) }, manifest);
+      const wire = projectBindingForWire({
+        connectorInstanceId: binding.connectorInstanceId,
+        connectorId: binding.connectorId,
+        displayName: binding.displayName,
+      });
+      return { summaries, wire };
+    },
+    fanInMapOptions(opts),
+  );
+
+  for (const { summaries, wire } of perBindingResults) {
     const summary = summaries.find((s) => s.name === streamName);
     if (summary) {
       recordCount += Number(summary.record_count || 0);
@@ -3914,11 +3976,6 @@ export async function getStreamDetailAcrossBindings(bindings, streamName, grant,
         lastUpdated = summary.last_updated || lastUpdated;
       }
     }
-    const wire = projectBindingForWire({
-      connectorInstanceId: binding.connectorInstanceId,
-      connectorId: binding.connectorId,
-      displayName: binding.displayName,
-    });
     if (wire) available.push(wire);
   }
   return {

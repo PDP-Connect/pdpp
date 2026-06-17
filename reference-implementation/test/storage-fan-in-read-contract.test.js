@@ -49,6 +49,7 @@ const STREAM = 'messages';
 
 const INSTANCE_A = 'cin_fanin_account_a';
 const INSTANCE_B = 'cin_fanin_account_b';
+const INSTANCE_C = 'cin_fanin_account_c';
 
 const baseManifest = {
   protocol_version: '0.1.0',
@@ -352,6 +353,47 @@ test('queryRecordsAcrossBindings fans in records across two granted connections'
     }
     assert.equal(idsByConnection[INSTANCE_A], 2);
     assert.equal(idsByConnection[INSTANCE_B], 2);
+  });
+});
+
+test('queryRecordsAcrossBindings preserves fan-in order and cursor collapse under bounded concurrency', async () => {
+  await withDualConnectionDb(async () => {
+    await seedInstance(INSTANCE_C, 'Account C', 'c@example.com');
+    await ingestRecord(target(INSTANCE_C), recordPayload('rec-c-1', 'C first', '2026-05-18T12:04:00.000Z'));
+
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    const byConnection = new Map(bindings.map((binding) => [binding.connectorInstanceId, binding]));
+    const orderedBindings = [INSTANCE_A, INSTANCE_B, INSTANCE_C].map((connectionId) => byConnection.get(connectionId));
+    assert.ok(orderedBindings.every(Boolean), 'expected all seeded bindings to resolve');
+
+    let peakInFlight = 0;
+    const response = await queryRecordsAcrossBindings(
+      orderedBindings,
+      STREAM,
+      grant,
+      { limit: 1 },
+      baseManifest,
+      {
+        concurrency: 2,
+        onInFlightChange: (inFlight) => {
+          peakInFlight = Math.max(peakInFlight, inFlight);
+        },
+      },
+    );
+
+    assert.deepEqual(
+      response.data.map((record) => record.connection_id),
+      [INSTANCE_A, INSTANCE_B, INSTANCE_C],
+      'bounded fan-in keeps global result order identical to serial binding order',
+    );
+    assert.equal(response.has_more, true);
+    assert.equal(response.next_cursor, undefined, 'multi-binding fan-in still suppresses an unsafe global cursor');
+    assert.ok(response.meta?.warnings?.some((warning) => warning.code === 'partial_results'));
+    assert.ok(peakInFlight > 1, `expected bounded fan-in to overlap reads, saw peak ${peakInFlight}`);
+    assert.ok(peakInFlight <= 2, `expected peak in-flight reads <= 2, saw ${peakInFlight}`);
   });
 });
 
