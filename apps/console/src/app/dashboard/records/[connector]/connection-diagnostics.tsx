@@ -80,18 +80,24 @@ export function ConnectionDiagnostics({
   sourceInstances,
   sourceInstancesError,
 }: ConnectionDiagnosticsProps) {
-  const opensForDeviceLocalRecovery =
+  const hasDeviceLocalRemediation =
     renderedVerdict?.required_actions.some((action) => action.remediation?.target.kind === "local_device") ?? false;
+  const backgroundDrain = summarizeBackgroundLocalDeviceDrain({
+    hasDeviceLocalRemediation,
+    localDeviceProgress,
+    sourceInstances,
+  });
   return (
     <Section
       description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
+      {backgroundDrain ? <BackgroundLocalDeviceDrainPanel summary={backgroundDrain} /> : null}
       <details
         className="group border-border/70 border-y"
         data-testid="diagnostics-details"
-        open={opensForDeviceLocalRecovery || undefined}
+        open={hasDeviceLocalRemediation || undefined}
       >
         <summary className="pdpp-body flex cursor-pointer items-center justify-between px-3 py-3 hover:bg-muted/40">
           <span className="font-medium">Projection, schedule, sources</span>
@@ -128,6 +134,86 @@ export function ConnectionDiagnostics({
         </div>
       </details>
     </Section>
+  );
+}
+
+interface BackgroundLocalDeviceDrain {
+  heartbeatAt: string | null;
+  hostLabels: readonly string[];
+  ingestAt: string | null;
+  pending: number;
+  total: number | null;
+}
+
+function summarizeBackgroundLocalDeviceDrain({
+  hasDeviceLocalRemediation,
+  localDeviceProgress,
+  sourceInstances,
+}: {
+  hasDeviceLocalRemediation: boolean;
+  localDeviceProgress: RefLocalDeviceProgress | null;
+  sourceInstances: readonly DeviceSourceInstance[];
+}): BackgroundLocalDeviceDrain | null {
+  if (hasDeviceLocalRemediation || !localDeviceProgress) {
+    return null;
+  }
+  const counts = localDeviceProgress.outbox_counts ?? null;
+  const pending = localDeviceProgress.records_pending ?? counts?.pending ?? 0;
+  if (pending <= 0) {
+    return null;
+  }
+  // Dead letters and stale leases are recovery states, not passive background
+  // upload. Let the cause-specific remediation panel own those states.
+  if ((counts?.dead_letter ?? 0) > 0 || (counts?.stale_leases ?? 0) > 0) {
+    return null;
+  }
+  return {
+    heartbeatAt: localDeviceProgress.last_heartbeat_at,
+    hostLabels: boundHostLabels(sourceInstances),
+    ingestAt: localDeviceProgress.last_ingest_at,
+    pending,
+    total: counts?.total ?? null,
+  };
+}
+
+function BackgroundLocalDeviceDrainPanel({ summary }: { summary: BackgroundLocalDeviceDrain }) {
+  const hostPhrase =
+    summary.hostLabels.length === 0
+      ? "the local host"
+      : `the local host${summary.hostLabels.length === 1 ? "" : "s"} (${summary.hostLabels.join(", ")})`;
+  return (
+    <div
+      className="mb-3 flex flex-col gap-1.5 border border-border/70 bg-muted/30 px-3 py-2"
+      data-testid="diagnostics-background-drain"
+    >
+      <p className="pdpp-caption font-medium text-foreground">Uploading from the local host</p>
+      <p className="pdpp-caption text-muted-foreground">
+        The collector on {hostPhrase} is sending saved work in the background. No dashboard action is needed while this
+        count is going down.
+      </p>
+      <p className="pdpp-caption text-muted-foreground tabular-nums" data-testid="diagnostics-background-drain-scale">
+        Queued uploads: {summary.pending.toLocaleString()}
+        {summary.total && summary.total > summary.pending ? ` of ${summary.total.toLocaleString()} local rows` : ""}
+      </p>
+      <p
+        className="pdpp-caption text-muted-foreground tabular-nums"
+        data-testid="diagnostics-background-drain-progress"
+      >
+        {summary.ingestAt ? (
+          <>
+            Last upload <IcTimestamp value={summary.ingestAt} />
+          </>
+        ) : (
+          "No upload timestamp yet"
+        )}
+        {summary.heartbeatAt ? (
+          <>
+            {" · collector checked in "}
+            <IcTimestamp value={summary.heartbeatAt} />
+          </>
+        ) : null}
+      </p>
+    </div>
   );
 }
 

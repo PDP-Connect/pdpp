@@ -87,7 +87,7 @@ const REMEDIATION_FAILS_CLOSED =
   /step\.command === null \?[\s\S]{0,300}diagnostics-outbox-remediation-command-unavailable/;
 const REMEDIATION_OWNER_EXPLANATION_HELPER = /function outboxCauseExplanation/;
 const REMEDIATION_COMMAND_CAPTION_HELPER = /function remediationCommandCaption/;
-const REMEDIATION_FAILED_UPLOAD_COPY = /saved records[\s\S]{0,120}did not upload to this server/;
+const REMEDIATION_FAILED_UPLOAD_COPY = /Some records were saved[\s\S]{0,180}did not upload to this server/;
 const REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY = /dashboard cannot fix that host-local queue remotely/;
 const REMEDIATION_RECOVER_DRY_RUN_CAPTION = /Dry run: shows what this recovery would do on that host/;
 const REMEDIATION_RECOVER_PROFILE_CAPTION =
@@ -117,7 +117,23 @@ const RENDERED_VERDICT_TESTID = /data-testid="rendered-verdict"/;
 const RENDERED_VERDICT_CHANNEL_TESTID = /data-testid="rendered-verdict-channel"/;
 const RENDERED_VERDICT_FORWARD_TESTID = /data-testid="rendered-verdict-forward"/;
 const RENDERED_VERDICT_PROGRESS_TESTID = /data-testid="rendered-verdict-progress"/;
-const DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY = /open=\{opensForDeviceLocalRecovery \|\| undefined\}/;
+const DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY = /open=\{hasDeviceLocalRemediation \|\| undefined\}/;
+const DIAGNOSTICS_HAS_DEVICE_LOCAL_REMEDIATION =
+  /const hasDeviceLocalRemediation =[\s\S]{0,160}action\.remediation\?\.target\.kind === "local_device"/;
+const BACKGROUND_DRAIN_SUMMARY_HELPER = /function summarizeBackgroundLocalDeviceDrain/;
+const BACKGROUND_DRAIN_PANEL = /function BackgroundLocalDeviceDrainPanel/;
+const BACKGROUND_DRAIN_TESTID = /data-testid="diagnostics-background-drain"/;
+const BACKGROUND_DRAIN_SCALE_TESTID = /data-testid="diagnostics-background-drain-scale"/;
+const BACKGROUND_DRAIN_PROGRESS_TESTID = /data-testid="diagnostics-background-drain-progress"/;
+const BACKGROUND_DRAIN_HOST_COPY = /The collector on \{hostPhrase\} is sending saved work in the background/;
+const BACKGROUND_DRAIN_NO_ACTION_COPY = /No dashboard action is needed while[\s\S]{0,80}count is going down/;
+const BACKGROUND_DRAIN_PENDING = /const pending = localDeviceProgress\.records_pending \?\? counts\?\.pending \?\? 0/;
+const BACKGROUND_DRAIN_DEADLETTER_GUARD = /\(counts\?\.dead_letter \?\? 0\) > 0/;
+const BACKGROUND_DRAIN_STALE_LEASE_GUARD = /\(counts\?\.stale_leases \?\? 0\) > 0/;
+const BACKGROUND_DRAIN_REMEDIATION_GUARD = /if \(hasDeviceLocalRemediation \|\| !localDeviceProgress\)/;
+const BACKGROUND_DRAIN_RENDERED_ABOVE_DETAILS =
+  /\{backgroundDrain \? <BackgroundLocalDeviceDrainPanel summary=\{backgroundDrain\} \/> : null\}[\s\S]{0,180}<details/;
+const BACKGROUND_DRAIN_USES_HOST_LABELS = /hostLabels: boundHostLabels\(sourceInstances\)/;
 const DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE =
   /required_actions\.some\(\(action\) => action\.remediation\?\.target\.kind === "local_device"\)/;
 const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
@@ -346,8 +362,26 @@ test("device-local recovery resolves a source-instance id before rendering copya
 
 test("device-local recovery opens Diagnostics so commands are immediately visible", async () => {
   const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, DIAGNOSTICS_HAS_DEVICE_LOCAL_REMEDIATION);
   assert.match(src, DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE);
   assert.match(src, DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY);
+});
+
+test("active local-device drain renders calm background upload progress, not recovery commands", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, BACKGROUND_DRAIN_SUMMARY_HELPER);
+  assert.match(src, BACKGROUND_DRAIN_PANEL);
+  assert.match(src, BACKGROUND_DRAIN_TESTID);
+  assert.match(src, BACKGROUND_DRAIN_SCALE_TESTID);
+  assert.match(src, BACKGROUND_DRAIN_PROGRESS_TESTID);
+  assert.match(src, BACKGROUND_DRAIN_HOST_COPY);
+  assert.match(src, BACKGROUND_DRAIN_NO_ACTION_COPY);
+  assert.match(src, BACKGROUND_DRAIN_PENDING);
+  assert.match(src, BACKGROUND_DRAIN_REMEDIATION_GUARD);
+  assert.match(src, BACKGROUND_DRAIN_DEADLETTER_GUARD);
+  assert.match(src, BACKGROUND_DRAIN_STALE_LEASE_GUARD);
+  assert.match(src, BACKGROUND_DRAIN_USES_HOST_LABELS);
+  assert.match(src, BACKGROUND_DRAIN_RENDERED_ABOVE_DETAILS);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {
