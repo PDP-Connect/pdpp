@@ -1280,6 +1280,39 @@ CREATE TABLE IF NOT EXISTS retained_size_top_rows (
 );
 CREATE INDEX IF NOT EXISTS idx_retained_size_top_rows_lookup
   ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
+
+-- Connector-summary evidence read model (reference-only, owner-facing).
+-- See openspec/changes/maintain-connector-summary-read-model/ for the spec
+-- delta. One maintained row per connection carrying DURABLE evidence only:
+-- identity + lifecycle (connector_id, display_name, status, source_kind,
+-- revoked_at) and durable counts (total_records, stream_count). Time-relative
+-- and runtime-relative synthesis (freshness, connection_health,
+-- collection_report, rendered_verdict, next_action) is NEVER persisted here;
+-- it is computed on read so a cached verdict can never go dishonest.
+CREATE TABLE IF NOT EXISTS connector_summary_evidence (
+  connector_instance_id         TEXT PRIMARY KEY,
+  connector_id                  TEXT NOT NULL,
+  display_name                  TEXT NOT NULL DEFAULT '',
+  status                        TEXT,
+  source_kind                   TEXT,
+  revoked_at                    TEXT,
+  total_records                 INTEGER NOT NULL DEFAULT 0,
+  stream_count                  INTEGER NOT NULL DEFAULT 0,
+  -- 1 means a mutation/ingest/run-lifecycle change happened that the
+  -- maintained evidence has not yet absorbed. Reads must surface this as
+  -- 'stale' rather than presenting the row as fresh truth.
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  -- Advisory monotonic seq of the event that last dirtied this row. Never
+  -- load-bearing for correctness; aids reconcile freshness diagnostics.
+  source_event_seq              INTEGER,
+  -- Honesty envelope: 'fresh' | 'stale' | 'rebuilding' | 'failed' | 'unknown'.
+  state                         TEXT NOT NULL DEFAULT 'rebuilding',
+  -- Sanitized last error (credentials redacted, bounded length).
+  last_error                    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
+  ON connector_summary_evidence(connector_id);
 `;
 
 /**

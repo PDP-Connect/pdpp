@@ -1406,6 +1406,29 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE INDEX IF NOT EXISTS idx_pg_retained_size_top_rows_lookup
         ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
 
+      -- Connector-summary evidence read model (reference-only, owner-facing).
+      -- See openspec/changes/maintain-connector-summary-read-model/ for spec
+      -- delta. Mirrors the SQLite schema in db.js; same column meaning so the
+      -- backend-agnostic projection module issues equivalent statements. Stores
+      -- DURABLE evidence only — synthesized health/verdict is computed on read.
+      CREATE TABLE IF NOT EXISTS connector_summary_evidence (
+        connector_instance_id     TEXT PRIMARY KEY,
+        connector_id              TEXT NOT NULL,
+        display_name              TEXT NOT NULL DEFAULT '',
+        status                    TEXT,
+        source_kind               TEXT,
+        revoked_at                TEXT,
+        total_records             BIGINT NOT NULL DEFAULT 0,
+        stream_count              BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        source_event_seq          BIGINT,
+        state                     TEXT NOT NULL DEFAULT 'rebuilding',
+        last_error                TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
+        ON connector_summary_evidence(connector_id);
+
       -- Outbound event subscriptions (RI extension). Client subscriptions are
       -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.
       -- Mirrors the SQLite schema in db.js; the Postgres-backed store applies
