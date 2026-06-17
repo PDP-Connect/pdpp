@@ -1,8 +1,8 @@
 ## 1. Contract
 
-- [ ] Add the filesystem/local-DB bounded-read requirement to `local-agent-collector-completeness`.
-- [ ] Add a manifest- or registry-driven regression guard for local connector whole-file and unbounded `.all()` reads.
-- [ ] Add reviewed exceptions for small per-artifact reads with explicit reasons.
+- [x] Add the filesystem/local-DB bounded-read requirement to `local-agent-collector-completeness`.
+- [x] Add a manifest- or registry-driven regression guard for local connector whole-file and unbounded `.all()` reads.
+- [x] Add reviewed exceptions for small per-artifact reads with explicit reasons.
 
 ## 2. High-Risk Connectors
 
@@ -12,6 +12,6 @@
 
 ## 3. Validation
 
-- [ ] Run targeted polyfill connector tests for changed connectors.
-- [ ] Run `pnpm --filter @pdpp/polyfill-connectors typecheck`.
-- [ ] Run `openspec validate generalize-local-connector-bounded-reads --strict`.
+- [x] Run targeted polyfill connector tests for changed connectors.
+- [x] Run `pnpm --filter @pdpp/polyfill-connectors typecheck`.
+- [x] Run `openspec validate generalize-local-connector-bounded-reads --strict`.
