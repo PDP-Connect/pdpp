@@ -85,7 +85,10 @@ function makeCtx(overrides = {}) {
 // Real-spine ctx: terminal + started lookups hit the SQLite fixture db.
 function makeSpineCtx(overrides = {}) {
   return makeCtx({
-    getLatestRunEvent: (runId) => listSpineEventsPage("run", runId, { limit: 20 }).events.at(-1) ?? null,
+    getLatestRunEvent: async (runId) => {
+      const page = await listSpineEventsPage("run", runId, { limit: 20 });
+      return page.events.at(-1) ?? null;
+    },
     getRunStartedEvent: (runId) => getRunStartedEvent(runId),
     getRunTerminalEvent: (runId) => getRunTerminalEvent(runId),
     ...overrides,
