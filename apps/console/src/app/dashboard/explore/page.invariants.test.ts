@@ -21,6 +21,8 @@ const CONNECTION_DISPLAY_HELPER_RE = /function connectorSummaryDisplayName\(summ
 const ASSEMBLER_IMPORT_RE = /from\s+["'][^"']*explore-data-assembler(?:\.ts)?["']/;
 const INLINE_FEED_LOADER_RE =
   /\bfunction\s+loadEmptyQueryFeed\b|\bfunction\s+loadTimeRangeFeed\b|\bfunction\s+loadSearchFeed\b/;
+const SUSPENSE_IMPORT_RE = /import\s+\{\s*Suspense\s*\}\s+from\s+["']react["']/;
+const SUSPENSE_FALLBACK_RE = /<Suspense\s+fallback=\{<ListLoadingSkeleton\s+label=["']records["']/;
 const EXPLORE_REDIRECT_SOURCE_RE = /source:\s*['"]\/explore['"]/;
 const EXPLORE_REDIRECT_DESTINATION_RE = /destination:\s*['"]\/dashboard\/explore['"]/;
 
@@ -38,6 +40,12 @@ test("live explore page delegates to the shared assembler", async () => {
   const src = await readFile(LIVE_PAGE_FILE, "utf8");
   assert.match(src, ASSEMBLER_IMPORT_RE, "live page must import explore-data-assembler");
   assert.doesNotMatch(src, INLINE_FEED_LOADER_RE, "live page must not define inline feed loader functions");
+});
+
+test("live explore page streams the heavy feed behind a route-local skeleton", async () => {
+  const src = await readFile(LIVE_PAGE_FILE, "utf8");
+  assert.match(src, SUSPENSE_IMPORT_RE, "Explore must import React Suspense");
+  assert.match(src, SUSPENSE_FALLBACK_RE, "Explore must render a skeleton before heavy feed data resolves");
 });
 
 test("next.config.mjs has a top-level /explore redirect to /dashboard/explore", async () => {

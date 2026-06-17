@@ -35,7 +35,9 @@
 
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
+import { Suspense } from "react";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
+import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -58,32 +60,25 @@ function parsePeekData(bodyJson: string | null): Record<string, unknown> {
 
 export const dynamic = "force-dynamic";
 
-export default async function RecordsExplorerPage({
-  searchParams,
+type ExploreSearchParams = {
+  q?: string;
+  connection?: string | string[];
+  stream?: string | string[];
+  peek?: string;
+  since?: string;
+  until?: string;
+  // Display sort order. Consumed by ExploreCanvas only — the live fetch is
+  // always recency-desc; "oldest" reverses the loaded window client-side.
+  order?: string;
+};
+
+async function ExploreData({
+  order,
+  params,
 }: {
-  searchParams: Promise<{
-    q?: string;
-    connection?: string | string[];
-    stream?: string | string[];
-    peek?: string;
-    since?: string;
-    until?: string;
-    // Display sort order. Consumed by ExploreCanvas only — the live fetch is
-    // always recency-desc; "oldest" reverses the loaded window client-side.
-    order?: string;
-  }>;
+  order: "newest" | "oldest";
+  params: ExploreSearchParams;
 }) {
-  // Empty-query loads still need the DAL gate; verifying once up front keeps
-  // the empty shell consistent with the search route.
-  await verifyDashboardSession();
-  // Touch the owner token early so we surface "owner token required" through
-  // the same code path the other dashboard pages do, rather than dying later
-  // in the fan-out.
-  await getOwnerToken();
-
-  const params = await searchParams;
-  const order = params.order === "oldest" ? "oldest" : "newest";
-
   try {
     const data = await assembleExplorerData(params, liveDashboardDataSource, getRsInternalUrl());
     // Relationships for the inspected record come from declared metadata via the
@@ -104,23 +99,42 @@ export default async function RecordsExplorerPage({
       );
     }
     return (
-      <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
-        <ExploreCanvas
-          data={data}
-          explorePath={dashboardRoutes.section.explore}
-          order={order}
-          peekRelationships={peekRelationships}
-        />
-      </RecordroomShellWithPalette>
+      <ExploreCanvas
+        data={data}
+        explorePath={dashboardRoutes.section.explore}
+        order={order}
+        peekRelationships={peekRelationships}
+      />
     );
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
-      return (
-        <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
-          <ServerUnreachable />
-        </RecordroomShellWithPalette>
-      );
+      return <ServerUnreachable />;
     }
     throw err;
   }
+}
+
+export default async function RecordsExplorerPage({
+  searchParams,
+}: {
+  searchParams: Promise<ExploreSearchParams>;
+}) {
+  // Empty-query loads still need the DAL gate; verifying once up front keeps
+  // the empty shell consistent with the search route.
+  await verifyDashboardSession();
+  // Touch the owner token early so we surface "owner token required" through
+  // the same code path the other dashboard pages do, rather than dying later
+  // in the fan-out.
+  await getOwnerToken();
+
+  const params = await searchParams;
+  const order = params.order === "oldest" ? "oldest" : "newest";
+
+  return (
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
+      <Suspense fallback={<ListLoadingSkeleton label="records" rows={8} />}>
+        <ExploreData order={order} params={params} />
+      </Suspense>
+    </RecordroomShellWithPalette>
+  );
 }
