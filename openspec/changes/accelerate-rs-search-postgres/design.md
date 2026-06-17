@@ -33,6 +33,8 @@ The reference shall execute Postgres per-source fan-out through a bounded work q
 
 SQLite remains unchanged because the live bottleneck and shared-memory failure are Postgres-specific.
 
+Live common-term measurement showed the default must also avoid Postgres contention, not only bound total work. Simulating the production connector-level fan-out over all indexed live streams for `q=the` showed concurrency 8 was consistently fastest and stable, while concurrency 16 had wider outliers and concurrency 2 under-utilized the store. The reference therefore defaults Postgres search fan-out to 8 while preserving the environment override for operators with different hardware.
+
 ### 4. Bound the Postgres lexical ranking candidate window
 
 The scoped GIN index fixes the authorization-scope shape, but exact relevance ranking over every match in a multi-million-row source still makes broad/common terms too slow. The reference shall first collect a bounded candidate window through the scoped text-search predicate, then compute rank and snippets over that window.

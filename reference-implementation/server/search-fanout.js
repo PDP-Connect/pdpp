@@ -1,4 +1,4 @@
-const DEFAULT_POSTGRES_SEARCH_FANOUT_CONCURRENCY = 16;
+const DEFAULT_POSTGRES_SEARCH_FANOUT_CONCURRENCY = 8;
 
 export function resolveSearchFanoutConcurrency({ isPostgres, env = process.env } = {}) {
   const raw = env.PDPP_RS_SEARCH_FANOUT_CONCURRENCY;

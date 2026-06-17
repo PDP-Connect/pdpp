@@ -14,7 +14,7 @@ test('search fanout is unbounded for non-Postgres unless configured', () => {
 });
 
 test('search fanout defaults to a bounded Postgres concurrency', () => {
-  assert.equal(resolveSearchFanoutConcurrency({ isPostgres: true, env: {} }), 16);
+  assert.equal(resolveSearchFanoutConcurrency({ isPostgres: true, env: {} }), 8);
 });
 
 test('search fanout honors explicit positive concurrency', () => {
