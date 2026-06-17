@@ -726,7 +726,7 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
         <Table className="rr-s-cols" cols="minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem">
           <TableHeaderRow>
             <TableHeader>stream</TableHeader>
-            <TableHeader>latest collection</TableHeader>
+            <TableHeader>records</TableHeader>
             <TableHeader>coverage</TableHeader>
             <TableHeader>read in</TableHeader>
           </TableHeaderRow>
@@ -736,9 +736,8 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
         </Table>
       )}
       <p className="rr-s-note">
-        Records are never read here. Stream facts come from the latest collection report when the reference has one;
-        otherwise the row says those facts are not available yet. Click any stream to open it in Explore — the one
-        reader.
+        Records are never read here. Counts come from the retained-size projection; coverage comes from the latest
+        collection report when the reference has one. Click any stream to open it in Explore — the one reader.
       </p>
     </div>
   );
@@ -752,7 +751,7 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
         <span className="rr-s-stream">{stream.name}</span>
       </TableCell>
       <TableCell>
-        <StreamCollectionCount collection={collection} />
+        <StreamRecordCount stream={stream} />
       </TableCell>
       <TableCell>
         {collection ? (
@@ -787,7 +786,22 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
   );
 }
 
-function StreamCollectionCount({ collection }: { collection: SourceInstanceView["streams"][number]["collection"] }) {
+function StreamRecordCount({ stream }: { stream: SourceInstanceView["streams"][number] }) {
+  const collection = stream.collection;
+  if (stream.recordCount !== null) {
+    return (
+      <>
+        <span className="rr-s-stream-fact" title="Current retained records stored for this stream.">
+          {stream.recordCount.toLocaleString()} records
+        </span>
+        {collection?.countsLabel ? (
+          <span className="rr-s-stream-subfact" title={collection.countsTitle}>
+            last run: {collection.countsLabel}
+          </span>
+        ) : null}
+      </>
+    );
+  }
   if (collection?.countsLabel) {
     return (
       <span className="rr-s-stream-fact" title={collection.countsTitle}>

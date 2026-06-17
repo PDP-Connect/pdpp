@@ -39,6 +39,12 @@ export interface RefConnectorsListRunSummary {
   readonly known_gaps: unknown[];
 }
 
+export interface RefConnectorsListStreamRecord {
+  readonly last_updated: string | null;
+  readonly record_count: number;
+  readonly stream: string;
+}
+
 export interface RefConnectorsListItem {
   readonly connection_id: string;
   readonly connection_health: unknown;
@@ -49,6 +55,7 @@ export interface RefConnectorsListItem {
   readonly manifest_version: string | null;
   readonly streams: string[];
   readonly stream_count?: number;
+  readonly stream_records?: readonly RefConnectorsListStreamRecord[];
   readonly total_records: number;
   readonly total_retained_bytes?: number | null;
   readonly freshness: RefConnectorsListFreshness;

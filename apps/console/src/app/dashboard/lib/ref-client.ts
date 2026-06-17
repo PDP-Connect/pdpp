@@ -476,9 +476,16 @@ export interface RefConnectorSummary {
   schedule: RefSchedule | null;
   status?: string | null;
   stream_count?: number;
+  stream_records?: readonly RefConnectorStreamRecord[];
   streams: string[];
   total_records: number;
   total_retained_bytes?: number | null;
+}
+
+export interface RefConnectorStreamRecord {
+  last_updated: string | null;
+  record_count: number;
+  stream: string;
 }
 
 export interface RefConnectorRuntimeStatus {

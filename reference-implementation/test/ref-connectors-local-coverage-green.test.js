@@ -215,6 +215,14 @@ test(
     // projection to unknown.
     assert.equal(health.state, 'idle');
     assert.notEqual(health.state, 'unknown');
+
+    const retainedByStream = Object.fromEntries(row.stream_records.map((entry) => [entry.stream, entry.record_count]));
+    assert.equal(retainedByStream.messages, 1, 'retained per-stream counts ride on the connector summary');
+    assert.equal(
+      retainedByStream.coverage_diagnostics,
+      4,
+      'retained streams outside the manifest remain visible instead of collapsing into the source total',
+    );
   }),
 );
 

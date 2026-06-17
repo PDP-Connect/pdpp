@@ -33,7 +33,8 @@ const COLLECTION_REPORT_INDEX_RE = /indexCollectionReportByStream\(summary\.coll
 const DUPLICATE_COLLAPSE_RE = /collapseDuplicateFallbackSources\(instances\)/;
 const DUPLICATE_GROUP_TESTID_RE = /data-testid="sources-duplicate-group"/;
 const FACTS_UNAVAILABLE_COPY_RE = /Collection facts not available yet/;
-const LATEST_COLLECTION_HEADER_RE = /latest collection/;
+const RECORDS_HEADER_RE = /<TableHeader>records<\/TableHeader>/;
+const STREAM_RECORDS_RE = /summary\.stream_records/;
 const OLD_CURSOR_HEADER_RE = /<TableHeader>cursor<\/TableHeader>/;
 const OLD_SEARCH_HEADER_RE = /<TableHeader>search<\/TableHeader>/;
 const OLD_CURSOR_FALLBACK_RE = /\{stream\.cursor\s*\?\?\s*"—"\}/;
@@ -61,8 +62,9 @@ test("stream manifest uses collection facts or an explicit unavailable state, no
   const view = await readFile(VIEW_FILE, "utf8");
   const model = await readFile(MODEL_FILE, "utf8");
   assert.match(model, COLLECTION_REPORT_INDEX_RE);
+  assert.match(model, STREAM_RECORDS_RE);
   assert.match(view, FACTS_UNAVAILABLE_COPY_RE);
-  assert.match(view, LATEST_COLLECTION_HEADER_RE);
+  assert.match(view, RECORDS_HEADER_RE);
   assert.doesNotMatch(view, OLD_CURSOR_HEADER_RE);
   assert.doesNotMatch(view, OLD_SEARCH_HEADER_RE);
   assert.doesNotMatch(view, OLD_CURSOR_FALLBACK_RE);

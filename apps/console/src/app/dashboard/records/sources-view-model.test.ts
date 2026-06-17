@@ -490,6 +490,39 @@ test("toSourceInstanceView surfaces server-owned collection report facts per str
   assert.equal(threads?.collection, null, "streams without collection report facts stay explicitly unavailable");
 });
 
+test("toSourceInstanceView surfaces retained stream counts without conflating them with latest collection", () => {
+  const view = toSourceInstanceView(
+    summary({
+      stream_records: [
+        { stream: "messages", record_count: 42, last_updated: "2026-06-17T11:00:00.000Z" },
+        { stream: "archived", record_count: 3, last_updated: "2026-06-16T11:00:00.000Z" },
+      ],
+      collection_report: [
+        {
+          stream: "messages",
+          collected: 8,
+          considered: 10,
+          checkpoint: "committed",
+          covered: 8,
+          pending_detail_gaps: 0,
+          skipped: null,
+          coverage_condition: "retryable_gap",
+          forward_disposition: "resumable",
+        },
+      ],
+    })
+  );
+
+  const messages = view.streams.find((stream) => stream.name === "messages");
+  const archived = view.streams.find((stream) => stream.name === "archived");
+  const threads = view.streams.find((stream) => stream.name === "threads");
+  assert.equal(messages?.recordCount, 42);
+  assert.equal(messages?.collection?.countsLabel, "8 / 10 covered · 8 collected");
+  assert.equal(archived?.recordCount, 3, "retained-only streams remain visible");
+  assert.equal(archived?.collection, null, "retained count is not relabeled as collection progress");
+  assert.equal(threads?.recordCount, null, "manifest streams without retained rows stay explicitly unknown");
+});
+
 test("toSourceInstanceView keeps collection-report-only streams visible", () => {
   const view = toSourceInstanceView(
     summary({

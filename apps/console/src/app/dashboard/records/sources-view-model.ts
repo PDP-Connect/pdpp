@@ -461,7 +461,8 @@ function isRevoked(summary: RefConnectorSummary): boolean {
 
 function streamNamesForSource(
   summary: RefConnectorSummary,
-  collectionFactsByStream: ReadonlyMap<string, unknown>
+  collectionFactsByStream: ReadonlyMap<string, unknown>,
+  streamRecordsByStream: ReadonlyMap<string, unknown>
 ): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
@@ -480,14 +481,17 @@ function streamNamesForSource(
   for (const name of collectionFactsByStream.keys()) {
     add(name);
   }
+  for (const name of streamRecordsByStream.keys()) {
+    add(name);
+  }
   return names;
 }
 
 /**
  * Project one `RefConnectorSummary` into a `SourceInstanceView`. Pure; takes no
- * I/O. The per-stream record counts are not pre-hydrated at the index level
- * (the summary carries only stream names + the connection total), so each row's
- * count is null and the manifest links into Explore for the authoritative read.
+ * I/O. Per-stream retained record counts come from the owner-only
+ * `stream_records` projection; collection facts stay separate because they
+ * describe the latest run, not the durable records currently retained.
  */
 export function toSourceInstanceView(
   summary: RefConnectorSummary,
@@ -537,11 +541,17 @@ export function toSourceInstanceView(
       formatStreamCollectionFacts(entry),
     ])
   );
-  const streams: SourceStreamManifestRow[] = streamNamesForSource(summary, collectionFactsByStream).map((name) => {
+  const streamRecordsByStream = new Map((summary.stream_records ?? []).map((entry) => [entry.stream, entry]));
+  const streams: SourceStreamManifestRow[] = streamNamesForSource(
+    summary,
+    collectionFactsByStream,
+    streamRecordsByStream
+  ).map((name) => {
     const facts = collectionFactsByStream.get(name) ?? null;
+    const retained = streamRecordsByStream.get(name) ?? null;
     return {
       name,
-      recordCount: null,
+      recordCount: retained ? retained.record_count : null,
       // The index summary exposes no cursor or searchable flag per stream;
       // render them as unknown rather than guessing. Collection-report facts
       // are server-owned and safe to show here without another read.

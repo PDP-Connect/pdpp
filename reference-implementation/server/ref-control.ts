@@ -193,6 +193,12 @@ interface StreamProjection {
   readonly record_count: number;
 }
 
+export interface StreamRecordSummary {
+  readonly last_updated: string | null;
+  readonly record_count: number;
+  readonly stream: string;
+}
+
 interface RecordProjectionRow {
   readonly connector_id?: string | null;
   readonly connector_instance_id?: string | null;
@@ -494,6 +500,13 @@ export interface ConnectorSummary {
   readonly schedule: unknown;
   readonly status: string | null;
   readonly stream_count?: number;
+  /**
+   * Retained record totals by stream, derived from the retained-size projection
+   * already loaded for the connector summary. Owner/control-plane surface only;
+   * this is "what data is here", distinct from `collection_report`, which is
+   * latest-run coverage/progress evidence.
+   */
+  readonly stream_records: readonly StreamRecordSummary[];
   readonly streams: string[];
   readonly total_records: number;
   readonly total_retained_bytes?: number | null;
@@ -1010,6 +1023,16 @@ function buildRecordProjectionFromRetainedRows(input: {
     retainedBytes: input.retainedBytes,
     totalRecords: input.rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
+}
+
+function projectStreamRecordSummaries(byStream: ReadonlyMap<string, StreamProjection>): StreamRecordSummary[] {
+  return [...byStream.entries()]
+    .map(([stream, projection]) => ({
+      stream,
+      record_count: projection.record_count,
+      last_updated: projection.last_updated,
+    }))
+    .sort((a, b) => a.stream.localeCompare(b.stream));
 }
 
 async function getConnectorRecordProjection(
@@ -3748,6 +3771,7 @@ async function projectConnectorSummaryForInstance(
     revoked_at: instance.revokedAt ?? null,
     streams: (manifest.streams || []).map((stream) => stream.name),
     stream_count: live.byStream.size,
+    stream_records: projectStreamRecordSummaries(live.byStream),
     status: instance.status ?? null,
     total_records: live.totalRecords,
     total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
