@@ -427,7 +427,7 @@ async function loadEmptyQueryFeed(
               connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
               limit: MAX_FEED_RECORDS_PER_STREAM,
               order: "desc",
-              window: "exact",
+              window: "none",
             }),
           ]);
           return {

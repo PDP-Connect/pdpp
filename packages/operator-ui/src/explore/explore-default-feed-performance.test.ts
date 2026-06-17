@@ -56,7 +56,8 @@ function record(connectorId: string, stream: string, index: number): StreamRecor
 
 test("empty-query Explore keeps first-paint fan-out bounded", async () => {
   const summaries = Array.from({ length: 10 }, (_, i) => summary(i));
-  const queryCalls: Array<{ connectorId: string; limit: number | undefined; stream: string }> = [];
+  const queryCalls: Array<{ connectorId: string; limit: number | undefined; stream: string; window: string | undefined }> =
+    [];
   const metadataCalls: Array<{ connectorId: string; stream: string }> = [];
 
   const dataSource = {
@@ -68,7 +69,7 @@ test("empty-query Explore keeps first-paint fan-out bounded", async () => {
       return { name: stream, object: "stream_metadata", field_capabilities: {} };
     },
     queryRecords: async (connectorId: string, stream: string, opts): Promise<RecordsPage> => {
-      queryCalls.push({ connectorId, stream, limit: opts?.limit });
+      queryCalls.push({ connectorId, stream, limit: opts?.limit, window: opts?.window });
       return {
         data: [record(connectorId, stream, queryCalls.length)],
         has_more: false,
@@ -108,6 +109,7 @@ test("empty-query Explore keeps first-paint fan-out bounded", async () => {
   assert.equal(queryCalls.length, 12);
   assert.equal(metadataCalls.length, 12);
   assert.deepEqual([...new Set(queryCalls.map((call) => call.limit))], [6]);
+  assert.deepEqual([...new Set(queryCalls.map((call) => call.window))], ["none"]);
   assert.equal(data.feed.length, 12);
   assert.equal(data.activitySummary?.source, "bounded_sample");
   assert.ok(data.feed.length <= 32);
