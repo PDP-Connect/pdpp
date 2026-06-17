@@ -15,7 +15,48 @@ interface LaunchResponse {
   run_id?: string;
 }
 
-async function startBrowserRun(connectorId: string, connectionId: string, draft: boolean): Promise<string> {
+const LOST_TRANSPORT_RE = /Failed to fetch|NetworkError|ERR_NETWORK_CHANGED/i;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLostTransportError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return LOST_TRANSPORT_RE.test(message);
+}
+
+async function recoverStartedBrowserRun(
+  connectorId: string,
+  connectionId: string,
+  attempts = 1
+): Promise<string | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) {
+      await delay(400);
+    }
+    try {
+      const params = new URLSearchParams({ connection_id: connectionId });
+      const response = await fetch(
+        `/dashboard/connect/browser-session/${encodeURIComponent(connectorId)}/launch/recover?${params.toString()}`,
+        { credentials: "same-origin" }
+      );
+      if (response.status === 404) {
+        continue;
+      }
+      const body = (await response.json().catch(() => ({}))) as LaunchResponse;
+      if (response.ok && body.href) {
+        return body.href;
+      }
+    } catch {
+      // Recovery is best-effort. A later attempt may succeed after Docker
+      // networking settles from starting the browser surface.
+    }
+  }
+  return null;
+}
+
+async function postStartBrowserRun(connectorId: string, connectionId: string, draft: boolean): Promise<string> {
   const response = await fetch(`/dashboard/connect/browser-session/${encodeURIComponent(connectorId)}/launch/start`, {
     body: new URLSearchParams({ connection_id: connectionId, draft: draft ? "1" : "0" }),
     credentials: "same-origin",
@@ -29,10 +70,29 @@ async function startBrowserRun(connectorId: string, connectionId: string, draft:
   return body.href;
 }
 
+async function startBrowserRun(connectorId: string, connectionId: string, draft: boolean): Promise<string> {
+  const alreadyStarted = await recoverStartedBrowserRun(connectorId, connectionId);
+  if (alreadyStarted) {
+    return alreadyStarted;
+  }
+
+  try {
+    return await postStartBrowserRun(connectorId, connectionId, draft);
+  } catch (err) {
+    if (isLostTransportError(err)) {
+      const recovered = await recoverStartedBrowserRun(connectorId, connectionId, 6);
+      if (recovered) {
+        return recovered;
+      }
+    }
+    throw err;
+  }
+}
+
 function launchErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : "The browser session could not start.";
-  return message === "Failed to fetch"
-    ? "The session may still be starting, but the network changed before this page received the run id. Check Runs, or try again if no new run appears."
+  return isLostTransportError(err)
+    ? "PDPP may have started the browser run, but this page could not confirm it after the network changed. Open Runs, or try again if no new run appears."
     : message;
 }
 

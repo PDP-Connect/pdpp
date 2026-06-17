@@ -34,11 +34,18 @@ const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
 const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, publicOrigin\(request\)\), 303\)/;
 const LAUNCH_PANEL_FETCH_RE =
   /fetch\(`\/dashboard\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/start`/;
+const LAUNCH_PANEL_RECOVER_RE =
+  /fetch\(\s*`\/dashboard\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/recover\?/;
+const LAUNCH_PANEL_LOST_TRANSPORT_RECOVERY_RE = /recoverStartedBrowserRun\(connectorId, connectionId, 6\)/;
 const LAUNCH_PANEL_INLINE_FAILURE_RE = /Browser session did not finish starting/;
 const LAUNCH_PANEL_RUNS_FALLBACK_RE = /href="\/dashboard\/runs"/;
 const LAUNCH_START_ROUTE_RUN_RE = /runConnectionNow\(connectionId\)/;
 const LAUNCH_START_ROUTE_CLEANUP_RE = /abandonBrowserEnrollmentShell\(connectionId\)/;
 const LAUNCH_START_ROUTE_JSON_RE = /NextResponse\.json/;
+const LAUNCH_RECOVER_ROUTE_FILE = `${HERE}[connectorId]/launch/recover/route.ts`;
+const LAUNCH_RECOVER_ROUTE_LIST_RE = /listRuns\(\{ connector_id: connectorId, limit: 50 \}\)/;
+const LAUNCH_RECOVER_ROUTE_CONNECTION_MATCH_RE = /run\.connector_instance_id === connectionId/;
+const LAUNCH_RECOVER_ROUTE_STREAM_HREF_RE = /\/dashboard\/runs\/\$\{encodeURIComponent\(run\.run_id\)\}\/stream/;
 
 test("browser-session page does not send owners to operator/browser-service artifacts", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -81,4 +88,15 @@ test("browser-session launch page owns slow run-start and renders inline failure
   assert.match(route, LAUNCH_START_ROUTE_RUN_RE);
   assert.match(route, LAUNCH_START_ROUTE_CLEANUP_RE);
   assert.match(route, LAUNCH_START_ROUTE_JSON_RE);
+});
+
+test("browser-session launch recovers an already-started run after transport loss", async () => {
+  const panel = await readFile(LAUNCH_PANEL_FILE, "utf8");
+  const route = await readFile(LAUNCH_RECOVER_ROUTE_FILE, "utf8");
+
+  assert.match(panel, LAUNCH_PANEL_RECOVER_RE);
+  assert.match(panel, LAUNCH_PANEL_LOST_TRANSPORT_RECOVERY_RE);
+  assert.match(route, LAUNCH_RECOVER_ROUTE_LIST_RE);
+  assert.match(route, LAUNCH_RECOVER_ROUTE_CONNECTION_MATCH_RE);
+  assert.match(route, LAUNCH_RECOVER_ROUTE_STREAM_HREF_RE);
 });
