@@ -14,5 +14,6 @@
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8"
-  }
+  },
+  "license": "Apache-2.0"
 }

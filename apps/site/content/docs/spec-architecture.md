@@ -103,7 +103,7 @@ When data isn't in the personal server yet, or is stale.
 
 User decides to collect data before any app requests it.
 
-1. User runs `vana collect spotify` (or background scheduler triggers it)
+1. User runs `pdpp collect spotify` (or background scheduler triggers it)
 2. Runtime sends START to connector with an explicit collection `scope` derived from user preferences or local policy (no raw grant)
 3. Connector collects, emits RECORD/STATE
 4. Runtime writes records to personal server

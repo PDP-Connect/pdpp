@@ -21,6 +21,20 @@ The protocol specifies:
 
 Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved. Data may reach the personal server via connector-driven collection, regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5–8) are agnostic to the collection method.
 
+This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. URI identifiers name connectors, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the grant and the manifest metadata pinned into that grant.
+
+### Interoperable core sections
+
+Sections 4-8 define the protocol surfaces that implementations evaluate independently.
+
+| Section | Governs | Other layers |
+| --- | --- | --- |
+| [Section 4: Record Model](#record-model) | Portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
+| [Section 5: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
+| [Section 6: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
+| [Section 7: Manifest Format](#manifest-format) | Manifest fields that make selection, consent display, and resource-server enforcement auditable. | Registry authority; manifests may be distributed through any mechanism that preserves connector identity and version identity. |
+| [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
+
 ### Relationship to existing standards
 
 | Standard | Relationship |
@@ -1276,6 +1290,8 @@ Multiple collection runs for the same connector may execute concurrently. The re
 
 This section defines what it means to implement each PDPP role. Conformance claims should reference this section.
 
+Conformance is role- and behavior-based. A conformant implementation is not required to use any particular vendor-hosted service, token, chain, centralized registry operator, domain, or repository deployment.
+
 ### Authorization Server conformance
 
 A conformant authorization server:
@@ -1457,6 +1473,12 @@ v0.1 grants narrow access only by stream selection, named view or field projecti
 **Derived subset streams (informative).** A stream MAY represent either a source-native collection or a connector-defined derived subset, provided its semantics are stable, versioned through the manifest, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a connector that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams must be statically declared in the manifest.
 
 The recommended future direction for this capability is manifest-declared parameterized subset templates with typed bound parameters and connector-defined consent display strings. See spec-deferred for the design constraints and open questions that must be resolved before specifying this.
+
+### Specification governance
+
+PDPP protocol changes are proposed through public repository pull requests. In this repository, non-trivial protocol, reference contract, or architecture changes are tracked with OpenSpec before implementation so reviewers can audit the rationale, tasks, and requirement deltas.
+
+Current active editors and maintainers are listed in `MAINTAINERS.md`. Specification text is made available under the Community Specification License 1.0 (SPDX: Community-Spec-1.0; see `LICENSE-specs`). Software packages, examples, and generated artifacts use Apache-2.0 unless a narrower file-local notice says otherwise.
 
 ---
 

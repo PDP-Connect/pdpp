@@ -421,7 +421,7 @@ function BrandSection() {
             >
               <PdppLogo size={14} title="" variant="mark" />
               <span className="font-mono text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-                pdpp.vana.org — the grant is the artifact
+                pdpp.dev — the grant is the artifact
               </span>
             </div>
             <div className="mt-4 flex items-center gap-2">
@@ -449,7 +449,7 @@ function BrandSection() {
                 Ada Verhoeven
               </div>
               <div className="mt-0.5 font-mono text-[10px]" style={{ color: "oklch(0.7 0.01 60)" }}>
-                ada@pdpp.vana.org · editor, working group
+                ada@pdpp.dev · editor, working group
               </div>
             </div>
           </div>

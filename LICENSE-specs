@@ -1,0 +1,13 @@
+Community Specification License 1.0
+
+PDPP protocol specification text is made available under the Community
+Specification License 1.0 (SPDX: Community-Spec-1.0).
+
+This applies to:
+
+- `spec-core.md`
+- `spec-architecture.md`
+- mirrored protocol-specification pages under `apps/site/content/docs/spec-*.md`
+
+License text:
+https://spdx.org/licenses/Community-Spec-1.0.html

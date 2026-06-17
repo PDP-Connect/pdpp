@@ -1,4 +1,4 @@
-const BASE = "https://pdpp.vana.com";
+const BASE = "https://pdpp.dev";
 
 export interface SpecRef {
   label: string;

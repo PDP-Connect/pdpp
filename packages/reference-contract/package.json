@@ -32,5 +32,6 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
     "ultracite": "7.6.0"
-  }
+  },
+  "license": "Apache-2.0"
 }

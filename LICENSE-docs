@@ -2,8 +2,11 @@ Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 This LICENSE-docs file applies to repository documentation under `docs/`,
 `design-notes/`, and other user-facing prose that ships alongside the
-substrate. It does NOT cover code (which is licensed under Apache-2.0;
-see `packages/remote-surface/LICENSE` and `reference-implementation/LICENSE`).
+substrate, except protocol specification text made available under the
+Community Specification License 1.0. It does NOT cover code (which is licensed
+under Apache-2.0; see `packages/remote-surface/LICENSE` and
+`reference-implementation/LICENSE`), packaged software, generated artifacts, or
+third-party files with their own file-local license notice.
 
 The full legal text is available at:
 

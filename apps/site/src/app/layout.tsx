@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   title: "PDPP — Personal Data Portability Protocol",
   description:
     "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-  metadataBase: new URL("https://pdpp.vana.org"),
+  metadataBase: new URL("https://pdpp.dev"),
   openGraph: {
     title: "PDPP — Personal Data Portability Protocol",
     description:
