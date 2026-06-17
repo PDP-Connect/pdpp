@@ -103,6 +103,57 @@ test('ref.spine.correlations.list emits run_summary discriminator with failure_r
   assert.equal(entry.failure_reason, 'auth_denied');
 });
 
+test('ref.spine.correlations.list projects browser-profile connection identity and surface failure reason', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'run', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'run_browser_surface_failed',
+            browser_surface_profile_key: 'chase:cin_expired_setup',
+            browser_surface_status: 'surface_failed',
+            browser_surface_wait_reason: 'surface_unhealthy',
+            failure: null,
+            status: 'surface_failed',
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'run_summary');
+  assert.equal(entry.connection_id, 'cin_expired_setup');
+  assert.equal(entry.connector_instance_id, 'cin_expired_setup');
+  assert.equal(entry.browser_surface_profile_key, 'chase:cin_expired_setup');
+  assert.equal(entry.failure_reason, 'surface_unhealthy');
+});
+
+test('ref.spine.correlations.list does not invent connection identity from non-connection browser profiles', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'run', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'run_managed_profile',
+            browser_surface_profile_key: 'managed-profile',
+            browser_surface_status: 'leased',
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'run_summary');
+  assert.equal('connection_id' in entry, false);
+  assert.equal('connector_instance_id' in entry, false);
+});
+
 test('ref.spine.correlations.list omits next_cursor when the page does not expose one', async () => {
   const envelope = await executeRefSpineCorrelationsList(
     { kind: 'trace', filters: {} },

@@ -48,6 +48,7 @@ export interface RefSpineCorrelationSummary {
   readonly browser_surface_profile_key?: string;
   readonly browser_surface_status?: string;
   readonly browser_surface_wait_reason?: string;
+  readonly connection_id?: string | null;
   readonly id?: string;
   readonly first_at: string;
   readonly last_at: string;
@@ -65,6 +66,7 @@ export interface RefSpineCorrelationSummary {
   readonly run_id: string | null;
   readonly client_id: string | null;
   readonly connector_id: string | null;
+  readonly connector_instance_id?: string | null;
   readonly source: RefSpineSource | null;
   readonly source_id: string | null;
   readonly source_kind: "connector" | "provider_native" | null;
@@ -150,7 +152,9 @@ export interface RefSpineRunSummary {
   readonly browser_surface_wait_reason?: string;
   readonly object: "run_summary";
   readonly run_id: string | undefined;
+  readonly connection_id?: string | null;
   readonly connector_id: string | null;
+  readonly connector_instance_id?: string | null;
   readonly first_at: string;
   readonly last_at: string;
   readonly event_count: number;
@@ -183,6 +187,28 @@ function sourceFromSummary(s: RefSpineCorrelationSummary): RefSpineSource | null
   }
   if (s.connector_id) {
     return { kind: "connector", id: s.connector_id };
+  }
+  return null;
+}
+
+function connectionIdFromBrowserSurfaceProfileKey(profileKey: string | null | undefined): string | null {
+  if (!profileKey) {
+    return null;
+  }
+  const suffix = profileKey.split(":").at(-1);
+  return suffix?.startsWith("cin_") ? suffix : null;
+}
+
+function runConnectionIdentity(s: RefSpineCorrelationSummary): string | null {
+  return s.connection_id ?? s.connector_instance_id ?? connectionIdFromBrowserSurfaceProfileKey(s.browser_surface_profile_key);
+}
+
+function runFailureReason(s: RefSpineCorrelationSummary): string | null {
+  if (s.failure?.reason) {
+    return s.failure.reason;
+  }
+  if (s.status === "surface_failed") {
+    return s.browser_surface_wait_reason || s.browser_surface_status || "browser_surface_failed";
   }
   return null;
 }
@@ -224,9 +250,11 @@ export function summaryToGrant(s: RefSpineCorrelationSummary): RefSpineGrantSumm
 }
 
 export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary {
+  const connectionId = runConnectionIdentity(s);
   return {
     object: "run_summary",
     run_id: s.id,
+    ...(connectionId ? { connection_id: connectionId, connector_instance_id: connectionId } : {}),
     connector_id: s.connector_id,
     first_at: s.first_at,
     last_at: s.last_at,
@@ -236,7 +264,7 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
     needs_input: Boolean(s.needs_input),
     source: sourceFromSummary(s),
     grant_id: s.grant_id,
-    failure_reason: s.failure?.reason || null,
+    failure_reason: runFailureReason(s),
     ...(s.browser_surface_status ? { browser_surface_status: s.browser_surface_status } : {}),
     ...(s.browser_surface_wait_reason ? { browser_surface_wait_reason: s.browser_surface_wait_reason } : {}),
     ...(s.browser_surface_lease_id ? { browser_surface_lease_id: s.browser_surface_lease_id } : {}),

@@ -204,7 +204,9 @@ export interface SpineSummary {
   browser_surface_status?: string;
   browser_surface_wait_reason?: string;
   client_id: string | null;
+  connection_id?: string | null;
   connector_id: string | null;
+  connector_instance_id?: string | null;
   event_count: number;
   failure: SpineFailureSummary | null;
   first_at: string;
@@ -995,6 +997,15 @@ function pickBrowserSurfaceFields(projection: Record<string, unknown> | null): R
   return out;
 }
 
+function connectionIdFromBrowserSurfaceProfileKey(projection: Record<string, unknown> | null): string | null {
+  const profileKey = projection?.browser_surface_profile_key;
+  if (typeof profileKey !== "string" || profileKey.length === 0) {
+    return null;
+  }
+  const suffix = profileKey.split(":").at(-1);
+  return suffix?.startsWith("cin_") ? suffix : null;
+}
+
 function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
     return null;
@@ -1012,6 +1023,8 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
       ? { event_type: "run.started", reason: "orphaned_started_run" }
       : null;
   const source = findFirstSource(events);
+  const browserSurface = findLatestBrowserSurfaceProjection(events);
+  const browserSurfaceConnectionId = connectionIdFromBrowserSurfaceProfileKey(browserSurface);
 
   return {
     first_at: first.occurred_at,
@@ -1029,9 +1042,12 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     source_kind: source?.kind ?? null,
     source_id: source?.id ?? null,
     connector_id: findFirstConnectorId(events),
+    ...(browserSurfaceConnectionId
+      ? { connection_id: browserSurfaceConnectionId, connector_instance_id: browserSurfaceConnectionId }
+      : {}),
     actor_type: first.actor_type,
     actor_id: first.actor_id,
-    ...pickBrowserSurfaceFields(findLatestBrowserSurfaceProjection(events)),
+    ...pickBrowserSurfaceFields(browserSurface),
     failure: terminalFailure
       ? {
           event_type: terminalFailure.event_type,

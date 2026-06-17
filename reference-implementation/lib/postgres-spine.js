@@ -194,6 +194,15 @@ function pickBrowserSurfaceFields(projection) {
   return out;
 }
 
+function connectionIdFromBrowserSurfaceProfileKey(projection) {
+  const profileKey = projection?.browser_surface_profile_key;
+  if (typeof profileKey !== 'string' || profileKey.length === 0) {
+    return null;
+  }
+  const suffix = profileKey.split(':').at(-1);
+  return suffix?.startsWith('cin_') ? suffix : null;
+}
+
 function encodeEventCursor(eventSeq) {
   return eventSeq == null ? null : Buffer.from(JSON.stringify({ event_seq: Number(eventSeq) })).toString('base64url');
 }
@@ -277,6 +286,7 @@ async function summarizeRows(id, rows, aggregate = {}) {
   const source = sources[0] || null;
   const connector = sources.find((candidate) => candidate.kind === 'connector') || null;
   const browserSurface = findLatestBrowserSurfaceProjection(events);
+  const browserSurfaceConnectionId = connectionIdFromBrowserSurfaceProfileKey(browserSurface);
 
   // Status projection — mirror lib/spine.ts summarizeEvents logic.
   //
@@ -320,6 +330,9 @@ async function summarizeRows(id, rows, aggregate = {}) {
     actor_id: last.actor_id || null,
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
+    ...(browserSurfaceConnectionId
+      ? { connection_id: browserSurfaceConnectionId, connector_instance_id: browserSurfaceConnectionId }
+      : {}),
     connector_id: connector?.id || null,
     event_count: Number(aggregate.event_count) || events.length,
     failure: failureEvent

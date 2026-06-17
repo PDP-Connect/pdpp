@@ -166,3 +166,41 @@ test('started-only run with an active controller row is projected as in progress
     assert.equal(summary.failure, null);
   });
 });
+
+test('browser-surface profile key gives run summary exact connection identity', async () => {
+  await withSpine(async () => {
+    const runId = 'run_browser_surface_stale_setup';
+
+    await emitSpineEvent({
+      event_type: 'run.browser_surface_failed',
+      run_id: runId,
+      status: 'surface_failed',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'chase',
+      source_kind: 'connector',
+      source_id: 'chase',
+      occurred_at: '2026-04-01T00:00:01Z',
+      data: {
+        source: { kind: 'connector', id: 'chase' },
+        browser_surface: {
+          pending_run_id: runId,
+          browser_surface_status: 'surface_failed',
+          browser_surface_wait_reason: 'surface_unhealthy',
+          browser_surface_lease_id: 'lease_stale_setup',
+          browser_surface_profile_key: 'chase:cin_expired_setup',
+        },
+      },
+    });
+
+    const page = await listSpineCorrelations('run', { limit: 50 });
+    const summary = page.summaries.find((s) => s.run_id === runId || s.id === runId);
+    assert.ok(summary, 'expected a summary for the browser surface run');
+    assert.equal(summary.status, 'surface_failed');
+    assert.equal(summary.connector_id, 'chase');
+    assert.equal(summary.connection_id, 'cin_expired_setup');
+    assert.equal(summary.connector_instance_id, 'cin_expired_setup');
+    assert.equal(summary.browser_surface_profile_key, 'chase:cin_expired_setup');
+  });
+});
