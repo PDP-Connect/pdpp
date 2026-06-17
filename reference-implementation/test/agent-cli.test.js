@@ -345,11 +345,13 @@ test('agent-flow: register client, stage PAR, approve inline, store token, verif
     const storedToken = readToken(cacheRoot, grantId);
     assert.equal(storedToken, approval.token);
 
-    // Use the cached token to query the RS
-    const streamsResp = await fetch(`${rsUrl}/v1/streams`, {
+    // Use the cached token to query the RS. This grant is manifest-only in
+    // this fixture; record/stream reads require an active connection and are
+    // covered by the stream-routing tests below.
+    const schemaResp = await fetch(`${rsUrl}/v1/schema`, {
       headers: { Authorization: `Bearer ${storedToken}` },
     });
-    assert.ok(streamsResp.ok, 'client token should give RS access');
+    assert.ok(schemaResp.ok, 'client token should give RS access');
 
     // hasUsableGrant should find this grant
     const found = hasUsableGrant(cacheRoot, { connectorId, streams: [streamName] });

@@ -60,11 +60,11 @@
       ]
     },
     "human_interaction": [
-      "provider_authorization"
+      "manual_action"
     ],
     "refresh_policy": {
       "recommended_mode": "manual",
-      "interaction_posture": "credentials",
+      "interaction_posture": "manual_action_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": false,

@@ -113,6 +113,9 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   // ─── Google Maps Timeline reason codes ────────────────────────────────────
   timeline_points_not_found: "We couldn't find any location points to import",
   timeline_segments_not_found: "We couldn't find any timeline segments to import",
+  // ─── WhatsApp chat export reason codes ────────────────────────────────────
+  empty_export: "That WhatsApp export did not contain any messages to import",
+  unsupported_export: "We could not read that WhatsApp export format yet",
   // ─── Resumable retry / bounded-run cap deferrals ───────────────────────
   // Two distinct codes, neither of which means the service was busy (that copy
   // belongs to `upstream_pressure` / `upstream_pressure_deferred`):

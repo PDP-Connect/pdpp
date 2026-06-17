@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 
 import { startServer } from '../server/index.js';
+import { runConnector } from '../runtime/index.js';
 import {
   registerClient,
   buildParRequest,
@@ -49,6 +50,51 @@ function firstStream(manifest) {
   return manifest.streams[0].name;
 }
 
+async function issueOwnerToken(asUrl, subjectId = 'owner_local') {
+  const clientId = 'cli_longview';
+  const deviceResp = await fetch(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId }).toString(),
+  });
+  assert.equal(deviceResp.status, 200);
+  const device = await deviceResp.json();
+
+  const approveResp = await fetch(`${asUrl}/device/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ user_code: device.user_code, subject_id: subjectId }).toString(),
+  });
+  assert.equal(approveResp.status, 200);
+
+  const tokenResp = await fetch(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: device.device_code,
+      client_id: clientId,
+    }).toString(),
+  });
+  assert.equal(tokenResp.status, 200);
+  const tokenBody = await tokenResp.json();
+  return tokenBody.access_token;
+}
+
+async function seedSpotify({ asUrl, rsUrl, manifest, subjectId = 'owner_local' }) {
+  const ownerToken = await issueOwnerToken(asUrl, subjectId);
+  const result = await runConnector({
+    connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+    connectorId: manifest.connector_id,
+    ownerToken,
+    manifest,
+    state: null,
+    collectionMode: 'full_refresh',
+    rsUrl,
+  });
+  assert.equal(result.status, 'succeeded');
+}
+
 test('example client completes the current reference flow on the inline-approval path', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -56,6 +102,7 @@ test('example client completes the current reference flow on the inline-approval
 
   try {
     const spotifyManifest = await registerSpotify(asUrl);
+    await seedSpotify({ asUrl, rsUrl, manifest: spotifyManifest });
 
     const registered = await registerClient({
       asUrl,
@@ -228,6 +275,7 @@ test('example client shipped defaults stage a PAR request and reach records agai
   try {
     const spotifyManifest = await registerSpotify(asUrl);
     const draft = buildDefaultDraft();
+    await seedSpotify({ asUrl, rsUrl, manifest: spotifyManifest, subjectId: draft.subjectId });
 
     // The shipped defaults must correspond to the real manifest.
     assert.equal(

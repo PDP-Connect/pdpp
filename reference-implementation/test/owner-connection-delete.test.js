@@ -296,6 +296,7 @@ function seedActiveRun(connectorInstanceId, connectorId) {
     trace_id: 'trc_test',
     scenario_id: 'default',
     started_at: NOW,
+    run_generation: 1,
   });
 }
 

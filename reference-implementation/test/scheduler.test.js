@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { closeDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from '../server/stores/scheduler-store.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -2317,6 +2319,17 @@ test('scheduler treats single_use grants as one successful run followed by exhau
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, 'scheduler_single_use_user');
+    await createSqliteConnectorInstanceStore().upsert({
+      connectorInstanceId: spotifyManifest.connector_id,
+      ownerSubjectId: 'scheduler_single_use_user',
+      connectorId: canonicalConnectorKey(spotifyManifest.connector_id),
+      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      sourceKind: 'account',
+      sourceBindingKey: 'scheduler_single_use_fixture',
+      sourceBinding: { kind: 'test_scheduler_fixture' },
+      createdAt: '2026-04-29T02:00:00.000Z',
+      updatedAt: '2026-04-29T02:00:00.000Z',
+    });
     const scheduler = createScheduler({
       connectors: [
         {

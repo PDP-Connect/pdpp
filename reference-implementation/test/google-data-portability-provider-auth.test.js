@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { startServer } from "../server/index.js";
@@ -26,7 +26,7 @@ const TEST_KEY = "google-data-portability-test-key";
 function readManifest() {
   return JSON.parse(
     readFileSync(
-      join(process.cwd(), "packages/polyfill-connectors/manifests/google_maps_data_portability.json"),
+      fileURLToPath(new URL("../../packages/polyfill-connectors/manifests/google_maps_data_portability.json", import.meta.url)),
       "utf8"
     )
   );

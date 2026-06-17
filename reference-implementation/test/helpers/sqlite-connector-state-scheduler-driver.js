@@ -202,6 +202,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
         run.traceId,
         run.scenarioId,
         run.startedAt,
+        run.runGeneration ?? 1,
       ]);
     },
 

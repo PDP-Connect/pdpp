@@ -10,6 +10,11 @@ import { tmpdir } from 'node:os';
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
+import {
+  createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -111,6 +116,25 @@ async function ensureConsoleBuild() {
     })();
   }
   await consoleBuildPromise;
+}
+
+async function materializeDefaultSpotifyConnection() {
+  const now = '2026-04-23T10:00:00.000Z';
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId(
+      OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      SPOTIFY_CONNECTOR_KEY,
+    ),
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    connectorId: SPOTIFY_CONNECTOR_KEY,
+    displayName: 'Spotify',
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey: 'composed-origin-spotify',
+    sourceBinding: { kind: 'test_account', label: 'composed-origin-spotify' },
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 async function waitForExistingConsoleBuild(timeoutMs = 120000) {
@@ -504,6 +528,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     });
     assert.equal(registerConnector.status, 201);
 
+    await materializeDefaultSpotifyConnection();
     await ingestRecord(SPOTIFY_CONNECTOR_ID, {
       stream: 'top_artists',
       id: 'artist_owner_top_1',

@@ -242,6 +242,7 @@ test('same connector instances keep separate schedules, active runs, and last-ru
       trace_id: 'trc_work',
       scenario_id: 'scn_work',
       started_at: now,
+      run_generation: 1,
     });
     store.upsertActiveRun({
       connector_instance_id: personal,
@@ -250,6 +251,7 @@ test('same connector instances keep separate schedules, active runs, and last-ru
       trace_id: 'trc_personal',
       scenario_id: 'scn_personal',
       started_at: now,
+      run_generation: 1,
     });
     store.upsertLastRunTime(work, 1_776_000_002_000, now, SEMANTIC_CONNECTOR);
     store.upsertLastRunTime(personal, 1_776_000_003_000, now, SEMANTIC_CONNECTOR);

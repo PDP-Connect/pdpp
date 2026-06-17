@@ -664,8 +664,8 @@ test('two Gmail account instances isolate state, records, schedules, leases, and
     const scheduler = createSqliteSchedulerStore();
     scheduler.createSchedule({ connector_instance_id: 'cin_gmail_work_acceptance', connector_id: GMAIL, interval_seconds: 600, jitter_seconds: 0, enabled: true, created_at: NOW, updated_at: NOW });
     scheduler.createSchedule({ connector_instance_id: 'cin_gmail_personal_acceptance', connector_id: GMAIL, interval_seconds: 1800, jitter_seconds: 0, enabled: false, created_at: NOW, updated_at: NOW });
-    scheduler.upsertActiveRun({ connector_instance_id: 'cin_gmail_work_acceptance', connector_id: GMAIL, run_id: 'run_work_acceptance', trace_id: 'trc_work', scenario_id: 'scn_work', started_at: NOW });
-    scheduler.upsertActiveRun({ connector_instance_id: 'cin_gmail_personal_acceptance', connector_id: GMAIL, run_id: 'run_personal_acceptance', trace_id: 'trc_personal', scenario_id: 'scn_personal', started_at: NOW });
+    scheduler.upsertActiveRun({ connector_instance_id: 'cin_gmail_work_acceptance', connector_id: GMAIL, run_id: 'run_work_acceptance', trace_id: 'trc_work', scenario_id: 'scn_work', started_at: NOW, run_generation: 1 });
+    scheduler.upsertActiveRun({ connector_instance_id: 'cin_gmail_personal_acceptance', connector_id: GMAIL, run_id: 'run_personal_acceptance', trace_id: 'trc_personal', scenario_id: 'scn_personal', started_at: NOW, run_generation: 1 });
 
     const leases = createSqliteBrowserSurfaceLeaseStore();
     await leases.upsertLease({ lease_id: 'lease_work', connector_id: GMAIL, profile_key: 'cin_gmail_work_acceptance', account_key: 'work@example.test', run_id: 'run_work_acceptance', status: 'waiting_for_browser_surface', priority_class: 'scheduled_refresh', requested_at: NOW, expires_at: '2026-05-18T12:05:00.000Z', fencing_token: 1 });

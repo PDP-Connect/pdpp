@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -292,6 +294,22 @@ async function uploadBlob(rsUrl, ownerToken, params, body, contentType = 'applic
 
 async function seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records) {
   await seedSpotifyStream(rsUrl, ownerToken, connectorId, 'top_artists', records);
+}
+
+async function materializeSpotifyConnection(connectorId) {
+  const now = '2026-01-01T00:00:00.000Z';
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorInstanceId: 'cin_query_contract_spotify',
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    connectorId: canonicalConnectorKey(connectorId),
+    displayName: 'Spotify',
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey: 'query-contract-spotify',
+    sourceBinding: { kind: 'test_account', label: 'query-contract-spotify' },
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 async function seedGmailStream(rsUrl, ownerToken, connectorId, stream, records) {
@@ -1067,6 +1085,7 @@ test('stream list publishes freshness with unknown status when empty', async () 
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorId = spotifyManifest.connector_id;
+    await materializeSpotifyConnection(connectorId);
     // list without any ingested records — we need owner_scope: connector
     const { status, body } = await fetchJson(
       `${rsUrl}/v1/streams?connector_id=${encodeURIComponent(connectorId)}`,
@@ -1457,6 +1476,7 @@ test('unknown query parameter is rejected (not silently ignored)', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorId = spotifyManifest.connector_id;
+    await materializeSpotifyConnection(connectorId);
     const url = `${rsUrl}/v1/streams/top_artists/records`
       + `?connector_id=${encodeURIComponent(connectorId)}`
       + `&totally_made_up=true`;

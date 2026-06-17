@@ -65,6 +65,7 @@ async function withServer(fn) {
     ownerAuthPassword: OWNER_PASSWORD,
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretAutoResume: false,
     staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -90,6 +91,7 @@ async function withOpenServer(fn) {
     ownerAuthPassword: '',
     ownerAuthSubjectId: OWNER_SUBJECT_ID,
     autoEnrollEligibleSchedules: false,
+    staticSecretAutoResume: false,
     staticSecretCredentialProber: permissiveProber(),
   });
   const asUrl = `http://localhost:${server.asPort}`;
