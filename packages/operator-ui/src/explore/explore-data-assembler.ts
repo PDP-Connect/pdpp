@@ -305,6 +305,42 @@ function metadataFieldNames(capabilities: readonly ExplorerFieldCapability[]): r
   return capabilities.length > 0 ? capabilities.map((cap) => cap.name) : undefined;
 }
 
+// The default recent feed is an owner-console overview. It can use manifest
+// declarations for presentation hints without blocking first paint on
+// grant-aware per-stream metadata; deep paths (time-window and peek) still load
+// actual stream metadata before rendering withheld fields.
+function manifestFieldCapabilities(
+  declaredFieldTypes: DeclaredFieldTypes | undefined,
+  fieldNames: readonly string[] | undefined
+): ExplorerFieldCapability[] {
+  if (!declaredFieldTypes && !fieldNames) {
+    return [];
+  }
+  const names = new Set<string>(fieldNames ?? Object.keys(declaredFieldTypes ?? {}));
+  for (const name of Object.keys(declaredFieldTypes ?? {})) {
+    names.add(name);
+  }
+  return [...names].map((name) => {
+    const type = declaredFieldTypes?.[name];
+    return {
+      name,
+      granted: true,
+      ...(type ? { type } : {}),
+    };
+  });
+}
+
+function streamUiMetadataFromManifest(
+  declaredFieldTypes: DeclaredFieldTypes | undefined,
+  fieldNames: readonly string[] | undefined
+): StreamUiMetadata {
+  return {
+    declaredFieldTypes,
+    fieldCapabilities: manifestFieldCapabilities(declaredFieldTypes, fieldNames),
+    fieldNames,
+  };
+}
+
 async function loadStreamUiMetadata(
   dataSource: DashboardDataSource,
   summary: RefConnectorSummary,
@@ -415,21 +451,16 @@ async function loadEmptyQueryFeed(
       fetches.push(
         (async (): Promise<StreamFetchResult> => {
           const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
-          const [{ metadata, warning }, page] = await Promise.all([
-            loadStreamUiMetadata(
-              dataSource,
-              summary,
-              streamName,
-              declaredFieldTypes.get(metaKey),
-              manifestFieldNames.get(metaKey)
-            ),
-            dataSource.queryRecords(summary.connector_id, streamName, {
-              connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-              limit: MAX_FEED_RECORDS_PER_STREAM,
-              order: "desc",
-              window: "none",
-            }),
-          ]);
+          const metadata = streamUiMetadataFromManifest(
+            declaredFieldTypes.get(metaKey),
+            manifestFieldNames.get(metaKey)
+          );
+          const page = await dataSource.queryRecords(summary.connector_id, streamName, {
+            connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+            limit: MAX_FEED_RECORDS_PER_STREAM,
+            order: "desc",
+            window: "none",
+          });
           return {
             ok: true,
             entries: page.data.map((record) => {
@@ -455,7 +486,7 @@ async function loadEmptyQueryFeed(
               };
             }),
             exactWindow: exactWindowFromPage(page),
-            warning,
+            warning: null,
           };
         })().catch((err): StreamFetchResult => {
           const { expected, reason } = classifyFanInFailure(err);
@@ -1151,7 +1182,10 @@ export async function assembleExplorerData(
   const since = isValidIsoDate(rawSince) ? rawSince : "";
   const until = isValidIsoDate(rawUntil) ? rawUntil : "";
 
-  const response = await dataSource.listConnectorSummaries();
+  const [response, manifestMetadata] = await Promise.all([
+    dataSource.listConnectorSummaries(),
+    buildManifestMetadata(dataSource),
+  ]);
   const summaries = response.data;
 
   const connections = summaries.map(toConnectionFacet).sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -1161,8 +1195,7 @@ export async function assembleExplorerData(
     filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
 
   const filterStreamSet = new Set(selectedStreams);
-  const { timestampMetadata, manifestFieldNames, declaredFieldTypes, serverFilterableFields } =
-    await buildManifestMetadata(dataSource);
+  const { timestampMetadata, manifestFieldNames, declaredFieldTypes, serverFilterableFields } = manifestMetadata;
 
   // Union the declared exact-filterable field names across the in-scope feed
   // streams. Search mode loads no per-stream metadata into this set (search hits
@@ -1172,20 +1205,22 @@ export async function assembleExplorerData(
     ? new Set<string>()
     : unionServerFilterableFields(filteredSummaries, filterStreamSet, serverFilterableFields);
 
-  const { feed: feedResult, lens } = await dispatchFeed({
-    query,
-    since,
-    until,
-    filteredSummaries,
-    filterStreamSet,
-    timestampMetadata,
-    manifestFieldNames,
-    declaredFieldTypes,
-    filterConnectionSet,
-    dataSource,
-  });
-
-  const peek = await buildPeek(params.peek, summaryByConnectionId(summaries), dataSource, rsBaseUrl);
+  const [feedDispatch, peek] = await Promise.all([
+    dispatchFeed({
+      query,
+      since,
+      until,
+      filteredSummaries,
+      filterStreamSet,
+      timestampMetadata,
+      manifestFieldNames,
+      declaredFieldTypes,
+      filterConnectionSet,
+      dataSource,
+    }),
+    buildPeek(params.peek, summaryByConnectionId(summaries), dataSource, rsBaseUrl),
+  ]);
+  const { feed: feedResult, lens } = feedDispatch;
 
   const warnings: ExplorerWarning[] = [...feedResult.warnings];
   if (peek?.error) {

@@ -37,7 +37,15 @@ function manifest(index: number): ConnectorManifest {
   return {
     connector_id: `connector_${index}`,
     streams: [
-      { name: "alpha", schema: { properties: { title: { type: "string" } } } },
+      {
+        name: "alpha",
+        schema: {
+          properties: {
+            attachment: { type: "object", x_pdpp_type: "blob" },
+            title: { type: "string" },
+          },
+        },
+      },
       { name: "beta", schema: { properties: { title: { type: "string" } } } },
       { name: "gamma", schema: { properties: { title: { type: "string" } } } },
     ],
@@ -46,7 +54,10 @@ function manifest(index: number): ConnectorManifest {
 
 function record(connectorId: string, stream: string, index: number): StreamRecord {
   return {
-    data: { title: `${connectorId}/${stream}/${index}` },
+    data: {
+      ...(stream === "alpha" ? { attachment: { fetch_url: `/v1/blobs/${connectorId}_${index}` } } : {}),
+      title: `${connectorId}/${stream}/${index}`,
+    },
     emitted_at: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
     id: `${connectorId}_${stream}_${index}`,
     object: "record",
@@ -107,10 +118,18 @@ test("empty-query Explore keeps first-paint fan-out bounded", async () => {
   const data = await assembleExplorerData({}, dataSource, "https://pdpp.example.test");
 
   assert.equal(queryCalls.length, 12);
-  assert.equal(metadataCalls.length, 12);
+  assert.equal(metadataCalls.length, 0);
   assert.deepEqual([...new Set(queryCalls.map((call) => call.limit))], [6]);
   assert.deepEqual([...new Set(queryCalls.map((call) => call.window))], ["none"]);
   assert.equal(data.feed.length, 12);
   assert.equal(data.activitySummary?.source, "bounded_sample");
   assert.ok(data.feed.length <= 32);
+  assert.ok(
+    data.feed.some(
+      (entry) =>
+        entry.stream === "alpha" &&
+        entry.blobAffordance?.state === "available" &&
+        entry.blobAffordance.href?.startsWith("/v1/blobs/")
+    )
+  );
 });
