@@ -2132,7 +2132,7 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
   // Configurable KNN overscan — we fetch more per connector than the final
   // page needs so the merged top-N is accurate. Matches the lexical
   // snapshot's approach of caching a reasonable upper bound.
-  const PER_CONNECTOR_LIMIT = 200;
+  const PER_CONNECTOR_LIMIT = 100;
 
   const perConnectorHits = await mapSearchFanout(
     perConnectorPlans,

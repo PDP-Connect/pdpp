@@ -12,6 +12,7 @@
 - [x] Apply bounded fan-out to semantic owner search snapshot building.
 - [x] Add a bounded Postgres lexical candidate window before rank/snippet computation for broad searches.
 - [x] Add short-lived single-flight caching for repeated semantic query vectors.
+- [x] Reduce semantic per-connector overscan to the public maximum page size.
 
 ## 3. Tests
 

@@ -45,6 +45,10 @@ Semantic database retrieval is fast once a query vector exists; the local Transf
 
 The cache is intentionally short-lived and clears when the semantic backend changes. It does not change semantic result semantics; it reuses the same vector the backend would have produced.
 
+### 6. Align semantic overscan with the public page maximum
+
+The semantic route previously requested 200 hits per connector even though the public maximum page size is 100. For broad owner searches this doubled KNN and candidate-merging work without improving the first page. The reference shall cap per-connector semantic overscan at the public maximum until a later change introduces a measured adaptive overscan policy.
+
 ## Alternatives
 
 - Increase Docker shared memory only: helpful, but insufficient. A forkable reference should not require operators to discover a container memory footgun before `/v1/search` works.
