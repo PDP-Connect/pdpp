@@ -500,7 +500,7 @@ function ConnectorPageView({
       <Section
         description={
           collectionFactsByStream.size > 0
-            ? "Per-stream collection facts are derived from the latest run. Coverage and next-run disposition reuse the same vocabulary as the connection headline; an unknown denominator reads unknown, never complete."
+            ? "Record counts show what this source currently retains. Coverage and next-run disposition come from the latest collection report; an unknown denominator reads unknown, never complete."
             : undefined
         }
         title={`Streams (${streams.length})`}
