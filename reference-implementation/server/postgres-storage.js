@@ -1421,6 +1421,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         total_records             BIGINT NOT NULL DEFAULT 0,
         stream_count              BIGINT NOT NULL DEFAULT 0,
         last_record_updated_at    TEXT,
+        stream_records_json       JSONB NOT NULL DEFAULT '[]'::jsonb,
+        retained_bytes_json       JSONB NOT NULL DEFAULT '{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}'::jsonb,
+        total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         source_event_seq          BIGINT,
@@ -1432,6 +1435,12 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS stream_records_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS retained_bytes_json JSONB NOT NULL DEFAULT '{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}'::jsonb;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS total_retained_bytes BIGINT NOT NULL DEFAULT 0;
 
       -- Outbound event subscriptions (RI extension). Client subscriptions are
       -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.

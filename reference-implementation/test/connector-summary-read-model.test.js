@@ -97,6 +97,31 @@ function seedRetainedSizeStreamSqlite({
     .run(connectorInstanceId, connectorId, stream, recordCount, computedAt);
 }
 
+function seedRetainedSizeConnectionSqlite({
+  connectorInstanceId,
+  connectorId,
+  recordJsonBytes = 0,
+  recordChangesJsonBytes = 0,
+  blobBytes = 0,
+  computedAt = NOW,
+}) {
+  getDb()
+    .prepare(
+      `INSERT INTO retained_size_connection(
+         connector_instance_id, connector_id, current_record_json_bytes,
+         record_history_json_bytes, blob_bytes, computed_at
+       )
+       VALUES(?, ?, ?, ?, ?, ?)
+       ON CONFLICT(connector_instance_id) DO UPDATE SET
+         connector_id = excluded.connector_id,
+         current_record_json_bytes = excluded.current_record_json_bytes,
+         record_history_json_bytes = excluded.record_history_json_bytes,
+         blob_bytes = excluded.blob_bytes,
+         computed_at = excluded.computed_at`,
+    )
+    .run(connectorInstanceId, connectorId, recordJsonBytes, recordChangesJsonBytes, blobBytes, computedAt);
+}
+
 function seedRecordSqlite({
   connectorInstanceId,
   connectorId,
@@ -144,6 +169,14 @@ test('rebuild derives durable identity + count evidence from canonical state', (
       recordCount: 1,
       computedAt: '2026-06-17T13:45:00.000Z',
     });
+    seedRetainedSizeConnectionSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      recordJsonBytes: 1200,
+      recordChangesJsonBytes: 340,
+      blobBytes: 4600,
+      computedAt: '2026-06-17T13:45:00.000Z',
+    });
     seedRecordSqlite({
       connectorInstanceId: 'cin_gmail_a',
       connectorId: 'gmail',
@@ -186,6 +219,17 @@ test('rebuild derives durable identity + count evidence from canonical state', (
     assert.equal(row.total_records, 3);
     assert.equal(row.stream_count, 2);
     assert.equal(row.last_record_updated_at, '2026-06-17T12:55:00.000Z');
+    assert.deepEqual(row.stream_records, [
+      { stream: 'attachments', record_count: 1, last_updated: null },
+      { stream: 'messages', record_count: 2, last_updated: null },
+    ]);
+    assert.deepEqual(row.retained_bytes, {
+      record_json_bytes: 1200,
+      record_changes_json_bytes: 340,
+      blob_bytes: 4600,
+      total_bytes: 6140,
+    });
+    assert.equal(row.total_retained_bytes, 6140);
     assert.equal(row.dirty, false);
     assert.equal(row.state, 'fresh');
     assert.equal(row.last_error, null);
@@ -243,6 +287,14 @@ test('dirty marking flips state to stale and reconcile repairs only dirty rows',
       recordCount: 1,
       computedAt: '2026-06-17T13:10:00.000Z',
     });
+    seedRetainedSizeConnectionSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      recordJsonBytes: 100,
+      recordChangesJsonBytes: 10,
+      blobBytes: 0,
+      computedAt: '2026-06-17T13:10:00.000Z',
+    });
     seedRecordSqlite({
       connectorInstanceId: 'cin_gmail_a',
       connectorId: 'gmail',
@@ -260,6 +312,14 @@ test('dirty marking flips state to stale and reconcile repairs only dirty rows',
       connectorId: 'gmail',
       stream: 'messages',
       recordCount: 2,
+      computedAt: '2026-06-17T13:45:00.000Z',
+    });
+    seedRetainedSizeConnectionSqlite({
+      connectorInstanceId: 'cin_gmail_a',
+      connectorId: 'gmail',
+      recordJsonBytes: 240,
+      recordChangesJsonBytes: 20,
+      blobBytes: 9,
       computedAt: '2026-06-17T13:45:00.000Z',
     });
     seedRecordSqlite({
@@ -298,6 +358,14 @@ test('dirty marking flips state to stale and reconcile repairs only dirty rows',
     assert.equal(clean.state, 'fresh');
     assert.equal(clean.total_records, 2);
     assert.equal(clean.last_record_updated_at, '2026-06-17T12:45:00.000Z');
+    assert.deepEqual(clean.stream_records, [{ stream: 'messages', record_count: 2, last_updated: null }]);
+    assert.deepEqual(clean.retained_bytes, {
+      record_json_bytes: 240,
+      record_changes_json_bytes: 20,
+      blob_bytes: 9,
+      total_bytes: 269,
+    });
+    assert.equal(clean.total_retained_bytes, 269);
   }));
 
 test('reconcile is a no-op when no rows are dirty', () =>
@@ -400,6 +468,14 @@ test(
         1,
         '2026-06-17T13:20:00.000Z',
       );
+      await seedRetainedSizeConnectionPostgres(
+        instanceId,
+        connectorId,
+        510,
+        40,
+        900,
+        '2026-06-17T13:20:00.000Z',
+      );
       await seedRecordPostgres(
         instanceId,
         connectorId,
@@ -415,6 +491,14 @@ test(
       assert.equal(row.total_records, 1);
       assert.equal(row.stream_count, 1);
       assert.equal(row.last_record_updated_at, '2026-06-17T12:20:00.000Z');
+      assert.deepEqual(row.stream_records, [{ stream: 'messages', record_count: 1, last_updated: null }]);
+      assert.deepEqual(row.retained_bytes, {
+        record_json_bytes: 510,
+        record_changes_json_bytes: 40,
+        blob_bytes: 900,
+        total_bytes: 1450,
+      });
+      assert.equal(row.total_retained_bytes, 1450);
       assert.equal(row.dirty, false);
       assert.equal(row.state, 'fresh');
 
@@ -423,6 +507,14 @@ test(
         connectorId,
         'messages',
         2,
+        '2026-06-17T13:50:00.000Z',
+      );
+      await seedRetainedSizeConnectionPostgres(
+        instanceId,
+        connectorId,
+        725,
+        80,
+        1200,
         '2026-06-17T13:50:00.000Z',
       );
       await seedRecordPostgres(
@@ -459,6 +551,14 @@ test(
       assert.equal(clean.state, 'fresh');
       assert.equal(clean.total_records, 2);
       assert.equal(clean.last_record_updated_at, '2026-06-17T12:50:00.000Z');
+      assert.deepEqual(clean.stream_records, [{ stream: 'messages', record_count: 2, last_updated: null }]);
+      assert.deepEqual(clean.retained_bytes, {
+        record_json_bytes: 725,
+        record_changes_json_bytes: 80,
+        blob_bytes: 1200,
+        total_bytes: 2005,
+      });
+      assert.equal(clean.total_retained_bytes, 2005);
     } finally {
       await cleanupPostgres(connectorId, instanceId);
       await closePostgresStorage();
@@ -476,6 +576,30 @@ async function seedRetainedSizeStreamPostgres(instanceId, connectorId, stream, r
        record_count = EXCLUDED.record_count,
        computed_at = EXCLUDED.computed_at`,
     [instanceId, connectorId, stream, recordCount, computedAt],
+  );
+}
+
+async function seedRetainedSizeConnectionPostgres(
+  instanceId,
+  connectorId,
+  recordJsonBytes,
+  recordChangesJsonBytes,
+  blobBytes,
+  computedAt = NOW,
+) {
+  await postgresQuery(
+    `INSERT INTO retained_size_connection(
+       connector_instance_id, connector_id, current_record_json_bytes,
+       record_history_json_bytes, blob_bytes, dirty, computed_at
+     )
+     VALUES($1, $2, $3, $4, $5, 0, $6)
+     ON CONFLICT (connector_instance_id) DO UPDATE SET
+       connector_id = EXCLUDED.connector_id,
+       current_record_json_bytes = EXCLUDED.current_record_json_bytes,
+       record_history_json_bytes = EXCLUDED.record_history_json_bytes,
+       blob_bytes = EXCLUDED.blob_bytes,
+       computed_at = EXCLUDED.computed_at`,
+    [instanceId, connectorId, recordJsonBytes, recordChangesJsonBytes, blobBytes, computedAt],
   );
 }
 

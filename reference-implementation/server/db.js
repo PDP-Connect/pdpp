@@ -1300,6 +1300,9 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   total_records                 INTEGER NOT NULL DEFAULT 0,
   stream_count                  INTEGER NOT NULL DEFAULT 0,
   last_record_updated_at        TEXT,
+  stream_records_json           TEXT NOT NULL DEFAULT '[]',
+  retained_bytes_json           TEXT NOT NULL DEFAULT '{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}',
+  total_retained_bytes          INTEGER NOT NULL DEFAULT 0,
   -- 1 means a mutation/ingest/run-lifecycle change happened that the
   -- maintained evidence has not yet absorbed. Reads must surface this as
   -- 'stale' rather than presenting the row as fresh truth.
@@ -1368,6 +1371,18 @@ function addColumnIfMissing(raw, table, column, type) {
   const cols = raw.prepare(`PRAGMA table_info(${table})`).all();
   if (cols.some((c) => c.name === column)) return;
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+function ensureConnectorSummaryEvidenceColumns(raw) {
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'last_record_updated_at', 'TEXT');
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'stream_records_json', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(
+    raw,
+    'connector_summary_evidence',
+    'retained_bytes_json',
+    'TEXT NOT NULL DEFAULT \'{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}\'',
+  );
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'total_retained_bytes', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {
@@ -3307,6 +3322,7 @@ export function initDb(path = ':memory:', opts = {}) {
   );
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
+  runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
   // prior package it extends via `parent_package_id`. Pre-existing reference
   // DBs predate the column; add it non-destructively (NULL = a root package
