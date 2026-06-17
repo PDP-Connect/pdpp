@@ -64,6 +64,39 @@ export interface TimelineEnvelope {
   truncated?: boolean;
 }
 
+export type RunHandleStatus =
+  | "abandoned"
+  | "active"
+  | "cancelled"
+  | "completed"
+  | "deferred"
+  | "expired"
+  | "failed"
+  | "leased"
+  | "released"
+  | "starting_surface"
+  | "surface_failed"
+  | "waiting_for_browser_surface";
+
+export interface RunStatusEnvelope {
+  completed_at: string | null;
+  connector_id: string | null;
+  connector_instance_id: string | null;
+  failure: {
+    connector_error_message: string | null;
+    message: string | null;
+    origin: string | null;
+    reason: string | null;
+  } | null;
+  links: { timeline: string };
+  object: "run_status";
+  run_id: string;
+  started_at: string | null;
+  status: RunHandleStatus;
+  terminal_reason: string | null;
+  trace_id: string | null;
+}
+
 interface TimelinePageOptions {
   cursor?: string | null;
 }
@@ -107,6 +140,65 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
     next_cursor: typeof r.next_cursor === "string" && r.next_cursor.length > 0 ? r.next_cursor : undefined,
     terminal_status: terminalStatus,
     truncated: r.truncated === true,
+  };
+}
+
+function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
+  const r = (raw || {}) as {
+    completed_at?: unknown;
+    connector_id?: unknown;
+    connector_instance_id?: unknown;
+    failure?: unknown;
+    links?: unknown;
+    object?: unknown;
+    run_id?: unknown;
+    started_at?: unknown;
+    status?: unknown;
+    terminal_reason?: unknown;
+    trace_id?: unknown;
+  };
+  const status =
+    r.status === "abandoned" ||
+    r.status === "active" ||
+    r.status === "cancelled" ||
+    r.status === "completed" ||
+    r.status === "deferred" ||
+    r.status === "expired" ||
+    r.status === "failed" ||
+    r.status === "leased" ||
+    r.status === "released" ||
+    r.status === "starting_surface" ||
+    r.status === "surface_failed" ||
+    r.status === "waiting_for_browser_surface"
+      ? r.status
+      : "active";
+  const failure =
+    r.failure && typeof r.failure === "object" && !Array.isArray(r.failure)
+      ? (r.failure as Record<string, unknown>)
+      : null;
+  return {
+    completed_at: typeof r.completed_at === "string" ? r.completed_at : null,
+    connector_id: typeof r.connector_id === "string" ? r.connector_id : null,
+    connector_instance_id: typeof r.connector_instance_id === "string" ? r.connector_instance_id : null,
+    failure: failure
+      ? {
+          connector_error_message:
+            typeof failure.connector_error_message === "string" ? failure.connector_error_message : null,
+          message: typeof failure.message === "string" ? failure.message : null,
+          origin: typeof failure.origin === "string" ? failure.origin : null,
+          reason: typeof failure.reason === "string" ? failure.reason : null,
+        }
+      : null,
+    links:
+      r.links && typeof r.links === "object" && !Array.isArray(r.links)
+        ? { timeline: String((r.links as Record<string, unknown>).timeline ?? "") }
+        : { timeline: "" },
+    object: "run_status",
+    run_id: typeof r.run_id === "string" ? r.run_id : "",
+    started_at: typeof r.started_at === "string" ? r.started_at : null,
+    status,
+    terminal_reason: typeof r.terminal_reason === "string" ? r.terminal_reason : null,
+    trace_id: typeof r.trace_id === "string" ? r.trace_id : null,
   };
 }
 
@@ -988,6 +1080,17 @@ export async function getRunTimeline(runId: string, options?: TimelinePageOption
     return normalizeTimeline(
       await refFetch(withTimelinePage(`/_ref/runs/${encodeURIComponent(runId)}/timeline`, options))
     );
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function getRunStatus(runId: string): Promise<RunStatusEnvelope | null> {
+  try {
+    return normalizeRunStatus(await refFetch(`/_ref/runs/${encodeURIComponent(runId)}`));
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;

@@ -1,6 +1,8 @@
 /**
- * Coverage for the envelope-driven terminal/active decision on the run detail
- * page (task 4.3 of `add-run-timeline-terminal-status`).
+ * Coverage for the whole-handle terminal/active decision on the run detail
+ * page. Runtime terminal events still flow through the timeline envelope, but
+ * browser-surface setup handles can fail before `run.started`; those use the
+ * run-status handle.
  *
  * Root cause being fixed: the page used to derive `active` by scanning a single
  * page of timeline events (`getTerminalRunStatus(events) == null`). The terminal
@@ -21,8 +23,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   type EnvelopeTerminalStatus,
+  isRunHandleActive,
   isRunActive,
   mapEnvelopeTerminalToDisplay,
+  mapRunHandleStatusToDisplay,
   resolveDisplayTerminalStatus,
   type TerminalRunStatus,
 } from "./run-terminal-status.ts";
@@ -39,6 +43,14 @@ test("isRunActive treats a null terminal_status as active and any class as termi
   assert.equal(isRunActive("failed"), false);
   assert.equal(isRunActive("cancelled"), false);
   assert.equal(isRunActive("abandoned"), false);
+});
+
+test("run-status handle treats browser-surface failed setup as terminal, not cancellable active work", () => {
+  assert.equal(isRunHandleActive("surface_failed"), false);
+  assert.equal(mapRunHandleStatusToDisplay("surface_failed"), "failed");
+  assert.equal(isRunHandleActive("waiting_for_browser_surface"), true);
+  assert.equal(isRunHandleActive("starting_surface"), true);
+  assert.equal(isRunHandleActive("leased"), true);
 });
 
 test("terminal_status drives a terminal decision even when the events page has NO terminal event", () => {
@@ -108,24 +120,25 @@ test("resolveDisplayTerminalStatus reports no terminal class for an active run",
   );
 });
 
-// ── Page wiring: active is envelope-driven; gates follow it ───────────────────
+// ── Page wiring: active is handle-driven; gates follow it ─────────────────────
 
-const PAGE_ACTIVE_FROM_ENVELOPE_RE =
-  /const envelopeTerminal = envelope\.terminal_status \?\? null;\s*const active = isRunActive\(envelopeTerminal\);/;
+const PAGE_ACTIVE_FROM_RUN_STATUS_RE =
+  /const active = runStatus \? isRunHandleActive\(runStatus\.status\) : isRunActive\(envelopeTerminal\);/;
 // The old, buggy derivation (active straight off a single-page event scan) must
 // be gone.
 const PAGE_OLD_ACTIVE_RE = /const active = (getTerminalRunStatus\(events\)|terminalStatus) == null;/;
 const PAGE_POLLER_GATE_RE = /<RunDetailPoller enabled=\{active\} \/>/;
 const PAGE_CANCEL_GATE_RE = /\{active \? <CancelRunControl runId=\{runId\} \/> : null\}/;
 const PAGE_DISPLAY_FROM_ENVELOPE_RE = /resolveDisplayTerminalStatus\(\{/;
+const PAGE_DISPLAY_FROM_RUN_STATUS_RE = /mapRunHandleStatusToDisplay\(runStatus\?\.status \?\? null\)/;
 
-test("run detail page derives `active` from envelope terminal_status, not a single-page scan", async () => {
+test("run detail page derives `active` from run-status handle, falling back to envelope terminal_status", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, PAGE_ACTIVE_FROM_ENVELOPE_RE);
+  assert.match(src, PAGE_ACTIVE_FROM_RUN_STATUS_RE);
   assert.doesNotMatch(src, PAGE_OLD_ACTIVE_RE, "active must not be derived from scanning a single event page");
 });
 
-test("the poller and cancel control both gate on the envelope-based `active`", async () => {
+test("the poller and cancel control both gate on the handle-based `active`", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PAGE_POLLER_GATE_RE);
   assert.match(src, PAGE_CANCEL_GATE_RE);
@@ -134,6 +147,7 @@ test("the poller and cancel control both gate on the envelope-based `active`", a
 test("the displayed terminal class is resolved via the envelope-anchored helper", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PAGE_DISPLAY_FROM_ENVELOPE_RE);
+  assert.match(src, PAGE_DISPLAY_FROM_RUN_STATUS_RE);
 });
 
 // ── ref-client: TimelineEnvelope carries terminal_status through normalize ────

@@ -9,7 +9,7 @@
 //
 // See: openspec/changes/add-run-timeline-terminal-status
 
-import type { TimelineEnvelope } from "../../lib/ref-client.ts";
+import type { RunHandleStatus, TimelineEnvelope } from "../../lib/ref-client.ts";
 
 export type TerminalRunStatus = "succeeded" | "succeeded_with_gaps" | "failed" | "cancelled" | null;
 
@@ -22,6 +22,18 @@ export type EnvelopeTerminalStatus = NonNullable<TimelineEnvelope["terminal_stat
  */
 export function isRunActive(envelopeTerminal: EnvelopeTerminalStatus | null): boolean {
   return envelopeTerminal == null;
+}
+
+/**
+ * Whole-handle liveness from `GET /_ref/runs/:runId`.
+ *
+ * The timeline envelope only knows Collection Profile terminal events
+ * (`run.completed` / `run.failed` / ...). Browser-surface setup runs can end
+ * before `run.started`, so their truthful liveness comes from the run-status
+ * handle surface instead.
+ */
+export function isRunHandleActive(status: RunHandleStatus | null): boolean {
+  return status === "active" || status === "leased" || status === "starting_surface" || status === "waiting_for_browser_surface";
 }
 
 /**
@@ -38,6 +50,24 @@ export function mapEnvelopeTerminalToDisplay(envelopeTerminal: EnvelopeTerminalS
       return "cancelled";
     case "failed":
     case "abandoned":
+      return "failed";
+    default:
+      return null;
+  }
+}
+
+export function mapRunHandleStatusToDisplay(status: RunHandleStatus | null): TerminalRunStatus {
+  switch (status) {
+    case "completed":
+      return "succeeded";
+    case "cancelled":
+      return "cancelled";
+    case "abandoned":
+    case "deferred":
+    case "expired":
+    case "failed":
+    case "released":
+    case "surface_failed":
       return "failed";
     default:
       return null;

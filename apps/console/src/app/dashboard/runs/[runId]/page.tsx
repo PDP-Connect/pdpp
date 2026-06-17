@@ -6,7 +6,13 @@ import { Fragment } from "react";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
+import {
+  getRunStatus,
+  getRunTimeline,
+  type RunStatusEnvelope,
+  type SpineEvent,
+  type TimelineEnvelope,
+} from "../../lib/ref-client.ts";
 import {
   type CurrentRunAssistance,
   getCurrentRunAssistance,
@@ -24,7 +30,13 @@ import {
 import { CancelRunControl } from "./cancel-run-control.tsx";
 import { RunInteractionForm } from "./interaction-form.tsx";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
-import { isRunActive, resolveDisplayTerminalStatus, type TerminalRunStatus } from "./run-terminal-status.ts";
+import {
+  isRunActive,
+  isRunHandleActive,
+  mapRunHandleStatusToDisplay,
+  resolveDisplayTerminalStatus,
+  type TerminalRunStatus,
+} from "./run-terminal-status.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -60,8 +72,9 @@ export default async function RunDetailPage({
   const cursor = getCursor(await searchParams);
 
   let envelope: TimelineEnvelope | null;
+  let runStatus: RunStatusEnvelope | null;
   try {
-    envelope = await getRunTimeline(runId, { cursor });
+    [envelope, runStatus] = await Promise.all([getRunTimeline(runId, { cursor }), getRunStatus(runId)]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -89,7 +102,7 @@ export default async function RunDetailPage({
   // page-only scan never sees it and would treat the run as active forever
   // (wrong badge, never-disabled poller, wrongly-rendered Cancel control).
   const envelopeTerminal = envelope.terminal_status ?? null;
-  const active = isRunActive(envelopeTerminal);
+  const active = runStatus ? isRunHandleActive(runStatus.status) : isRunActive(envelopeTerminal);
   // In-page scan retained ONLY for the detail nuances it can read off the
   // event object (failed-vs-cancelled reason, succeeded-with-gaps). It is
   // never the source of the active/terminal decision and may be null when
@@ -109,10 +122,10 @@ export default async function RunDetailPage({
     coverageGapCount: gapClassification.coverageGaps.length,
     envelopeTerminal,
     inPageTerminalStatus,
-  });
+  }) ?? mapRunHandleStatusToDisplay(runStatus?.status ?? null);
   const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus: displayTerminalStatus });
-  const failureRows = summarizeFailure(failure);
+  const failureRows = summarizeFailure(failure, runStatus);
 
   // The before-timeline stack, header meta pills, and description are assigned
   // to locals and passed to TimelineDetailView's slot-named props
@@ -865,8 +878,18 @@ function summarizeInteractions(events: SpineEvent[]): [string, string][] {
   ];
 }
 
-function summarizeFailure(failure: SpineEvent | undefined): [string, string][] {
+function summarizeFailure(failure: SpineEvent | undefined, runStatus: RunStatusEnvelope | null): [string, string][] {
   if (!failure) {
+    if (runStatus?.failure) {
+      return [
+        ["reason", runStatus.failure.reason ?? runStatus.terminal_reason ?? "—"],
+        ["origin", runStatus.failure.origin ?? "—"],
+        ...(runStatus.failure.message ? [["message", runStatus.failure.message] as [string, string]] : []),
+        ...(runStatus.failure.connector_error_message
+          ? [["connector", runStatus.failure.connector_error_message] as [string, string]]
+          : []),
+      ];
+    }
     return [["status", "no failure"]];
   }
   const failureOrigin = typeof failure.data.failure_origin === "string" ? failure.data.failure_origin : null;
