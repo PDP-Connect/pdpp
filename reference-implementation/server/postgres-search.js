@@ -16,6 +16,7 @@ import {
 } from './postgres-storage.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { sumCountRows } from './search-index-counts.js';
 
 function lexicalTextEntries(fields) {
   if (!fields || typeof fields !== 'object') return [];
@@ -148,20 +149,20 @@ export async function postgresLexicalRecordsCountNonDeleted({ connectorInstanceI
 }
 
 export async function postgresLexicalCountIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
-  let total = 0;
-  for (const field of declaredFields || []) {
-    const result = await postgresQuery(
-      `SELECT COUNT(*) AS n
-       FROM records
-       WHERE connector_instance_id = $1
-         AND stream = $2
-         AND deleted = FALSE
-         AND COALESCE(record_json ->> $3, '') <> ''`,
-      [connectorInstanceId, stream, field],
-    );
-    total += Number(result.rows[0]?.n || 0);
-  }
-  return total;
+  const fields = declaredFields || [];
+  if (fields.length === 0) return 0;
+  const result = await postgresQuery(
+    `SELECT declared_fields.field_ordinal, declared_fields.field, COUNT(*) AS n
+     FROM unnest($3::text[]) WITH ORDINALITY AS declared_fields(field, field_ordinal)
+     JOIN records
+       ON records.connector_instance_id = $1
+      AND records.stream = $2
+      AND records.deleted = FALSE
+      AND COALESCE(records.record_json ->> declared_fields.field, '') <> ''
+     GROUP BY declared_fields.field_ordinal, declared_fields.field`,
+    [connectorInstanceId, stream, fields],
+  );
+  return sumCountRows(result.rows);
 }
 
 export async function postgresLexicalRecordsPageNonDeleted({
@@ -325,20 +326,20 @@ export async function postgresCountSemanticRecords({ connectorInstanceId, stream
 }
 
 export async function postgresCountIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }) {
-  let total = 0;
-  for (const field of declaredFields) {
-    const result = await postgresQuery(
-      `SELECT COUNT(*) AS n
-       FROM records
-       WHERE connector_instance_id = $1
-         AND stream = $2
-         AND deleted = FALSE
-         AND NULLIF(BTRIM(record_json ->> $3), '') IS NOT NULL`,
-      [connectorInstanceId, stream, field],
-    );
-    total += Number(result.rows[0]?.n || 0);
-  }
-  return total;
+  const fields = declaredFields || [];
+  if (fields.length === 0) return 0;
+  const result = await postgresQuery(
+    `SELECT declared_fields.field_ordinal, declared_fields.field, COUNT(*) AS n
+     FROM unnest($3::text[]) WITH ORDINALITY AS declared_fields(field, field_ordinal)
+     JOIN records
+       ON records.connector_instance_id = $1
+      AND records.stream = $2
+      AND records.deleted = FALSE
+      AND NULLIF(BTRIM(records.record_json ->> declared_fields.field), '') IS NOT NULL
+     GROUP BY declared_fields.field_ordinal, declared_fields.field`,
+    [connectorInstanceId, stream, fields],
+  );
+  return sumCountRows(result.rows);
 }
 
 export async function postgresCountSemanticIndexByScope({ connectorId, connectorInstanceId, scopeKey }) {
@@ -364,30 +365,53 @@ export async function postgresListExistingSemanticKeys({ connectorId, connectorI
   return new Set(result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`])));
 }
 
-export async function postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, entries }) {
-  await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+function dedupeSemanticEntries({ connectorId, connectorInstanceId, entries }) {
+  const deduped = new Map();
+  for (const entry of entries || []) {
+    const resolvedConnectorInstanceId = entry.connectorInstanceId ?? connectorInstanceId;
+    const key = JSON.stringify([resolvedConnectorInstanceId, entry.scopeKey, entry.recordKey]);
+    deduped.set(key, {
+      connectorId: entry.connectorId ?? connectorId,
+      connectorInstanceId: resolvedConnectorInstanceId,
+      scopeKey: entry.scopeKey,
+      recordKey: entry.recordKey,
+      values: Array.from(entry.vector || []),
+    });
+  }
+  return Array.from(deduped.values());
+}
+
+export async function postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), entries }) {
   const vectorMode = isPostgresSemanticVectorEmbedding();
-  for (const entry of entries) {
-    const values = Array.from(entry.vector || []);
+  const rows = dedupeSemanticEntries({ connectorId, connectorInstanceId, entries })
     // pgvector rejects empty vectors; an empty embedding could never match a
     // query anyway (the JSONB path scored it at infinite distance).
-    if (vectorMode && values.length === 0) continue;
-    await postgresQuery(
-      // `[0.1,0.2,...]` is simultaneously valid JSON and a valid pgvector
-      // literal, so only the cast differs between the two storage modes.
-      `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
-       VALUES ($1, $2, $3, $4, $5::${vectorMode ? 'vector' : 'jsonb'})
-       ON CONFLICT (connector_instance_id, scope_key, record_key) DO UPDATE
-         SET embedding = EXCLUDED.embedding`,
-      [
-        entry.connectorId ?? connectorId,
-        entry.connectorInstanceId ?? connectorInstanceId,
-        entry.scopeKey,
-        entry.recordKey,
-        JSON.stringify(values),
-      ],
-    );
-  }
+    .filter((entry) => !vectorMode || entry.values.length > 0);
+  if (rows.length === 0) return 0;
+  await postgresQuery(
+    // The embedding parameter is text: pg accepts a JSON array literal as both
+    // valid JSON and valid pgvector input, but the target type differs between
+    // the two storage modes.
+    `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
+     SELECT rows.connector_id, rows.connector_instance_id, rows.scope_key, rows.record_key, rows.embedding::${vectorMode ? 'vector' : 'jsonb'}
+     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+       AS rows(connector_id, connector_instance_id, scope_key, record_key, embedding)
+     ON CONFLICT (connector_instance_id, scope_key, record_key) DO UPDATE
+       SET embedding = EXCLUDED.embedding`,
+    [
+      rows.map((entry) => entry.connectorId),
+      rows.map((entry) => entry.connectorInstanceId),
+      rows.map((entry) => entry.scopeKey),
+      rows.map((entry) => entry.recordKey),
+      rows.map((entry) => JSON.stringify(entry.values)),
+    ],
+  );
+  return rows.length;
+}
+
+export async function postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, entries }) {
+  await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+  return await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
 }
 
 export async function postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit }) {

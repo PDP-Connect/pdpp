@@ -47,6 +47,7 @@ import {
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { sqliteCountIndexableTextValues } from './search-index-counts.js';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
@@ -56,6 +57,7 @@ import {
   postgresAnySemanticProgressRow,
   postgresSemanticIndexDelete,
   postgresSemanticIndexDeleteByConnectorStream,
+  postgresSemanticIndexInsertMany,
   postgresSemanticIndexUpsertMany,
   postgresSemanticSearch,
   postgresGetSemanticRecord,
@@ -1139,13 +1141,13 @@ function jsonPathForTopLevelField(field) {
 }
 
 function countIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }) {
-  let total = 0;
-  for (const field of declaredFields) {
-    const path = jsonPathForTopLevelField(field);
-    const row = getOne(referenceQueries.searchSemanticRecordsCountIndexableTextValues, [connectorInstanceId, stream, path, path]);
-    total += Number(row?.n || 0);
-  }
-  return total;
+  return sqliteCountIndexableTextValues({
+    connectorInstanceId,
+    stream,
+    declaredFields,
+    jsonPathForField: jsonPathForTopLevelField,
+    iterateDynamicSql: iterateDynamicSqlAcknowledged,
+  });
 }
 
 function listSemanticConnectorInstanceIds({ connectorId, stream }) {
@@ -1243,15 +1245,7 @@ async function rebuildSemanticIndexForStream({
       }
     }
     if (usePostgres) {
-      const byRecordKey = new Map();
-      for (const entry of entries) {
-        const recordEntries = byRecordKey.get(entry.recordKey) || [];
-        recordEntries.push(entry);
-        byRecordKey.set(entry.recordKey, recordEntries);
-      }
-      for (const [recordKey, recordEntries] of byRecordKey) {
-        await postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId, stream, recordKey, entries: recordEntries });
-      }
+      await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
     } else if (entries.length > 0 && typeof index.upsertMany === 'function') {
       await index.upsertMany(entries);
     } else {

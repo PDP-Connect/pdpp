@@ -30,8 +30,11 @@ import {
   postgresPersistContentAddressedBlob,
 } from '../server/postgres-records.js';
 import {
+  postgresCountIndexableSemanticValues,
+  postgresLexicalCountIndexableTextValues,
   postgresLexicalIndexUpsert,
   postgresLexicalSearch,
+  postgresSemanticIndexInsertMany,
   postgresSemanticIndexUpsertMany,
   postgresSemanticSearch,
 } from '../server/postgres-search.js';
@@ -1324,6 +1327,115 @@ if (!POSTGRES_URL) {
       configureSemanticBackend(null);
       await closePostgresStorage();
       closeDb();
+    }
+  });
+
+  test('postgres grouped indexable field counts match per-field loop semantics', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_index_counts_${suffix}`;
+    const connectorInstanceId = `cin_pg_index_counts_${suffix}`;
+    const stream = 'messages';
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      const rows = [
+        ['a', { title: 'Alpha', body: '  ', summary: 'One' }, false],
+        ['b', { title: '', body: 'Beta', summary: null }, false],
+        ['c', { title: 'Gamma', body: 'Delta', summary: 42 }, false],
+        ['deleted', { title: 'Hidden', body: 'Hidden', summary: 'Hidden' }, true],
+      ];
+      for (const [recordKey, recordJson, deleted] of rows) {
+        await postgresQuery(
+          `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted)
+           VALUES($1, $2, $3, $4, $5::jsonb, $6, 1, $7)`,
+          [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(recordJson), new Date().toISOString(), deleted],
+        );
+      }
+
+      assert.equal(
+        await postgresLexicalCountIndexableTextValues({
+          connectorInstanceId,
+          stream,
+          declaredFields: ['title', 'body', 'missing', 'title'],
+        }),
+        7,
+      );
+      assert.equal(
+        await postgresCountIndexableSemanticValues({
+          connectorInstanceId,
+          stream,
+          declaredFields: ['title', 'body', 'missing', 'title'],
+        }),
+        6,
+      );
+    } finally {
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+    }
+  });
+
+  test('postgres semantic insert-many writes and updates the same indexed rows', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_semantic_batch_${suffix}`;
+    const connectorInstanceId = `cin_pg_semantic_batch_${suffix}`;
+    const stream = 'messages';
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      const titleScope = JSON.stringify([stream, 'title']);
+      const bodyScope = JSON.stringify([stream, 'body']);
+
+      assert.equal(
+        await postgresSemanticIndexInsertMany({
+          connectorId,
+          connectorInstanceId,
+          entries: [
+            { connectorId, connectorInstanceId, scopeKey: titleScope, recordKey: 'a', vector: [1, 0, 0] },
+            { connectorId, connectorInstanceId, scopeKey: bodyScope, recordKey: 'a', vector: [0, 1, 0] },
+            { connectorId, connectorInstanceId, scopeKey: titleScope, recordKey: 'b', vector: [0, 0, 1] },
+            { connectorId, connectorInstanceId, scopeKey: titleScope, recordKey: 'b', vector: [0.5, 0.5, 0] },
+          ],
+        }),
+        3,
+      );
+
+      let indexedRows = await postgresQuery(
+        `SELECT scope_key, record_key, embedding::text AS embedding
+         FROM semantic_search_blob
+         WHERE connector_instance_id = $1
+         ORDER BY scope_key, record_key`,
+        [connectorInstanceId],
+      );
+      assert.deepEqual(
+        indexedRows.rows.map((row) => [row.scope_key, row.record_key]),
+        [
+          [bodyScope, 'a'],
+          [titleScope, 'a'],
+          [titleScope, 'b'],
+        ],
+      );
+      assert.equal(indexedRows.rows.find((row) => row.record_key === 'b').embedding.replace(/\s+/g, ''), '[0.5,0.5,0]');
+
+      assert.equal(
+        await postgresSemanticIndexInsertMany({
+          connectorId,
+          connectorInstanceId,
+          entries: [
+            { connectorId, connectorInstanceId, scopeKey: titleScope, recordKey: 'b', vector: [0.25, 0.75, 0] },
+          ],
+        }),
+        1,
+      );
+      indexedRows = await postgresQuery(
+        `SELECT COUNT(*)::int AS count,
+                MAX(embedding::text) FILTER (WHERE scope_key = $2 AND record_key = 'b') AS b_embedding
+         FROM semantic_search_blob
+         WHERE connector_instance_id = $1`,
+        [connectorInstanceId, titleScope],
+      );
+      assert.equal(indexedRows.rows[0].count, 3);
+      assert.equal(indexedRows.rows[0].b_embedding.replace(/\s+/g, ''), '[0.25,0.75,0]');
+    } finally {
+      await postgresQuery('DELETE FROM semantic_search_blob WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
     }
   });
 

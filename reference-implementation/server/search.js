@@ -40,6 +40,7 @@ import {
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
+import { sqliteCountIndexableTextValues } from './search-index-counts.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import {
   listActiveOwnerBindingsForConnectors,
@@ -327,13 +328,13 @@ async function countIndexableTextValues({ connectorInstanceId, stream, declaredF
       declaredFields,
     });
   }
-  let total = 0;
-  for (const field of declaredFields) {
-    const path = jsonPathForTopLevelField(field);
-    const row = getOne(referenceQueries.searchRecordsCountIndexableTextValues, [connectorInstanceId, stream, path, path]);
-    total += Number(row?.n || 0);
-  }
-  return total;
+  return sqliteCountIndexableTextValues({
+    connectorInstanceId,
+    stream,
+    declaredFields,
+    jsonPathForField: jsonPathForTopLevelField,
+    iterateDynamicSql: iterateDynamicSqlAcknowledged,
+  });
 }
 
 async function lexicalMetaGetFingerprint({ connectorInstanceId, stream }) {
