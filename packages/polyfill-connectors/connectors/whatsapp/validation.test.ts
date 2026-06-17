@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateWhatsAppChatExportArtifact } from "./validation.ts";
 
+process.env.TZ = "America/Chicago";
+
 const VALID_EXPORT = `[6/5/24, 9:15:22 AM] Alice: Hello
 [6/5/24, 9:16:00 AM] Bob: <Media omitted>
 [6/5/24, 9:17:00 AM] Alice: Multi

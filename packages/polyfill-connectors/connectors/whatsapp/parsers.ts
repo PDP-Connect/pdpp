@@ -44,6 +44,7 @@ const ZIP_STORE_METHOD = 0;
 const ZIP_DEFLATE_METHOD = 8;
 const ZIP_EOCD_MIN_LENGTH = 22;
 const ZIP_EOCD_MAX_COMMENT_LENGTH = 0xff_ff;
+const WHATSAPP_TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([APap][Mm]))?$/;
 
 // Chat ID is derived from the export file name. This preserves existing
 // collector semantics while validation and collection share one parser.
@@ -53,14 +54,105 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function parseWhatsAppDateTime(dateStr: string, timeStr: string): string | null {
-  try {
-    const date = new Date(`${dateStr} ${timeStr}`);
-    if (!Number.isNaN(date.getTime())) {
-      return date.toISOString();
+function parseWhatsAppDateParts(dateStr: string): { day: number; month: number; year: number } | null {
+  let separator = ".";
+  if (dateStr.includes("/")) {
+    separator = "/";
+  } else if (dateStr.includes("-")) {
+    separator = "-";
+  }
+  const parts = dateStr.split(separator);
+  if (parts.length !== 3) {
+    return null;
+  }
+  const [firstRaw, secondRaw, thirdRaw] = parts;
+  const first = Number(firstRaw);
+  const second = Number(secondRaw);
+  const third = Number(thirdRaw);
+  if (![first, second, third].every(Number.isInteger)) {
+    return null;
+  }
+
+  let day: number;
+  let month: number;
+  let year: number;
+  if ((firstRaw?.length ?? 0) === 4) {
+    year = first;
+    month = second;
+    day = third;
+  } else {
+    year = third;
+    if (third >= 70 && third < 100) {
+      year = 1900 + third;
+    } else if (third < 70) {
+      year = 2000 + third;
     }
-  } catch {
-    /* fall through */
+    if (first > 12 && second <= 12) {
+      day = first;
+      month = second;
+    } else {
+      month = first;
+      day = second;
+    }
+  }
+
+  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  return { day, month, year };
+}
+
+function parseWhatsAppTimeParts(timeStr: string): { hour: number; minute: number; second: number } | null {
+  const match = WHATSAPP_TIME_RE.exec(timeStr.trim());
+  if (!match) {
+    return null;
+  }
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = match[3] == null ? 0 : Number(match[3]);
+  const meridiem = match[4]?.toLowerCase();
+  if (!(Number.isInteger(hour) && Number.isInteger(minute) && Number.isInteger(second))) {
+    return null;
+  }
+  if (meridiem) {
+    if (hour < 1 || hour > 12) {
+      return null;
+    }
+    if (meridiem === "pm" && hour !== 12) {
+      hour += 12;
+    } else if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    return null;
+  }
+  return { hour, minute, second };
+}
+
+export function parseWhatsAppDateTime(dateStr: string, timeStr: string): string | null {
+  const dateParts = parseWhatsAppDateParts(dateStr);
+  const timeParts = parseWhatsAppTimeParts(timeStr);
+  if (!(dateParts && timeParts)) {
+    return null;
+  }
+  const date = new Date(
+    dateParts.year,
+    dateParts.month - 1,
+    dateParts.day,
+    timeParts.hour,
+    timeParts.minute,
+    timeParts.second
+  );
+  if (
+    date.getFullYear() === dateParts.year &&
+    date.getMonth() === dateParts.month - 1 &&
+    date.getDate() === dateParts.day &&
+    date.getHours() === timeParts.hour &&
+    date.getMinutes() === timeParts.minute &&
+    date.getSeconds() === timeParts.second
+  ) {
+    return date.toISOString();
   }
   return null;
 }

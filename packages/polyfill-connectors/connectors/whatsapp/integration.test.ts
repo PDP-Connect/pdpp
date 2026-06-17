@@ -96,6 +96,7 @@ async function runWhatsAppImport(
       PDPP_OWNER_TOKEN: "",
       PDPP_RS_URL: "",
       RS_URL: "",
+      TZ: "America/Chicago",
       WHATSAPP_EXPORT_DIR: importRoot,
       ...env,
     },
