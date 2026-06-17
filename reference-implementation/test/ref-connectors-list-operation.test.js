@@ -15,6 +15,7 @@ import test from 'node:test';
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
 import { createAttention } from '../runtime/attention.ts';
 import {
+  canUseConnectorWideRunSummaryFallback,
   isPublicReferenceConnector,
   LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
   mapWithConcurrency,
@@ -121,6 +122,69 @@ test('ref.connectors.list yields empty envelope when dependency returns empty', 
     listConnectorSummaries: () => [],
   });
   assert.deepEqual(envelope, { object: 'list', data: [] });
+});
+
+test('connector-wide run fallback is allowed only for singleton active visible connections', () => {
+  const summary = {
+    id: 'run_legacy_static',
+    run_id: 'run_legacy_static',
+    browser_surface_profile_key: null,
+  };
+
+  assert.equal(
+    canUseConnectorWideRunSummaryFallback({
+      activeVisibleConnectionCount: 1,
+      browserSurfaceProfileKey: null,
+      connectorInstanceId: 'cin_singleton',
+      summary,
+    }),
+    true,
+    'a legacy unscoped run can hydrate the only active visible connection for that connector type',
+  );
+
+  assert.equal(
+    canUseConnectorWideRunSummaryFallback({
+      activeVisibleConnectionCount: 2,
+      browserSurfaceProfileKey: null,
+      connectorInstanceId: 'cin_one_of_many',
+      summary,
+    }),
+    false,
+    'a connector-wide run must not be borrowed when multiple active visible connections exist',
+  );
+});
+
+test('connector-wide run fallback refuses runs tagged to a different browser profile', () => {
+  const staleSetupRun = {
+    id: 'run_stale_setup_shell',
+    run_id: 'run_stale_setup_shell',
+    browser_surface_profile_key: 'chase:cin_expired_setup',
+  };
+
+  assert.equal(
+    canUseConnectorWideRunSummaryFallback({
+      activeVisibleConnectionCount: 1,
+      browserSurfaceProfileKey: 'chase:cin_active',
+      connectorInstanceId: 'cin_active',
+      summary: staleSetupRun,
+    }),
+    false,
+    'stale setup-shell browser runs must not attach to the surviving active source',
+  );
+
+  assert.equal(
+    canUseConnectorWideRunSummaryFallback({
+      activeVisibleConnectionCount: 1,
+      browserSurfaceProfileKey: 'chatgpt:cin_active',
+      connectorInstanceId: 'cin_active',
+      summary: {
+        ...staleSetupRun,
+        browser_surface_profile_key: 'chatgpt:cin_active',
+      },
+    }),
+    true,
+    'a browser run with the matching profile remains valid for the connection',
+  );
 });
 
 test('ref.connectors.list carries one owner-only runtime status when supplied', async () => {

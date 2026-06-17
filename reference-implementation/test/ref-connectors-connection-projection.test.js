@@ -343,6 +343,37 @@ test('reference connector summaries keep revoked connections visible for owner m
   assert.equal(scoped.revoked_at, REVOKED_AT);
 }));
 
+test('reference connector summaries hide retired setup shells from sources', withTmpDb(async () => {
+  seedConnector();
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorInstanceId: REVOKED_INSTANCE_ID,
+    ownerSubjectId: 'owner_local',
+    connectorId: CONNECTOR_ID,
+    displayName: 'Expired browser setup',
+    status: 'revoked',
+    revokedAt: REVOKED_AT,
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'expired-browser-shell',
+    sourceBinding: {
+      kind: 'browser_enrollment_shell',
+      enrollment_expires_at: '2026-06-10T10:00:00.000Z',
+    },
+    createdAt: NOW,
+    updatedAt: REVOKED_AT,
+  });
+
+  const summaries = await listConnectorSummaries();
+  assert.equal(
+    summaries.some((row) => row.connector_instance_id === REVOKED_INSTANCE_ID),
+    false,
+    'retired setup shells must not appear as revoked configured sources',
+  );
+
+  const scoped = await getConnectorSummaryForRoute(REVOKED_INSTANCE_ID);
+  assert.equal(scoped, null, 'retired setup shells are not resolvable as source detail rows');
+}));
+
 // `observed_at` on connection-health condition rows is stamped at projection
 // call time, so two projections of the same connection taken a millisecond apart
 // differ only in that timestamp. Normalize it before asserting structural

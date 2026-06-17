@@ -238,6 +238,7 @@ interface ConnectorInstanceRow {
   readonly displayName: string;
   readonly ownerSubjectId: string;
   readonly revokedAt: string | null;
+  readonly sourceBinding?: unknown;
   readonly sourceKind: string;
   readonly status: string;
 }
@@ -935,6 +936,31 @@ function runSummaryMatchesConnection(
   return data.connector_instance_id === connectorInstanceId || data.connection_id === connectorInstanceId;
 }
 
+export function canUseConnectorWideRunSummaryFallback(input: {
+  readonly activeVisibleConnectionCount: number;
+  readonly browserSurfaceProfileKey: string | null;
+  readonly connectorInstanceId: string;
+  readonly summary: SpineSummary;
+}): boolean {
+  if (input.activeVisibleConnectionCount !== 1) {
+    return false;
+  }
+  if (runSummaryMatchesConnection(input.summary, input.connectorInstanceId, input.browserSurfaceProfileKey)) {
+    return true;
+  }
+  // Browser-backed runs carry a profile key when the runtime knows which
+  // browser identity produced the run. A mismatched profile belongs to a sibling
+  // or an expired setup shell and must not be borrowed by a singleton fallback.
+  if (input.summary.browser_surface_profile_key) {
+    return false;
+  }
+  // Legacy API/static/manual connectors often emitted connector-wide run events
+  // before connection_id existed on the spine. When there is exactly one active
+  // visible connection for that connector type, the connector-wide run is the
+  // only honest source of last-run/freshness evidence for that row.
+  return true;
+}
+
 async function getLatestRunSummary(
   connectorId: string,
   status: string | null = null
@@ -947,12 +973,14 @@ async function getLatestRunSummary(
 }
 
 async function getLatestRunSummaryForConnection({
+  activeVisibleConnectionCount,
   browserSurfaceProfileKey,
   connectorId,
   connectorInstanceId,
   listRunSummariesForConnector,
   status = null,
 }: {
+  readonly activeVisibleConnectionCount: number;
   readonly browserSurfaceProfileKey: string | null;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
@@ -963,7 +991,18 @@ async function getLatestRunSummaryForConnection({
   const match = summaries.find((summary) =>
     runSummaryMatchesConnection(summary, connectorInstanceId, browserSurfaceProfileKey)
   );
-  return toConnectorRunSummary(match ?? null);
+  const fallback =
+    match ??
+    summaries.find((summary) =>
+      canUseConnectorWideRunSummaryFallback({
+        activeVisibleConnectionCount,
+        browserSurfaceProfileKey,
+        connectorInstanceId,
+        summary,
+      })
+    ) ??
+    null;
+  return toConnectorRunSummary(fallback);
 }
 
 async function getRetainedBytesForConnection(connectorInstanceId: string): Promise<RetainedBytesBreakdown | null> {
@@ -1353,8 +1392,21 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
   // owner-facing source list. Same pattern list as isPublicReferenceConnector.
   return instances.filter(
     (instance: ConnectorInstanceRow) =>
-      !NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part))
+      !NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part)) &&
+      !isRetiredSetupAttempt(instance)
   );
+}
+
+function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
+  if (instance.status !== "revoked") {
+    return false;
+  }
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return false;
+  }
+  const kind = (binding as { readonly kind?: unknown }).kind;
+  return kind === "browser_enrollment_shell" || kind === "static_secret_draft" || kind === "manual_upload_draft";
 }
 
 async function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
@@ -3537,6 +3589,34 @@ interface ConnectorSummaryProjectionDeps {
   readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
 }
 
+function isActiveVisibleConnectorInstance(
+  instance: ConnectorInstanceRow,
+  manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>
+): boolean {
+  if (instance.status !== "active") {
+    return false;
+  }
+  const manifest = manifestsByConnectorId.get(instance.connectorId);
+  if (!manifest) {
+    return false;
+  }
+  return isPublicReferenceConnector({ connector_id: instance.connectorId, manifest: JSON.stringify(manifest) }, manifest);
+}
+
+function countActiveVisibleConnectionsByConnectorId(
+  rows: readonly ConnectorInstanceRow[],
+  manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const instance of rows) {
+    if (!isActiveVisibleConnectorInstance(instance, manifestsByConnectorId)) {
+      continue;
+    }
+    counts.set(instance.connectorId, (counts.get(instance.connectorId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
   const cache = new Map<string, Promise<readonly SpineSummary[]>>();
   return (connectorId, status = null) => {
@@ -3649,7 +3729,8 @@ function buildRenderedVerdictForSummary(input: {
 // `getConnectorSummaryForRoute` (one resolved instance) call it.
 async function projectConnectorSummaryForInstance(
   instance: ConnectorInstanceRow,
-  deps: ConnectorSummaryProjectionDeps
+  deps: ConnectorSummaryProjectionDeps,
+  options: { readonly activeVisibleConnectionCount?: number } = {}
 ): Promise<ConnectorSummary | null> {
   const { controller, listRunSummariesForConnector, manifestsByConnectorId, sharedBrowserSurfaceReader } = deps;
   const connectorId = instance.connectorId;
@@ -3662,6 +3743,7 @@ async function projectConnectorSummaryForInstance(
     return null;
   }
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
+  const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
   const live = await getConnectorRecordProjection(
     recordStorageConnectorIdForConnection(instance),
     connectorInstanceId,
@@ -3681,6 +3763,7 @@ async function projectConnectorSummaryForInstance(
     getScheduleFrom(controller, connectorId, { connectorInstanceId }),
     deps.includeRunSummaries
       ? getLatestRunSummaryForConnection({
+          activeVisibleConnectionCount,
           browserSurfaceProfileKey,
           connectorId,
           connectorInstanceId,
@@ -3689,6 +3772,7 @@ async function projectConnectorSummaryForInstance(
       : Promise.resolve(null),
     deps.includeRunSummaries
       ? getLatestRunSummaryForConnection({
+          activeVisibleConnectionCount,
           browserSurfaceProfileKey,
           connectorId,
           connectorInstanceId,
@@ -3887,10 +3971,14 @@ async function computeConnectorSummaries(
     includeRunSummaries: options.includeRunSummaries !== false,
   });
   const rows = await listConnectorInstanceRowsForDashboard();
+  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
   const summaries = await mapWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
-    (instance): Promise<ConnectorSummary | null> => projectConnectorSummaryForInstance(instance, deps),
+    (instance): Promise<ConnectorSummary | null> =>
+      projectConnectorSummaryForInstance(instance, deps, {
+        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
+      }),
     options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
   );
   return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
@@ -3916,7 +4004,10 @@ export async function getConnectorSummaryForRoute(
     return null;
   }
   const deps = await loadConnectorSummaryProjectionDeps(controller, { includeRunSummaries: true });
-  return projectConnectorSummaryForInstance(match, deps);
+  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
+  return projectConnectorSummaryForInstance(match, deps, {
+    activeVisibleConnectionCount: activeVisibleConnectionCounts.get(match.connectorId) ?? 0,
+  });
 }
 
 export async function getConnectorDetail(
