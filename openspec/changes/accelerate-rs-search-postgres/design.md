@@ -39,6 +39,8 @@ The scoped GIN index fixes the authorization-scope shape, but exact relevance ra
 
 This preserves the public contract: v1 lexical search is relevance-oriented and does not promise portable numeric BM25 scores or exhaustive global ranking. Requests narrowed by explicit record keys keep the exact path because the caller already supplied a bounded candidate set.
 
+Live tuning after the semantic tranche showed the default lexical candidate window was still too wide for extremely common terms on multi-million-row sources: a `claude-code/messages` scoped search for `the` took about 5.6s with a 1000-row candidate window and about 85ms with a 200-row candidate window, while a 100-row window produced an unrelated 1.8s outlier on `codex/messages`. The reference default is therefore 200: enough overscan for the public first page while avoiding unnecessary common-term work.
+
 ### 5. Cache repeated semantic query vectors
 
 Semantic database retrieval is fast once a query vector exists; the local Transformers.js query embedding is the expensive step. The reference shall keep a small, backend-identity-keyed in-process query-vector cache with single-flight semantics so repeated semantic/hybrid requests during one navigation do not recompute the same embedding.

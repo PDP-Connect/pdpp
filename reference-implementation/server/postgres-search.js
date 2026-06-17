@@ -33,7 +33,7 @@ function postgresLexicalCandidateLimit({ env = process.env } = {}) {
   if (Number.isFinite(parsed) && parsed > 0) {
     return Math.min(Math.max(parsed, 100), 10000);
   }
-  return 1000;
+  return 200;
 }
 
 export async function postgresLexicalIndexUpsert({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, fields }) {
