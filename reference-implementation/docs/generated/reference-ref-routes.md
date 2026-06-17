@@ -24,6 +24,8 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/v1/owner/connectors/{connectorId}/run` | `ownerRunConnector` | Owner-agent bearer: start a run-now for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connections/{connectionId}/revoke` | `ownerRevokeConnection` | Owner-agent bearer: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, spine evidence, device rows, and sibling connections are untouched (zero cascade), and the revoke is durable across owner reads and grant/polyfill scope resolution. A double-revoke returns a typed `connector_instance_inactive` (400). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched. |
 | **POST** | `/v1/owner/connectors/{connectorId}/revoke` | `ownerRevokeConnector` | Owner-agent bearer: revoke a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Flips the resolved connection to status `revoked` (zero cascade, durable). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connections/{connectionId}/reactivate` | `ownerReactivateConnection` | Owner-agent bearer: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `ownerRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connectors/{connectorId}/reactivate` | `ownerReactivateConnector` | Owner-agent bearer: reactivate a connector's revoked connection addressed by `connector_id`. Auto-selects the only revoked connection for that connector. When more than one connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `revoked` to `active` (zero cascade). Owner bearers only. |
 | **DELETE** | `/v1/owner/connections/{connectionId}` | `ownerDeleteConnection` | Owner-agent bearer: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, never widening to connector_id (sibling connections of the same connector type are untouched). It does NOT erase a running collection: a connection with an in-flight run is REFUSED, not deleted (no active-run row is erased while running). The source-of-truth deletion (records, history, version counters, blobs, blob bindings, attention, schedule, device back-ref, and the connector_instances row) is transactional all-or-nothing across one connector_instance_id; the search-index teardown is a rebuildable projection cleaned up after that commit. PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: it erases the past and removes the configuration, where revoke only stops the future. A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404) without leaking existence. An in-flight run returns `connection_run_active` (409). A default-account binding returns `default_account_delete_unsupported` (409) — revoke it instead. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched. |
 | **DELETE** | `/v1/owner/connectors/{connectorId}` | `ownerDeleteConnector` | Owner-agent bearer: DESTRUCTIVELY delete a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Erases the resolved connection's data + configuration per the connection-scoped cascade (see ownerDeleteConnection). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/v1/owner/connections/{connectionId}/diagnostics` | `ownerInspectConnectionDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
@@ -54,6 +56,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **DELETE** | `/_ref/connectors/{connectorId}/schedule` | `refDeleteConnectorSchedule` | Delete the connector schedule config. |
 | **DELETE** | `/_ref/connections/{connectorInstanceId}/schedule` | `refDeleteConnectionSchedule` | Delete the schedule config for one configured connection. |
 | **POST** | `/_ref/connections/{connectorInstanceId}/revoke` | `refRevokeConnection` | Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/reactivate` | `refReactivateConnection` | Owner-session: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `refRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerReactivateConnection` route under a cookie auth adapter. |
 | **DELETE** | `/_ref/connections/{connectorInstanceId}` | `refDeleteConnection` | Owner-session: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases exactly that connection's records, history, blobs, search indices, and attention, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — keyed strictly on one connection_id, never widening to connector_id (sibling connections untouched). A connection with an in-flight run is REFUSED (`connection_run_active` 409), and a default-account binding is REFUSED (`default_account_delete_unsupported` 409). A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Owner-session only (operator console); shares the same `deleteConnection` cascade and audit event type as the owner-agent bearer `ownerDeleteConnection` route under a cookie auth adapter. |
 | **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
@@ -414,6 +417,40 @@ Owner-agent bearer: revoke a connector's connection addressed by `connector_id`.
 ### Responses
 
 - `200` — Revoked
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerReactivateConnection
+
+`POST /v1/owner/connections/{connectionId}/reactivate`
+
+Owner-agent bearer: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `ownerRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — Reactivated
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerReactivateConnector
+
+`POST /v1/owner/connectors/{connectorId}/reactivate`
+
+Owner-agent bearer: reactivate a connector's revoked connection addressed by `connector_id`. Auto-selects the only revoked connection for that connector. When more than one connection exists the request is rejected with a typed `ambiguous_connection` (409). Flips the resolved connection from `revoked` to `active` (zero cascade). Owner bearers only.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — Reactivated
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
@@ -983,6 +1020,23 @@ Owner-session: revoke one configured connection, addressed by `connection_id`. F
 ### Responses
 
 - `200` — Revoked
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refReactivateConnection
+
+`POST /_ref/connections/{connectorInstanceId}/reactivate`
+
+Owner-session: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `refRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerReactivateConnection` route under a cookie auth adapter.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — Reactivated
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
