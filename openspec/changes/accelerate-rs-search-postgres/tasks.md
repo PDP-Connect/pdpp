@@ -28,7 +28,7 @@
 
 ## 4. Live Verification
 
-- [ ] Build/deploy in a live-stack window.
-- [ ] Verify `/v1/search?q=the&limit=5` no longer fails with shared-memory errors.
-- [ ] Verify API benchmark deltas for lexical, semantic, and hybrid search.
-- [ ] Record residual performance gaps for the next loop.
+- [x] Build/deploy in a live-stack window.
+- [x] Verify `/v1/search?q=the&limit=5` no longer fails with shared-memory errors.
+- [x] Verify API benchmark deltas for lexical, semantic, and hybrid search.
+- [x] Record residual performance gaps for the next loop.
