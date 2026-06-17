@@ -4,7 +4,10 @@ import test from 'node:test';
 
 import { listSpineEventsPage } from '../lib/spine.ts';
 import { startServer } from '../server/index.js';
-import { expiredEnrollmentShellIds } from '../server/browser-enrollment-shell-retirement.ts';
+import {
+  expiredEnrollmentShellIds,
+  retireExpiredBrowserEnrollmentShells,
+} from '../server/browser-enrollment-shell-retirement.ts';
 import { BROWSER_ENROLLMENT_SHELL_TTL_MS } from '../server/routes/ref-browser-enrollment-shell.ts';
 
 // Integration coverage for the browser-enrollment shell routes:
@@ -321,4 +324,50 @@ test('expiredEnrollmentShellIds: missing enrollment_expires_at treated as not-ex
 
 test('BROWSER_ENROLLMENT_SHELL_TTL_MS is 2 hours', () => {
   assert.equal(BROWSER_ENROLLMENT_SHELL_TTL_MS, 2 * 60 * 60 * 1000);
+});
+
+test('retireExpiredBrowserEnrollmentShells flips only expired draft shells to revoked', async () => {
+  const updates = [];
+  const shells = [
+    {
+      connectorInstanceId: 'cin_expired_1',
+      status: 'draft',
+      sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
+    },
+    {
+      connectorInstanceId: 'cin_not_expired',
+      status: 'draft',
+      sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T14:00:00.000Z' },
+    },
+    {
+      connectorInstanceId: 'cin_active',
+      status: 'active',
+      sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
+    },
+  ];
+
+  const retired = await retireExpiredBrowserEnrollmentShells(
+    {
+      async listDraftBrowserEnrollmentShells(ownerSubjectId) {
+        assert.equal(ownerSubjectId, OWNER_SUBJECT_ID);
+        return shells;
+      },
+      async updateStatus(connectorInstanceId, args) {
+        updates.push({ connectorInstanceId, args });
+      },
+    },
+    { now: '2026-06-10T12:00:00.000Z', ownerSubjectId: OWNER_SUBJECT_ID }
+  );
+
+  assert.deepEqual(retired, ['cin_expired_1']);
+  assert.deepEqual(updates, [
+    {
+      connectorInstanceId: 'cin_expired_1',
+      args: {
+        status: 'revoked',
+        revokedAt: '2026-06-10T12:00:00.000Z',
+        updatedAt: '2026-06-10T12:00:00.000Z',
+      },
+    },
+  ]);
 });

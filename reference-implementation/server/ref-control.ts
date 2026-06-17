@@ -56,6 +56,10 @@ import {
 } from "./ref-record-utils.ts";
 import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
 import {
+  type EnrollmentShellLike,
+  retireExpiredBrowserEnrollmentShells,
+} from "./browser-enrollment-shell-retirement.ts";
+import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
 } from "./stores/acquisition-batch-store.js";
@@ -1351,6 +1355,29 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
     (instance: ConnectorInstanceRow) =>
       !NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part))
   );
+}
+
+async function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
+  const store = getConnectorInstanceStore() as {
+    listDraftBrowserEnrollmentShells(ownerSubjectId?: string | null):
+      | Promise<readonly EnrollmentShellLike[]>
+      | readonly EnrollmentShellLike[];
+    updateStatus(
+      connectorInstanceId: string,
+      args: { status: string; updatedAt: string; revokedAt?: string | null }
+    ): Promise<unknown> | unknown;
+  };
+  return retireExpiredBrowserEnrollmentShells({
+    async listDraftBrowserEnrollmentShells(ownerSubjectId) {
+      return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
+    },
+    async updateStatus(connectorInstanceId, args) {
+      return await store.updateStatus(connectorInstanceId, args);
+    },
+  }, {
+    now,
+    ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
+  });
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
@@ -3854,6 +3881,7 @@ async function computeConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
+  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
   const deps = await loadConnectorSummaryProjectionDeps(controller, {
     includeRetainedSizeSnapshot: true,
     includeRunSummaries: options.includeRunSummaries !== false,
@@ -3876,6 +3904,7 @@ export async function getConnectorSummaryForRoute(
   routeId: string,
   controller?: ControllerLike | null
 ): Promise<ConnectorSummary | null> {
+  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
   const rows = await listConnectorInstanceRowsForDashboard();
   const exact = rows.find((instance) => instance.connectorInstanceId === routeId) ?? null;
   const connectorMatches = exact ? [] : rows.filter((instance) => instance.connectorId === routeId);
