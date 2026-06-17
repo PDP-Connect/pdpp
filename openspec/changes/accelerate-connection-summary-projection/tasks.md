@@ -6,6 +6,8 @@
 - [x] Add a short-lived Postgres single-flight cache for repeated full-list reads.
 - [x] Preload retained-size stream/connection projection rows once for the full-list path.
 - [x] Add a committed real-browser performance harness with RSC fetch timing and RS/API probes.
+- [x] Keep the full connector-summary list shallow for run summaries while retaining deep run summaries on scoped connection/detail reads.
+- [x] Add the Postgres source/run spine summary index to bootstrap/migration code.
 
 ## 2. Tests
 
@@ -21,4 +23,6 @@
 - [ ] Verify `/_ref/connectors` repeated-call latency before/after.
 - [ ] Verify `/dashboard/runs` real-browser RSC fetch count/timing before/after.
 - [ ] Verify `/dashboard` and `/dashboard/runs` cold browser document time after retained-size preloading.
+- [ ] Verify `/dashboard` and `/dashboard/runs` cold browser document time after shallow-list projection.
 - [ ] Verify Amazon/Chase row state no longer reflects sibling draft-shell run evidence.
+- [ ] Verify scoped connection detail/diagnostics still exposes deep run evidence after shallow-list projection.

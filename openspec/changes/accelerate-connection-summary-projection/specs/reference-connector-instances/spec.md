@@ -41,3 +41,41 @@ The reference implementation SHALL compute the full owner connection-summary lis
 **WHEN** the owner reads a single connection summary by route id
 **THEN** the reference implementation projects only that resolved connection
 **AND** it does not require the all-connection retained-size snapshot.
+
+### Requirement: Connection overview does not hydrate deep run histories
+
+The reference implementation SHALL treat the full owner connection-summary list
+as a shallow overview read for run summaries. It SHALL NOT block that full-list
+read on deep per-connection run-history hydration. Scoped connection summary
+reads and owner diagnostics SHALL retain deep run evidence for the selected
+connection.
+
+#### Scenario: full overview stays shallow
+
+**WHEN** the owner reads the full connection-summary list
+**THEN** the reference implementation may omit `last_run` and
+`last_successful_run` evidence from overview rows rather than hydrating deep run
+history for every configured connection
+**AND** it still projects health, freshness, retained-size, coverage, schedule,
+and rendered verdict fields from bounded overview inputs.
+
+#### Scenario: scoped diagnostics retain run evidence
+
+**WHEN** the owner reads diagnostics for one configured connection
+**THEN** the reference implementation projects that one connection through the
+deep run-summary path
+**AND** it does not fall back to the shallow full-list projection.
+
+### Requirement: Postgres connection-summary spine indexes are provisioned
+
+The reference implementation SHALL provision Postgres indexes needed by the
+connection-summary hot path during schema bootstrap and migrations, including a
+source/run summary index for source-scoped run grouping.
+
+#### Scenario: source-scoped run grouping has a bootstrap index
+
+**WHEN** a Postgres reference instance starts or migrates
+**THEN** the schema includes an index over source kind, source id, run id, and
+run occurrence time for run-bearing spine events
+**AND** source-scoped run grouping SHALL NOT depend on a manual live-operator
+index creation step.

@@ -3503,7 +3503,7 @@ function buildAsApp(opts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
     pdppError,
-    listConnectorSummaries: () => listConnectorSummaries(controller),
+    listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: false }),
     getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
     getConnectorDetail: (id) => getConnectorDetail(id, controller),
     getRuntimeStatus: () =>
@@ -4526,7 +4526,7 @@ function buildRsApp(opts = {}) {
   // inspects ONE connection's last run status, last successful ingest time,
   // current schedule state, freshness, and typed health classification, without a
   // browser owner session. They share the `getOwnerConnectionDiagnostics`
-  // operation (which reuses `listConnectorSummaries`) under a separate
+  // operation (which projects the requested connection only) under a separate
   // owner-bearer auth adapter (`requireToken` + `requireOwner`). The read is
   // connection-scoped by construction — it derives from the single configured
   // connection matching the resolved `connection_id`, never device-exporter

@@ -274,6 +274,33 @@ test('connection summaries do not smear browser-surface runs across sibling conn
   assert.equal(personal.last_run?.failure_reason, 'capacity_full');
 }));
 
+test('full-list shallow option omits run history while scoped summaries keep it', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'browser_collector' });
+
+  await seedBrowserSurfaceRun({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_work_surface_failed',
+    status: 'surface_failed',
+    occurredAt: '2026-05-20T12:01:00.000Z',
+    waitReason: 'surface_unhealthy',
+  });
+
+  const shallowSummaries = await listConnectorSummaries(null, { includeRunSummaries: false });
+  const shallowWork = shallowSummaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  assert.ok(shallowWork);
+  assert.equal(shallowWork.last_run, null);
+  assert.equal(shallowWork.last_successful_run, null);
+  assert.ok(shallowWork.rendered_verdict, 'shallow overview still carries the rendered verdict');
+
+  const scopedWork = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+  assert.ok(scopedWork);
+  assert.equal(scopedWork.last_run?.run_id, 'run_work_surface_failed');
+  assert.equal(scopedWork.last_run?.failure_reason, 'surface_unhealthy');
+}));
+
 test('reference connector summaries keep revoked connections visible for owner manageability', withTmpDb(async () => {
   seedConnector();
   const store = createSqliteConnectorInstanceStore();

@@ -1203,6 +1203,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         ON spine_events(trace_id, occurred_at, recorded_at);
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run
         ON spine_events(run_id, occurred_at, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source_run_summary
+        ON spine_events(source_kind, source_id, run_id, occurred_at DESC)
+        WHERE run_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_terminal
         ON spine_events(run_id, event_type, event_seq DESC)
         WHERE run_id IS NOT NULL
@@ -2544,6 +2547,11 @@ async function migratePostgresSpineSourceColumns(client) {
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
       ON spine_events(source_kind, source_id, occurred_at, recorded_at)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source_run_summary
+      ON spine_events(source_kind, source_id, run_id, occurred_at DESC)
+      WHERE run_id IS NOT NULL
   `);
 }
 

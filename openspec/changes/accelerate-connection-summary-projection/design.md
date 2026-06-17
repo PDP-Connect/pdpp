@@ -46,12 +46,49 @@ The per-connection projection remains the single source of summary shape; it rec
 
 The fetch-only `scripts/perf/bench.mjs` cannot see hydration, cold browser cache, aborted prefetches, RSC fetches, or page console errors. The new `scripts/perf/browser-bench.mjs` launches system Chrome with a fresh profile per route, records Web Vitals where available, separates routine aborted prefetches from true failed requests, captures same-route `?_rsc=` fetch timing, and runs RS/API probes in the same JSON output. It uses Chrome DevTools Protocol directly rather than adding Playwright or Puppeteer.
 
+### 7. Overview rows are shallow; scoped diagnostics stay deep
+
+Retained-size preloading did not remove the live cold cost. A local profile
+against live Postgres isolated the next dominant cost to deep run-history
+hydration: the full overview path was paying for `listSpineCorrelations("run",
+sourceId=...)` and timeline classification across every source even though the
+live overview payload currently projected those fields as `null`.
+
+The full `/_ref/connectors` list is an overview read. It must answer "what
+sources do I have and what state are they in?" quickly. It does not need to
+block on deep run timeline hydration for every source before rendering the
+owner's first page. Scoped reads keep the deep path:
+
+- `/_ref/connectors?connection=...`
+- source detail pages that resolve one connection
+- owner-agent connection diagnostics
+
+This preserves the evidence where the user has already chosen a source, while
+making the list fast enough to be a navigation primitive.
+
+This is a performance split, not a semantic downgrade. If overview rows later
+need latest-run evidence for a connector whose health is not otherwise captured,
+the correct next step is a bounded latest-run read model or SQL projection for
+overview fields, not returning to deep timeline hydration on every list row.
+
+### 8. Postgres source/run summary index is bootstrap state
+
+The live Postgres proof showed that a partial covering index on
+`spine_events(source_kind, source_id, run_id, occurred_at DESC) WHERE run_id IS
+NOT NULL` changes source-scoped run grouping from heap-heavy scans to
+index-only scans. The live index is not enough; it must be created by bootstrap
+and migration code so new Postgres instances and redeploys do not depend on a
+manual operator step.
+
 ## Alternatives
 
 - Route-level HTTP caching: helps repeated fetches but cannot fix wrong sibling run evidence and is less precise than caching the expensive shared projection.
 - Long-lived materialized summary table: likely the right later step if the projection remains expensive, but higher risk overnight because it changes write paths and invalidation.
 - Assign connector-scoped legacy runs to every sibling: preserves old data but keeps the live confusion. The reference should prefer honest unknown over false precision.
 - Adding Playwright only for performance measurement: more familiar, but unnecessary on this host because Chrome is already installed and CDP is enough for the required metrics.
+- Hydrate deep run summaries on every overview row and rely on SQL indexes:
+  the source/run index is useful for scoped run grouping, but the product list
+  still should not wait on deep run-timeline classification for every source.
 
 ## Acceptance Checks
 
@@ -61,3 +98,6 @@ The fetch-only `scripts/perf/bench.mjs` cannot see hydration, cold browser cache
 - Reference and console TypeScript pass.
 - Live proof after deploy: repeated `/_ref/connectors` calls and `/dashboard/runs` browser timings improve, and Amazon/Chase rows no longer inherit sibling draft-shell run state.
 - Browser harness smoke writes a JSON result with no true failed requests or console errors for a known-fast route.
+- Live proof after the shallow-list tranche: first authenticated `/_ref/connectors`
+  read improves materially from the ~3.8-5.1s live baseline, while a scoped
+  connector detail/diagnostics read still carries deep run evidence.

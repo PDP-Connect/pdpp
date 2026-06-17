@@ -3398,6 +3398,12 @@ export async function mapWithConcurrency<T, R>(
 
 export interface ListConnectorSummariesOptions {
   readonly concurrency?: number;
+  /**
+   * Full list routes should not block on deep run-history hydration. Scoped
+   * connection/detail reads keep this enabled so diagnostics can carry run
+   * evidence when it is actually needed.
+   */
+  readonly includeRunSummaries?: boolean;
   /** Test hook: invoked whenever the in-flight worker count changes. */
   readonly onInFlightChange?: (inFlight: number) => void;
 }
@@ -3424,8 +3430,13 @@ function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): 
   );
 }
 
-function connectorSummariesCacheKey(controller?: ControllerLike | null): string {
-  return controller == null ? "no-controller" : "controller";
+function connectorSummariesCacheKey(
+  controller?: ControllerLike | null,
+  options: ListConnectorSummariesOptions = {}
+): string {
+  const controllerKey = controller == null ? "no-controller" : "controller";
+  const runDepth = options.includeRunSummaries === false ? "shallow-runs" : "deep-runs";
+  return `${controllerKey}:${runDepth}`;
 }
 
 // Shared inputs for `projectConnectorSummaryForInstance`. These are the reads
@@ -3440,6 +3451,7 @@ interface ConnectorSummaryProjectionDeps {
     connectorId: string,
     status?: string | null
   ) => Promise<readonly SpineSummary[]>;
+  readonly includeRunSummaries: boolean;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   readonly retainedSizeSnapshot?: RetainedSizeProjectionSnapshot;
   readonly runtimeOk: boolean;
@@ -3588,19 +3600,23 @@ async function projectConnectorSummaryForInstance(
     acquisitionCoverage,
   ] = await Promise.all([
     getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-    getLatestRunSummaryForConnection({
-      browserSurfaceProfileKey,
-      connectorId,
-      connectorInstanceId,
-      listRunSummariesForConnector,
-    }),
-    getLatestRunSummaryForConnection({
-      browserSurfaceProfileKey,
-      connectorId,
-      connectorInstanceId,
-      listRunSummariesForConnector,
-      status: "succeeded",
-    }),
+    deps.includeRunSummaries
+      ? getLatestRunSummaryForConnection({
+          browserSurfaceProfileKey,
+          connectorId,
+          connectorInstanceId,
+          listRunSummariesForConnector,
+        })
+      : Promise.resolve(null),
+    deps.includeRunSummaries
+      ? getLatestRunSummaryForConnection({
+          browserSurfaceProfileKey,
+          connectorId,
+          connectorInstanceId,
+          listRunSummariesForConnector,
+          status: "succeeded",
+        })
+      : Promise.resolve(null),
     getConnectorDetailGapProjection(connectorId, connectorInstanceId),
     getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
     getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
@@ -3715,11 +3731,16 @@ async function projectConnectorSummaryForInstance(
 
 async function loadConnectorSummaryProjectionDeps(
   controller?: ControllerLike | null,
-  options: { readonly includeRetainedSizeSnapshot?: boolean } = {}
+  options: {
+    readonly includeRetainedSizeSnapshot?: boolean;
+    readonly includeRunSummaries?: boolean;
+  } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const [connectorRows, retainedSizeSnapshot] = await Promise.all([
     listRegisteredConnectorRows(),
-    options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
+    options.includeRetainedSizeSnapshot
+      ? loadRetainedSizeProjectionSnapshot()
+      : Promise.resolve(undefined),
   ]);
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
@@ -3734,6 +3755,7 @@ async function loadConnectorSummaryProjectionDeps(
   return {
     controller,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
+    includeRunSummaries: options.includeRunSummaries !== false,
     manifestsByConnectorId,
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
     runtimeOk: controller != null,
@@ -3746,7 +3768,7 @@ export async function listConnectorSummaries(
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
   if (shouldCacheConnectorSummaries(options)) {
-    const key = connectorSummariesCacheKey(controller);
+    const key = connectorSummariesCacheKey(controller, options);
     const cached = connectorSummariesCache.get(key);
     const now = Date.now();
     if (cached?.value && cached.expiresAt > now) {
@@ -3778,7 +3800,10 @@ async function computeConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
-  const deps = await loadConnectorSummaryProjectionDeps(controller, { includeRetainedSizeSnapshot: true });
+  const deps = await loadConnectorSummaryProjectionDeps(controller, {
+    includeRetainedSizeSnapshot: true,
+    includeRunSummaries: options.includeRunSummaries !== false,
+  });
   const rows = await listConnectorInstanceRowsForDashboard();
   const summaries = await mapWithConcurrency(
     rows,
@@ -3809,7 +3834,7 @@ export async function getConnectorSummaryForRoute(
   if (match === null) {
     return null;
   }
-  const deps = await loadConnectorSummaryProjectionDeps(controller);
+  const deps = await loadConnectorSummaryProjectionDeps(controller, { includeRunSummaries: true });
   return projectConnectorSummaryForInstance(match, deps);
 }
 
@@ -4018,8 +4043,7 @@ export async function getOwnerConnectionDiagnostics(
   connectorInstanceId: string,
   controller?: ControllerLike | null
 ): Promise<OwnerConnectionDiagnostics | null> {
-  const summaries = await listConnectorSummaries(controller);
-  const summary = summaries.find((row) => row.connector_instance_id === connectorInstanceId);
+  const summary = await getConnectorSummaryForRoute(connectorInstanceId, controller);
   if (!summary) {
     return null;
   }
