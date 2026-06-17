@@ -26,5 +26,5 @@
 ## 5. Acceptance
 
 - [x] 5.1 Fixture-search a broad/common lexical query and verify the response discloses whether candidate-window truncation occurred. (Native `lexical-retrieval.test.js` ingests 250 matching records -> real SQLite FTS reports `candidate_window` / `lower_bound` / `truncated`.)
-- [ ] 5.2 Live-search a broad/common query on `pdpp.vivid.fish` after deploy and verify the response discloses whether candidate-window truncation occurred.
+- [x] 5.2 Live-search a broad/common query on `pdpp.vivid.fish` after deploy and verify the response discloses whether candidate-window truncation occurred. (After deploying `eddd84b9`, a scoped Slack `messages` grant searched broad terms `error`, `run`, and `chatgpt`; each returned `meta.count_accuracy:"lower_bound"` with `meta.recall.truncated:true`, `ranking_scope:"candidate_window"`, and `candidate_window_limit:100`. A smaller `pdpp` query returned `count_accuracy:"exact"` and `recall.complete:true`, proving both paths live.)
 - [x] 5.3 Confirm older clients remain compatible because the change is additive to the list envelope. (All 16 pre-existing operation tests + 27 native lexical-retrieval tests still pass; `meta` is purely additive and the only behavioral change is that `meta` is now always present.)
