@@ -33,6 +33,7 @@ docs/inbox/
 docs/outbox/
 packages/polyfill-connectors/.pdpp-data/
 reference-implementation/report.*.json
+perf-results/
 .agents/
 # .claude/ is tracked for project hooks and working state
 # but some contents are ignored:
