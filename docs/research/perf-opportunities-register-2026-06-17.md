@@ -28,7 +28,7 @@
 
 ## Cross-cutting themes
 - N+1 / loop-per-X recurs in db-layer (#2,4,7) -> a "batch, don't loop" pattern.
-- Store-parity (L5): #3 index on BOTH stores; SQLite pragmas (other corpus doc) still open.
+- Store-parity (L5): #3 index on BOTH stores. SQLite pragmas are already present for file-backed DBs (`journal_mode=WAL`, `synchronous=NORMAL`, `mmap_size`, `cache_size`; shipped in `121d9637`), and connector-summary cache parity is closed by the SQLite store-identity cache key (`4d28a492`).
 - Honesty (L14): #6 candidate-cap truncation must be DISCLOSED (meta.count), not silent.
 - Verifiers killed 4+ "obvious" caching/parallelism ideas as band-aids on EXISTING primitives -> easy wins mostly done; remaining = real N+1s + indexes + disclosed-recall + perceived-perf skeletons.
 
@@ -38,4 +38,4 @@
 - #3 spine_events composite index BOTH stores (DDL, parity) = runtime, quick.
 - #5 records-table skeleton + fetch hoist (console, Claude, no API change).
 - HOLD #6 (changes results -> contract design + Codex sign-off). #4 = second wave.
-SLVP-restoration items (read-model, SQLite pragmas/parity, BM25, PPR-shell, collector bounded-memory) are SEPARATE from these NEW finds; sequence with Codex.
+SLVP-restoration items (read-model, BM25, PPR-shell, collector bounded-memory) are SEPARATE from these NEW finds; sequence with Codex. SQLite pragmas/cache parity were re-verified closed on 2026-06-17.
