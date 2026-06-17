@@ -14,4 +14,5 @@
 - [x] 3.1 Run focused diagnostics tests.
 - [x] 3.2 Run console typecheck.
 - [x] 3.3 Run OpenSpec strict/all validation and `git diff --check`.
-- [ ] 3.4 Verify the live peregrine source renders the new panel after deployment, or record why the live queue drained before deployment.
+- [x] 3.4 Verify the live peregrine source renders the new panel after deployment, or record why the live queue drained before deployment.
+  - Live verified on `pdpp.vivid.fish` at revision `v0.5.0-281-gc578128d`: peregrine Claude Code rendered `Checking`/calm with `1,316` pending local-device uploads, `0` dead letters, and the source detail page included the `diagnostics-background-drain` panel without a recovery command or unresolved placeholders.
