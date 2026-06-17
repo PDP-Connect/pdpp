@@ -3816,6 +3816,141 @@ function buildRenderedVerdictForSummary(input: {
   });
 }
 
+interface ConnectorSummarySynthesisInput {
+  readonly acquisitionCoverage: Awaited<ReturnType<typeof getAcquisitionCoverageSummary>>;
+  readonly attention: Awaited<ReturnType<typeof getConnectorAttentionProjection>>;
+  readonly collectionRate: Awaited<ReturnType<typeof readLatestCollectionRateForRun>>;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly detailGaps: Awaited<ReturnType<typeof getConnectorDetailGapProjection>>;
+  readonly instance: ConnectorInstanceRow;
+  readonly lastRun: ConnectorRunSummary | null;
+  readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly live: RecordProjection;
+  readonly localCoverage: Awaited<ReturnType<typeof getConnectorLocalCoverageAxis>>;
+  readonly manifest: ConnectorManifest;
+  readonly nowIso: string;
+  readonly outbox: Awaited<ReturnType<typeof getConnectorOutboxAxis>>;
+  readonly refreshPolicy: ReturnType<typeof extractRefreshPolicy>;
+  readonly remoteSurface: Awaited<ReturnType<typeof getConnectorBrowserSurfaceProjection>>;
+  readonly runtimeOk: boolean;
+  readonly schedule: Awaited<ReturnType<typeof getScheduleFrom>>;
+}
+
+function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): ConnectorSummary {
+  const {
+    acquisitionCoverage,
+    attention,
+    collectionRate,
+    connectorId,
+    connectorInstanceId,
+    detailGaps,
+    instance,
+    lastRun,
+    lastSuccessfulRun,
+    live,
+    localCoverage,
+    manifest,
+    nowIso,
+    outbox,
+    refreshPolicy,
+    remoteSurface,
+    runtimeOk,
+    schedule,
+  } = input;
+  const localDeviceBacked = instance.sourceKind === "local_device";
+  const localDeviceProgress = localDeviceBacked ? projectLocalDeviceProgress(outbox.heartbeats) : null;
+  // A heartbeat can satisfy freshness only when it represents a healthy
+  // check with no known local backlog. Active/pending outboxes still show
+  // progress via the outbox axis rather than a false "fresh" claim.
+  const canUseHeartbeatForFreshness =
+    localDeviceProgress?.last_heartbeat_status === "healthy" &&
+    (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
+  const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
+  const freshness = buildConnectorFreshness({
+    lastRun,
+    lastSuccessfulRun,
+    live,
+    refreshPolicy,
+    lastHeartbeatAt: freshnessHeartbeatAt,
+  });
+  const connectionHealth = projectConnectorSummaryConnectionHealth({
+    attentionRecords: attention.records,
+    collectionRate,
+    freshness,
+    lastRun,
+    lastSuccessfulRun,
+    localCoverage,
+    localDeviceBacked,
+    manifestStreams: manifest.streams ?? [],
+    outbox: { axis: outbox.axis, cause: outbox.cause },
+    pendingDetailGaps: detailGaps.gaps,
+    pendingDetailGapsReadLimit: detailGaps.readLimit,
+    pendingDetailGapsRecovered: detailGaps.recovered,
+    pendingDetailGapsTerminal: detailGaps.terminal,
+    pendingDetailGapsUnreliable: detailGaps.unreliable,
+    nowIso,
+    refreshPolicy,
+    remoteSurface: remoteSurface.evidence,
+    unreliableSources: combineUnreliableSources(
+      detailGaps.unreliable,
+      outbox.unreliable,
+      attention.unreliable,
+      remoteSurface.unreliable
+    ),
+    schedule,
+  });
+  const connectorDisplayName = manifest.display_name || connectorId;
+  const collectionReport = projectCollectionReport({
+    lastRun,
+    connectionHealth,
+    manifestStreams: manifest.streams ?? [],
+    pendingDetailGaps: detailGaps.gaps,
+    refreshPolicy,
+  });
+  const recoveredCount = detailGaps.recovered;
+  const renderedVerdict = buildRenderedVerdictForSummary({
+    collectionReport,
+    connectionHealth,
+    freshness,
+    hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
+    localDeviceBacked,
+    manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
+    observedAt: nowIso,
+    refreshPolicy,
+    retainedRecords: live.totalRecords,
+    runtimeOk,
+    schedule,
+  });
+  return {
+    acquisition_coverage: acquisitionCoverage,
+    collection_report: collectionReport,
+    connection_id: connectorInstanceId,
+    connection_health: connectionHealth,
+    connector_display_name: connectorDisplayName,
+    connector_id: connectorId,
+    connector_instance_id: connectorInstanceId,
+    display_name: instance.displayName || connectorDisplayName,
+    local_device_progress: localDeviceProgress,
+    manifest_version: manifest.version || null,
+    next_action: connectionHealth.next_action,
+    rendered_verdict: renderedVerdict,
+    retained_bytes: live.retainedBytes,
+    revoked_at: instance.revokedAt ?? null,
+    streams: (manifest.streams || []).map((stream) => stream.name),
+    stream_count: live.byStream.size,
+    stream_records: projectStreamRecordSummaries(live.byStream),
+    status: instance.status ?? null,
+    total_records: live.totalRecords,
+    total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
+    freshness,
+    refresh_policy: refreshPolicy,
+    schedule,
+    last_run: lastRun,
+    last_successful_run: lastSuccessfulRun,
+  };
+}
+
 // Project one configured connection into its summary, or `null` when the
 // connection is not a public reference connector / has no registered manifest.
 // This is the single source of truth for a connection-summary item: both
@@ -3900,97 +4035,26 @@ async function projectConnectorSummaryForInstance(
         lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
       )
     : null;
-  const localDeviceProgress =
-    instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
-  // A heartbeat can satisfy freshness only when it represents a healthy
-  // check with no known local backlog. Active/pending outboxes still show
-  // progress via the outbox axis rather than a false "fresh" claim.
-  const canUseHeartbeatForFreshness =
-    localDeviceProgress?.last_heartbeat_status === "healthy" &&
-    (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
-  const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
-  const freshness = buildConnectorFreshness({
+  return synthesizeConnectorSummary({
+    acquisitionCoverage,
+    attention,
+    collectionRate,
+    connectorId,
+    connectorInstanceId,
+    detailGaps,
+    instance,
     lastRun,
     lastSuccessfulRun,
     live,
-    refreshPolicy,
-    lastHeartbeatAt: freshnessHeartbeatAt,
-  });
-  const connectionHealth = projectConnectorSummaryConnectionHealth({
-    attentionRecords: attention.records,
-    collectionRate,
-    freshness,
-    lastRun,
-    lastSuccessfulRun,
     localCoverage,
-    localDeviceBacked: instance.sourceKind === "local_device",
-    manifestStreams: manifest.streams ?? [],
-    outbox: { axis: outbox.axis, cause: outbox.cause },
-    pendingDetailGaps: detailGaps.gaps,
-    pendingDetailGapsReadLimit: detailGaps.readLimit,
-    pendingDetailGapsRecovered: detailGaps.recovered,
-    pendingDetailGapsTerminal: detailGaps.terminal,
-    pendingDetailGapsUnreliable: detailGaps.unreliable,
+    manifest,
     nowIso,
+    outbox,
     refreshPolicy,
-    remoteSurface: remoteSurface.evidence,
-    unreliableSources: combineUnreliableSources(
-      detailGaps.unreliable,
-      outbox.unreliable,
-      attention.unreliable,
-      remoteSurface.unreliable
-    ),
-    schedule,
-  });
-  const connectorDisplayName = manifest.display_name || connectorId;
-  const collectionReport = projectCollectionReport({
-    lastRun,
-    connectionHealth,
-    manifestStreams: manifest.streams ?? [],
-    pendingDetailGaps: detailGaps.gaps,
-    refreshPolicy,
-  });
-  const recoveredCount = detailGaps.recovered;
-  const renderedVerdict = buildRenderedVerdictForSummary({
-    collectionReport,
-    connectionHealth,
-    freshness,
-    hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
-    localDeviceBacked: instance.sourceKind === "local_device",
-    manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
-    observedAt: nowIso,
-    refreshPolicy,
-    retainedRecords: live.totalRecords,
+    remoteSurface,
     runtimeOk: deps.runtimeOk,
     schedule,
   });
-  return {
-    acquisition_coverage: acquisitionCoverage,
-    collection_report: collectionReport,
-    connection_id: connectorInstanceId,
-    connection_health: connectionHealth,
-    connector_display_name: connectorDisplayName,
-    connector_id: connectorId,
-    connector_instance_id: connectorInstanceId,
-    display_name: instance.displayName || connectorDisplayName,
-    local_device_progress: localDeviceProgress,
-    manifest_version: manifest.version || null,
-    next_action: connectionHealth.next_action,
-    rendered_verdict: renderedVerdict,
-    retained_bytes: live.retainedBytes,
-    revoked_at: instance.revokedAt ?? null,
-    streams: (manifest.streams || []).map((stream) => stream.name),
-    stream_count: live.byStream.size,
-    stream_records: projectStreamRecordSummaries(live.byStream),
-    status: instance.status ?? null,
-    total_records: live.totalRecords,
-    total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
-    freshness,
-    refresh_policy: refreshPolicy,
-    schedule,
-    last_run: lastRun,
-    last_successful_run: lastSuccessfulRun,
-  };
 }
 
 async function loadConnectorSummaryProjectionDeps(

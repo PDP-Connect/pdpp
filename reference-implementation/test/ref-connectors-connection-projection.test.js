@@ -477,6 +477,43 @@ test('getConnectorSummaryForRoute resolves one connection by stable identity and
   );
 }));
 
+test('getConnectorSummaryForRoute scopes retained records to the resolved connection', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  seedRecord({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    stream: 'messages',
+    key: 'work_msg',
+    data: { id: 'work_msg', text: 'work scoped message' },
+    emittedAt: '2026-05-20T12:10:00.000Z',
+    version: 1,
+  });
+  seedRecord({
+    connectorInstanceId: PERSONAL_INSTANCE_ID,
+    stream: 'messages',
+    key: 'personal_msg',
+    data: { id: 'personal_msg', text: 'personal sibling message' },
+    emittedAt: '2026-05-20T12:11:00.000Z',
+    version: 1,
+  });
+  await rebuildRetainedSize();
+
+  const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+
+  assert.ok(scoped, 'a known connection id resolves to a summary');
+  assert.equal(scoped.connection_id, WORK_INSTANCE_ID);
+  assert.equal(scoped.connector_instance_id, WORK_INSTANCE_ID);
+  assert.equal(scoped.connector_id, CONNECTOR_ID);
+  assert.equal(scoped.total_records, 1, 'scoped route must not include sibling connection records');
+  assert.deepEqual(scoped.stream_records, [
+    {
+      stream: 'messages',
+      record_count: 1,
+      last_updated: null,
+    },
+  ]);
+}));
+
 test('getConnectorSummaryForRoute allows connector_id fallback only when unambiguous', withTmpDb(async () => {
   seedConnector();
   await seedInstance({
