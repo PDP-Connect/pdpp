@@ -2,7 +2,7 @@
 // parsers in parsers.ts can import them without pulling in the runtime
 // entry point.
 
-import type { StreamScope } from "../../src/connector-runtime.ts";
+import type { RecordData, StreamScope } from "../../src/connector-runtime.ts";
 
 /**
  * Per-thread fingerprint carried across runs. `updated_at` is the
@@ -132,7 +132,7 @@ export interface RolloutAggregate {
   rolloutPath: string;
 }
 
-export interface PendingCall {
+export interface PendingCall extends RecordData {
   arguments: string | null;
   call_id: string;
   id: string;

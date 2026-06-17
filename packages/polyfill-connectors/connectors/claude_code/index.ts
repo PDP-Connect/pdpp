@@ -24,7 +24,7 @@
  */
 
 import { createReadStream, type Dirent, type Stats, statSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
@@ -631,6 +631,11 @@ function markFileMtimeAndShouldSkip(
   return fileMtimes[path] === mtime;
 }
 
+async function readBoundedUtf8(path: string): Promise<string | null> {
+  const preview = await readBoundedFilePreview(path);
+  return preview?.buffer.toString("utf8") ?? null;
+}
+
 async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMtimes }: EmitSkillsArgs): Promise<void> {
   if (!requested.has("skills")) {
     return;
@@ -651,7 +656,7 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
     }
     const skillPath = join(skillsDir, ent.name, "SKILL.md");
     let st: ReturnType<typeof statSync>;
-    let raw: string;
+    let raw: string | null;
     try {
       st = statSync(skillPath);
     } catch {
@@ -661,8 +666,11 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
       continue;
     }
     try {
-      raw = await readFile(skillPath, "utf8");
+      raw = await readBoundedUtf8(skillPath);
     } catch {
+      continue;
+    }
+    if (raw === null) {
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
@@ -687,7 +695,7 @@ async function processSlashCommandFile(args: ProcessSlashCommandArgs): Promise<v
     return;
   }
   let st: ReturnType<typeof statSync>;
-  let raw: string;
+  let raw: string | null;
   try {
     st = statSync(args.full);
   } catch {
@@ -697,8 +705,11 @@ async function processSlashCommandFile(args: ProcessSlashCommandArgs): Promise<v
     return;
   }
   try {
-    raw = await readFile(args.full, "utf8");
+    raw = await readBoundedUtf8(args.full);
   } catch {
+    return;
+  }
+  if (raw === null) {
     return;
   }
   const { frontmatter, body } = parseFrontmatter(raw);
@@ -775,7 +786,7 @@ async function emitProjectMemoryNotes({
   );
   for (const { fullPath, relPath } of files) {
     let st: ReturnType<typeof statSync>;
-    let raw: string;
+    let raw: string | null;
     try {
       st = statSync(fullPath);
     } catch {
@@ -785,8 +796,11 @@ async function emitProjectMemoryNotes({
       continue;
     }
     try {
-      raw = await readFile(fullPath, "utf8");
+      raw = await readBoundedUtf8(fullPath);
     } catch {
+      continue;
+    }
+    if (raw === null) {
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);

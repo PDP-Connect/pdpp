@@ -326,6 +326,65 @@ test("processRolloutLine: an unpaired function_call still flushes once at EOF (n
   assert.equal(state.pendingCalls.size, 0, "flush clears the map");
 });
 
+test("processRolloutLine: offset-zero replay caps unmatched function_calls", () => {
+  const { deps, emitted } = makeHarness({ requested: ["function_calls"] });
+  const state = makeRolloutParseState();
+  processRolloutLine({ obj: sessionMetaLine("sess-unmatched"), state, deps, file: "rollout-replay.jsonl" });
+
+  const calls = 1100;
+  for (let i = 0; i < calls; i++) {
+    const callId = `call_${String(i).padStart(24, "0")}`;
+    processRolloutLine({
+      obj: functionCallLine(callId, "shell", `echo ${i}`),
+      state,
+      deps,
+      file: "rollout-replay.jsonl",
+    });
+    assert.ok(state.pendingCalls.size <= 1024, "pending calls stay bounded during full replay");
+  }
+
+  const emittedBeforeFlush = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(emittedBeforeFlush.length, calls - 1024, "oldest unmatched calls are emitted before EOF");
+  assert.equal(state.pendingCalls.size, 1024, "only the bounded pending window remains before EOF");
+
+  flushPendingCalls(state, deps);
+  const emittedAfterFlush = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(emittedAfterFlush.length, calls, "EOF flush emits the remaining unmatched calls exactly once");
+  assert.equal(state.pendingCalls.size, 0, "flush clears the bounded pending window");
+});
+
+test("processRolloutLine: an output for an evicted pending call lands as output-only fallback", () => {
+  const { deps, emitted } = makeHarness({ requested: ["function_calls"] });
+  const state = makeRolloutParseState();
+  processRolloutLine({ obj: sessionMetaLine("sess-evicted-output"), state, deps, file: "rollout-replay.jsonl" });
+
+  for (let i = 0; i < 1025; i++) {
+    processRolloutLine({
+      obj: functionCallLine(`call_${i}`, "shell", `echo ${i}`),
+      state,
+      deps,
+      file: "rollout-replay.jsonl",
+    });
+  }
+
+  const evicted = emitted.filter((r) => r.stream === "function_calls").find((r) => r.data.call_id === "call_0");
+  assert.ok(evicted, "the oldest call is emitted before EOF when the pending window fills");
+  assert.equal(evicted.data.output_preview, null, "the evicted call has not seen its output yet");
+
+  processRolloutLine({
+    obj: functionCallOutputLine("call_0", "late output"),
+    state,
+    deps,
+    file: "rollout-replay.jsonl",
+  });
+
+  const call0 = emitted.filter((r) => r.stream === "function_calls" && r.data.call_id === "call_0");
+  assert.equal(call0.length, 2, "late output after eviction lands separately instead of being dropped");
+  assert.equal(call0[1]?.data.name, null, "late output fallback cannot recreate evicted call metadata");
+  assert.equal(call0[1]?.data.output_preview, "late output");
+  assert.ok(state.pendingCalls.size <= 1024, "late output fallback does not regrow the pending window");
+});
+
 // ─── Invariant 5: source order is preserved across streams ──────────────────
 
 test("processRolloutLine: messages and paired function_calls emit in file-line order within a session", () => {

@@ -41,12 +41,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { createReadStream, type Dirent, existsSync, type Stats, statSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { createReadStream, type Dirent, type Stats, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
@@ -98,6 +99,11 @@ const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
 // truncated/rotated/replaced and the stored byte offset is no longer valid.
 // Bounded so the guard is O(1) regardless of how large the rollout file grows.
 const GUARD_PREFIX_BYTES = 64 * 1024;
+// Enrollment / connector-version upgrades can arrive with only legacy file_mtimes
+// state, and rotated/truncated/replaced rollout files fail the prefix-integrity
+// guard. Both paths force a parse from byte offset 0, so keep unmatched
+// function-call state bounded across full replay.
+const MAX_PENDING_FUNCTION_CALLS = 1024;
 
 let stdoutDrainPromise: Promise<void> | null = null;
 
@@ -418,47 +424,23 @@ function openThreadsDb(dbPath: string): DatabaseSync | null {
   }
 }
 
-function queryThreadsRows(db: DatabaseSync): ThreadRow[] {
+function isThreadRow(row: unknown): row is ThreadRow {
+  return typeof row === "object" && row !== null && typeof (row as { id?: unknown }).id === "string";
+}
+
+function* queryThreadsRows(db: DatabaseSync): Iterable<ThreadRow> {
   try {
-    const rawRows: unknown = db.prepare(THREADS_QUERY).all();
-    return rawRows as ThreadRow[];
+    for (const row of db.prepare(THREADS_QUERY).iterate()) {
+      if (isThreadRow(row)) {
+        yield row;
+      }
+    }
   } catch {
     emit({
       type: "PROGRESS",
       message: "Codex phase=index pass=index state_db_query_failed=true fallback=rollouts_only",
     });
-    return [];
   }
-}
-
-/**
- * Load `threads` rows keyed by id. Opens the DB read-only to be safe against
- * live Codex writes. Returns a Map of id → thread record (raw, unmapped).
- */
-function loadThreadsMap(dbPath: string): {
-  map: Map<string, ThreadRow>;
-  present: boolean;
-} {
-  if (!existsSync(dbPath)) {
-    return { map: new Map(), present: false };
-  }
-  const db = openThreadsDb(dbPath);
-  if (!db) {
-    return { map: new Map(), present: false };
-  }
-  const map = new Map<string, ThreadRow>();
-  try {
-    for (const r of queryThreadsRows(db)) {
-      map.set(r.id, r);
-    }
-  } finally {
-    try {
-      db.close();
-    } catch {
-      /* noop */
-    }
-  }
-  return { map, present: true };
 }
 
 // ─── Static-file streams ────────────────────────────────────────────────
@@ -472,7 +454,11 @@ interface LoadedFile {
 async function statAndRead(path: string): Promise<LoadedFile | null> {
   try {
     const st = await stat(path);
-    const text = await readFile(path, "utf8");
+    const preview = await readBoundedFilePreview(path);
+    if (preview === null) {
+      return null;
+    }
+    const text = preview.buffer.toString("utf8");
     return { mtimeMs: Number(st.mtimeMs), size: Number(st.size), text };
   } catch {
     return null;
@@ -658,12 +644,26 @@ function emitMessageRecord(
   });
 }
 
-function registerFunctionCall(state: RolloutParseState, payload: RolloutPayload, ts: string | null): void {
+function registerFunctionCall(
+  state: RolloutParseState,
+  payload: RolloutPayload,
+  ts: string | null,
+  emitRecord: (stream: string, data: RecordData) => void
+): void {
   const sessionId = state.sessionId;
   if (!sessionId) {
     return;
   }
   const callId = payload.call_id || `${sessionId}:${state.lineCount}`;
+  while (state.pendingCalls.size >= MAX_PENDING_FUNCTION_CALLS) {
+    const oldestEntry = state.pendingCalls.entries().next();
+    if (oldestEntry.done) {
+      break;
+    }
+    const [oldestCallId, oldest] = oldestEntry.value;
+    emitRecord("function_calls", oldest);
+    state.pendingCalls.delete(oldestCallId);
+  }
   state.pendingCalls.set(callId, {
     id: callId,
     session_id: sessionId,
@@ -750,7 +750,7 @@ export function processResponseItem({ deps, payload, state, ts }: ProcessRespons
   if (payload.type === "function_call") {
     state.functionCallCount++;
     if (deps.requested.has("function_calls")) {
-      registerFunctionCall(state, payload, ts);
+      registerFunctionCall(state, payload, ts, deps.emitRecord);
     }
     return;
   }
@@ -975,6 +975,29 @@ export function emitSessionsFromMaps({
     // against (updated_at lives in threads). They re-emit whenever
     // their rollout file mtime changes — the rollout-file mtime gate
     // in scanRollouts is the right deduper for that path.
+  }
+}
+
+interface EmitSessionsFromRowsArgs {
+  cursor: CarryForwardCursor<ThreadFingerprint>;
+  emitRecord: (stream: string, data: RecordData) => void;
+  rolloutAggregates: Map<string, RolloutAggregate>;
+  threadsRows: Iterable<ThreadRow>;
+}
+
+function emitSessionsFromRows({ threadsRows, rolloutAggregates, emitRecord, cursor }: EmitSessionsFromRowsArgs): void {
+  for (const t of threadsRows) {
+    const agg = rolloutAggregates.get(t.id);
+    rolloutAggregates.delete(t.id);
+    const prior = cursor?.prior(t.id);
+    if (shouldReemitThreadSession(t, agg, prior)) {
+      emitRecord("sessions", buildThreadSessionRecord(t.id, t, agg, prior));
+    }
+    cursor?.note(t.id, makeThreadFingerprint(t, agg, prior));
+  }
+
+  for (const [id, agg] of rolloutAggregates) {
+    emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
   }
 }
 
@@ -1308,16 +1331,25 @@ interface EmitSessionsArgs {
 function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }: EmitSessionsArgs): void {
   // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
   // fields only when state_5 doesn't have the session. Session PK stays the
-  // thread/session id — the same UUID is used by both sources. The I/O-free
-  // merge + dedup (`emitSessionsFromMaps`) is exported from this file so
-  // integration tests can pin it without touching sqlite.
-  const { map: threadsById } = loadThreadsMap(stateDbPath);
-  emitSessionsFromMaps({
-    threadsMap: threadsById,
-    rolloutAggregates,
-    emitRecord,
-    cursor,
-  });
+  // thread/session id — the same UUID is used by both sources.
+  const db = openThreadsDb(stateDbPath);
+  if (!db) {
+    for (const [id, agg] of rolloutAggregates) {
+      emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
+    }
+    return;
+  }
+
+  try {
+    emitSessionsFromRows({
+      threadsRows: queryThreadsRows(db),
+      rolloutAggregates,
+      emitRecord,
+      cursor,
+    });
+  } finally {
+    db.close();
+  }
 }
 
 // ─── Start-message + state-cursor helpers ───────────────────────────────
