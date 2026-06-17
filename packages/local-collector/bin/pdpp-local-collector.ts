@@ -286,10 +286,12 @@ Subcommands:
           [--queue <path>]
           [--connection-id <id>]
           [--source-instance-id <id>]
+          [--profile <name>]        Optional profile name under the collector profile dir.
   doctor                          Print local durable outbox operator diagnostics as JSON.
           [--queue <path>]
           [--connection-id <id>]
           [--source-instance-id <id>]
+          [--profile <name>]        Optional profile name under the collector profile dir.
   retry-dead-letters              Requeue local dead-letter outbox rows.
           [--queue <path>]
           [--connection-id <id>]
@@ -358,9 +360,10 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "status" || options.command === "doctor") {
-    const status = inspectLocalOutboxStatus(options);
+    const inspectOptions = resolveInspectionOptions(options);
+    const status = inspectLocalOutboxStatus(inspectOptions);
     if (options.command === "doctor") {
-      const errorSummary = readLocalOutboxDeadLetterErrorSummary(options);
+      const errorSummary = readLocalOutboxDeadLetterErrorSummary(inspectOptions);
       process.stdout.write(`${JSON.stringify(buildLocalOutboxDoctor(status, errorSummary), null, 2)}\n`);
       return;
     }
@@ -1215,6 +1218,39 @@ function resolveRecoveryOptions(options: CliOptions): {
     profileName: null,
     profileSource: "configured_queue",
   };
+}
+
+export function resolveInspectionOptions(options: CliOptions): CliOptions {
+  const sourceInstanceId = options.sourceInstanceId?.trim();
+  if (!sourceInstanceId || options.explicitOptions?.has("--queue") === true) {
+    return options;
+  }
+
+  const lookup = findLocalCollectorProfiles({
+    profileName: options.profile ?? null,
+    sourceInstanceId,
+  });
+  if (lookup.matches.length > 1) {
+    throw new CollectorUsageError(
+      `${options.command} found ${lookup.matches.length} local collector profiles for source_instance_id '${sourceInstanceId}'. ` +
+        "Pass --profile <name> to disambiguate."
+    );
+  }
+  if (lookup.matches.length === 1) {
+    return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
+  }
+
+  const configuredQueue =
+    options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  if (!configuredQueue) {
+    throw new CollectorUsageError(
+      `${options.command} could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
+        "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
+        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+    );
+  }
+
+  return options;
 }
 
 function hasDeadLetters(status: LocalOutboxStatusOutput): boolean {

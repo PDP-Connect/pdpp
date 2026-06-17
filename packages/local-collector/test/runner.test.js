@@ -32,6 +32,7 @@ import {
   pruneSentOutboxRows,
   readLocalOutboxDeadLetterErrorSummary,
   recoverLocalCollector,
+  resolveInspectionOptions,
   resolveLocalCollectorPackageVersion,
   retryLocalOutboxDeadLetters,
   scopedDefaultQueuePath,
@@ -688,6 +689,52 @@ test('local collector profile parser reads source identity and durable queue set
   assert.equal(env.PDPP_CONNECTION_ID, 'dsrc_profile');
   assert.equal(env.PDPP_COLLECTOR_QUEUE, '/var/lib/pdpp/collector.sqlite');
   assert.equal(env['ignored-line'], undefined);
+});
+
+test('local collector status resolves the matching source-instance profile queue', async () => {
+  const profileDir = await tempDir();
+  const queuePath = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    outbox.enqueue({
+      id: 'pending-row',
+      kind: 'record_batch',
+      payload: { private: 'not-rendered' },
+      sourceInstanceId: 'dsrc_peregrine',
+    });
+  } finally {
+    outbox.close();
+  }
+  await writeFile(
+    join(profileDir, 'claude_code.env'),
+    [
+      'PDPP_REFERENCE_BASE_URL=https://pdpp.example.com',
+      'PDPP_COLLECTOR_CONNECTOR=claude_code',
+      'PDPP_LOCAL_DEVICE_ID=device-1',
+      'PDPP_LOCAL_DEVICE_TOKEN=token-1',
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      `PDPP_COLLECTOR_QUEUE=${queuePath}`,
+      '',
+    ].join('\n')
+  );
+
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const options = resolveInspectionOptions(parseArgs(['status', '--source-instance-id', 'dsrc_peregrine']));
+    const status = inspectLocalOutboxStatus(options, { deploymentPosture: PUBLISHED_POSTURE });
+    assert.equal(status.db.exists, true);
+    assert.equal(status.db.path, queuePath);
+    assert.equal(status.configured_device.device_id_configured, true);
+    assert.equal(status.configured_device.device_token_configured, true);
+    assert.equal(status.outbox.counts.pending, 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
 });
 
 test('local collector recover dry-run loads the matching source-instance profile queue', async () => {

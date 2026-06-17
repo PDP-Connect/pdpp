@@ -1,7 +1,7 @@
 const COLLECTOR_BUILD_SOURCE_SENTINEL = "source";
 const COLLECTOR_BUILD_INFO = {
-    builtAt: "2026-06-17T01:11:13.014Z",
-    revision: "87265101004e",
+    builtAt: "2026-06-17T15:50:40.712Z",
+    revision: "0138c31864ab",
     version: "0.0.0",
 };
 function buildAgentVersion(info = COLLECTOR_BUILD_INFO) {
