@@ -25,4 +25,4 @@
 - [x] Verify `/dashboard` and `/dashboard/runs` cold browser document time after retained-size preloading.
 - [x] Verify `/dashboard` and `/dashboard/runs` cold browser document time after shallow-list projection.
 - [x] Verify Amazon/Chase row state no longer reflects sibling draft-shell run evidence.
-- [ ] Verify scoped connection detail/diagnostics still exposes deep run evidence after shallow-list projection.
+- [x] Verify scoped connection detail/diagnostics still exposes deep run evidence after shallow-list projection.
