@@ -20,4 +20,4 @@
 - [x] 4.1 Add regression coverage for duplicate connector-type connections and exact route ids.
 - [x] 4.2 Add regression coverage for connector-wide run evidence not being attributed to a source without exact connection proof.
 - [x] 4.3 Run console/reference type checks and targeted tests.
-- [ ] 4.4 Verify live behavior before declaring the tranche complete.
+- [x] 4.4 Verify live behavior before declaring the tranche complete.
