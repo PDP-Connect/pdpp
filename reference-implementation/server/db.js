@@ -25,9 +25,15 @@ const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
 
 let db;
+let sqliteStoreCacheGeneration = 0;
+let sqliteStoreCacheIdentity = 'sqlite:closed:0';
 
 export function getDb() {
   return db;
+}
+
+export function getSqliteStoreCacheIdentity() {
+  return sqliteStoreCacheIdentity;
 }
 
 /**
@@ -40,6 +46,8 @@ export function closeDb() {
     try { db.close(); } catch { /* best-effort */ }
     db = null;
   }
+  sqliteStoreCacheGeneration += 1;
+  sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
 }
 
 function resolveSqliteBusyTimeoutMs(value = process.env.PDPP_SQLITE_BUSY_TIMEOUT_MS) {
@@ -3204,6 +3212,8 @@ export function initDb(path = ':memory:', opts = {}) {
   closeDb();
   const busyTimeoutMs = resolveSqliteBusyTimeoutMs(opts.busyTimeoutMs);
   const raw = new Database(path, { timeout: busyTimeoutMs });
+  sqliteStoreCacheGeneration += 1;
+  sqliteStoreCacheIdentity = `sqlite:${String(path)}:${sqliteStoreCacheGeneration}`;
   raw.pragma(`busy_timeout = ${busyTimeoutMs}`);
 
   // Performance PRAGMAs — see openspec/changes/add-polyfill-connector-system/

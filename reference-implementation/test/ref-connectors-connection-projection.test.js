@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
-import { getConnectorSummaryForRoute, listConnectorSummaries } from '../server/ref-control.ts';
+import { getConnectorSummaryForRoute, invalidateConnectorSummariesCache, listConnectorSummaries } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
@@ -346,6 +346,7 @@ test('singleton-active overview hydrates only unambiguous active source run hist
     sourceBindingKey: 'personal',
     sourceBinding: { kind: 'browser_collector', device: 'personal' },
   });
+  invalidateConnectorSummariesCache();
   const ambiguous = await listConnectorSummaries(null, { includeRunSummaries: 'singleton-active' });
   const ambiguousWork = ambiguous.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
   assert.ok(ambiguousWork);

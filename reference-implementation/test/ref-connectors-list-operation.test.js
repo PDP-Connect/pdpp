@@ -16,6 +16,7 @@ import { executeRefConnectorsList } from '../operations/ref-connectors-list/inde
 import { createAttention } from '../runtime/attention.ts';
 import {
   canUseConnectorWideRunSummaryFallback,
+  connectorSummariesCacheKey,
   decideConnectorSummariesCacheRead,
   isPublicReferenceConnector,
   LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
@@ -24,6 +25,7 @@ import {
   projectConnectorSummaryConnectionHealth,
   projectLocalDeviceProgress,
 } from '../server/ref-control.ts';
+import { closeDb, initDb } from '../server/db.js';
 
 const NOW = '2026-05-19T12:00:00.000Z';
 const FRESH = '2026-05-19T11:55:00.000Z';
@@ -239,6 +241,22 @@ test('connector summaries cache returns stale values while refreshing in the bac
     ),
     'compute',
   );
+});
+
+test('connector summaries cache key separates reopened SQLite stores', () => {
+  try {
+    initDb(':memory:');
+    const firstKey = connectorSummariesCacheKey(null, { includeRunSummaries: 'singleton-active' });
+    closeDb();
+    initDb(':memory:');
+    const secondKey = connectorSummariesCacheKey(null, { includeRunSummaries: 'singleton-active' });
+
+    assert.match(firstKey, /^sqlite:/);
+    assert.match(secondKey, /^sqlite:/);
+    assert.notEqual(secondKey, firstKey);
+  } finally {
+    closeDb();
+  }
 });
 
 test('ref.connectors.list carries one owner-only runtime status when supplied', async () => {

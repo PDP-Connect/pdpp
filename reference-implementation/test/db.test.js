@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 
 import {
   closeDb,
+  getSqliteStoreCacheIdentity,
   initDb,
   isTransientSqliteLockError,
   runWithSqliteBusyRetry,
@@ -19,6 +20,29 @@ test('initDb applies a configurable SQLite busy timeout', () => {
   try {
     const db = initDb(join(dir, 'pdpp.sqlite'), { busyTimeoutMs: 12_345 });
     assert.equal(db.pragma('busy_timeout', { simple: true }), 12_345);
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('initDb advances SQLite store cache identity across reopen', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-db-cache-identity-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  try {
+    const before = getSqliteStoreCacheIdentity();
+    initDb(dbPath);
+    const firstOpen = getSqliteStoreCacheIdentity();
+    closeDb();
+    const closed = getSqliteStoreCacheIdentity();
+    initDb(dbPath);
+    const secondOpen = getSqliteStoreCacheIdentity();
+
+    assert.match(firstOpen, /^sqlite:/);
+    assert.notEqual(firstOpen, before);
+    assert.notEqual(closed, firstOpen);
+    assert.notEqual(secondOpen, firstOpen);
+    assert.notEqual(secondOpen, closed);
   } finally {
     closeDb();
     rmSync(dir, { recursive: true, force: true });

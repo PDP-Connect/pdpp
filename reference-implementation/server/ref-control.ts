@@ -43,6 +43,12 @@ import {
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { getConnectorManifest } from "./auth.js";
+import {
+  type EnrollmentShellLike,
+  retireExpiredBrowserEnrollmentShells,
+} from "./browser-enrollment-shell-retirement.ts";
+import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
+import { getSqliteStoreCacheIdentity } from "./db.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listLocalCoverageDiagnostics } from "./records.js";
@@ -56,10 +62,6 @@ import {
 } from "./ref-record-utils.ts";
 import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
 import {
-  type EnrollmentShellLike,
-  retireExpiredBrowserEnrollmentShells,
-} from "./browser-enrollment-shell-retirement.ts";
-import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
 } from "./stores/acquisition-batch-store.js";
@@ -71,7 +73,6 @@ import {
   createSqliteConnectorInstanceStore,
 } from "./stores/connector-instance-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
-import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -3566,29 +3567,32 @@ export function decideConnectorSummariesCacheRead(
 }
 
 function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): boolean {
-  // Cache only the production Postgres all-list path. SQLite test databases are
-  // frequently torn down/re-created in one process, and hook/concurrency calls
-  // are explicit diagnostics that must observe real worker behavior.
+  // Cache only the all-list path. Hook/concurrency calls are explicit
+  // diagnostics that must observe real worker behavior.
   return (
-    isPostgresStorageBackend() &&
     LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS > 0 &&
     options.concurrency == null &&
     options.onInFlightChange == null
   );
 }
 
-function connectorSummariesCacheKey(
+function connectorSummariesCacheStorageKey(): string {
+  return isPostgresStorageBackend() ? "postgres" : getSqliteStoreCacheIdentity();
+}
+
+export function connectorSummariesCacheKey(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): string {
+  const storageKey = connectorSummariesCacheStorageKey();
   const controllerKey = controller == null ? "no-controller" : "controller";
-  const runDepth =
-    options.includeRunSummaries === false
-      ? "shallow-runs"
-      : options.includeRunSummaries === "singleton-active"
-        ? "singleton-active-runs"
-        : "deep-runs";
-  return `${controllerKey}:${runDepth}`;
+  let runDepth = "deep-runs";
+  if (options.includeRunSummaries === false) {
+    runDepth = "shallow-runs";
+  } else if (options.includeRunSummaries === "singleton-active") {
+    runDepth = "singleton-active-runs";
+  }
+  return `${storageKey}:${controllerKey}:${runDepth}`;
 }
 
 function refreshConnectorSummariesCache(
