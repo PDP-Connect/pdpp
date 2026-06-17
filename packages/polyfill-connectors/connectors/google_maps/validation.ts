@@ -59,6 +59,8 @@ function remediationFor(status: TimelineValidationStatus): string | null {
       return "Choose the Timeline JSON export from Google Maps on your phone. Google account passwords and Data Portability archives are not Timeline exports.";
     case "valid":
       return null;
+    default:
+      return null;
   }
 }
 
