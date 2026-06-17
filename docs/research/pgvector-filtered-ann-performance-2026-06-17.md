@@ -305,12 +305,18 @@ The live finding is sharper:
   scans/sorts roughly 80k-90k vectors and takes about 3-4 seconds.
 - A bounded connector-level ANN candidate window improves Gmail materially but
   remains cold-slow for ChatGPT on low-similarity query vectors.
-- Diagnostic partial HNSW indexes for the two slow connector instances made the
-  original fully-scoped query use filtered HNSW directly and return in about
-  180-205ms.
+- Diagnostic partial HNSW indexes for Gmail and ChatGPT made the original
+  fully-scoped query use filtered HNSW directly and return in about 180-205ms.
+- A later diagnostic attempt to build a partial HNSW index for the largest
+  832k-row Claude Code source exceeded maintenance memory and was canceled
+  after ~25 minutes. That corrected the design: do not build partial HNSW for
+  dominant huge sources by default; use a smaller candidate window for those.
 
 Corrected verdict: keep the existing btree exact path for small scopes, use
 bounded ANN candidate windows as a fallback, and manage a capped set of derived
-partial HNSW indexes for medium-selectivity hot connector instances. This is the
+partial HNSW indexes for medium-selectivity hot connector instances. Raise the
+exact threshold enough that 15k-20k-row rare local-device sources stay exact,
+and keep the default ANN candidate window modest so dominant large sources do
+not pay for unnecessary 1000-row overscan. This is the
 lowest-incidental-complexity fix that matches the pgvector filtering ladder and
 the live PDPP workload.

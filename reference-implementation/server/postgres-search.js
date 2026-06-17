@@ -521,14 +521,14 @@ function compareSemanticHits(a, b) {
 
 function postgresSemanticCandidateLimit(limit, { env = process.env } = {}) {
   const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT || '', 10);
-  const configured = Number.isInteger(parsed) && parsed > 0 ? parsed : 1000;
+  const configured = Number.isInteger(parsed) && parsed > 0 ? parsed : 200;
   const requested = Math.max(Number(limit) || 200, 1);
   return Math.min(Math.max(configured, requested), 10_000);
 }
 
 function postgresSemanticExactMaxRows({ env = process.env } = {}) {
   const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS || '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 5000;
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 10_000;
 }
 
 function semanticStreamsFromScopeKeys(scopeKeys) {

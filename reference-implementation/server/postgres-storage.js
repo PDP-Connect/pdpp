@@ -46,7 +46,7 @@ function semanticVectorMigrationBatchSize() {
 
 function semanticHotHnswMinRows() {
   const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS || '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 25_000;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 10_000;
 }
 
 function semanticHotHnswMaxIndexes() {
