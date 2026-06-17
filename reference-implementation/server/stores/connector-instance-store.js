@@ -499,8 +499,10 @@ export function createSqliteConnectorInstanceStore() {
       return this.get(connectorInstanceId);
     },
 
-    // Returns all draft browser-enrollment shells (any owner). Used by the TTL
+    // Returns all browser-enrollment shells (any owner). Used by the TTL
     // retirement sweep to find shells whose enrollment_expires_at has passed.
+    // Historical method/query name says "Draft", but active shell rows are
+    // still incomplete until their source_binding_json.kind changes.
     // The optional ownerSubjectId filter is applied client-side after the
     // bounded read to avoid dynamic SQL.
     listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
@@ -798,14 +800,16 @@ export function createPostgresConnectorInstanceStore() {
       return await this.get(connectorInstanceId);
     },
 
-    // Returns all draft browser-enrollment shells (any owner, or filtered by
-    // ownerSubjectId). Used by the TTL retirement sweep.
+    // Returns all browser-enrollment shells (any owner, or filtered by
+    // ownerSubjectId). Used by the TTL retirement sweep. Historical method
+    // name says "Draft", but active shell rows are still incomplete until
+    // their source_binding_json.kind changes.
     async listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
       const result = ownerSubjectId
         ? await postgresQuery(
             `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
              FROM connector_instances
-             WHERE status = 'draft'
+             WHERE status IN ('draft', 'active')
                AND source_binding_json->>'kind' = 'browser_enrollment_shell'
                AND owner_subject_id = $1
              ORDER BY created_at ASC, connector_instance_id ASC
@@ -815,7 +819,7 @@ export function createPostgresConnectorInstanceStore() {
         : await postgresQuery(
             `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
              FROM connector_instances
-             WHERE status = 'draft'
+             WHERE status IN ('draft', 'active')
                AND source_binding_json->>'kind' = 'browser_enrollment_shell'
              ORDER BY created_at ASC, connector_instance_id ASC
              LIMIT 256`,

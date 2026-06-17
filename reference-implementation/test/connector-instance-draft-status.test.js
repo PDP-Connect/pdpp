@@ -161,6 +161,62 @@ test('activateDraft flips draft → active and is a no-op on non-draft rows', ()
   }
 });
 
+test('browser enrollment shell sweep enumerates active shell bindings until they resolve', () => {
+  initDb();
+  try {
+    seedConnector('amazon');
+    const store = createSqliteConnectorInstanceStore();
+    const draftShell = store.upsert({
+      ownerSubjectId: 'owner_1',
+      connectorId: 'amazon',
+      displayName: 'Amazon',
+      status: 'draft',
+      sourceKind: 'account',
+      sourceBindingKey: 'browser_shell_draft',
+      sourceBinding: {
+        kind: 'browser_enrollment_shell',
+        enrollment_expires_at: '2026-06-02T14:00:00.000Z',
+      },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const activeShell = store.upsert({
+      ownerSubjectId: 'owner_1',
+      connectorId: 'amazon',
+      displayName: 'Amazon',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'browser_shell_active',
+      sourceBinding: {
+        kind: 'browser_enrollment_shell',
+        enrollment_expires_at: '2026-06-02T14:00:00.000Z',
+      },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    store.upsert({
+      ownerSubjectId: 'owner_1',
+      connectorId: 'amazon',
+      displayName: 'Amazon - Personal',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'browser_collector_resolved',
+      sourceBinding: {
+        kind: 'browser_collector',
+        enrollment_expires_at: '2026-06-02T14:00:00.000Z',
+      },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const listed = store.listDraftBrowserEnrollmentShells('owner_1').map((instance) => instance.connectorInstanceId);
+
+    assert.deepEqual(listed.sort(), [activeShell.connectorInstanceId, draftShell.connectorInstanceId].sort());
+  } finally {
+    closeDb();
+  }
+});
+
 test('two drafts for one connector are two distinct connection_ids', () => {
   initDb();
   try {

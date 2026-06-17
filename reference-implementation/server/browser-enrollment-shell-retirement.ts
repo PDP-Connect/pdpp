@@ -3,8 +3,10 @@
 // Every browser-enrollment shell is created with an `enrollment_expires_at`
 // field inside its sourceBinding. This module provides a pure retirement sweep
 // that can be called at startup or from a periodic handler to flip expired
-// `draft` shells to `revoked`. Active shells (enrollment captured source
-// identity and flipped them to `active`) are never touched.
+// shell rows to `revoked`. A browser run can temporarily activate the draft
+// row before source identity is captured, so the durable completion signal is
+// the source-binding kind moving away from `browser_enrollment_shell`, not the
+// status alone.
 //
 // The sweep is intentionally side-effect-free in its pure form: it accepts a
 // list of shells and returns the IDs that should be retired, so it is directly
@@ -18,11 +20,12 @@ export interface EnrollmentShellLike {
   readonly sourceBinding?: Record<string, unknown> | null;
 }
 
-// Returns the connectorInstanceIds of draft browser-enrollment shells whose
-// TTL has expired relative to `now`. Active shells are excluded (they already
-// completed enrollment). Missing/malformed `enrollment_expires_at` is treated
-// conservatively as not-yet-expired (the data-ops retirement contract applies
-// only to shells with a declared TTL).
+// Returns the connectorInstanceIds of browser-enrollment shells whose TTL has
+// expired relative to `now`. Draft and active shell rows are both eligible:
+// active only means a run started, not that enrollment completed. Missing or
+// malformed `enrollment_expires_at` is treated conservatively as not-yet-
+// expired (the data-ops retirement contract applies only to shells with a
+// declared TTL).
 export function expiredEnrollmentShellIds(
   shells: readonly EnrollmentShellLike[],
   now: string
@@ -30,7 +33,7 @@ export function expiredEnrollmentShellIds(
   const nowMs = new Date(now).getTime();
   return shells
     .filter((shell) => {
-      if (shell.status !== "draft") return false;
+      if (shell.status !== "draft" && shell.status !== "active") return false;
       const binding = shell.sourceBinding as Partial<BrowserEnrollmentShellSourceBinding> | null;
       if (binding?.kind !== "browser_enrollment_shell") return false;
       const expiresAt = binding.enrollment_expires_at;
@@ -42,9 +45,10 @@ export function expiredEnrollmentShellIds(
 }
 
 export interface ShellRetirementStore {
-  // List all draft instances (any connector) for the given owner, or all owners
-  // if ownerSubjectId is null. Implementations may scope this to
-  // `source_binding_json->>'kind' = 'browser_enrollment_shell'` for efficiency.
+  // List all unresolved browser-enrollment shell instances (any connector) for
+  // the given owner, or all owners if ownerSubjectId is null. Implementations
+  // may scope this to `source_binding_json->>'kind' =
+  // 'browser_enrollment_shell'` for efficiency.
   listDraftBrowserEnrollmentShells(ownerSubjectId: string | null): Promise<EnrollmentShellLike[]>;
   updateStatus(
     connectorInstanceId: string,

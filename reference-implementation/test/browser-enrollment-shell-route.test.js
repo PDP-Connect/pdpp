@@ -277,7 +277,7 @@ test('abandon-enrollment: 409 for non-enrollment-shell connection (wrong kind in
 
 // --- TTL retirement utility (pure unit tests, no server needed) ---
 
-test('expiredEnrollmentShellIds: returns IDs of expired draft shells', () => {
+test('expiredEnrollmentShellIds: returns IDs of expired draft/active shell bindings', () => {
   const now = '2026-06-10T12:00:00.000Z';
   const shells = [
     {
@@ -296,13 +296,23 @@ test('expiredEnrollmentShellIds: returns IDs of expired draft shells', () => {
       sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
     },
     {
+      connectorInstanceId: 'cin_completed_account',
+      status: 'active',
+      sourceBinding: { kind: 'browser_collector', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
+    },
+    {
+      connectorInstanceId: 'cin_paused_shell',
+      status: 'paused',
+      sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
+    },
+    {
       connectorInstanceId: 'cin_static_secret',
       status: 'draft',
       sourceBinding: { kind: 'static_secret_draft' },
     },
   ];
   const ids = expiredEnrollmentShellIds(shells, now);
-  assert.deepEqual(ids, ['cin_expired_1']);
+  assert.deepEqual(ids, ['cin_expired_1', 'cin_active']);
 });
 
 test('expiredEnrollmentShellIds: empty list returns empty', () => {
@@ -326,7 +336,7 @@ test('BROWSER_ENROLLMENT_SHELL_TTL_MS is 2 hours', () => {
   assert.equal(BROWSER_ENROLLMENT_SHELL_TTL_MS, 2 * 60 * 60 * 1000);
 });
 
-test('retireExpiredBrowserEnrollmentShells flips only expired draft shells to revoked', async () => {
+test('retireExpiredBrowserEnrollmentShells flips expired draft/active shell bindings to revoked', async () => {
   const updates = [];
   const shells = [
     {
@@ -344,6 +354,11 @@ test('retireExpiredBrowserEnrollmentShells flips only expired draft shells to re
       status: 'active',
       sourceBinding: { kind: 'browser_enrollment_shell', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
     },
+    {
+      connectorInstanceId: 'cin_real_account',
+      status: 'active',
+      sourceBinding: { kind: 'browser_collector', enrollment_expires_at: '2026-06-10T10:00:00.000Z' },
+    },
   ];
 
   const retired = await retireExpiredBrowserEnrollmentShells(
@@ -359,10 +374,18 @@ test('retireExpiredBrowserEnrollmentShells flips only expired draft shells to re
     { now: '2026-06-10T12:00:00.000Z', ownerSubjectId: OWNER_SUBJECT_ID }
   );
 
-  assert.deepEqual(retired, ['cin_expired_1']);
+  assert.deepEqual(retired, ['cin_expired_1', 'cin_active']);
   assert.deepEqual(updates, [
     {
       connectorInstanceId: 'cin_expired_1',
+      args: {
+        status: 'revoked',
+        revokedAt: '2026-06-10T12:00:00.000Z',
+        updatedAt: '2026-06-10T12:00:00.000Z',
+      },
+    },
+    {
+      connectorInstanceId: 'cin_active',
       args: {
         status: 'revoked',
         revokedAt: '2026-06-10T12:00:00.000Z',
