@@ -524,6 +524,8 @@ export type RefActionRemediationCause =
 
 export type RefActionRemediationCommandKind =
   | "local_collector_doctor"
+  | "local_collector_recover_apply"
+  | "local_collector_recover_preview"
   | "local_collector_retry_dead_letters_apply"
   | "local_collector_retry_dead_letters_preview"
   | "local_collector_run";

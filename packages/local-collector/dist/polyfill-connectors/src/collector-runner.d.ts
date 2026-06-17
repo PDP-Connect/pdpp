@@ -32,6 +32,22 @@ export interface CollectorAutoPruneResult {
     matched: number;
     pruned: number;
 }
+export interface CollectorAutoCompactPolicy {
+    enabled: boolean;
+    minReclaimableBytes: number;
+}
+export declare const DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY: Readonly<CollectorAutoCompactPolicy>;
+export declare function resolveCollectorAutoCompactPolicy(override?: Partial<CollectorAutoCompactPolicy>, env?: NodeJS.ProcessEnv): CollectorAutoCompactPolicy;
+export declare function autoCompactOutboxIfBloated(input: {
+    outbox: Pick<LocalDeviceOutbox, "compact" | "countNonSucceeded" | "pageStats">;
+    policy: CollectorAutoCompactPolicy;
+}): CollectorAutoCompactResult;
+export interface CollectorAutoCompactResult {
+    compacted: boolean;
+    enabled: boolean;
+    reason: "disabled" | "below_threshold" | "lane_not_quiet" | "compacted";
+    reclaimedBytes: number;
+}
 export interface CollectorEnrollmentConfig {
     baseUrl: string;
     code: string;
@@ -48,6 +64,7 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
 }
 export interface CollectorRunConfig {
     abortSignal?: AbortSignal;
+    autoCompact?: Partial<CollectorAutoCompactPolicy>;
     autoPrune?: Partial<CollectorAutoPrunePolicy>;
     baseUrl: string;
     batchSize?: number;

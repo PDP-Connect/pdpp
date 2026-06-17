@@ -27,6 +27,7 @@ const QUEUE_FLAG = /--queue/;
 const BASE_URL_FLAG = /--base-url/;
 const DEVICE_TOKEN_FLAG = /--device-token/;
 const HOST_PATH_ARG = /\s\/|~\//;
+const TEMPLATE_PLACEHOLDER = /<[a-z-]+>/;
 
 test("package info advertises the @pdpp/cli specifier", () => {
   assert.equal(pdppCliPackageInfo.packageName, "@pdpp/cli");
@@ -195,8 +196,11 @@ test("substituteCommandTemplate resolves all three non-secret placeholders", () 
     "npx -y @pdpp/local-collector run --base-url <provider-url> --connector <connector-id>",
     { providerUrl: "https://pdpp.example.com", connectorId: "claude-code", connectionId: "cin_x" }
   );
-  assert.equal(resolved, "npx -y @pdpp/local-collector run --base-url https://pdpp.example.com --connector claude-code");
-  assert.doesNotMatch(resolved ?? "", /<[a-z-]+>/);
+  assert.equal(
+    resolved,
+    "npx -y @pdpp/local-collector run --base-url https://pdpp.example.com --connector claude-code"
+  );
+  assert.doesNotMatch(resolved ?? "", TEMPLATE_PLACEHOLDER);
 });
 
 test("substituteCommandTemplate resolves the connection-id placeholder", () => {
@@ -205,6 +209,14 @@ test("substituteCommandTemplate resolves the connection-id placeholder", () => {
     { providerUrl: null, connectorId: null, connectionId: "cin_peregrine" }
   );
   assert.equal(resolved, "npx -y @pdpp/local-collector retry-dead-letters --connection-id cin_peregrine");
+});
+
+test("substituteCommandTemplate resolves the source-instance-id placeholder", () => {
+  const resolved = substituteCommandTemplate(
+    "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply",
+    { providerUrl: null, connectorId: null, connectionId: "cin_peregrine", sourceInstanceId: "dsrc_peregrine" }
+  );
+  assert.equal(resolved, "npx -y @pdpp/local-collector recover --source-instance-id dsrc_peregrine --apply");
 });
 
 test("substituteCommandTemplate FAILS CLOSED when a placeholder is unresolved", () => {
@@ -224,6 +236,15 @@ test("substituteCommandTemplate FAILS CLOSED when a placeholder is unresolved", 
       providerUrl: "https://x",
       connectorId: null,
       connectionId: "cin_x",
+    }),
+    null
+  );
+  assert.equal(
+    substituteCommandTemplate("recover --source-instance-id <source-instance-id>", {
+      providerUrl: null,
+      connectorId: null,
+      connectionId: "cin_x",
+      sourceInstanceId: null,
     }),
     null
   );

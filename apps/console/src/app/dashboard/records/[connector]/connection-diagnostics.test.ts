@@ -89,8 +89,13 @@ const REMEDIATION_OWNER_EXPLANATION_HELPER = /function outboxCauseExplanation/;
 const REMEDIATION_COMMAND_CAPTION_HELPER = /function remediationCommandCaption/;
 const REMEDIATION_FAILED_UPLOAD_COPY = /saved records[\s\S]{0,120}did not upload to this server/;
 const REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY = /dashboard cannot fix that host-local queue remotely/;
-const REMEDIATION_DRY_RUN_CAPTION = /Dry run: shows the saved records that would be retried/;
-const REMEDIATION_UPLOADS_QUEUED_RECORDS_CAPTION = /uploads queued records to this server/;
+const REMEDIATION_RECOVER_DRY_RUN_CAPTION = /Dry run: shows what this recovery would do on that host/;
+const REMEDIATION_RECOVER_PROFILE_CAPTION =
+  /Uses the enrolled local profile to recover saved work and run the collector once/;
+const REMEDIATION_THREADS_SOURCE_INSTANCE_ID = /sourceInstanceId=\{recoverySourceId\}/;
+const REMEDIATION_SUBSTITUTES_SOURCE_INSTANCE_ID = /sourceInstanceId,/;
+const RECOVERY_SOURCE_ID_HELPER = /function recoverySourceInstanceId/;
+const RECOVERY_SOURCE_FILTERS_BY_CONNECTOR_INSTANCE = /source\.connector_instance_id === connectionId/;
 const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
@@ -318,6 +323,8 @@ test("stalled-outbox remediation PREFERS the server's cause-specific verdict com
   // Verdict command templates are substituted (not rendered literally) and fail closed.
   assert.match(src, REMEDIATION_SUBSTITUTES_TEMPLATE);
   assert.match(src, REMEDIATION_FAILS_CLOSED);
+  assert.match(src, REMEDIATION_THREADS_SOURCE_INSTANCE_ID);
+  assert.match(src, REMEDIATION_SUBSTITUTES_SOURCE_INSTANCE_ID);
 });
 
 test("cause-specific collector recovery explains the host-local problem in owner language", async () => {
@@ -326,8 +333,15 @@ test("cause-specific collector recovery explains the host-local problem in owner
   assert.match(src, REMEDIATION_COMMAND_CAPTION_HELPER);
   assert.match(src, REMEDIATION_FAILED_UPLOAD_COPY);
   assert.match(src, REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY);
-  assert.match(src, REMEDIATION_DRY_RUN_CAPTION);
-  assert.match(src, REMEDIATION_UPLOADS_QUEUED_RECORDS_CAPTION);
+  assert.match(src, REMEDIATION_RECOVER_DRY_RUN_CAPTION);
+  assert.match(src, REMEDIATION_RECOVER_PROFILE_CAPTION);
+});
+
+test("device-local recovery resolves a source-instance id before rendering copyable commands", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, RECOVERY_SOURCE_ID_HELPER);
+  assert.match(src, RECOVERY_SOURCE_FILTERS_BY_CONNECTOR_INSTANCE);
+  assert.match(src, REMEDIATION_THREADS_SOURCE_INSTANCE_ID);
 });
 
 test("device-local recovery opens Diagnostics so commands are immediately visible", async () => {
@@ -429,7 +443,7 @@ test("connector detail page surfaces pending-on-devices delta when source instan
 // hiding it in a title an owner who did not set up the collector won't open.
 
 const REMEDIATION_THREADS_HOST_LABELS =
-  /OutboxStallRemediationPanel[\s\S]{0,160}hostLabels=\{boundHostLabels\(sourceInstances\)\}/;
+  /OutboxStallRemediationPanel[\s\S]{0,220}hostLabels=\{boundHostLabels\(recoverySourceInstances\)\}/;
 const REMEDIATION_HOST_TESTID = /data-testid="diagnostics-outbox-remediation-host"/;
 const REMEDIATION_NAMES_BOUND_DEVICE = /Bound device/;
 const BOUND_HOST_LABELS_PREFERS_DISPLAY_NAME = /source\.display_name \?\? source\.local_binding_name/;

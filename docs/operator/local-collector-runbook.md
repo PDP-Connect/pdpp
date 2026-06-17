@@ -234,7 +234,7 @@ situation from raw counts. It is exactly one of:
 | `healthy_idle`      | Fully drained; coverage accounted for (or nothing collected yet)        | None |
 | `draining`          | Claimable-now or leased work exists — actively moving records           | None; let the run/schedule continue |
 | `retryable_backlog` | Ready work remains but all of it is waiting on retry backoff            | None; the next scheduled run drains it |
-| `dead_letter`       | Rows exhausted retries and need recovery                                | `retry-dead-letters` (preview, then `--apply`), then re-run |
+| `dead_letter`       | Rows exhausted retries and need recovery                                | `recover --source-instance-id <id>` (preview, then `--apply`) |
 | `stale_lease`       | A prior run crashed mid-drain and left a lease past expiry              | None; the next run recovers it automatically |
 | `coverage_missing`  | Collected records but never carried a `coverage_diagnostics` record (the local shape behind a stuck dashboard `coverage_unknown`) | Re-run with the default stream set (no `--streams`) once |
 

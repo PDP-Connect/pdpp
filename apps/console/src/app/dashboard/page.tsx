@@ -68,7 +68,11 @@ async function loadStandingInputs(): Promise<StandingInputs> {
   const [summary, grantsRes, tracesRes, failedTracesRes, failedRunsRes, pendingRes, clientsRes, connectorsRes] =
     await Promise.all([
       safe(() => ds.getDatasetSummary(), null),
-      safe(() => ds.listGrants({ limit: 12 }), { data: [] as GrantSummary[], has_more: false, object: "list" as const }),
+      safe(() => ds.listGrants({ limit: 12 }), {
+        data: [] as GrantSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
       safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
       safe(() => ds.listTraces({ status: "failed", limit: 5 }), {
         data: [] as TraceSummary[],

@@ -26,9 +26,12 @@ import {
   classifyLocalCollectorDeploymentPosture,
   compactOutbox,
   inspectLocalOutboxStatus,
+  findLocalCollectorProfiles,
   parseArgs,
+  parseCollectorProfileEnv,
   pruneSentOutboxRows,
   readLocalOutboxDeadLetterErrorSummary,
+  recoverLocalCollector,
   resolveLocalCollectorPackageVersion,
   retryLocalOutboxDeadLetters,
   scopedDefaultQueuePath,
@@ -313,7 +316,7 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
     // scenario also has an expired lease, so doctor emits a distinct
     // self-heal hint for that — each non-ok check gets its own line.
     assert.ok(Array.isArray(doctor.remediation));
-    const deadLetterHint = doctor.remediation.find((line) => /retry-dead-letters/.test(line));
+    const deadLetterHint = doctor.remediation.find((line) => /recover --source-instance-id <id>/.test(line));
     assert.ok(deadLetterHint, 'expected a dead-letter remediation hint');
     assert.match(deadLetterHint, /--apply/);
     const expiredLeaseHint = doctor.remediation.find((line) => /past expiry/.test(line));
@@ -642,8 +645,8 @@ test('local collector retry-dead-letters is dry-run by default and backs up befo
   assert.equal(applied.status_before.dead_letter, 1);
   assert.equal(applied.status_after.dead_letter, 0);
   assert.equal(applied.status_after.pending, 1);
-  // After requeue the note is explicit that a collector re-run drains it.
-  assert.match(applied.note, /re-run the collector/);
+  // After requeue the note points normal recovery at the source-profile command.
+  assert.match(applied.note, /recover --source-instance-id <id> --apply/);
   assert.match(applied.note, /does not ingest/);
 
   // Payloads and ids never leak; the redacted error class ("terminal") is
@@ -667,10 +670,160 @@ test('local collector retry-dead-letters explains a state-read block when nothin
   assert.equal(result.matched, 0);
   assert.equal(result.requeued, 0);
   assert.equal(result.dead_letter_error_summary, undefined);
-  // The note distinguishes a state-read block (nothing to requeue, re-run to
-  // clear) from a dead-letter backlog.
+  // The note distinguishes a state-read block (nothing to requeue) from a
+  // dead-letter backlog and points at source-profile recovery.
   assert.match(result.note, /state-read block/);
-  assert.match(result.note, /re-run the collector/);
+  assert.match(result.note, /recover --source-instance-id <id> --apply/);
+});
+
+test('local collector profile parser reads source identity and durable queue settings', () => {
+  const env = parseCollectorProfileEnv(`
+    # comment
+    export PDPP_REFERENCE_BASE_URL="https://pdpp.example.com"
+    PDPP_CONNECTION_ID='dsrc_profile'
+    PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector.sqlite
+    ignored-line
+  `);
+  assert.equal(env.PDPP_REFERENCE_BASE_URL, 'https://pdpp.example.com');
+  assert.equal(env.PDPP_CONNECTION_ID, 'dsrc_profile');
+  assert.equal(env.PDPP_COLLECTOR_QUEUE, '/var/lib/pdpp/collector.sqlite');
+  assert.equal(env['ignored-line'], undefined);
+});
+
+test('local collector recover dry-run loads the matching source-instance profile queue', async () => {
+  const profileDir = await tempDir();
+  const queuePath = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    outbox.enqueue({
+      id: 'dead-letter-id',
+      kind: 'record_batch',
+      payload: { secret: 'dead-letter-payload' },
+      sourceInstanceId: 'dsrc_peregrine',
+    });
+    const [claim] = outbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_peregrine' });
+    outbox.deadLetter({
+      error: 'local device request failed: 502',
+      holder: 'worker-a',
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    outbox.close();
+  }
+  await writeFile(
+    join(profileDir, 'claude_code.env'),
+    [
+      'PDPP_REFERENCE_BASE_URL=https://pdpp.example.com',
+      'PDPP_COLLECTOR_CONNECTOR=claude_code',
+      'PDPP_LOCAL_DEVICE_ID=device-1',
+      'PDPP_LOCAL_DEVICE_TOKEN=token-1',
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      `PDPP_COLLECTOR_QUEUE=${queuePath}`,
+      '',
+    ].join('\n')
+  );
+
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const lookup = findLocalCollectorProfiles({ sourceInstanceId: 'dsrc_peregrine' });
+    assert.equal(lookup.matches.length, 1);
+    assert.equal(lookup.matches[0]?.name, 'claude_code');
+
+    const result = await recoverLocalCollector(parseArgs(['recover', '--source-instance-id', 'dsrc_peregrine']));
+    assert.equal(result.object, 'local_collector_recovery');
+    assert.equal(result.dry_run, true);
+    assert.equal(result.profile.name, 'claude_code');
+    assert.equal(result.profile.source, 'local_profile');
+    assert.equal(result.db.exists, true);
+    assert.equal(result.db.path, queuePath);
+    assert.equal(result.retry_dead_letters?.matched, 1);
+    assert.equal(result.retry_dead_letters?.requeued, 0);
+    assert.equal(result.status_before.outbox.counts.dead_letter, 1);
+    assert.match(result.note, /would be prepared for retry/);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test('local collector recover respects explicit queue over the matching profile queue', async () => {
+  const profileDir = await tempDir();
+  const profileQueuePath = await tempOutboxPath();
+  const explicitQueuePath = await tempOutboxPath();
+  const profileOutbox = new LocalDeviceOutbox({ path: profileQueuePath });
+  const explicitOutbox = new LocalDeviceOutbox({ path: explicitQueuePath });
+  try {
+    profileOutbox.enqueue({ id: 'profile-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_peregrine' });
+    explicitOutbox.enqueue({ id: 'explicit-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_peregrine' });
+    const [claim] = explicitOutbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_peregrine' });
+    explicitOutbox.deadLetter({
+      error: 'explicit queue error',
+      holder: 'worker-a',
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    profileOutbox.close();
+    explicitOutbox.close();
+  }
+  await writeFile(
+    join(profileDir, 'claude_code.env'),
+    [
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      `PDPP_COLLECTOR_QUEUE=${profileQueuePath}`,
+      '',
+    ].join('\n')
+  );
+
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const result = await recoverLocalCollector(
+      parseArgs(['recover', '--source-instance-id', 'dsrc_peregrine', '--queue', explicitQueuePath])
+    );
+    assert.equal(result.db.path, explicitQueuePath);
+    assert.equal(result.retry_dead_letters?.matched, 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test('local collector rejects conflicting source identity flags', () => {
+  assert.throws(
+    () => parseArgs(['recover', '--connection-id', 'dsrc_a', '--source-instance-id', 'dsrc_b']),
+    /disagrees/
+  );
+});
+
+test('local collector recover refuses package-default queue when no profile exists', async () => {
+  const profileDir = await tempDir();
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    await assert.rejects(
+      recoverLocalCollector(parseArgs(['recover', '--source-instance-id', 'dsrc_missing'])),
+      (error) => {
+        assert.match(String(error), /could not find a local collector profile/);
+        assert.doesNotMatch(String(error), new RegExp(profileDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        return true;
+      }
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
 });
 
 test('local collector run output summarizes state cursors without dumping payload maps', () => {
@@ -828,7 +981,7 @@ test('run summary surfaces a dead-letter backlog with a recovery pointer', () =>
   assert.equal(output.drained, false);
   assert.equal(output.lifecycle_state, 'dead_letter');
   assert.equal(output.residual_backlog.dead_letter, 2);
-  assert.match(output.drain_note, /retry-dead-letters/);
+  assert.match(output.drain_note, /recover --source-instance-id <id> --apply/);
 });
 
 test('run summary explains a backlog-skipped scan without claiming a fresh drain', () => {
@@ -1796,7 +1949,7 @@ test('stalled/dead-letter still surfaces as a problem even with a large sent bac
   assert.equal(doctor.checks.outbox_failures, 'fail');
   assert.equal(doctor.status, 'critical');
   assert.ok(Array.isArray(doctor.remediation));
-  assert.ok(doctor.remediation.some((line) => /retry-dead-letters/.test(line)));
+  assert.ok(doctor.remediation.some((line) => /recover --source-instance-id <id>/.test(line)));
 });
 
 async function tempOutboxPath() {

@@ -13,6 +13,7 @@ export interface StreamScope {
 }
 export interface StartMessage {
     detail_gaps?: readonly DetailGapStartEntry[];
+    recovery_only?: boolean;
     scope: {
         streams: readonly StreamScope[];
     };
@@ -30,6 +31,19 @@ export interface DetailGapStartEntry {
     reference_only?: true;
     status: "pending";
     stream: string;
+}
+export interface DetailGapsPageRequestMessage {
+    max_bytes?: number;
+    reference_only: true;
+    request_id: string;
+    streams?: readonly string[];
+    type: "DETAIL_GAPS_PAGE_REQUEST";
+}
+export interface DetailGapsPageResponse {
+    detail_gaps: readonly DetailGapStartEntry[];
+    reference_only: true;
+    request_id: string;
+    type: "DETAIL_GAPS_PAGE_RESPONSE";
 }
 export interface InteractionResponse {
     data?: Record<string, string>;
@@ -125,6 +139,34 @@ export interface DetailGapRecoveredMessage {
     stream: string;
     type: "DETAIL_GAP_RECOVERED";
 }
+export interface ProviderBudgetProgress {
+    circuit: {
+        previous_state: "closed" | "half_open" | "open";
+        reason: "provider_failure" | "provider_throttle" | "reset_timeout" | "success";
+        state: "closed" | "half_open" | "open";
+        trigger: "before_request" | "provider_failure" | "provider_throttle" | "success";
+    };
+    elapsed_ms: number;
+    object: "provider_budget_circuit_transition";
+    request_count: number;
+    retry_tokens_remaining?: number | "unbounded";
+}
+export interface CollectionRateProgress {
+    ceiling_interval_ms: number;
+    ceiling_rate_per_min: number;
+    current_interval_ms: number;
+    effective_rate_per_min: number;
+    last_backoff: {
+        at_interval_ms: number;
+        reason: "retry_after" | "throttle";
+    } | null;
+    object: "collection_rate";
+}
+export interface ProgressExtra {
+    count?: number;
+    stream?: string;
+    total?: number;
+}
 export type EmittedMessage = {
     type: "RECORD";
     stream: string;
@@ -139,7 +181,11 @@ export type EmittedMessage = {
 } | {
     type: "PROGRESS";
     message: string;
+    count?: number;
     stream?: string;
+    total?: number;
+    provider_budget?: ProviderBudgetProgress;
+    collection_rate?: CollectionRateProgress;
 } | ({
     type: "ASSISTANCE";
 } & AssistanceRequest) | ({
@@ -150,7 +196,11 @@ export type EmittedMessage = {
     reason: string;
     message: string;
     diagnostics?: unknown;
-} | DetailGapMessage | DetailCoverageMessage | DetailGapRecoveredMessage | {
+    recovery_hint?: string | {
+        action?: string;
+        retryable?: boolean;
+    };
+} | DetailGapMessage | DetailCoverageMessage | DetailGapRecoveredMessage | DetailGapsPageRequestMessage | {
     type: "DONE";
     status: "succeeded" | "failed";
     records_emitted: number;

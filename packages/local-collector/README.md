@@ -32,6 +32,13 @@ PDPP_CONNECTION_ID=<source_instance_id> \
 npx -y @pdpp/local-collector run \
   --base-url https://<reference-host> \
   --connector claude_code
+
+# Preview host-local recovery for a stalled collector lane. This loads the
+# enrolled local profile for the source instance and changes nothing.
+npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id>
+
+# Apply recovery: requeue failed uploads when present, then run the collector once.
+npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id> --apply
 ```
 
 The collector sends `X-PDPP-Collector-Protocol` on enrollment and every

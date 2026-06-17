@@ -424,12 +424,16 @@ test('channel: stalled outbox state-read block asks for re-run, not dead-letter 
     kind: 'local_device',
     identity_source: 'source_instance_bindings',
   });
-  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_run']);
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_recover_apply']);
+  assert.equal(
+    action.remediation?.commands[0]?.command_template,
+    'npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply'
+  );
   assert.notEqual(v.forward_statement, 'Current and collecting normally.');
   assert.doesNotMatch(JSON.stringify(action), /dead[- ]letter/i);
 });
 
-test('channel: dead-letter stalled outbox includes retry-dead-letters before re-run', () => {
+test('channel: dead-letter stalled outbox includes recover preview before apply', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
       state: 'degraded',
@@ -456,14 +460,16 @@ test('channel: dead-letter stalled outbox includes retry-dead-letters before re-
   assert.doesNotMatch(v.forward_statement, /dead[- ]letter/i);
   assert.doesNotMatch(action.cta, /dead[- ]letter/i);
   assert.deepEqual(action.remediation?.commands.map((command) => command.kind), [
-    'local_collector_retry_dead_letters_preview',
-    'local_collector_retry_dead_letters_apply',
-    'local_collector_run',
+    'local_collector_recover_preview',
+    'local_collector_recover_apply',
   ]);
   assert.deepEqual(action.remediation?.commands.map((command) => command.label), [
-    'Check what will be retried',
-    'Prepare failed uploads for retry',
-    'Run the local collector again',
+    'Preview recovery',
+    'Recover and run the collector',
+  ]);
+  assert.deepEqual(action.remediation?.commands.map((command) => command.command_template), [
+    'npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id>',
+    'npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply',
   ]);
 });
 
@@ -488,8 +494,32 @@ test('channel: stale-pending stalled outbox asks for collector re-run only', () 
   assert.equal(v.forward_statement, 'The local collector has queued work that stopped moving. Run it again on that host.');
   assert.equal(action.cta, 'Run the local collector again');
   assert.equal(action.remediation?.cause, 'stale_pending');
-  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_run']);
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_recover_apply']);
   assert.doesNotMatch(JSON.stringify(action), /retry-dead-letters/);
+});
+
+test('channel: unknown stalled outbox diagnostics target source-instance recovery scope', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
+      forward_disposition: 'complete',
+      reason_code: 'unexpected_outbox_stall',
+      conditions: [localExporterStalledCondition('unexpected_outbox_stall')],
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.channel, 'attention');
+  assert.equal(action.remediation?.cause, 'stalled_unknown');
+  assert.deepEqual(action.remediation?.commands.map((command) => command.kind), ['local_collector_doctor']);
+  assert.equal(
+    action.remediation?.commands[0]?.command_template,
+    'npx -y @pdpp/local-collector doctor --source-instance-id <source-instance-id>'
+  );
+  assert.doesNotMatch(JSON.stringify(action), /<connection-id>/);
 });
 
 test('channel: degraded resumable stale coverage is advisory Retry now, not calm wait', () => {

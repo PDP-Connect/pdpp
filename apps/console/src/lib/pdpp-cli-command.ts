@@ -11,6 +11,7 @@ export const localCollectorPackageName = "@pdpp/local-collector";
 // direct string literal (not an alias) so the owner-journey harness scanner
 // can resolve it in rendered-command extraction.
 export const localCollectorPackageSpecifier = "@pdpp/local-collector";
+const TEMPLATE_PLACEHOLDER = /<[a-z-]+>/;
 
 /**
  * Rewrite a canonical `pdpp ...` invocation (as advertised in dashboard/docs
@@ -154,9 +155,11 @@ export function pdppCliMonorepoCommand(cliCommand: string): string | null {
  * runs them on the host that owns the data — so the generated string is safe
  * to display remotely. We deliberately omit `--queue` (a device-local
  * filesystem path) so the dashboard never leaks or guesses host paths; the
- * collector resolves the default queue on the device. When the connection's
- * source identity is known we scope with `--connection-id <id>`, which is a
- * non-secret stable source identity already shown elsewhere in diagnostics.
+ * collector resolves the default queue on the device. These legacy helpers
+ * accept a source identity via the historical `--connection-id` flag; current
+ * owner-facing recovery panels prefer the higher-level `recover
+ * --source-instance-id <id>` command so the collector can load the enrolled
+ * local profile before touching the outbox.
  */
 function pdppLocalCollectorDiagnosticCommand(
   subcommand: "doctor" | "status",
@@ -229,7 +232,8 @@ export const pdppCliCollectorRetryDeadLettersCommand = pdppLocalCollectorRetryDe
 
 /**
  * Late-bind the non-secret placeholders the runtime leaves in a remediation
- * `command_template` (`<provider-url>`, `<connector-id>`, `<connection-id>`)
+ * `command_template` (`<provider-url>`, `<connector-id>`, `<connection-id>`,
+ * `<source-instance-id>`)
  * with the values the console knows. The runtime owns the command SHAPE; the
  * console owns this substitution — that is the agreed runtime/console contract.
  *
@@ -238,13 +242,17 @@ export const pdppCliCollectorRetryDeadLettersCommand = pdppLocalCollectorRetryDe
  * state rather than a broken command with literal `<...>` in it — a broken
  * copy-paste command is exactly the owner-reported failure this prevents.
  *
- * Only these three non-secret placeholders are ever substituted; no base URL,
- * token, or filesystem path is introduced that the template did not already
- * name.
+ * Only these non-secret placeholders are ever substituted; no token or
+ * filesystem path is introduced that the template did not already name.
  */
 export function substituteCommandTemplate(
   template: string,
-  values: { connectionId: string | null; connectorId: string | null; providerUrl: string | null }
+  values: {
+    connectionId: string | null;
+    connectorId: string | null;
+    providerUrl: string | null;
+    sourceInstanceId?: string | null;
+  }
 ): string | null {
   let resolved = template;
   if (values.providerUrl) {
@@ -256,6 +264,9 @@ export function substituteCommandTemplate(
   if (values.connectionId) {
     resolved = resolved.replaceAll("<connection-id>", values.connectionId);
   }
+  if (values.sourceInstanceId) {
+    resolved = resolved.replaceAll("<source-instance-id>", values.sourceInstanceId);
+  }
   // Fail closed on any leftover placeholder so a broken command can never be copied.
-  return /<[a-z-]+>/.test(resolved) ? null : resolved;
+  return TEMPLATE_PLACEHOLDER.test(resolved) ? null : resolved;
 }

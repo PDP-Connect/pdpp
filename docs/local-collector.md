@@ -221,6 +221,31 @@ npx -y @pdpp/local-collector run \
 `PDPP_CONNECTION_ID`, but new docs and scripts should use
 `PDPP_CONNECTION_ID`.
 
+## Recover A Stalled Collector
+
+When the dashboard says a local collector needs attention, run the recovery
+command on the host that owns that collector. Use the `source_instance_id`
+shown in the dashboard's focused recovery panel; do not substitute the
+owner-facing `connector_instance_id` / `connection_id`.
+
+```bash
+# Dry run: resolves the enrolled local profile and reports what would happen.
+npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id>
+
+# Apply: requeues failed uploads if present, then runs the collector once.
+npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id> --apply
+```
+
+`recover` looks for a local collector profile matching that source instance
+under `${PDPP_LOCAL_COLLECTOR_PROFILE_DIR}` or
+`${XDG_CONFIG_HOME:-$HOME/.config}/pdpp/collectors`. When it finds one, it uses
+the profile's durable outbox path, connector id, reference base URL, device id,
+and device token. If no matching profile exists and no explicit queue was
+configured, it refuses with an operator error instead of falling back to the
+package-default outbox. That refusal is intentional: the package-default queue
+is often unrelated to the enrolled host collector and can produce a misleading
+`db.exists:false` / `matched:0` result.
+
 If you installed globally with `npm i -g @pdpp/local-collector`, replace
 the `npx -y @pdpp/local-collector` prefix with `pdpp-local-collector`:
 
@@ -517,7 +542,7 @@ that issued the current device token. A token from one reference DB is not valid
 against a fresh DB. If the DB was replaced, create a new enrollment code and run
 `npx -y @pdpp/local-collector enroll ...` again.
 
-Also confirm you are passing the correct connection id:
+Also confirm you are passing the correct source identity:
 
 ```bash
 # shell inspection only; do not print PDPP_LOCAL_DEVICE_TOKEN

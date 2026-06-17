@@ -167,6 +167,26 @@ local_device`) privileges the right signal: `gaps_drained_last_run` +
 `retained_records` + "last refreshed Nd ago" for manual. The "did it work?" eye
 never lands on a structurally-zero number (ideal-design fork F5).
 
+### D10 — local-device recovery targets source-instance profiles, not public connection ids
+
+Local collector recovery runs on the host that owns the durable outbox. That
+host-side outbox is keyed by the device-binding `source_instance_id`, while owner
+routes and records pages are keyed by the public `connection_id` /
+`connector_instance_id`. Those ids can differ. A dashboard command that
+substitutes the public `connection_id` into a local collector command can inspect
+the wrong queue and report `db.exists:false` / `matched:0` even while the real
+host profile has a dead-letter backlog.
+
+The recovery contract therefore uses the collector CLI as the recovery primitive:
+`pdpp-local-collector recover --source-instance-id <id>`. Owner surfaces resolve
+the `<id>` from existing source-instance bindings and fail closed if exactly one
+binding is not available. The CLI then locates the enrolled local profile on that
+host (`$PDPP_LOCAL_COLLECTOR_PROFILE_DIR` or
+`$XDG_CONFIG_HOME/pdpp/collectors`), loads the profile's durable queue, connector,
+reference origin, and device credential, and either previews or applies recovery.
+This keeps tokens and filesystem paths off the remote dashboard while avoiding a
+copyable command that silently targets an unrelated default queue.
+
 ## Alternatives considered and rejected
 
 ### A — The honesty-only design (rejected as the endpoint, kept as the floor)

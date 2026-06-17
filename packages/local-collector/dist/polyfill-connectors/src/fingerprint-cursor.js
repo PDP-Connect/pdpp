@@ -34,7 +34,8 @@ export function recordFingerprint(record, excludeKeys = []) {
     return createHash("sha1").update(stableStringify(record, exclude)).digest("hex");
 }
 export function openFingerprintCursor(priorState, options = {}) {
-    const excludeKeys = options.excludeFromFingerprint ?? [];
+    const staticExcludeKeys = options.excludeFromFingerprint ?? [];
+    const resolveExcludeKeys = options.resolveExcludeFromFingerprint;
     const prior = options.priorFingerprints ?? decodePriorFingerprints(priorState);
     const cursor = openCarryForwardCursor(prior);
     return {
@@ -47,7 +48,9 @@ export function openFingerprintCursor(priorState, options = {}) {
             if (id.length === 0) {
                 return true;
             }
-            const fingerprint = recordFingerprint(data, excludeKeys);
+            const record = data;
+            const excludeKeys = resolveExcludeKeys ? resolveExcludeKeys(record) : staticExcludeKeys;
+            const fingerprint = recordFingerprint(record, excludeKeys);
             cursor.note(id, fingerprint);
             return cursor.prior(id) !== fingerprint;
         },

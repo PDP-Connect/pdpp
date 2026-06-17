@@ -223,8 +223,9 @@ correlating the same-stream pending detail gap.
   `local_exporter_dead_letter_backlog` or `outbox_dead_letter_backlog`
 - **THEN** the primary required action's focused remediation payload SHALL carry
   `cause: "dead_letter_backlog"`
-- **AND** the remediation commands SHALL include the dead-letter preview, the
-  dead-letter apply step, and the collector re-run step in that order.
+- **AND** the remediation commands SHALL include a recovery preview command and
+  a recovery apply command in that order; the apply command SHALL requeue failed
+  uploads when present and run the collector once.
 - **AND** the action `cta`, `forward_statement`, and owner-facing summary SHALL
   explain that records saved on the local collector host did not upload to the
   server
@@ -240,6 +241,37 @@ correlating the same-stream pending detail gap.
 - **AND** it SHALL render the exact copyable command or commands for that cause
 - **AND** each command SHALL include a plain-language purpose so the owner does
   not need to remember the local-collector workflow.
+
+#### Scenario: Local-collector recovery targets the source-instance profile, not the public connection id
+
+- **WHEN** a local-device recovery action is rendered for a connection whose
+  owner-facing `connection_id` / `connector_instance_id` differs from the
+  device-binding `source_instance_id`
+- **THEN** the copyable command SHALL target the device-binding
+  `source_instance_id` and SHALL NOT substitute the public connection id into a
+  local outbox command
+- **AND** the command SHALL rely on the local collector's recovery/profile lookup
+  to find the enrolled queue, connector, base URL, and device credential on that
+  host
+- **AND** if the owner surface cannot resolve exactly one source-instance binding
+  for the focused recovery target, it SHALL render a non-copyable unavailable
+  state rather than a command that can inspect the wrong queue.
+
+#### Scenario: Local collector recover command loads the host profile before touching the outbox
+
+- **WHEN** the owner runs a rendered local recovery command on the host that owns
+  the collector
+- **THEN** `pdpp-local-collector recover --source-instance-id <id>` SHALL locate
+  the enrolled local profile for that `source_instance_id` when one exists and
+  use that profile's durable outbox path, connector id, reference base URL, and
+  device credential
+- **AND** the dry-run form SHALL explain what would be recovered without mutating
+  the outbox or uploading records
+- **AND** the `--apply` form SHALL perform the cause-appropriate recovery and
+  run the collector once using the same profile
+- **AND** the command SHALL fail with an explicit operator error instead of
+  falling back to an unrelated default queue when no matching profile or explicit
+  queue environment is available.
 
 #### Scenario: Stale-pending stalled outbox renders rerun recovery
 

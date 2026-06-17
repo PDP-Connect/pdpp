@@ -39,9 +39,9 @@ import type {
 export interface ConnectionDiagnosticsProps {
   connectionHealth: RefConnectionHealthSnapshot | null;
   /**
-   * Stable, non-secret source identity for this connection. Used to scope the
-   * local collector `doctor` command shown when the outbox is stalled. May be
-   * null for legacy single-instance rows; the command then runs unscoped.
+   * Owner-facing connection identity for this route. Local collector recovery
+   * commands do NOT use this directly; they resolve the device-binding
+   * source_instance_id from `sourceInstances` and fail closed when ambiguous.
    */
   connectionId: string | null;
   /** Connector type id (e.g. "chase"), used to resolve `<connector-id>` in the
@@ -225,6 +225,28 @@ function boundHostLabels(sourceInstances: readonly DeviceSourceInstance[]): stri
   return labels;
 }
 
+function sourceInstancesForRecovery(
+  sourceInstances: readonly DeviceSourceInstance[],
+  connectionId: string | null
+): readonly DeviceSourceInstance[] {
+  if (!connectionId) {
+    return sourceInstances;
+  }
+  const matching = sourceInstances.filter((source) => source.connector_instance_id === connectionId);
+  return matching.length > 0 ? matching : sourceInstances;
+}
+
+function recoverySourceInstanceId(
+  sourceInstances: readonly DeviceSourceInstance[],
+  connectionId: string | null
+): string | null {
+  const candidates = sourceInstancesForRecovery(sourceInstances, connectionId)
+    .map((source) => source.source_instance_id?.trim())
+    .filter((sourceInstanceId): sourceInstanceId is string => Boolean(sourceInstanceId));
+  const unique = [...new Set(candidates)];
+  return unique.length === 1 ? (unique[0] ?? null) : null;
+}
+
 function ProjectedStateDiagnostics({
   connectionHealth,
   connectionId,
@@ -277,6 +299,8 @@ function ProjectedStateDiagnostics({
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
     .map((id) => conditionById.get(id))
     .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+  const recoverySourceInstances = sourceInstancesForRecovery(sourceInstances, connectionId);
+  const recoverySourceId = recoverySourceInstanceId(sourceInstances, connectionId);
 
   // Single-voice synthesis [SLVP §1.3, Frame 3 P11]: the detail header badge
   // uses the SAME effective state as the list row, so a source-pressure
@@ -352,9 +376,10 @@ function ProjectedStateDiagnostics({
         <OutboxStallRemediationPanel
           connectionId={connectionId}
           connectorId={connectorId}
-          hostLabels={boundHostLabels(sourceInstances)}
+          hostLabels={boundHostLabels(recoverySourceInstances)}
           providerOrigin={providerOrigin}
           remediation={outboxRemediation}
+          sourceInstanceId={recoverySourceId}
           verdictRemediation={verdictRemediation}
         />
       ) : null}
@@ -708,6 +733,10 @@ function outboxCauseExplanation(cause: RefActionRemediation["cause"], hostPhrase
 
 function remediationCommandCaption(command: RefActionRemediation["commands"][number]): string {
   switch (command.kind) {
+    case "local_collector_recover_preview":
+      return "Dry run: shows what this recovery would do on that host. It changes nothing.";
+    case "local_collector_recover_apply":
+      return "Uses the enrolled local profile to recover saved work and run the collector once.";
     case "local_collector_retry_dead_letters_preview":
       return "Dry run: shows the saved records that would be retried. It changes nothing.";
     case "local_collector_retry_dead_letters_apply":
@@ -736,11 +765,13 @@ function remediationCommandCaption(command: RefActionRemediation["commands"][num
  *     NO dead-letter retry. This was the owner-reported dead end: the old code
  *     always showed `retry-dead-letters`, which returned "matched: 0, nothing to
  *     do" when there were no dead letters.
- *   - `dead_letter_backlog` → preview the requeue, apply it, then re-run.
- *   - `stale_pending` → re-run.
+ *   - `dead_letter_backlog` → preview recovery, then apply recovery.
+ *   - `stale_pending` → apply recovery, which runs the collector once.
  * Each command is a template with non-secret placeholders the console late-binds
- * (`substituteCommandTemplate`); an unresolved placeholder fails CLOSED to a
- * non-copyable "Command unavailable" line, never a broken command.
+ * (`substituteCommandTemplate`); current recovery commands bind
+ * `<source-instance-id>` from the device source-instance list, not the public
+ * connection route id. An unresolved placeholder fails CLOSED to a non-copyable
+ * "Command unavailable" line, never a broken command.
  *
  * LEGACY FALLBACK (references predating the `remediation` payload): we cannot
  * tell the cause apart, so we render the documented three-step dead-letter ritual
@@ -755,11 +786,13 @@ function OutboxStallRemediationPanel({
   hostLabels,
   providerOrigin,
   remediation,
+  sourceInstanceId,
   verdictRemediation,
 }: {
   connectionId: string | null;
   connectorId: string | null;
   providerOrigin: string | null;
+  sourceInstanceId: string | null;
   /**
    * Owner-meaningful label(s) for the host(s) bound to this connection. Names
    * the remediation target so an owner who did not set up the collector knows
@@ -776,7 +809,12 @@ function OutboxStallRemediationPanel({
    */
   verdictRemediation: RefActionRemediation | null;
 }) {
-  const scope = connectionId ? { connectionId } : undefined;
+  let scope: { connectionId: string } | undefined;
+  if (sourceInstanceId) {
+    scope = { connectionId: sourceInstanceId };
+  } else if (connectionId) {
+    scope = { connectionId };
+  }
   // Prefer the server-owned cause-specific steps. They already exclude the
   // dead-letter commands for causes (state_read_failed / stale_pending) that
   // have nothing to requeue — fixing the "matched: 0, nothing to do" dead end.
@@ -795,6 +833,7 @@ function OutboxStallRemediationPanel({
           connectionId,
           connectorId,
           providerUrl: providerOrigin,
+          sourceInstanceId,
         }),
       }))
     : [

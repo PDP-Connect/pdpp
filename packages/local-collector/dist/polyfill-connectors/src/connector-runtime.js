@@ -130,6 +130,8 @@ export function runConnector(config) {
     };
     let interactionCounter = 0;
     const nextInteractionId = () => `int_${Date.now()}_${++interactionCounter}`;
+    let detailGapPageCounter = 0;
+    const nextDetailGapPageRequestId = () => `dgp_${Date.now()}_${++detailGapPageCounter}`;
     let assistanceCounter = 0;
     const nextAssistanceId = () => `asst_${Date.now()}_${++assistanceCounter}`;
     const sendInteraction = (req) => {
@@ -169,6 +171,43 @@ export function runConnector(config) {
             }
         });
     });
+    const requestDetailGapPage = (req = {}) => {
+        const request_id = nextDetailGapPageRequestId();
+        const streams = Array.isArray(req.streams)
+            ? req.streams.filter((stream) => typeof stream === "string" && stream.length > 0)
+            : undefined;
+        const maxBytes = typeof req.maxBytes === "number" && Number.isFinite(req.maxBytes) && req.maxBytes > 0
+            ? Math.floor(req.maxBytes)
+            : undefined;
+        emit({
+            type: "DETAIL_GAPS_PAGE_REQUEST",
+            reference_only: true,
+            request_id,
+            ...(streams && streams.length > 0 ? { streams } : {}),
+            ...(maxBytes ? { max_bytes: maxBytes } : {}),
+        }).catch(() => undefined);
+        return new Promise((resolve, reject) => {
+            const onLine = (line) => {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.type !== "DETAIL_GAPS_PAGE_RESPONSE" || parsed.request_id !== request_id) {
+                        return;
+                    }
+                    rl.off("line", onLine);
+                    if (parsed.reference_only !== true || !Array.isArray(parsed.detail_gaps)) {
+                        reject(new Error("Invalid DETAIL_GAPS_PAGE_RESPONSE envelope"));
+                        return;
+                    }
+                    resolve(parsed.detail_gaps);
+                }
+                catch (err) {
+                    rl.off("line", onLine);
+                    reject(err instanceof Error ? err : new Error(String(err)));
+                }
+            };
+            rl.on("line", onLine);
+        });
+    };
     const progress = (message, extra = {}) => emit({ type: "PROGRESS", message, ...extra });
     const assist = async (req) => {
         const assistance_request_id = req.assistance_request_id ?? nextAssistanceId();
@@ -215,6 +254,8 @@ export function runConnector(config) {
             sendInteraction,
             emittedAt,
             detailGaps: startMsg.detail_gaps ?? [],
+            requestDetailGapPage,
+            recoveryOnly: startMsg.recovery_only === true,
         };
         if (browser) {
             await runInBrowser({
@@ -808,7 +849,6 @@ export function makeSessionEstablishWatchdog(args) {
                 resolve(TRIP);
             };
             timer = setInterval(onTick, pollIntervalMs);
-            timer.unref?.();
         });
         const workPromise = work();
         workPromise.catch(() => undefined);

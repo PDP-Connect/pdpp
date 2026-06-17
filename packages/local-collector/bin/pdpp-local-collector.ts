@@ -23,7 +23,8 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,6 +70,7 @@ const DEFAULT_QUEUE_PATH = join(
 );
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
+const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
 /**
  * Placeholder version published to the `latest` dist-tag and carried by the
  * in-repo `package.json` by design. It is older than every real beta build, so
@@ -248,6 +250,7 @@ export interface CliOptions {
     | "advertise"
     | "status"
     | "doctor"
+    | "recover"
     | "retry-dead-letters"
     | "prune-sent"
     | "compact";
@@ -257,10 +260,12 @@ export interface CliOptions {
   deviceLabel?: string;
   deviceToken?: string;
   entrypointCommand?: string;
+  explicitOptions?: ReadonlySet<string>;
   force?: boolean;
   keepCount?: number;
   limit?: number;
   olderThanDays?: number;
+  profile?: string;
   queuePath: string;
   runId?: string;
   sourceInstanceId?: string;
@@ -280,18 +285,27 @@ Subcommands:
   status                          Print local durable outbox health as JSON.
           [--queue <path>]
           [--connection-id <id>]
+          [--source-instance-id <id>]
   doctor                          Print local durable outbox operator diagnostics as JSON.
           [--queue <path>]
           [--connection-id <id>]
+          [--source-instance-id <id>]
   retry-dead-letters              Requeue local dead-letter outbox rows.
           [--queue <path>]
           [--connection-id <id>]
+          [--source-instance-id <id>]
           [--kind record_batch|checkpoint|gap|blob_upload]
           [--limit <n>]
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
+  recover                         Resolve the enrolled local profile, recover stalled outbox work,
+                                   and run the collector once.
+          --source-instance-id <id>
+          [--profile <name>]        Optional profile name under the collector profile dir.
+          [--apply]                Dry-run by default; --apply requeues and runs.
   prune-sent                      Delete sent (succeeded) outbox rows to reclaim disk space.
           [--queue <path>]
           [--connection-id <id>]
+          [--source-instance-id <id>]
           [--older-than-days <n>]  Delete sent rows older than N days (default: 30).
           [--keep-count <n>]       Keep at most N most-recent sent rows per connection.
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
@@ -310,6 +324,7 @@ Subcommands:
           --device-id <id>
           --device-token <token>
           --connection-id <id>
+          [--source-instance-id <id>]
           [--streams a,b,c]
           [--backfill-streams attachments]
           [--run-id <id>]
@@ -359,6 +374,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === "recover") {
+    const result = await recoverLocalCollector(options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
   if (options.command === "prune-sent") {
     const result = pruneSentOutboxRows(options);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -390,9 +411,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  const result = await runCollectorOnce(options);
+  process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
+}
+
+type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
+
+async function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new CollectorUsageError(
-      "run requires --device-id <id>, --device-token <token>, and --connection-id <id>"
+      "run requires --device-id <id>, --device-token <token>, and --connection-id/--source-instance-id <id>"
     );
   }
   if (!options.connector) {
@@ -400,7 +428,7 @@ async function main(): Promise<void> {
   }
 
   const spec = buildConnectorSpec(options);
-  const result = await runCollectorConnector({
+  return runCollectorConnector({
     baseUrl: options.baseUrl,
     connector: spec,
     deviceId: options.deviceId,
@@ -409,10 +437,7 @@ async function main(): Promise<void> {
     ...(options.runId ? { runId: options.runId } : {}),
     sourceInstanceId: options.sourceInstanceId,
   });
-  process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
 }
-
-type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
   /**
@@ -524,7 +549,7 @@ function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSumm
     parts.push(`${summary.leased} leased (in flight)`);
   }
   if (summary.deadLetter > 0) {
-    parts.push(`${summary.deadLetter} dead-letter (run \`retry-dead-letters\` then re-run)`);
+    parts.push(`${summary.deadLetter} dead-letter (run \`recover --source-instance-id <id> --apply\`)`);
   }
   const scanNote = result.scanBudgetExceeded
     ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
@@ -801,9 +826,9 @@ export function buildLocalOutboxDoctor(
       : "";
     remediation.push(
       `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery.${causeHint} ` +
-        "Preview with `pdpp-local-collector retry-dead-letters`, then requeue with " +
-        "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first), " +
-        "then re-run the collector to drain the requeued rows."
+        "Preview with `pdpp-local-collector recover --source-instance-id <id>`, then apply with " +
+        "`pdpp-local-collector recover --source-instance-id <id> --apply`. The apply step backs up the DB, " +
+        "prepares failed uploads for retry when present, and runs the collector once."
     );
   }
   if (checks.expired_leases === "warn") {
@@ -922,17 +947,20 @@ export function readLocalOutboxDeadLetterErrorSummary(
 const RETRY_DEAD_LETTERS_NO_MATCH_NOTE =
   "No dead-letter rows matched. If the dashboard shows this connection as " +
   "blocked/stalled, that is a state-read block, not a dead-letter backlog — " +
-  "there is nothing to requeue. Recovery is to re-run the collector " +
-  "(`pdpp-local-collector run …`), which re-reads prior state and clears the block.";
+  "there is nothing to requeue. Use `pdpp-local-collector recover --source-instance-id <id> --apply` " +
+  "to run the collector through the enrolled local profile and clear the block.";
 
 function retryDeadLettersMatchNote(matched: number, dryRun: boolean): string {
   if (matched === 0) {
     return RETRY_DEAD_LETTERS_NO_MATCH_NOTE;
   }
   const requeued = dryRun
-    ? `${matched} dead-letter row(s) would be requeued (dry run). Re-run with --apply to requeue (backs up the DB first), `
+    ? `${matched} dead-letter row(s) would be requeued (dry run). `
     : `${matched} dead-letter row(s) matched and were requeued to pending. `;
-  return `${requeued}then re-run the collector (\`pdpp-local-collector run …\`) to drain them — requeue moves rows to pending, it does not ingest.`;
+  return (
+    `${requeued}Use \`pdpp-local-collector recover --source-instance-id <id> --apply\` for the dashboard recovery path. ` +
+    "This low-level command only moves rows to pending; it does not ingest."
+  );
 }
 
 export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLettersOutput {
@@ -990,6 +1018,272 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
   } finally {
     outbox.close();
   }
+}
+
+export interface LocalCollectorProfile {
+  env: Record<string, string>;
+  name: string;
+  path: string;
+  source_instance_id: string | null;
+}
+
+export interface LocalCollectorProfileLookupResult {
+  matches: LocalCollectorProfile[];
+  profile_dir: string;
+}
+
+export interface RecoverLocalCollectorOutput {
+  applied: boolean;
+  db: {
+    exists: boolean;
+    path: string;
+  };
+  dry_run: boolean;
+  note: string;
+  object: "local_collector_recovery";
+  profile: {
+    name: string | null;
+    source: "configured_queue" | "local_profile";
+  };
+  retry_dead_letters: RetryDeadLettersOutput | null;
+  run: LocalCollectorRunOutput | null;
+  source_instance_id: string;
+  status_after: LocalOutboxStatusOutput | null;
+  status_before: LocalOutboxStatusOutput;
+}
+
+function defaultCollectorProfileDir(): string {
+  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config");
+  return join(configHome, "pdpp", "collectors");
+}
+
+export function parseCollectorProfileEnv(contents: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const assignment = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+    const eq = assignment.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    const key = assignment.slice(0, eq).trim();
+    const rawValue = assignment.slice(eq + 1).trim();
+    if (!/^[A-Z0-9_]+$/.test(key)) {
+      continue;
+    }
+    env[key] = unquoteProfileEnvValue(rawValue);
+  }
+  return env;
+}
+
+function unquoteProfileEnvValue(rawValue: string): string {
+  if (rawValue.length >= 2) {
+    const quote = rawValue[0];
+    if ((quote === '"' || quote === "'") && rawValue.endsWith(quote)) {
+      const inner = rawValue.slice(1, -1);
+      return quote === '"' ? inner.replace(/\\"/g, '"').replace(/\\\\/g, "\\") : inner;
+    }
+  }
+  return rawValue;
+}
+
+function profileSourceInstanceId(env: Record<string, string>): string | null {
+  return env.PDPP_SOURCE_INSTANCE_ID?.trim() || env.PDPP_CONNECTION_ID?.trim() || null;
+}
+
+function safeProfileFileName(name: string): string {
+  const trimmed = name.trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new CollectorUsageError("--profile must be a simple profile file name");
+  }
+  return trimmed.endsWith(".env") ? trimmed : `${trimmed}.env`;
+}
+
+export function findLocalCollectorProfiles(input: {
+  profileDir?: string;
+  profileName?: string | null;
+  sourceInstanceId?: string | null;
+}): LocalCollectorProfileLookupResult {
+  const profileDir = input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const sourceInstanceId = input.sourceInstanceId?.trim() || null;
+  const files = input.profileName
+    ? [safeProfileFileName(input.profileName)]
+    : (() => {
+        try {
+          return readdirSync(profileDir).filter((name) => name.endsWith(".env")).sort();
+        } catch {
+          return [];
+        }
+      })();
+
+  const matches: LocalCollectorProfile[] = [];
+  for (const file of files) {
+    const path = join(profileDir, file);
+    let env: Record<string, string>;
+    try {
+      env = parseCollectorProfileEnv(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
+    const profileSource = profileSourceInstanceId(env);
+    if (sourceInstanceId && profileSource !== sourceInstanceId) {
+      continue;
+    }
+    matches.push({
+      env,
+      name: file.replace(/\.env$/, ""),
+      path,
+      source_instance_id: profileSource,
+    });
+  }
+
+  return { matches, profile_dir: profileDir };
+}
+
+function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): CliOptions {
+  const env = profile.env;
+  const explicit = options.explicitOptions;
+  const keep = (flag: string): boolean => explicit?.has(flag) === true;
+  const next: CliOptions = {
+    ...options,
+    baseUrl: keep("--base-url") ? options.baseUrl : env.PDPP_REFERENCE_BASE_URL?.trim() || options.baseUrl,
+    queuePath: keep("--queue") ? options.queuePath : env.PDPP_COLLECTOR_QUEUE?.trim() || options.queuePath,
+  };
+  const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
+  const connector = keep("--connector") ? options.connector : env.PDPP_COLLECTOR_CONNECTOR?.trim() || options.connector;
+  const deviceId = keep("--device-id") ? options.deviceId : env.PDPP_LOCAL_DEVICE_ID?.trim() || options.deviceId;
+  const deviceToken = keep("--device-token") ? options.deviceToken : env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
+  if (sourceInstanceId) {
+    next.sourceInstanceId = sourceInstanceId;
+  }
+  if (connector) {
+    next.connector = connector;
+  }
+  if (deviceId) {
+    next.deviceId = deviceId;
+  }
+  if (deviceToken) {
+    next.deviceToken = deviceToken;
+  }
+  return next;
+}
+
+function resolveRecoveryOptions(options: CliOptions): {
+  options: CliOptions;
+  profileName: string | null;
+  profileSource: "configured_queue" | "local_profile";
+} {
+  const sourceInstanceId = options.sourceInstanceId?.trim();
+  if (!sourceInstanceId) {
+    throw new CollectorUsageError("recover requires --source-instance-id <id>");
+  }
+
+  const lookup = findLocalCollectorProfiles({
+    profileName: options.profile ?? null,
+    sourceInstanceId,
+  });
+  if (lookup.matches.length > 1) {
+    throw new CollectorUsageError(
+      `recover found ${lookup.matches.length} local collector profiles for source_instance_id '${sourceInstanceId}'. ` +
+        "Pass --profile <name> to disambiguate."
+    );
+  }
+  if (lookup.matches.length === 1) {
+    const profile = lookup.matches[0] as LocalCollectorProfile;
+    return {
+      options: applyProfileEnv(options, profile),
+      profileName: profile.name,
+      profileSource: "local_profile",
+    };
+  }
+
+  const configuredQueue =
+    options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  if (!configuredQueue) {
+    throw new CollectorUsageError(
+      `recover could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
+        "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
+        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+    );
+  }
+
+  return {
+    options,
+    profileName: null,
+    profileSource: "configured_queue",
+  };
+}
+
+function hasDeadLetters(status: LocalOutboxStatusOutput): boolean {
+  return status.outbox.counts.dead_letter > 0;
+}
+
+function recoverDryRunNote(status: LocalOutboxStatusOutput): string {
+  if (hasDeadLetters(status)) {
+    return (
+      `${status.outbox.counts.dead_letter} failed upload row(s) would be prepared for retry, then the collector would run once. ` +
+      "Dry run only; re-run with --apply to mutate the local outbox and upload."
+    );
+  }
+  return (
+    "No failed upload rows are present for this source. The recovery apply step would run the collector once on this host " +
+    "to refresh state and drain queued work."
+  );
+}
+
+function recoverAppliedNote(statusBefore: LocalOutboxStatusOutput, retry: RetryDeadLettersOutput | null): string {
+  const retried = retry ? `${retry.requeued} failed upload row(s) were prepared for retry. ` : "";
+  if (hasDeadLetters(statusBefore)) {
+    return `${retried}The collector ran once to upload queued work. Run status again if the dashboard has not refreshed yet.`;
+  }
+  return "The collector ran once to refresh local state and drain queued work.";
+}
+
+export async function recoverLocalCollector(options: CliOptions): Promise<RecoverLocalCollectorOutput> {
+  const resolved = resolveRecoveryOptions(options);
+  const sourceInstanceId = resolved.options.sourceInstanceId;
+  if (!sourceInstanceId) {
+    throw new CollectorUsageError("recover requires --source-instance-id <id>");
+  }
+
+  const statusBefore = inspectLocalOutboxStatus(resolved.options);
+  const retryPreview = hasDeadLetters(statusBefore) ? retryLocalOutboxDeadLetters({ ...resolved.options, apply: false }) : null;
+
+  if (!options.apply) {
+    return {
+      applied: false,
+      db: statusBefore.db.path ? { exists: statusBefore.db.exists, path: statusBefore.db.path } : { exists: false, path: "" },
+      dry_run: true,
+      note: recoverDryRunNote(statusBefore),
+      object: "local_collector_recovery",
+      profile: { name: resolved.profileName, source: resolved.profileSource },
+      retry_dead_letters: retryPreview,
+      run: null,
+      source_instance_id: sourceInstanceId,
+      status_after: null,
+      status_before: statusBefore,
+    };
+  }
+
+  const retryApply = hasDeadLetters(statusBefore) ? retryLocalOutboxDeadLetters({ ...resolved.options, apply: true }) : null;
+  const run = summarizeRunResultForCli(await runCollectorOnce(resolved.options));
+  const statusAfter = inspectLocalOutboxStatus(resolved.options);
+  return {
+    applied: true,
+    db: statusAfter.db.path ? { exists: statusAfter.db.exists, path: statusAfter.db.path } : { exists: false, path: "" },
+    dry_run: false,
+    note: recoverAppliedNote(statusBefore, retryApply),
+    object: "local_collector_recovery",
+    profile: { name: resolved.profileName, source: resolved.profileSource },
+    retry_dead_letters: retryApply,
+    run,
+    source_instance_id: sourceInstanceId,
+    status_after: statusAfter,
+    status_before: statusBefore,
+  };
 }
 
 function summaryCounts(summary: LocalDeviceOutboxSummary): LocalOutboxStatusOutput["outbox"]["counts"] {
@@ -1239,7 +1533,7 @@ export function compactOutbox(options: CliOptions): CompactOutput {
         dry_run: false,
         note:
           `Refusing to compact: ${nonSucceeded} non-succeeded (ready/leased/dead-letter) row(s) are still in the outbox. ` +
-          "Drain the lane first (`pdpp-local-collector run …`, then `retry-dead-letters --apply` for any dead-letter rows), " +
+          "Drain the lane first (`pdpp-local-collector recover --source-instance-id <id> --apply` for stalled work), " +
           "or pass --force to compact anyway. VACUUM is lossless — unsent rows are copied, never dropped — but compacting a " +
           "live lane is refused by default so the reclaim runs on a quiet outbox.",
         non_succeeded_rows: nonSucceeded,
@@ -1356,12 +1650,13 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "advertise" &&
     command !== "status" &&
     command !== "doctor" &&
+    command !== "recover" &&
     command !== "retry-dead-letters" &&
     command !== "prune-sent" &&
     command !== "compact"
   ) {
     throw new CollectorUsageError(
-      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent|compact> --base-url <url> [options]`
+      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]`
     );
   }
   const options: CliOptions = {
@@ -1369,6 +1664,8 @@ export function parseArgs(args: string[]): CliOptions {
     command,
     queuePath: process.env.PDPP_COLLECTOR_QUEUE ?? DEFAULT_QUEUE_PATH,
   };
+  const explicitOptions = new Set<string>();
+  options.explicitOptions = explicitOptions;
   if (process.env.PDPP_LOCAL_DEVICE_ID) {
     options.deviceId = process.env.PDPP_LOCAL_DEVICE_ID;
   }
@@ -1394,10 +1691,12 @@ export function parseArgs(args: string[]): CliOptions {
       throw new CollectorUsageError("missing option");
     }
     if (applyFlagOption(options, arg)) {
+      explicitOptions.add(arg);
       continue;
     }
     const value = rest[index + 1];
     applyOption(options, arg, value);
+    explicitOptions.add(arg);
     index++;
   }
 
@@ -1451,14 +1750,17 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--queue": (next) => {
       options.queuePath = next;
     },
+    "--profile": (next) => {
+      options.profile = next;
+    },
     "--run-id": (next) => {
       options.runId = next;
     },
     "--connection-id": (next) => {
-      options.sourceInstanceId = next;
+      setExplicitSourceInstanceId(options, arg, next);
     },
     "--source-instance-id": (next) => {
-      options.sourceInstanceId = next;
+      setExplicitSourceInstanceId(options, arg, next);
     },
     "--streams": (next) => {
       options.streams = parseCsv(next);
@@ -1481,6 +1783,17 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     throw new CollectorUsageError(`unknown option: ${arg}`);
   }
   set(value);
+}
+
+function setExplicitSourceInstanceId(options: CliOptions, arg: string, value: string): void {
+  const hadExplicitSource =
+    options.explicitOptions?.has("--connection-id") || options.explicitOptions?.has("--source-instance-id");
+  if (hadExplicitSource && options.sourceInstanceId && options.sourceInstanceId !== value) {
+    throw new CollectorUsageError(
+      `${arg} disagrees with the already supplied source identity '${options.sourceInstanceId}'`
+    );
+  }
+  options.sourceInstanceId = value;
 }
 
 function parseOutboxKind(value: string): LocalDeviceOutboxKind {

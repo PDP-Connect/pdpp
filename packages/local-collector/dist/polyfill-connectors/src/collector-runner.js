@@ -62,6 +62,36 @@ export function autoPruneSucceededOutbox(input) {
     });
     return { enabled: true, matched: result.matched, pruned: result.pruned };
 }
+export const DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY = Object.freeze({
+    enabled: true,
+    minReclaimableBytes: 512 * 1024 * 1024,
+});
+export function resolveCollectorAutoCompactPolicy(override, env = process.env) {
+    const policy = { ...DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY, ...(override ?? {}) };
+    const enabledRaw = env.PDPP_COLLECTOR_AUTO_COMPACT;
+    if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+        policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+    }
+    const minBytes = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_COMPACT_MIN_RECLAIM_BYTES);
+    if (minBytes !== null) {
+        policy.minReclaimableBytes = minBytes;
+    }
+    return policy;
+}
+export function autoCompactOutboxIfBloated(input) {
+    if (!input.policy.enabled) {
+        return { compacted: false, enabled: false, reason: "disabled", reclaimedBytes: 0 };
+    }
+    const before = input.outbox.pageStats();
+    if (before.reclaimableBytes < input.policy.minReclaimableBytes) {
+        return { compacted: false, enabled: true, reason: "below_threshold", reclaimedBytes: 0 };
+    }
+    if (input.outbox.countNonSucceeded() > 0) {
+        return { compacted: false, enabled: true, reason: "lane_not_quiet", reclaimedBytes: 0 };
+    }
+    const result = input.outbox.compact();
+    return { compacted: true, enabled: true, reason: "compacted", reclaimedBytes: result.reclaimedBytes };
+}
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export async function enrollCollector(config) {
@@ -91,6 +121,7 @@ export async function runCollectorConnector(config) {
     const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
     const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
     const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
+    const autoCompactPolicy = resolveCollectorAutoCompactPolicy(config.autoCompact);
     const holderId = config.collectorHolderId ?? randomUUID();
     const outboxPath = config.outboxPath ?? config.queuePath;
     const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -186,6 +217,7 @@ export async function runCollectorConnector(config) {
             policy: autoPrunePolicy,
             sourceInstanceId: config.sourceInstanceId,
         });
+        autoCompactOutboxIfBloated({ outbox, policy: autoCompactPolicy });
         const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const recordsPending = pendingOutboxWorkCount(finalSummary);
         if (!checkpointResult.statePutFailed) {

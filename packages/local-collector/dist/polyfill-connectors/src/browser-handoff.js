@@ -72,7 +72,6 @@ export async function withDeadline(work, ms, onTimeout) {
             onTimeout?.();
             resolve(DEADLINE_TIMEOUT);
         }, ms);
-        timer.unref?.();
     });
     try {
         return await Promise.race([work, deadline]);

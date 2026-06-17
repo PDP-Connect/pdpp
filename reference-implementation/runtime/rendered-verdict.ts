@@ -110,6 +110,8 @@ export type ActionRemediationCause = "dead_letter_backlog" | "stale_pending" | "
 
 export type ActionRemediationCommandKind =
   | "local_collector_doctor"
+  | "local_collector_recover_apply"
+  | "local_collector_recover_preview"
   | "local_collector_retry_dead_letters_apply"
   | "local_collector_retry_dead_letters_preview"
   | "local_collector_run";
@@ -559,23 +561,30 @@ function shouldOfferRetryGapAction(
   return snapshot.state === "degraded" || isManualRefreshOnly(refresh);
 }
 
-const LOCAL_COLLECTOR_RUN_COMMAND =
-  "npx -y @pdpp/local-collector run --base-url <provider-url> --connector <connector-id>";
-const LOCAL_COLLECTOR_DOCTOR_COMMAND = "npx -y @pdpp/local-collector doctor --connection-id <connection-id>";
-const LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_COMMAND =
-  "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id>";
-const LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_APPLY_COMMAND =
-  "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id> --apply";
+const LOCAL_COLLECTOR_RECOVER_COMMAND =
+  "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id>";
+const LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND =
+  "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply";
+const LOCAL_COLLECTOR_DOCTOR_COMMAND =
+  "npx -y @pdpp/local-collector doctor --source-instance-id <source-instance-id>";
 const LOCAL_COLLECTOR_REMEDIATION_TARGET: ActionRemediationTarget = {
   kind: "local_device",
   identity_source: "source_instance_bindings",
 };
 
-function localCollectorRunCommand(): ActionRemediationCommand {
+function localCollectorRecoverPreviewCommand(): ActionRemediationCommand {
   return {
-    kind: "local_collector_run",
-    label: "Run the local collector again",
-    command_template: LOCAL_COLLECTOR_RUN_COMMAND,
+    kind: "local_collector_recover_preview",
+    label: "Preview recovery",
+    command_template: LOCAL_COLLECTOR_RECOVER_COMMAND,
+  };
+}
+
+function localCollectorRecoverApplyCommand(): ActionRemediationCommand {
+  return {
+    kind: "local_collector_recover_apply",
+    label: "Recover and run the collector",
+    command_template: LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND,
   };
 }
 
@@ -584,22 +593,6 @@ function localCollectorDoctorCommand(): ActionRemediationCommand {
     kind: "local_collector_doctor",
     label: "Check local collector health",
     command_template: LOCAL_COLLECTOR_DOCTOR_COMMAND,
-  };
-}
-
-function localCollectorRetryPreviewCommand(): ActionRemediationCommand {
-  return {
-    kind: "local_collector_retry_dead_letters_preview",
-    label: "Check what will be retried",
-    command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_COMMAND,
-  };
-}
-
-function localCollectorRetryApplyCommand(): ActionRemediationCommand {
-  return {
-    kind: "local_collector_retry_dead_letters_apply",
-    label: "Prepare failed uploads for retry",
-    command_template: LOCAL_COLLECTOR_RETRY_DEAD_LETTERS_APPLY_COMMAND,
   };
 }
 
@@ -647,7 +640,7 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         summary:
           "The server cannot read the collector's last state from that host. Run the local collector again there.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRunCommand()],
+        commands: [localCollectorRecoverApplyCommand()],
       };
     case "dead_letter_backlog":
       return {
@@ -656,7 +649,7 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         label: "Recover local collector uploads",
         summary: "The local collector has saved records on its host that did not upload to this server.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRetryPreviewCommand(), localCollectorRetryApplyCommand(), localCollectorRunCommand()],
+        commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
       };
     case "stale_pending":
       return {
@@ -665,7 +658,7 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         label: "Run the local collector again",
         summary: "The local collector has queued work that stopped moving. Run it again on that host.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRunCommand()],
+        commands: [localCollectorRecoverApplyCommand()],
       };
     default:
       return {

@@ -208,8 +208,18 @@ export interface StandingHrefs {
  * NOT from failed runs/traces. See {@link attentionConnectionsFromConnectors}.
  */
 export interface AttentionConnection {
+  /** The owner-resolvable action label (the CTA verb). */
+  actionLabel: string;
   /** Owner-facing connector type, for the human label ("Chase needs you"). */
   connectorKey: string;
+  /**
+   * True when the action is a DEVICE-LOCAL recovery — the owner runs commands on
+   * the host that holds the data; the dashboard cannot perform it. The CTA then
+   * only NAVIGATES to where the commands are shown, so its label must read as
+   * navigation ("See what to do"), never restate the action as if a click runs
+   * it (which sends the owner in a circle).
+   */
+  deviceLocal: boolean;
   /**
    * The records-route id that resolves to THIS exact connection — the
    * connection identity (`connector_instance_id ?? connection_id`), NOT the
@@ -220,16 +230,6 @@ export interface AttentionConnection {
   routeId: string;
   /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
   what: string;
-  /** The owner-resolvable action label (the CTA verb). */
-  actionLabel: string;
-  /**
-   * True when the action is a DEVICE-LOCAL recovery — the owner runs commands on
-   * the host that holds the data; the dashboard cannot perform it. The CTA then
-   * only NAVIGATES to where the commands are shown, so its label must read as
-   * navigation ("See what to do"), never restate the action as if a click runs
-   * it (which sends the owner in a circle).
-   */
-  deviceLocal: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -411,9 +411,7 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
  * failed runs/traces (which surfaced healthy connections as "broken" and missed
  * the genuinely-attention ones). Revoked connections are excluded.
  */
-export function attentionConnectionsFromConnectors(
-  connectors: readonly RefConnectorSummary[]
-): AttentionConnection[] {
+export function attentionConnectionsFromConnectors(connectors: readonly RefConnectorSummary[]): AttentionConnection[] {
   const out: AttentionConnection[] = [];
   for (const connector of connectors) {
     if (connector.revoked_at) {
@@ -423,9 +421,7 @@ export function attentionConnectionsFromConnectors(
     if (verdict?.channel !== "attention") {
       continue;
     }
-    const action = verdict.required_actions.find(
-      (a) => a.audience === "owner" && a.satisfied_when.kind !== "none"
-    );
+    const action = verdict.required_actions.find((a) => a.audience === "owner" && a.satisfied_when.kind !== "none");
     if (!action) {
       continue; // attention with no owner-resolvable action is a synthesis error (S1) — never alarm the owner here.
     }
