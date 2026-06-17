@@ -16,5 +16,5 @@
 ## 3. Live Verification
 
 - [x] Create the recent-correlation indexes on live Postgres or verify bootstrap created them.
-- [ ] Verify `/_ref/traces?limit=6` and `/_ref/runs?limit=100` before/after latency.
-- [ ] Verify `/dashboard` and `/dashboard/runs` with the browser harness.
+- [x] Verify `/_ref/traces?limit=6` and `/_ref/runs?limit=100` before/after latency.
+- [x] Verify `/dashboard` and `/dashboard/runs` with the browser harness.
