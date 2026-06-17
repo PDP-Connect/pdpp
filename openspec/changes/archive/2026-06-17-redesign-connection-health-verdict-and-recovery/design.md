@@ -510,3 +510,33 @@ with freshness annotation and refresh affordance, while actual degraded collecti
 health says `Degraded`. The named residuals are the undemonstrated live terminal
 path, the owner-calibrated advisory-vs-attention threshold, and runtime-liveness
 sensitivity — all honest, none hidden.
+
+## Post-Implementation Live Closeout — 2026-06-17
+
+Owner-session verification against `pdpp.vivid.fish` confirmed the core
+attention-layer contract:
+
+- ChatGPT renders `Healthy` / `calm` / `Fresh today`, with no owner action.
+- The dashboard, sources page, and runs page do not expose `2532`; recovered or
+  mechanistic gap counts stay out of the attention layer.
+- Peregrine Claude Code moved out of owner attention after the source-profile
+  local-collector recovery command; its remaining queued work is self-handled
+  background drain.
+- Amazon stale manual-refresh evidence reaches the rendered verdict, proving the
+  Risk 1 refresh-evidence seam is not silently null in the deployed reference.
+
+The live instance no longer exercises two original archetype examples exactly:
+Amazon rows and Chase are currently degraded/checking/calm after controller
+restart or unknown-freshness evidence, not the older Amazon-stale-advisory and
+Chase-retry-advisory states. Those archetypes remain fixture/test-covered. The
+closeout therefore records this as a live-calibration residual rather than
+pretending the historical live cases are still present.
+
+Self-heal also remains test-proven rather than live-proven in this closeout
+because no current live owner-actionable satisfaction event was available without
+creating a new credential/refresh repair solely for the test.
+
+The local collector recovery journey has one follow-up design residual: foreground
+recovery repairs the owner-actionable dead-letter state, but large local outboxes
+may continue draining in the background. See
+`design-notes/local-collector-recovery-drain-residual-2026-06-17.md`.
