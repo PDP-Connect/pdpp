@@ -36,4 +36,4 @@
 - [x] Verify `/v1/search?q=the&limit=5` no longer fails with shared-memory errors.
 - [x] Verify API benchmark deltas for lexical, semantic, and hybrid search.
 - [x] Record residual performance gaps for the next loop.
-- [ ] Verify API benchmark deltas after broad Postgres semantic retrieval uses ANN candidate windows instead of exact scoped vector scans.
+- [x] Verify API benchmark deltas after broad Postgres semantic retrieval uses ANN candidate windows instead of exact scoped vector scans.
