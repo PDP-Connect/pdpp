@@ -33,7 +33,6 @@ import {
   listOwnerIssuedClients,
   type OwnerIssuedClient,
   type PendingApproval,
-  type RunSummary,
   type TraceSummary,
 } from "./lib/ref-client.ts";
 
@@ -65,7 +64,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, failedTracesRes, failedRunsRes, pendingRes, clientsRes, connectorsRes] =
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes] =
     await Promise.all([
       safe(() => ds.getDatasetSummary(), null),
       safe(() => ds.listGrants({ limit: 12 }), {
@@ -74,16 +73,6 @@ async function loadStandingInputs(): Promise<StandingInputs> {
         object: "list" as const,
       }),
       safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
-      safe(() => ds.listTraces({ status: "failed", limit: 5 }), {
-        data: [] as TraceSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safe(() => ds.listRuns({ status: "failed", limit: 5 }), {
-        data: [] as RunSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
       safe(() => ds.listPendingApprovals(), {
         data: [] as PendingApproval[],
         has_more: false,
@@ -104,8 +93,8 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     summary,
     grants: grantsRes.data,
     traces: tracesRes.data,
-    failedTraces: failedTracesRes.data,
-    failedRuns: failedRunsRes.data,
+    failedTraces: [],
+    failedRuns: [],
     pendingApprovals: pendingRes.data,
     bearerClients: clientsRes.data,
     attentionConnections: attentionConnectionsFromConnectors(connectorsRes.data),

@@ -188,6 +188,8 @@ const RUN_TERMINAL_EVENT_TYPES = new Set([
 const RUN_TERMINAL_EVENT_TYPE_LIST = [...RUN_TERMINAL_EVENT_TYPES];
 const SUMMARY_EVENT_HEAD_LIMIT = 5000;
 const SUMMARY_EVENT_TAIL_LIMIT = 200;
+const RECENT_CORRELATION_SCAN_CHUNK = 1000;
+const RECENT_CORRELATION_SCAN_FALLBACK_AFTER = 100000;
 
 async function hasPostgresActiveRunLease(runId) {
   if (!runId) return false;
@@ -345,6 +347,117 @@ async function fetchRowsForSummary(kind, column, id) {
   return mergeEventRows([...head.rows, ...tail.rows, ...terminal.rows]);
 }
 
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.max(1, Math.min(limit, items.length)); i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+function hasOnlyFirstPageRecentFilters(filters) {
+  return !(
+    filters.cursor ||
+    filters.since ||
+    filters.until ||
+    filters.status ||
+    filters.clientId ||
+    filters.sourceKind ||
+    filters.sourceId ||
+    filters.grantId ||
+    filters.q
+  );
+}
+
+function compareSummaryRows(a, b) {
+  const lastAt = String(b.last_at || '').localeCompare(String(a.last_at || ''));
+  if (lastAt !== 0) return lastAt;
+  return String(a.id || '').localeCompare(String(b.id || ''));
+}
+
+async function listRecentCorrelationAggregates(column, limit) {
+  const seen = new Map();
+  let beforeAt = null;
+  let beforeSeq = null;
+  let scanned = 0;
+
+  for (;;) {
+    const params = [];
+    let cursorSql = '';
+    if (beforeAt !== null && beforeSeq !== null) {
+      params.push(beforeAt, beforeSeq);
+      cursorSql = `AND (occurred_at < $1 OR (occurred_at = $1 AND event_seq < $2))`;
+    }
+    params.push(Math.max(RECENT_CORRELATION_SCAN_CHUNK, limit * 20));
+    const limitPlaceholder = `$${params.length}`;
+    const result = await postgresQuery(
+      `SELECT ${column} AS id, occurred_at, event_seq
+       FROM spine_events
+       WHERE ${column} IS NOT NULL
+         ${cursorSql}
+       ORDER BY occurred_at DESC, event_seq DESC
+       LIMIT ${limitPlaceholder}`,
+      params,
+    );
+    if (result.rows.length === 0) break;
+
+    for (const row of result.rows) {
+      if (row.id && !seen.has(row.id)) {
+        seen.set(row.id, row.occurred_at);
+      }
+    }
+    scanned += result.rows.length;
+
+    const ordered = [...seen.entries()]
+      .map(([id, last_at]) => ({ id, last_at }))
+      .sort(compareSummaryRows);
+    if (ordered.length >= limit + 1) {
+      const boundary = ordered[Math.min(limit, ordered.length - 1)]?.last_at;
+      const lastRow = result.rows[result.rows.length - 1];
+      if (boundary && String(lastRow?.occurred_at || '') < String(boundary)) {
+        break;
+      }
+    }
+    if (scanned >= RECENT_CORRELATION_SCAN_FALLBACK_AFTER) {
+      return null;
+    }
+
+    const last = result.rows[result.rows.length - 1];
+    beforeAt = last.occurred_at;
+    beforeSeq = Number(last.event_seq || 0);
+  }
+
+  const orderedIds = [...seen.entries()]
+    .map(([id, last_at]) => ({ id, last_at }))
+    .sort(compareSummaryRows)
+    .slice(0, limit + 1)
+    .map((row) => row.id);
+  if (orderedIds.length === 0) {
+    return [];
+  }
+  const placeholders = orderedIds.map((_, i) => `$${i + 1}`).join(', ');
+  const aggregate = await postgresQuery(
+    `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
+     FROM spine_events
+     WHERE ${column} IN (${placeholders})
+     GROUP BY ${column}`,
+    orderedIds,
+  );
+  const byId = new Map(aggregate.rows.map((row) => [row.id, row]));
+  return orderedIds.map((id) => byId.get(id)).filter(Boolean).sort(compareSummaryRows);
+}
+
 export async function postgresEmitSpineEvent(input = {}) {
   const event = normalize(input);
   const result = await postgresQuery(
@@ -445,6 +558,11 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
   const limit = Math.max(1, Math.min(Number(filters.limit) || 50, 500));
 
+  let resultRows = null;
+  if (hasOnlyFirstPageRecentFilters(filters)) {
+    resultRows = await listRecentCorrelationAggregates(column, limit);
+  }
+
   // Event-column equality filters. These tag every event in a correlation
   // with the same value (or null), so applying them in the WHERE clause is
   // safe — the GROUP BY rolls up matching events into per-correlation rows.
@@ -495,25 +613,27 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   params.push(limit + 1);
   const limitPlaceholder = `$${params.length}`;
 
-  const result = await postgresQuery(
-    `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
-     FROM spine_events
-     WHERE ${whereParts.join(' AND ')}
-     GROUP BY ${column}${havingSql}
-     ORDER BY last_at DESC, id ASC
-     LIMIT ${limitPlaceholder}`,
-    params,
-  );
+  if (resultRows === null) {
+    const result = await postgresQuery(
+      `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
+       FROM spine_events
+       WHERE ${whereParts.join(' AND ')}
+       GROUP BY ${column}${havingSql}
+       ORDER BY last_at DESC, id ASC
+       LIMIT ${limitPlaceholder}`,
+      params,
+    );
+    resultRows = result.rows;
+  }
 
   // Page-scope filters (applied after the aggregation): status filter is
   // applied against the summary's projected run-status, so it must run
   // after summarizeRows. The SQLite path does the same.
-  const pageRows = result.rows.slice(0, limit);
-  let summaries = [];
-  for (const row of pageRows) {
+  const pageRows = resultRows.slice(0, limit);
+  let summaries = await mapWithConcurrency(pageRows, 8, async (row) => {
     const events = await fetchRowsForSummary(kind, column, row.id);
-    summaries.push(await summarizeRows(row.id, events, row));
-  }
+    return summarizeRows(row.id, events, row);
+  });
 
   if (filters.status) {
     const wanted = String(filters.status);
@@ -535,7 +655,7 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
     }
   }
 
-  const hasMore = result.rows.length > limit;
+  const hasMore = resultRows.length > limit;
   return {
     summaries,
     hasMore,

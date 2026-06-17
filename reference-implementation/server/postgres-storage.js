@@ -1201,8 +1201,14 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_trace
         ON spine_events(trace_id, occurred_at, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_trace_recent
+        ON spine_events(occurred_at DESC, event_seq DESC, trace_id)
+        WHERE trace_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run
         ON spine_events(run_id, occurred_at, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_recent
+        ON spine_events(occurred_at DESC, event_seq DESC, run_id)
+        WHERE run_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source_run_summary
         ON spine_events(source_kind, source_id, run_id, occurred_at DESC)
         WHERE run_id IS NOT NULL;
@@ -1220,6 +1226,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         WHERE event_type = 'run.abandoned';
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant
         ON spine_events(grant_id, occurred_at, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant_recent
+        ON spine_events(occurred_at DESC, event_seq DESC, grant_id)
+        WHERE grant_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS lexical_search_index (
         connector_id TEXT NOT NULL,
@@ -2547,6 +2556,21 @@ async function migratePostgresSpineSourceColumns(client) {
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
       ON spine_events(source_kind, source_id, occurred_at, recorded_at)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_trace_recent
+      ON spine_events(occurred_at DESC, event_seq DESC, trace_id)
+      WHERE trace_id IS NOT NULL
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_run_recent
+      ON spine_events(occurred_at DESC, event_seq DESC, run_id)
+      WHERE run_id IS NOT NULL
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant_recent
+      ON spine_events(occurred_at DESC, event_seq DESC, grant_id)
+      WHERE grant_id IS NOT NULL
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source_run_summary

@@ -121,6 +121,10 @@ if (!POSTGRES_URL) {
       assert.equal(await columnExists(pool, 'spine_events', 'source_kind'), true);
       assert.equal(await columnExists(pool, 'spine_events', 'source_id'), true);
       assert.equal(await indexExists(pool, 'idx_pg_spine_events_source'), true);
+      assert.equal(await indexExists(pool, 'idx_pg_spine_events_trace_recent'), true);
+      assert.equal(await indexExists(pool, 'idx_pg_spine_events_run_recent'), true);
+      assert.equal(await indexExists(pool, 'idx_pg_spine_events_grant_recent'), true);
+      assert.equal(await indexExists(pool, 'idx_pg_spine_events_source_run_summary'), true);
     });
   });
 
@@ -264,6 +268,61 @@ if (!POSTGRES_URL) {
         id: 'slack',
       });
       assert.equal(byRun.get('run_runtime_source')?.connector_id, 'slack');
+    });
+  });
+
+  test('unfiltered Postgres summary first pages return recent distinct correlations', async () => {
+    await withTempDb(async (url) => {
+      await initPostgresStorage({ backend: 'postgres', databaseUrl: url });
+      const pool = getPostgresPool();
+
+      for (let i = 0; i < 120; i += 1) {
+        await insertEvent(pool, {
+          eventId: `trace-a-${i}`,
+          actorType: 'client',
+          actorId: 'app-a',
+          dataJson: {},
+        });
+        await pool.query(
+          `UPDATE spine_events
+             SET trace_id = 'trace_a',
+                 occurred_at = $1,
+                 recorded_at = $1
+           WHERE event_id = $2`,
+          [`2026-06-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`, `trace-a-${i}`],
+        );
+      }
+      await insertEvent(pool, {
+        eventId: 'trace-b',
+        actorType: 'client',
+        actorId: 'app-b',
+        dataJson: {},
+      });
+      await pool.query(
+        `UPDATE spine_events
+           SET trace_id = 'trace_b',
+               occurred_at = '2026-05-31T23:59:59.000Z',
+               recorded_at = '2026-05-31T23:59:59.000Z'
+         WHERE event_id = 'trace-b'`,
+      );
+      await insertEvent(pool, {
+        eventId: 'trace-c',
+        actorType: 'client',
+        actorId: 'app-c',
+        dataJson: {},
+      });
+      await pool.query(
+        `UPDATE spine_events
+           SET trace_id = 'trace_c',
+               occurred_at = '2026-05-31T23:59:58.000Z',
+               recorded_at = '2026-05-31T23:59:58.000Z'
+         WHERE event_id = 'trace-c'`,
+      );
+
+      const page = await postgresListSpineCorrelations('trace', { limit: 2 });
+      assert.deepEqual(page.summaries.map((summary) => summary.trace_id), ['trace_a', 'trace_b']);
+      assert.equal(page.hasMore, true);
+      assert.equal(page.summaries[0].event_count, 120);
     });
   });
 }
