@@ -704,10 +704,25 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
         }
         return a.recordKey.localeCompare(b.recordKey);
       });
+      // The sandbox ranks the full deterministic fixture set (never near a
+      // candidate window), so recall is honestly complete and the count is
+      // exact. This mirrors the SLVP-ideal global top-k path and gives the
+      // public sandbox surface an exhaustive, exact-counted envelope.
       return {
         snapshot_id: generateSandboxSnapshotId(),
         query: q,
         results: hits,
+        recall_meta: {
+          count: hits.length,
+          count_accuracy: "exact",
+          recall: {
+            complete: true,
+            ranking_scope: "all_matches",
+            truncated: false,
+            ranked_candidate_count: hits.length,
+            sources_searched_count: perConnectorPlans.length,
+          },
+        },
       };
     },
     persistSnapshot: (snapshot) => {

@@ -42,7 +42,10 @@
  *   - `search_result` shaping; `record_url` is delegated to the host through
  *     a `formatRecordUrl` capability;
  *   - list-envelope shape (`object: 'list'`, `has_more`, `next_cursor?`,
- *     `data[]`); hosts add the host-shaped `url` field;
+ *     `data[]`, `meta`); hosts add the host-shaped `url` field. `meta` always
+ *     carries `count` / `count_accuracy` / `recall` recall disclosure (see
+ *     openspec/changes/disclose-lexical-recall-windows) plus optional
+ *     structured `warnings[]`;
  *   - `disclosure.served` data block.
  */
 
@@ -180,10 +183,82 @@ export interface SearchLexicalSnapshotResult {
   [extra: string]: unknown;
 }
 
+/**
+ * Count-accuracy grade for the caller-visible match count.
+ *
+ * - `exact`: `count` is the exact number of caller-visible matching candidates.
+ * - `lower_bound`: `count` is a minimum; additional matches may exist (e.g. a
+ *   bounded candidate window truncated at least one source).
+ * - `estimated`: `count` is approximate.
+ * - `not_counted`: the server did not compute a count; `count` is `null`.
+ */
+export type SearchLexicalCountAccuracy =
+  | "exact"
+  | "lower_bound"
+  | "estimated"
+  | "not_counted";
+
+export type SearchLexicalRankingScope =
+  | "all_matches"
+  | "candidate_window"
+  | "unknown";
+
+/**
+ * Response-level recall disclosure. Describes the ranking *input* — whether the
+ * implementation ranked all known caller-visible matches or a bounded subset —
+ * which is distinct from `has_more` (a property of the current paginated set).
+ *
+ * Compact window facts (`ranked_candidate_count`, `candidate_window_limit`,
+ * `sources_searched_count`, `truncated_source_count`) are response-level
+ * aggregates, never a per-source dump. An implementation MUST omit any fact it
+ * cannot prove cheaply and MUST NOT fabricate a fact to look more complete.
+ */
+export interface SearchLexicalRecallMeta {
+  /**
+   * `true` ⇒ the implementation ranked all known caller-visible matches for
+   * the query before pagination. `false` ⇒ additional caller-visible matches
+   * may exist outside the ranked set.
+   */
+  complete: boolean;
+  ranking_scope: SearchLexicalRankingScope;
+  /**
+   * `true` ⇒ an implementation-applied candidate or source window prevented
+   * the ranked set from representing every caller-visible match.
+   */
+  truncated: boolean;
+  /** Number of caller-visible candidates the implementation actually ranked. */
+  ranked_candidate_count?: number;
+  /** Per-source candidate cap that produced the window, when one applies. */
+  candidate_window_limit?: number;
+  /** Count of caller-visible sources that were searched under this query. */
+  sources_searched_count?: number;
+  /** Count of searched sources whose candidate set was truncated by the cap. */
+  truncated_source_count?: number;
+}
+
+/**
+ * Recall/count facts an adapter `buildSnapshot` MAY attach to the snapshot so
+ * cursor pages reuse them verbatim instead of inferring completeness from
+ * `has_more`. When absent, the operation emits an honest `not_counted` /
+ * `unknown` envelope rather than guessing.
+ */
+export interface SearchLexicalSnapshotRecall {
+  count: number | null;
+  count_accuracy: SearchLexicalCountAccuracy;
+  recall: SearchLexicalRecallMeta;
+}
+
 export interface SearchLexicalSnapshot {
   snapshot_id: string;
   query: string;
   results: SearchLexicalSnapshotResult[];
+  /**
+   * Operation-level recall/count disclosure for the *whole* ranked set. The
+   * preferred durable seam: the snapshot owns it so every page (fresh or
+   * cursor-loaded) reports the same recall facts. Adapters that cannot prove
+   * recall MAY omit it; the operation then emits `not_counted` / `unknown`.
+   */
+  recall_meta?: SearchLexicalSnapshotRecall;
   [extra: string]: unknown;
 }
 
@@ -421,6 +496,14 @@ export interface SearchLexicalWarning {
 
 export interface SearchLexicalEnvelopeMeta {
   warnings?: SearchLexicalWarning[];
+  /**
+   * Caller-visible match count. `null` when `count_accuracy` is
+   * `not_counted`. Interpreted by `count_accuracy`; never read in isolation.
+   */
+  count?: number | null;
+  count_accuracy?: SearchLexicalCountAccuracy;
+  /** Response-level recall disclosure (see {@link SearchLexicalRecallMeta}). */
+  recall?: SearchLexicalRecallMeta;
   [extra: string]: unknown;
 }
 
@@ -697,6 +780,33 @@ export function decodeSearchLexicalCursor(cursor: string): CursorPayload | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the response-level recall/count disclosure for a snapshot.
+ *
+ * When the adapter attached `snapshot.recall_meta`, the operation trusts it
+ * verbatim (the adapter owns ranking and is the only honest source of
+ * truncation facts). When it is absent — older adapters, test shims, or
+ * implementations that cannot prove recall cheaply — the operation emits an
+ * honest "I don't know" envelope (`not_counted` / `unknown`) rather than
+ * inferring completeness from `has_more` or the hit count, which would be a
+ * lie about the ranking input.
+ */
+function resolveEnvelopeRecall(
+  snapshot: SearchLexicalSnapshot,
+): SearchLexicalSnapshotRecall {
+  const provided = snapshot.recall_meta;
+  if (provided) return provided;
+  return {
+    count: null,
+    count_accuracy: "not_counted",
+    recall: {
+      complete: false,
+      ranking_scope: "unknown",
+      truncated: false,
+    },
+  };
 }
 
 function advertisesScore(advertisement: SearchLexicalAdvertisement | null): boolean {
@@ -1052,14 +1162,22 @@ export async function executeSearchLexical(
     ...params.warnings,
     ...skippedWarnings,
   ];
+  // Recall/count disclosure is a property of the whole ranked snapshot, not of
+  // the current page, so it is identical across fresh and cursor-loaded pages
+  // and is never inferred from `has_more`. It is always present so a client can
+  // distinguish a complete exact search from a bounded-window one on every page.
+  const { count, count_accuracy, recall } = resolveEnvelopeRecall(snapshot);
   const envelope: SearchLexicalEnvelope = {
     object: "list",
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
-    ...(allWarnings.length > 0
-      ? { meta: { warnings: allWarnings } }
-      : {}),
+    meta: {
+      ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
+      count,
+      count_accuracy,
+      recall,
+    },
   };
 
   const disclosureData: SearchLexicalDisclosureData = {

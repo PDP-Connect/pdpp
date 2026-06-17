@@ -1663,12 +1663,39 @@ function summarizeSearch(body, results) {
   const cursorText = nextCursor ? ` next_cursor=${formatScalar(nextCursor)}.` : '';
   const firstFetchText = results[0]?.id ? ` first_fetch_id=${formatInlineValue(results[0].id)}` : '';
   const sourceMixText = formatSearchSourceMix(body);
+  const recallText = formatSearchRecallWarning(body);
   const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
   const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
   const fetchHint = previews.length > 0
     ? '\nFetch a hit with `fetch` using the shown id as-is; ids are self-contained. Pass connection_id only when shown separately.'
     : '';
-  return `search: ${results.length} hit(s).${hasMore}${cursorText}${firstFetchText}${sourceMixText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+  return `search: ${results.length} hit(s).${hasMore}${cursorText}${firstFetchText}${sourceMixText}${recallText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+}
+
+// Mirror — never reinterpret — the RS recall disclosure. The warning is driven
+// strictly by `meta.recall` from `/v1/search`; the adapter does NOT infer
+// completeness from `has_more`, page size, or the hit count. A complete
+// (`all_matches`) recall emits no extra warning, keeping the common case terse.
+// Spec: openspec/changes/disclose-lexical-recall-windows.
+function formatSearchRecallWarning(body) {
+  const meta = objectValue(envelopeField(body, 'meta'));
+  const recall = objectValue(meta?.recall);
+  if (!recall) return '';
+  if (recall.ranking_scope === 'candidate_window' || recall.complete === false) {
+    const facts = [];
+    if (typeof recall.ranked_candidate_count === 'number') {
+      facts.push(`ranked_candidate_count=${recall.ranked_candidate_count}`);
+    }
+    if (typeof recall.candidate_window_limit === 'number') {
+      facts.push(`candidate_window_limit=${recall.candidate_window_limit}`);
+    }
+    if (typeof recall.truncated_source_count === 'number') {
+      facts.push(`truncated_source_count=${recall.truncated_source_count}`);
+    }
+    const factsText = facts.length > 0 ? ` (${facts.join(', ')})` : '';
+    return ` Recall: results were ranked over a bounded candidate window, not all matches — more matches may exist${factsText}; do not treat this page as exhaustive.`;
+  }
+  return '';
 }
 
 function formatSearchSourceMix(body) {

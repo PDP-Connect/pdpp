@@ -43,10 +43,12 @@ import {
 } from '../server/search.js';
 import { startServer } from '../server/index.js';
 import { getDb, initDb, closeDb } from '../server/db.js';
+import { closePostgresStorage } from '../server/postgres-storage.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
+const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
@@ -349,8 +351,162 @@ test('happy-path search returns list envelope with search_result entries (owner 
     assert.ok(Number.isFinite(hit.score.value));
     // 'cooking pasta' must not match
     assert.equal(body.data.find((r) => r.record_key === 'p2'), undefined);
+
+    // Recall disclosure (disclose-lexical-recall-windows): a small corpus far
+    // below the candidate window ranks ALL matches, so recall is complete and
+    // the count is exact. The single 'overdraft' match yields count=1.
+    assert.ok(body.meta, 'envelope must carry meta');
+    assert.equal(body.meta.count_accuracy, 'exact');
+    assert.equal(body.meta.count, 1);
+    assert.equal(body.meta.recall.complete, true);
+    assert.equal(body.meta.recall.ranking_scope, 'all_matches');
+    assert.equal(body.meta.recall.truncated, false);
   });
 });
+
+test('bounded candidate window: >200 matching records yields lower_bound count + candidate_window recall', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    // Ingest 250 records all matching the same term so a single (stream, field)
+    // FTS query fills the LIMIT 200 candidate window and reports truncation.
+    const records = [];
+    for (let i = 0; i < 250; i += 1) {
+      records.push({
+        id: `w${i}`,
+        title: `windowterm entry ${i}`,
+        selftext: 'filler',
+        source_created_at: '2026-04-01T00:00:00Z',
+      });
+    }
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', records);
+
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search?q=windowterm`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.equal(body.object, 'list');
+    assert.ok(body.meta, 'envelope must carry meta');
+    // The window capped the candidate set, so the ranked set is not exhaustive.
+    assert.equal(body.meta.count_accuracy, 'lower_bound');
+    assert.notEqual(body.meta.count_accuracy, 'exact');
+    assert.equal(body.meta.recall.complete, false);
+    assert.equal(body.meta.recall.ranking_scope, 'candidate_window');
+    assert.equal(body.meta.recall.truncated, true);
+    assert.equal(body.meta.recall.candidate_window_limit, 200);
+    assert.ok(body.meta.recall.ranked_candidate_count >= 200);
+    assert.ok(body.meta.recall.truncated_source_count >= 1);
+    // count is a lower bound: at least what we ranked.
+    assert.ok(body.meta.count >= 200);
+
+    // Pagination is distinct from recall completeness: even after paging past
+    // the first page (has_more flips on later pages), recall stays incomplete.
+    const page1 = await fetchJson(
+      `${rsUrl}/v1/search?q=windowterm&limit=10`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(page1.body.has_more, true);
+    assert.equal(page1.body.meta.recall.complete, false);
+    assert.equal(page1.body.meta.recall.truncated, true);
+    // A cursor page reuses the persisted snapshot's recall facts verbatim.
+    const page2 = await fetchJson(
+      `${rsUrl}/v1/search?q=windowterm&limit=10&cursor=${encodeURIComponent(page1.body.next_cursor)}`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(page2.body.meta.recall.complete, false);
+    assert.equal(page2.body.meta.recall.ranking_scope, 'candidate_window');
+    assert.deepEqual(page2.body.meta.recall, page1.body.meta.recall);
+  });
+});
+
+if (!POSTGRES_URL) {
+  test('postgres lexical recall reports effective candidate-window cap (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
+} else {
+  test('postgres lexical recall reports effective candidate-window cap', async () => {
+    const suffix = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_lexical_recall_${suffix}`;
+    const term = `pgwindowterm${suffix}`;
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Lexical Recall',
+      capabilities: { human_interaction: ['credentials'] },
+      streams: [
+        {
+          name: 'posts',
+          semantics: 'append_only',
+          schema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              source_created_at: { type: 'string', format: 'date-time' },
+            },
+            required: ['id', 'title'],
+          },
+          primary_key: ['id'],
+          cursor_field: 'source_created_at',
+          consent_time_field: 'source_created_at',
+          selection: { fields: true, resources: false },
+          query: { search: { lexical_fields: ['title'] } },
+        },
+      ],
+    };
+    let server = null;
+    try {
+      server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath: ':memory:',
+        storageBackend: 'postgres',
+        databaseUrl: POSTGRES_URL,
+        dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+        reconcilePolyfillManifests: false,
+      });
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
+      const reg = await fetch(`${asUrl}/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manifest),
+      });
+      assert.equal(reg.status, 201, `register ${connectorId}`);
+      const ownerToken = await issueOwnerToken(asUrl, `owner_pg_lexical_${suffix}`);
+      const records = [];
+      for (let i = 0; i < 120; i += 1) {
+        records.push({
+          id: `pgw${i}`,
+          title: `${term} entry ${i}`,
+          source_created_at: '2026-04-01T00:00:00Z',
+        });
+      }
+      await ingest(rsUrl, ownerToken, connectorId, 'posts', records);
+
+      const { status, body } = await fetchJson(
+        `${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=5`,
+        { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+      );
+      assert.equal(status, 200);
+      assert.equal(body.meta.count_accuracy, 'lower_bound');
+      assert.equal(body.meta.count, 100);
+      assert.equal(body.meta.recall.complete, false);
+      assert.equal(body.meta.recall.ranking_scope, 'candidate_window');
+      assert.equal(body.meta.recall.truncated, true);
+      assert.equal(body.meta.recall.candidate_window_limit, 100);
+      assert.equal(body.meta.recall.ranked_candidate_count, 100);
+      assert.equal(body.meta.recall.truncated_source_count, 1);
+    } finally {
+      if (server) await closeServer(server);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+}
 
 test('lexical search omits score when capability metadata does not advertise score support', async () => {
   await withHarness({

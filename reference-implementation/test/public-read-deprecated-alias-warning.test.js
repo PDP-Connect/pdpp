@@ -222,7 +222,10 @@ test('lexical search omits meta.warnings when only canonical connection_id is se
     { actor: ownerActor, query: { q: 'overdraft', connection_id: 'ci_alpha' } },
     makeLexicalDeps(),
   );
-  assert.equal(result.envelope.meta, undefined);
+  // `meta` is always present now (it carries recall disclosure per
+  // openspec/changes/disclose-lexical-recall-windows); the contract this test
+  // pins is that NO `warnings[]` are emitted for a clean canonical request.
+  assert.equal(result.envelope.meta.warnings, undefined);
 });
 
 test('lexical search emits meta.warnings deprecated_alias_used when only the deprecated alias is sent', async () => {

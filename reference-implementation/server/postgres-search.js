@@ -29,7 +29,7 @@ function defaultConnectorInstanceId(connectorId) {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
-function postgresLexicalCandidateLimit({ env = process.env } = {}) {
+export function postgresLexicalCandidateLimit({ env = process.env } = {}) {
   const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_CANDIDATE_LIMIT || '', 10);
   if (Number.isFinite(parsed) && parsed > 0) {
     return Math.min(Math.max(parsed, 100), 10000);

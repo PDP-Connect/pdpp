@@ -366,3 +366,153 @@ test('disclosure data block carries query_shape, record_count, has_more, mode, c
     connector_count: 2,
   });
 });
+
+// ─── Recall / count disclosure (disclose-lexical-recall-windows) ─────────
+
+// Build deps whose snapshot carries an explicit `recall_meta`, mirroring the
+// adapter seam where the FTS builder folds per-source truncation facts into
+// the snapshot so cursor pages reuse them verbatim.
+function makeRecallDeps(recallMeta, { hits } = {}) {
+  const stored = new Map();
+  return makeDeps({
+    buildSnapshot: ({ q, perConnectorPlans }) => {
+      const results = perConnectorPlans.length === 0
+        ? []
+        : hits ?? [makeHit({ recordKey: 'rec_1' }), makeHit({ recordKey: 'rec_2', score: -1.0 })];
+      return {
+        snapshot_id: `snap_${q.replace(/[^a-z0-9]/gi, '_')}`,
+        query: q,
+        results,
+        ...(recallMeta ? { recall_meta: recallMeta } : {}),
+      };
+    },
+    persistSnapshot: (snapshot) => {
+      stored.set(snapshot.snapshot_id, snapshot);
+    },
+    loadSnapshot: (snapshotId) => stored.get(snapshotId) ?? null,
+  });
+}
+
+test('exact complete search emits meta.count exact + recall all_matches', async () => {
+  const deps = makeRecallDeps({
+    count: 2,
+    count_accuracy: 'exact',
+    recall: {
+      complete: true,
+      ranking_scope: 'all_matches',
+      truncated: false,
+      ranked_candidate_count: 2,
+      sources_searched_count: 2,
+    },
+  });
+  const out = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.equal(out.envelope.meta.count, 2);
+  assert.equal(out.envelope.meta.count_accuracy, 'exact');
+  assert.equal(out.envelope.meta.recall.complete, true);
+  assert.equal(out.envelope.meta.recall.ranking_scope, 'all_matches');
+  assert.equal(out.envelope.meta.recall.truncated, false);
+});
+
+test('bounded-window search emits lower_bound count + candidate_window recall with compact facts', async () => {
+  const deps = makeRecallDeps({
+    count: 200,
+    count_accuracy: 'lower_bound',
+    recall: {
+      complete: false,
+      ranking_scope: 'candidate_window',
+      truncated: true,
+      ranked_candidate_count: 200,
+      candidate_window_limit: 200,
+      sources_searched_count: 2,
+      truncated_source_count: 1,
+    },
+  });
+  const out = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.equal(out.envelope.meta.count, 200);
+  assert.equal(out.envelope.meta.count_accuracy, 'lower_bound');
+  assert.notEqual(out.envelope.meta.count_accuracy, 'exact');
+  const recall = out.envelope.meta.recall;
+  assert.equal(recall.complete, false);
+  assert.equal(recall.ranking_scope, 'candidate_window');
+  assert.equal(recall.truncated, true);
+  assert.equal(recall.ranked_candidate_count, 200);
+  assert.equal(recall.candidate_window_limit, 200);
+  assert.ok(recall.truncated_source_count > 0);
+});
+
+test('snapshot without recall_meta yields honest not_counted / unknown (no has_more inference)', async () => {
+  // A snapshot that omits recall_meta (legacy adapter / pre-upgrade cursor)
+  // must NOT be reported as complete just because it fit one page.
+  const deps = makeRecallDeps(undefined);
+  const out = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo' } },
+    deps,
+  );
+  assert.equal(out.envelope.has_more, false);
+  assert.equal(out.envelope.meta.count, null);
+  assert.equal(out.envelope.meta.count_accuracy, 'not_counted');
+  assert.equal(out.envelope.meta.recall.complete, false);
+  assert.equal(out.envelope.meta.recall.ranking_scope, 'unknown');
+  assert.equal(out.envelope.meta.recall.truncated, false);
+});
+
+test('has_more:false with a bounded window still reports recall.complete:false on every page', async () => {
+  // Pagination completeness (has_more) is distinct from recall completeness.
+  // A bounded-window snapshot paginated to its last page (has_more:false) must
+  // keep recall.complete:false and recall.truncated:true — identical across
+  // pages, because recall is a property of the ranked snapshot, not the page.
+  const recallMeta = {
+    count: 2,
+    count_accuracy: 'lower_bound',
+    recall: {
+      complete: false,
+      ranking_scope: 'candidate_window',
+      truncated: true,
+      ranked_candidate_count: 2,
+      candidate_window_limit: 200,
+      sources_searched_count: 1,
+      truncated_source_count: 1,
+    },
+  };
+  const deps = makeRecallDeps(recallMeta);
+  const page1 = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo', limit: '1' } },
+    deps,
+  );
+  assert.equal(page1.envelope.has_more, true);
+  assert.equal(page1.envelope.meta.recall.complete, false);
+  assert.equal(page1.envelope.meta.recall.truncated, true);
+
+  const page2 = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo', limit: '1', cursor: page1.envelope.next_cursor } },
+    deps,
+  );
+  // Last page: has_more flips to false, but recall facts are unchanged.
+  assert.equal(page2.envelope.has_more, false);
+  assert.equal(page2.envelope.meta.recall.complete, false);
+  assert.equal(page2.envelope.meta.recall.truncated, true);
+  assert.equal(page2.envelope.meta.count_accuracy, 'lower_bound');
+  assert.deepEqual(page2.envelope.meta.recall, page1.envelope.meta.recall);
+});
+
+test('recall meta coexists with structured warnings in the same meta object', async () => {
+  const deps = makeRecallDeps({
+    count: 2,
+    count_accuracy: 'exact',
+    recall: { complete: true, ranking_scope: 'all_matches', truncated: false },
+  });
+  // The deprecated alias triggers a warning; meta must carry BOTH.
+  const out = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'foo', connector_instance_id: 'ci_x' } },
+    deps,
+  );
+  assert.equal(out.envelope.meta.count_accuracy, 'exact');
+  assert.ok(Array.isArray(out.envelope.meta.warnings));
+  assert.equal(out.envelope.meta.warnings[0].code, 'deprecated_alias_used');
+});

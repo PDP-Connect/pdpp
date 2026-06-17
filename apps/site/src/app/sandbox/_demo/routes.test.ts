@@ -215,10 +215,25 @@ test("/sandbox/v1/search returns the live `list` envelope with bm25-shaped score
     url: string;
     has_more: boolean;
     data: Record<string, unknown>[];
+    meta?: {
+      count?: number | null;
+      count_accuracy?: string;
+      recall?: { complete?: boolean; ranking_scope?: string; truncated?: boolean };
+    };
   };
   assert.equal(body.object, "list");
   assert.equal(body.url, "/sandbox/v1/search");
   assert.ok(body.data.length > 0);
+  // Recall disclosure propagates through the sandbox host route. The sandbox
+  // ranks its full deterministic fixture set, so recall is exact + complete.
+  assert.ok(body.meta, "sandbox search envelope must carry meta");
+  assert.equal(body.meta.count_accuracy, "exact");
+  // count is the full caller-visible match count (may exceed one page), so it
+  // is at least the number of hits returned on this page.
+  assert.ok(typeof body.meta.count === "number" && body.meta.count >= body.data.length);
+  assert.equal(body.meta.recall?.complete, true);
+  assert.equal(body.meta.recall?.ranking_scope, "all_matches");
+  assert.equal(body.meta.recall?.truncated, false);
   for (const hit of body.data) {
     assert.equal(hit.object, "search_result");
     assert.equal(typeof hit.stream, "string");

@@ -58,6 +58,7 @@ import {
   postgresLexicalMetaGetFingerprint,
   postgresLexicalMetaListStreamsForConnector,
   postgresLexicalMetaUpsertFingerprint,
+  postgresLexicalCandidateLimit,
   postgresLexicalRecordsCountNonDeleted,
   postgresLexicalRecordsPageNonDeleted,
   postgresLexicalSearch,
@@ -870,10 +871,12 @@ export async function runLexicalSearch({
         ? { next_cursor: result.envelope.next_cursor }
         : {}),
       data: result.envelope.data,
-      // Carry the operation's canonical `meta.warnings[]` (limit_clamped,
-      // deprecated_alias_used, source_skipped_not_applicable) through to the
-      // REST response. Omitted when the operation produced no warnings so
-      // warning-free envelopes are unchanged.
+      // Carry the operation's canonical `meta` through to the REST response.
+      // `meta` always carries recall disclosure (`count`, `count_accuracy`,
+      // `recall`) per openspec/changes/disclose-lexical-recall-windows, plus
+      // optional structured `warnings[]` (limit_clamped, deprecated_alias_used,
+      // source_skipped_not_applicable). The guard stays defensive in case a
+      // future operation revision omits it.
       ...(result.envelope.meta ? { meta: result.envelope.meta } : {}),
     },
     disclosureData: result.disclosureData,
@@ -1083,8 +1086,40 @@ function resolveLexicalRetrievalAdvertisement(opts) {
 // ─── Snapshot building (FTS5 query + ranking) ──────────────────────────────
 
 /**
- * Build a snapshot of the full ranked result set for (q, perConnectorPlans).
- * Returns { snapshot_id, query, plan_hash, results }.
+ * Per-(stream, field) candidate cap applied by the SQLite lexical FTS query
+ * (`ORDER BY score ASC LIMIT 200`). This is the bounded candidate window the
+ * recall disclosure reports: when a single SQLite query returns this many rows,
+ * that source's candidate set may have been truncated, so the ranked snapshot
+ * is not guaranteed to represent every caller-visible match.
+ *
+ * NOTE: this is the SQLite cap only. The Postgres builder has a DIFFERENT
+ * effective cap — see `postgresEffectiveCandidateWindowLimit()` — because
+ * `postgresLexicalSearch` ranks an inner candidate CTE (default 200) and then
+ * clamps the outer returned rows to <=100. The honest `candidate_window_limit`
+ * reported per backend reflects the cap that actually bounded that backend.
+ *
+ * Spec: openspec/changes/disclose-lexical-recall-windows.
+ */
+const SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT = 200;
+
+/**
+ * Effective per-(stream, field) candidate cap the Postgres lexical builder
+ * actually applies. `postgresLexicalSearch` clamps its outer `LIMIT` to <=100,
+ * so even though the inner candidate CTE defaults to 200, no Postgres query
+ * returns more than 100 ranked rows. The recall disclosure uses this so the
+ * truncation signal (`rows.length >= cap`) is correct for Postgres and the
+ * reported `candidate_window_limit` is not a lie.
+ */
+function postgresEffectiveCandidateWindowLimit() {
+  // Mirror the clamp inside `postgresLexicalSearch`: the outer LIMIT is
+  // Math.min(Math.max(requested, 1), 100). We request the inner CTE limit, so
+  // the binding cap is min(candidateLimit, 100).
+  return Math.min(postgresLexicalCandidateLimit(), 100);
+}
+
+/**
+ * Build a snapshot of the ranked result set for (q, perConnectorPlans).
+ * Returns { snapshot_id, query, plan_hash, results, recall_meta }.
  *
  * Each result is a candidate with everything needed to shape a search_result
  * object: { connectorId, stream, recordKey, emittedAt, matchedFields, snippet? }.
@@ -1092,10 +1127,17 @@ function resolveLexicalRetrievalAdvertisement(opts) {
  * Cross-connector merge uses round-robin so no single connector dominates the
  * early pages. Within a connector, hits are ordered by FTS5's bm25() (lower
  * is better).
+ *
+ * `recall_meta` carries the operation-level recall disclosure for the WHOLE
+ * ranked set (see openspec/changes/disclose-lexical-recall-windows). It is
+ * computed from per-source truncation facts so the operation does not have to
+ * infer completeness from `has_more`. It counts only the caller-visible sources
+ * the fan-in actually searched (grant-safe by construction: the fan-out already
+ * resolved authorized bindings/streams/fields upstream).
  */
 async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
   const allowsSnippets = true; // reference always supports snippets in v1
-  const perConnectorHits = await mapSearchFanout(
+  const perConnectorResults = await mapSearchFanout(
     perConnectorPlans,
     async ({ connectorId, planEntries, manifest }) =>
       runFtsQueryForConnector({
@@ -1107,6 +1149,9 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
       }),
     { isPostgres: isPostgresStorageBackend() },
   );
+
+  const perConnectorHits = perConnectorResults.map((r) => r.hits);
+  const recallMeta = computeSnapshotRecallMeta(perConnectorResults);
 
   // Round-robin merge across connectors, preserving each connector's
   // intra-list relevance order.
@@ -1133,20 +1178,113 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
     query: q,
     plan_hash: hashPlan({ perConnectorPlans, isOwner }),
     results: merged,
+    recall_meta: recallMeta,
+  };
+}
+
+/**
+ * Fold per-source FTS facts into the operation-level recall/count disclosure.
+ *
+ * `perConnectorResults` is one entry per searched source (binding), each:
+ *   { hits, rankedCandidateCount, truncated, candidateWindowLimit }
+ * where `rankedCandidateCount` is the number of distinct records this source
+ * contributed, `truncated` is true when at least one of the source's
+ * (stream, field) SQL queries filled its backend's candidate window, and
+ * `candidateWindowLimit` is the cap that bounded that backend (SQLite=200,
+ * Postgres=effective outer clamp).
+ *
+ * Honesty rules:
+ *   - If NO source truncated, the ranked set is the complete caller-visible
+ *     match set: count is `exact`, recall is `all_matches` / complete.
+ *   - If ANY source truncated, the count is a `lower_bound` (more matches may
+ *     exist beyond the window) and recall is `candidate_window` / incomplete.
+ *   - Window facts (`ranked_candidate_count`, `candidate_window_limit`,
+ *     `sources_searched_count`, `truncated_source_count`) are compact aggregates
+ *     only emitted when proven. `truncated_source_count` is omitted unless a
+ *     window is active (we never emit a guessed `0`). `candidate_window_limit`
+ *     is emitted only when every truncated source shared one cap; if truncated
+ *     sources used different caps (mixed backends — not currently possible) we
+ *     omit it rather than report a misleading single number.
+ */
+function computeSnapshotRecallMeta(perConnectorResults) {
+  const sourcesSearched = perConnectorResults.length;
+  const rankedCandidateCount = perConnectorResults.reduce(
+    (sum, r) => sum + (Number.isFinite(r.rankedCandidateCount) ? r.rankedCandidateCount : 0),
+    0,
+  );
+  const truncatedResults = perConnectorResults.filter((r) => r.truncated);
+  const truncatedSourceCount = truncatedResults.length;
+  const anyTruncated = truncatedSourceCount > 0;
+
+  if (!anyTruncated) {
+    // Every searched source returned strictly fewer rows than the cap, so the
+    // ranked set IS the complete caller-visible match set. Count is exact.
+    return {
+      count: rankedCandidateCount,
+      count_accuracy: 'exact',
+      recall: {
+        complete: true,
+        ranking_scope: 'all_matches',
+        truncated: false,
+        ranked_candidate_count: rankedCandidateCount,
+        sources_searched_count: sourcesSearched,
+      },
+    };
+  }
+
+  // All truncated sources share one cap iff they all report the same
+  // `candidateWindowLimit`. (Today a single search hits one backend, so this is
+  // always true; the guard keeps the field honest if that ever changes.)
+  const truncatedCaps = new Set(
+    truncatedResults
+      .map((r) => r.candidateWindowLimit)
+      .filter((n) => Number.isFinite(n)),
+  );
+  const sharedCap = truncatedCaps.size === 1 ? [...truncatedCaps][0] : null;
+
+  // At least one source's candidate set was capped. We ranked a bounded window;
+  // the true caller-visible match count is at least what we ranked.
+  return {
+    count: rankedCandidateCount,
+    count_accuracy: 'lower_bound',
+    recall: {
+      complete: false,
+      ranking_scope: 'candidate_window',
+      truncated: true,
+      ranked_candidate_count: rankedCandidateCount,
+      ...(sharedCap !== null ? { candidate_window_limit: sharedCap } : {}),
+      sources_searched_count: sourcesSearched,
+      truncated_source_count: truncatedSourceCount,
+    },
   };
 }
 
 /**
  * Run the FTS5 query for one connector across all of its (stream, field)
- * plan entries. Returns an array of hits sorted by intra-connector relevance.
+ * plan entries. Returns `{ hits, rankedCandidateCount, truncated, candidateWindowLimit }`:
+ *   - `hits`: array of collapsed hits sorted by intra-connector relevance;
+ *   - `rankedCandidateCount`: number of distinct records this source ranked;
+ *   - `truncated`: true when at least one (stream, field) SQL query filled its
+ *     backend's candidate window, i.e. the bounded window may have excluded
+ *     further caller-visible matches;
+ *   - `candidateWindowLimit`: the cap that bounded this backend's queries
+ *     (SQLite=`SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT`, Postgres=the effective
+ *     outer clamp from `postgresEffectiveCandidateWindowLimit()`).
  *
  * For each matching record, we collapse multiple field hits into one hit
  * with a combined matched_fields list and one snippet from the
  * highest-ranked field match.
+ *
+ * Truncation is observed at the SQL-query level (rows returned >= the cap)
+ * rather than after collapse/grant-filtering: a query that filled the window
+ * could have more matching rows beyond it, so the honest answer is "may be
+ * truncated" even if post-filtering then drops some of those rows.
  */
 async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planEntries, q, allowsSnippets }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+  let truncated = false;
   if (isPostgresStorageBackend()) {
+    const candidateWindowLimit = postgresEffectiveCandidateWindowLimit();
     const collapsed = new Map();
     for (const entry of planEntries) {
       const candidateRecordKeys = Array.isArray(entry.candidateRecordKeys)
@@ -1165,9 +1303,13 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         stream: entry.streamName,
         searchableFields: entry.searchableFields,
         q,
-        limit: 200,
+        // Request the inner candidate-CTE size; `postgresLexicalSearch` clamps
+        // the returned rows to <=100, so `candidateWindowLimit` (the effective
+        // cap) is what bounds `rows.length`.
+        limit: postgresLexicalCandidateLimit(),
         recordKeys: candidateRecordKeys,
       });
+      if (rows.length >= candidateWindowLimit) truncated = true;
       for (const row of rows) {
         if (
           Array.isArray(candidateRecordKeys)
@@ -1205,10 +1347,12 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         }
       }
     }
-    return Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
+    const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
+    return { hits, rankedCandidateCount: hits.length, truncated, candidateWindowLimit };
   }
 
   const ftsQuery = buildFtsUserTextQuery(q);
+  const candidateWindowLimit = SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT;
   // Build one query per stream-field plan entry, scoped to this connector
   // and the (stream, field) pair. This guarantees the index is only ever
   // queried for declared+authorized fields.
@@ -1233,7 +1377,9 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
         : '';
       // REVIEWED-DYNAMIC: FTS query has conditional snippet/candidate
-      // predicates; SQL composed at call time; LIMIT 200 included.
+      // predicates; SQL composed at call time; the bounded candidate window
+      // (SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT) is interpolated as a numeric
+      // literal.
       const sql = `
         SELECT
           lsi.record_key                          AS record_key,
@@ -1254,7 +1400,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
           AND r.deleted = 0
           ${recordKeyConstraint}
         ORDER BY score ASC
-        LIMIT 200
+        LIMIT ${SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT}
       `;
       const rows = [];
       for (const row of iterateDynamicSqlAcknowledged(
@@ -1263,6 +1409,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
       )) {
         rows.push(row);
       }
+      if (rows.length >= candidateWindowLimit) truncated = true;
       for (const row of rows) {
         const key = `${entry.streamName}:${row.record_key}`;
         const existing = collapsed.get(key);
@@ -1297,7 +1444,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
 
   // Intra-connector relevance order
   const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
-  return hits;
+  return { hits, rankedCandidateCount: hits.length, truncated, candidateWindowLimit };
 }
 
 function authoredTimestampFromRecordJson(recordJson) {
@@ -1385,7 +1532,24 @@ function hashPlan({ perConnectorPlans, isOwner }) {
   return JSON.stringify({ isOwner, summary });
 }
 
+/**
+ * Serialize a snapshot's persisted payload into the existing `results_json`
+ * column. We avoid a schema migration (the disclosure change is additive) by
+ * storing a wrapper `{ results, recall_meta }` rather than a bare results
+ * array. `materializeSnapshot` reads both this wrapped shape and the legacy
+ * bare-array shape so in-flight pre-upgrade snapshots (5-minute TTL) keep
+ * paginating — they just report `not_counted` / `unknown` recall, which is
+ * the honest answer for a snapshot built before recall facts were captured.
+ */
+function serializeSnapshotResultsJson(snapshot) {
+  return JSON.stringify({
+    results: snapshot.results,
+    ...(snapshot.recall_meta ? { recall_meta: snapshot.recall_meta } : {}),
+  });
+}
+
 async function persistSnapshot(snapshot) {
+  const resultsJson = serializeSnapshotResultsJson(snapshot);
   if (isPostgresStorageBackend()) {
     await postgresQuery(
       `
@@ -1397,14 +1561,14 @@ async function persistSnapshot(snapshot) {
         results_json = excluded.results_json,
         created_at = (now() AT TIME ZONE 'utc')::text
       `,
-      [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results)],
+      [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, resultsJson],
     );
     return;
   }
 
   exec(
     referenceQueries.searchSnapshotsInsert,
-    [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, JSON.stringify(snapshot.results)],
+    [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, resultsJson],
   );
 }
 
@@ -1431,10 +1595,21 @@ function materializeSnapshot(row) {
   if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {
     return null;
   }
+  const parsed = JSON.parse(row.results_json);
+  // Two persisted shapes coexist during the upgrade window:
+  //   - new: { results: [...], recall_meta?: {...} }
+  //   - legacy: [...] (bare results array from a pre-upgrade snapshot)
+  // Cursor pages reuse the snapshot's recall_meta verbatim so every page
+  // reports identical recall facts; a legacy snapshot has none, so the
+  // operation falls back to an honest not_counted / unknown envelope.
+  const isWrapped = parsed && !Array.isArray(parsed) && Array.isArray(parsed.results);
+  const results = isWrapped ? parsed.results : parsed;
+  const recallMeta = isWrapped && parsed.recall_meta ? parsed.recall_meta : undefined;
   return {
     snapshot_id: row.snapshot_id,
     query: row.query,
     plan_hash: row.plan_hash,
-    results: JSON.parse(row.results_json),
+    results,
+    ...(recallMeta ? { recall_meta: recallMeta } : {}),
   };
 }
