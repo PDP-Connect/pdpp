@@ -926,10 +926,7 @@ function runSummaryMatchesConnection(
   browserSurfaceProfileKey: string | null
 ): boolean {
   if (summary.browser_surface_profile_key) {
-    return (
-      summary.browser_surface_profile_key === browserSurfaceProfileKey ||
-      summary.browser_surface_profile_key === connectorInstanceId
-    );
+    return summary.browser_surface_profile_key === (browserSurfaceProfileKey ?? connectorInstanceId);
   }
 
   const data = summary as SpineSummary & { connector_instance_id?: unknown; connection_id?: unknown };
@@ -3530,14 +3527,17 @@ export async function mapWithConcurrency<T, R>(
 export interface ListConnectorSummariesOptions {
   readonly concurrency?: number;
   /**
-   * Full list routes should not block on deep run-history hydration. Scoped
-   * connection/detail reads keep this enabled so diagnostics can carry run
-   * evidence when it is actually needed.
+   * Full list routes hydrate only singleton active sources: enough evidence to
+   * avoid false "Checking" on unambiguous configured sources, without borrowing
+   * connector-wide runs across duplicate accounts/devices. Scoped
+   * connection/detail reads keep full evidence enabled.
    */
-  readonly includeRunSummaries?: boolean;
+  readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   /** Test hook: invoked whenever the in-flight worker count changes. */
   readonly onInFlightChange?: (inFlight: number) => void;
 }
+
+type ConnectorRunSummaryInclusion = boolean | "singleton-active";
 
 const LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS = Number(process.env.PDPP_REF_CONNECTOR_SUMMARIES_CACHE_MS ?? 5000);
 
@@ -3566,7 +3566,12 @@ function connectorSummariesCacheKey(
   options: ListConnectorSummariesOptions = {}
 ): string {
   const controllerKey = controller == null ? "no-controller" : "controller";
-  const runDepth = options.includeRunSummaries === false ? "shallow-runs" : "deep-runs";
+  const runDepth =
+    options.includeRunSummaries === false
+      ? "shallow-runs"
+      : options.includeRunSummaries === "singleton-active"
+        ? "singleton-active-runs"
+        : "deep-runs";
   return `${controllerKey}:${runDepth}`;
 }
 
@@ -3582,7 +3587,7 @@ interface ConnectorSummaryProjectionDeps {
     connectorId: string,
     status?: string | null
   ) => Promise<readonly SpineSummary[]>;
-  readonly includeRunSummaries: boolean;
+  readonly includeRunSummaries: ConnectorRunSummaryInclusion;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   readonly retainedSizeSnapshot?: RetainedSizeProjectionSnapshot;
   readonly runtimeOk: boolean;
@@ -3615,6 +3620,20 @@ function countActiveVisibleConnectionsByConnectorId(
     counts.set(instance.connectorId, (counts.get(instance.connectorId) ?? 0) + 1);
   }
   return counts;
+}
+
+function shouldHydrateRunSummariesForInstance(
+  mode: ConnectorRunSummaryInclusion,
+  instance: ConnectorInstanceRow,
+  activeVisibleConnectionCount: number
+): boolean {
+  if (mode === true) {
+    return true;
+  }
+  if (mode === false) {
+    return false;
+  }
+  return instance.status === "active" && activeVisibleConnectionCount === 1;
 }
 
 function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
@@ -3744,6 +3763,11 @@ async function projectConnectorSummaryForInstance(
   }
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
+  const hydrateRunSummaries = shouldHydrateRunSummariesForInstance(
+    deps.includeRunSummaries,
+    instance,
+    activeVisibleConnectionCount
+  );
   const live = await getConnectorRecordProjection(
     recordStorageConnectorIdForConnection(instance),
     connectorInstanceId,
@@ -3761,16 +3785,16 @@ async function projectConnectorSummaryForInstance(
     acquisitionCoverage,
   ] = await Promise.all([
     getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-    deps.includeRunSummaries
+    hydrateRunSummaries
       ? getLatestRunSummaryForConnection({
           activeVisibleConnectionCount,
           browserSurfaceProfileKey,
           connectorId,
           connectorInstanceId,
           listRunSummariesForConnector,
-        })
+      })
       : Promise.resolve(null),
-    deps.includeRunSummaries
+    hydrateRunSummaries
       ? getLatestRunSummaryForConnection({
           activeVisibleConnectionCount,
           browserSurfaceProfileKey,
@@ -3898,7 +3922,7 @@ async function loadConnectorSummaryProjectionDeps(
   controller?: ControllerLike | null,
   options: {
     readonly includeRetainedSizeSnapshot?: boolean;
-    readonly includeRunSummaries?: boolean;
+    readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const [connectorRows, retainedSizeSnapshot] = await Promise.all([
@@ -3920,7 +3944,7 @@ async function loadConnectorSummaryProjectionDeps(
   return {
     controller,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
-    includeRunSummaries: options.includeRunSummaries !== false,
+    includeRunSummaries: options.includeRunSummaries ?? true,
     manifestsByConnectorId,
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
     runtimeOk: controller != null,
@@ -3968,7 +3992,7 @@ async function computeConnectorSummaries(
   await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
   const deps = await loadConnectorSummaryProjectionDeps(controller, {
     includeRetainedSizeSnapshot: true,
-    includeRunSummaries: options.includeRunSummaries !== false,
+    includeRunSummaries: options.includeRunSummaries ?? true,
   });
   const rows = await listConnectorInstanceRowsForDashboard();
   const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);

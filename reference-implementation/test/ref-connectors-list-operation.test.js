@@ -159,6 +159,7 @@ test('connector-wide run fallback refuses runs tagged to a different browser pro
     id: 'run_stale_setup_shell',
     run_id: 'run_stale_setup_shell',
     browser_surface_profile_key: 'chase:cin_expired_setup',
+    connector_instance_id: 'cin_active',
   };
 
   assert.equal(

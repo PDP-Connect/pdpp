@@ -3503,7 +3503,7 @@ function buildAsApp(opts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     handleError,
     pdppError,
-    listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: false }),
+    listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: 'singleton-active' }),
     getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
     getConnectorDetail: (id) => getConnectorDetail(id, controller),
     getRuntimeStatus: () =>

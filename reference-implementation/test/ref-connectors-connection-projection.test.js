@@ -313,6 +313,49 @@ test('full-list shallow option omits run history while scoped summaries keep it'
   assert.equal(scopedWork.last_run?.failure_reason, 'surface_unhealthy');
 }));
 
+test('singleton-active overview hydrates only unambiguous active source run history', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    displayName: 'Work laptop',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'work',
+    sourceBinding: { kind: 'browser_collector', device: 'work' },
+  });
+  await seedBrowserSurfaceRun({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_work_surface_failed',
+    status: 'surface_failed',
+    occurredAt: '2026-05-20T12:01:00.000Z',
+    waitReason: 'surface_unhealthy',
+  });
+
+  const singleton = await listConnectorSummaries(null, { includeRunSummaries: 'singleton-active' });
+  const singletonWork = singleton.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
+  assert.ok(singletonWork);
+  assert.equal(
+    singletonWork.last_run?.run_id,
+    'run_work_surface_failed',
+    'singleton active source keeps enough evidence to avoid false Checking',
+  );
+
+  await seedInstance({
+    connectorInstanceId: PERSONAL_INSTANCE_ID,
+    displayName: 'Personal laptop',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'personal',
+    sourceBinding: { kind: 'browser_collector', device: 'personal' },
+  });
+  const ambiguous = await listConnectorSummaries(null, { includeRunSummaries: 'singleton-active' });
+  const ambiguousWork = ambiguous.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
+  assert.ok(ambiguousWork);
+  assert.equal(
+    ambiguousWork.last_run,
+    null,
+    'duplicate active sources must not borrow connector-wide run history on the overview',
+  );
+}));
+
 test('reference connector summaries keep revoked connections visible for owner manageability', withTmpDb(async () => {
   seedConnector();
   const store = createSqliteConnectorInstanceStore();
