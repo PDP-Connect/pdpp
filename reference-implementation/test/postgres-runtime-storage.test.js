@@ -203,6 +203,17 @@ if (!POSTGRES_URL) {
         cimdTable.rows.map((row) => row.column_name),
         ['document_id', 'client_name', 'redirect_uris', 'logo_uri', 'created_at', 'updated_at'],
       );
+      const scopedLexicalIndex = await postgresQuery(
+        `SELECT 1
+           FROM pg_extension e
+           JOIN pg_indexes i
+             ON i.schemaname = current_schema()
+            AND i.tablename = 'lexical_search_index'
+            AND i.indexname = 'idx_pg_lexical_search_scope_document'
+          WHERE e.extname = 'btree_gin'
+          LIMIT 1`,
+      );
+      assert.equal(scopedLexicalIndex.rowCount, 1);
     } finally {
       await closeStartedServer(server);
       await closePostgresStorage();

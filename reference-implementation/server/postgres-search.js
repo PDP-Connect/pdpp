@@ -200,28 +200,35 @@ export async function postgresLexicalSearch({
     params.push(recordKeys);
     recordClause = `AND lsi.record_key = ANY($${params.length}::text[])`;
   }
-  const result = await postgresQuery(
-    `SELECT lsi.connector_id, lsi.stream, lsi.record_key, lsi.field,
-            r.emitted_at,
-            r.record_json::text AS record_json,
-            ts_rank_cd(document, plainto_tsquery('simple', $3)) AS score,
-            ts_headline('simple', value, plainto_tsquery('simple', $3),
-              'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
-     FROM lexical_search_index lsi
-     JOIN records r
-       ON r.connector_instance_id = lsi.connector_instance_id
-      AND r.stream = lsi.stream
-      AND r.record_key = lsi.record_key
-     WHERE lsi.connector_instance_id = $1
-       AND lsi.stream = $2
-       ${fieldClause}
-       ${recordClause}
-       AND document @@ plainto_tsquery('simple', $3)
-       AND r.deleted = FALSE
-     ORDER BY score DESC, record_key ASC
-     LIMIT $4`,
-    params,
-  );
+  const result = await withPostgresTransaction(async (client) => {
+    // Parallel FTS plans allocate dynamic shared memory; Docker's default
+    // /dev/shm is small enough that broad owner searches can fail with 53100.
+    // Keep this scoped to the lexical read transaction rather than mutating
+    // global Postgres settings.
+    await client.query('SET LOCAL max_parallel_workers_per_gather = 0');
+    return client.query(
+      `SELECT lsi.connector_id, lsi.stream, lsi.record_key, lsi.field,
+              r.emitted_at,
+              r.record_json::text AS record_json,
+              ts_rank_cd(document, plainto_tsquery('simple', $3)) AS score,
+              ts_headline('simple', value, plainto_tsquery('simple', $3),
+                'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
+       FROM lexical_search_index lsi
+       JOIN records r
+         ON r.connector_instance_id = lsi.connector_instance_id
+        AND r.stream = lsi.stream
+        AND r.record_key = lsi.record_key
+       WHERE lsi.connector_instance_id = $1
+         AND lsi.stream = $2
+         ${fieldClause}
+         ${recordClause}
+         AND document @@ plainto_tsquery('simple', $3)
+         AND r.deleted = FALSE
+       ORDER BY score DESC, record_key ASC
+       LIMIT $4`,
+      params,
+    );
+  });
   return result.rows;
 }
 

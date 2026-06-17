@@ -345,6 +345,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch {}
+    try {
+      await client.query('CREATE EXTENSION IF NOT EXISTS btree_gin');
+    } catch {}
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS connectors (
@@ -1455,6 +1458,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
+    await ensurePostgresLexicalScopedGinIndex(client, log);
   } finally {
     client.release();
   }
@@ -2025,6 +2029,40 @@ async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
+}
+
+async function ensurePostgresLexicalScopedGinIndex(client, log = () => {}) {
+  const extension = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'btree_gin' LIMIT 1");
+  if (extension.rowCount === 0) {
+    log('[PDPP] Lexical search scoped GIN index skipped: btree_gin extension is unavailable');
+    return;
+  }
+  const existing = await client.query(
+    `SELECT ix.indisvalid AS valid
+       FROM pg_class idx
+       JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+       JOIN pg_index ix ON ix.indexrelid = idx.oid
+      WHERE ns.nspname = current_schema()
+        AND idx.relname = 'idx_pg_lexical_search_scope_document'
+      LIMIT 1`,
+  );
+  if (existing.rowCount > 0 && existing.rows[0]?.valid === true) return;
+  if (existing.rowCount > 0) {
+    log('[PDPP] Lexical search migration: dropping invalid scoped GIN index before rebuild');
+    await client.query('DROP INDEX CONCURRENTLY IF EXISTS idx_pg_lexical_search_scope_document');
+  }
+
+  // Existing deployments can have millions of lexical rows. Build
+  // concurrently so startup does not hold a table-wide write lock while the
+  // reference remains otherwise readable.
+  log('[PDPP] Lexical search migration: building scoped GIN index idx_pg_lexical_search_scope_document');
+  const startedAt = Date.now();
+  await client.query(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_lexical_search_scope_document
+       ON lexical_search_index
+       USING GIN (connector_instance_id, stream, document)`,
+  );
+  log(`[PDPP] Lexical search migration: scoped GIN index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
 }
 
 function localDeviceConnectorId(connectorId) {

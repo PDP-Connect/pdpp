@@ -46,6 +46,7 @@ import {
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from './connection-identity.js';
+import { mapSearchFanout } from './search-fanout.js';
 import {
   postgresLexicalCountIndexableTextValues,
   postgresLexicalIndexCountByStream,
@@ -1093,16 +1094,17 @@ function resolveLexicalRetrievalAdvertisement(opts) {
  */
 async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
   const allowsSnippets = true; // reference always supports snippets in v1
-  const perConnectorHits = await Promise.all(
-    perConnectorPlans.map(async ({ connectorId, planEntries, manifest }) =>
+  const perConnectorHits = await mapSearchFanout(
+    perConnectorPlans,
+    async ({ connectorId, planEntries, manifest }) =>
       runFtsQueryForConnector({
         connectorId: connectorId || manifest?.connector_id,
         connectorInstanceId: planEntries[0]?.connectorInstanceId || manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id,
         planEntries,
         q,
         allowsSnippets,
-      })
-    ),
+      }),
+    { isPostgres: isPostgresStorageBackend() },
   );
 
   // Round-robin merge across connectors, preserving each connector's

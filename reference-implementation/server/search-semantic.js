@@ -80,6 +80,7 @@ import {
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from './connection-identity.js';
+import { mapSearchFanout } from './search-fanout.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -2077,8 +2078,9 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
   // snapshot's approach of caching a reasonable upper bound.
   const PER_CONNECTOR_LIMIT = 200;
 
-  const perConnectorHits = await Promise.all(
-    perConnectorPlans.map(async ({ connectorId, planEntries }) => {
+  const perConnectorHits = await mapSearchFanout(
+    perConnectorPlans,
+    async ({ connectorId, planEntries }) => {
       const entryHits = [];
       for (const entry of planEntries) {
         if (entry.scopeKeys.length === 0) continue;
@@ -2113,7 +2115,8 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
         }
       }
       return entryHits.sort(compareHits).slice(0, PER_CONNECTOR_LIMIT);
-    }),
+    },
+    { isPostgres: isPostgresStorageBackend() },
   );
 
   // Merge under total order.
