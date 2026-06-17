@@ -124,14 +124,12 @@ export default async function ReferencePage() {
       <div className="relative mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 lg:py-14">
         <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0">
-            <div className="pdpp-eyebrow text-muted-foreground">Reference implementation</div>
-            <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">
-              The forkable PDPP implementation, not the protocol authority.
-            </h1>
+            <div className="pdpp-eyebrow text-muted-foreground">Host your own · reference implementation</div>
+            <h1 className="pdpp-display mt-3 max-w-4xl text-foreground">Run your own PDPP server.</h1>
             <p className="pdpp-body-lg mt-5 max-w-3xl text-muted-foreground">
-              This surface explains the runnable code in this repository: the authorization server, resource server,
-              local composition, dashboard, reference clients, tests, and deployment posture. For normative protocol
-              behavior, use the protocol docs.
+              A complete, forkable implementation you can self-host: authorization server, resource server, dashboard,
+              reference clients, tests, and deployment posture. It is one runnable implementation of PDPP. The protocol
+              docs remain the normative authority.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
               <a className={buttonVariants({ variant: "default", size: "lg" })} href={GITHUB_REFERENCE_README}>

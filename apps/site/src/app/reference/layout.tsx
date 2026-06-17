@@ -12,7 +12,7 @@ export default function ReferenceLayout({ children }: { children: ReactNode }) {
           borderBottom: "1px solid var(--border)",
         }}
       >
-        <SiteHeader currentLabel="Reference" />
+        <SiteHeader currentLabel="Host your own" />
       </header>
       {children}
     </div>
