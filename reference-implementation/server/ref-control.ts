@@ -194,6 +194,8 @@ interface StreamProjection {
 }
 
 interface RecordProjectionRow {
+  readonly connector_id?: string | null;
+  readonly connector_instance_id?: string | null;
   readonly last_updated: string | null;
   readonly record_count: number | string | null;
   readonly stream: string;
@@ -204,6 +206,20 @@ export interface RetainedBytesBreakdown {
   readonly record_changes_json_bytes: number;
   readonly record_json_bytes: number;
   readonly total_bytes: number;
+}
+
+interface RetainedSizeConnectionProjectionRow {
+  readonly blob_bytes?: number | string | null;
+  readonly connector_id?: string | null;
+  readonly connector_instance_id?: string | null;
+  readonly current_record_json_bytes?: number | string | null;
+  readonly record_history_json_bytes?: number | string | null;
+}
+
+interface RetainedSizeProjectionSnapshot {
+  readonly connectionsByInstanceId: ReadonlyMap<string, RetainedSizeConnectionProjectionRow>;
+  readonly streamsByConnectorId: ReadonlyMap<string, readonly RecordProjectionRow[]>;
+  readonly streamsByInstanceId: ReadonlyMap<string, readonly RecordProjectionRow[]>;
 }
 
 interface ConnectorInstanceRow {
@@ -955,31 +971,28 @@ async function getRetainedBytesForConnection(connectorInstanceId: string): Promi
   };
 }
 
-async function getConnectorRecordProjection(
-  connectorId: string,
-  connectorInstanceId?: string
-): Promise<RecordProjection> {
-  let rows: RecordProjectionRow[];
-  if (connectorInstanceId) {
-    rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(
-      (row: { stream: string; record_count?: number }) => ({
-        stream: row.stream,
-        record_count: Number(row.record_count || 0),
-        last_updated: null,
-      })
-    ) as RecordProjectionRow[];
-  } else {
-    rows = (await listRetainedSizeStreams({}))
-      .filter((row: { connector_id?: string }) => row.connector_id === connectorId)
-      .map((row: { stream: string; record_count?: number }) => ({
-        stream: row.stream,
-        record_count: Number(row.record_count || 0),
-        last_updated: null,
-      })) as RecordProjectionRow[];
+function retainedBytesFromConnectionRow(row: RetainedSizeConnectionProjectionRow | undefined): RetainedBytesBreakdown | null {
+  if (!row) {
+    return null;
   }
+  const recordJsonBytes = Number(row.current_record_json_bytes || 0);
+  const recordChangesJsonBytes = Number(row.record_history_json_bytes || 0);
+  const blobBytes = Number(row.blob_bytes || 0);
+  return {
+    blob_bytes: blobBytes,
+    record_changes_json_bytes: recordChangesJsonBytes,
+    record_json_bytes: recordJsonBytes,
+    total_bytes: recordJsonBytes + recordChangesJsonBytes + blobBytes,
+  };
+}
+
+function buildRecordProjectionFromRetainedRows(input: {
+  readonly retainedBytes: RetainedBytesBreakdown | null;
+  readonly rows: readonly RecordProjectionRow[];
+}): RecordProjection {
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
-  for (const row of rows) {
+  for (const row of input.rows) {
     const recordCount = Number(row.record_count || 0);
     const lastUpdated = row.last_updated || null;
     byStream.set(row.stream, {
@@ -994,9 +1007,53 @@ async function getConnectorRecordProjection(
   return {
     byStream,
     freshness: buildFreshness(latest),
-    retainedBytes: connectorInstanceId ? await getRetainedBytesForConnection(connectorInstanceId) : null,
-    totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
+    retainedBytes: input.retainedBytes,
+    totalRecords: input.rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
+}
+
+async function getConnectorRecordProjection(
+  connectorId: string,
+  connectorInstanceId?: string,
+  snapshot?: RetainedSizeProjectionSnapshot
+): Promise<RecordProjection> {
+  let rows: RecordProjectionRow[];
+  if (connectorInstanceId && snapshot) {
+    rows = [...(snapshot.streamsByInstanceId.get(connectorInstanceId) ?? [])];
+    return buildRecordProjectionFromRetainedRows({
+      rows,
+      retainedBytes: retainedBytesFromConnectionRow(snapshot.connectionsByInstanceId.get(connectorInstanceId)),
+    });
+  }
+  if (!connectorInstanceId && snapshot) {
+    rows = [...(snapshot.streamsByConnectorId.get(connectorId) ?? [])];
+    return buildRecordProjectionFromRetainedRows({ rows, retainedBytes: null });
+  }
+  if (connectorInstanceId) {
+    rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(
+      (row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
+        connector_id: row.connector_id,
+        connector_instance_id: row.connector_instance_id,
+        stream: row.stream,
+        record_count: Number(row.record_count || 0),
+        last_updated: null,
+      })
+    ) as RecordProjectionRow[];
+  } else {
+    rows = (await listRetainedSizeStreams({}))
+      .filter((row: { connector_id?: string }) => row.connector_id === connectorId)
+      .map((row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
+        connector_id: row.connector_id,
+        connector_instance_id: row.connector_instance_id,
+        stream: row.stream,
+        record_count: Number(row.record_count || 0),
+        last_updated: null,
+      })) as RecordProjectionRow[];
+  }
+  return buildRecordProjectionFromRetainedRows({
+    rows,
+    retainedBytes: connectorInstanceId ? await getRetainedBytesForConnection(connectorInstanceId) : null,
+  });
 }
 
 interface AttentionStoreProjection {
@@ -3384,6 +3441,7 @@ interface ConnectorSummaryProjectionDeps {
     status?: string | null
   ) => Promise<readonly SpineSummary[]>;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
+  readonly retainedSizeSnapshot?: RetainedSizeProjectionSnapshot;
   readonly runtimeOk: boolean;
   readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
 }
@@ -3401,6 +3459,54 @@ function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["li
       cache.set(key, promise);
     }
     return promise;
+  };
+}
+
+function groupRetainedSizeRowsByInstance(
+  rows: readonly RecordProjectionRow[]
+): Map<string, readonly RecordProjectionRow[]> {
+  const map = new Map<string, RecordProjectionRow[]>();
+  for (const row of rows) {
+    if (!row.connector_instance_id) {
+      continue;
+    }
+    const bucket = map.get(row.connector_instance_id) ?? [];
+    bucket.push(row);
+    map.set(row.connector_instance_id, bucket);
+  }
+  return map;
+}
+
+function groupRetainedSizeRowsByConnector(
+  rows: readonly RecordProjectionRow[]
+): Map<string, readonly RecordProjectionRow[]> {
+  const map = new Map<string, RecordProjectionRow[]>();
+  for (const row of rows) {
+    if (!row.connector_id) {
+      continue;
+    }
+    const bucket = map.get(row.connector_id) ?? [];
+    bucket.push(row);
+    map.set(row.connector_id, bucket);
+  }
+  return map;
+}
+
+async function loadRetainedSizeProjectionSnapshot(): Promise<RetainedSizeProjectionSnapshot> {
+  const [streamRows, connectionRows] = await Promise.all([
+    listRetainedSizeStreams({}) as Promise<readonly RecordProjectionRow[]>,
+    listRetainedSizeConnections({}) as Promise<readonly RetainedSizeConnectionProjectionRow[]>,
+  ]);
+  const connectionsByInstanceId = new Map<string, RetainedSizeConnectionProjectionRow>();
+  for (const row of connectionRows) {
+    if (row.connector_instance_id) {
+      connectionsByInstanceId.set(row.connector_instance_id, row);
+    }
+  }
+  return {
+    connectionsByInstanceId,
+    streamsByConnectorId: groupRetainedSizeRowsByConnector(streamRows),
+    streamsByInstanceId: groupRetainedSizeRowsByInstance(streamRows),
   };
 }
 
@@ -3465,7 +3571,11 @@ async function projectConnectorSummaryForInstance(
     return null;
   }
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
-  const live = await getConnectorRecordProjection(recordStorageConnectorIdForConnection(instance), connectorInstanceId);
+  const live = await getConnectorRecordProjection(
+    recordStorageConnectorIdForConnection(instance),
+    connectorInstanceId,
+    deps.retainedSizeSnapshot
+  );
   const [
     schedule,
     lastRun,
@@ -3604,9 +3714,13 @@ async function projectConnectorSummaryForInstance(
 }
 
 async function loadConnectorSummaryProjectionDeps(
-  controller?: ControllerLike | null
+  controller?: ControllerLike | null,
+  options: { readonly includeRetainedSizeSnapshot?: boolean } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
-  const connectorRows = await listRegisteredConnectorRows();
+  const [connectorRows, retainedSizeSnapshot] = await Promise.all([
+    listRegisteredConnectorRows(),
+    options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
+  ]);
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
@@ -3621,6 +3735,7 @@ async function loadConnectorSummaryProjectionDeps(
     controller,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
     manifestsByConnectorId,
+    ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
     runtimeOk: controller != null,
     sharedBrowserSurfaceReader,
   };
@@ -3663,7 +3778,7 @@ async function computeConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
-  const deps = await loadConnectorSummaryProjectionDeps(controller);
+  const deps = await loadConnectorSummaryProjectionDeps(controller, { includeRetainedSizeSnapshot: true });
   const rows = await listConnectorInstanceRowsForDashboard();
   const summaries = await mapWithConcurrency(
     rows,
