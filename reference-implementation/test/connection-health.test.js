@@ -1215,6 +1215,47 @@ test('outbox axis: blocked status with dead letters is a dead-letter backlog', (
   assert.equal(r.cause, 'dead_letter_backlog');
 });
 
+test('outbox axis: blocked status with complete transient 5xx summary is system-handled', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatStatus: 'blocked',
+      deadLetterCount: 251,
+      deadLetterErrorClasses: [
+        { count: 248, error_class: 'local device request failed: 502' },
+        { count: 3, error_class: 'local device request failed: 500' },
+      ],
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'transient_upload_failure');
+});
+
+test('outbox axis: mixed or incomplete dead-letter summaries remain owner-recoverable', () => {
+  const mixed = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatStatus: 'blocked',
+      deadLetterCount: 2,
+      deadLetterErrorClasses: [
+        { count: 1, error_class: 'local device request failed: 502' },
+        { count: 1, error_class: 'local device request failed: 400 invalid_request' },
+      ],
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(mixed.cause, 'dead_letter_backlog');
+
+  const incomplete = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatStatus: 'blocked',
+      deadLetterCount: 2,
+      deadLetterErrorClasses: [{ count: 1, error_class: 'local device request failed: 502' }],
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(incomplete.cause, 'dead_letter_backlog');
+});
+
 test('outbox axis: pending work + stale heartbeat degrades to stale_pending stall', () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({ lastHeartbeatStatus: 'healthy', lastHeartbeatAt: OLD, recordsPending: 3 }),
@@ -1266,6 +1307,28 @@ test('local exporter: dead_letter_backlog renders owner-readable failed-upload c
   assert.equal(
     findCondition(snap, 'BacklogClear')?.reason,
     CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG,
+  );
+});
+
+test('local exporter: transient_upload_failure is degraded but system-handled', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'transient_upload_failure' },
+    }),
+  );
+  assert.equal(snap.state, 'degraded');
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE);
+  assert.equal(exporter?.severity, 'warning');
+  assert.equal(exporter?.remediation?.action, 'wait');
+  assert.match(exporter?.message ?? '', /temporary server or network errors/i);
+  assert.match(exporter?.message ?? '', /without owner action/i);
+  assert.equal(
+    findCondition(snap, 'BacklogClear')?.reason,
+    CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE,
   );
 });
 

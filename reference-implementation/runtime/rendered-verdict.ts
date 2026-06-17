@@ -106,7 +106,12 @@ export type ActionUrgency = "now" | "overdue" | "soon" | "verifying";
 
 export type ActionRemediationKind = "local_collector_recovery";
 
-export type ActionRemediationCause = "dead_letter_backlog" | "stale_pending" | "state_read_failed" | "stalled_unknown";
+export type ActionRemediationCause =
+  | "dead_letter_backlog"
+  | "stale_pending"
+  | "state_read_failed"
+  | "stalled_unknown"
+  | "transient_upload_failure";
 
 export type ActionRemediationCommandKind =
   | "local_collector_doctor"
@@ -436,6 +441,9 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
     case "active":
       return "green";
     case "stalled":
+      if (hasTransientUploadFailure(snapshot)) {
+        return "amber";
+      }
       return "red";
     case "unknown":
       // `unknown` is absence of local-device/outbox evidence for many normal
@@ -554,6 +562,15 @@ function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
 }
 
+function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.current &&
+      (condition.reason === CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE ||
+        condition.reason === CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE)
+  );
+}
+
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null
@@ -615,6 +632,12 @@ function stalledOutboxCause(snapshot: ConnectionHealthSnapshot): ActionRemediati
     return "dead_letter_backlog";
   }
   if (
+    reasons.has(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE) ||
+    reasons.has(CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE)
+  ) {
+    return "transient_upload_failure";
+  }
+  if (
     reasons.has(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED) ||
     reasons.has(CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED)
   ) {
@@ -650,6 +673,15 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         summary: "The local collector has saved records on its host that did not upload to this server.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
+      };
+    case "transient_upload_failure":
+      return {
+        kind: "local_collector_recovery",
+        cause,
+        label: "Wait for upload retry",
+        summary: "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
+        target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
+        commands: [],
       };
     case "stale_pending":
       return {
@@ -730,7 +762,31 @@ function buildRequiredActions(
   // A stalled outbox means durable work is stuck outside the server. Coverage may
   // still be "complete" because the records already accepted are valid, but the
   // source cannot keep making progress until the owner checks the collector host.
-  if (snapshot.axes.outbox === "stalled" && disposition !== "terminal" && !hasOwnerAction(actions)) {
+  if (
+    snapshot.axes.outbox === "stalled" &&
+    disposition !== "terminal" &&
+    !hasOwnerAction(actions) &&
+    hasTransientUploadFailure(snapshot)
+  ) {
+    const remediation = stalledOutboxRemediation(snapshot);
+    actions.push({
+      kind: "wait",
+      audience: "none",
+      urgency: "verifying",
+      affects: [],
+      cta: "Retrying local uploads — no action needed",
+      remediation,
+      terminal: false,
+      satisfied_when: { kind: "none" },
+    });
+  }
+
+  if (
+    snapshot.axes.outbox === "stalled" &&
+    disposition !== "terminal" &&
+    !hasOwnerAction(actions) &&
+    !hasTransientUploadFailure(snapshot)
+  ) {
     const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
       kind: "add_info",
@@ -1021,6 +1077,9 @@ function buildForwardStatement(
       default:
         return "Your action will bring this up to date.";
     }
+  }
+  if (primary?.kind === "wait" && primary.remediation?.cause === "transient_upload_failure") {
+    return primary.remediation.summary;
   }
 
   switch (disposition) {

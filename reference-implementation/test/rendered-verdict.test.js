@@ -473,6 +473,65 @@ test('channel: dead-letter stalled outbox includes recover preview before apply'
   ]);
 });
 
+test('channel: transient upload failures do not ask the owner to recover local uploads', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'complete', freshness: 'fresh', outbox: 'stalled' },
+      forward_disposition: 'complete',
+      reason_code: 'local_exporter_transient_upload_failure',
+      conditions: [
+        condition({
+          type: 'LocalExporterAvailable',
+          id: 'LocalExporterAvailable:local_exporter_transient_upload_failure',
+          reason: CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE,
+          message: 'The local collector hit temporary server or network errors while uploading.',
+          origin: 'local_device',
+          status: 'false',
+          severity: 'warning',
+          remediation: {
+            action: 'wait',
+            label: 'Wait for upload retry',
+            retryable: true,
+            target: 'local_device',
+          },
+        }),
+        condition({
+          type: 'BacklogClear',
+          id: 'BacklogClear:outbox_transient_upload_failure',
+          reason: CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE,
+          message: 'Local-device uploads are waiting for the server or network to recover.',
+          origin: 'local_device',
+          status: 'false',
+          severity: 'warning',
+          remediation: {
+            action: 'wait',
+            label: 'Wait for upload retry',
+            retryable: true,
+            target: 'local_device',
+          },
+        }),
+      ],
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.channel, 'calm');
+  assert.equal(action.kind, 'wait');
+  assert.equal(action.audience, 'none');
+  assert.equal(action.remediation?.cause, 'transient_upload_failure');
+  assert.equal(action.satisfied_when.kind, 'none');
+  assert.equal(
+    v.forward_statement,
+    'The local collector hit temporary server or network errors while uploading. It will retry without owner action.'
+  );
+  assert.doesNotMatch(JSON.stringify(v), /Recover local collector uploads/);
+  assert.doesNotMatch(JSON.stringify(v), /Preview recovery/);
+});
+
 test('channel: stale-pending stalled outbox asks for collector re-run only', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({

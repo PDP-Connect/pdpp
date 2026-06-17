@@ -2420,6 +2420,7 @@ interface HeartbeatRow {
   readonly deviceId: string;
   readonly deviceRevokedAt: string | null;
   readonly deviceStatus: string;
+  readonly lastError?: unknown;
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
@@ -2471,6 +2472,7 @@ const STALLED_CAUSE_RANK: Record<OutboxStalledCause, number> = {
   dead_letter_backlog: 3,
   state_read_failed: 2,
   stale_pending: 1,
+  transient_upload_failure: 0,
 };
 
 function escalateStalledCause(
@@ -2498,6 +2500,7 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
       lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
       recordsPending: row.recordsPending,
       deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
+      deadLetterErrorClasses: deadLetterErrorClassesFromHeartbeat(row.lastError),
     },
     {
       nowIso,
@@ -2559,6 +2562,27 @@ export function projectConnectorOutboxAxisFromHeartbeats(
     return { axis: "idle", cause: null, unreliable: acc.anyUnreliable, hasEvidence: true };
   }
   return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
+}
+
+function deadLetterErrorClassesFromHeartbeat(value: unknown): { count: number; error_class: string }[] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as { kind?: unknown; top_dead_letter_classes?: unknown };
+  if (record.kind !== "dead_letter_backlog" || !Array.isArray(record.top_dead_letter_classes)) {
+    return null;
+  }
+  const classes: { count: number; error_class: string }[] = [];
+  for (const item of record.top_dead_letter_classes) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const row = item as { count?: unknown; error_class?: unknown };
+    if (typeof row.error_class === "string" && typeof row.count === "number" && Number.isFinite(row.count)) {
+      classes.push({ error_class: row.error_class, count: row.count });
+    }
+  }
+  return classes.length > 0 ? classes : null;
 }
 
 function normalizeHeartbeatStatusForAxis(

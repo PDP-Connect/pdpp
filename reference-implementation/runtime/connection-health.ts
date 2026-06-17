@@ -108,6 +108,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   LOCAL_EXPORTER_STALE_PENDING: "local_exporter_stale_pending",
   LOCAL_EXPORTER_STALLED: "local_exporter_stalled",
   LOCAL_EXPORTER_STATE_READ_FAILED: "local_exporter_state_read_failed",
+  LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE: "local_exporter_transient_upload_failure",
   LOCAL_EXPORTER_UNKNOWN: "local_exporter_unknown",
   MISSING_BROWSER_SURFACE: "missing_browser_surface",
   NO_ACTIVE_BACKOFF: "no_active_backoff",
@@ -118,6 +119,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   OUTBOX_STALE_PENDING: "outbox_stale_pending",
   OUTBOX_STALLED: "outbox_stalled",
   OUTBOX_STATE_READ_FAILED: "outbox_state_read_failed",
+  OUTBOX_TRANSIENT_UPLOAD_FAILURE: "outbox_transient_upload_failure",
   OUTBOX_UNKNOWN: "outbox_unknown",
   PROJECTION_CURRENT: "projection_current",
   PROJECTION_UNRELIABLE: "projection_unreliable",
@@ -297,6 +299,10 @@ export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
  *                            dead letters, then re-run the collector to drain
  *                            them. Mirrors `last_error.kind =
  *                            "dead_letter_backlog"`.
+ *   - `transient_upload_failure`: the device reported dead-lettered rows whose
+ *                            complete error summary is transient server/network
+ *                            upload failures. The outbox is stalled, but the
+ *                            owner cannot fix it; the system should retry.
  *   - `stale_pending`      : pending work exists but the heartbeat has gone
  *                            stale past the freshness threshold, so the
  *                            collector likely died mid-drain. Recovery is to
@@ -305,7 +311,16 @@ export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
  * `null` is reserved for non-stalled axes (`idle`/`active`/`unknown`), which
  * never carry a stalled cause.
  */
-export type OutboxStalledCause = "dead_letter_backlog" | "stale_pending" | "state_read_failed";
+export type OutboxStalledCause =
+  | "dead_letter_backlog"
+  | "stale_pending"
+  | "state_read_failed"
+  | "transient_upload_failure";
+
+export interface DeadLetterErrorClassEvidence {
+  readonly count: number;
+  readonly error_class: string;
+}
 
 export type OutboxState = "backlog" | "dead_letter" | "drained" | "pending" | "retrying" | "stale" | "unknown";
 
@@ -1882,49 +1897,70 @@ function remoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): C
  * the host; the console renders the deterministic command separately.
  */
 interface StalledCauseCopy {
+  readonly action: ConnectionConditionRemediation["action"];
   readonly backlogMessage: string;
   readonly backlogReason: string;
   readonly exporterMessage: string;
   readonly exporterReason: string;
   readonly remediationLabel: string;
+  readonly severity: ConnectionConditionSeverity;
 }
 
 function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
   switch (cause) {
     case "state_read_failed":
       return {
+        action: "clear_backlog",
         exporterMessage:
           "The local collector cannot read its last saved state. Run it again on the host; there are no failed uploads to retry.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STATE_READ_FAILED,
         backlogMessage: "The local collector is blocked reading saved state, not waiting on failed uploads.",
         backlogReason: CONDITION_REASON.OUTBOX_STATE_READ_FAILED,
         remediationLabel: "Run the local collector again on the host",
+        severity: "error",
       };
     case "dead_letter_backlog":
       return {
+        action: "clear_backlog",
         exporterMessage:
           "The local collector has saved records that failed to upload. Prepare those uploads for retry, then run the collector again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
         backlogMessage: "The local collector has saved failed uploads waiting to be retried.",
         backlogReason: CONDITION_REASON.OUTBOX_DEAD_LETTER_BACKLOG,
         remediationLabel: "Recover local collector uploads",
+        severity: "error",
+      };
+    case "transient_upload_failure":
+      return {
+        action: "wait",
+        exporterMessage:
+          "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE,
+        backlogMessage: "Local-device uploads are waiting for the server or network to recover.",
+        backlogReason: CONDITION_REASON.OUTBOX_TRANSIENT_UPLOAD_FAILURE,
+        remediationLabel: "Wait for upload retry",
+        severity: "warning",
       };
     case "stale_pending":
       return {
+        action: "clear_backlog",
         exporterMessage:
           "The local collector has queued work but stopped checking in. Run it again on the host to resume uploads.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALE_PENDING,
         backlogMessage: "The local collector has queued work that stopped moving.",
         backlogReason: CONDITION_REASON.OUTBOX_STALE_PENDING,
         remediationLabel: "Run the local collector again on the host",
+        severity: "error",
       };
     default:
       return {
+        action: "clear_backlog",
         exporterMessage: "The local collector is not making progress.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
         backlogMessage: "The local collector has work that appears stalled.",
         backlogReason: CONDITION_REASON.OUTBOX_STALLED,
         remediationLabel: "Check the local collector",
+        severity: "error",
       };
   }
 }
@@ -1957,12 +1993,12 @@ function localExporterAvailableCondition(
       return condition({
         type: "LocalExporterAvailable",
         status: "false",
-        severity: "error",
+        severity: copy.severity,
         reason: copy.exporterReason,
         message: copy.exporterMessage,
         origin: "local_device",
         remediation: {
-          action: "clear_backlog",
+          action: copy.action,
           label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
@@ -2346,12 +2382,12 @@ function backlogClearCondition(
       return condition({
         type: "BacklogClear",
         status: "false",
-        severity: "error",
+        severity: copy.severity,
         reason: copy.backlogReason,
         message: copy.backlogMessage,
         origin: "local_device",
         remediation: {
-          action: "clear_backlog",
+          action: copy.action,
           label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
@@ -2697,6 +2733,7 @@ export interface HeartbeatOutboxEvidence {
    * dead-letter evidence is classified `state_read_failed`.
    */
   readonly deadLetterCount?: number | null;
+  readonly deadLetterErrorClasses?: readonly DeadLetterErrorClassEvidence[] | null;
   /**
    * Whether the device + source-instance row constitutes trustworthy
    * evidence (device active, source active, not revoked). The caller
@@ -2742,7 +2779,10 @@ export function deriveOutboxAxisFromHeartbeat(
     // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
     // blocked heartbeat with none is a failed state read cleared by re-running.
     // Mirrors the device-side `last_error.kind` split.
-    const cause: OutboxStalledCause = (evidence.deadLetterCount ?? 0) > 0 ? "dead_letter_backlog" : "state_read_failed";
+    const cause: OutboxStalledCause =
+      (evidence.deadLetterCount ?? 0) > 0
+        ? deadLetterStalledCause(evidence.deadLetterCount ?? 0, evidence.deadLetterErrorClasses ?? null)
+        : "state_read_failed";
     return { axis: "stalled", cause, unreliable: false };
   }
 
@@ -2763,6 +2803,42 @@ export function deriveOutboxAxisFromHeartbeat(
     return { axis: "idle", cause: null, unreliable: false };
   }
   return { axis: "unknown", cause: null, unreliable: false };
+}
+
+function deadLetterStalledCause(
+  deadLetterCount: number,
+  classes: readonly DeadLetterErrorClassEvidence[] | null
+): OutboxStalledCause {
+  if (isCompleteTransientDeadLetterSummary(deadLetterCount, classes)) {
+    return "transient_upload_failure";
+  }
+  return "dead_letter_backlog";
+}
+
+function isCompleteTransientDeadLetterSummary(
+  deadLetterCount: number,
+  classes: readonly DeadLetterErrorClassEvidence[] | null
+): boolean {
+  if (deadLetterCount <= 0 || !classes || classes.length === 0) {
+    return false;
+  }
+  const summarizedCount = classes.reduce((total, item) => total + Math.max(0, item.count), 0);
+  return summarizedCount >= deadLetterCount && classes.every((item) => isTransientDeadLetterErrorClass(item.error_class));
+}
+
+function isTransientDeadLetterErrorClass(errorClass: string): boolean {
+  const normalized = errorClass.toLowerCase();
+  return (
+    /local device request failed:\s*5\d\d/.test(normalized) ||
+    normalized.includes("request timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("eai_again") ||
+    normalized.includes("enotfound")
+  );
 }
 
 function ageMs(iso: string, nowIso: string): number | null {
