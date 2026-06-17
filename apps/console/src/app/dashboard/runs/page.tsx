@@ -31,6 +31,7 @@ import { buildSyncsViewModel } from "./syncs-model.ts";
 import { SyncsView } from "./syncs-view.tsx";
 
 export const dynamic = "force-dynamic";
+const SYNCS_OVERVIEW_RUN_LIMIT = 25;
 
 interface Params {
   connector_id?: string;
@@ -66,7 +67,10 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   let runsResult: ListResponse<RunSummary>;
   let connectorsResult: ListResponse<RefConnectorSummary>;
   try {
-    [runsResult, connectorsResult] = await Promise.all([listRuns({ limit: 100 }), listConnectorSummaries()]);
+    [runsResult, connectorsResult] = await Promise.all([
+      listRuns({ limit: SYNCS_OVERVIEW_RUN_LIMIT }),
+      listConnectorSummaries(),
+    ]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (

@@ -14,6 +14,7 @@ const PEEK_REDIRECT_RE =
 // not the old `result = await listRuns(` assignment shape.
 const LIST_RUNS_RE = /\blistRuns\(/;
 const RUN_TIMELINE_FETCH_RE = /\bgetRunTimeline\(/;
+const SYNCS_OVERVIEW_RUN_LIMIT_RE = /const\s+SYNCS_OVERVIEW_RUN_LIMIT\s*=\s*(\d+);/;
 
 test("run list peek query opens the full run detail route instead of inline details", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -54,4 +55,20 @@ test("syncs view stays server-rendered by default", async () => {
   assert.doesNotMatch(src, /^["']use client["'];?/m, "runs must not hydrate the entire syncs view");
   assert.match(src, /<details className="rr-sync-row-shell">/, "row details should use native disclosure");
   assert.doesNotMatch(src, /useState\(/, "page-wide row disclosure state would force full-page client hydration");
+});
+
+test("syncs first-paint run feed is bounded to the overview budget", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  const limitMatch = src.match(SYNCS_OVERVIEW_RUN_LIMIT_RE);
+
+  assert.ok(limitMatch, "runs page must name its first-paint run feed limit");
+  assert.ok(
+    Number(limitMatch[1]) <= 25,
+    "syncs overview must not hydrate a deep run history before first paint"
+  );
+  assert.match(
+    src,
+    /listRuns\(\{\s*limit:\s*SYNCS_OVERVIEW_RUN_LIMIT\s*\}\)/,
+    "syncs overview must use the bounded first-paint run feed limit"
+  );
 });
