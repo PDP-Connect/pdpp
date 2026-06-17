@@ -35,6 +35,9 @@ const DUPLICATE_GROUP_TESTID_RE = /data-testid="sources-duplicate-group"/;
 const FACTS_UNAVAILABLE_COPY_RE = /Collection facts not available yet/;
 const RECORDS_HEADER_RE = /<TableHeader>records<\/TableHeader>/;
 const STREAM_RECORDS_RE = /summary\.stream_records/;
+const PRIMARY_VERDICT_ACTION_RE = /primaryVerdictAction=\{instance\.primaryVerdictAction\}/;
+const NON_OWNER_VERDICT_GUARD_RE =
+  /primaryVerdictAction !== null && !primaryVerdictAction\.ownerRunnable[\s\S]*data-testid="sources-verdict-status-action"[\s\S]*Sync now/;
 const OLD_CURSOR_HEADER_RE = /<TableHeader>cursor<\/TableHeader>/;
 const OLD_SEARCH_HEADER_RE = /<TableHeader>search<\/TableHeader>/;
 const OLD_CURSOR_FALLBACK_RE = /\{stream\.cursor\s*\?\?\s*"—"\}/;
@@ -75,4 +78,10 @@ test("repeated unnamed same-type sources are collapsed into a review group", asy
   const view = await readFile(VIEW_FILE, "utf8");
   assert.match(view, DUPLICATE_COLLAPSE_RE);
   assert.match(view, DUPLICATE_GROUP_TESTID_RE);
+});
+
+test("source passport suppresses generic sync for non-owner verdict actions", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, PRIMARY_VERDICT_ACTION_RE);
+  assert.match(view, NON_OWNER_VERDICT_GUARD_RE);
 });

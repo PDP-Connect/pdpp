@@ -38,6 +38,7 @@ import type {
   RefConnectorSummary,
   RefRecordVersionStatsRow,
   RefRenderedVerdict,
+  RefRequiredAction,
   RefSchedule,
   RefVerdictTone,
 } from "../lib/ref-client.ts";
@@ -129,6 +130,15 @@ export interface SourcePassportField {
   value: string | null;
 }
 
+export interface SourcePrimaryVerdictAction {
+  audience: RefRequiredAction["audience"];
+  cta: string;
+  kind: RefRequiredAction["kind"];
+  ownerRunnable: boolean;
+  satisfiedWhenKind: RefRequiredAction["satisfied_when"]["kind"];
+  terminal: boolean;
+}
+
 /** The fully-projected, serializable view of one source instance. */
 export interface SourceInstanceView {
   /** Human account/identity line for the list (display name vs. type). */
@@ -159,6 +169,13 @@ export interface SourceInstanceView {
   nextAction: FormattedNextAction | null;
   /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
   passportFields: SourcePassportField[];
+  /**
+   * First server-rendered verdict action, whether or not it is owner-runnable.
+   * `nextAction` intentionally filters out maintainer/wait actions; the
+   * passport foot still needs this fact so it does not fall back to generic
+   * Sync/Reauthorize controls for a source the owner cannot repair.
+   */
+  primaryVerdictAction: SourcePrimaryVerdictAction | null;
   revoked: boolean;
   /** Status flag (dot + Endorse) derived from rendered verdict, with legacy fallback. */
   status: SourceStatusFlag;
@@ -340,6 +357,21 @@ function formatRenderedRequiredAction(verdict: RefRenderedVerdict | null | undef
     label: action.cta,
     notificationHint: null,
     variant: "structured",
+  };
+}
+
+function formatPrimaryVerdictAction(verdict: RefRenderedVerdict | null | undefined): SourcePrimaryVerdictAction | null {
+  const action = verdict?.required_actions[0] ?? null;
+  if (!action) {
+    return null;
+  }
+  return {
+    audience: action.audience,
+    cta: action.cta,
+    kind: action.kind,
+    ownerRunnable: action.audience === "owner" && action.satisfied_when.kind !== "none",
+    satisfiedWhenKind: action.satisfied_when.kind,
+    terminal: action.terminal,
   };
 }
 
@@ -533,6 +565,7 @@ export function toSourceInstanceView(
     accountLine = kind;
   }
   const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
+  const primaryVerdictAction = formatPrimaryVerdictAction(summary.rendered_verdict);
   const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
 
   const collectionFactsByStream = new Map(
@@ -601,6 +634,7 @@ export function toSourceInstanceView(
     needsOwnerLabel: hasFallbackLabel,
     status,
     nextAction,
+    primaryVerdictAction,
     streams,
     totalRecords: summary.total_records,
     passportFields,

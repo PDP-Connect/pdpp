@@ -471,6 +471,10 @@ function PassportActions({
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const [confirmingReactivate, setConfirmingReactivate] = useState(false);
   const manualUploadHref = instance.manualUploadHref;
+  const nonOwnerVerdictAction =
+    instance.primaryVerdictAction !== null && !instance.primaryVerdictAction.ownerRunnable
+      ? instance.primaryVerdictAction
+      : null;
 
   const handleSync = useCallback(() => {
     setToast({ kind: "none" });
@@ -506,6 +510,7 @@ function PassportActions({
           isPending={isPending}
           manualUploadHref={manualUploadHref}
           onSync={handleSync}
+          primaryVerdictAction={instance.primaryVerdictAction}
           syncDisabled={syncDisabled}
         />
 
@@ -513,12 +518,14 @@ function PassportActions({
           className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
           href={instance.detailHref}
           title={
-            manualUploadHref
-              ? "Open runs, receipts, streams, and source settings."
-              : "Reauthorize and credential controls live on the connection detail page."
+            nonOwnerVerdictAction
+              ? "Open runs, receipts, streams, and source settings for this source."
+              : manualUploadHref
+                ? "Open runs, receipts, streams, and source settings."
+                : "Reauthorize and credential controls live on the connection detail page."
           }
         >
-          {manualUploadHref ? "Source details →" : "Reauthorize →"}
+          {manualUploadHref || nonOwnerVerdictAction ? "Source details →" : "Reauthorize →"}
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
@@ -587,14 +594,33 @@ function CollectionRunAction({
   isPending,
   manualUploadHref,
   onSync,
+  primaryVerdictAction,
   syncDisabled,
 }: {
   instance: SourceInstanceView;
   isPending: boolean;
   manualUploadHref: string | null;
   onSync: () => void;
+  primaryVerdictAction: SourceInstanceView["primaryVerdictAction"];
   syncDisabled: boolean;
 }) {
+  if (primaryVerdictAction !== null && !primaryVerdictAction.ownerRunnable) {
+    return (
+      <span
+        className="rr-s-cta__hint"
+        data-action-audience={primaryVerdictAction.audience}
+        data-action-kind={primaryVerdictAction.kind}
+        data-testid="sources-verdict-status-action"
+        title={
+          primaryVerdictAction.terminal
+            ? "This source is not owner-repairable from the dashboard."
+            : "This source is waiting on reference-side work."
+        }
+      >
+        {primaryVerdictAction.cta}
+      </span>
+    );
+  }
   if (manualUploadHref) {
     return (
       <>

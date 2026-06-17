@@ -274,6 +274,9 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
       })
     );
     assert.equal(view.nextAction, null);
+    assert.equal(view.primaryVerdictAction?.cta, action.cta);
+    assert.equal(view.primaryVerdictAction?.ownerRunnable, false);
+    assert.equal(view.primaryVerdictAction?.satisfiedWhenKind, "none");
   }
 });
 
