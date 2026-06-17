@@ -17,10 +17,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import pg from 'pg';
 
+import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   initPostgresStorage,
   closePostgresStorage,
@@ -110,6 +112,45 @@ async function indexExists(pool, name) {
   const r = await pool.query(`SELECT 1 FROM pg_indexes WHERE indexname = $1`, [name]);
   return r.rowCount > 0;
 }
+
+test('SQLite boot creates source/run summary index for spine aggregation', () => {
+  closeDb();
+  try {
+    initDb(':memory:');
+
+    const row = getDb()
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`
+      )
+      .get('idx_spine_events_source_run_summary');
+
+    assert.ok(row?.sql, 'idx_spine_events_source_run_summary exists');
+    assert.match(
+      row.sql,
+      /ON spine_events\(source_kind, source_id, run_id, occurred_at DESC\)/
+    );
+    assert.match(row.sql, /WHERE run_id IS NOT NULL/);
+  } finally {
+    closeDb();
+  }
+});
+
+test('spine_events source/run summary index DDL is store-parity', () => {
+  const sqliteDdl = readFileSync(new URL('../server/db.js', import.meta.url), 'utf8');
+  const postgresDdl = readFileSync(
+    new URL('../server/postgres-storage.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    sqliteDdl,
+    /CREATE INDEX IF NOT EXISTS idx_spine_events_source_run_summary\s+ON spine_events\(source_kind, source_id, run_id, occurred_at DESC\)\s+WHERE run_id IS NOT NULL/
+  );
+  assert.match(
+    postgresDdl,
+    /CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source_run_summary\s+ON spine_events\(source_kind, source_id, run_id, occurred_at DESC\)\s+WHERE run_id IS NOT NULL/
+  );
+});
 
 if (!POSTGRES_URL) {
   test('spine-source boot/backfill DB tests (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});

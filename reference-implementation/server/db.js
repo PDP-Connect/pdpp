@@ -1047,6 +1047,10 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_grant
 CREATE INDEX IF NOT EXISTS idx_spine_events_run
   ON spine_events(run_id, occurred_at, recorded_at);
 
+CREATE INDEX IF NOT EXISTS idx_spine_events_source_run_summary
+  ON spine_events(source_kind, source_id, run_id, occurred_at DESC)
+  WHERE run_id IS NOT NULL;
+
 -- Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
 -- One row per (connector_instance_id, stream, record_key, field) where \`field\` is
 -- declared in the stream's manifest under query.search.lexical_fields.
@@ -2980,6 +2984,11 @@ function migrateSpineSourceColumns(raw, opts = {}) {
     raw.exec(
       `CREATE INDEX IF NOT EXISTS idx_spine_events_source
         ON spine_events(source_kind, source_id, occurred_at, recorded_at)`
+    );
+    raw.exec(
+      `CREATE INDEX IF NOT EXISTS idx_spine_events_source_run_summary
+        ON spine_events(source_kind, source_id, run_id, occurred_at DESC)
+        WHERE run_id IS NOT NULL`
     );
 
     return { droppedProviderId: hadProviderId };
