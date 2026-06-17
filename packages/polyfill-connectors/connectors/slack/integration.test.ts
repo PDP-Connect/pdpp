@@ -289,9 +289,9 @@ test("emitMessagesPass: message with reactions but no attachments — reactions 
 
 // ─── Invariant 5: no hidden dedup at this seam ───────────────────────────
 
-test("emitMessagesPass: the same MessageRow passed twice emits twice (dedup is upstream in loadMessageRows)", async () => {
+test("emitMessagesPass: the same MessageRow passed twice emits twice (dedup is upstream in iterateMessageRows)", async () => {
   // Slackdump can store (CHANNEL_ID, TS) across multiple CHUNK_IDs; the
-  // MAX(CHUNK_ID) GROUP BY in loadMessageRows collapses those. This seam
+  // MAX(CHUNK_ID) GROUP BY in iterateMessageRows collapses those. This seam
   // is faithful to its input — a future optimization that caches by
   // message id would land here and change the contract, so pin it.
   const { deps, emitted } = makeHarness();

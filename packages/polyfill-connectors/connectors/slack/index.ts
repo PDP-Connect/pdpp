@@ -432,7 +432,7 @@ export interface MessagesPassResult {
  *     so in practice an all-disabled call is a harmless no-op.
  *   - A message with no reactions / no attachments still emits its
  *     messages record; enrichment is additive, not gating.
- *   - This function does not dedupe — dedup happens in `loadMessageRows`
+ *   - This function does not dedupe — dedup happens in `iterateMessageRows`
  *     at the sqlite layer via `MAX(CHUNK_ID) GROUP BY (CHANNEL_ID, TS)`.
  *     Passing the same row twice emits twice on purpose.
  *   - `deps.emittedAt` is the pinned emit-time; `parseMessageRow` uses
@@ -442,11 +442,16 @@ export interface MessagesPassResult {
  */
 export async function emitMessagesPass(
   deps: MessagesPassDeps,
-  rows: readonly MessageRow[],
+  rows: Iterable<MessageRow>,
   priorTs: string | null
 ): Promise<MessagesPassResult> {
   if (priorTs) {
-    deps.progress(`incremental: filtering messages newer than ${priorTs} (${rows.length} to process)`, {
+    // Row count is intentionally omitted: rows is now a streamed iterator
+    // (see iterateMessageRows) so the total is unknown without materializing
+    // the whole MESSAGE table, which is exactly the heap pressure this pass
+    // avoids. The "incremental"/priorTs signal callers wire to the UI is
+    // unchanged.
+    deps.progress(`incremental: filtering messages newer than ${priorTs}`, {
       stream: "messages",
     });
   }
@@ -755,10 +760,18 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
 }
 
 /**
- * Load message rows from slackdump's sqlite, deduping by (CHANNEL_ID, TS)
+ * Stream message rows from slackdump's sqlite, deduping by (CHANNEL_ID, TS)
  * on latest CHUNK_ID and optionally filtering incrementally on ts>priorTs.
+ *
+ * The MESSAGE table is the only slackdump table that grows unbounded with
+ * workspace history (10+ year workspaces, DMs + channel history). Iterating
+ * row-by-row (`.iterate()`) keeps process memory bounded by a single row
+ * rather than the whole materialized result set; this mirrors the codex
+ * collector's `queryThreadsRows` shape. The bounded lookup tables
+ * (S_USER, FILE, CHANNEL, WORKSPACE) keep `.all()` via `safeAll`: their
+ * cardinality is members/files/channels, not message volume.
  */
-function loadMessageRows(db: DatabaseSync, priorTs: string | null): MessageRow[] {
+function* iterateMessageRows(db: DatabaseSync, priorTs: string | null): Iterable<MessageRow> {
   const tsParam = priorTs ? [priorTs] : [];
   const tsClause = priorTs ? "WHERE m.TS > ?" : "";
   // Slackdump can store the same (CHANNEL_ID, TS) message across multiple
@@ -775,19 +788,22 @@ function loadMessageRows(db: DatabaseSync, priorTs: string | null): MessageRow[]
     ) latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
     ${tsClause}
   `);
-  // node:sqlite stmt.all(...) returns Record<string, SQLOutputValue>[].
-  // Our typed shape is a subset (we SELECT named columns); rebuild each
-  // row explicitly to narrow SQLOutputValue into our column shape. Cheap:
-  // 7 fields per row, and the runtime has already produced the row.
-  return stmt.all(...tsParam).map((raw) => ({
-    CHANNEL_ID: raw.CHANNEL_ID as string,
-    TS: raw.TS as string,
-    THREAD_TS: (raw.THREAD_TS as string | null) ?? null,
-    IS_PARENT: (raw.IS_PARENT as number | null) ?? null,
-    TXT: (raw.TXT as string | null) ?? null,
-    NUM_FILES: (raw.NUM_FILES as number | null) ?? null,
-    DATA: raw.DATA as Uint8Array | string | null,
-  }));
+  // node:sqlite stmt.iterate(...) yields Record<string, SQLOutputValue> one
+  // row at a time. Our typed shape is a subset (we SELECT named columns);
+  // rebuild each row explicitly to narrow SQLOutputValue into our column
+  // shape. Cheap: 7 fields per row, and the runtime has already produced
+  // the row.
+  for (const raw of stmt.iterate(...tsParam)) {
+    yield {
+      CHANNEL_ID: raw.CHANNEL_ID as string,
+      TS: raw.TS as string,
+      THREAD_TS: (raw.THREAD_TS as string | null) ?? null,
+      IS_PARENT: (raw.IS_PARENT as number | null) ?? null,
+      TXT: (raw.TXT as string | null) ?? null,
+      NUM_FILES: (raw.NUM_FILES as number | null) ?? null,
+      DATA: raw.DATA as Uint8Array | string | null,
+    };
+  }
 }
 
 /**
@@ -806,7 +822,9 @@ function loadMessageRows(db: DatabaseSync, priorTs: string | null): MessageRow[]
 function runMessagesUnifiedPass(deps: StreamDeps, priorTs: string | null): Promise<{ maxMessageTs: string | null }> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
-  const rows = loadMessageRows(deps.db, priorTs);
+  // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
+  // at a time, so the unbounded MESSAGE table never lands in heap at once.
+  const rows = iterateMessageRows(deps.db, priorTs);
   return emitMessagesPass(deps, rows, priorTs);
 }
 
