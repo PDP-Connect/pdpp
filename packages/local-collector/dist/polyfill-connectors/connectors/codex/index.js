@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { createReadStream, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { readBoundedFilePreview } from "../../src/bounded-file-preview.js";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.js";
 import { openCarryForwardCursor } from "../../src/fingerprint-cursor.js";
 import { isMainModule } from "../../src/is-main-module.js";
@@ -17,6 +18,7 @@ import { validateRecord } from "./schemas.js";
 const DEFAULT_ACTIVE_ROLLOUT_QUIET_MS = 120_000;
 const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
 const GUARD_PREFIX_BYTES = 64 * 1024;
+const MAX_PENDING_FUNCTION_CALLS = 1024;
 let stdoutDrainPromise = null;
 const emit = (m) => {
     const ok = process.stdout.write(stringifyForJsonl(m));
@@ -270,46 +272,32 @@ function openThreadsDb(dbPath) {
         return null;
     }
 }
-function queryThreadsRows(db) {
+function isThreadRow(row) {
+    return typeof row === "object" && row !== null && typeof row.id === "string";
+}
+function* queryThreadsRows(db) {
     try {
-        const rawRows = db.prepare(THREADS_QUERY).all();
-        return rawRows;
+        for (const row of db.prepare(THREADS_QUERY).iterate()) {
+            if (isThreadRow(row)) {
+                yield row;
+            }
+        }
     }
     catch {
         emit({
             type: "PROGRESS",
             message: "Codex phase=index pass=index state_db_query_failed=true fallback=rollouts_only",
         });
-        return [];
     }
-}
-function loadThreadsMap(dbPath) {
-    if (!existsSync(dbPath)) {
-        return { map: new Map(), present: false };
-    }
-    const db = openThreadsDb(dbPath);
-    if (!db) {
-        return { map: new Map(), present: false };
-    }
-    const map = new Map();
-    try {
-        for (const r of queryThreadsRows(db)) {
-            map.set(r.id, r);
-        }
-    }
-    finally {
-        try {
-            db.close();
-        }
-        catch {
-        }
-    }
-    return { map, present: true };
 }
 async function statAndRead(path) {
     try {
         const st = await stat(path);
-        const text = await readFile(path, "utf8");
+        const preview = await readBoundedFilePreview(path);
+        if (preview === null) {
+            return null;
+        }
+        const text = preview.buffer.toString("utf8");
         return { mtimeMs: Number(st.mtimeMs), size: Number(st.size), text };
     }
     catch {
@@ -428,12 +416,21 @@ function emitMessageRecord(state, payload, ts, emitRecord) {
         timestamp: ts,
     });
 }
-function registerFunctionCall(state, payload, ts) {
+function registerFunctionCall(state, payload, ts, emitRecord) {
     const sessionId = state.sessionId;
     if (!sessionId) {
         return;
     }
     const callId = payload.call_id || `${sessionId}:${state.lineCount}`;
+    while (state.pendingCalls.size >= MAX_PENDING_FUNCTION_CALLS) {
+        const oldestEntry = state.pendingCalls.entries().next();
+        if (oldestEntry.done) {
+            break;
+        }
+        const [oldestCallId, oldest] = oldestEntry.value;
+        emitRecord("function_calls", oldest);
+        state.pendingCalls.delete(oldestCallId);
+    }
     state.pendingCalls.set(callId, {
         id: callId,
         session_id: sessionId,
@@ -485,7 +482,7 @@ export function processResponseItem({ deps, payload, state, ts }) {
     if (payload.type === "function_call") {
         state.functionCallCount++;
         if (deps.requested.has("function_calls")) {
-            registerFunctionCall(state, payload, ts);
+            registerFunctionCall(state, payload, ts, deps.emitRecord);
         }
         return;
     }
@@ -572,6 +569,20 @@ export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord
         if (emittedSessionIds.has(id)) {
             continue;
         }
+        emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
+    }
+}
+function emitSessionsFromRows({ threadsRows, rolloutAggregates, emitRecord, cursor }) {
+    for (const t of threadsRows) {
+        const agg = rolloutAggregates.get(t.id);
+        rolloutAggregates.delete(t.id);
+        const prior = cursor?.prior(t.id);
+        if (shouldReemitThreadSession(t, agg, prior)) {
+            emitRecord("sessions", buildThreadSessionRecord(t.id, t, agg, prior));
+        }
+        cursor?.note(t.id, makeThreadFingerprint(t, agg, prior));
+    }
+    for (const [id, agg] of rolloutAggregates) {
         emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
     }
 }
@@ -754,13 +765,24 @@ async function scanRollouts(args) {
     return { parsedFiles: parsedRollouts };
 }
 function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }) {
-    const { map: threadsById } = loadThreadsMap(stateDbPath);
-    emitSessionsFromMaps({
-        threadsMap: threadsById,
-        rolloutAggregates,
-        emitRecord,
-        cursor,
-    });
+    const db = openThreadsDb(stateDbPath);
+    if (!db) {
+        for (const [id, agg] of rolloutAggregates) {
+            emitRecord("sessions", buildRolloutOnlySessionRecord(id, agg));
+        }
+        return;
+    }
+    try {
+        emitSessionsFromRows({
+            threadsRows: queryThreadsRows(db),
+            rolloutAggregates,
+            emitRecord,
+            cursor,
+        });
+    }
+    finally {
+        db.close();
+    }
 }
 async function readStartMessage() {
     const rl = createInterface({ input: process.stdin, terminal: false });

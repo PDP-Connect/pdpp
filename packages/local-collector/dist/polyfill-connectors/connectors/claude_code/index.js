@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createReadStream, statSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
@@ -379,6 +379,10 @@ function markFileMtimeAndShouldSkip(fileMtimes, newMtimes, path, mtime) {
     newMtimes[path] = mtime;
     return fileMtimes[path] === mtime;
 }
+async function readBoundedUtf8(path) {
+    const preview = await readBoundedFilePreview(path);
+    return preview?.buffer.toString("utf8") ?? null;
+}
 async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMtimes }) {
     if (!requested.has("skills")) {
         return;
@@ -411,9 +415,12 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
             continue;
         }
         try {
-            raw = await readFile(skillPath, "utf8");
+            raw = await readBoundedUtf8(skillPath);
         }
         catch {
+            continue;
+        }
+        if (raw === null) {
             continue;
         }
         const { frontmatter, body } = parseFrontmatter(raw);
@@ -436,9 +443,12 @@ async function processSlashCommandFile(args) {
         return;
     }
     try {
-        raw = await readFile(args.full, "utf8");
+        raw = await readBoundedUtf8(args.full);
     }
     catch {
+        return;
+    }
+    if (raw === null) {
         return;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
@@ -495,9 +505,12 @@ async function emitProjectMemoryNotes({ emitRecord, fileMtimes, newMtimes, proje
             continue;
         }
         try {
-            raw = await readFile(fullPath, "utf8");
+            raw = await readBoundedUtf8(fullPath);
         }
         catch {
+            continue;
+        }
+        if (raw === null) {
             continue;
         }
         const { frontmatter, body } = parseFrontmatter(raw);
