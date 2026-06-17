@@ -50,7 +50,6 @@ import {
   type ConnectorManifest,
   type ConnectorOverview,
   listConnectorManifests,
-  listStreams,
   type StreamSummary,
 } from "../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
@@ -225,6 +224,38 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
   };
 }
 
+function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummary[] {
+  const recordsByStream = new Map((summary.stream_records ?? []).map((record) => [record.stream, record]));
+  const orderedNames = new Set<string>();
+  const streams: StreamSummary[] = [];
+
+  const pushStream = (name: string) => {
+    if (orderedNames.has(name)) {
+      return;
+    }
+    orderedNames.add(name);
+    const record = recordsByStream.get(name);
+    streams.push({
+      name,
+      object: "stream",
+      record_count: Number(record?.record_count ?? 0),
+      last_updated: record?.last_updated ?? null,
+    });
+  };
+
+  // Preserve manifest/source order for known streams, then append live-only
+  // streams from the retained-size projection. Local collectors can retain
+  // streams before the committed manifest catches up; hiding those rows makes
+  // the owner think records disappeared.
+  for (const name of summary.streams) {
+    pushStream(name);
+  }
+  for (const record of summary.stream_records ?? []) {
+    pushStream(record.stream);
+  }
+  return streams;
+}
+
 export default async function ConnectorPage({
   params,
   searchParams,
@@ -271,15 +302,14 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
       name: summary.connector_display_name ?? summary.display_name,
       streams: summary.streams.map((name) => ({ name })),
     } satisfies ConnectorManifest);
-  // `streams` and `diagnostics` each depend only on the connector/instance ids
-  // resolved above — never on each other. Awaiting them in series turned the
-  // detail page into a request waterfall against the reference deployment. Race
-  // them so the second phase costs one round trip, not several. Recent run
-  // evidence comes from the already connection-scoped summary projection below;
-  // do not fetch connector-wide runs here and present them as this source's
-  // history.
-  const [streams, diagnostics, providerOrigin] = await Promise.all([
-    listStreams(connectorId, { connectorInstanceId }),
+  // The scoped connector summary already carries the retained-size read-model
+  // stream projection. Do not call `/v1/streams` here: for high-volume local
+  // sources that endpoint re-aggregates current records and has been measured
+  // at ~4.5s on the owner detail route. The detail page is an owner/control
+  // surface, so using the owner-only summary read-model is the SLVP construction
+  // boundary: one cheap projection read, no duplicate expensive RS metadata read.
+  const streams = streamsFromConnectorSummary(summary);
+  const [diagnostics, providerOrigin] = await Promise.all([
     loadConnectorDiagnostics(connectorId, connectorInstanceId),
     // Resolve the public origin to late-bind `<provider-url>` in remediation
     // command templates. Failure → null → the command fails closed (no broken
@@ -288,7 +318,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   ]);
   const overview = toConnectorOverview(summary, streams);
   const recentRuns = connectionRecentRuns(summary);
-  const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
+  const totalRecords = summary.total_records;
   // Per-stream collection facts from the reference's derived `collection_report`
   // (absent on references predating the field → empty map → Streams section
   // renders unchanged). Indexed by stream name to join with the resource-server
@@ -592,10 +622,7 @@ function ConnectorHeaderActions({
           Active run →
         </Link>
       ) : null}
-      <Link
-        className={buttonVariants({ variant: "ghost", size: "sm" })}
-        href="/dashboard/runs"
-      >
+      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/runs">
         All runs →
       </Link>
       {/* Update credential: visible on static-secret connections so the owner can
@@ -1237,10 +1264,7 @@ function StreakStrip({ dots }: { dots: StreakDot[] }) {
           </span>
         ))}
       </span>
-      <Link
-        className="pdpp-caption ml-auto text-muted-foreground hover:text-foreground"
-        href="/dashboard/runs"
-      >
+      <Link className="pdpp-caption ml-auto text-muted-foreground hover:text-foreground" href="/dashboard/runs">
         {failureLabel} · Open runs →
       </Link>
     </div>
