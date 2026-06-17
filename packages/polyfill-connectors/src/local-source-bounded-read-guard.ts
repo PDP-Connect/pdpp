@@ -72,22 +72,6 @@ export const BOUNDED_READ_EXCEPTIONS: readonly BoundedReadException[] = [
       "Reviewed safeAll helper for bounded lookup tables such as workspace, users, channels, files, and canvases. The unbounded MESSAGE table now uses iterateMessageRows.",
   },
   {
-    connector: "twitter_archive",
-    file: "index.ts",
-    pattern: "readFile",
-    lineIncludes: 'import { readFile } from "node:fs/promises";',
-    reason:
-      "Imports readFile for the known whole-archive read below; streaming parser is blocked by the documented design packet.",
-  },
-  {
-    connector: "twitter_archive",
-    file: "index.ts",
-    pattern: "readFile",
-    lineIncludes: 'const text = await readFile(path, "utf8");',
-    reason:
-      "Known source-size-to-heap hazard for Twitter archive JS assignment files. Left as a reviewed blocked item pending streaming parser and file fixtures.",
-  },
-  {
     connector: "whatsapp",
     file: "index.ts",
     pattern: "readFile",

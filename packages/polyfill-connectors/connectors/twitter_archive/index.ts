@@ -14,17 +14,15 @@
  *   data/direct-messages.js
  */
 
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type EmittedMessage, runConnector } from "../../src/connector-runtime.ts";
+import { archiveExists, streamJsArchive } from "./archive-stream.ts";
 import {
   advanceCursor,
   buildDmRecord,
   buildTweetRecord,
   isBeforeCursor,
-  stripJsArchive,
   unwrapDmConversation,
   unwrapDmMessage,
   unwrapTweetEntry,
@@ -32,26 +30,18 @@ import {
 import { validateRecord } from "./schemas.ts";
 import type { StreamState } from "./types.ts";
 
-async function readJsArchive(path: string): Promise<unknown[] | null> {
-  if (!existsSync(path)) {
-    return null;
-  }
-  const text = await readFile(path, "utf8");
-  // Archive files start like:  window.YTD.tweets.part0 = [ ... ]
-  return stripJsArchive(text);
-}
-
 /**
  * Locate `tweets.js`, falling back to the older `tweet.js` filename some
- * archives use. Returns the parsed array, or null when neither file is
- * present.
+ * archives use. Returns the streaming source path, or null when neither file
+ * is present.
  */
-async function loadTweetArchive(importDir: string): Promise<unknown[] | null> {
-  const modern = await readJsArchive(join(importDir, "data", "tweets.js"));
-  if (modern) {
+function resolveTweetArchivePath(importDir: string): string | null {
+  const modern = join(importDir, "data", "tweets.js");
+  if (archiveExists(modern)) {
     return modern;
   }
-  return readJsArchive(join(importDir, "data", "tweet.js"));
+  const legacy = join(importDir, "data", "tweet.js");
+  return archiveExists(legacy) ? legacy : null;
 }
 
 interface TweetsContext {
@@ -63,8 +53,8 @@ interface TweetsContext {
 
 async function runTweetsStream(ctx: TweetsContext): Promise<void> {
   const { emit, emitRecord, importDir, state } = ctx;
-  const arr = await loadTweetArchive(importDir);
-  if (!arr) {
+  const path = resolveTweetArchivePath(importDir);
+  if (!path) {
     await emit({
       type: "SKIP_RESULT",
       stream: "tweets",
@@ -78,28 +68,41 @@ async function runTweetsStream(ctx: TweetsContext): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "tweets",
-    message: `Twitter archive phase=emit pass=emit stream=tweets total_items=${arr.length}`,
+    message: "Twitter archive phase=emit pass=emit stream=tweets streaming",
   });
   let itemOrdinal = 0;
-  for (const raw of arr) {
-    itemOrdinal++;
-    const tweet = unwrapTweetEntry(raw);
-    const rec = buildTweetRecord(tweet);
-    if (!rec) {
-      continue;
+  try {
+    for await (const raw of streamJsArchive(path)) {
+      itemOrdinal++;
+      const tweet = unwrapTweetEntry(raw);
+      const rec = buildTweetRecord(tweet);
+      if (!rec) {
+        continue;
+      }
+      if (isBeforeCursor(rec.created_at, since)) {
+        continue;
+      }
+      latest = advanceCursor(latest, rec.created_at);
+      await emitRecord("tweets", { ...rec });
+      if (itemOrdinal % 10_000 === 0) {
+        await emit({
+          type: "PROGRESS",
+          stream: "tweets",
+          message: `Twitter archive phase=emit pass=emit stream=tweets item=${itemOrdinal}`,
+        });
+      }
     }
-    if (isBeforeCursor(rec.created_at, since)) {
-      continue;
-    }
-    latest = advanceCursor(latest, rec.created_at);
-    await emitRecord("tweets", { ...rec });
-    if (itemOrdinal % 10_000 === 0) {
-      await emit({
-        type: "PROGRESS",
-        stream: "tweets",
-        message: `Twitter archive phase=emit pass=emit stream=tweets item=${itemOrdinal}/${arr.length}`,
-      });
-    }
+  } catch (err) {
+    // A present-but-malformed archive (not a window.YTD assignment, truncated,
+    // or non-array body) is reported as a missing archive, matching the prior
+    // whole-file parser that returned null for any non-array body.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "tweets",
+      reason: "archive_not_found",
+      message: `Twitter archive tweets data could not be parsed: ${(err as Error).message}`,
+    });
+    return;
   }
   await emit({
     type: "STATE",
@@ -144,8 +147,8 @@ async function emitDmConversation(
 
 async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
   const { emit, emitRecord, importDir, state } = ctx;
-  const arr = await readJsArchive(join(importDir, "data", "direct-messages.js"));
-  if (!arr) {
+  const path = join(importDir, "data", "direct-messages.js");
+  if (!archiveExists(path)) {
     await emit({
       type: "SKIP_RESULT",
       stream: "direct_messages",
@@ -161,19 +164,29 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "direct_messages",
-    message: `Twitter archive phase=emit pass=emit stream=direct_messages total_conversations=${arr.length}`,
+    message: "Twitter archive phase=emit pass=emit stream=direct_messages streaming",
   });
   let conversationOrdinal = 0;
-  for (const rawConvo of arr) {
-    conversationOrdinal++;
-    await emitDmConversation(rawConvo, cursor, emitRecord);
-    if (conversationOrdinal % 1000 === 0) {
-      await emit({
-        type: "PROGRESS",
-        stream: "direct_messages",
-        message: `Twitter archive phase=emit pass=emit stream=direct_messages conversation=${conversationOrdinal}/${arr.length}`,
-      });
+  try {
+    for await (const rawConvo of streamJsArchive(path)) {
+      conversationOrdinal++;
+      await emitDmConversation(rawConvo, cursor, emitRecord);
+      if (conversationOrdinal % 1000 === 0) {
+        await emit({
+          type: "PROGRESS",
+          stream: "direct_messages",
+          message: `Twitter archive phase=emit pass=emit stream=direct_messages conversation=${conversationOrdinal}`,
+        });
+      }
     }
+  } catch (err) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "direct_messages",
+      reason: "archive_not_found",
+      message: `Twitter archive direct-message data could not be parsed: ${(err as Error).message}`,
+    });
+    return;
   }
   await emit({
     type: "STATE",

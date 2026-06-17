@@ -3,51 +3,22 @@ import { test } from "node:test";
 import {
   DM_ENTRY,
   DM_ENTRY_WITH_MALFORMED,
-  DM_JS_TEXT,
   TWEET_ENTRY_LEGACY,
   TWEET_ENTRY_MODERN,
   TWEET_NO_DATE,
   TWEET_REPLY,
-  TWEETS_JS_TEXT,
 } from "./__fixtures__/archive-samples.ts";
 import {
   advanceCursor,
   buildDmRecord,
   buildTweetRecord,
   isBeforeCursor,
-  stripJsArchive,
   toIntOrNull,
   toIsoOrNull,
   unwrapDmConversation,
   unwrapDmMessage,
   unwrapTweetEntry,
 } from "./parsers.ts";
-
-// ─── stripJsArchive ─────────────────────────────────────────────────────
-
-test("stripJsArchive: removes window.YTD assignment + trailing semicolon", () => {
-  const arr = stripJsArchive(TWEETS_JS_TEXT);
-  assert.ok(arr);
-  assert.equal(arr.length, 1);
-});
-
-test("stripJsArchive: handles DM archive body", () => {
-  const arr = stripJsArchive(DM_JS_TEXT);
-  assert.ok(arr);
-  assert.equal(arr.length, 1);
-});
-
-test("stripJsArchive: malformed JSON → null", () => {
-  assert.equal(stripJsArchive("window.YTD.x = { not array }"), null);
-});
-
-test("stripJsArchive: non-array JSON → null", () => {
-  assert.equal(stripJsArchive('window.YTD.x = {"a": 1};'), null);
-});
-
-test("stripJsArchive: empty array preserved", () => {
-  assert.deepEqual(stripJsArchive("window.YTD.x = [];"), []);
-});
 
 // ─── toIsoOrNull ────────────────────────────────────────────────────────
 

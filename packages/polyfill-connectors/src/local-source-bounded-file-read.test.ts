@@ -86,23 +86,45 @@ test("exceptions are live and line-specific", () => {
   }
 });
 
+test("twitter_archive streams its JS archive instead of whole-file reading", () => {
+  const indexSource = readFileSync(new URL("twitter_archive/index.ts", CONNECTORS_ROOT), "utf8");
+  assert.doesNotMatch(
+    indexSource,
+    /\breadFile\b/,
+    "twitter_archive must not import or await readFile; it streams the archive via archive-stream.ts"
+  );
+  const streamSource = readFileSync(new URL("twitter_archive/archive-stream.ts", CONNECTORS_ROOT), "utf8");
+  assert.match(
+    streamSource,
+    /createReadStream/,
+    "twitter_archive streaming helper should read the archive with createReadStream"
+  );
+  assert.match(
+    streamSource,
+    /@streamparser\/json/,
+    "twitter_archive streaming helper should parse the array with the streaming JSON parser"
+  );
+});
+
 test("the guard fires when a reviewed exception is removed", () => {
-  const withoutTwitterRead = BOUNDED_READ_EXCEPTIONS.filter(
+  // Negative control against a still-present exception (whatsapp per-export
+  // chat read). Removing it must surface the otherwise-allowlisted readFile.
+  const withoutWhatsappRead = BOUNDED_READ_EXCEPTIONS.filter(
     (exception) =>
       !(
-        exception.connector === "twitter_archive" &&
+        exception.connector === "whatsapp" &&
         exception.pattern === "readFile" &&
-        exception.lineIncludes.includes("const text = await readFile")
+        exception.lineIncludes.includes("const content = await readFile")
       )
   );
-  const findings = findUnapprovedBoundedReads({ exceptions: withoutTwitterRead });
+  const findings = findUnapprovedBoundedReads({ exceptions: withoutWhatsappRead });
   assert.ok(
     findings.some(
       (finding) =>
-        finding.connector === "twitter_archive" &&
+        finding.connector === "whatsapp" &&
         finding.pattern === "readFile" &&
-        finding.text.includes("const text = await readFile")
+        finding.text.includes("const content = await readFile")
     ),
-    "removing the Twitter archive whole-file read exception must surface the unbounded read"
+    "removing the WhatsApp per-export read exception must surface the unbounded read"
   );
 });

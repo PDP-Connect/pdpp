@@ -4,27 +4,12 @@
 
 import type { DMConversation, DMEntry, DMMessage, DMOut, DMShape, TweetEntry, TweetOut, TweetShape } from "./types.ts";
 
-// ─── Module-scoped regexes (Biome useTopLevelRegex) ────────────────────
-
-export const WINDOW_ASSIGN_PREFIX_RE = /^[^=]*=\s*/;
-export const TRAILING_SEMICOLON_RE = /;?\s*$/;
-
 // ─── Low-level helpers ─────────────────────────────────────────────────
-
-/**
- * Twitter archive `.js` files assign an array literal to a `window.YTD.*`
- * global. Stripping the assignment prefix + trailing semicolon yields
- * plain JSON. Returns null when the file isn't the expected array shape.
- */
-export function stripJsArchive(text: string): unknown[] | null {
-  const stripped = text.replace(WINDOW_ASSIGN_PREFIX_RE, "").trim().replace(TRAILING_SEMICOLON_RE, "");
-  try {
-    const parsed = JSON.parse(stripped) as unknown;
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
+//
+// Archive `.js` files assign an array literal to a `window.YTD.*` global. The
+// assignment prefix is stripped and the array streamed element-by-element by
+// the bounded reader in archive-stream.ts; these helpers stay pure (no I/O)
+// so they can be unit-tested in isolation.
 
 export function toIsoOrNull(raw: string | undefined): string | null {
   if (!raw) {
