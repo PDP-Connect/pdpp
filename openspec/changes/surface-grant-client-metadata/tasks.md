@@ -25,3 +25,4 @@
 - [x] 4.1 Run focused reference and console tests.
 - [x] 4.2 Run console typecheck and `git diff --check`.
 - [x] 4.3 Deploy under the live-stack mutex and verify the live Standing relationship rows no longer render only raw `cli_...` when client metadata exists.
+- [x] 4.4 Deploy the trace/list-label extension under the live-stack mutex and verify live recent-read rows no longer render raw `cli_...` as primary labels when metadata exists.
