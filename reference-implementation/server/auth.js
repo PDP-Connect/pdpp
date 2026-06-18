@@ -1276,9 +1276,23 @@ export async function requireResolvedPersistedGrantState(row = {}, opts = {}) {
   }
 }
 
-async function getPendingConsentRow(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    return pgOne(
+// ─── Consent + owner-device-auth stores ────────────────────────────────────
+//
+// Two cohesive, domain-local stores for the consent and owner-device-auth
+// drift seams. Each method is the SAME conceptual row op differing ONLY by SQL
+// dialect (placeholder $1.. vs ?, the params_json::text cast, boolean coercion
+// true|null vs 1|null). Dialect SQL/queries move VERBATIM from the old inline
+// branches; the adapters return RAW rows (or perform the write) and any
+// caller-side concerns (the approval_id guard, JSON.stringify, trace context,
+// nowIso timestamps) stay in the calling function. The backend is selected
+// ONCE per op via isPostgresStorageBackend(), mirroring the existing
+// search.js getSearchIndexStore / VectorIndex / BlobStore precedent. Each
+// backend keeps its OWN coercion; the boolean ai_training_consented is
+// true|null on Postgres and 1|null on SQLite and must NOT be unified.
+
+const postgresPendingConsentStore = {
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
       `SELECT device_code, user_code, params_json::text AS params_json, status,
               subject_id, grant_id, token_id, ai_training_consented,
               request_id, trace_id, scenario_id, created_at, expires_at,
@@ -1286,20 +1300,19 @@ async function getPendingConsentRow(deviceCode) {
        FROM pending_consents
        WHERE device_code = $1`,
       [deviceCode],
-    );
-  }
-  return getOne(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]);
-}
-
-async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
-  const createdAt = nowIso();
-  const traceContext = getRequestTraceContext(params);
-  // approval_id is the non-redeemable opaque public id for `_ref/approvals`
-  // projections. Generated alongside the row so every public read surface
-  // has a stable id without exposing the live device_code.
-  const approvalId = generateId('appr');
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+    ),
+  getByApprovalId: (approvalId) =>
+    pgOne(
+      `SELECT device_code, user_code, params_json::text AS params_json, status,
+              subject_id, grant_id, token_id, ai_training_consented,
+              request_id, trace_id, scenario_id, created_at, expires_at,
+              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
+       FROM pending_consents
+       WHERE approval_id = $1`,
+      [approvalId],
+    ),
+  insert: ({ deviceCode, userCode, params, traceContext, createdAt, expiresAt, approvalId }) =>
+    pgExec(
       `INSERT INTO pending_consents(
          device_code, user_code, params_json, status,
          request_id, trace_id, scenario_id, created_at, expires_at, approval_id
@@ -1315,41 +1328,9 @@ async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
         expiresAt,
         approvalId,
       ],
-    );
-    return;
-  }
-  exec(referenceQueries.authPendingConsentsInsert, [
-    deviceCode,
-    userCode,
-    JSON.stringify(params),
-    traceContext.request_id,
-    traceContext.trace_id,
-    traceContext.scenario_id || null,
-    createdAt,
-    expiresAt,
-    approvalId,
-  ]);
-}
-
-export async function getPendingConsentRowByApprovalId(approvalId) {
-  if (typeof approvalId !== 'string' || !approvalId) return null;
-  if (isPostgresStorageBackend()) {
-    return pgOne(
-      `SELECT device_code, user_code, params_json::text AS params_json, status,
-              subject_id, grant_id, token_id, ai_training_consented,
-              request_id, trace_id, scenario_id, created_at, expires_at,
-              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
-       FROM pending_consents
-       WHERE approval_id = $1`,
-      [approvalId],
-    );
-  }
-  return getOne(referenceQueries.authPendingConsentsGetByApprovalId, [approvalId]);
-}
-
-async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+    ),
+  markApproved: ({ deviceCode, subjectId, grantId, tokenId, aiTrainingConsented, approvedAt }) =>
+    pgExec(
       `UPDATE pending_consents
        SET status = 'approved',
            subject_id = $1,
@@ -1358,78 +1339,231 @@ async function markPendingConsentApproved(deviceCode, { subjectId, grantId, toke
            ai_training_consented = $4,
            approved_at = $5
        WHERE device_code = $6`,
-      [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, nowIso(), deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authPendingConsentsMarkApproved, [
-    subjectId,
-    grantId,
-    tokenId,
-    aiTrainingConsented ? 1 : null,
-    nowIso(),
-    deviceCode,
-  ]);
-}
-
-async function markPendingConsentDenied(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+      [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, approvedAt, deviceCode],
+    ),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    pgExec(
       `UPDATE pending_consents
        SET status = 'denied', denied_at = $1
        WHERE device_code = $2 AND status = 'pending'`,
-      [nowIso(), deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authPendingConsentsMarkDenied, [nowIso(), deviceCode]);
-}
-
-async function markPendingConsentExpired(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+      [deniedAt, deviceCode],
+    ),
+  markExpired: ({ deviceCode }) =>
+    pgExec(
       "UPDATE pending_consents SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
       [deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
-}
-
-async function updatePendingConsentLastPolled(deviceCode) {
-  const polledAt = nowIso();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+    ),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    pgExec(
       "UPDATE pending_consents SET last_polled_at = $1 WHERE device_code = $2",
       [polledAt, deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authPendingConsentsUpdateLastPolled, [polledAt, deviceCode]);
+    ),
+};
+
+const sqlitePendingConsentStore = {
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]),
+  getByApprovalId: (approvalId) =>
+    getOne(referenceQueries.authPendingConsentsGetByApprovalId, [approvalId]),
+  insert: ({ deviceCode, userCode, params, traceContext, createdAt, expiresAt, approvalId }) =>
+    exec(referenceQueries.authPendingConsentsInsert, [
+      deviceCode,
+      userCode,
+      JSON.stringify(params),
+      traceContext.request_id,
+      traceContext.trace_id,
+      traceContext.scenario_id || null,
+      createdAt,
+      expiresAt,
+      approvalId,
+    ]),
+  markApproved: ({ deviceCode, subjectId, grantId, tokenId, aiTrainingConsented, approvedAt }) =>
+    exec(referenceQueries.authPendingConsentsMarkApproved, [
+      subjectId,
+      grantId,
+      tokenId,
+      aiTrainingConsented ? 1 : null,
+      approvedAt,
+      deviceCode,
+    ]),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]),
+  markExpired: ({ deviceCode }) =>
+    exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    exec(referenceQueries.authPendingConsentsUpdateLastPolled, [polledAt, deviceCode]),
+};
+
+function getPendingConsentStore() {
+  return isPostgresStorageBackend() ? postgresPendingConsentStore : sqlitePendingConsentStore;
 }
 
-async function getOwnerDeviceAuthRow(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    return pgOne(
+const postgresOwnerDeviceAuthStore = {
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
       `SELECT *
        FROM owner_device_auth
        WHERE device_code = $1`,
       [deviceCode],
-    );
-  }
-  return getOne(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [deviceCode]);
-}
-
-async function getOwnerDeviceAuthRowByUserCode(userCode) {
-  if (isPostgresStorageBackend()) {
-    return pgOne(
+    ),
+  getByUserCode: (userCode) =>
+    pgOne(
       `SELECT *
        FROM owner_device_auth
        WHERE user_code = $1`,
       [userCode],
-    );
-  }
-  return getOne(referenceQueries.authOwnerDeviceAuthGetByUserCode, [userCode]);
+    ),
+  getByApprovalId: (approvalId) =>
+    pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE approval_id = $1`,
+      [approvalId],
+    ),
+  insert: ({ deviceCode, userCode, clientId, intervalSeconds, createdAt, expiresAt, requestId, traceId, scenarioId, approvalId }) =>
+    pgExec(
+      `INSERT INTO owner_device_auth(
+         device_code, user_code, client_id, status, interval_seconds,
+         created_at, expires_at, request_id, trace_id, scenario_id, approval_id
+       ) VALUES($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        deviceCode,
+        userCode,
+        clientId,
+        intervalSeconds,
+        createdAt,
+        expiresAt,
+        requestId,
+        traceId,
+        scenarioId,
+        approvalId,
+      ],
+    ),
+  markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
+    pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'approved',
+           subject_id = $1,
+           token_id = $2,
+           approved_at = $3
+       WHERE device_code = $4`,
+      [subjectId, tokenId, approvedAt, deviceCode],
+    ),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'denied', denied_at = $1
+       WHERE device_code = $2 AND status = 'pending'`,
+      [deniedAt, deviceCode],
+    ),
+  markExpired: ({ deviceCode }) =>
+    pgExec(
+      "UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
+      [deviceCode],
+    ),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    pgExec(
+      "UPDATE owner_device_auth SET last_polled_at = $1 WHERE device_code = $2",
+      [polledAt, deviceCode],
+    ),
+};
+
+const sqliteOwnerDeviceAuthStore = {
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [deviceCode]),
+  getByUserCode: (userCode) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByUserCode, [userCode]),
+  getByApprovalId: (approvalId) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]),
+  insert: ({ deviceCode, userCode, clientId, intervalSeconds, createdAt, expiresAt, requestId, traceId, scenarioId, approvalId }) =>
+    exec(referenceQueries.authOwnerDeviceAuthInsert, [
+      deviceCode,
+      userCode,
+      clientId,
+      intervalSeconds,
+      createdAt,
+      expiresAt,
+      requestId,
+      traceId,
+      scenarioId,
+      approvalId,
+    ]),
+  markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+      subjectId,
+      tokenId,
+      approvedAt,
+      deviceCode,
+    ]),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]),
+  markExpired: ({ deviceCode }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [polledAt, deviceCode]),
+};
+
+function getOwnerDeviceAuthStore() {
+  return isPostgresStorageBackend() ? postgresOwnerDeviceAuthStore : sqliteOwnerDeviceAuthStore;
+}
+
+async function getPendingConsentRow(deviceCode) {
+  return getPendingConsentStore().getByDeviceCode(deviceCode);
+}
+
+async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
+  const createdAt = nowIso();
+  const traceContext = getRequestTraceContext(params);
+  // approval_id is the non-redeemable opaque public id for `_ref/approvals`
+  // projections. Generated alongside the row so every public read surface
+  // has a stable id without exposing the live device_code.
+  const approvalId = generateId('appr');
+  await getPendingConsentStore().insert({
+    deviceCode,
+    userCode,
+    params,
+    traceContext,
+    createdAt,
+    expiresAt,
+    approvalId,
+  });
+}
+
+export async function getPendingConsentRowByApprovalId(approvalId) {
+  if (typeof approvalId !== 'string' || !approvalId) return null;
+  return getPendingConsentStore().getByApprovalId(approvalId);
+}
+
+async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
+  await getPendingConsentStore().markApproved({
+    deviceCode,
+    subjectId,
+    grantId,
+    tokenId,
+    aiTrainingConsented,
+    approvedAt: nowIso(),
+  });
+}
+
+async function markPendingConsentDenied(deviceCode) {
+  await getPendingConsentStore().markDenied({ deviceCode, deniedAt: nowIso() });
+}
+
+async function markPendingConsentExpired(deviceCode) {
+  await getPendingConsentStore().markExpired({ deviceCode });
+}
+
+async function updatePendingConsentLastPolled(deviceCode) {
+  const polledAt = nowIso();
+  await getPendingConsentStore().updateLastPolled({ deviceCode, polledAt });
+}
+
+async function getOwnerDeviceAuthRow(deviceCode) {
+  return getOwnerDeviceAuthStore().getByDeviceCode(deviceCode);
+}
+
+async function getOwnerDeviceAuthRowByUserCode(userCode) {
+  return getOwnerDeviceAuthStore().getByUserCode(userCode);
 }
 
 async function createOwnerDeviceAuth({
@@ -1445,108 +1579,44 @@ async function createOwnerDeviceAuth({
   // approval_id mirrors `pending_consents.approval_id` — see
   // createPendingConsent for rationale.
   const approvalId = generateId('appr');
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO owner_device_auth(
-         device_code, user_code, client_id, status, interval_seconds,
-         created_at, expires_at, request_id, trace_id, scenario_id, approval_id
-       ) VALUES($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        deviceCode,
-        userCode,
-        clientId,
-        intervalSeconds,
-        nowIso(),
-        expiresAt,
-        requestId,
-        traceId,
-        scenarioId,
-        approvalId,
-      ],
-    );
-    return;
-  }
-  exec(referenceQueries.authOwnerDeviceAuthInsert, [
+  await getOwnerDeviceAuthStore().insert({
     deviceCode,
     userCode,
     clientId,
     intervalSeconds,
-    nowIso(),
+    createdAt: nowIso(),
     expiresAt,
     requestId,
     traceId,
     scenarioId,
     approvalId,
-  ]);
+  });
 }
 
 export async function getOwnerDeviceAuthRowByApprovalId(approvalId) {
   if (typeof approvalId !== 'string' || !approvalId) return null;
-  if (isPostgresStorageBackend()) {
-    return pgOne(
-      `SELECT *
-       FROM owner_device_auth
-       WHERE approval_id = $1`,
-      [approvalId],
-    );
-  }
-  return getOne(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]);
+  return getOwnerDeviceAuthStore().getByApprovalId(approvalId);
 }
 
 async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE owner_device_auth
-       SET status = 'approved',
-           subject_id = $1,
-           token_id = $2,
-           approved_at = $3
-       WHERE device_code = $4`,
-      [subjectId, tokenId, nowIso(), deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+  await getOwnerDeviceAuthStore().markApproved({
+    deviceCode,
     subjectId,
     tokenId,
-    nowIso(),
-    deviceCode,
-  ]);
+    approvedAt: nowIso(),
+  });
 }
 
 async function markOwnerDeviceAuthDenied(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE owner_device_auth
-       SET status = 'denied', denied_at = $1
-       WHERE device_code = $2 AND status = 'pending'`,
-      [nowIso(), deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [nowIso(), deviceCode]);
+  await getOwnerDeviceAuthStore().markDenied({ deviceCode, deniedAt: nowIso() });
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      "UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
-      [deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]);
+  await getOwnerDeviceAuthStore().markExpired({ deviceCode });
 }
 
 async function updateOwnerDeviceAuthLastPolled(deviceCode) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      "UPDATE owner_device_auth SET last_polled_at = $1 WHERE device_code = $2",
-      [nowIso(), deviceCode],
-    );
-    return;
-  }
-  exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [nowIso(), deviceCode]);
+  await getOwnerDeviceAuthStore().updateLastPolled({ deviceCode, polledAt: nowIso() });
 }
 
 function buildInvalidRegisteredClientError(clientId) {
