@@ -1119,13 +1119,26 @@ function manualHeadline(retained: number | null, refreshedAt: string | null): st
   return `Holding ${retained.toLocaleString()} records${refreshedAt ? "; refresh to update." : "."}`;
 }
 
+function terminalProgressHeadline(retained: number | null, actions: readonly RequiredAction[]): string {
+  const held = retained === null ? "Retained-record count is unavailable" : `Holding ${retained.toLocaleString()} records`;
+  if (actions.some((action) => action.kind === "code_fix")) {
+    return `${held}; connector code needs a fix before new collection.`;
+  }
+  return `${held}; this source cannot collect more until the terminal issue is fixed.`;
+}
+
 function progressHeadline(
   mode: ProgressMode,
   gapsDrained: number | null,
   committed: number | null,
   retained: number | null,
-  refreshedAt: string | null
+  refreshedAt: string | null,
+  disposition: ForwardDisposition,
+  actions: readonly RequiredAction[]
 ): string {
+  if (disposition === "terminal") {
+    return terminalProgressHeadline(retained, actions);
+  }
   switch (mode) {
     case "deferred":
       return deferredHeadline(gapsDrained, retained);
@@ -1146,7 +1159,11 @@ function progressHeadline(
   }
 }
 
-function buildProgress(evidence: ProgressEvidence | null): RenderedProgress {
+function buildProgress(
+  evidence: ProgressEvidence | null,
+  disposition: ForwardDisposition,
+  actions: readonly RequiredAction[]
+): RenderedProgress {
   const mode: ProgressMode = evidence?.mode ?? "scheduled";
   const gapsDrained = evidence?.gaps_drained_last_run ?? null;
   const committed = evidence?.records_committed_last_run ?? null;
@@ -1159,7 +1176,7 @@ function buildProgress(evidence: ProgressEvidence | null): RenderedProgress {
     records_committed_last_run: mode === "scheduled" ? committed : null,
     retained_records: retained,
     last_refreshed_at: refreshedAt,
-    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt),
+    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt, disposition, actions),
   };
 }
 
@@ -1351,6 +1368,9 @@ function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthS
   if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.forward_statement)) {
     violations.push("forward_statement claims recovery on a terminal disposition (inv 3)");
   }
+  if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.progress.headline)) {
+    violations.push("progress.headline claims recovery on a terminal disposition (inv 3)");
+  }
 
   // (4) terminal === (forward_disposition === "terminal") for every connection-level action.
   const dispositionTerminal = verdict.detail.forward_disposition === "terminal";
@@ -1448,7 +1468,7 @@ function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
     forward_statement: "Checking this connection.",
     required_actions: [],
     streams: [],
-    progress: buildProgress(null),
+    progress: buildProgress(null, "checking", []),
     detail: buildDetail(snapshot, "complete", []),
     trace: {
       tone_cause: "grey",
@@ -1509,7 +1529,7 @@ export function synthesizeRenderedVerdict(
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, progress, actions);
   const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
   const streamRows = buildStreamRows(streams, snapshot, refresh, actions);
-  const renderedProgress = buildProgress(progress);
+  const renderedProgress = buildProgress(progress, disposition, actions);
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);

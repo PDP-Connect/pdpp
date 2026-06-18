@@ -1,4 +1,4 @@
-import type { StreamCollectionFacts } from "../../lib/collection-report.ts";
+import { streamOwnerActionCueNeeded, type StreamCollectionFacts } from "../../lib/collection-report.ts";
 import type { EvidenceTone } from "../../lib/connection-evidence.ts";
 
 /**
@@ -18,7 +18,13 @@ import type { EvidenceTone } from "../../lib/connection-evidence.ts";
  * reference predating the field — or a stream with no report entry — leaves the
  * row exactly as it was.
  */
-export function StreamCollectionFactsLine({ facts }: { facts: StreamCollectionFacts | null }) {
+export function StreamCollectionFactsLine({
+  facts,
+  ownerActionAvailable = true,
+}: {
+  facts: StreamCollectionFacts | null;
+  ownerActionAvailable?: boolean;
+}) {
   if (!facts) {
     return null;
   }
@@ -55,7 +61,9 @@ export function StreamCollectionFactsLine({ facts }: { facts: StreamCollectionFa
           title={disposition.title}
         >
           Next run: <span className={streamFactsTextClass(disposition.tone)}>{disposition.label}</span>
-          {disposition.ownerActionNeeded ? <span className="ml-1 text-muted-foreground">(needs you)</span> : null}
+          {streamOwnerActionCueNeeded(disposition, ownerActionAvailable) ? (
+            <span className="ml-1 text-muted-foreground">(needs you)</span>
+          ) : null}
         </span>
       ) : null}
 

@@ -214,3 +214,10 @@ export function formatStreamCollectionFacts(entry: RefCollectionReportEntry): St
     tone,
   };
 }
+
+export function streamOwnerActionCueNeeded(
+  disposition: ForwardDispositionSummary | null,
+  ownerActionAvailable: boolean
+): boolean {
+  return Boolean(disposition?.ownerActionNeeded && ownerActionAvailable);
+}

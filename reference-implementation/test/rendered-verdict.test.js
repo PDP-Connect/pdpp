@@ -638,6 +638,22 @@ test('progress: scheduled privileges records committed', () => {
   assert.equal(v.progress.records_committed_last_run, 42);
 });
 
+test('progress: terminal manual source never says refresh to update', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'terminal_gap', freshness: 'stale' },
+      forward_disposition: 'terminal',
+    }),
+    [stream({ coverage: 'terminal_gap' })],
+    MANUAL_REFRESH,
+    true,
+    { mode: 'manual', retained_records: 1169, last_refreshed_at: '2026-06-15T12:00:00.000Z' }
+  );
+  assert.equal(v.progress.headline, 'Holding 1,169 records; connector code needs a fix before new collection.');
+  assert.doesNotMatch(v.progress.headline, /refresh|retry|resum|next run/i);
+});
+
 // ─── 4.3 composite invariant test over representative snapshots ────────────────
 
 test('composite: all eleven invariants hold across representative snapshots', () => {

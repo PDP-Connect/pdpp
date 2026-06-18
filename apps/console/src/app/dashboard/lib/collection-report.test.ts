@@ -21,7 +21,11 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatStreamCollectionFacts, indexCollectionReportByStream } from "./collection-report.ts";
+import {
+  formatStreamCollectionFacts,
+  indexCollectionReportByStream,
+  streamOwnerActionCueNeeded,
+} from "./collection-report.ts";
 import type { RefCollectionReportEntry } from "./ref-client.ts";
 
 // Regexes hoisted to module scope (lint: useTopLevelRegex), matching the idiom
@@ -243,4 +247,13 @@ test("the counts line never names a connector or promises a hosted sync service"
     assert.doesNotMatch(text, HOSTED_SERVICE_COPY, `disposition ${disposition} must not promise a hosted service`);
     assert.doesNotMatch(text, CONNECTOR_NAME_COPY, `disposition ${disposition} must stay connector-agnostic`);
   }
+});
+
+test("owner action cue renders only when the stream action is owner-satisfiable", () => {
+  const refresh = formatStreamCollectionFacts(entry({ forward_disposition: "owner_refresh_due" }));
+  assert.equal(streamOwnerActionCueNeeded(refresh.disposition, true), true);
+  assert.equal(streamOwnerActionCueNeeded(refresh.disposition, false), false);
+
+  const resumable = formatStreamCollectionFacts(entry({ forward_disposition: "resumable" }));
+  assert.equal(streamOwnerActionCueNeeded(resumable.disposition, true), false);
 });

@@ -112,6 +112,7 @@ interface ConnectorPageModel {
    * renders exactly as before in that case.
    */
   collectionFactsByStream: Map<string, StreamCollectionFacts>;
+  collectionOwnerActionByStream: Map<string, boolean>;
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
   /**
@@ -139,6 +140,22 @@ interface ConnectorPageModel {
   sourceInstancesError: string | null;
   streams: StreamSummary[];
   totalRecords: number;
+}
+
+function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): boolean {
+  return action?.audience === "owner" && action.satisfied_when.kind !== "none";
+}
+
+function ownerActionAvailabilityByStream(verdict: RefRenderedVerdict | null | undefined): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  if (!verdict) {
+    return out;
+  }
+  for (const row of verdict.streams ?? []) {
+    const action = row.action_ref === null ? null : verdict.required_actions[row.action_ref] ?? null;
+    out.set(row.stream_id, isOwnerSatisfiableAction(action));
+  }
+  return out;
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
@@ -327,6 +344,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   for (const [stream, entry] of indexCollectionReportByStream(summary.collection_report)) {
     collectionFactsByStream.set(stream, formatStreamCollectionFacts(entry));
   }
+  const collectionOwnerActionByStream = ownerActionAvailabilityByStream(summary.rendered_verdict ?? null);
   const displayName = formatConnectorNameForDisplay({
     connectorId,
     displayName: manifest.display_name,
@@ -355,6 +373,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
 
   return {
     collectionFactsByStream,
+    collectionOwnerActionByStream,
     connectionHealth: summary.connection_health ?? null,
     connectionId,
     connectionRenderedVerdict: summary.rendered_verdict ?? null,
@@ -420,6 +439,7 @@ function ConnectorPageView({
 }) {
   const {
     collectionFactsByStream,
+    collectionOwnerActionByStream,
     connectionHealth,
     connectionRenderedVerdict,
     connectionId,
@@ -541,6 +561,7 @@ function ConnectorPageView({
           <DataList>
             {streams.map((s) => {
               const facts = collectionFactsByStream.get(s.name) ?? null;
+              const ownerActionAvailable = collectionOwnerActionByStream.get(s.name) ?? true;
               return (
                 <li key={s.name}>
                   <Link
@@ -562,7 +583,7 @@ function ConnectorPageView({
                   </Link>
                   {facts ? (
                     <div className="px-3 pb-3">
-                      <StreamCollectionFactsLine facts={facts} />
+                      <StreamCollectionFactsLine facts={facts} ownerActionAvailable={ownerActionAvailable} />
                     </div>
                   ) : null}
                 </li>
