@@ -43,6 +43,22 @@ function listHref(params: Params, overrides: Partial<Params> = {}): string {
   return qs ? `/dashboard/grants?${qs}` : "/dashboard/grants";
 }
 
+function looksLikeTechnicalClientId(value: string): boolean {
+  return /^cli_[a-z0-9]+$/i.test(value);
+}
+
+function grantClientCaption(grant: GrantSummary): string | null {
+  const name = grant.client?.client_name?.trim();
+  if (name) {
+    return `client ${name}`;
+  }
+  const clientId = grant.client_id?.trim();
+  if (!clientId) {
+    return null;
+  }
+  return looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`;
+}
+
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const filters = {
@@ -220,6 +236,7 @@ function GrantRow({
   const packageHref = grant.grant_package_id
     ? `/dashboard/grants/packages/${encodeURIComponent(grant.grant_package_id)}`
     : null;
+  const clientCaption = grantClientCaption(grant);
 
   // Shared row content rendered inside both the mobile and desktop links.
   const rowContent = (
@@ -230,9 +247,9 @@ function GrantRow({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
           <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
-          {grant.client_id ? (
-            <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id}>
-              client {grant.client_id}
+          {clientCaption ? (
+            <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id ?? undefined}>
+              {clientCaption}
             </span>
           ) : null}
         </div>
