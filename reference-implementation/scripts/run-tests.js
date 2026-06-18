@@ -3,6 +3,7 @@ import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,12 +15,103 @@ const effectiveArgs = forwardedArgs.includes('--test-force-exit')
   : ['--test-force-exit', ...forwardedArgs];
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || '', 10);
 
-function runNodeTest(filePath, extraArgs) {
+// --- Per-file Postgres database isolation ---
+//
+// When PDPP_TEST_POSTGRES_URL is set, each test file receives its own
+// ephemeral database created before spawn and dropped after exit, whether
+// or not the file passes. This eliminates cross-file state pollution without
+// requiring any changes to individual test files.
+
+let fileCounter = 0;
+
+/**
+ * Derive the admin connection URL from a per-test URL by replacing the
+ * database path segment with 'postgres' (always present on any standard PG
+ * server). This gives us a stable admin connection independent of the base
+ * DB name the operator chose.
+ */
+function adminUrlFromBase(baseUrl) {
+  const u = new URL(baseUrl);
+  u.pathname = '/postgres';
+  return u.toString();
+}
+
+/**
+ * Derive a short, safe DB name from the test file path and a monotonic
+ * counter so concurrent workers never collide.
+ */
+function deriveDbName(filePath) {
+  // Strip directory and extension; keep only alphanumeric/underscore chars.
+  const base = filePath
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-z0-9_]/gi, '_')
+    .toLowerCase()
+    .slice(0, 40);
+  fileCounter += 1;
+  return `pdpp_test_${base}_${fileCounter}`;
+}
+
+/**
+ * Create a fresh database and return its connection URL plus a cleanup
+ * function that drops it. Never throws -- on error it logs a warning and
+ * returns undefined so the caller falls back to the base URL.
+ */
+async function allocateTestDb(filePath, baseUrl) {
+  const dbName = deriveDbName(filePath);
+  const adminUrl = adminUrlFromBase(baseUrl);
+  const client = new pg.Client({ connectionString: adminUrl });
+  try {
+    await client.connect();
+    // Identifier is safe: deriveDbName produces only [a-z0-9_] chars.
+    await client.query(`CREATE DATABASE "${dbName}"`);
+    await client.end();
+  } catch (err) {
+    try { await client.end(); } catch (_) {}
+    process.stderr.write(`[run-tests] WARN: could not create test DB ${dbName}: ${err.message}\n`);
+    return undefined;
+  }
+
+  // Reuse the base URL structure but point at the new DB.
+  const testUrl = new URL(baseUrl);
+  testUrl.pathname = `/${dbName}`;
+
+  async function release() {
+    const drop = new pg.Client({ connectionString: adminUrl });
+    try {
+      await drop.connect();
+      await drop.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+      await drop.end();
+    } catch (err) {
+      try { await drop.end(); } catch (_) {}
+      process.stderr.write(`[run-tests] WARN: could not drop test DB ${dbName}: ${err.message}\n`);
+    }
+  }
+
+  return { url: testUrl.toString(), release };
+}
+
+async function runNodeTest(filePath, extraArgs) {
+  const baseUrl = process.env.PDPP_TEST_POSTGRES_URL;
+  const baseEnv = buildScrubbedTestEnv(process.env);
+
+  // Allocate a per-file DB when a base Postgres URL is configured.
+  let allocation;
+  if (baseUrl) {
+    allocation = await allocateTestDb(filePath, baseUrl);
+  }
+
+  const childEnv = allocation
+    ? { ...baseEnv, PDPP_TEST_POSTGRES_URL: allocation.url }
+    : baseEnv;
+
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--test', ...extraArgs, filePath], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: buildScrubbedTestEnv(process.env),
+      env: childEnv,
     });
     let output = '';
 
@@ -30,17 +122,27 @@ function runNodeTest(filePath, extraArgs) {
       output += chunk.toString();
     });
 
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (allocation) allocation.release().finally(() => reject(err));
+      else reject(err);
+    });
     child.on('exit', (code, signal) => {
-      if (signal) {
-        reject(new Error(`Test process for ${filePath} exited via signal ${signal}`));
-        return;
+      const finish = () => {
+        if (signal) {
+          reject(new Error(`Test process for ${filePath} exited via signal ${signal}`));
+          return;
+        }
+        resolve({
+          filePath,
+          exitCode: code ?? 1,
+          output: `\n==> ${filePath}\n${output}`,
+        });
+      };
+      if (allocation) {
+        allocation.release().finally(finish);
+      } else {
+        finish();
       }
-      resolve({
-        filePath,
-        exitCode: code ?? 1,
-        output: `\n==> ${filePath}\n${output}`,
-      });
     });
   });
 }
