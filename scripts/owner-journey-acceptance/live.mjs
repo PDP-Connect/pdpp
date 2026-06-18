@@ -140,6 +140,22 @@ function htmlToProseText(html) {
   );
 }
 
+function visibleMonogramInitials(html) {
+  const out = [];
+  const re = /<span\b([^>]*\bclass=(["'])[^"']*\bpdpp-monogram\b[^"']*\2[^>]*)>([\s\S]*?)<\/span>/gi;
+  for (const match of String(html).matchAll(re)) {
+    const attrs = match[1] ?? "";
+    if (/\baria-hidden=(["'])true\1/i.test(attrs)) {
+      continue;
+    }
+    const initials = htmlToText(match[3] ?? "");
+    if (initials) {
+      out.push(initials);
+    }
+  }
+  return out;
+}
+
 function asArrayList(raw) {
   if (Array.isArray(raw)) {
     return raw;
@@ -414,6 +430,18 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     reason: connector?.connection_health?.reason_code ?? connector?.last_run?.failure_reason ?? "raw source issue",
   }));
   const dashboardText = htmlToText(htmlByPath.get("/dashboard") ?? "");
+  const dashboardVisibleMonograms = visibleMonogramInitials(htmlByPath.get("/dashboard") ?? "");
+  if (dashboardVisibleMonograms.length > 0) {
+    findings.push({
+      ruleId: "dashboard-monogram-not-decorative",
+      class: "dashboard-accessibility",
+      path: "live:/dashboard",
+      line: 0,
+      excerpt: dashboardVisibleMonograms.slice(0, 5).join(", "),
+      rationale:
+        "Dashboard client monograms are visual marks. If their initials remain in the text/accessibility tree, owner-facing labels collapse into strings like CLCLaude instead of Claude.",
+    });
+  }
 
   if (sourceIssues.length > 0 || rawSourceIssues.length > 0) {
     const allClearRe = /Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
@@ -474,6 +502,14 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       ? "fail"
       : "pass",
     detail: `${sourceIssues.length} rendered material source issue(s), ${rawSourceIssues.length} raw material source issue(s) in /_ref/connectors`,
+  });
+  checks.push({
+    id: "dashboard-decorative-monograms",
+    status: dashboardVisibleMonograms.length > 0 ? "fail" : "pass",
+    detail:
+      dashboardVisibleMonograms.length > 0
+        ? `${dashboardVisibleMonograms.length} visible monogram initial(s) leaked into dashboard text`
+        : "dashboard monogram initials are decorative",
   });
 
   const recordsText = htmlToText(htmlByPath.get("/dashboard/records") ?? "");

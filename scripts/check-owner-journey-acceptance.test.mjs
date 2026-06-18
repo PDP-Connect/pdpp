@@ -640,6 +640,73 @@ test("live semantic probe accepts raw broken source facts represented on the das
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects dashboard monograms that pollute client labels", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        '<main><span class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-monogram-not-decorative"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "dashboard-decorative-monograms")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts decorative dashboard monograms", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        '<main><span aria-hidden="true" class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "dashboard-decorative-monograms")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects visible source count claims that diverge from connector summaries", async () => {
   const response = (status, body) => ({
     status,

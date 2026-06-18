@@ -96,5 +96,9 @@ function toMonogram(name: string): string {
 }
 
 export function Monogram({ name, className }: MonogramProps) {
-  return <span className={["pdpp-monogram", className].filter(Boolean).join(" ")}>{toMonogram(name)}</span>;
+  return (
+    <span aria-hidden="true" className={["pdpp-monogram", className].filter(Boolean).join(" ")}>
+      {toMonogram(name)}
+    </span>
+  );
 }
