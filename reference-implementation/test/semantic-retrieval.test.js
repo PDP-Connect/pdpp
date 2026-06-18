@@ -61,6 +61,7 @@ import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUN_MULTILINGUAL_MINILM_SMOKE = process.env.PDPP_MULTILINGUAL_MINILM_SMOKE === '1';
 
 async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
@@ -1853,7 +1854,12 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
   }
 });
 
-test('multilingual-minilm profile builds embeddings and returns semantic hits', { timeout: 180_000 }, async () => {
+test('multilingual-minilm profile builds embeddings and returns semantic hits', {
+  timeout: 180_000,
+  skip: RUN_MULTILINGUAL_MINILM_SMOKE
+    ? false
+    : 'set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke',
+}, async () => {
   const cacheDir = process.env.PDPP_MULTILINGUAL_MINILM_SMOKE_CACHE_DIR
     || path.join(os.tmpdir(), 'pdpp-multilingual-minilm-smoke-cache');
   const backend = resolveSemanticBackendFromEnv({
