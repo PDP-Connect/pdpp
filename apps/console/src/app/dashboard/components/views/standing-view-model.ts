@@ -523,7 +523,19 @@ function denyReason(reason: string | null): string {
 
 function looksLikeTechnicalId(value: string | null | undefined): boolean {
   const v = value?.trim() ?? "";
-  return /^(cli|grt|trc|run|req|cin|dsrc|dexp|ldt)_[A-Za-z0-9_-]+$/.test(v);
+  if (/^(cli|grt|trc|run|req|cin|dsrc|dexp|ldt)_[A-Za-z0-9_-]+$/.test(v)) {
+    return true;
+  }
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)) {
+    return true;
+  }
+  if (/^[a-f0-9]{16,}$/i.test(v)) {
+    return true;
+  }
+  // Long space/dot-free tokens are more likely to be machine ids than names.
+  // When uncertain, under-claim identity as "Unnamed app" rather than present
+  // a raw token as a trusted owner-facing client name.
+  return /^(?=.{32,}$)(?=.*\d)[A-Za-z0-9_-]+$/.test(v);
 }
 
 function traceActorFallback(trace: TraceSummary): string {

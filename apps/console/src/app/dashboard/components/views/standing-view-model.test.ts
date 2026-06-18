@@ -629,6 +629,32 @@ test("lately does not bold raw technical client ids when metadata is missing", (
   assert.notEqual(data.lately[0]?.text.who, "cli_raw");
 });
 
+test("lately does not render bare opaque client ids as names", () => {
+  const opaqueClientId = "d9f1c1bb7a5c4a6f9e8d7c6b5a4f3210";
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_opaque",
+    status: "succeeded",
+    actor_id: opaqueClientId,
+    actor_type: "unknown",
+    client_id: opaqueClientId,
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 3,
+    kinds: ["query.received"],
+    failure: null,
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+
+  assert.equal(data.lately.length, 1);
+  assert.equal(data.lately[0]?.text.who, "Someone");
+  assert.notEqual(data.lately[0]?.text.who, opaqueClientId);
+});
+
 test("lately summarizes identical recent reads instead of repeating the same row", () => {
   const repeated = Array.from({ length: 5 }, (_, i): TraceSummary => ({
     object: "trace_summary",
@@ -803,6 +829,32 @@ test("relationships do not render raw URL client ids as owner-facing names", () 
   assert.equal(data.relationships[0]?.who, "chatgpt.com");
   assert.equal(data.relationships[0]?.clientId, urlClientId);
   assert.equal(data.relationships[0]?.showClientId, false);
+});
+
+test("relationships do not render bare UUID or opaque client ids as owner-facing names", () => {
+  for (const clientId of ["0b643449-9516-45e0-b375-7feb9ecb7a58", "d9f1c1bb7a5c4a6f9e8d7c6b5a4f3210"]) {
+    const grants: GrantSummary[] = [
+      {
+        object: "grant_summary",
+        grant_id: "g1",
+        client_id: clientId,
+        connector_id: "pdpp",
+        status: "active",
+        first_at: "2026-06-01T00:00:00Z",
+        last_at: "2026-06-12T12:00:00Z",
+        event_count: 7,
+        kinds: ["query.received"],
+        failure: null,
+      },
+    ];
+
+    const data = buildStandingData(baseInputs({ grants }));
+
+    assert.equal(data.relationships.length, 1);
+    assert.equal(data.relationships[0]?.who, "Unnamed app");
+    assert.equal(data.relationships[0]?.clientId, clientId);
+    assert.equal(data.relationships[0]?.showClientId, false);
+  }
 });
 
 test("revoked grants are excluded from relationships", () => {
