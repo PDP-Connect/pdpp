@@ -54,6 +54,30 @@ function deriveDbName(filePath) {
   return `pdpp_test_${base}_${fileCounter}`;
 }
 
+// Per-file databases currently allocated. Tracked so that if the runner
+// process itself is killed (SIGTERM/SIGINT, CI timeout) while child tests are
+// in flight, their databases are dropped on the way out rather than orphaned.
+const activeAllocations = new Set();
+let signalCleanupArmed = false;
+
+function armSignalCleanup() {
+  if (signalCleanupArmed) return;
+  signalCleanupArmed = true;
+  const dropAll = () => {
+    // Best-effort synchronous-ish drop of every live allocation; release() is
+    // idempotent (DROP DATABASE IF EXISTS) so double-dropping is harmless.
+    const pending = [...activeAllocations].map((a) => a.release().catch(() => {}));
+    return Promise.allSettled(pending);
+  };
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => {
+      dropAll().finally(() => {
+        process.exit(sig === 'SIGINT' ? 130 : 143);
+      });
+    });
+  }
+}
+
 /**
  * Create a fresh database and return its connection URL plus a cleanup
  * function that drops it. Never throws -- on error it logs a warning and
@@ -78,7 +102,10 @@ async function allocateTestDb(filePath, baseUrl) {
   const testUrl = new URL(baseUrl);
   testUrl.pathname = `/${dbName}`;
 
-  async function release() {
+  const allocation = { url: testUrl.toString() };
+
+  allocation.release = async function release() {
+    activeAllocations.delete(allocation);
     const drop = new pg.Client({ connectionString: adminUrl });
     try {
       await drop.connect();
@@ -88,9 +115,14 @@ async function allocateTestDb(filePath, baseUrl) {
       try { await drop.end(); } catch (_) {}
       process.stderr.write(`[run-tests] WARN: could not drop test DB ${dbName}: ${err.message}\n`);
     }
-  }
+  };
 
-  return { url: testUrl.toString(), release };
+  // Track the live allocation and arm the runner-level signal cleanup so a
+  // killed runner drops its in-flight databases instead of orphaning them.
+  armSignalCleanup();
+  activeAllocations.add(allocation);
+
+  return allocation;
 }
 
 async function runNodeTest(filePath, extraArgs) {
