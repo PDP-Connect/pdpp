@@ -21,6 +21,7 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
+import { deriveFailureSummary } from "../../lib/connection-evidence.ts";
 
 // ─── Plain-language lexicon: scope/stream → what it means to a person ──
 //
@@ -618,7 +619,21 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
       continue; // revoked rows stay owner-visible but never alarm.
     }
     const verdict = connector.rendered_verdict;
-    if (verdict?.channel !== "attention") {
+    if (!verdict) {
+      const summary = deriveFailureSummary(connector.connection_health, null);
+      if (!summary?.ownerActionRequired) {
+        continue;
+      }
+      out.push({
+        connectorKey: connector.connector_id,
+        routeId: connectionRouteId(connector),
+        deviceLocal: false,
+        what: summary.prose,
+        actionLabel: summary.actionLabel ?? "Review source",
+      });
+      continue;
+    }
+    if (verdict.channel !== "attention") {
       continue;
     }
     const action = ownerSatisfiableAction(verdict);
@@ -672,6 +687,16 @@ export function sourceIssueConnectionsFromConnectors(connectors: readonly RefCon
     }
     const verdict = connector.rendered_verdict;
     if (!verdict) {
+      const summary = deriveFailureSummary(connector.connection_health, null);
+      if (!summary || summary.ownerActionRequired) {
+        continue;
+      }
+      out.push({
+        label: connectorLabel(connector),
+        routeId: connectionRouteId(connector),
+        status: "is degraded",
+        what: summary.prose,
+      });
       continue;
     }
     if (verdict.channel === "attention" && ownerSatisfiableAction(verdict)) {

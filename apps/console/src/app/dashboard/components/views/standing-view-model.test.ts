@@ -254,7 +254,7 @@ test("decide wins over alarm", () => {
 
 function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
+    connection_health: legacyHealth("healthy"),
     connection_id: "cin_x",
     connector_id: "claude-code",
     display_name: "Claude Code",
@@ -267,6 +267,24 @@ function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
     streams: [],
     total_records: 0,
     ...over,
+  };
+}
+
+function legacyHealth(state: RefConnectorSummary["connection_health"]["state"]): RefConnectorSummary["connection_health"] {
+  return {
+    axes: {
+      attention: "none",
+      coverage: "unknown",
+      freshness: "unknown",
+      outbox: "unknown",
+    },
+    badges: { stale: false, syncing: false },
+    last_success_at: null,
+    next_action: null,
+    next_attempt_at: null,
+    reason_code: null,
+    state,
+    unknown_reasons: [],
   };
 }
 
@@ -337,6 +355,27 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   assert.equal(attention[0]?.deviceLocal, true);
 });
 
+test("attention truth falls back to legacy blocked health when rendered verdict is absent", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "chase",
+      connection_id: "cin_chase",
+      connection_health: legacyHealth("blocked"),
+      display_name: "Chase",
+      rendered_verdict: null,
+    }),
+  ];
+
+  const attention = attentionConnectionsFromConnectors(connectors);
+  assert.equal(attention.length, 1);
+  assert.equal(attention[0]?.connectorKey, "chase");
+  assert.equal(attention[0]?.routeId, "cin_chase");
+  assert.equal(attention[0]?.actionLabel, "Reconnect");
+
+  const hero = computeHero(baseInputs({ attentionConnections: attention }));
+  assert.equal(hero.tone, "alarm");
+});
+
 test("source issues show non-owner material verdicts without alarming as owner attention", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
@@ -377,6 +416,32 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.equal(data.sourceIssues.length, 1);
   assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
   assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
+});
+
+test("source issues fall back to legacy degraded health when rendered verdict is absent", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "usaa",
+      connection_id: "cin_usaa",
+      connection_health: legacyHealth("degraded"),
+      display_name: "USAA - Personal",
+      rendered_verdict: null,
+    }),
+  ];
+
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+
+  const sourceIssues = sourceIssueConnectionsFromConnectors(connectors);
+  assert.equal(sourceIssues.length, 1);
+  assert.equal(sourceIssues[0]?.label, "USAA - Personal");
+  assert.equal(sourceIssues[0]?.routeId, "cin_usaa");
+  assert.equal(sourceIssues[0]?.status, "is degraded");
+  assert.match(sourceIssues[0]?.what ?? "", /incomplete|gap/);
+
+  const data = buildStandingData(baseInputs({ sourceIssues }));
+  assert.equal(data.hero.tone, "calm");
+  assert.equal(data.sourceIssues.length, 1);
+  assert.equal(data.attention.length, 0);
 });
 
 test("attention routeId targets the EXACT connection instance, not the connector type", () => {
