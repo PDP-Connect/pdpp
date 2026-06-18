@@ -568,6 +568,40 @@ test("toSourceInstanceView surfaces a revoked instance with a struck status", ()
   assert.equal(view.status.kind, "revoked");
 });
 
+test("toSourceInstanceView omits passport identity rows that duplicate the source title", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Amazon - Personal",
+    })
+  );
+
+  assert.equal(view.displayName, "Amazon - Personal");
+  assert.equal(view.listKind, null);
+  assert.deepEqual(
+    view.passportFields.map((field) => field.k).slice(0, 2),
+    ["config", "auth"]
+  );
+  assert.equal(view.passportFields.some((field) => field.k === "kind"), false);
+  assert.equal(view.passportFields.some((field) => field.k === "account"), false);
+  assert.equal(view.passportFields.some((field) => field.k === "type"), false);
+});
+
+test("toSourceInstanceView keeps connector type when the source title does not identify it", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_id: "amazon",
+      connector_display_name: "Amazon",
+      display_name: "Personal",
+    })
+  );
+
+  assert.equal(view.displayName, "Personal");
+  assert.equal(view.listKind, "Amazon");
+  assert.deepEqual(view.passportFields[0], { k: "type", value: "Amazon", mono: false });
+});
+
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
   const view = toSourceInstanceView(summary({ connection_id: "conn x/y" }));
   assert.equal(view.detailHref, "/dashboard/records/conn%20x%2Fy");

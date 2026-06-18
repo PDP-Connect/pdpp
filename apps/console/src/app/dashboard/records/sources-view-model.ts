@@ -169,7 +169,7 @@ export interface SourceInstanceView {
   needsOwnerLabel: boolean;
   /** Owner CTA derived from rendered_verdict.required_actions, or null. */
   nextAction: FormattedNextAction | null;
-  /** Passport KV rows (kind / account / config / auth / schedule / last run …). */
+  /** Passport KV rows; the title owns identity, so rows only add non-duplicative facts. */
   passportFields: SourcePassportField[];
   /**
    * First server-rendered verdict action, whether or not it is owner-runnable.
@@ -633,8 +633,7 @@ export function toSourceInstanceView(
   });
 
   const passportFields: SourcePassportField[] = [
-    { k: "kind", value: kind, mono: true },
-    { k: "account", value: displayName },
+    ...(listKind ? [{ k: "type", value: kind, mono: false } satisfies SourcePassportField] : []),
     { k: "config", value: `${summary.stream_count ?? summary.streams.length} streams`, mono: true },
     { k: "auth", value: deriveAuthLine(nextAction, isLocalDevicePush, manualUploadHref) },
     { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
