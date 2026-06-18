@@ -21,4 +21,4 @@
 
 - [x] 4.1 Run focused reference and console tests.
 - [x] 4.2 Run console typecheck and `git diff --check`.
-- [ ] 4.3 Deploy under the live-stack mutex and verify the live Standing relationship rows no longer render only raw `cli_...` when client metadata exists.
+- [x] 4.3 Deploy under the live-stack mutex and verify the live Standing relationship rows no longer render only raw `cli_...` when client metadata exists.
