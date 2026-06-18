@@ -111,6 +111,18 @@ test("grantReads humanizes kinds, falls back to connector, then generic", () => 
   assert.equal(grantReads(nothing), "reads a scoped slice of your data");
 });
 
+test("grantReads humanizes protocol audit stream names instead of raw event ids", () => {
+  const auditGrant = {
+    kinds: ["consent.approved", "token.issued", "query.received", "disclosure.served", "query.rejected"],
+    connector_id: "pdpp",
+  } as GrantSummary;
+
+  assert.equal(
+    grantReads(auditGrant),
+    "reads only grant decisions, token activity, read requests, data disclosures, and rejected reads"
+  );
+});
+
 // ─── relative time ────────────────────────────────────────────────
 
 test("relDay produces calm relative labels", () => {

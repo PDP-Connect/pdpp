@@ -51,6 +51,11 @@ const SCOPE_HUMAN: Record<string, string> = {
   purchases: "your purchases",
   health: "your health records",
   location: "where you've been",
+  "consent.approved": "grant decisions",
+  "disclosure.served": "data disclosures",
+  "query.received": "read requests",
+  "query.rejected": "rejected reads",
+  "token.issued": "token activity",
 };
 
 const READ_SUFFIX_RE = /\.read$/;
