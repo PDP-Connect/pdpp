@@ -454,6 +454,21 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }));
   const dashboardText = htmlToText(htmlByPath.get("/dashboard") ?? "");
   const dashboardVisibleMonograms = visibleMonogramInitials(htmlByPath.get("/dashboard") ?? "");
+  const unsupportedAllClearClaim =
+    dashboardText.match(/\bGrants are within their limits\b/i)?.[0] ??
+    dashboardText.match(/\bbackups are on\b/i)?.[0] ??
+    null;
+  if (unsupportedAllClearClaim) {
+    findings.push({
+      ruleId: "dashboard-unsupported-all-clear-claim",
+      class: "dashboard-trust-claim",
+      path: "live:/dashboard",
+      line: 0,
+      excerpt: unsupportedAllClearClaim,
+      rationale:
+        "The dashboard all-clear must only state facts backed by the overview inputs. It must not claim backup state or grant-limit health unless those facts are actually derived.",
+    });
+  }
   if (dashboardVisibleMonograms.length > 0) {
     findings.push({
       ruleId: "dashboard-monogram-not-decorative",
@@ -467,7 +482,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
 
   if (sourceIssues.length > 0 || rawSourceIssues.length > 0) {
-    const allClearRe = /Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+    const allClearRe = /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
     if (allClearRe.test(dashboardText)) {
       findings.push({
         ruleId: "dashboard-source-issue-all-clear",
@@ -539,7 +554,8 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         f.ruleId === "dashboard-source-issue-all-clear" ||
         f.ruleId === "dashboard-source-issue-missing" ||
         f.ruleId === "dashboard-raw-source-issue-missing" ||
-        f.ruleId === "dashboard-healthy-advisory-overstated"
+        f.ruleId === "dashboard-healthy-advisory-overstated" ||
+        f.ruleId === "dashboard-unsupported-all-clear-claim"
     )
       ? "fail"
       : "pass",

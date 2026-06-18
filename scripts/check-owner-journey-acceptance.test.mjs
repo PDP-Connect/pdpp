@@ -480,7 +480,7 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
     if (href.endsWith("/dashboard")) {
       return response(
         200,
-        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+        "<main><h2>Anything wrong</h2><div>No source issues to review here. Source health checks completed for this overview.</div></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -593,7 +593,7 @@ test("live semantic probe does not treat healthy refresh advisories as source is
     if (href.endsWith("/dashboard")) {
       return response(
         200,
-        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+        "<main><h2>Anything wrong</h2><div>No source issues to review here. Source health checks completed for this overview.</div></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -607,6 +607,37 @@ test("live semantic probe does not treat healthy refresh advisories as source is
 
   assert.equal(result.ok, true);
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
+});
+
+test("live semantic probe rejects unsupported dashboard all-clear claims", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-unsupported-all-clear-claim"));
+  assert.equal(result.semanticChecks?.find((check) => check.id === "dashboard-source-issue-all-clear")?.status, "fail");
 });
 
 test("live semantic probe rejects healthy refresh advisories rendered as degraded issues", async () => {
@@ -709,7 +740,7 @@ test("live semantic probe rejects raw broken source facts hidden by a calm verdi
     if (href.endsWith("/dashboard")) {
       return response(
         200,
-        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+        "<main><h2>Anything wrong</h2><div>No source issues to review here. Source health checks completed for this overview.</div></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));

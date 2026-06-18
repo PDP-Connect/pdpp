@@ -199,7 +199,7 @@ function AttentionBlock({
       ) : (
         <div className="rr-allclear">
           <span className="rr-allclear__text">
-            Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.
+            No source issues to review here. Source health checks completed for this overview.
           </span>
         </div>
       )}
