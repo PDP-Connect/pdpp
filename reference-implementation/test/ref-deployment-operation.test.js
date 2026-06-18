@@ -27,7 +27,15 @@ function makeReport(overrides = {}) {
       collector_paired: false,
       in_container: false,
     },
-    lexical: { index: { state: 'built', backfill_progress: null } },
+    lexical: {
+      backend: {
+        active: 'sqlite_fts5',
+        configured: false,
+        fallback: false,
+        pg_search: { available: false, state: 'not_applicable' },
+      },
+      index: { state: 'built', backfill_progress: null },
+    },
     manifests: [],
     semantic: {
       backend: { configured: false, available: false },

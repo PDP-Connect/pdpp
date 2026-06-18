@@ -74,6 +74,7 @@ test('buildEnvironmentReport redacts explicitly-secret allowlist entries', () =>
     GOOGLE_DATAPORTABILITY_CLIENT_ID: 'google-client-id.apps.googleusercontent.com',
     GOOGLE_DATAPORTABILITY_CLIENT_SECRET: 'google-client-secret-should-never-appear',
     GOOGLE_DATAPORTABILITY_REDIRECT_URI: 'https://pdpp.example/_ref/provider-auth/callback',
+    PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND: 'pg_search',
     PDPP_DCR_INITIAL_ACCESS_TOKENS: 'real-token-value-should-never-appear',
     PDPP_OWNER_PASSWORD: 'owner-password-should-never-appear',
     NODE_ENV: 'production',
@@ -95,6 +96,12 @@ test('buildEnvironmentReport redacts explicitly-secret allowlist entries', () =>
   assert.equal(googleRedirectEntry.provenance, 'present');
   assert.equal(googleRedirectEntry.value, 'https://pdpp.example/_ref/provider-auth/callback');
   assert.equal(googleRedirectEntry.secret, false);
+
+  const bm25BackendEntry = report.find((e) => e.name === 'PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND');
+  assert.ok(bm25BackendEntry, 'BM25 backend selector entry is present');
+  assert.equal(bm25BackendEntry.provenance, 'present');
+  assert.equal(bm25BackendEntry.value, 'pg_search');
+  assert.equal(bm25BackendEntry.secret, false);
 
   const tokenEntry = report.find((e) => e.name === 'PDPP_DCR_INITIAL_ACCESS_TOKENS');
   assert.ok(tokenEntry, 'secret allowlist entry is present');
@@ -310,6 +317,60 @@ test('lexical backfill progress is surfaced as a distinct warning', () => {
   assert.equal(report.lexical.index.backfill_progress?.indexed_rows, 750);
   assert.ok(report.warnings.some((w) => w.code === 'lexical_building_index'));
   assert.equal(report.semantic.index.state, 'built');
+});
+
+test('lexical backend posture defaults to SQLite FTS without warnings', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend(),
+    db: { vectorIndexKind: 'sqlite-vec' },
+    dbPath: ':memory:',
+    manifests: [{ manifest: manifestWithSemantic(), provenance: 'polyfill-registered' }],
+    indexState: 'built',
+    env: {},
+  });
+
+  assert.deepEqual(report.lexical.backend, {
+    active: 'sqlite_fts5',
+    configured: false,
+    fallback: false,
+    pg_search: {
+      available: false,
+      state: 'not_applicable',
+    },
+  });
+  assert.ok(!report.warnings.some((w) => w.code === 'lexical_bm25_fallback'));
+});
+
+test('lexical backend posture reports pg_search fallback without changing active backend', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend(),
+    db: { vectorIndexKind: 'sqlite-vec' },
+    dbPath: '/var/lib/pdpp/postgres',
+    manifests: [{ manifest: manifestWithSemantic(), provenance: 'polyfill-registered' }],
+    indexState: 'built',
+    lexicalBackend: {
+      active: 'postgres_native_fts',
+      configured: true,
+      fallback: true,
+      pg_search: {
+        available: false,
+        state: 'fallback_unavailable',
+      },
+    },
+    env: {},
+  });
+
+  assert.equal(report.lexical.backend.active, 'postgres_native_fts');
+  assert.equal(report.lexical.backend.configured, true);
+  assert.equal(report.lexical.backend.fallback, true);
+  assert.deepEqual(report.lexical.backend.pg_search, {
+    available: false,
+    state: 'fallback_unavailable',
+  });
+  const warning = report.warnings.find((w) => w.code === 'lexical_bm25_fallback');
+  assert.ok(warning, 'requested-but-unavailable pg_search emits an operator warning');
+  assert.match(warning.message, /native Postgres full-text search/);
+  assert.match(warning.message, /recall disclosure/);
 });
 
 test('backend unavailability is reported even with zero participation', () => {

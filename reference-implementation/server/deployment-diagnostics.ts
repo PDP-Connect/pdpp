@@ -87,6 +87,24 @@ export interface LexicalBackfillProgress {
   readonly updated_at: string;
 }
 
+export type LexicalBackendActive = "sqlite_fts5" | "postgres_native_fts" | "pg_search_bm25";
+export type PgSearchState =
+  | "not_applicable"
+  | "unavailable"
+  | "available_disabled"
+  | "enabled"
+  | "fallback_unavailable";
+
+export interface LexicalBackendPosture {
+  readonly active: LexicalBackendActive;
+  readonly configured: boolean;
+  readonly fallback: boolean;
+  readonly pg_search: {
+    readonly available: boolean;
+    readonly state: PgSearchState;
+  };
+}
+
 // Minimal DB shape used by diagnostics: vectorIndexKind is stamped by
 // initDb() in db.js. dbPath is the resolved path passed to initDb().
 export interface DiagnosticsDb {
@@ -171,6 +189,7 @@ export interface DeploymentDiagnosticsInput {
   readonly dbPath: string;
   readonly env: DiagnosticsEnv;
   readonly indexState: SemanticIndexState | null;
+  readonly lexicalBackend?: LexicalBackendPosture | null;
   readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
   // Physical on-disk database footprint. Optional and pre-computed by the
@@ -259,6 +278,7 @@ export interface ParticipationSummary {
 export type DiagnosticsWarningCode =
   | "zero_participation"
   | "lexical_building_index"
+  | "lexical_bm25_fallback"
   | "building_index"
   | "stale_index"
   | "backend_unavailable"
@@ -301,6 +321,7 @@ export interface DeploymentDiagnosticsReport {
   readonly disk_headroom: readonly DiskHeadroomEntry[];
   readonly environment: readonly EnvValueReport[];
   readonly lexical: {
+    readonly backend: LexicalBackendPosture;
     readonly index: {
       readonly state: "built" | "building";
       readonly backfill_progress: LexicalBackfillProgress | null;
@@ -380,6 +401,7 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_EMBEDDING_DISTANCE_METRIC" },
   { name: "PDPP_EMBEDDING_CACHE_DIR" },
   { name: "PDPP_EMBEDDING_DOWNLOAD_ALLOWED" },
+  { name: "PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND" },
   { name: "GOOGLE_DATAPORTABILITY_CLIENT_ID" },
   { name: "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", secret: true },
   { name: "GOOGLE_DATAPORTABILITY_REDIRECT_URI" },
@@ -519,6 +541,14 @@ function buildWarnings(
       code: "lexical_building_index",
       message:
         "Lexical index rebuild is running in the background. Text search remains available, but results may be partial until indexing completes.",
+    });
+  }
+
+  if (input.lexicalBackend?.fallback) {
+    warnings.push({
+      code: "lexical_bm25_fallback",
+      message:
+        "Postgres BM25 lexical search was requested, but the pg_search extension is not available. The reference is using native Postgres full-text search with recall disclosure instead.",
     });
   }
 
@@ -690,6 +720,29 @@ function buildRuntimeCapabilityReport(
         }
       : null,
     in_container: posture.in_container,
+  };
+}
+
+function normalizeLexicalBackendPosture(posture: LexicalBackendPosture | null | undefined): LexicalBackendPosture {
+  if (!posture) {
+    return {
+      active: "sqlite_fts5",
+      configured: false,
+      fallback: false,
+      pg_search: {
+        available: false,
+        state: "not_applicable",
+      },
+    };
+  }
+  return {
+    active: posture.active,
+    configured: Boolean(posture.configured),
+    fallback: Boolean(posture.fallback),
+    pg_search: {
+      available: Boolean(posture.pg_search?.available),
+      state: posture.pg_search?.state ?? "not_applicable",
+    },
   };
 }
 
@@ -895,6 +948,7 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
   readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
+  readonly getLexicalBackendPosture?: () => LexicalBackendPosture | null;
   // Optional: read-only physical footprint of the database. The adapter calls
   // it and degrades cleanly to unmeasured on absence or rejection — the page
   // never fails because the footprint could not be read.
@@ -985,6 +1039,7 @@ export async function collectDeploymentDiagnostics(
     db,
     dbPath: opts.dbPath,
     backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
+    lexicalBackend: deps.getLexicalBackendPosture ? deps.getLexicalBackendPosture() : null,
     lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
     indexState,
@@ -1001,12 +1056,14 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   // with "backend reported unavailable"; keep them distinct because the
   // warnings table distinguishes the two.
   const backendAvailable = input.backend === null ? false : input.backend.available();
+  const lexicalBackend = normalizeLexicalBackendPosture(input.lexicalBackend);
   const participation = computeParticipation(input.manifests);
   const warnings = buildWarnings(input, participation, backendAvailable);
 
   return {
     runtime_capabilities: buildRuntimeCapabilityReport(input.runtimeCapabilities ?? null),
     lexical: {
+      backend: lexicalBackend,
       index: {
         state: input.lexicalBackfillProgress ? "building" : "built",
         backfill_progress: input.lexicalBackfillProgress ?? null,

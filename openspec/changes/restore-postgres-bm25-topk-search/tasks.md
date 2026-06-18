@@ -1,9 +1,9 @@
 ## 1. Probe And Configuration
 
-- [ ] 1.1 Add an explicit Postgres BM25 backend config flag; default it to disabled.
-- [ ] 1.2 Add a Postgres `pg_search` availability probe that distinguishes disabled, unavailable, available, enabled, and fallback states.
-- [ ] 1.3 Surface the probed backend state in reference deployment diagnostics without exposing connection strings or secrets.
-- [ ] 1.4 Add tests proving Postgres startup succeeds without `pg_search` and keeps native FTS active.
+- [x] 1.1 Add an explicit Postgres BM25 backend config flag; default it to disabled.
+- [x] 1.2 Add a Postgres `pg_search` availability probe that distinguishes disabled, unavailable, available, enabled, and fallback states.
+- [x] 1.3 Surface the probed backend state in reference deployment diagnostics without exposing connection strings or secrets.
+- [x] 1.4 Add tests proving Postgres startup succeeds without `pg_search` and keeps native FTS active.
 
 ## 2. Optional DDL And Index Shape
 
@@ -23,7 +23,7 @@
 
 - [ ] 4.1 Keep `candidate_window` recall disclosure on native Postgres FTS fallback.
 - [ ] 4.2 Emit exact/all-matches recall only when the BM25 path proves full scoped top-k retrieval before pagination.
-- [ ] 4.3 Update protected-resource metadata or reference diagnostics to identify the active lexical backend without claiming portable score comparability.
+- [x] 4.3 Update protected-resource metadata or reference diagnostics to identify the active lexical backend without claiming portable score comparability.
 - [ ] 4.4 Ensure MCP search output mirrors the same recall/backend facts without inferring completeness from `has_more`.
 
 ## 5. Test And Proof Profile

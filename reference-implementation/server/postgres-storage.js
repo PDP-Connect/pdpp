@@ -29,6 +29,7 @@ let semanticEmbeddingColumnMode = 'jsonb';
 // Whether the server supports `hnsw.iterative_scan` (pgvector >= 0.8), so
 // filtered HNSW scans keep exact distance order without under-returning.
 let semanticIterativeScanSupported = false;
+let lexicalPgSearchAvailability = 'unavailable';
 
 // Production embedding profile dimensionality (search-semantic.js profiles).
 // The HNSW index is a partial expression index pinned at this width — the
@@ -66,6 +67,36 @@ export function isPostgresSemanticVectorEmbedding() {
 
 export function isPostgresSemanticIterativeScanSupported() {
   return semanticIterativeScanSupported;
+}
+
+export function postgresLexicalPgSearchRequested({ env = process.env } = {}) {
+  const raw = String(env.PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND || '').trim().toLowerCase();
+  return raw === 'pg_search';
+}
+
+export function getPostgresLexicalBackendState({ env = process.env } = {}) {
+  const requested = postgresLexicalPgSearchRequested({ env });
+  if (activeBackend !== 'postgres') {
+    return {
+      active: 'sqlite_fts5',
+      configured: requested,
+      fallback: false,
+      pg_search: {
+        available: false,
+        state: 'not_applicable',
+      },
+    };
+  }
+  const available = lexicalPgSearchAvailability === 'available';
+  return {
+    active: requested && available ? 'pg_search_bm25' : 'postgres_native_fts',
+    configured: requested,
+    fallback: requested && !available,
+    pg_search: {
+      available,
+      state: requested ? (available ? 'enabled' : 'fallback_unavailable') : available ? 'available_disabled' : 'unavailable',
+    },
+  };
 }
 
 function nonEmptyString(value) {
@@ -347,6 +378,7 @@ export async function closePostgresStorage() {
   activeBackend = 'sqlite';
   semanticEmbeddingColumnMode = 'jsonb';
   semanticIterativeScanSupported = false;
+  lexicalPgSearchAvailability = 'unavailable';
   if (current) {
     await current.end();
   }
@@ -365,6 +397,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS btree_gin');
     } catch {}
+    lexicalPgSearchAvailability = (await detectPgSearchExtension(client)) ? 'available' : 'unavailable';
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS connectors (
@@ -1532,6 +1565,17 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
 async function hasPgvectorExtension(client) {
   const result = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'vector' LIMIT 1");
   return result.rowCount > 0;
+}
+
+async function detectPgSearchExtension(client) {
+  try {
+    const result = await client.query(
+      "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_search' LIMIT 1",
+    );
+    return result.rowCount > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function postgresColumnUdtName(client, table, column) {

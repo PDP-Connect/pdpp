@@ -13,6 +13,7 @@ import { closeDb, getDb, initDb } from './db.js';
 import {
   closePostgresStorage,
   collectPhysicalFootprint,
+  getPostgresLexicalBackendState,
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
@@ -3185,6 +3186,7 @@ function buildAsApp(opts = {}) {
         computeIndexState: () => computeSemanticIndexState(),
         getBackfillProgress: () => getSemanticIndexBackfillProgress(),
         getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
+        getLexicalBackendPosture: () => getPostgresLexicalBackendState(),
         getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
         listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
         getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),

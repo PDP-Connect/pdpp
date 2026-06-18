@@ -1262,6 +1262,15 @@ export interface DeploymentDiagnostics {
     secret: boolean;
   }>;
   lexical: {
+    backend: {
+      active: "sqlite_fts5" | "postgres_native_fts" | "pg_search_bm25";
+      configured: boolean;
+      fallback: boolean;
+      pg_search: {
+        available: boolean;
+        state: "not_applicable" | "unavailable" | "available_disabled" | "enabled" | "fallback_unavailable";
+      };
+    };
     index: {
       state: "built" | "building";
       backfill_progress: {
