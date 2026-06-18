@@ -122,6 +122,98 @@ function resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId = nu
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
+// ─── Lexical index/meta/snapshot store (one adapter selected per backend) ───
+//
+// Domain-local store for the structurally-identical index, meta, and snapshot
+// drift seams: each method is the SAME conceptual op differing only by SQL
+// dialect. Dialect SQL/queries move VERBATIM; adapters return RAW rows (or
+// perform the write) and any row-shaping stays caller-side. The backend is
+// selected ONCE per op via isPostgresStorageBackend(), mirroring the existing
+// VectorIndex / BlobStore precedent. The multi-statement rebuild loop, the
+// PG-only upsert field-map decomposition, and the SQLite dynamic JSON-path
+// count scan are NOT part of this store; they keep their honest per-call
+// branch because they differ in more than dialect.
+const postgresSearchIndexStore = {
+  indexDelete: ({ connectorId, connectorInstanceId, stream, recordKey }) =>
+    postgresLexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey }),
+  indexDeleteByStream: ({ connectorId, connectorInstanceId, stream }) =>
+    postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream }),
+  metaGetFingerprint: ({ connectorInstanceId, stream }) =>
+    postgresLexicalMetaGetFingerprint({ connectorInstanceId, stream }),
+  metaUpsertFingerprint: ({ connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt }) =>
+    postgresLexicalMetaUpsertFingerprint({ connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt }),
+  metaListStreamsForConnector: ({ connectorInstanceId }) =>
+    postgresLexicalMetaListStreamsForConnector({ connectorInstanceId }),
+  indexCountByStream: ({ connectorInstanceId, stream }) =>
+    postgresLexicalIndexCountByStream({ connectorInstanceId, stream }),
+  recordsCountNonDeleted: ({ connectorInstanceId, stream }) =>
+    postgresLexicalRecordsCountNonDeleted({ connectorInstanceId, stream }),
+  async persistSnapshot({ snapshotId, query, planHash, resultsJson }) {
+    await postgresQuery(
+      `
+      INSERT INTO lexical_search_snapshots(snapshot_id, query, plan_hash, results_json)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT(snapshot_id) DO UPDATE SET
+        query = excluded.query,
+        plan_hash = excluded.plan_hash,
+        results_json = excluded.results_json,
+        created_at = (now() AT TIME ZONE 'utc')::text
+      `,
+      [snapshotId, query, planHash, resultsJson],
+    );
+  },
+  async loadSnapshotRow(snapshotId) {
+    const { rows } = await postgresQuery(
+      `
+      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
+      FROM lexical_search_snapshots
+      WHERE snapshot_id = $1
+      `,
+      [snapshotId],
+    );
+    return rows[0];
+  },
+};
+
+const sqliteSearchIndexStore = {
+  indexDelete: ({ connectorInstanceId, stream, recordKey }) => {
+    exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorInstanceId, stream, recordKey]);
+  },
+  indexDeleteByStream: ({ connectorInstanceId, stream }) => {
+    exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
+  },
+  metaGetFingerprint: ({ connectorInstanceId, stream }) =>
+    getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorInstanceId, stream]),
+  metaUpsertFingerprint: ({ connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt }) => {
+    exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt]);
+  },
+  metaListStreamsForConnector: ({ connectorInstanceId }) =>
+    allowUnboundedReadAcknowledged(
+      referenceQueries.searchMetaListStreamsForConnector,
+      [connectorInstanceId],
+    ),
+  indexCountByStream: ({ connectorInstanceId, stream }) => {
+    const row = getOne(referenceQueries.searchIndexCountByStream, [connectorInstanceId, stream]);
+    return Number(row?.n || 0);
+  },
+  recordsCountNonDeleted: ({ connectorInstanceId, stream }) => {
+    const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorInstanceId, stream]);
+    return Number(row?.n || 0);
+  },
+  persistSnapshot: ({ snapshotId, query, planHash, resultsJson }) => {
+    exec(
+      referenceQueries.searchSnapshotsInsert,
+      [snapshotId, query, planHash, resultsJson],
+    );
+  },
+  loadSnapshotRow: (snapshotId) =>
+    getOne(referenceQueries.searchSnapshotsGetById, [snapshotId]),
+};
+
+function getSearchIndexStore() {
+  return isPostgresStorageBackend() ? postgresSearchIndexStore : sqliteSearchIndexStore;
+}
+
 // ─── Stream-level declaration lookup ───────────────────────────────────────
 
 /**
@@ -180,11 +272,7 @@ export async function lexicalIndexUpsert({ connectorId, connectorInstanceId, str
  */
 export async function lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDelete({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream, recordKey });
-    return;
-  }
-  exec(referenceQueries.searchIndexDeleteByRecordKey, [resolvedConnectorInstanceId, stream, recordKey]);
+  await getSearchIndexStore().indexDelete({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream, recordKey });
 }
 
 /**
@@ -193,11 +281,7 @@ export async function lexicalIndexDelete({ connectorId, connectorInstanceId, str
  */
 export async function lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream });
-    return;
-  }
-  exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
+  await getSearchIndexStore().indexDeleteByStream({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream });
 }
 
 // ─── Drift-detect + backfill ───────────────────────────────────────────────
@@ -339,10 +423,7 @@ async function countIndexableTextValues({ connectorInstanceId, stream, declaredF
 }
 
 async function lexicalMetaGetFingerprint({ connectorInstanceId, stream }) {
-  if (isPostgresStorageBackend()) {
-    return await postgresLexicalMetaGetFingerprint({ connectorInstanceId, stream });
-  }
-  return getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorInstanceId, stream]);
+  return await getSearchIndexStore().metaGetFingerprint({ connectorInstanceId, stream });
 }
 
 async function lexicalMetaExists({ connectorInstanceId, stream }) {
@@ -353,17 +434,13 @@ async function lexicalMetaExists({ connectorInstanceId, stream }) {
 }
 
 async function lexicalMetaUpsertFingerprint({ connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt }) {
-  if (isPostgresStorageBackend()) {
-    await postgresLexicalMetaUpsertFingerprint({
-      connectorId,
-      connectorInstanceId,
-      stream,
-      fieldsFingerprint,
-      updatedAt,
-    });
-    return;
-  }
-  exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt]);
+  await getSearchIndexStore().metaUpsertFingerprint({
+    connectorId,
+    connectorInstanceId,
+    stream,
+    fieldsFingerprint,
+    updatedAt,
+  });
 }
 
 async function lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream }) {
@@ -376,29 +453,15 @@ async function lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanc
 }
 
 async function lexicalMetaListStreamsForConnector({ connectorInstanceId }) {
-  if (isPostgresStorageBackend()) {
-    return await postgresLexicalMetaListStreamsForConnector({ connectorInstanceId });
-  }
-  return allowUnboundedReadAcknowledged(
-    referenceQueries.searchMetaListStreamsForConnector,
-    [connectorInstanceId],
-  );
+  return await getSearchIndexStore().metaListStreamsForConnector({ connectorInstanceId });
 }
 
 async function lexicalIndexCountByStream({ connectorInstanceId, stream }) {
-  if (isPostgresStorageBackend()) {
-    return await postgresLexicalIndexCountByStream({ connectorInstanceId, stream });
-  }
-  const row = getOne(referenceQueries.searchIndexCountByStream, [connectorInstanceId, stream]);
-  return Number(row?.n || 0);
+  return await getSearchIndexStore().indexCountByStream({ connectorInstanceId, stream });
 }
 
 async function lexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
-  if (isPostgresStorageBackend()) {
-    return await postgresLexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
-  }
-  const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorInstanceId, stream]);
-  return Number(row?.n || 0);
+  return await getSearchIndexStore().recordsCountNonDeleted({ connectorInstanceId, stream });
 }
 
 async function resolveLexicalBackfillConnectorInstanceIds({ connectorId, manifest }) {
@@ -1550,42 +1613,16 @@ function serializeSnapshotResultsJson(snapshot) {
 
 async function persistSnapshot(snapshot) {
   const resultsJson = serializeSnapshotResultsJson(snapshot);
-  if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `
-      INSERT INTO lexical_search_snapshots(snapshot_id, query, plan_hash, results_json)
-      VALUES ($1, $2, $3, $4::jsonb)
-      ON CONFLICT(snapshot_id) DO UPDATE SET
-        query = excluded.query,
-        plan_hash = excluded.plan_hash,
-        results_json = excluded.results_json,
-        created_at = (now() AT TIME ZONE 'utc')::text
-      `,
-      [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, resultsJson],
-    );
-    return;
-  }
-
-  exec(
-    referenceQueries.searchSnapshotsInsert,
-    [snapshot.snapshot_id, snapshot.query, snapshot.plan_hash, resultsJson],
-  );
+  await getSearchIndexStore().persistSnapshot({
+    snapshotId: snapshot.snapshot_id,
+    query: snapshot.query,
+    planHash: snapshot.plan_hash,
+    resultsJson,
+  });
 }
 
 async function loadSnapshot(snapshotId) {
-  if (isPostgresStorageBackend()) {
-    const { rows } = await postgresQuery(
-      `
-      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
-      FROM lexical_search_snapshots
-      WHERE snapshot_id = $1
-      `,
-      [snapshotId],
-    );
-    return materializeSnapshot(rows[0]);
-  }
-
-  const row = getOne(referenceQueries.searchSnapshotsGetById, [snapshotId]);
+  const row = await getSearchIndexStore().loadSnapshotRow(snapshotId);
   return materializeSnapshot(row);
 }
 
