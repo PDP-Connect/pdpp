@@ -631,6 +631,110 @@ test("live semantic probe accepts humanized dashboard denial reasons", async () 
   );
 });
 
+test("live semantic probe rejects dead-letter jargon on source recovery detail pages", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_local",
+              display_name: "Claude Code",
+              rendered_verdict: {
+                channel: "attention",
+                forward_statement: "The local collector has failed uploads.",
+                pill: { label: "Can't collect", tone: "red" },
+                required_actions: [{ audience: "owner", satisfied_when: { kind: "manual" } }],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>Claude Code can't collect</section></main>");
+    }
+    if (href.endsWith("/dashboard/records/cin_local")) {
+      return response(200, "<main><section>Stuck on the device: 3 dead-letter.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "source-detail-raw-recovery-jargon"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts failed-upload owner copy on source recovery detail pages", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_local",
+              display_name: "Claude Code",
+              rendered_verdict: {
+                channel: "attention",
+                forward_statement: "The local collector has failed uploads.",
+                pill: { label: "Can't collect", tone: "red" },
+                required_actions: [{ audience: "owner", satisfied_when: { kind: "manual" } }],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>Claude Code can't collect</section></main>");
+    }
+    if (href.endsWith("/dashboard/records/cin_local")) {
+      return response(
+        200,
+        "<main><section>Stuck on the device: 3 failed uploads.</section><code>pdpp local-collector retry-dead-letters --connection-id cin_local</code></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects raw technical client ids as visible grant captions", async () => {
   const response = (status, body) => ({
     status,

@@ -133,6 +133,12 @@ function htmlToText(html) {
     .trim();
 }
 
+function htmlToProseText(html) {
+  return htmlToText(
+    String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+  );
+}
+
 function asArrayList(raw) {
   if (Array.isArray(raw)) {
     return raw;
@@ -163,6 +169,11 @@ function connectorLabel(connector) {
   );
 }
 
+function connectorRouteId(connector) {
+  const id = connector?.connector_instance_id ?? connector?.connection_id ?? null;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
 function isMaterialSourceIssue(connector) {
   if (connector?.revoked_at) {
     return false;
@@ -182,6 +193,17 @@ function isMaterialSourceIssue(connector) {
     pill.tone === "amber" ||
     pill.label === "Degraded"
   );
+}
+
+function shouldProbeSourceDetailRecoveryCopy(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const verdict = renderedVerdict(connector);
+  if (!verdict) {
+    return false;
+  }
+  return isMaterialSourceIssue(connector) || verdict.channel === "attention" || ownerSatisfiableAction(verdict);
 }
 
 function runLiveGrantCaptionChecks({ htmlByPath }) {
@@ -352,6 +374,74 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     id: "dashboard-denial-reasons-humanized",
     status: rawDenialReason ? "fail" : "pass",
     detail: rawDenialReason ? `raw denial reason visible: ${rawDenialReason}` : "no raw denial reason visible",
+  });
+
+  const recoveryRouteIds = Array.from(
+    new Set(
+      connectors
+        .filter(shouldProbeSourceDetailRecoveryCopy)
+        .map(connectorRouteId)
+        .filter((id) => typeof id === "string" && id.length > 0)
+    )
+  ).slice(0, 12);
+  const rawRecoveryTermFindings = [];
+  for (const routeId of recoveryRouteIds) {
+    try {
+      const path = `/dashboard/records/${encodeURIComponent(routeId)}`;
+      const res = await fetchImpl(`${base}${path}`, {
+        headers: { accept: "text/html", ...header },
+        redirect: "manual",
+      });
+      const status = res.status;
+      const html = await res.text();
+      if (status < 200 || status >= 300) {
+        findings.push({
+          ruleId: "source-detail-not-reached",
+          class: "live-probe-inconclusive",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `status ${status}`,
+          rationale:
+            "The live semantic probe could not reach a source recovery detail page. Owner recovery copy is inconclusive until the exact source route renders.",
+        });
+        continue;
+      }
+      const detailText = htmlToProseText(html);
+      const rawRecoveryTerm = detailText.match(/\bdead-letter(?:ed)?\b/i)?.[0] ?? null;
+      if (rawRecoveryTerm) {
+        const finding = {
+          ruleId: "source-detail-raw-recovery-jargon",
+          class: "source-recovery-copy",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: rawRecoveryTerm,
+          rationale:
+            "Owner-facing recovery copy must not use durable-outbox jargon such as dead-letter. Use owner-language like failed uploads while preserving exact technical terms only in commands or engineering traces.",
+        };
+        rawRecoveryTermFindings.push(finding);
+        findings.push(finding);
+      }
+    } catch (err) {
+      findings.push({
+        ruleId: "source-detail-fetch-failed",
+        class: "live-probe-inconclusive",
+        path: `live:/dashboard/records/${routeId}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "The live semantic probe could not fetch a source recovery detail page. Owner recovery copy is inconclusive until the exact source route renders.",
+      });
+    }
+  }
+  checks.push({
+    id: "source-detail-recovery-copy-humanized",
+    status: rawRecoveryTermFindings.length > 0 ? "fail" : "pass",
+    detail:
+      recoveryRouteIds.length === 0
+        ? "no source recovery detail routes to probe"
+        : rawRecoveryTermFindings.length > 0
+          ? `${rawRecoveryTermFindings.length} detail page(s) render raw recovery jargon`
+          : `${recoveryRouteIds.length} source recovery detail route(s) render human recovery copy`,
   });
   return { findings, checks };
 }

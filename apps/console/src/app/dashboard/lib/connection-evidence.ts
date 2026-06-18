@@ -675,7 +675,7 @@ export interface OutboxStallRemediation {
 
 /**
  * Render the device-reported outbox count rollup as one short operator line,
- * e.g. "12 pending · 2 dead-letter · 1 stale lease". Only the
+ * e.g. "12 pending · 2 failed uploads · 1 stale lease". Only the
  * decision-relevant, non-zero categories are shown so a healthy-but-counted
  * rollup does not read as alarming. Returns `null` when the rollup is absent
  * or carries no positive counts.
@@ -700,7 +700,7 @@ function formatOutboxCountScale(counts: RefLocalDeviceProgress["outbox_counts"] 
     parts.push(`${staleLeases.toLocaleString()} stale lease${staleLeases === 1 ? "" : "s"}`);
   }
   if (deadLetter > 0) {
-    parts.push(`${deadLetter.toLocaleString()} dead-letter`);
+    parts.push(`${deadLetter.toLocaleString()} failed upload${deadLetter === 1 ? "" : "s"}`);
   }
   if (backlog > 0) {
     parts.push(`${backlog.toLocaleString()} backlog`);
@@ -836,7 +836,7 @@ export function formatSourceOutboxState(
         `pending ${diagnostics.pending ?? 0}`,
         `retrying ${diagnostics.retrying ?? 0}`,
         `stale ${diagnostics.stale_leases ?? 0}`,
-        `dead-letter ${diagnostics.dead_letter ?? 0}`,
+        `failed upload ${diagnostics.dead_letter ?? 0}`,
         `backlog ${diagnostics.backlog_open ?? 0}`,
       ].join(" · ")
     : "no granular outbox diagnostics reported";
@@ -845,8 +845,8 @@ export function formatSourceOutboxState(
     case "dead_letter":
       return {
         dimension: "Outbox",
-        value: "dead-letter",
-        label: "Outbox · dead-letter",
+        value: "failed uploads",
+        label: "Outbox · failed uploads",
         title: counts,
         tone: "danger",
       };
@@ -1337,7 +1337,7 @@ export interface NextStepGuidance {
   /** Short imperative label, e.g. "Sync now" or "Check the collector host". */
   label: string;
   /**
-   * Count-backed scale of stuck work, e.g. "12 pending · 2 dead-letter". Set
+   * Count-backed scale of stuck work, e.g. "12 pending · 2 failed uploads". Set
    * only on the stalled-outbox guidance when the connection summary carries a
    * non-null `outbox_counts` rollup with at least one positive stuck-work
    * category. `null` for every other guidance — and for a stalled outbox with

@@ -197,10 +197,14 @@ test("outbox active is colour-coded as a progressing (non-neutral) state", () =>
 });
 
 test("formatSourceOutboxState distinguishes granular local collector states", () => {
-  assert.equal(
-    formatSourceOutboxState({ outbox_state: "dead_letter", outbox_diagnostics: { dead_letter: 1 } }).tone,
-    "danger"
-  );
+  const failedUploadOutbox = formatSourceOutboxState({
+    outbox_state: "dead_letter",
+    outbox_diagnostics: { dead_letter: 1 },
+  });
+  assert.equal(failedUploadOutbox.tone, "danger");
+  assert.equal(failedUploadOutbox.label, "Outbox · failed uploads");
+  assert.equal(failedUploadOutbox.value, "failed uploads");
+  assert.doesNotMatch(failedUploadOutbox.title, /dead-letter/i);
   assert.equal(
     formatSourceOutboxState({ outbox_state: "stale", outbox_diagnostics: { stale_leases: 1 } }).tone,
     "danger"
@@ -634,7 +638,7 @@ test("summarizeOutboxStallRemediation: surfaces a count-backed scale from outbox
       source_count: 1,
     }
   );
-  assert.equal(remediation?.scale, "12 pending · 1 stale lease · 2 dead-letter");
+  assert.equal(remediation?.scale, "12 pending · 1 stale lease · 2 failed uploads");
 });
 
 test("summarizeOutboxStallRemediation: scale omits zero categories so it never reads as alarming noise", () => {
@@ -651,7 +655,7 @@ test("summarizeOutboxStallRemediation: scale omits zero categories so it never r
       source_count: 1,
     }
   );
-  assert.equal(remediation?.scale, "3 dead-letter");
+  assert.equal(remediation?.scale, "3 failed uploads");
 });
 
 test("summarizeOutboxStallRemediation: counts never attach to a quiet (non-stalled) connection", () => {
@@ -1585,7 +1589,7 @@ test("stalled-row guidance carries a count-backed scale from outbox_counts", () 
   assert.ok(out);
   assert.equal(out?.tone, "danger");
   assert.match(out?.label ?? "", HOST_RE);
-  assert.equal(out?.scale, "12 pending · 1 stale lease · 2 dead-letter");
+  assert.equal(out?.scale, "12 pending · 1 stale lease · 2 failed uploads");
 });
 
 test("stalled-row scale omits zero categories so a counted rollup never reads as alarming", () => {
@@ -1596,7 +1600,7 @@ test("stalled-row scale omits zero categories so a counted rollup never reads as
     localDeviceProgress: localDeviceProgress({ pending: 0, dead_letter: 3, stale_leases: 0, total: 3 }),
     supportsOwnerSync: false,
   });
-  assert.equal(out?.scale, "3 dead-letter");
+  assert.equal(out?.scale, "3 failed uploads");
 });
 
 test("stalled-row scale is null when the summary carries no count rollup", () => {

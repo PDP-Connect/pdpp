@@ -162,7 +162,7 @@ function summarizeBackgroundLocalDeviceDrain({
   if (pending <= 0) {
     return null;
   }
-  // Dead letters and stale leases are recovery states, not passive background
+  // Failed uploads and stale leases are recovery states, not passive background
   // upload. Let the cause-specific remediation panel own those states.
   if ((counts?.dead_letter ?? 0) > 0 || (counts?.stale_leases ?? 0) > 0) {
     return null;
@@ -848,9 +848,9 @@ function remediationCommandCaption(command: RefActionRemediation["commands"][num
  * CAUSE-SPECIFIC `remediation` payload, and we render its `commands[]` in order.
  * The runtime makes these correct per cause, so we never show the wrong steps:
  *   - `state_read_failed` (blocked heartbeat, no real backlog) → re-run only,
- *     NO dead-letter retry. This was the owner-reported dead end: the old code
+ *     NO failed-upload retry. This was the owner-reported dead end: the old code
  *     always showed `retry-dead-letters`, which returned "matched: 0, nothing to
- *     do" when there were no dead letters.
+ *     do" when there were no failed uploads.
  *   - `dead_letter_backlog` → preview recovery, then apply recovery.
  *   - `stale_pending` → apply recovery, which drains queued work until clear or bounded.
  * Each command is a template with non-secret placeholders the console late-binds
@@ -860,11 +860,11 @@ function remediationCommandCaption(command: RefActionRemediation["commands"][num
  * "Command unavailable" line, never a broken command.
  *
  * LEGACY FALLBACK (references predating the `remediation` payload): we cannot
- * tell the cause apart, so we render the documented three-step dead-letter ritual
+ * tell the cause apart, so we render the documented three-step failed-upload recovery
  * (diagnose → preview requeue → apply) plus a trailing note covering both the
- * dead-letter and the blocked-state-read cases. That note is rendered ONLY on
+ * failed-upload and the blocked-state-read cases. That note is rendered ONLY on
  * this fallback path — under a cause-specific remediation it would reintroduce
- * the very dead-letter confusion the cause-correct steps remove.
+ * the very failed-upload confusion the cause-correct steps remove.
  */
 function OutboxStallRemediationPanel({
   connectionId,
@@ -890,7 +890,7 @@ function OutboxStallRemediationPanel({
   /**
    * Server-owned CAUSE-SPECIFIC remediation from the rendered verdict. When
    * present, its `commands[]` are the correct steps for the actual cause
-   * (e.g. `state_read_failed` → re-run only, no dead-letter retry). Preferred
+   * (e.g. `state_read_failed` → re-run only, no failed-upload retry). Preferred
    * over the legacy hard-coded steps; `null` for references that predate it.
    */
   verdictRemediation: RefActionRemediation | null;
@@ -902,13 +902,13 @@ function OutboxStallRemediationPanel({
     scope = { connectionId };
   }
   // Prefer the server-owned cause-specific steps. They already exclude the
-  // dead-letter commands for causes (state_read_failed / stale_pending) that
+  // failed-upload commands for causes (state_read_failed / stale_pending) that
   // have nothing to requeue — fixing the "matched: 0, nothing to do" dead end.
   // The runtime owns the command SHAPE (a template with non-secret placeholders);
   // the console late-binds the values it knows. A command that cannot be fully
   // resolved renders as a non-copyable "unavailable" line (fail-closed) rather
   // than a broken command with literal <…> in it — the agreed contract.
-  // Fall back to the legacy three-step dead-letter ritual only when the
+  // Fall back to the legacy three-step failed-upload recovery only when the
   // reference does not send a remediation payload (legacy commands are already
   // fully resolved by the safe CLI builders).
   const steps: { caption: string; command: string | null; label: string }[] = verdictRemediation
@@ -925,7 +925,7 @@ function OutboxStallRemediationPanel({
     : [
         {
           label: "1. Diagnose",
-          caption: "See the dead-letter rows and outbox health.",
+          caption: "See saved upload rows and local upload health.",
           command: pdppLocalCollectorDoctorCommand(scope),
         },
         {
@@ -936,7 +936,7 @@ function OutboxStallRemediationPanel({
         {
           label: "3. Requeue",
           caption:
-            "Moves the dead-letter rows back to pending after backing up the database first. The next collector run drains them — it does not ingest on its own.",
+            "Marks failed uploads for another attempt after backing up the local database first. The next collector run drains them — it does not ingest on its own.",
           command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
         },
       ];
@@ -1003,10 +1003,10 @@ function OutboxStallRemediationPanel({
       </ol>
       {verdictRemediation ? null : (
         // Legacy fallback only: when the reference does not send cause-specific
-        // remediation, we can't tell dead-letter from state-read, so this note
+        // remediation, we can't tell failed-upload from state-read, so this note
         // covers both. With a verdict remediation present the steps are already
         // cause-correct (e.g. state_read_failed → re-run only), and this
-        // dead-letter/doctor language would REINTRODUCE the very confusion the
+        // failed-upload/doctor language would REINTRODUCE the very confusion the
         // cause-specific commands fix — so it is omitted.
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-run-note">
           Then run the collector again on {hostPhrase} (the same{" "}
