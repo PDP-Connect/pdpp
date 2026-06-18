@@ -417,7 +417,7 @@ function buildSyncRows(input: {
   const cadence = describeCadence(schedule);
   const rhythm = deriveConnectionRhythm(connectionRuns);
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
-  const lastFailed = failing || (lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false);
+  const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
   const eventCount = lastRun ? lastRun.event_count : null;
   const delta = describeDelta({ failed: lastFailed, eventCount });
   const duration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
@@ -431,7 +431,7 @@ function buildSyncRows(input: {
       stream,
       cadence,
       rhythm,
-      delta: lastFailed ? "sync failed" : delta,
+      delta,
       lastAt,
       duration,
       next,

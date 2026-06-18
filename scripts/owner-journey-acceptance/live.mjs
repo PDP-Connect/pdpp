@@ -181,6 +181,33 @@ function isMaterialSourceIssue(connector) {
   );
 }
 
+function runLiveGrantCaptionChecks({ htmlByPath }) {
+  const findings = [];
+  const checks = [];
+  const grantsText = htmlToText(htmlByPath.get("/dashboard/grants") ?? "");
+  const rawClientCaption = grantsText.match(/\bclient\s+cli_[a-z0-9]+\b/i)?.[0] ?? null;
+
+  if (rawClientCaption) {
+    findings.push({
+      ruleId: "grants-raw-client-caption",
+      class: "dashboard-trust-claim",
+      path: "live:/dashboard/grants",
+      line: 0,
+      excerpt: rawClientCaption,
+      rationale:
+        "The grants list must not lead with raw technical client ids in visible row copy. Preserve ids as details, but render registered client names or a human fallback caption.",
+    });
+  }
+
+  checks.push({
+    id: "grants-client-caption-humanized",
+    status: rawClientCaption ? "fail" : "pass",
+    detail: rawClientCaption ? "raw technical client caption visible" : "no raw technical client caption visible",
+  });
+
+  return { findings, checks };
+}
+
 async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
   try {
     const res = await fetchImpl(`${base}${path}`, {
@@ -380,13 +407,15 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
   }
 
   const semantic = await runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath });
+  const grantCaptions = runLiveGrantCaptionChecks({ htmlByPath });
   findings.push(...semantic.findings);
+  findings.push(...grantCaptions.findings);
 
   return {
     origin: base,
     authMode: mode,
     surfaces,
-    semanticChecks: semantic.checks,
+    semanticChecks: [...semantic.checks, ...grantCaptions.checks],
     findings,
     ok: findings.length === 0,
   };

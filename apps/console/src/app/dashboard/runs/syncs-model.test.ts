@@ -372,13 +372,52 @@ test("a failing connection holds its next and marks rows failed", () => {
   const failHealth = health({ state: "blocked", reason_code: "credentials_expired" });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
-    runs: [run({ status: "failed" })],
+    runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
   const group = model.groups[0];
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
   assert.equal(group?.streams[0]?.next, "held");
   assert.equal(group?.streams[0]?.delta, "sync failed");
+});
+
+test("a broken connector does not rewrite a successful last run into sync failed", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "none", coverage: "terminal_gap", freshness: "stale", outbox: "idle" },
+          reason_code: "qfx_download_failed",
+          state: "degraded",
+        }),
+        last_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
+        last_successful_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement: "This connector needs a code fix before it can collect again.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [
+            action({
+              audience: "maintainer",
+              cta: "Connector code needs a fix",
+              kind: "code_fix",
+              satisfied_when: { kind: "none" },
+              terminal: true,
+              urgency: "soon",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const row = model.groups[0]?.streams[0];
+  assert.equal(model.groups[0]?.health, "failing", "the group still shows the current connector state");
+  assert.equal(row?.delta, "+52 records", "last result remains the successful run fact");
+  assert.equal(row?.failed, false, "row failure style follows the actual last run, not the current verdict");
+  assert.equal(row?.next, "held", "the current verdict still blocks future collection");
+  assert.deepEqual(row?.rhythm, ["ok"], "rhythm agrees with the successful last run");
 });
 
 // ─── RenderedVerdict conformance matrix ──────────────────────────────────────

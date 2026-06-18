@@ -450,6 +450,34 @@ test("live semantic probe passes when material source issues are represented on 
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects raw technical client ids as visible grant captions", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard/grants")) {
+      return response(200, "<main><article>slack active client cli_348b7036fe7172ba 7 hours ago</article></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "grants-raw-client-caption"));
+  assert.equal(result.semanticChecks?.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
+});
+
 // ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────
 
 test("clean-shell probe flags a rendered subcommand missing from published --help", async () => {
