@@ -27,9 +27,11 @@ import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
  * Minimal storage interface for aggregation reads.
  *
  * @typedef {Object} StorageBackend
- * @property {(params: { connectorInstanceId: string, stream: string }) => Promise<AggregationRow[]>} listRowsForAggregation
+ * @property {(params: { connectorInstanceId: string, stream: string }) => Promise<Iterable<AggregationRow>>} listRowsForAggregation
  *   Return every non-deleted row for the given connector instance + stream,
- *   ordered by record_key ascending. `record_json` must be a string.
+ *   ordered by record_key ascending. `record_json` must be a string. The
+ *   returned value is iterable so SQLite can preserve its existing lazy
+ *   iterator behavior while Postgres can return its materialized row array.
  */
 
 /**
@@ -66,7 +68,7 @@ function createPostgresStorageBackend() {
  */
 function createSqliteStorageBackend() {
   return {
-    listRowsForAggregation({ connectorInstanceId, stream }) {
+    async listRowsForAggregation({ connectorInstanceId, stream }) {
       return iterate(
         referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
         [connectorInstanceId, stream],
