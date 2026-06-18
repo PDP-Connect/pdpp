@@ -79,6 +79,79 @@ test('ref.spine.correlations.list emits grant_summary discriminator with source 
   assert.equal('actor_type' in entry, false);
 });
 
+test('ref.spine.correlations.list projects optional grant client metadata without replacing client_id', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'grant', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'grt_named',
+            client_id: 'cli_named',
+            client: {
+              client_id: 'cli_named',
+              client_name: 'Claude Code',
+              registration_mode: 'dynamic',
+            },
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'grant_summary');
+  assert.equal(entry.client_id, 'cli_named');
+  assert.deepEqual(entry.client, {
+    client_id: 'cli_named',
+    client_name: 'Claude Code',
+    registration_mode: 'dynamic',
+  });
+});
+
+test('ref.spine.correlations.list omits grant client metadata when unavailable', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'grant', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [makeSummary({ id: 'grt_raw', client_id: 'cli_unknown', client: null })],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'grant_summary');
+  assert.equal(entry.client_id, 'cli_unknown');
+  assert.equal('client' in entry, false);
+});
+
+test('ref.spine.correlations.list does not project client metadata on run summaries', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'run', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'run_named',
+            client: {
+              client_id: 'cli_named',
+              client_name: 'Claude Code',
+              registration_mode: 'dynamic',
+            },
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'run_summary');
+  assert.equal('client' in entry, false);
+});
+
 test('ref.spine.correlations.list emits run_summary discriminator with failure_reason and needs_input', async () => {
   const envelope = await executeRefSpineCorrelationsList(
     { kind: 'run', filters: {} },

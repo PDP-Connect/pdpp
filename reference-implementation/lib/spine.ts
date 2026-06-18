@@ -196,9 +196,16 @@ export interface SpineFailureSummary {
   readonly reason: string | null;
 }
 
+export interface SpineClientMetadata {
+  readonly client_id: string;
+  readonly client_name: string | null;
+  readonly registration_mode: string | null;
+}
+
 export interface SpineSummary {
   actor_id: string;
   actor_type: string;
+  client?: SpineClientMetadata | null;
   browser_surface_lease_id?: string;
   browser_surface_profile_key?: string;
   browser_surface_status?: string;
@@ -1369,6 +1376,49 @@ function attachGrantPackageMembership(summaries: readonly SpineSummary[]): void 
   }
 }
 
+interface RegisteredClientMetadataRow {
+  readonly client_id: string;
+  readonly metadata_json: string | null;
+  readonly registration_mode: string | null;
+}
+
+function clientMetadataFromOAuthRow(row: RegisteredClientMetadataRow): SpineClientMetadata {
+  const metadata = safeJsonParse(row.metadata_json, {}) as Record<string, unknown>;
+  const clientName = typeof metadata.client_name === "string" && metadata.client_name.trim() ? metadata.client_name.trim() : null;
+  return {
+    client_id: row.client_id,
+    client_name: clientName,
+    registration_mode: typeof row.registration_mode === "string" && row.registration_mode ? row.registration_mode : null,
+  };
+}
+
+function attachGrantClientMetadata(summaries: readonly SpineSummary[]): void {
+  const clientIds = Array.from(
+    new Set(summaries.map((s) => s.client_id).filter((value): value is string => typeof value === "string" && value.length > 0))
+  );
+  if (clientIds.length === 0) {
+    return;
+  }
+  const placeholders = clientIds.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: IN-list cardinality is page-bounded by clampLimit (≤500);
+  // values are bound parameters and LIMIT is the same page-bound cardinality.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<RegisteredClientMetadataRow>(
+      `SELECT client_id, registration_mode, metadata_json
+       FROM oauth_clients
+       WHERE client_id IN (${placeholders})
+       LIMIT ?`,
+      [...clientIds, clientIds.length]
+    ),
+  ];
+  const byClientId = new Map(rows.map((row) => [row.client_id, clientMetadataFromOAuthRow(row)]));
+  for (const summary of summaries) {
+    if (summary.client_id) {
+      summary.client = byClientId.get(summary.client_id) ?? null;
+    }
+  }
+}
+
 function listSpineCorrelationsSqlite(
   key: SpineCorrelationKey | string,
   filters: SpineCorrelationFilters
@@ -1411,6 +1461,7 @@ function listSpineCorrelationsSqlite(
 
   if (key === "grant" && page.length > 0) {
     attachGrantPackageMembership(page);
+    attachGrantClientMetadata(page);
   }
 
   return { summaries: page, hasMore, nextCursor };

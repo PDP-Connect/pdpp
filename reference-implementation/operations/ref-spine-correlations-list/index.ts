@@ -30,6 +30,12 @@ export interface RefSpineFailureSummary {
   readonly reason: string | null;
 }
 
+export interface RefSpineClientMetadata {
+  readonly client_id: string;
+  readonly client_name: string | null;
+  readonly registration_mode: string | null;
+}
+
 export interface RefSpineSource {
   readonly kind: "connector" | "provider_native";
   readonly id: string;
@@ -65,6 +71,7 @@ export interface RefSpineCorrelationSummary {
   readonly grant_package_id?: string | null;
   readonly run_id: string | null;
   readonly client_id: string | null;
+  readonly client?: RefSpineClientMetadata | null;
   readonly connector_id: string | null;
   readonly connector_instance_id?: string | null;
   readonly source: RefSpineSource | null;
@@ -141,6 +148,7 @@ export interface RefSpineGrantSummary {
   readonly status: string;
   readonly kinds: readonly string[];
   readonly client_id: string | null;
+  readonly client?: RefSpineClientMetadata;
   readonly source: RefSpineSource | null;
   readonly failure: RefSpineFailureSummary | null;
 }
@@ -243,6 +251,7 @@ export function summaryToGrant(s: RefSpineCorrelationSummary): RefSpineGrantSumm
     status: s.status,
     kinds: s.kinds,
     client_id: s.client_id,
+    ...(s.client ? { client: s.client } : {}),
     source: sourceFromSummary(s),
     failure: s.failure,
     ...(s.grant_package_id ? { grant_package_id: s.grant_package_id } : {}),

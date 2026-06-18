@@ -242,6 +242,11 @@ export interface TraceSummary {
 }
 
 export interface GrantSummary {
+  client?: {
+    client_id: string;
+    client_name: string | null;
+    registration_mode: string | null;
+  };
   client_id: string | null;
   connector_id?: string | null;
   event_count: number;

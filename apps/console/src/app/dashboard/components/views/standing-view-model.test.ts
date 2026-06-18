@@ -568,6 +568,42 @@ test("relationships use known client names without replacing the verified client
   assert.equal(data.bearers.length, 0, "inactive owner clients still provide identity metadata only");
 });
 
+test("relationships prefer grant client metadata over owner-token labels", () => {
+  const grants: GrantSummary[] = [
+    {
+      object: "grant_summary",
+      grant_id: "g1",
+      client_id: "cli_known",
+      client: {
+        client_id: "cli_known",
+        client_name: "Claude Code",
+        registration_mode: "dynamic",
+      },
+      connector_id: "pdpp",
+      status: "active",
+      first_at: "2026-06-01T00:00:00Z",
+      last_at: "2026-06-12T12:00:00Z",
+      event_count: 7,
+      kinds: ["query.received"],
+      failure: null,
+    },
+  ];
+  const clients: OwnerIssuedClient[] = [
+    {
+      active_token_count: 1,
+      client_id: "cli_known",
+      client_name: "Older owner-token label",
+      created_at: "2026-06-01T00:00:00Z",
+    },
+  ];
+
+  const data = buildStandingData(baseInputs({ bearerClients: clients, grants }));
+
+  assert.equal(data.relationships.length, 1);
+  assert.equal(data.relationships[0]?.who, "Claude Code");
+  assert.equal(data.relationships[0]?.clientId, "cli_known");
+});
+
 test("revoked grants are excluded from relationships", () => {
   const revoked: GrantSummary = {
     object: "grant_summary",

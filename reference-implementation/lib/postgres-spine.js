@@ -603,6 +603,46 @@ export async function postgresGrantPackageIdsForGrants(grantIds) {
   return out;
 }
 
+function clientMetadataFromOAuthRow(row) {
+  let metadata = {};
+  try {
+    metadata = typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : (row.metadata_json || {});
+  } catch {
+    metadata = {};
+  }
+  const clientName = typeof metadata.client_name === 'string' && metadata.client_name.trim()
+    ? metadata.client_name.trim()
+    : null;
+  return {
+    client_id: row.client_id,
+    client_name: clientName,
+    registration_mode: typeof row.registration_mode === 'string' && row.registration_mode ? row.registration_mode : null,
+  };
+}
+
+/**
+ * Look up registered OAuth client metadata for the current page of grant
+ * summaries. This is reference-operator display metadata only; the verified
+ * identity remains the grant summary's top-level `client_id`.
+ */
+export async function postgresClientMetadataForClients(clientIds) {
+  if (!Array.isArray(clientIds) || clientIds.length === 0) return new Map();
+  const placeholders = clientIds.map((_, i) => `$${i + 1}`).join(', ');
+  const result = await postgresQuery(
+    `SELECT client_id, registration_mode, metadata_json::text AS metadata_json
+       FROM oauth_clients
+       WHERE client_id IN (${placeholders})`,
+    clientIds,
+  );
+  const out = new Map();
+  for (const row of result.rows) {
+    if (row.client_id && !out.has(row.client_id)) {
+      out.set(row.client_id, clientMetadataFromOAuthRow(row));
+    }
+  }
+  return out;
+}
+
 export async function postgresListSpineCorrelations(kind, filters = {}) {
   const column = COLUMN_BY_KIND[kind];
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
@@ -701,6 +741,17 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
         const gid = s.grant_id || s.id;
         const packageId = gid ? packageByGrant.get(gid) : null;
         return packageId ? { ...s, grant_package_id: packageId } : s;
+      });
+    }
+    const clientIds = [...new Set(summaries
+      .map((s) => s?.client_id)
+      .filter((v) => typeof v === 'string' && v.length > 0))];
+    const clientById = await postgresClientMetadataForClients(clientIds);
+    if (clientById.size > 0) {
+      summaries = summaries.map((s) => {
+        if (!s?.client_id) return s;
+        const client = clientById.get(s.client_id);
+        return client ? { ...s, client } : s;
       });
     }
   }

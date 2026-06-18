@@ -425,6 +425,7 @@ function toRelationships(
   >();
   for (const grant of grants.filter(isLiveGrant)) {
     const clientId = grant.client_id || grant.grant_id;
+    const grantClientName = grant.client?.client_name?.trim() || null;
     const knownClientName = grant.client_id ? (knownClientNames.get(grant.client_id) ?? null) : null;
     const existing =
       groups.get(clientId) ??
@@ -434,7 +435,7 @@ function toRelationships(
         lastAt: null,
         phrases: new Set<string>(),
         statuses: [],
-        who: clientLabel(knownClientName ?? grant.client_id, grant.grant_id),
+        who: clientLabel(grantClientName ?? knownClientName ?? grant.client_id, grant.grant_id),
       };
     existing.grantIds.push(grant.grant_id);
     existing.lastAt = newerIso(existing.lastAt, grant.last_at);
