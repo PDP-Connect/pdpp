@@ -1159,6 +1159,30 @@ if (!POSTGRES_URL) {
       });
       assert.deepEqual([...new Set(accountALexicalHits.map((row) => row.record_key))], ['shared']);
 
+      // Register the default connector instance for this owner so the client-mode
+      // search fan-in (resolveClientBindings -> resolveFanInBindings ->
+      // listActiveBindingsForGrant) can discover an active binding.  ingestRecord
+      // writes to the records table using makeDefaultAccountConnectorInstanceId
+      // but never inserts a connector_instances row; that registration belongs here
+      // in the test setup, not in the ingest path.
+      const defaultConnectorInstanceId = makeDefaultAccountConnectorInstanceId(
+        OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId,
+      );
+      const instanceStore = createPostgresConnectorInstanceStore();
+      const instanceNow = new Date().toISOString();
+      await instanceStore.upsert({
+        connectorInstanceId: defaultConnectorInstanceId,
+        ownerSubjectId,
+        connectorId,
+        displayName: connectorId,
+        status: 'active',
+        sourceKind: 'account',
+        sourceBinding: {},
+        createdAt: instanceNow,
+        updatedAt: instanceNow,
+      });
+
       const searchDeps = {
         resolveOwnerVisibleConnectorIds: () => [connectorId],
         resolveOwnerScopeForConnector: () => ({ connectorId }),
