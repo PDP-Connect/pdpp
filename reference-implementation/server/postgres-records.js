@@ -98,12 +98,10 @@ function validateCountKind(value) {
 // Canonical `window` opt-in vocabulary, mirrored from records.js's
 // `SUPPORTED_WINDOW_KINDS` (see the one-way-dependency note above). The
 // Postgres list path validates the `window` value with the same strict
-// discipline as the SQLite path, but does NOT yet compute `meta.window`:
-// an honest bounded window over the logical `consent_time_field` requires a
-// JSON-extract min/max scan whose timestamp-parse semantics match the SQLite
-// reference's `new Date(...)` parse. Until that parity scan lands, the
-// Postgres path omits `meta.window` rather than substituting ingest time —
-// consumers treat the absence as "not available" per the spec.
+// discipline as the SQLite path AND computes `meta.window` to parity via
+// computePostgresRecordWindow: a JSON-extract min/max scan over the logical
+// `consent_time_field` whose timestamp normalization matches the SQLite
+// reference's `new Date(...)` parse.
 //
 // Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
 //       reference-implementation-architecture/spec.md
@@ -220,6 +218,14 @@ function mergeMetaCount(existingMeta, count) {
     ? { ...existingMeta }
     : {};
   base.count = count;
+  return base;
+}
+
+function mergeMetaWindow(existingMeta, window) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.window = window;
   return base;
 }
 const KEY_SEPARATOR = '\u0001';
@@ -1073,9 +1079,8 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   //       (#"Sort", #"Counts").
   validateCountKind(requestParams.count);
   // Validate the `window` opt-in with the same strict discipline as `count`.
-  // The Postgres path does not yet emit `meta.window` (see
-  // SUPPORTED_WINDOW_KINDS_PG); a valid `window=exact` is accepted and the
-  // window is omitted, never estimated.
+  // A valid `window=exact` produces `meta.window` to parity with SQLite via
+  // computePostgresRecordWindow below.
   validateWindowKind(requestParams.window);
   const resolvedSort = validateCanonicalSort(requestParams.sort, manifestStream);
   const orderDirection = resolveListOrder(requestParams.order, resolvedSort);
@@ -1269,8 +1274,59 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   if (countOutcome) {
     response.meta = mergeMetaCount(response.meta, countOutcome.count);
   }
+  const windowOutcome = await computePostgresRecordWindow({
+    requestParams,
+    countWhere,
+    countParams,
+    consentTimeField: manifestStream?.consent_time_field || null,
+  });
+  if (windowOutcome) {
+    response.meta = mergeMetaWindow(response.meta, windowOutcome);
+  }
   attachRequestWarningsToResponse(response, requestWarnings);
   return response;
+}
+
+// Compute the bounded `meta.window` aggregate for the Postgres list path,
+// mirroring computeRecordWindow in records.js: `total` is the count of
+// grant-visible rows under the same WHERE clause as the graded count, and
+// `earliest_at`/`latest_at` are the min/max of the manifest's
+// consent_time_field over those rows. Returns null when window is not
+// requested. Closes the parity gap where the Postgres path omitted meta.window.
+async function computePostgresRecordWindow({ requestParams, countWhere, countParams, consentTimeField }) {
+  const requested = typeof requestParams.window === 'string' ? requestParams.window : null;
+  if (!requested || requested === 'none') return null;
+
+  // total uses the identical grant-visible scope the count query uses.
+  const totalResult = await postgresQuery(
+    `SELECT COUNT(*)::bigint AS total FROM records ${countWhere}`,
+    countParams,
+  );
+  const total = Number(totalResult.rows[0]?.total || 0);
+  const window = { total };
+
+  if (consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonStringExpr(consentTimeField);
+    const boundsResult = await postgresQuery(
+      `SELECT MIN(${ctExpr}) AS earliest, MAX(${ctExpr}) AS latest
+         FROM records ${countWhere}
+        AND ${ctExpr} IS NOT NULL AND ${ctExpr} <> ''`,
+      countParams,
+    );
+    const earliest = boundsResult.rows[0]?.earliest;
+    const latest = boundsResult.rows[0]?.latest;
+    if (earliest != null && latest != null) {
+      // Normalize to ISO 8601 UTC, matching the SQLite path's new Date(...) form.
+      const earliestMs = new Date(earliest).getTime();
+      const latestMs = new Date(latest).getTime();
+      if (!Number.isNaN(earliestMs) && !Number.isNaN(latestMs)) {
+        window.earliest_at = new Date(earliestMs).toISOString();
+        window.latest_at = new Date(latestMs).toISOString();
+      }
+    }
+  }
+  return window;
 }
 
 /**
