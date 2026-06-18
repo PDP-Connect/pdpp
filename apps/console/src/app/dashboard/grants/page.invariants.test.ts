@@ -15,10 +15,12 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
 const CLIENT_CAPTION_HELPER_RE = /function grantClientCaption\(/;
+const CLIENT_ORIGIN_CAPTION_HELPER_RE = /function clientOriginCaption\(/;
 const RAW_CLIENT_CAPTION_RE = /client\s+\{grant\.client_id\}/;
 
 test("grants list formats visible client captions instead of rendering raw client ids", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, CLIENT_CAPTION_HELPER_RE);
+  assert.match(src, CLIENT_ORIGIN_CAPTION_HELPER_RE);
   assert.doesNotMatch(src, RAW_CLIENT_CAPTION_RE);
 });

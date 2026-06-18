@@ -185,7 +185,10 @@ function runLiveGrantCaptionChecks({ htmlByPath }) {
   const findings = [];
   const checks = [];
   const grantsText = htmlToText(htmlByPath.get("/dashboard/grants") ?? "");
-  const rawClientCaption = grantsText.match(/\bclient\s+cli_[a-z0-9]+\b/i)?.[0] ?? null;
+  const rawClientCaption =
+    grantsText.match(/\bclient\s+cli_[a-z0-9]+\b/i)?.[0] ??
+    grantsText.match(/\bclient\s+https?:\/\/[^\s]+/i)?.[0] ??
+    null;
 
   if (rawClientCaption) {
     findings.push({

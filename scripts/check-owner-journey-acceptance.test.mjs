@@ -478,6 +478,37 @@ test("live semantic probe rejects raw technical client ids as visible grant capt
   assert.equal(result.semanticChecks?.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
 });
 
+test("live semantic probe rejects raw URL client ids as visible grant captions", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard/grants")) {
+      return response(
+        200,
+        '<main><article>github active client https://chatgpt.com/oauth/client.json?token_endpoint_auth_method=none</article></main>'
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "grants-raw-client-caption"));
+  assert.equal(result.semanticChecks?.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
+});
+
 // ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────
 
 test("clean-shell probe flags a rendered subcommand missing from published --help", async () => {

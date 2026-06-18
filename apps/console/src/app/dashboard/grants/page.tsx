@@ -47,6 +47,16 @@ function looksLikeTechnicalClientId(value: string): boolean {
   return /^cli_[a-z0-9]+$/i.test(value);
 }
 
+function clientOriginCaption(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./, "");
+    return host ? `client ${host}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function grantClientCaption(grant: GrantSummary): string | null {
   const name = grant.client?.client_name?.trim();
   if (name) {
@@ -56,7 +66,7 @@ function grantClientCaption(grant: GrantSummary): string | null {
   if (!clientId) {
     return null;
   }
-  return looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`;
+  return clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`);
 }
 
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
