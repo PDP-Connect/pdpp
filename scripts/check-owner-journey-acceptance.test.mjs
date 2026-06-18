@@ -735,6 +735,131 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
   );
 });
 
+test("live semantic probe rejects clean-success source detail copy when collection gaps remain", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_chase",
+              display_name: "Chase - Personal",
+              last_run: { run_id: "run_1", status: "succeeded" },
+              collection_report: [
+                {
+                  stream: "transactions",
+                  coverage_condition: "terminal_gap",
+                  pending_detail_gaps: 1,
+                  skipped: { reason: "qfx_download_failed" },
+                },
+              ],
+              rendered_verdict: {
+                channel: "advisory",
+                forward_statement: "This connector needs a code fix before it can collect again.",
+                pill: { label: "Can't collect", tone: "red" },
+                required_actions: [{ audience: "maintainer", satisfied_when: { kind: "none" } }],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>Chase - Personal can't collect</section></main>");
+    }
+    if (href.endsWith("/dashboard/records/cin_chase")) {
+      return response(
+        200,
+        "<main><section>Last 1 runs ✓ 0 failures · Open runs →</section><section>Known source runs succeeded run_1</section></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "source-detail-clean-success-with-open-gaps"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "source-detail-run-gap-honesty")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts partial source detail copy when collection gaps remain", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_chase",
+              display_name: "Chase - Personal",
+              last_run: { run_id: "run_1", status: "succeeded" },
+              collection_report: [
+                {
+                  stream: "transactions",
+                  coverage_condition: "retryable_gap",
+                  pending_detail_gaps: 1,
+                  skipped: null,
+                },
+              ],
+              rendered_verdict: {
+                channel: "advisory",
+                forward_statement: "The next run is expected to fill the remaining data.",
+                pill: { label: "Degraded", tone: "amber" },
+                required_actions: [{ audience: "owner", satisfied_when: { kind: "manual" } }],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>Chase - Personal degraded</section></main>");
+    }
+    if (href.endsWith("/dashboard/records/cin_chase")) {
+      return response(
+        200,
+        "<main><section>Last 1 runs ⚠ 1 with gaps · Open runs →</section><section>Known source runs partial run_1</section></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "source-detail-run-gap-honesty")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects raw technical client ids as visible grant captions", async () => {
   const response = (status, body) => ({
     status,

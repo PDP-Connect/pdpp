@@ -206,6 +206,31 @@ function shouldProbeSourceDetailRecoveryCopy(connector) {
   return isMaterialSourceIssue(connector) || verdict.channel === "attention" || ownerSatisfiableAction(verdict);
 }
 
+const SUCCESS_RUN_STATUSES = new Set(["succeeded", "success", "completed"]);
+
+function collectionReportHasOpenGaps(report) {
+  if (!Array.isArray(report)) {
+    return false;
+  }
+  return report.some((entry) => {
+    if (entry?.coverage_condition !== "complete") {
+      return true;
+    }
+    if (Number(entry?.pending_detail_gaps ?? 0) > 0) {
+      return true;
+    }
+    return entry?.skipped !== null && entry?.skipped !== undefined;
+  });
+}
+
+function shouldProbeSourceDetailRunGapHonesty(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const lastRunStatus = String(connector?.last_run?.status ?? "").toLowerCase();
+  return SUCCESS_RUN_STATUSES.has(lastRunStatus) && collectionReportHasOpenGaps(connector?.collection_report);
+}
+
 function runLiveGrantCaptionChecks({ htmlByPath }) {
   const findings = [];
   const checks = [];
@@ -442,6 +467,75 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         : rawRecoveryTermFindings.length > 0
           ? `${rawRecoveryTermFindings.length} detail page(s) render raw recovery jargon`
           : `${recoveryRouteIds.length} source recovery detail route(s) render human recovery copy`,
+  });
+
+  const runGapRouteIds = Array.from(
+    new Set(
+      connectors
+        .filter(shouldProbeSourceDetailRunGapHonesty)
+        .map(connectorRouteId)
+        .filter((id) => typeof id === "string" && id.length > 0)
+    )
+  ).slice(0, 12);
+  const runGapFindings = [];
+  for (const routeId of runGapRouteIds) {
+    try {
+      const path = `/dashboard/records/${encodeURIComponent(routeId)}`;
+      const res = await fetchImpl(`${base}${path}`, {
+        headers: { accept: "text/html", ...header },
+        redirect: "manual",
+      });
+      const status = res.status;
+      const html = await res.text();
+      if (status < 200 || status >= 300) {
+        findings.push({
+          ruleId: "source-detail-run-gap-not-reached",
+          class: "live-probe-inconclusive",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `status ${status}`,
+          rationale:
+            "The live semantic probe could not reach a source detail page that has a successful latest run with unresolved collection gaps. Run-status honesty is inconclusive until the exact source route renders.",
+        });
+        continue;
+      }
+      const detailText = htmlToText(html);
+      const cleanSuccessClaim = detailText.match(/\b0 failures\s*·\s*Open runs\b/i)?.[0] ?? null;
+      const rendersGapStatus = /\bwith gaps\b/i.test(detailText) || /\bpartial\b/i.test(detailText);
+      if (cleanSuccessClaim || !rendersGapStatus) {
+        const finding = {
+          ruleId: "source-detail-clean-success-with-open-gaps",
+          class: "source-run-honesty",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: cleanSuccessClaim ?? "missing partial/with gaps status",
+          rationale:
+            "A source detail page whose latest successful run has unresolved collection gaps must not render as a clean success. It must show a partial/with-gaps status so the owner can trust the run summary.",
+        };
+        runGapFindings.push(finding);
+        findings.push(finding);
+      }
+    } catch (err) {
+      findings.push({
+        ruleId: "source-detail-run-gap-fetch-failed",
+        class: "live-probe-inconclusive",
+        path: `live:/dashboard/records/${routeId}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "The live semantic probe could not fetch a source detail page with unresolved collection gaps. Run-status honesty is inconclusive until the exact source route renders.",
+      });
+    }
+  }
+  checks.push({
+    id: "source-detail-run-gap-honesty",
+    status: runGapFindings.length > 0 ? "fail" : "pass",
+    detail:
+      runGapRouteIds.length === 0
+        ? "no successful source runs with unresolved gaps to probe"
+        : runGapFindings.length > 0
+          ? `${runGapFindings.length} detail page(s) render clean success despite open gaps`
+          : `${runGapRouteIds.length} source detail route(s) render partial/with-gaps status`,
   });
   return { findings, checks };
 }
