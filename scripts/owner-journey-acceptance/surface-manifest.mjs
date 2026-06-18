@@ -42,6 +42,8 @@ export const NORMAL_OWNER_UI_FILES = [
   "apps/console/src/app/dashboard/components/source-setup-catalog.tsx",
   "apps/console/src/app/dashboard/lib/source-setup-presentation.ts",
   "apps/console/src/app/dashboard/connect/page.tsx",
+  "apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/launch-panel.tsx",
+  "apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/manual-upload-form.tsx",
   "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/page.tsx",
   "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/actions.ts",
   "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/status/[connectionId]/page.tsx",
@@ -55,7 +57,15 @@ export const NORMAL_OWNER_UI_FILES = [
  */
 export const NORMAL_OWNER_ROUTE_SCAN_ROOTS = [
   "apps/console/src/app/dashboard/connect",
+  "apps/console/src/app/dashboard/deployment",
+  "apps/console/src/app/dashboard/event-subscriptions",
+  "apps/console/src/app/dashboard/explore",
+  "apps/console/src/app/dashboard/grants",
   "apps/console/src/app/dashboard/records",
+  "apps/console/src/app/dashboard/runs",
+  "apps/console/src/app/dashboard/schedules",
+  "apps/console/src/app/dashboard/search",
+  "apps/console/src/app/dashboard/traces",
 ];
 
 /**

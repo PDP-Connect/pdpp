@@ -274,7 +274,7 @@ test("current owner UI source passes the full acceptance scan", async () => {
   assert.equal(result.ok, true);
 });
 
-test("owner route discovery scans browser-session and manual-upload setup surfaces", async () => {
+test("owner route discovery scans browser-session, upload, and full nav owner surfaces", async () => {
   const result = await runLocalAcceptance();
   const scanned = new Set(result.scannedFiles.normal);
   assert.ok(
@@ -290,9 +290,29 @@ test("owner route discovery scans browser-session and manual-upload setup surfac
     "manual upload setup page must be scanned"
   );
   assert.ok(
+    scanned.has("apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/manual-upload-form.tsx"),
+    "manual upload client form must be scanned"
+  );
+  assert.ok(
+    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/launch-panel.tsx"),
+    "browser-session launch client panel must be scanned"
+  );
+  assert.ok(
     scanned.has("apps/console/src/app/dashboard/records/[connector]/page.tsx"),
     "source detail pages must be scanned"
   );
+  for (const file of [
+    "apps/console/src/app/dashboard/deployment/page.tsx",
+    "apps/console/src/app/dashboard/event-subscriptions/page.tsx",
+    "apps/console/src/app/dashboard/explore/page.tsx",
+    "apps/console/src/app/dashboard/grants/page.tsx",
+    "apps/console/src/app/dashboard/runs/page.tsx",
+    "apps/console/src/app/dashboard/schedules/page.tsx",
+    "apps/console/src/app/dashboard/search/page.tsx",
+    "apps/console/src/app/dashboard/traces/page.tsx",
+  ]) {
+    assert.ok(scanned.has(file), `${file} must be scanned as a normal owner nav surface`);
+  }
 });
 
 test("real published surface contains the subcommands rendered in owner UI", async () => {
