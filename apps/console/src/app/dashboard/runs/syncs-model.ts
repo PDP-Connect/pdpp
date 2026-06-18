@@ -456,7 +456,11 @@ function buildSyncRows(input: {
         cadence,
         next,
         nextAt,
-        failed: lastFailed,
+        // `failed` is the connection-level last-run outcome, used only as a
+        // fallback for streams that have NO per-stream report. When a stream
+        // has its own collection_report entry, that per-stream truth governs
+        // its display, so the connection-level failure must not override it.
+        failed: lastFailed && reportEntry === null,
         browseHref: browseStreamHref(connector.connection_id, stream),
         // Per-stream facts from collection_report. Null when absent (honest
         // empty state for pre-Tranche-C references).
@@ -648,7 +652,12 @@ export function buildSyncsViewModel(input: {
       })
     );
   const totalStreamCount = allGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
-  const band = buildHealthBand({ groups: allGroups, failureCards: allFailureCards });
+  // The band must count the failure cards that are actually RENDERED below it
+  // (`failureCards`), not the full population (`allFailureCards`). Advisories on
+  // duplicate groups that were collapsed away are surfaced separately through
+  // the duplicate-group panel, so counting them here would tell the owner to
+  // "review the cards below" when no such card is visible.
+  const band = buildHealthBand({ groups: allGroups, failureCards });
   return {
     band,
     duplicateGroups,

@@ -152,15 +152,28 @@ function formatCollectedThisRun(row: SyncRow): string | null {
     return "skipped";
   }
   if (row.collectedThisRun === null) {
-    return null;
+    return row.failed ? "sync failed" : null;
+  }
+  // A real per-stream collected count is per-stream truth and wins over the
+  // connection-level failure flag: a stream that collected rows did not fail,
+  // even if the run as a whole did.
+  if (row.collectedThisRun > 0) {
+    return `+${row.collectedThisRun.toLocaleString()} collected`;
   }
   if (row.failed) {
     return "sync failed";
   }
-  if (row.collectedThisRun <= 0) {
-    return "no change";
+  return "no change";
+}
+
+// The coverage condition is shown only when it adds information: "complete" is
+// the expected baseline and "unknown" is noise, so both are suppressed. Single
+// source of truth shared by the collapsed cell and the expanded KV detail.
+function coverageSuffix(condition: string | null): string {
+  if (!condition || condition === "complete" || condition === "unknown") {
+    return "";
   }
-  return `+${row.collectedThisRun.toLocaleString()} collected`;
+  return ` · ${condition}`;
 }
 
 function SyncTableRow({ row }: { row: SyncRow }) {
@@ -180,8 +193,8 @@ function SyncTableRow({ row }: { row: SyncRow }) {
         <TableCell className="rr-sync-row__cadence">{row.cadence}</TableCell>
         <TableCell className={deltaClass}>
           {collectedText !== null ? <span>{collectedText}</span> : <span className="rr-sync-row__empty">—</span>}
-          {row.coverageCondition && row.coverageCondition !== "complete" && row.coverageCondition !== "unknown" ? (
-            <span className="rr-sync-row__coverage"> · {row.coverageCondition}</span>
+          {coverageSuffix(row.coverageCondition) ? (
+            <span className="rr-sync-row__coverage">{coverageSuffix(row.coverageCondition)}</span>
           ) : null}
         </TableCell>
         <TableCell className="rr-sync-row__next" numeric>
@@ -192,7 +205,7 @@ function SyncTableRow({ row }: { row: SyncRow }) {
         <KV>
           <KVRow k="collected (last run)">
             {collectedText ?? "—"}
-            {row.coverageCondition ? ` · ${row.coverageCondition}` : ""}
+            {coverageSuffix(row.coverageCondition)}
           </KVRow>
           <KVRow k="cadence">{row.cadence}</KVRow>
           <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
@@ -238,8 +251,15 @@ function SyncGroupBlock({
   group: SyncGroup;
 }) {
   const healthy = group.health === "ok";
+  // Reserve an accurate placeholder height for content-visibility so off-screen
+  // groups do not shift the page when scrolled into view. ~52px per stream row
+  // plus the group header/last-run block.
+  const intrinsicHeight = group.streams.length * 52 + 96;
   return (
-    <section className="rr-sync-group">
+    <section
+      className="rr-sync-group"
+      style={{ "--sync-group-intrinsic": `${intrinsicHeight}px` } as Record<string, string>}
+    >
       <div className="rr-sync-group__head">
         <span aria-hidden className={["rr-sync-group__dot", healthy ? "is-ok" : "is-fail"].join(" ")} />
         <span className="rr-sync-group__name">{group.name}</span>

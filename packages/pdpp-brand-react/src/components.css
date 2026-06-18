@@ -962,7 +962,7 @@
 
 /* Per-connection group. content-visibility skips layout/paint for off-screen
    groups so scroll performance stays fast even at the ~134-row catalogue ceiling. */
-.rr-sync-group { display: flex; flex-direction: column; gap: 8px; content-visibility: auto; contain-intrinsic-size: 0 300px; }
+.rr-sync-group { display: flex; flex-direction: column; gap: 8px; content-visibility: auto; contain-intrinsic-size: 0 var(--sync-group-intrinsic, 300px); }
 .rr-sync-group__head {
   display: flex;
   align-items: baseline;

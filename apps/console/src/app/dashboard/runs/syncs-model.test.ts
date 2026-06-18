@@ -977,3 +977,63 @@ test("streamSkipped is true only when collection_report entry has a skip", () =>
   assert.equal(byStream.get("transactions")?.streamSkipped, true, "skipped stream is marked");
   assert.equal(byStream.get("balances")?.streamSkipped, false, "non-skipped stream is clean");
 });
+
+test("a stream with a real collected count keeps its per-stream truth when the connection-level run failed", () => {
+  // Adversarial-audit regression: `failed` is a connection-level flag. A stream
+  // that has its own collection_report entry must NOT be overridden by the
+  // connection-level failure. Otherwise a stream that collected rows would
+  // wrongly read as failed (the original per-row-untruth bug, reincarnated).
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_partial",
+        connector_instance_id: "cin_partial",
+        connector_id: "gmail",
+        display_name: "Gmail",
+        streams: ["messages", "labels"],
+        collection_report: [
+          collectionEntry({ stream: "messages", collected: 500 }),
+          // labels has no report entry, so it falls back to connection failure.
+        ],
+      }),
+    ],
+    runs: [
+      run({
+        connection_id: "cin_partial",
+        connector_instance_id: "cin_partial",
+        connector_id: "gmail",
+        event_count: 500,
+        status: "failed",
+      }),
+    ],
+  });
+
+  const group = model.groups[0];
+  const byStream = new Map((group?.streams ?? []).map((r) => [r.stream, r]));
+
+  // The core assertion: a stream with its own collection_report entry shows
+  // its per-stream truth and is NOT marked failed, even though the connection
+  // run's status is "failed". Streams without a report entry carry no
+  // per-stream collected value (null) and defer to the connection-level flag.
+  assert.equal(byStream.get("messages")?.failed, false, "a stream with its own report is not marked failed by the connection");
+  assert.equal(byStream.get("messages")?.collectedThisRun, 500, "its real per-stream collected count is preserved");
+  assert.equal(byStream.get("labels")?.failed, true, "a stream with no report falls back to the connection-level failure");
+  assert.equal(byStream.get("labels")?.collectedThisRun, null, "a stream with no report shows no fabricated per-stream count");
+});
+
+test("the health band counts only the failure cards actually rendered, not advisories on collapsed duplicate groups", () => {
+  // Adversarial-audit regression: the band's needs-review count must match the
+  // rendered failureCards so it never says "review the cards below" with no
+  // visible card.
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({ connection_id: "cin_a", connector_id: "gmail", display_name: "Gmail", streams: ["messages"] }),
+    ],
+    runs: [run({ connection_id: "cin_a", event_count: 10, status: "succeeded" })],
+  });
+  assert.equal(
+    model.band.needsReview,
+    model.failureCards.length,
+    "band needs-review count must equal the number of rendered failure cards"
+  );
+});
