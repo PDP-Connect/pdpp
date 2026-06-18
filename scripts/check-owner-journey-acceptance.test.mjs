@@ -275,7 +275,7 @@ test("owner auth resolves from env by mode without exposing the value", () => {
   assert.equal(bearer.header.authorization, "Bearer tok");
 });
 
-test("live probe scans served HTML and marks login redirects inconclusive", async () => {
+test("live probe scans served HTML and fails closed on login redirects", async () => {
   const fetchImpl = async (url) => {
     if (url.endsWith("/dashboard/connect")) {
       return { status: 200, text: async () => `<pre>packages/polyfill-connectors/x</pre>` };
@@ -285,12 +285,64 @@ test("live probe scans served HTML and marks login redirects inconclusive", asyn
   };
   const result = await runLiveAcceptance({ origin: "https://example.com/", env: {}, fetchImpl });
   assert.equal(result.authMode, "none");
-  // The 200 surface with a monorepo path is a finding; the 302s are inconclusive.
+  assert.equal(result.ok, false, "redirected live surfaces are not a passing live gate");
+  // The 200 surface with a monorepo path is a finding; the 302s are failed inconclusive probes.
   assert.ok(result.findings.some((f) => f.class === "developer-only-path"));
+  assert.ok(result.findings.some((f) => f.ruleId === "live-owner-surface-not-reached"));
   const connect = result.surfaces.find((s) => s.path === "/dashboard/connect");
   assert.equal(connect.reachedOwnerSurface, true);
   const records = result.surfaces.find((s) => s.path === "/dashboard/records");
   assert.equal(records.reachedOwnerSurface, false);
+});
+
+test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan authenticated renders", async () => {
+  const calls = [];
+  const cookieHeaders = [];
+  const response = (status, body, setCookie = null) => ({
+    status,
+    headers: {
+      get(name) {
+        if (name.toLowerCase() === "set-cookie") {
+          return setCookie;
+        }
+        return null;
+      },
+    },
+    text: async () => body,
+  });
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (String(url).includes("/owner/login") && init.method !== "POST") {
+      return response(
+        200,
+        '<input type="hidden" name="_csrf" value="csrf-1" />',
+        "pdpp_owner_csrf=csrf-cookie; Path=/"
+      );
+    }
+    if (String(url).endsWith("/owner/login") && init.method === "POST") {
+      assert.ok(String(init.body).includes("password=secret"), "login body carries the password only to fetch");
+      assert.equal(init.headers.cookie, "pdpp_owner_csrf=csrf-cookie");
+      return response(302, "", "pdpp_owner_session=session-cookie; Path=/; HttpOnly");
+    }
+    cookieHeaders.push(init.headers?.cookie ?? "");
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com/",
+    env: { PDPP_OWNER_PASSWORD: "secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.authMode, "password-session");
+  assert.equal(result.ok, true);
+  assert.equal(result.findings.length, 0);
+  assert.equal(result.surfaces.every((surface) => surface.reachedOwnerSurface), true);
+  assert.ok(cookieHeaders.length >= 4);
+  assert.ok(cookieHeaders.every((value) => value === "pdpp_owner_session=session-cookie"));
+  assert.ok(!JSON.stringify(result).includes("secret"), "result must not expose the owner password");
+  assert.ok(!JSON.stringify(result).includes("session-cookie"), "result must not expose the owner session cookie");
+  assert.equal(calls.some((call) => String(call.url).endsWith("/owner/login") && call.init.method === "POST"), true);
 });
 
 // ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────

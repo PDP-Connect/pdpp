@@ -116,8 +116,14 @@ export function renderReport({ local, live, cleanShell = null, timestamp }) {
     if (live.authMode === "none") {
       lines.push(
         "> Live auth was not supplied, so owner-only surfaces likely redirected to login " +
-          "and were marked inconclusive. Set `PDPP_OWNER_SESSION_COOKIE` or `PDPP_OWNER_TOKEN` " +
-          "to scan authenticated renders."
+          "and are treated as acceptance failures. Set `PDPP_OWNER_SESSION_COOKIE` or " +
+          "`PDPP_OWNER_PASSWORD` to scan authenticated renders."
+      );
+      lines.push("");
+    } else if (live.findings.some((f) => f.class === "live-probe-inconclusive")) {
+      lines.push(
+        "> At least one live owner surface was not reached. This is a failed live gate until " +
+          "the authenticated rendered page is observed."
       );
       lines.push("");
     }
