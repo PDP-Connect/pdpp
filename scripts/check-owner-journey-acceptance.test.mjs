@@ -18,8 +18,10 @@ import test from "node:test";
 
 import {
   checkCommandFreshness,
+  checkDashboardRouteShellContract,
   checkHelpLinkTargets,
   checkPostSubmitDurability,
+  checkSharedShellNavContract,
   deriveSpecifierVars,
   deriveSubcommandSurface,
   extractRenderedCommands,
@@ -206,6 +208,49 @@ test("post-submit durability flags a transient-only flow and passes a durable on
   assert.deepEqual(checkPostSubmitDurability({ path: "p", src: durable, rule: POST_SUBMIT_RULE }), []);
 });
 
+test("shared shell nav contract catches missing route links and ambiguous Explore chrome", () => {
+  const src = `export const NAV_GROUPS = [
+    { heading: null, items: [{ label: "Sources", href: "/dashboard/records" }] },
+  ];
+  function NavList(){ return <button>{item.label}</button>; }
+  export function RecordroomShell(){ return <button className="rr-chrome-btn">Explore</button>; }`;
+  const findings = checkSharedShellNavContract({
+    path: "shell.tsx",
+    src,
+    requiredItems: [{ label: "Explore", href: "/dashboard/explore" }],
+  });
+  assert.ok(findings.some((f) => f.ruleId === "shared-shell-missing-nav-item"));
+  assert.ok(findings.some((f) => f.ruleId === "shared-shell-nav-not-links"));
+  assert.ok(findings.some((f) => f.ruleId === "shared-shell-jump-not-explore-button"));
+});
+
+test("dashboard route shell contract catches legacy or unshelled owner routes", () => {
+  const findings = checkDashboardRouteShellContract({
+    files: [
+      {
+        path: "apps/console/src/app/dashboard/records/page.tsx",
+        src: `import { DashboardShell } from "./components/shell"; export default function Page(){ return <DashboardShell/>; }`,
+      },
+      {
+        path: "apps/console/src/app/dashboard/grants/page.tsx",
+        src: `export default function Page(){ return <main>raw page</main>; }`,
+      },
+      {
+        path: "apps/console/src/app/dashboard/records/deployment/page.tsx",
+        src: `import { redirect } from "next/navigation"; export default function Page(){ redirect("/dashboard/deployment"); }`,
+      },
+    ],
+    fullScreenExceptions: [],
+  });
+  assert.ok(findings.some((f) => f.ruleId === "legacy-dashboard-shell-route"));
+  assert.ok(findings.some((f) => f.ruleId === "dashboard-route-missing-recordroom-shell"));
+  assert.equal(
+    findings.some((f) => f.path.endsWith("/records/deployment/page.tsx")),
+    false,
+    "redirect-only aliases do not need the shell"
+  );
+});
+
 // ── 4. stripComments correctness ─────────────────────────────────────────────
 
 test("stripComments removes comments but preserves string/template content", () => {
@@ -227,6 +272,27 @@ test("current owner UI source passes the full acceptance scan", async () => {
     `expected clean owner UI, got findings:\n${result.findings.map((f) => `  [${f.class}] ${f.ruleId} ${f.path}:${f.line}`).join("\n")}`
   );
   assert.equal(result.ok, true);
+});
+
+test("owner route discovery scans browser-session and manual-upload setup surfaces", async () => {
+  const result = await runLocalAcceptance();
+  const scanned = new Set(result.scannedFiles.normal);
+  assert.ok(
+    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/page.tsx"),
+    "browser-session setup page must be scanned"
+  );
+  assert.ok(
+    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/page.tsx"),
+    "browser-session launch page must be scanned"
+  );
+  assert.ok(
+    scanned.has("apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/page.tsx"),
+    "manual upload setup page must be scanned"
+  );
+  assert.ok(
+    scanned.has("apps/console/src/app/dashboard/records/[connector]/page.tsx"),
+    "source detail pages must be scanned"
+  );
 });
 
 test("real published surface contains the subcommands rendered in owner UI", async () => {

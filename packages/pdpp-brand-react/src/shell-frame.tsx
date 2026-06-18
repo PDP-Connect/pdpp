@@ -9,18 +9,17 @@
  * Ported from `rr-app.jsx` (the design SHELL) and rebound to the REAL app:
  *
  * NAV RECONCILIATION (design groups vs real routes):
- *   The design groups nav as Explore · Collection (Syncs, Sources) · Sharing
- *   (Grants, Traces) · Server (Connect AI apps, Deployment, Device exporters,
- *   Event subscriptions) · Glance (Standing = Overview). We keep that grouped
- *   PRESENTATION but bind every item to the REAL route the dashboard enforces
- *   (those routes are pinned by next.config.mjs redirects + tests), and adopt
- *   the design's labels where they map. Decisions:
- *     - "Standing" (design) → label kept, route is the real Overview `/dashboard`.
- *     - "Sources" → the real route is `/dashboard/records` (the design's Sources
- *       maps onto the real records surface).
- *     - "Syncs" (design-only; the real app has no /dashboard/syncs) → mapped to
- *       the real Runs route `/dashboard/runs`, keeping the warmer "Syncs" label
- *       (is your data arriving). See SYNCS_NOTE below.
+ *   The shell uses owner-facing labels for the real routes the dashboard
+ *   enforces (those routes are pinned by next.config.mjs redirects + tests).
+ *   The labels answer the owner's core questions:
+ *     - "Overview" -> where the instance stands and what needs attention.
+ *     - "Explore" -> the reader for records already in this instance.
+ *     - "Sources" -> configured data sources and their streams.
+ *     - "Syncs" -> the real Runs route `/dashboard/runs`, using the warmer
+ *       owner-facing label from the page title. See SYNCS_NOTE below.
+ *     - "Schedules" -> the real schedule management route.
+ *     - "Connect AI apps" -> reader/client access, grouped with sharing, not
+ *       source collection.
  *   `NAV_GROUPS` is a typed array so leaf views / future edits are trivial.
  *
  * THEME: the toggle flips BOTH `data-theme` and the `dark` class on <html> so
@@ -38,9 +37,8 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import "./components.css";
 import "./shell.css";
 
-// SYNCS_NOTE: the design's "Syncs" group item has no dedicated real route; we
-// point it at the real Runs route. If a future `/dashboard/runs` presentation
-// renames itself "Syncs", only this href/label pair changes.
+// SYNCS_NOTE: the owner-facing "Syncs" group item has no dedicated real route;
+// it points at the real Runs route, whose page title is also Syncs.
 
 export interface NavItem {
   /** Real route href (pinned by redirects/tests). */
@@ -50,7 +48,7 @@ export interface NavItem {
 }
 
 export interface NavGroup {
-  /** Group heading; null for the ungrouped top item (Explore). */
+  /** Group heading; null for the ungrouped orientation items. */
   heading: string | null;
   items: NavItem[];
 }
@@ -60,17 +58,25 @@ export interface NavGroup {
  * design vocabulary. Edit this array to change nav — components derive from it.
  */
 export const NAV_GROUPS: NavGroup[] = [
-  { heading: null, items: [{ label: "Explore", href: "/dashboard/explore" }] },
+  {
+    heading: null,
+    items: [
+      { label: "Overview", href: "/dashboard" },
+      { label: "Explore", href: "/dashboard/explore" },
+    ],
+  },
   {
     heading: "Collection",
     items: [
-      { label: "Syncs", href: "/dashboard/runs" },
       { label: "Sources", href: "/dashboard/records" },
+      { label: "Syncs", href: "/dashboard/runs" },
+      { label: "Schedules", href: "/dashboard/schedules" },
     ],
   },
   {
     heading: "Sharing",
     items: [
+      { label: "Connect AI apps", href: "/dashboard/connect" },
       { label: "Grants", href: "/dashboard/grants" },
       { label: "Traces", href: "/dashboard/traces" },
     ],
@@ -78,13 +84,11 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     heading: "Server",
     items: [
-      { label: "Connect AI apps", href: "/dashboard/connect" },
       { label: "Deployment", href: "/dashboard/deployment" },
       { label: "Device exporters", href: "/dashboard/device-exporters" },
       { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
     ],
   },
-  { heading: "Glance", items: [{ label: "Standing", href: "/dashboard" }] },
 ];
 
 /** Flat list of every nav item, for ⌘K palettes and tests. */
@@ -92,7 +96,7 @@ export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 // ─── Active-route matching ────────────────────────────────────────
 //
-// `/dashboard` (Standing) must match ONLY itself — every other route also
+// `/dashboard` (Overview) must match ONLY itself — every other route also
 // starts with `/dashboard`, so an exact match is required for the root and a
 // prefix match (segment-boundary aware) for the rest.
 export function isNavItemActive(href: string, pathname: string): boolean {

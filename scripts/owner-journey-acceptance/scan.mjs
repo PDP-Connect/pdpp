@@ -505,6 +505,151 @@ export function checkPostSubmitDurability({ path, src, rule }) {
   ];
 }
 
+/**
+ * Check the shared dashboard shell's primary navigation contract. This is a
+ * source-level regression guard for the old failure where navigation looked
+ * like vague top chrome instead of a durable route map.
+ *
+ * @param {object} args
+ * @param {string} args.path
+ * @param {string} args.src
+ * @param {ReadonlyArray<{label:string,href:string}>} args.requiredItems
+ * @returns {Array} findings
+ */
+export function checkSharedShellNavContract({ path, src, requiredItems }) {
+  const cleaned = stripComments(src);
+  const findings = [];
+
+  for (const item of requiredItems) {
+    const itemRe = new RegExp(
+      `\\{\\s*label:\\s*${quotedLiteralPattern(item.label)},\\s*href:\\s*${quotedLiteralPattern(item.href)}\\s*\\}`
+    );
+    if (!itemRe.test(cleaned)) {
+      findings.push({
+        ruleId: "shared-shell-missing-nav-item",
+        class: "shell-navigation-contract",
+        path,
+        line: 0,
+        excerpt: `${item.label} -> ${item.href}`,
+        rationale:
+          "The owner console shell must expose the primary route map as durable navigation links. Missing or remapped route labels can recreate the confusing top-nav/button state from the owner walkthrough.",
+      });
+    }
+  }
+
+  const linkUsesRouteHref = /<Link\b[\s\S]*?href=\{item\.href\}/.test(cleaned);
+  if (!linkUsesRouteHref) {
+    findings.push({
+      ruleId: "shared-shell-nav-not-links",
+      class: "shell-navigation-contract",
+      path,
+      line: 0,
+      excerpt: "NavList must render Link href={item.href}",
+      rationale:
+        "Primary navigation must be real route links. It must not regress into vague buttons that obscure route changes.",
+    });
+  }
+
+  if (!/aria-current=\{active \? "page" : undefined\}/.test(cleaned)) {
+    findings.push({
+      ruleId: "shared-shell-missing-active-page",
+      class: "shell-navigation-contract",
+      path,
+      line: 0,
+      excerpt: "aria-current active page marker",
+      rationale:
+        "The shared shell must mark the current route with aria-current so the owner can tell where they are.",
+    });
+  }
+
+  const jumpButton = cleaned.match(/<button\b[^>]*className="rr-chrome-btn"[\s\S]*?<\/button>/)?.[0] ?? "";
+  if (!/\bJump\b/.test(jumpButton) || /\bExplore\b/.test(jumpButton)) {
+    findings.push({
+      ruleId: "shared-shell-jump-not-explore-button",
+      class: "shell-navigation-contract",
+      path,
+      line: jumpButton ? lineOf(cleaned, cleaned.indexOf(jumpButton)) : 0,
+      excerpt: excerptAround(jumpButton, 0, 80) || "missing Jump button",
+      rationale:
+        "Header chrome may open the command palette, but it must not present Explore as an ambiguous button. Explore belongs in route navigation.",
+    });
+  }
+
+  return findings;
+}
+
+/**
+ * Check dashboard route files for shared-shell consistency. Redirect-only
+ * aliases and full-screen browser-stream surfaces are explicit exceptions; all
+ * normal owner route pages and loading states should use the same Recordroom
+ * shell.
+ *
+ * @param {object} args
+ * @param {ReadonlyArray<{path:string,src:string}>} args.files
+ * @param {ReadonlyArray<string>} args.fullScreenExceptions
+ * @returns {Array} findings
+ */
+export function checkDashboardRouteShellContract({ files, fullScreenExceptions = [] }) {
+  const findings = [];
+  const exceptionSet = new Set(fullScreenExceptions);
+
+  for (const file of files) {
+    const cleaned = stripComments(file.src);
+    const isRouteFile = /\/(?:page|loading)\.tsx$/.test(file.path);
+    if (!isRouteFile) {
+      continue;
+    }
+
+    if (/\bDashboardShell\b/.test(cleaned)) {
+      findings.push({
+        ruleId: "legacy-dashboard-shell-route",
+        class: "shell-navigation-contract",
+        path: file.path,
+        line: lineOf(cleaned, cleaned.search(/\bDashboardShell\b/)),
+        excerpt: "DashboardShell",
+        rationale:
+          "Normal console routes must not reintroduce the legacy dashboard shell/top-nav path. Use RecordroomShellWithPalette for shared navigation.",
+      });
+    }
+
+    if (exceptionSet.has(file.path) || isRedirectOnlyRoute(cleaned)) {
+      continue;
+    }
+
+    if (!/\bRecordroomShellWithPalette\b/.test(cleaned)) {
+      findings.push({
+        ruleId: "dashboard-route-missing-recordroom-shell",
+        class: "shell-navigation-contract",
+        path: file.path,
+        line: 0,
+        excerpt: "RecordroomShellWithPalette missing",
+        rationale:
+          "Normal dashboard pages and loading states must render inside the shared Recordroom shell so navigation and chrome stay consistent across the owner journey.",
+      });
+    }
+  }
+
+  return findings;
+}
+
+function quotedLiteralPattern(value) {
+  return `["']${escapeRegExp(value)}["']`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isRedirectOnlyRoute(src) {
+  return (
+    /\b(?:redirect|permanentRedirect)\s*\(/.test(src) &&
+    !/<RecordroomShellWithPalette\b/.test(src) &&
+    !/<main\b/.test(src) &&
+    !/<section\b/.test(src) &&
+    !/<div\b/.test(src)
+  );
+}
+
 // ── small text helpers ─────────────────────────────────────────────────────
 
 /** 1-based line number of a character offset. */

@@ -92,7 +92,7 @@ async function startBrowserRun(connectorId: string, connectionId: string, draft:
 function launchErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : "The browser session could not start.";
   return isLostTransportError(err)
-    ? "PDPP may have started the browser run, but this page could not confirm it after the network changed. Open Runs, or try again if no new run appears."
+    ? "PDPP may have started the browser run, but this page could not confirm it after the network changed. Open Syncs, or try again if no new run appears."
     : message;
 }
 
@@ -154,7 +154,7 @@ export function BrowserSessionLaunchPanel({
             Try again
           </button>
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/runs">
-            Open Runs
+            Open Syncs
           </Link>
           <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records">
             Back to Sources

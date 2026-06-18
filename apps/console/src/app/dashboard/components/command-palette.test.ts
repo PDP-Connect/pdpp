@@ -6,26 +6,25 @@ import { listDashboardCommands, matchDashboardCommands } from "../lib/actions.ts
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const COMMAND_PALETTE_FILE = `${HERE}command-palette.tsx`;
-const SHELL_FILE = `${HERE}shell.tsx`;
+const RECORDROOM_SHELL_FILE = fileURLToPath(
+  new URL("../../../../../../packages/pdpp-brand-react/src/shell-frame.tsx", import.meta.url)
+);
+const RECORDROOM_SHELL_BRIDGE_FILE = `${HERE}recordroom-shell-with-palette.tsx`;
+const DASHBOARD_PALETTE_PROVIDER_FILE = `${HERE}dashboard-palette-provider.tsx`;
 
 const MODULE_MUTABLE_OPENER = /let\s+openRef|noopOpen|openRef\s*=\s*\{/;
 const CONTEXT_PROVIDER = /const CommandPaletteContext = createContext<CommandPaletteContextValue \| null>\(null\)/;
 const CONTEXT_HOOK = /function useCommandPalette\(\): CommandPaletteContextValue/;
 const TRIGGER_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*onClick=\{palette\.open\}/;
 const PALETTE_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*if \(!palette\.isOpen\)/;
-const SHELL_IMPORTS_PROVIDER = /import \{ CommandPalette, CommandPaletteProvider, CommandPaletteTrigger \}/;
-const SHELL_PROVIDER_WRAP =
-  /<CommandPaletteProvider>[\s\S]*<Topbar overviewHref=\{routes\.section\.overview\} \/>[\s\S]*<CommandPalette [\s\S]*<\/CommandPaletteProvider>/;
+const LAYOUT_PROVIDER_WRAP = /<CommandPaletteProvider>[\s\S]*\{children\}[\s\S]*<CommandPalette basePath="\/dashboard" mode="live" \/>[\s\S]*<\/CommandPaletteProvider>/;
+const SHELL_BRIDGE_USES_CONTEXT = /const \{ toggle \} = useCommandPalette\(\)/;
+const SHELL_BRIDGE_WIRES_JUMP = /<RecordroomShell build=\{build\} host=\{host\} onJump=\{toggle\}>/;
 const PALETTE_USES_REGISTRY = /import \{[^}]*\blistDashboardCommands\b[^}]*\} from "\.\.\/lib\/actions\.ts"/;
-const EXPLORE_PRIMARY_GROUP_RE = /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["']/;
-const EXPLORE_PRIMARY_GROUPS_RECORDS_RE =
-  /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["'] \|\| a === ["']records["']/;
-const PRIMARY_JUMP_NAV_RE = /label:\s*["']Jump["']/;
-const PRIMARY_SOURCES_NAV_RE = /\{\s*href:\s*routes\.section\.records,\s*label:\s*["']Sources["']/;
-
-function buildNavSource(src: string): string {
-  return src.slice(src.indexOf("function buildNav"), src.indexOf("function resolveRoutes"));
-}
+const NAV_ITEM_RE = (label: string, href: string) =>
+  new RegExp(`\\{\\s*label:\\s*["']${label}["'],\\s*href:\\s*["']${href.replaceAll("/", "\\/")}["']\\s*\\}`);
+const NAV_GROUP_RE = (heading: string, labels: string[]) =>
+  new RegExp(`heading:\\s*["']${heading}["'][\\s\\S]*${labels.map((label) => `label:\\s*["']${label}["']`).join("[\\s\\S]*")}`);
 
 test("command palette uses React context, not a module-level mutable opener", async () => {
   const src = await readFile(COMMAND_PALETTE_FILE, "utf8");
@@ -36,19 +35,23 @@ test("command palette uses React context, not a module-level mutable opener", as
   assert.match(src, PALETTE_USES_CONTEXT);
 });
 
-test("dashboard shell wraps the topbar trigger and palette in the same provider", async () => {
-  const src = await readFile(SHELL_FILE, "utf8");
-  assert.match(src, SHELL_IMPORTS_PROVIDER);
-  assert.match(src, SHELL_PROVIDER_WRAP);
+test("dashboard layout provides the live command palette to the Recordroom shell bridge", async () => {
+  const provider = await readFile(DASHBOARD_PALETTE_PROVIDER_FILE, "utf8");
+  const bridge = await readFile(RECORDROOM_SHELL_BRIDGE_FILE, "utf8");
+  assert.match(provider, LAYOUT_PROVIDER_WRAP);
+  assert.match(bridge, SHELL_BRIDGE_USES_CONTEXT);
+  assert.match(bridge, SHELL_BRIDGE_WIRES_JUMP);
 });
 
-test("primary shell navigation keeps Explore, Jump, and Sources distinct", async () => {
-  const src = await readFile(SHELL_FILE, "utf8");
-  const primaryNav = buildNavSource(src);
-  assert.match(primaryNav, EXPLORE_PRIMARY_GROUP_RE);
-  assert.doesNotMatch(primaryNav, EXPLORE_PRIMARY_GROUPS_RECORDS_RE, "Sources must not be grouped under Explore");
-  assert.doesNotMatch(primaryNav, PRIMARY_JUMP_NAV_RE, "Jump belongs in the Explore subnav, not primary navigation");
-  assert.match(primaryNav, PRIMARY_SOURCES_NAV_RE, "Sources must be primary navigation");
+test("live Recordroom shell navigation covers owner routes with one clear label per concept", async () => {
+  const src = await readFile(RECORDROOM_SHELL_FILE, "utf8");
+  assert.match(src, NAV_ITEM_RE("Overview", "/dashboard"));
+  assert.match(src, NAV_ITEM_RE("Explore", "/dashboard/explore"));
+  assert.match(src, NAV_GROUP_RE("Collection", ["Sources", "Syncs", "Schedules"]));
+  assert.match(src, NAV_GROUP_RE("Sharing", ["Connect AI apps", "Grants", "Traces"]));
+  assert.match(src, NAV_GROUP_RE("Server", ["Deployment", "Device exporters", "Event subscriptions"]));
+  assert.doesNotMatch(src, /label:\s*["']Standing["']/, "Standing must not ship as owner-facing nav");
+  assert.doesNotMatch(src, /label:\s*["']Jump["']/, "Jump is command-palette chrome, not primary nav");
 });
 
 test("command palette sources commands from the actions registry, not a hard-coded list", async () => {
@@ -99,6 +102,19 @@ test("Schedules nav command is present in live mode", () => {
   const schedules = all.find((c) => c.id === "nav-schedules");
   assert.ok(schedules, "nav-schedules must exist");
   assert.equal(schedules.href, "/dashboard/schedules");
+});
+
+test("runs route is labeled Syncs in the command palette to match the page and sidebar", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const syncs = all.find((c) => c.id === "nav-runs");
+  assert.ok(syncs, "nav-runs command must exist");
+  assert.equal(syncs.title, "Syncs");
+  assert.equal(syncs.href, "/dashboard/runs");
+  assert.equal(
+    all.some((c) => c.title === "Runs"),
+    false,
+    "owner-facing command titles must not reintroduce the old Runs label"
+  );
 });
 
 test("Deployment nav command is present in live mode", () => {

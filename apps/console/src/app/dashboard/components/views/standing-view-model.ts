@@ -727,7 +727,7 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
 function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): StandingHero {
   return {
     tone: "alarm",
-    kicker: "Standing may be out of date",
+    kicker: "Overview may be out of date",
     line: { text: "Your overview ", emphasis: "hasn't refreshed", tail: " recently." },
     sub:
       summary?.projection?.last_error ??

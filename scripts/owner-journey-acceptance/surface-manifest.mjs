@@ -49,6 +49,16 @@ export const NORMAL_OWNER_UI_FILES = [
 ];
 
 /**
+ * Route trees whose page/loading files are normal owner UI and should be
+ * scanned automatically. This prevents new setup/source pages from silently
+ * bypassing the owner-journey acceptance harness.
+ */
+export const NORMAL_OWNER_ROUTE_SCAN_ROOTS = [
+  "apps/console/src/app/dashboard/connect",
+  "apps/console/src/app/dashboard/records",
+];
+
+/**
  * Advanced / diagnostic console surfaces. Scanned for monorepo and unpublished
  * command leaks, but exempt from owner-vocabulary-only rules (these surfaces
  * may legitimately show `connector_instance_id`, `source_instance_id`, and a
@@ -72,6 +82,37 @@ export const ADVANCED_OWNER_UI_FILES = [
 export const COMMAND_SOURCE_FILES = [
   "apps/console/src/lib/pdpp-cli-command.ts",
   "apps/console/src/app/dashboard/lib/connection-catalog.ts",
+];
+
+/**
+ * Shared shell contract: the primary dashboard route map must stay in the
+ * Recordroom shell and normal owner routes must render through it. This guards
+ * the navigation regression from the owner walkthrough without freezing visual
+ * implementation details like spacing or color.
+ */
+export const SHARED_SHELL_FILE = "packages/pdpp-brand-react/src/shell-frame.tsx";
+
+export const DASHBOARD_ROUTE_ROOT = "apps/console/src/app/dashboard";
+
+export const SHELL_NAV_REQUIRED_ITEMS = [
+  { label: "Overview", href: "/dashboard" },
+  { label: "Explore", href: "/dashboard/explore" },
+  { label: "Sources", href: "/dashboard/records" },
+  { label: "Syncs", href: "/dashboard/runs" },
+  { label: "Schedules", href: "/dashboard/schedules" },
+  { label: "Connect AI apps", href: "/dashboard/connect" },
+  { label: "Grants", href: "/dashboard/grants" },
+  { label: "Traces", href: "/dashboard/traces" },
+  { label: "Deployment", href: "/dashboard/deployment" },
+  { label: "Device exporters", href: "/dashboard/device-exporters" },
+  { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
+];
+
+export const FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS = [
+  // Browser-control stream surfaces are intentionally full-screen task surfaces,
+  // not dashboard reading-room pages.
+  "apps/console/src/app/dashboard/runs/[runId]/stream/page.tsx",
+  "apps/console/src/app/dashboard/stream-playground/page.tsx",
 ];
 
 /**

@@ -9,14 +9,16 @@
 // it returns a structured result object. It performs no console output and no
 // process.exit — callers decide how to present and gate.
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   checkCommandFreshness,
+  checkDashboardRouteShellContract,
   checkHelpLinkTargets,
   checkPostSubmitDurability,
+  checkSharedShellNavContract,
   deriveSubcommandSurface,
   extractRenderedCommands,
   scanForbiddenStrings,
@@ -25,12 +27,17 @@ import {
 import {
   ADVANCED_OWNER_UI_FILES,
   COMMAND_SOURCE_FILES,
+  DASHBOARD_ROUTE_ROOT,
   FORBIDDEN_RENDERED_HELPERS,
   FORBIDDEN_STRING_RULES,
+  FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS,
   HELP_LINK_RULE,
   NORMAL_OWNER_UI_FILES,
+  NORMAL_OWNER_ROUTE_SCAN_ROOTS,
   POST_SUBMIT_RULE,
   PUBLISHED_PACKAGES,
+  SHARED_SHELL_FILE,
+  SHELL_NAV_REQUIRED_ITEMS,
 } from "./surface-manifest.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +46,50 @@ export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
 async function readRepoFile(repoRelativePath) {
   return readFile(path.join(REPO_ROOT, repoRelativePath), "utf8");
+}
+
+async function walkRepoFiles(repoRelativeDir) {
+  const absoluteDir = path.join(REPO_ROOT, repoRelativeDir);
+  const entries = await readdir(absoluteDir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const rel = path.join(repoRelativeDir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await walkRepoFiles(rel)));
+    } else if (entry.isFile()) {
+      files.push(rel);
+    }
+  }
+  return files;
+}
+
+async function readRouteSources(repoRelativeRoot) {
+  const files = await walkRepoFiles(repoRelativeRoot);
+  const routeFiles = files
+    .filter((file) => /\/(?:page|loading)\.tsx$/.test(file))
+    .sort();
+  const sources = [];
+  for (const file of routeFiles) {
+    sources.push({ path: file, src: await readRepoFile(file) });
+  }
+  return sources;
+}
+
+async function readDashboardRouteSources() {
+  return readRouteSources(DASHBOARD_ROUTE_ROOT);
+}
+
+async function discoverNormalOwnerRouteFiles(explicitFiles) {
+  const explicit = new Set(explicitFiles);
+  const discovered = [];
+  for (const root of NORMAL_OWNER_ROUTE_SCAN_ROOTS) {
+    for (const file of await walkRepoFiles(root)) {
+      if (/\/(?:page|loading)\.tsx$/.test(file) && !explicit.has(file)) {
+        discovered.push(file);
+      }
+    }
+  }
+  return [...new Set(discovered)].sort();
 }
 
 /**
@@ -67,7 +118,7 @@ export async function derivePublishedCommandSurface() {
  *   findings: Array,
  *   renderedCommands: Array,
  *   publishedSurface: Record<string, string[]>,
- *   scannedFiles: { normal: string[], advanced: string[], commandSource: string[] },
+ *   scannedFiles: { normal: string[], advanced: string[], commandSource: string[], discoveredNormalRoutes: string[] },
  *   ok: boolean,
  * }>}
  */
@@ -75,6 +126,10 @@ export async function runLocalAcceptance(opts = {}) {
   const normalFiles = opts.normalFiles ?? NORMAL_OWNER_UI_FILES;
   const advancedFiles = opts.advancedFiles ?? ADVANCED_OWNER_UI_FILES;
   const commandSourceFiles = opts.commandSourceFiles ?? COMMAND_SOURCE_FILES;
+  const discoveredNormalRouteFiles = opts.normalFiles
+    ? []
+    : await discoverNormalOwnerRouteFiles([...normalFiles, ...advancedFiles]);
+  const allNormalFiles = [...normalFiles, ...discoveredNormalRouteFiles];
 
   const surfaceByPackage = await derivePublishedCommandSurface();
   const findings = [];
@@ -94,7 +149,7 @@ export async function runLocalAcceptance(opts = {}) {
     renderedCommands.push(...fresh.rendered);
   };
 
-  for (const file of normalFiles) {
+  for (const file of allNormalFiles) {
     await scanRenderedTier(file, "normal");
   }
   for (const file of advancedFiles) {
@@ -125,6 +180,26 @@ export async function runLocalAcceptance(opts = {}) {
     findings.push(...checkPostSubmitDurability({ path: POST_SUBMIT_RULE.file, src, rule: POST_SUBMIT_RULE }));
   }
 
+  // Shared shell / navigation contract. This pins the current route-map
+  // architecture and prevents normal owner routes from silently drifting back
+  // to the legacy dashboard shell or one-off chrome.
+  {
+    const src = await readRepoFile(SHARED_SHELL_FILE);
+    findings.push(
+      ...checkSharedShellNavContract({
+        path: SHARED_SHELL_FILE,
+        src,
+        requiredItems: SHELL_NAV_REQUIRED_ITEMS,
+      })
+    );
+    findings.push(
+      ...checkDashboardRouteShellContract({
+        files: await readDashboardRouteSources(),
+        fullScreenExceptions: FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS,
+      })
+    );
+  }
+
   const publishedSurface = Object.fromEntries(
     Object.entries(surfaceByPackage).map(([k, v]) => [k, [...v].sort()])
   );
@@ -134,9 +209,10 @@ export async function runLocalAcceptance(opts = {}) {
     renderedCommands,
     publishedSurface,
     scannedFiles: {
-      normal: [...normalFiles],
+      normal: allNormalFiles,
       advanced: [...advancedFiles],
       commandSource: [...commandSourceFiles],
+      discoveredNormalRoutes: discoveredNormalRouteFiles,
     },
     ok: findings.length === 0,
   };

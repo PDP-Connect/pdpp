@@ -20,6 +20,9 @@ import { lineOf, scanForbiddenStrings } from "./scan.mjs";
 export const LIVE_SURFACES = [
   { path: "/dashboard", tier: "normal" },
   { path: "/dashboard/connect", tier: "normal" },
+  { path: "/dashboard/connect/browser-session/amazon", tier: "normal" },
+  { path: "/dashboard/connect/manual-upload/google-maps", tier: "normal" },
+  { path: "/dashboard/connect/manual-upload/whatsapp", tier: "normal" },
   { path: "/dashboard/records", tier: "normal" },
   { path: "/dashboard/records/add", tier: "normal" },
   { path: "/dashboard/grants", tier: "normal" },
