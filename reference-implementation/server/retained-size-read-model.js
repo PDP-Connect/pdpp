@@ -78,30 +78,357 @@ function defaultMetadata(at) {
 }
 
 // ---------------------------------------------------------------------------
+// Domain-local store
+//
+// One named, per-domain store with two dialect adapters selected ONCE via
+// isPostgresStorageBackend(). Dialect SQL moves VERBATIM from the old inline
+// branches. Adapters return RAW rows / perform writes; row-shaping
+// (shapeGlobalRow, shapeConnectionRow, ...) and the best-effort try/catch
+// wrappers on markers stay CALLER-SIDE.
+// ---------------------------------------------------------------------------
+
+function createRetainedSizePostgresStore() {
+  return {
+    async getGlobalRow() {
+      const result = await postgresQuery(
+        `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_count, record_history_count, blob_count,
+                dirty, computed_at, metadata_json
+           FROM retained_size_global
+          WHERE projection_key = $1`,
+        [GLOBAL_KEY],
+      );
+      return result.rows[0];
+    },
+    async listConnectionRows({ connectorInstanceId } = {}) {
+      const params = [];
+      let where = '';
+      if (connectorInstanceId) {
+        params.push(connectorInstanceId);
+        where = `WHERE connector_instance_id = $${params.length}`;
+      }
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id,
+                current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_count, record_history_count, blob_count,
+                dirty, computed_at
+           FROM retained_size_connection
+           ${where}
+           ORDER BY connector_instance_id ASC`,
+        params,
+      );
+      return result.rows;
+    },
+    async listStreamRows({ connectorInstanceId, connectorId, stream } = {}) {
+      const params = [];
+      const clauses = [];
+      if (connectorInstanceId) {
+        params.push(connectorInstanceId);
+        clauses.push(`connector_instance_id = $${params.length}`);
+      }
+      if (connectorId) {
+        params.push(connectorId);
+        clauses.push(`connector_id = $${params.length}`);
+      }
+      if (stream) {
+        params.push(stream);
+        clauses.push(`stream = $${params.length}`);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, stream,
+                current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_count, record_history_count, blob_count,
+                dirty, computed_at
+           FROM retained_size_stream
+           ${where}
+           ORDER BY connector_instance_id ASC, stream ASC`,
+        params,
+      );
+      return result.rows;
+    },
+    async listRecordFamilyRows({ connectorInstanceId, stream, recordFamily } = {}) {
+      const params = [];
+      const clauses = [];
+      if (connectorInstanceId) {
+        params.push(connectorInstanceId);
+        clauses.push(`connector_instance_id = $${params.length}`);
+      }
+      if (stream) {
+        params.push(stream);
+        clauses.push(`stream = $${params.length}`);
+      }
+      if (recordFamily) {
+        params.push(recordFamily);
+        clauses.push(`record_family = $${params.length}`);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, stream, record_family,
+                current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_count, record_history_count, blob_count,
+                dirty, computed_at
+           FROM retained_size_record_family
+           ${where}
+           ORDER BY connector_instance_id ASC, stream ASC, record_family ASC`,
+        params,
+      );
+      return result.rows;
+    },
+    async listTopRows({ scope, measure, limit }) {
+      const result = await postgresQuery(
+        `SELECT scope, measure, rank, grain_key,
+                connector_instance_id, connector_id, stream, record_key, blob_id,
+                current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                total_retained_bytes, record_count, record_history_count, blob_count,
+                dirty, computed_at, metadata_json
+           FROM retained_size_top_rows
+          WHERE scope = $1 AND measure = $2
+          ORDER BY rank ASC
+          LIMIT $3`,
+        [scope, measure, limit],
+      );
+      return result.rows;
+    },
+    async upsertGlobalDirty({ at, metadataJson }) {
+      await postgresQuery(
+        `INSERT INTO retained_size_global(
+           projection_key, dirty, computed_at, metadata_json
+         )
+         VALUES($1, 1, $2, $3::jsonb)
+         ON CONFLICT (projection_key) DO UPDATE SET
+           dirty = 1,
+           computed_at = COALESCE(retained_size_global.computed_at, $2),
+           metadata_json = $3::jsonb`,
+        [GLOBAL_KEY, at, metadataJson],
+      );
+    },
+    async markStreamRowsDirty({ connectorInstanceId, stream }) {
+      await postgresQuery(
+        `UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = $1 AND stream = $2`,
+        [connectorInstanceId, stream],
+      );
+      await postgresQuery(
+        `UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+    },
+    async markConnectionRowsDirty({ connectorInstanceId }) {
+      await postgresQuery(
+        `UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+      await postgresQuery(
+        `UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+    },
+    async upsertGlobalRebuilding({ at, metadataJson }) {
+      await postgresQuery(
+        `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
+         VALUES($1, 1, $2, $3::jsonb)
+         ON CONFLICT (projection_key) DO UPDATE SET
+           metadata_json = $3::jsonb`,
+        [GLOBAL_KEY, at, metadataJson],
+      );
+    },
+    async updateGlobalFresh({ at, metadataJson }) {
+      await postgresQuery(
+        `UPDATE retained_size_global SET dirty = 0, computed_at = $1, metadata_json = $2::jsonb
+          WHERE projection_key = $3`,
+        [at, metadataJson, GLOBAL_KEY],
+      );
+    },
+    async upsertGlobalFailed({ at, metadataJson }) {
+      await postgresQuery(
+        `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
+         VALUES($1, 1, $2, $3::jsonb)
+         ON CONFLICT (projection_key) DO UPDATE SET
+           dirty = 1,
+           metadata_json = $3::jsonb`,
+        [GLOBAL_KEY, at, metadataJson],
+      );
+    },
+  };
+}
+
+function createRetainedSizeSqliteStore() {
+  return {
+    getGlobalRow() {
+      return getDb()
+        .prepare(
+          `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                  record_count, record_history_count, blob_count,
+                  dirty, computed_at, metadata_json
+             FROM retained_size_global
+            WHERE projection_key = ?`,
+        )
+        .get(GLOBAL_KEY);
+    },
+    listConnectionRows({ connectorInstanceId } = {}) {
+      const db = getDb();
+      return connectorInstanceId
+        ? db
+          .prepare(
+            `SELECT connector_instance_id, connector_id,
+                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                    record_count, record_history_count, blob_count,
+                    dirty, computed_at
+               FROM retained_size_connection
+              WHERE connector_instance_id = ?
+              ORDER BY connector_instance_id ASC`,
+          )
+          .all(connectorInstanceId)
+        : db
+          .prepare(
+            `SELECT connector_instance_id, connector_id,
+                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                    record_count, record_history_count, blob_count,
+                    dirty, computed_at
+               FROM retained_size_connection
+              ORDER BY connector_instance_id ASC`,
+          )
+          .all();
+    },
+    listStreamRows({ connectorInstanceId, connectorId, stream } = {}) {
+      const db = getDb();
+      let sql = `SELECT connector_instance_id, connector_id, stream,
+                        current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                        record_count, record_history_count, blob_count,
+                        dirty, computed_at
+                 FROM retained_size_stream`;
+      const where = [];
+      const params = [];
+      if (connectorInstanceId) {
+        where.push('connector_instance_id = ?');
+        params.push(connectorInstanceId);
+      }
+      if (connectorId) {
+        where.push('connector_id = ?');
+        params.push(connectorId);
+      }
+      if (stream) {
+        where.push('stream = ?');
+        params.push(stream);
+      }
+      if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+      sql += ' ORDER BY connector_instance_id ASC, stream ASC';
+      return db.prepare(sql).all(...params);
+    },
+    listRecordFamilyRows({ connectorInstanceId, stream, recordFamily } = {}) {
+      const db = getDb();
+      let sql = `SELECT connector_instance_id, connector_id, stream, record_family,
+                        current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                        record_count, record_history_count, blob_count,
+                        dirty, computed_at
+                   FROM retained_size_record_family`;
+      const where = [];
+      const params = [];
+      if (connectorInstanceId) {
+        where.push('connector_instance_id = ?');
+        params.push(connectorInstanceId);
+      }
+      if (stream) {
+        where.push('stream = ?');
+        params.push(stream);
+      }
+      if (recordFamily) {
+        where.push('record_family = ?');
+        params.push(recordFamily);
+      }
+      if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+      sql += ' ORDER BY connector_instance_id ASC, stream ASC, record_family ASC';
+      return db.prepare(sql).all(...params);
+    },
+    listTopRows({ scope, measure, limit }) {
+      return getDb()
+        .prepare(
+          `SELECT scope, measure, rank, grain_key,
+                  connector_instance_id, connector_id, stream, record_key, blob_id,
+                  current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                  total_retained_bytes, record_count, record_history_count, blob_count,
+                  dirty, computed_at, metadata_json
+             FROM retained_size_top_rows
+            WHERE scope = ? AND measure = ?
+            ORDER BY rank ASC
+            LIMIT ?`,
+        )
+        .all(scope, measure, limit);
+    },
+    upsertGlobalDirty({ at, metadataJson }) {
+      getDb()
+        .prepare(
+          `INSERT INTO retained_size_global(
+             projection_key, dirty, computed_at, metadata_json
+           )
+           VALUES(?, 1, ?, ?)
+           ON CONFLICT(projection_key) DO UPDATE SET
+             dirty = 1,
+             computed_at = COALESCE(computed_at, ?),
+             metadata_json = ?`,
+        )
+        .run(GLOBAL_KEY, at, metadataJson, at, metadataJson);
+    },
+    markStreamRowsDirty({ connectorInstanceId, stream }) {
+      getDb()
+        .prepare(`UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = ? AND stream = ?`)
+        .run(connectorInstanceId, stream);
+      getDb()
+        .prepare(`UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?`)
+        .run(connectorInstanceId);
+    },
+    markConnectionRowsDirty({ connectorInstanceId }) {
+      getDb()
+        .prepare(`UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = ?`)
+        .run(connectorInstanceId);
+      getDb()
+        .prepare(`UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?`)
+        .run(connectorInstanceId);
+    },
+    upsertGlobalRebuilding({ at, metadataJson }) {
+      getDb()
+        .prepare(
+          `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
+           VALUES(?, 1, ?, ?)
+           ON CONFLICT(projection_key) DO UPDATE SET
+             metadata_json = excluded.metadata_json`,
+        )
+        .run(GLOBAL_KEY, at, metadataJson);
+    },
+    updateGlobalFresh({ at, metadataJson }) {
+      getDb()
+        .prepare(
+          `UPDATE retained_size_global SET dirty = 0, computed_at = ?, metadata_json = ?
+            WHERE projection_key = ?`,
+        )
+        .run(at, metadataJson, GLOBAL_KEY);
+    },
+    upsertGlobalFailed({ at, metadataJson }) {
+      getDb()
+        .prepare(
+          `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
+           VALUES(?, 1, ?, ?)
+           ON CONFLICT(projection_key) DO UPDATE SET
+             dirty = 1,
+             metadata_json = excluded.metadata_json`,
+        )
+        .run(GLOBAL_KEY, at, metadataJson);
+    },
+  };
+}
+
+function getRetainedSizeStore() {
+  return isPostgresStorageBackend()
+    ? createRetainedSizePostgresStore()
+    : createRetainedSizeSqliteStore();
+}
+
+// ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
 export async function getRetainedSizeGlobal() {
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count,
-              dirty, computed_at, metadata_json
-         FROM retained_size_global
-        WHERE projection_key = $1`,
-      [GLOBAL_KEY],
-    );
-    return shapeGlobalRow(result.rows[0]);
-  }
-  const row = getDb()
-    .prepare(
-      `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count,
-              dirty, computed_at, metadata_json
-         FROM retained_size_global
-        WHERE projection_key = ?`,
-    )
-    .get(GLOBAL_KEY);
+  const row = await getRetainedSizeStore().getGlobalRow();
   return shapeGlobalRow(row);
 }
 
@@ -144,48 +471,7 @@ function parseMetadata(value) {
 }
 
 export async function listRetainedSizeConnections({ connectorInstanceId } = {}) {
-  if (isPostgresStorageBackend()) {
-    const params = [];
-    let where = '';
-    if (connectorInstanceId) {
-      params.push(connectorInstanceId);
-      where = `WHERE connector_instance_id = $${params.length}`;
-    }
-    const result = await postgresQuery(
-      `SELECT connector_instance_id, connector_id,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count,
-              dirty, computed_at
-         FROM retained_size_connection
-         ${where}
-         ORDER BY connector_instance_id ASC`,
-      params,
-    );
-    return result.rows.map(shapeConnectionRow);
-  }
-  const db = getDb();
-  const rows = connectorInstanceId
-    ? db
-      .prepare(
-        `SELECT connector_instance_id, connector_id,
-                current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
-                dirty, computed_at
-           FROM retained_size_connection
-          WHERE connector_instance_id = ?
-          ORDER BY connector_instance_id ASC`,
-      )
-      .all(connectorInstanceId)
-    : db
-      .prepare(
-        `SELECT connector_instance_id, connector_id,
-                current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
-                dirty, computed_at
-           FROM retained_size_connection
-          ORDER BY connector_instance_id ASC`,
-      )
-      .all();
+  const rows = await getRetainedSizeStore().listConnectionRows({ connectorInstanceId });
   return rows.map(shapeConnectionRow);
 }
 
@@ -210,57 +496,7 @@ function shapeConnectionRow(row) {
 }
 
 export async function listRetainedSizeStreams({ connectorInstanceId, connectorId, stream } = {}) {
-  if (isPostgresStorageBackend()) {
-    const params = [];
-    const clauses = [];
-    if (connectorInstanceId) {
-      params.push(connectorInstanceId);
-      clauses.push(`connector_instance_id = $${params.length}`);
-    }
-    if (connectorId) {
-      params.push(connectorId);
-      clauses.push(`connector_id = $${params.length}`);
-    }
-    if (stream) {
-      params.push(stream);
-      clauses.push(`stream = $${params.length}`);
-    }
-    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const result = await postgresQuery(
-      `SELECT connector_instance_id, connector_id, stream,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count,
-              dirty, computed_at
-         FROM retained_size_stream
-         ${where}
-         ORDER BY connector_instance_id ASC, stream ASC`,
-      params,
-    );
-    return result.rows.map(shapeStreamRow);
-  }
-  const db = getDb();
-  let sql = `SELECT connector_instance_id, connector_id, stream,
-                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count,
-                    dirty, computed_at
-             FROM retained_size_stream`;
-  const where = [];
-  const params = [];
-  if (connectorInstanceId) {
-    where.push('connector_instance_id = ?');
-    params.push(connectorInstanceId);
-  }
-  if (connectorId) {
-    where.push('connector_id = ?');
-    params.push(connectorId);
-  }
-  if (stream) {
-    where.push('stream = ?');
-    params.push(stream);
-  }
-  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-  sql += ' ORDER BY connector_instance_id ASC, stream ASC';
-  const rows = db.prepare(sql).all(...params);
+  const rows = await getRetainedSizeStore().listStreamRows({ connectorInstanceId, connectorId, stream });
   return rows.map(shapeStreamRow);
 }
 
@@ -269,57 +505,11 @@ export async function listRetainedSizeRecordFamilies({
   stream,
   recordFamily,
 } = {}) {
-  if (isPostgresStorageBackend()) {
-    const params = [];
-    const clauses = [];
-    if (connectorInstanceId) {
-      params.push(connectorInstanceId);
-      clauses.push(`connector_instance_id = $${params.length}`);
-    }
-    if (stream) {
-      params.push(stream);
-      clauses.push(`stream = $${params.length}`);
-    }
-    if (recordFamily) {
-      params.push(recordFamily);
-      clauses.push(`record_family = $${params.length}`);
-    }
-    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const result = await postgresQuery(
-      `SELECT connector_instance_id, connector_id, stream, record_family,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count,
-              dirty, computed_at
-         FROM retained_size_record_family
-         ${where}
-         ORDER BY connector_instance_id ASC, stream ASC, record_family ASC`,
-      params,
-    );
-    return result.rows.map(shapeRecordFamilyRow);
-  }
-  const db = getDb();
-  let sql = `SELECT connector_instance_id, connector_id, stream, record_family,
-                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count,
-                    dirty, computed_at
-               FROM retained_size_record_family`;
-  const where = [];
-  const params = [];
-  if (connectorInstanceId) {
-    where.push('connector_instance_id = ?');
-    params.push(connectorInstanceId);
-  }
-  if (stream) {
-    where.push('stream = ?');
-    params.push(stream);
-  }
-  if (recordFamily) {
-    where.push('record_family = ?');
-    params.push(recordFamily);
-  }
-  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-  sql += ' ORDER BY connector_instance_id ASC, stream ASC, record_family ASC';
-  const rows = db.prepare(sql).all(...params);
+  const rows = await getRetainedSizeStore().listRecordFamilyRows({
+    connectorInstanceId,
+    stream,
+    recordFamily,
+  });
   return rows.map(shapeRecordFamilyRow);
 }
 
@@ -380,34 +570,11 @@ export async function listRetainedSizeTop({ scope, measure, limit } = {}) {
   }
   const effectiveLimit = clampTopLimit(limit);
 
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT scope, measure, rank, grain_key,
-              connector_instance_id, connector_id, stream, record_key, blob_id,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              total_retained_bytes, record_count, record_history_count, blob_count,
-              dirty, computed_at, metadata_json
-         FROM retained_size_top_rows
-        WHERE scope = $1 AND measure = $2
-        ORDER BY rank ASC
-        LIMIT $3`,
-      [scope, measure, effectiveLimit],
-    );
-    return result.rows.map(shapeTopRow);
-  }
-  const rows = getDb()
-    .prepare(
-      `SELECT scope, measure, rank, grain_key,
-              connector_instance_id, connector_id, stream, record_key, blob_id,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              total_retained_bytes, record_count, record_history_count, blob_count,
-              dirty, computed_at, metadata_json
-         FROM retained_size_top_rows
-        WHERE scope = ? AND measure = ?
-        ORDER BY rank ASC
-        LIMIT ?`,
-    )
-    .all(scope, measure, effectiveLimit);
+  const rows = await getRetainedSizeStore().listTopRows({
+    scope,
+    measure,
+    limit: effectiveLimit,
+  });
   return rows.map(shapeTopRow);
 }
 
@@ -824,64 +991,16 @@ async function markTopRowsDirtyPostgres(client, reason, at = nowIso()) {
 export async function markRetainedSizeDirty(reason) {
   const at = nowIso();
   const sanitized = sanitizeProjectionError(reason || 'retained-size projection is stale');
-  if (isPostgresStorageBackend()) {
-    try {
-      await postgresQuery(
-        `INSERT INTO retained_size_global(
-           projection_key, dirty, computed_at, metadata_json
-         )
-         VALUES($1, 1, $2, $3::jsonb)
-         ON CONFLICT (projection_key) DO UPDATE SET
-           dirty = 1,
-           computed_at = COALESCE(retained_size_global.computed_at, $2),
-           metadata_json = $3::jsonb`,
-        [
-          GLOBAL_KEY,
-          at,
-          JSON.stringify({
-            state: 'stale',
-            stale_since: at,
-            rebuild_status: 'idle',
-            last_error: sanitized,
-          }),
-        ],
-      );
-    } catch {
-      // Dirty marker failure is non-fatal — canonical evidence is untouched.
-    }
-    return;
-  }
+  const metadataJson = JSON.stringify({
+    state: 'stale',
+    stale_since: at,
+    rebuild_status: 'idle',
+    last_error: sanitized,
+  });
   try {
-    getDb()
-      .prepare(
-        `INSERT INTO retained_size_global(
-           projection_key, dirty, computed_at, metadata_json
-         )
-         VALUES(?, 1, ?, ?)
-         ON CONFLICT(projection_key) DO UPDATE SET
-           dirty = 1,
-           computed_at = COALESCE(computed_at, ?),
-           metadata_json = ?`,
-      )
-      .run(
-        GLOBAL_KEY,
-        at,
-        JSON.stringify({
-          state: 'stale',
-          stale_since: at,
-          rebuild_status: 'idle',
-          last_error: sanitized,
-        }),
-        at,
-        JSON.stringify({
-          state: 'stale',
-          stale_since: at,
-          rebuild_status: 'idle',
-          last_error: sanitized,
-        }),
-      );
+    await getRetainedSizeStore().upsertGlobalDirty({ at, metadataJson });
   } catch {
-    // Dirty marker failure is non-fatal.
+    // Dirty marker failure is non-fatal; canonical evidence is untouched.
   }
 }
 
@@ -891,23 +1010,7 @@ export async function markRetainedSizeStreamDirty({ connectorInstanceId, stream 
     return;
   }
   try {
-    if (isPostgresStorageBackend()) {
-      await postgresQuery(
-        `UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = $1 AND stream = $2`,
-        [connectorInstanceId, stream],
-      );
-      await postgresQuery(
-        `UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = $1`,
-        [connectorInstanceId],
-      );
-    } else {
-      getDb()
-        .prepare(`UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = ? AND stream = ?`)
-        .run(connectorInstanceId, stream);
-      getDb()
-        .prepare(`UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?`)
-        .run(connectorInstanceId);
-    }
+    await getRetainedSizeStore().markStreamRowsDirty({ connectorInstanceId, stream });
   } catch {
     // Best-effort marker; rebuild will repair.
   }
@@ -920,23 +1023,7 @@ export async function markRetainedSizeConnectionDirty({ connectorInstanceId }) {
     return;
   }
   try {
-    if (isPostgresStorageBackend()) {
-      await postgresQuery(
-        `UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = $1`,
-        [connectorInstanceId],
-      );
-      await postgresQuery(
-        `UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = $1`,
-        [connectorInstanceId],
-      );
-    } else {
-      getDb()
-        .prepare(`UPDATE retained_size_stream SET dirty = 1 WHERE connector_instance_id = ?`)
-        .run(connectorInstanceId);
-      getDb()
-        .prepare(`UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?`)
-        .run(connectorInstanceId);
-    }
+    await getRetainedSizeStore().markConnectionRowsDirty({ connectorInstanceId });
   } catch {
     // Best-effort.
   }
@@ -2112,24 +2199,7 @@ async function markRetainedSizeRebuilding(at) {
     rebuild_status: 'running',
     last_error: null,
   };
-  if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
-       VALUES($1, 1, $2, $3::jsonb)
-       ON CONFLICT (projection_key) DO UPDATE SET
-         metadata_json = $3::jsonb`,
-      [GLOBAL_KEY, at, JSON.stringify(metadata)],
-    );
-    return;
-  }
-  getDb()
-    .prepare(
-      `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
-       VALUES(?, 1, ?, ?)
-       ON CONFLICT(projection_key) DO UPDATE SET
-         metadata_json = excluded.metadata_json`,
-    )
-    .run(GLOBAL_KEY, at, JSON.stringify(metadata));
+  await getRetainedSizeStore().upsertGlobalRebuilding({ at, metadataJson: JSON.stringify(metadata) });
 }
 
 async function markRetainedSizeFresh(at) {
@@ -2139,20 +2209,7 @@ async function markRetainedSizeFresh(at) {
     rebuild_status: 'idle',
     last_error: null,
   };
-  if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `UPDATE retained_size_global SET dirty = 0, computed_at = $1, metadata_json = $2::jsonb
-        WHERE projection_key = $3`,
-      [at, JSON.stringify(metadata), GLOBAL_KEY],
-    );
-    return;
-  }
-  getDb()
-    .prepare(
-      `UPDATE retained_size_global SET dirty = 0, computed_at = ?, metadata_json = ?
-        WHERE projection_key = ?`,
-    )
-    .run(at, JSON.stringify(metadata), GLOBAL_KEY);
+  await getRetainedSizeStore().updateGlobalFresh({ at, metadataJson: JSON.stringify(metadata) });
 }
 
 async function markRetainedSizeFailed(err) {
@@ -2163,26 +2220,7 @@ async function markRetainedSizeFailed(err) {
     last_error: sanitizeProjectionError(err),
   };
   try {
-    if (isPostgresStorageBackend()) {
-      await postgresQuery(
-        `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
-         VALUES($1, 1, $2, $3::jsonb)
-         ON CONFLICT (projection_key) DO UPDATE SET
-           dirty = 1,
-           metadata_json = $3::jsonb`,
-        [GLOBAL_KEY, nowIso(), JSON.stringify(metadata)],
-      );
-    } else {
-      getDb()
-        .prepare(
-          `INSERT INTO retained_size_global(projection_key, dirty, computed_at, metadata_json)
-           VALUES(?, 1, ?, ?)
-           ON CONFLICT(projection_key) DO UPDATE SET
-             dirty = 1,
-             metadata_json = excluded.metadata_json`,
-        )
-        .run(GLOBAL_KEY, nowIso(), JSON.stringify(metadata));
-    }
+    await getRetainedSizeStore().upsertGlobalFailed({ at: nowIso(), metadataJson: JSON.stringify(metadata) });
   } catch {
     // Best-effort.
   }
