@@ -58,21 +58,23 @@ async function seedAndQuery(seed = SEED) {
   return queryRecords(CONNECTOR_ID, STREAM, GRANT, { window: 'exact', count: 'exact' }, MANIFEST);
 }
 
-// Rows whose consent_time carries non-UTC offsets and one unparseable value.
+// Rows whose consent_time carries non-UTC offsets and unparseable values.
 // The chronological earliest is r_late (-07:00 == 13:00Z) vs r_early (+02:00
 // == 06:00Z); a lexicographic MIN/MAX would pick the wrong bound, and the
-// "-bad-date" value would lexically win MIN and silently drop bounds. Both
-// backends must agree on the chronological bounds over the parseable rows.
+// malformed values must be skipped whether they are lexically-small or
+// ISO-shaped-but-invalid. Both backends must agree on the chronological bounds
+// over the parseable rows.
 const TZ_SEED = [
   { id: 'z1', created_at: '2026-02-01T08:00:00+02:00', body: 'x' }, // 06:00Z (earliest)
   { id: 'z2', created_at: '2026-02-01T06:00:00-07:00', body: 'y' }, // 13:00Z (latest)
   { id: 'z3', created_at: '2026-02-01T10:00:00+00:00', body: 'z' }, // 10:00Z
   { id: 'z4', created_at: '-bad-date', body: 'w' }, // unparseable, must be skipped
+  { id: 'z5', created_at: '2026-99-99T00:00:00Z', body: 'v' }, // ISO-shaped but unparseable
 ];
 
 function assertTimezoneWindow(result, label) {
   assert.ok(result?.meta?.window, `${label}: tz seed must produce meta.window`);
-  assert.equal(result.meta.window.total, 4, `${label}: total counts all 4 rows`);
+  assert.equal(result.meta.window.total, 5, `${label}: total counts all 5 rows`);
   assert.equal(result.meta.window.earliest_at, '2026-02-01T06:00:00.000Z', `${label}: chronological earliest`);
   assert.equal(result.meta.window.latest_at, '2026-02-01T13:00:00.000Z', `${label}: chronological latest`);
 }

@@ -1313,15 +1313,15 @@ async function computePostgresRecordWindow({ requestParams, countWhere, countPar
     // string sorts before "...T06:00+00:00" textually but is later in time), and
     // a lexically-small non-date string (e.g. "-bad-date") would win MIN and
     // then fail to parse, silently dropping bounds. Cast to timestamptz so
-    // Postgres orders by instant, and restrict to ISO-date-prefixed values so
-    // unparseable rows are skipped — mirroring the SQLite path's per-row
-    // `Number.isNaN(...) ? continue` behavior. timestamptz results come back
-    // UTC-normalized, so the downstream new Date(...).toISOString() is correct.
-    const isoPrefix = `${ctExpr} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'`;
+    // Postgres orders by instant, and use pg_input_is_valid so unparseable rows
+    // are skipped instead of aborting the query, mirroring the SQLite path's
+    // per-row `Number.isNaN(...) ? continue` behavior. timestamptz results come
+    // back UTC-normalized, so downstream new Date(...).toISOString() is correct.
+    const validTimestamp = `pg_input_is_valid(${ctExpr}, 'timestamp with time zone')`;
     const boundsResult = await postgresQuery(
       `SELECT MIN((${ctExpr})::timestamptz) AS earliest, MAX((${ctExpr})::timestamptz) AS latest
          FROM records ${countWhere}
-        AND ${ctExpr} IS NOT NULL AND ${ctExpr} <> '' AND ${isoPrefix}`,
+        AND ${ctExpr} IS NOT NULL AND ${ctExpr} <> '' AND ${validTimestamp}`,
       countParams,
     );
     const earliest = boundsResult.rows[0]?.earliest;
