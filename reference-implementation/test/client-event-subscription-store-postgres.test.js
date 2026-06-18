@@ -50,6 +50,7 @@ async function clearTables() {
 
 function makeActor(overrides = {}) {
   return {
+    authorityKind: 'client_grant',
     clientId: 'pg_client',
     grantId: 'pg_grant',
     subjectId: 'pg_owner',
