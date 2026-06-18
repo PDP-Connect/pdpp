@@ -142,7 +142,8 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
           run_id TEXT NOT NULL UNIQUE,
           trace_id TEXT NOT NULL,
           scenario_id TEXT NOT NULL,
-          started_at TIMESTAMPTZ NOT NULL
+          started_at TIMESTAMPTZ NOT NULL,
+          run_generation INTEGER NOT NULL DEFAULT 1
         )
       `);
 
