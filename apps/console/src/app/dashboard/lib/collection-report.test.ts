@@ -22,8 +22,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  collectionReportHasOpenGaps,
   formatStreamCollectionFacts,
   indexCollectionReportByStream,
+  runStatusWithCollectionReportGaps,
   streamOwnerActionCueNeeded,
 } from "./collection-report.ts";
 import type { RefCollectionReportEntry } from "./ref-client.ts";
@@ -80,6 +82,37 @@ test("a duplicate stream name keeps the first entry", () => {
   ]);
   assert.equal(byStream.size, 1);
   assert.equal(byStream.get("items")?.collected, 5);
+});
+
+test("collectionReportHasOpenGaps distinguishes clean completion from unresolved coverage", () => {
+  assert.equal(
+    collectionReportHasOpenGaps([
+      entry({ coverage_condition: "complete", considered: 1, collected: 0, covered: 1, forward_disposition: "owner_refresh_due" }),
+    ]),
+    false
+  );
+  assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "retryable_gap" })]), true);
+  assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "terminal_gap" })]), true);
+  assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "unknown" })]), true);
+  assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "complete", pending_detail_gaps: 1 })]), true);
+  assert.equal(
+    collectionReportHasOpenGaps([entry({ coverage_condition: "complete", skipped: { reason: "qfx_download_failed" } })]),
+    true
+  );
+});
+
+test("runStatusWithCollectionReportGaps promotes only clean success statuses when the report has gaps", () => {
+  const gapReport = [entry({ coverage_condition: "terminal_gap" })];
+  assert.equal(runStatusWithCollectionReportGaps("succeeded", gapReport), "succeeded_with_gaps");
+  assert.equal(runStatusWithCollectionReportGaps("success", gapReport), "succeeded_with_gaps");
+  assert.equal(runStatusWithCollectionReportGaps("completed", gapReport), "succeeded_with_gaps");
+  assert.equal(runStatusWithCollectionReportGaps("failed", gapReport), "failed");
+  assert.equal(
+    runStatusWithCollectionReportGaps("succeeded", [
+      entry({ coverage_condition: "complete", considered: 1, collected: 0, covered: 1 }),
+    ]),
+    "succeeded"
+  );
 });
 
 test("THE HONESTY GATE: collected records with an unknown considered denominator never imply completeness", () => {

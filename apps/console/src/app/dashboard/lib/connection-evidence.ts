@@ -1839,6 +1839,9 @@ export function deriveStreakDots(
 ): StreakDot[] {
   return runs.slice(0, 14).map((r): StreakDot => {
     const s = r.status;
+    if (s === "succeeded_with_gaps") {
+      return { symbol: "⚠", tone: "warning", at: r.first_at, statusLabel: "Succeeded with gaps" };
+    }
     if (s === "succeeded" || s === "success" || s === "completed") {
       return { symbol: "✓", tone: "success", at: r.first_at, statusLabel: "Succeeded" };
     }
@@ -1858,6 +1861,19 @@ export function deriveStreakDots(
     // defensively so the map never throws.
     return { symbol: "⚠", tone: "neutral", at: r.first_at, statusLabel: s.replace(/_/g, " ") };
   });
+}
+
+export function summarizeStreakDots(dots: readonly StreakDot[]): string {
+  const failureCount = dots.filter((d) => d.tone === "danger").length;
+  const partialCount = dots.filter((d) => d.tone === "warning").length;
+  const parts: string[] = [];
+  if (failureCount > 0) {
+    parts.push(`${failureCount} failure${failureCount === 1 ? "" : "s"}`);
+  }
+  if (partialCount > 0) {
+    parts.push(`${partialCount} with gaps`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "0 failures";
 }
 
 // ─── Auto-paused banner ───────────────────────────────────────────────────────

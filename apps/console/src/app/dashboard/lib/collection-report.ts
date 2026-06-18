@@ -83,6 +83,33 @@ export function indexCollectionReportByStream(
 }
 
 /**
+ * Returns true when the latest collection report contains unresolved stream
+ * coverage. Used by owner-control surfaces to avoid rendering a completed run
+ * as a clean green success when the same source detail page shows skipped
+ * streams, retryable gaps, terminal gaps, or unknown coverage.
+ */
+export function collectionReportHasOpenGaps(report: readonly RefCollectionReportEntry[] | null | undefined): boolean {
+  return (report ?? []).some((entry) => {
+    if (entry.coverage_condition !== "complete") {
+      return true;
+    }
+    if (entry.pending_detail_gaps > 0) {
+      return true;
+    }
+    return entry.skipped !== null;
+  });
+}
+
+const SUCCESS_RUN_STATUSES = new Set(["succeeded", "success", "completed"]);
+
+export function runStatusWithCollectionReportGaps(
+  status: string,
+  report: readonly RefCollectionReportEntry[] | null | undefined
+): string {
+  return SUCCESS_RUN_STATUSES.has(status) && collectionReportHasOpenGaps(report) ? "succeeded_with_gaps" : status;
+}
+
+/**
  * Build the owner-facing counts line for one stream.
  *
  * The honesty gate: a known considered denominator renders either `covered /

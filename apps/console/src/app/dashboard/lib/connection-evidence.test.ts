@@ -33,6 +33,7 @@ import {
   summarizeOutboxForRow,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
+  summarizeStreakDots,
   syncActionIdleLabel,
   syncStartFailureLead,
   synthesizeConnectionVerdict,
@@ -1978,6 +1979,34 @@ test("deriveStreakDots maps degraded → ⚠ warning", () => {
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "⚠");
   assert.equal(dots[0].tone, "warning");
+});
+
+test("deriveStreakDots maps succeeded_with_gaps → ⚠ warning", () => {
+  const dots = deriveStreakDots([{ status: "succeeded_with_gaps", first_at: "2026-05-15T00:00:00Z" }]);
+  assert.ok(dots[0]);
+  assert.equal(dots[0].symbol, "⚠");
+  assert.equal(dots[0].tone, "warning");
+  assert.equal(dots[0].statusLabel, "Succeeded with gaps");
+});
+
+test("summarizeStreakDots distinguishes clean, failed, and completed-with-gaps runs", () => {
+  assert.equal(
+    summarizeStreakDots(deriveStreakDots([{ status: "succeeded", first_at: "2026-05-15T00:00:00Z" }])),
+    "0 failures"
+  );
+  assert.equal(
+    summarizeStreakDots(deriveStreakDots([{ status: "succeeded_with_gaps", first_at: "2026-05-15T00:00:00Z" }])),
+    "1 with gaps"
+  );
+  assert.equal(
+    summarizeStreakDots(
+      deriveStreakDots([
+        { status: "failed", first_at: "2026-05-15T00:00:00Z" },
+        { status: "succeeded_with_gaps", first_at: "2026-05-14T00:00:00Z" },
+      ])
+    ),
+    "1 failure · 1 with gaps"
+  );
 });
 
 test("deriveStreakDots caps at 14 runs", () => {

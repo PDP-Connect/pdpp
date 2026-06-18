@@ -18,6 +18,7 @@ import { ServerUnreachable } from "../../components/shell.tsx";
 import {
   formatStreamCollectionFacts,
   indexCollectionReportByStream,
+  runStatusWithCollectionReportGaps,
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
 import {
@@ -25,6 +26,7 @@ import {
   deriveAutoPausedBanner,
   derivePrimaryRowAction,
   deriveStreakDots,
+  summarizeStreakDots,
   type PrimaryRowAction,
   type StreakDot,
   syncActionIdleLabel,
@@ -38,6 +40,7 @@ import {
   listDeviceExporterSourceInstances,
   type RefAcquisitionBatchSummary,
   type RefAcquisitionCoverageSummary,
+  type RefCollectionReportEntry,
   type RefConnectionHealthSnapshot,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
@@ -176,11 +179,13 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
 function toRunSummaryForConnection(
   connectorId: string,
   connectionId: string,
-  summary: RefConnectorRunSummary | null
+  summary: RefConnectorRunSummary | null,
+  collectionReport: readonly RefCollectionReportEntry[] | null | undefined
 ): RunSummary | null {
   if (!summary) {
     return null;
   }
+  const status = runStatusWithCollectionReportGaps(summary.status, collectionReport);
   return {
     connection_id: connectionId,
     connector_id: connectorId,
@@ -194,15 +199,22 @@ function toRunSummaryForConnection(
     needs_input: false,
     object: "run_summary",
     run_id: summary.run_id,
-    status: summary.status,
+    status,
   };
 }
 
 function connectionRecentRuns(summary: RefConnectorSummary): RunSummary[] {
+  const reportRunId = summary.last_run?.run_id ?? null;
+  const collectionReport = summary.collection_report ?? null;
   const byId = new Map<string, RunSummary>();
   for (const run of [
-    toRunSummaryForConnection(summary.connector_id, summary.connection_id, summary.last_run),
-    toRunSummaryForConnection(summary.connector_id, summary.connection_id, summary.last_successful_run),
+    toRunSummaryForConnection(summary.connector_id, summary.connection_id, summary.last_run, collectionReport),
+    toRunSummaryForConnection(
+      summary.connector_id,
+      summary.connection_id,
+      summary.last_successful_run,
+      summary.last_successful_run?.run_id === reportRunId ? collectionReport : null
+    ),
   ]) {
     if (run) {
       byId.set(run.run_id, run);
@@ -1266,8 +1278,7 @@ function streakDotToneClass(tone: StreakDot["tone"]): string {
  * the page header so the operator gets a health fingerprint before diving in.
  */
 function StreakStrip({ dots }: { dots: StreakDot[] }) {
-  const failureCount = dots.filter((d) => d.tone === "danger").length;
-  const failureLabel = failureCount === 0 ? "0 failures" : `${failureCount} failure${failureCount === 1 ? "" : "s"}`;
+  const outcomeLabel = summarizeStreakDots(dots);
 
   return (
     <div className="flex items-center gap-3 border-border/70 border-b px-4 py-2" data-testid="streak-strip">
@@ -1286,7 +1297,7 @@ function StreakStrip({ dots }: { dots: StreakDot[] }) {
         ))}
       </span>
       <Link className="pdpp-caption ml-auto text-muted-foreground hover:text-foreground" href="/dashboard/runs">
-        {failureLabel} · Open runs →
+        {outcomeLabel} · Open runs →
       </Link>
     </div>
   );
