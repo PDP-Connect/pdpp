@@ -91,7 +91,7 @@ const REMEDIATION_FAILED_UPLOAD_COPY = /Some records were saved[\s\S]{0,180}did 
 const REMEDIATION_DASHBOARD_CANNOT_FIX_REMOTE_COPY = /dashboard cannot fix that host-local queue remotely/;
 const REMEDIATION_RECOVER_DRY_RUN_CAPTION = /Dry run: shows what this recovery would do on that host/;
 const REMEDIATION_RECOVER_PROFILE_CAPTION =
-  /Uses the enrolled local profile to recover saved work and run the collector once/;
+  /Uses the enrolled local profile to recover saved work and drain queued uploads/;
 const REMEDIATION_THREADS_SOURCE_INSTANCE_ID = /sourceInstanceId=\{recoverySourceId\}/;
 const REMEDIATION_SUBSTITUTES_SOURCE_INSTANCE_ID = /sourceInstanceId,/;
 const RECOVERY_SOURCE_ID_HELPER = /function recoverySourceInstanceId/;

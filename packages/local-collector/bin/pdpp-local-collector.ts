@@ -71,6 +71,7 @@ const DEFAULT_QUEUE_PATH = join(
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
 const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
+const RECOVER_DEFAULT_MAX_DRAIN_PASSES = 20;
 /**
  * Placeholder version published to the `latest` dist-tag and carried by the
  * in-repo `package.json` by design. It is older than every real beta build, so
@@ -264,6 +265,7 @@ export interface CliOptions {
   force?: boolean;
   keepCount?: number;
   limit?: number;
+  maxDrainPasses?: number;
   olderThanDays?: number;
   profile?: string;
   queuePath: string;
@@ -300,9 +302,10 @@ Subcommands:
           [--limit <n>]
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
   recover                         Resolve the enrolled local profile, recover stalled outbox work,
-                                   and run the collector once.
+                                   and drain queued work until clear or bounded.
           --source-instance-id <id>
           [--profile <name>]        Optional profile name under the collector profile dir.
+          [--max-drain-passes <n>]  Apply mode runs up to N drain passes (default: ${RECOVER_DEFAULT_MAX_DRAIN_PASSES}).
           [--apply]                Dry-run by default; --apply requeues and runs.
   prune-sent                      Delete sent (succeeded) outbox rows to reclaim disk space.
           [--queue <path>]
@@ -831,7 +834,7 @@ export function buildLocalOutboxDoctor(
       `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery.${causeHint} ` +
         "Preview with `pdpp-local-collector recover --source-instance-id <id>`, then apply with " +
         "`pdpp-local-collector recover --source-instance-id <id> --apply`. The apply step backs up the DB, " +
-        "prepares failed uploads for retry when present, and runs the collector once."
+        "prepares failed uploads for retry when present, and drains queued work until clear or bounded."
     );
   }
   if (checks.expired_leases === "warn") {
@@ -1042,6 +1045,9 @@ export interface RecoverLocalCollectorOutput {
     path: string;
   };
   dry_run: boolean;
+  drain_attempts?: number;
+  drain_stopped_reason?: "drained" | "max_passes" | "no_progress";
+  fully_drained?: boolean;
   note: string;
   object: "local_collector_recovery";
   profile: {
@@ -1050,9 +1056,16 @@ export interface RecoverLocalCollectorOutput {
   };
   retry_dead_letters: RetryDeadLettersOutput | null;
   run: LocalCollectorRunOutput | null;
+  runs?: LocalCollectorRunOutput[];
   source_instance_id: string;
   status_after: LocalOutboxStatusOutput | null;
   status_before: LocalOutboxStatusOutput;
+}
+
+export interface RecoverLocalCollectorDeps {
+  inspectStatus?: (options: CliOptions) => LocalOutboxStatusOutput;
+  retryDeadLetters?: (options: CliOptions) => RetryDeadLettersOutput;
+  runOnce?: (options: CliOptions) => Promise<CollectorRunResult>;
 }
 
 function defaultCollectorProfileDir(): string {
@@ -1260,33 +1273,62 @@ function hasDeadLetters(status: LocalOutboxStatusOutput): boolean {
 function recoverDryRunNote(status: LocalOutboxStatusOutput): string {
   if (hasDeadLetters(status)) {
     return (
-      `${status.outbox.counts.dead_letter} failed upload row(s) would be prepared for retry, then the collector would run once. ` +
+      `${status.outbox.counts.dead_letter} failed upload row(s) would be prepared for retry, then the collector would drain queued work. ` +
       "Dry run only; re-run with --apply to mutate the local outbox and upload."
     );
   }
   return (
-    "No failed upload rows are present for this source. The recovery apply step would run the collector once on this host " +
-    "to refresh state and drain queued work."
+    "No failed upload rows are present for this source. The recovery apply step would run the collector on this host " +
+    "to refresh state and drain queued work until clear or bounded."
   );
 }
 
-function recoverAppliedNote(statusBefore: LocalOutboxStatusOutput, retry: RetryDeadLettersOutput | null): string {
-  const retried = retry ? `${retry.requeued} failed upload row(s) were prepared for retry. ` : "";
-  if (hasDeadLetters(statusBefore)) {
-    return `${retried}The collector ran once to upload queued work. Run status again if the dashboard has not refreshed yet.`;
-  }
-  return "The collector ran once to refresh local state and drain queued work.";
+function outboxOpenWork(status: LocalOutboxStatusOutput): number {
+  const counts = status.outbox.counts;
+  return counts.dead_letter + counts.leased + counts.pending + counts.retrying;
 }
 
-export async function recoverLocalCollector(options: CliOptions): Promise<RecoverLocalCollectorOutput> {
+function recoverAppliedNote(input: {
+  attempts: number;
+  maxPasses: number;
+  retry: RetryDeadLettersOutput | null;
+  statusAfter: LocalOutboxStatusOutput;
+  statusBefore: LocalOutboxStatusOutput;
+  stoppedReason: RecoverLocalCollectorOutput["drain_stopped_reason"];
+}): string {
+  const { attempts, maxPasses, retry, statusAfter, statusBefore, stoppedReason } = input;
+  const retried = retry ? `${retry.requeued} failed upload row(s) were prepared for retry. ` : "";
+  const remaining = outboxOpenWork(statusAfter);
+  if (stoppedReason === "drained") {
+    return `${retried}The collector drained queued work in ${attempts} pass(es).`;
+  }
+  if (hasDeadLetters(statusBefore)) {
+    if (stoppedReason === "max_passes") {
+      return `${retried}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. Re-run this command to continue; it stopped at the ${maxPasses}-pass safety bound.`;
+    }
+    return `${retried}The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. It stopped because another pass did not reduce the backlog.`;
+  }
+  if (stoppedReason === "max_passes") {
+    return `The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. Re-run this command to continue; it stopped at the ${maxPasses}-pass safety bound.`;
+  }
+  return `The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. It stopped because another pass did not reduce the backlog.`;
+}
+
+export async function recoverLocalCollector(
+  options: CliOptions,
+  deps: RecoverLocalCollectorDeps = {}
+): Promise<RecoverLocalCollectorOutput> {
+  const inspectStatus = deps.inspectStatus ?? inspectLocalOutboxStatus;
+  const retryDeadLetters = deps.retryDeadLetters ?? retryLocalOutboxDeadLetters;
+  const runOnce = deps.runOnce ?? runCollectorOnce;
   const resolved = resolveRecoveryOptions(options);
   const sourceInstanceId = resolved.options.sourceInstanceId;
   if (!sourceInstanceId) {
     throw new CollectorUsageError("recover requires --source-instance-id <id>");
   }
 
-  const statusBefore = inspectLocalOutboxStatus(resolved.options);
-  const retryPreview = hasDeadLetters(statusBefore) ? retryLocalOutboxDeadLetters({ ...resolved.options, apply: false }) : null;
+  const statusBefore = inspectStatus(resolved.options);
+  const retryPreview = hasDeadLetters(statusBefore) ? retryDeadLetters({ ...resolved.options, apply: false }) : null;
 
   if (!options.apply) {
     return {
@@ -1304,18 +1346,52 @@ export async function recoverLocalCollector(options: CliOptions): Promise<Recove
     };
   }
 
-  const retryApply = hasDeadLetters(statusBefore) ? retryLocalOutboxDeadLetters({ ...resolved.options, apply: true }) : null;
-  const run = summarizeRunResultForCli(await runCollectorOnce(resolved.options));
-  const statusAfter = inspectLocalOutboxStatus(resolved.options);
+  const retryApply = hasDeadLetters(statusBefore) ? retryDeadLetters({ ...resolved.options, apply: true }) : null;
+  const maxPasses = options.maxDrainPasses ?? RECOVER_DEFAULT_MAX_DRAIN_PASSES;
+  const runs: LocalCollectorRunOutput[] = [];
+  let statusAfter = inspectStatus(resolved.options);
+  let stoppedReason: RecoverLocalCollectorOutput["drain_stopped_reason"] = "drained";
+  let previousOpenAfterRun: number | null = null;
+
+  for (let attempt = 0; attempt < maxPasses; attempt += 1) {
+    const run = summarizeRunResultForCli(await runOnce(resolved.options));
+    runs.push(run);
+    statusAfter = inspectStatus(resolved.options);
+    const openWork = outboxOpenWork(statusAfter);
+    if (openWork === 0) {
+      stoppedReason = "drained";
+      break;
+    }
+    if (previousOpenAfterRun !== null && openWork >= previousOpenAfterRun) {
+      stoppedReason = "no_progress";
+      break;
+    }
+    previousOpenAfterRun = openWork;
+    if (attempt === maxPasses - 1) {
+      stoppedReason = "max_passes";
+    }
+  }
+  const latestRun = runs.at(-1) ?? null;
   return {
     applied: true,
     db: statusAfter.db.path ? { exists: statusAfter.db.exists, path: statusAfter.db.path } : { exists: false, path: "" },
+    drain_attempts: runs.length,
+    drain_stopped_reason: stoppedReason,
     dry_run: false,
-    note: recoverAppliedNote(statusBefore, retryApply),
+    fully_drained: outboxOpenWork(statusAfter) === 0,
+    note: recoverAppliedNote({
+      attempts: runs.length,
+      maxPasses,
+      retry: retryApply,
+      statusAfter,
+      statusBefore,
+      stoppedReason,
+    }),
     object: "local_collector_recovery",
     profile: { name: resolved.profileName, source: resolved.profileSource },
     retry_dead_letters: retryApply,
-    run,
+    run: latestRun,
+    ...(runs.length > 1 ? { runs } : {}),
     source_instance_id: sourceInstanceId,
     status_after: statusAfter,
     status_before: statusBefore,
@@ -1812,6 +1888,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--keep-count": (next) => {
       options.keepCount = parseNonNegativeInteger("--keep-count", next);
+    },
+    "--max-drain-passes": (next) => {
+      options.maxDrainPasses = parsePositiveInteger("--max-drain-passes", next);
     },
   };
   const set = setters[arg];

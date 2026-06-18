@@ -844,6 +844,141 @@ test('local collector recover respects explicit queue over the matching profile 
   }
 });
 
+test('local collector recover apply keeps draining while the backlog shrinks', async () => {
+  const status = (pending) => ({
+    collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+    configured_device: {
+      device_id_configured: true,
+      device_token_configured: true,
+    },
+    coverage: {
+      observed: true,
+      record_batches: 1,
+    },
+    db: {
+      configured: true,
+      exists: true,
+      path: '/tmp/pdpp-test-collector.sqlite',
+    },
+    deployment_posture: PUBLISHED_POSTURE,
+    lifecycle_state: pending > 0 ? 'draining' : 'healthy_idle',
+    outbox: {
+      counts: {
+        dead_letter: 0,
+        leased: 0,
+        pending,
+        retrying: 0,
+        sent: 10,
+        total: 10 + pending,
+      },
+      expired_leases: 0,
+      oldest_pending_at: pending > 0 ? '2026-06-17T01:39:24.812Z' : null,
+    },
+    package: {
+      name: '@pdpp/local-collector',
+      version: '0.1.0-beta.7',
+    },
+    source: {
+      connection_id: 'dsrc_peregrine',
+      source_instance_id: 'dsrc_peregrine',
+    },
+  });
+  const statuses = [status(24), status(24), status(12), status(0)];
+  let runCount = 0;
+
+  const result = await recoverLocalCollector(
+    parseArgs([
+      'recover',
+      '--source-instance-id',
+      'dsrc_peregrine',
+      '--queue',
+      '/tmp/pdpp-test-collector.sqlite',
+      '--apply',
+      '--max-drain-passes',
+      '5',
+    ]),
+    {
+      inspectStatus: () => statuses.shift() ?? status(0),
+      runOnce: async () => {
+        runCount += 1;
+        return baseRunResult({ ready: Math.max(0, 24 - runCount * 12), succeeded: 10, total: 10 });
+      },
+    }
+  );
+
+  assert.equal(result.applied, true);
+  assert.equal(result.drain_attempts, 2);
+  assert.equal(result.drain_stopped_reason, 'drained');
+  assert.equal(result.fully_drained, true);
+  assert.equal(result.run.drained, true);
+  assert.equal(result.runs.length, 2);
+  assert.match(result.note, /drained queued work in 2 pass/);
+});
+
+test('local collector recover apply stops honestly when a drain pass makes no progress', async () => {
+  const status = (pending) => ({
+    collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+    configured_device: {
+      device_id_configured: true,
+      device_token_configured: true,
+    },
+    coverage: {
+      observed: true,
+      record_batches: 1,
+    },
+    db: {
+      configured: true,
+      exists: true,
+      path: '/tmp/pdpp-test-collector.sqlite',
+    },
+    deployment_posture: PUBLISHED_POSTURE,
+    lifecycle_state: 'draining',
+    outbox: {
+      counts: {
+        dead_letter: 0,
+        leased: 0,
+        pending,
+        retrying: 0,
+        sent: 10,
+        total: 10 + pending,
+      },
+      expired_leases: 0,
+      oldest_pending_at: '2026-06-17T01:39:24.812Z',
+    },
+    package: {
+      name: '@pdpp/local-collector',
+      version: '0.1.0-beta.7',
+    },
+    source: {
+      connection_id: 'dsrc_peregrine',
+      source_instance_id: 'dsrc_peregrine',
+    },
+  });
+  const statuses = [status(24), status(24), status(24)];
+
+  const result = await recoverLocalCollector(
+    parseArgs([
+      'recover',
+      '--source-instance-id',
+      'dsrc_peregrine',
+      '--queue',
+      '/tmp/pdpp-test-collector.sqlite',
+      '--apply',
+      '--max-drain-passes',
+      '5',
+    ]),
+    {
+      inspectStatus: () => statuses.shift() ?? status(24),
+      runOnce: async () => baseRunResult({ ready: 24, succeeded: 10, total: 34 }),
+    }
+  );
+
+  assert.equal(result.drain_attempts, 2);
+  assert.equal(result.drain_stopped_reason, 'no_progress');
+  assert.equal(result.fully_drained, false);
+  assert.match(result.note, /did not reduce the backlog/);
+});
+
 test('local collector rejects conflicting source identity flags', () => {
   assert.throws(
     () => parseArgs(['recover', '--connection-id', 'dsrc_a', '--source-instance-id', 'dsrc_b']),

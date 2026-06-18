@@ -822,7 +822,7 @@ function remediationCommandCaption(command: RefActionRemediation["commands"][num
     case "local_collector_recover_preview":
       return "Dry run: shows what this recovery would do on that host. It changes nothing.";
     case "local_collector_recover_apply":
-      return "Uses the enrolled local profile to recover saved work and run the collector once.";
+      return "Uses the enrolled local profile to recover saved work and drain queued uploads.";
     case "local_collector_retry_dead_letters_preview":
       return "Dry run: shows the saved records that would be retried. It changes nothing.";
     case "local_collector_retry_dead_letters_apply":
@@ -852,7 +852,7 @@ function remediationCommandCaption(command: RefActionRemediation["commands"][num
  *     always showed `retry-dead-letters`, which returned "matched: 0, nothing to
  *     do" when there were no dead letters.
  *   - `dead_letter_backlog` → preview recovery, then apply recovery.
- *   - `stale_pending` → apply recovery, which runs the collector once.
+ *   - `stale_pending` → apply recovery, which drains queued work until clear or bounded.
  * Each command is a template with non-secret placeholders the console late-binds
  * (`substituteCommandTemplate`); current recovery commands bind
  * `<source-instance-id>` from the device source-instance list, not the public
