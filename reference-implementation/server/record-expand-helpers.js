@@ -25,6 +25,44 @@ export function normalizePrimaryKey(primaryKey) {
   return [];
 }
 
+// Shared write-path identity guard used by both the SQLite and Postgres record
+// stores so the two backends cannot diverge. `primaryKeyFields` is the
+// manifest-declared primary_key (already normalized); `key` is the record's
+// key tuple (single string for a one-field key, ordered array for compound).
+// Each declared field present in `data` must equal its position in the key
+// tuple. Fields omitted from `data` are not checked. When no primary-key fields
+// are known, falls back to the legacy `data.id` guard so the common ["id"] case
+// is never silently unvalidated. Throws an Error with code
+// 'invalid_record_identity' on mismatch.
+export function assertRecordIdentity(primaryKeyFields, key, data) {
+  if (data == null || typeof data !== 'object') return;
+  const fields = Array.isArray(primaryKeyFields) ? primaryKeyFields : [];
+
+  if (fields.length === 0) {
+    const single = typeof key === 'string' ? key : Array.isArray(key) && key.length === 1 ? key[0] : null;
+    if (single != null && data.id !== undefined && data.id !== single) {
+      const err = new Error(`key and data.id disagree: key=${single}, data.id=${data.id}`);
+      err.code = 'invalid_record_identity';
+      throw err;
+    }
+    return;
+  }
+
+  const keyParts = typeof key === 'string' ? [key] : Array.isArray(key) ? key : [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    const dataValue = data[field];
+    if (dataValue === undefined) continue;
+    if (String(dataValue) !== String(keyParts[i])) {
+      const err = new Error(
+        `key and data disagree on primary-key field '${field}': key part=${keyParts[i]}, data.${field}=${dataValue}`,
+      );
+      err.code = 'invalid_record_identity';
+      throw err;
+    }
+  }
+}
+
 export function parseIntegerValue(value) {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value !== 'string' || !/^-?\d+$/.test(value.trim())) return null;

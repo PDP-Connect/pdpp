@@ -111,6 +111,7 @@ import { mapWithConcurrency } from './concurrency.ts';
 import {
   SAFE_JSON_FIELD,
   assertSafeJsonField,
+  assertRecordIdentity,
   buildEffectiveFilter,
   invalidQueryError,
   normalizeExpandRequest,
@@ -289,18 +290,14 @@ export async function ingestRecord(storageTarget, record) {
   const recordKey = encodeKey(key);
   const recordJson = data ? JSON.stringify(data) : null;
 
-  // Validate record identity: if primary_key is ["id"] (i.e., key is a single string "id"),
-  // data.id must match key
-  if (typeof key === 'string' && data.id !== undefined && data.id !== key) {
-    const err = new Error(`key and data.id disagree: key=${key}, data.id=${data.id}`);
-    err.code = 'invalid_record_identity';
-    throw err;
-  }
-  if (Array.isArray(key) && key.length === 1 && data.id !== undefined && data.id !== key[0]) {
-    const err = new Error(`key and data.id disagree: key=${key[0]}, data.id=${data.id}`);
-    err.code = 'invalid_record_identity';
-    throw err;
-  }
+  // Validate record identity against the manifest-declared primary_key. The
+  // record `key` is the ordered tuple of primary-key field values; each
+  // declared field present in `data` must equal its position in `key`. This
+  // covers non-`id` single keys (e.g. ["account_number"]) and compound keys
+  // (e.g. ["account_id", "txn_id"]), not just `data.id`. When the manifest is
+  // unavailable we fall back to the legacy `data.id` check so identity is never
+  // silently unvalidated for the common `["id"]` case.
+  validateRecordIdentity({ connectorId, stream, key, data });
 
   const effectiveEmittedAt = emitted_at || nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
@@ -4368,6 +4365,34 @@ function getManifestConsentTimeField(connectorId, streamName) {
   const field = stream?.consent_time_field;
   if (typeof field !== 'string' || !field) return null;
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(field) ? field : null;
+}
+
+// Returns the manifest-declared primary_key field names for a stream, or null
+// when the manifest/stream is unavailable. Mirrors getManifestConsentTimeField's
+// load path so identity validation uses the same manifest source of truth.
+function getManifestPrimaryKeyFields(connectorId, streamName) {
+  const row = getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  if (!row?.manifest) return null;
+
+  let manifest;
+  try {
+    manifest = JSON.parse(row.manifest);
+  } catch {
+    return null;
+  }
+  const stream = Array.isArray(manifest?.streams)
+    ? manifest.streams.find((candidate) => candidate?.name === streamName)
+    : null;
+  const fields = normalizePrimaryKey(stream?.primary_key);
+  return fields.length > 0 ? fields : null;
+}
+
+// Validate the record `key` tuple against manifest-declared primary-key fields,
+// delegating to the shared assertRecordIdentity guard so SQLite and Postgres
+// stores enforce identical identity rules.
+function validateRecordIdentity({ connectorId, stream, key, data }) {
+  const fields = getManifestPrimaryKeyFields(connectorId, stream) ?? [];
+  assertRecordIdentity(fields, key, data);
 }
 
 // --- Cursor encoding ---

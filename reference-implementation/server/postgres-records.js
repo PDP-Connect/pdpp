@@ -12,9 +12,11 @@ import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
 import {
+  assertRecordIdentity,
   assertSafeJsonField,
   buildEffectiveFilter,
   normalizeExpandRequest,
+  normalizePrimaryKey,
 } from './record-expand-helpers.js';
 import { createPostgresConnectorInstanceStore } from './stores/connector-instance-store.js';
 import {
@@ -845,16 +847,11 @@ export async function postgresIngestRecord(storageTarget, record) {
   const recordKey = encodeKey(key);
   const recordJson = data ? JSON.stringify(data) : null;
 
-  if (typeof key === 'string' && data?.id !== undefined && data.id !== key) {
-    const err = new Error(`key and data.id disagree: key=${key}, data.id=${data.id}`);
-    err.code = 'invalid_record_identity';
-    throw err;
-  }
-  if (Array.isArray(key) && key.length === 1 && data?.id !== undefined && data.id !== key[0]) {
-    const err = new Error(`key and data.id disagree: key=${key[0]}, data.id=${data.id}`);
-    err.code = 'invalid_record_identity';
-    throw err;
-  }
+  // Validate record identity against the manifest-declared primary_key (covers
+  // non-`id` and compound keys), via the same shared guard the SQLite store
+  // uses. Falls back to the legacy data.id check when no primary_key is known.
+  const identityManifestStream = await getCachedPostgresManifestStream(connectorId, stream);
+  assertRecordIdentity(normalizePrimaryKey(identityManifestStream?.primary_key), key, data);
 
   const effectiveEmittedAt = emittedAt || nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
