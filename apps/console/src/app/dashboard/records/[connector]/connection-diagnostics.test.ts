@@ -51,6 +51,8 @@ const SOURCE_OUTBOX_STATE_TESTID = /data-testid="diagnostics-outbox-state"/;
 const SOURCE_OUTBOX_STATE_HELPER = /formatSourceOutboxState/;
 const SOURCE_LOCAL_GAPS_TESTID = /data-testid="diagnostics-local-gaps"/;
 const SOURCE_LOCAL_GAPS_MISSING_TESTID = /data-testid="diagnostics-local-gaps-missing"/;
+const LOCAL_DETAIL_GAP_COPY = /local detail gap/;
+const LOCAL_COLLECTOR_GAP_COPY = /local collector gap/;
 const OUTBOX_REMEDIATION_HELPER = /summarizeOutboxStallRemediation/;
 const OUTBOX_REMEDIATION_TESTID = /data-testid="diagnostics-outbox-remediation"/;
 const OUTBOX_REMEDIATION_LABEL_TESTID = /data-testid="diagnostics-outbox-remediation-label"/;
@@ -295,6 +297,15 @@ test("connection-diagnostics renders per-source runtime and backlog evidence", a
   assert.match(src, SOURCE_OUTBOX_STATE_HELPER);
   assert.match(src, SOURCE_LOCAL_GAPS_TESTID);
   assert.match(src, SOURCE_LOCAL_GAPS_MISSING_TESTID);
+});
+
+test("connection-diagnostics names local detail gaps distinctly from failed uploads", async () => {
+  // Outbox failed uploads and local detail gaps are separate dimensions. The
+  // owner-facing copy must not say "No local collector gaps pending" next to a
+  // failed-upload outbox, because that reads like the recovery problem is gone.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, LOCAL_DETAIL_GAP_COPY);
+  assert.doesNotMatch(src, LOCAL_COLLECTOR_GAP_COPY);
 });
 
 test("connection-diagnostics renders visible stalled-outbox remediation copy and a copy-pasteable doctor command", async () => {

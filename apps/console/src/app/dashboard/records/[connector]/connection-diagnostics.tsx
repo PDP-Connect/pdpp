@@ -763,11 +763,11 @@ function formatLocalCollectorGaps(gaps: NonNullable<DeviceSourceInstance["local_
   }
   if (gaps.pending_count > 0) {
     const reason = gaps.reasons.length > 0 ? ` · ${gaps.reasons.join(", ")}` : "";
-    return `${gaps.pending_count.toLocaleString()} local collector gap${
+    return `${gaps.pending_count.toLocaleString()} local detail gap${
       gaps.pending_count === 1 ? "" : "s"
     } pending${reason}.`;
   }
-  return "No local collector gaps pending.";
+  return "No local detail gaps pending.";
 }
 
 function localCollectorGapToneClass(gaps: NonNullable<DeviceSourceInstance["local_collector_gaps"]>): string {
