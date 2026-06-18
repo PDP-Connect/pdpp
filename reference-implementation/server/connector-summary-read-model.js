@@ -70,6 +70,171 @@ function emptyRetainedBytes() {
 }
 
 // ---------------------------------------------------------------------------
+// Domain-local store: connector_summary_evidence
+//
+// One named store for the six dialect-only drift seams of this read model.
+// The Postgres/SQLite adapter is selected ONCE per call site via the storage
+// backend predicate; the dialect SQL is moved VERBATIM from the old
+// inline branches. Adapters stay thin: they return RAW rows (or perform an
+// UPDATE). Row-shaping (shapeEvidenceRow, normalizeInstanceRow,
+// addStreamRecordEvidence, retainedBytesFromRow) and the best-effort
+// try/catch on the dirty markers stay in the calling orchestration.
+//
+// NOT folded here (already-clean function-level adapter selection over
+// multi-statement transactions): rebuild* and reconcileDirty*. Also untouched:
+// the *Sync SQLite helpers reconcile uses to stay inside one better-sqlite3
+// transaction, and readConnectionRecordRecencyEvidence (out of this tranche).
+// ---------------------------------------------------------------------------
+function createConnectorSummaryStore() {
+  if (isPostgresStorageBackend()) {
+    return {
+      async listEvidence({ connectorInstanceId } = {}) {
+        const params = [];
+        let where = '';
+        if (connectorInstanceId) {
+          params.push(connectorInstanceId);
+          where = `WHERE connector_instance_id = $${params.length}`;
+        }
+        const result = await postgresQuery(
+          `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
+                  revoked_at, total_records, stream_count, last_record_updated_at,
+                  stream_records_json, retained_bytes_json, total_retained_bytes,
+                  dirty, computed_at, source_event_seq, state, last_error
+             FROM connector_summary_evidence
+             ${where}
+             ORDER BY connector_instance_id ASC`,
+          params,
+        );
+        return result.rows;
+      },
+      async markDirty({ connectorInstanceId, sanitized, sourceEventSeq }) {
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = $2,
+                  source_event_seq = COALESCE($3, source_event_seq)
+            WHERE connector_instance_id = $1`,
+          [connectorInstanceId, sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq)],
+        );
+      },
+      async markAllDirty({ sanitized }) {
+        await postgresQuery(
+          `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1`,
+          [sanitized],
+        );
+      },
+      async listConnectorInstanceRows() {
+        const result = await postgresQuery(
+          `SELECT connector_instance_id, connector_id, display_name, status, source_kind, revoked_at
+             FROM connector_instances
+            WHERE owner_subject_id = $1
+            ORDER BY connector_instance_id ASC`,
+          [REFERENCE_OWNER_SUBJECT_ID],
+        );
+        return result.rows;
+      },
+      async listStreamCountRows() {
+        const result = await postgresQuery(
+          `SELECT connector_instance_id,
+                  stream,
+                  record_count
+             FROM retained_size_stream
+            ORDER BY connector_instance_id ASC, stream ASC`,
+        );
+        return result.rows;
+      },
+      async listRetainedBytesRows() {
+        const result = await postgresQuery(
+          `SELECT connector_instance_id,
+                  current_record_json_bytes,
+                  record_history_json_bytes,
+                  blob_bytes
+             FROM retained_size_connection`,
+        );
+        return result.rows;
+      },
+    };
+  }
+  return {
+    listEvidence({ connectorInstanceId } = {}) {
+      const db = getDb();
+      return connectorInstanceId
+        ? db
+          .prepare(
+            `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
+                    revoked_at, total_records, stream_count, last_record_updated_at,
+                    stream_records_json, retained_bytes_json, total_retained_bytes,
+                    dirty, computed_at, source_event_seq, state, last_error
+               FROM connector_summary_evidence
+              WHERE connector_instance_id = ?
+              ORDER BY connector_instance_id ASC`,
+          )
+          .all(connectorInstanceId)
+        : db
+          .prepare(
+            `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
+                    revoked_at, total_records, stream_count, last_record_updated_at,
+                    stream_records_json, retained_bytes_json, total_retained_bytes,
+                    dirty, computed_at, source_event_seq, state, last_error
+               FROM connector_summary_evidence
+              ORDER BY connector_instance_id ASC`,
+          )
+          .all();
+    },
+    markDirty({ connectorInstanceId, sanitized, sourceEventSeq }) {
+      getDb()
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = ?,
+                  source_event_seq = COALESCE(?, source_event_seq)
+            WHERE connector_instance_id = ?`,
+        )
+        .run(sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq), connectorInstanceId);
+    },
+    markAllDirty({ sanitized }) {
+      getDb()
+        .prepare(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = ?`)
+        .run(sanitized);
+    },
+    listConnectorInstanceRows() {
+      return getDb()
+        .prepare(
+          `SELECT connector_instance_id, connector_id, display_name, status, source_kind, revoked_at
+             FROM connector_instances
+            WHERE owner_subject_id = ?
+            ORDER BY connector_instance_id ASC`,
+        )
+        .all(REFERENCE_OWNER_SUBJECT_ID);
+    },
+    listStreamCountRows() {
+      return getDb()
+        .prepare(
+          `SELECT connector_instance_id,
+                  stream,
+                  record_count
+             FROM retained_size_stream
+            ORDER BY connector_instance_id ASC, stream ASC`,
+        )
+        .all();
+    },
+    listRetainedBytesRows() {
+      return getDb()
+        .prepare(
+          `SELECT connector_instance_id,
+                  current_record_json_bytes,
+                  record_history_json_bytes,
+                  blob_bytes
+             FROM retained_size_connection`,
+        )
+        .all();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
@@ -79,48 +244,8 @@ function emptyRetainedBytes() {
  * synthesize freshness/health/verdict on read.
  */
 export async function listConnectorSummaryEvidence({ connectorInstanceId } = {}) {
-  if (isPostgresStorageBackend()) {
-    const params = [];
-    let where = '';
-    if (connectorInstanceId) {
-      params.push(connectorInstanceId);
-      where = `WHERE connector_instance_id = $${params.length}`;
-    }
-    const result = await postgresQuery(
-      `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-              revoked_at, total_records, stream_count, last_record_updated_at,
-              stream_records_json, retained_bytes_json, total_retained_bytes,
-              dirty, computed_at, source_event_seq, state, last_error
-         FROM connector_summary_evidence
-         ${where}
-         ORDER BY connector_instance_id ASC`,
-      params,
-    );
-    return result.rows.map(shapeEvidenceRow);
-  }
-  const db = getDb();
-  const rows = connectorInstanceId
-    ? db
-      .prepare(
-        `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-                revoked_at, total_records, stream_count, last_record_updated_at,
-                stream_records_json, retained_bytes_json, total_retained_bytes,
-                dirty, computed_at, source_event_seq, state, last_error
-           FROM connector_summary_evidence
-          WHERE connector_instance_id = ?
-          ORDER BY connector_instance_id ASC`,
-      )
-      .all(connectorInstanceId)
-    : db
-      .prepare(
-        `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
-                revoked_at, total_records, stream_count, last_record_updated_at,
-                stream_records_json, retained_bytes_json, total_retained_bytes,
-                dirty, computed_at, source_event_seq, state, last_error
-           FROM connector_summary_evidence
-          ORDER BY connector_instance_id ASC`,
-      )
-      .all();
+  const store = createConnectorSummaryStore();
+  const rows = await store.listEvidence({ connectorInstanceId });
   return rows.map(shapeEvidenceRow);
 }
 
@@ -177,28 +302,8 @@ export async function markConnectorSummaryEvidenceDirty({ connectorInstanceId, r
   }
   const sanitized = reason ? sanitizeProjectionError(reason) : null;
   try {
-    if (isPostgresStorageBackend()) {
-      await postgresQuery(
-        `UPDATE connector_summary_evidence
-            SET dirty = 1,
-                state = 'stale',
-                last_error = $2,
-                source_event_seq = COALESCE($3, source_event_seq)
-          WHERE connector_instance_id = $1`,
-        [connectorInstanceId, sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq)],
-      );
-      return;
-    }
-    getDb()
-      .prepare(
-        `UPDATE connector_summary_evidence
-            SET dirty = 1,
-                state = 'stale',
-                last_error = ?,
-                source_event_seq = COALESCE(?, source_event_seq)
-          WHERE connector_instance_id = ?`,
-      )
-      .run(sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq), connectorInstanceId);
+    const store = createConnectorSummaryStore();
+    await store.markDirty({ connectorInstanceId, sanitized, sourceEventSeq });
   } catch {
     // Best-effort marker; rebuild/reconcile will repair.
   }
@@ -212,16 +317,8 @@ export async function markConnectorSummaryEvidenceDirty({ connectorInstanceId, r
 export async function markAllConnectorSummaryEvidenceDirty(reason) {
   const sanitized = reason ? sanitizeProjectionError(reason) : null;
   try {
-    if (isPostgresStorageBackend()) {
-      await postgresQuery(
-        `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1`,
-        [sanitized],
-      );
-      return;
-    }
-    getDb()
-      .prepare(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = ?`)
-      .run(sanitized);
+    const store = createConnectorSummaryStore();
+    await store.markAllDirty({ sanitized });
   } catch {
     // Best-effort.
   }
@@ -237,24 +334,8 @@ export async function markAllConnectorSummaryEvidenceDirty(reason) {
  * status, source kind, revoked time) — never a synthesized verdict.
  */
 async function readConnectorInstanceRows() {
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT connector_instance_id, connector_id, display_name, status, source_kind, revoked_at
-         FROM connector_instances
-        WHERE owner_subject_id = $1
-        ORDER BY connector_instance_id ASC`,
-      [REFERENCE_OWNER_SUBJECT_ID],
-    );
-    return result.rows.map(normalizeInstanceRow);
-  }
-  const rows = getDb()
-    .prepare(
-      `SELECT connector_instance_id, connector_id, display_name, status, source_kind, revoked_at
-         FROM connector_instances
-        WHERE owner_subject_id = ?
-        ORDER BY connector_instance_id ASC`,
-    )
-    .all(REFERENCE_OWNER_SUBJECT_ID);
+  const store = createConnectorSummaryStore();
+  const rows = await store.listConnectorInstanceRows();
   return rows.map(normalizeInstanceRow);
 }
 
@@ -300,28 +381,8 @@ function addStreamRecordEvidence(map, row) {
 
 async function readConnectionCountEvidence() {
   const map = new Map();
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT connector_instance_id,
-              stream,
-              record_count
-         FROM retained_size_stream
-        ORDER BY connector_instance_id ASC, stream ASC`,
-    );
-    for (const row of result.rows) {
-      addStreamRecordEvidence(map, row);
-    }
-    return map;
-  }
-  const rows = getDb()
-    .prepare(
-      `SELECT connector_instance_id,
-              stream,
-              record_count
-         FROM retained_size_stream
-        ORDER BY connector_instance_id ASC, stream ASC`,
-    )
-    .all();
+  const store = createConnectorSummaryStore();
+  const rows = await store.listStreamCountRows();
   for (const row of rows) {
     addStreamRecordEvidence(map, row);
   }
@@ -342,29 +403,8 @@ function retainedBytesFromRow(row) {
 
 async function readConnectionRetainedBytesEvidence() {
   const map = new Map();
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT connector_instance_id,
-              current_record_json_bytes,
-              record_history_json_bytes,
-              blob_bytes
-         FROM retained_size_connection`,
-    );
-    for (const row of result.rows) {
-      map.set(row.connector_instance_id, retainedBytesFromRow(row));
-    }
-    return map;
-  }
-
-  const rows = getDb()
-    .prepare(
-      `SELECT connector_instance_id,
-              current_record_json_bytes,
-              record_history_json_bytes,
-              blob_bytes
-         FROM retained_size_connection`,
-    )
-    .all();
+  const store = createConnectorSummaryStore();
+  const rows = await store.listRetainedBytesRows();
   for (const row of rows) {
     map.set(row.connector_instance_id, retainedBytesFromRow(row));
   }
