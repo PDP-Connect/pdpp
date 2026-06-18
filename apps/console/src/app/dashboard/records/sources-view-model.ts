@@ -519,6 +519,15 @@ function streamNamesForSource(
   return names;
 }
 
+function formatSourceListFacts(summary: RefConnectorSummary): string {
+  const recordCount = Number.isFinite(summary.total_records) ? Math.max(0, Math.floor(summary.total_records)) : 0;
+  const recordNoun = recordCount === 1 ? "record" : "records";
+  const streamCountRaw = summary.stream_count ?? summary.streams.length;
+  const streamCount = Number.isFinite(streamCountRaw) ? Math.max(0, Math.floor(streamCountRaw)) : 0;
+  const streamNoun = streamCount === 1 ? "stream" : "streams";
+  return `${recordCount.toLocaleString()} ${recordNoun} · ${streamCount.toLocaleString()} ${streamNoun}`;
+}
+
 /**
  * Project one `RefConnectorSummary` into a `SourceInstanceView`. Pure; takes no
  * I/O. Per-stream retained record counts come from the owner-only
@@ -562,7 +571,7 @@ export function toSourceInstanceView(
   if (hasFallbackLabel) {
     accountLine = "Unnamed source";
   } else {
-    accountLine = kind;
+    accountLine = formatSourceListFacts(summary);
   }
   const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
   const primaryVerdictAction = formatPrimaryVerdictAction(summary.rendered_verdict);

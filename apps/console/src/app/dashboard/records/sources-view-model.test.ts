@@ -599,7 +599,7 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
   assert.equal(views[1]?.displayName, "Amazon · account 2");
   assert.equal(views[0]?.accountLine, "Unnamed source");
   assert.equal(views[2]?.displayName, "Amazon - Personal");
-  assert.equal(views[2]?.accountLine, "Amazon");
+  assert.equal(views[2]?.accountLine, "100 records · 2 streams");
 });
 
 test("duplicate source review flags same-type unnamed active sources without hiding them", () => {
