@@ -112,20 +112,31 @@ function RelationshipsBlock({
       </div>
       {relationships.length > 0 ? (
         <div className="rr-rel-list">
-          {relationships.map((r) => (
-            <div className="rr-rel" key={r.clientId}>
-              <span className="rr-rel__who">
-                <Monogram name={r.who} /> {r.who}
-              </span>
-              <span className="rr-rel__reads">
-                {r.reads} · <Endorse status={r.status} />
-              </span>
-              <span className="rr-rel__meta">{r.terms}</span>
-              <a className="rr-rel__revoke" href={r.actionHref}>
-                {r.actionLabel}
-              </a>
-            </div>
-          ))}
+          {relationships.map((r) => {
+            const hasDistinctId = r.clientId !== r.who;
+            return (
+              <div className="rr-rel" key={r.clientId}>
+                <span className="rr-rel__who">
+                  <Monogram name={r.who} />
+                  <span>
+                    <span title={r.who}>{r.who}</span>
+                    {hasDistinctId ? (
+                      <span className="rr-bearer__client" title={r.clientId}>
+                        {r.clientId}
+                      </span>
+                    ) : null}
+                  </span>
+                </span>
+                <span className="rr-rel__reads">
+                  {r.reads} · <Endorse status={r.status} />
+                </span>
+                <span className="rr-rel__meta">{r.terms}</span>
+                <a className="rr-rel__revoke" href={r.actionHref}>
+                  {r.actionLabel}
+                </a>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="rr-stand-empty">

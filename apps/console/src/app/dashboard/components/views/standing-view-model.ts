@@ -395,7 +395,23 @@ function newerIso(a: string | null, b: string | null): string | null {
   return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
 }
 
-function toRelationships(grants: GrantSummary[], hrefs: StandingHrefs, now: Date): RelationshipView[] {
+function clientNamesById(clients: readonly OwnerIssuedClient[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const client of clients) {
+    const name = client.client_name?.trim();
+    if (name) {
+      out.set(client.client_id, name);
+    }
+  }
+  return out;
+}
+
+function toRelationships(
+  grants: GrantSummary[],
+  hrefs: StandingHrefs,
+  now: Date,
+  knownClientNames: ReadonlyMap<string, string> = new Map()
+): RelationshipView[] {
   const groups = new Map<
     string,
     {
@@ -409,6 +425,7 @@ function toRelationships(grants: GrantSummary[], hrefs: StandingHrefs, now: Date
   >();
   for (const grant of grants.filter(isLiveGrant)) {
     const clientId = grant.client_id || grant.grant_id;
+    const knownClientName = grant.client_id ? (knownClientNames.get(grant.client_id) ?? null) : null;
     const existing =
       groups.get(clientId) ??
       {
@@ -417,7 +434,7 @@ function toRelationships(grants: GrantSummary[], hrefs: StandingHrefs, now: Date
         lastAt: null,
         phrases: new Set<string>(),
         statuses: [],
-        who: clientLabel(grant.client_id, grant.grant_id),
+        who: clientLabel(knownClientName ?? grant.client_id, grant.grant_id),
       };
     existing.grantIds.push(grant.grant_id);
     existing.lastAt = newerIso(existing.lastAt, grant.last_at);
@@ -707,7 +724,7 @@ export function buildStandingData(input: StandingInputs): StandingData {
   return {
     hero: computeHero(input),
     bearers: toBearers(input.bearerClients, input.hrefs, input.now),
-    relationships: toRelationships(input.grants, input.hrefs, input.now),
+    relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     lately: toLately(input.traces, input.now),
     attention: toAttention(input.attentionConnections, input.hrefs),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
