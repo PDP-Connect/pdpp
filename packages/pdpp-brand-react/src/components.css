@@ -960,8 +960,9 @@
   }
 }
 
-/* Per-connection group. */
-.rr-sync-group { display: flex; flex-direction: column; gap: 8px; }
+/* Per-connection group. content-visibility skips layout/paint for off-screen
+   groups so scroll performance stays fast even at the ~134-row catalogue ceiling. */
+.rr-sync-group { display: flex; flex-direction: column; gap: 8px; content-visibility: auto; contain-intrinsic-size: 0 300px; }
 .rr-sync-group__head {
   display: flex;
   align-items: baseline;
@@ -993,11 +994,23 @@
   color: var(--muted-foreground);
   white-space: nowrap;
 }
-.rr-sync-group__overflow {
-  margin: 1px 0 0;
-  color: var(--muted-foreground);
+.rr-sync-group__last-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
   font-size: 0.72rem;
-  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+.rr-sync-group__delta {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rr-sync-group__duration {
+  white-space: nowrap;
+}
+.rr-sync-group__when {
+  white-space: nowrap;
 }
 
 /* Sync row — composed over the kit Table (pdpp-table__row). */
@@ -1034,6 +1047,15 @@
 .rr-sync-row__when {
   font-family: var(--font-mono);
   font-size: 0.62rem;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.rr-sync-row__empty {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.rr-sync-row__coverage {
+  font-size: 0.69rem;
   color: var(--muted-foreground);
   font-weight: 400;
 }

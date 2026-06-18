@@ -25,9 +25,9 @@ import {
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import type { DuplicateSyncGroup, FailureCard, SyncGroup, SyncRow, SyncsViewModel } from "./syncs-model.ts";
+import type { DuplicateSyncGroup, FailureCard, SyncGroup, SyncRow, SyncRhythmTick, SyncsViewModel } from "./syncs-model.ts";
 
-const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) auto minmax(0,1.2fr) minmax(0,0.9fr)";
+const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9fr)";
 
 const RESET_NOTE = "Nothing already saved is ever lost — a held connection only pauses new arrivals.";
 
@@ -143,8 +143,34 @@ function DuplicateSyncGroupPanel({ group }: { group: DuplicateSyncGroup }) {
 
 // ─── Sync row (one stream) ────────────────────────────────────────────────────
 
+/**
+ * Format the per-stream collected count for display.
+ * Returns null when collection_report is absent (honest empty state).
+ */
+function formatCollectedThisRun(row: SyncRow): string | null {
+  if (row.streamSkipped) {
+    return "skipped";
+  }
+  if (row.collectedThisRun === null) {
+    return null;
+  }
+  if (row.failed) {
+    return "sync failed";
+  }
+  if (row.collectedThisRun <= 0) {
+    return "no change";
+  }
+  return `+${row.collectedThisRun.toLocaleString()} collected`;
+}
+
 function SyncTableRow({ row }: { row: SyncRow }) {
-  const deltaClass = ["rr-sync-row__delta", row.quiet ? "is-quiet" : undefined, row.failed ? "is-failed" : undefined]
+  const collectedText = formatCollectedThisRun(row);
+  const isQuiet = !row.failed && row.collectedThisRun !== null && row.collectedThisRun <= 0 && !row.streamSkipped;
+  const deltaClass = [
+    "rr-sync-row__delta",
+    isQuiet ? "is-quiet" : undefined,
+    row.failed ? "is-failed" : undefined,
+  ]
     .filter(Boolean)
     .join(" ");
   return (
@@ -152,15 +178,10 @@ function SyncTableRow({ row }: { row: SyncRow }) {
       <summary className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}>
         <TableCell className="rr-sync-row__stream">{row.stream}</TableCell>
         <TableCell className="rr-sync-row__cadence">{row.cadence}</TableCell>
-        <TableCell>
-          <Rhythm ticks={row.rhythm} />
-        </TableCell>
         <TableCell className={deltaClass}>
-          <span>{row.delta}</span>
-          {row.lastAt ? (
-            <span className="rr-sync-row__when">
-              <IcTimestamp mode="relative" value={row.lastAt} />
-            </span>
+          {collectedText !== null ? <span>{collectedText}</span> : <span className="rr-sync-row__empty">—</span>}
+          {row.coverageCondition && row.coverageCondition !== "complete" && row.coverageCondition !== "unknown" ? (
+            <span className="rr-sync-row__coverage"> · {row.coverageCondition}</span>
           ) : null}
         </TableCell>
         <TableCell className="rr-sync-row__next" numeric>
@@ -169,11 +190,10 @@ function SyncTableRow({ row }: { row: SyncRow }) {
       </summary>
       <div className="rr-sync-detail">
         <KV>
-          <KVRow k="last run">
-            {row.lastAt ? <IcTimestamp mode="relative" value={row.lastAt} /> : "—"}
-            {row.duration ? ` · ${row.duration}` : ""}
+          <KVRow k="collected (last run)">
+            {collectedText ?? "—"}
+            {row.coverageCondition ? ` · ${row.coverageCondition}` : ""}
           </KVRow>
-          <KVRow k="delta">{row.failed ? "0 records — cursor held" : row.delta}</KVRow>
           <KVRow k="cadence">{row.cadence}</KVRow>
           <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
         </KV>
@@ -186,6 +206,31 @@ function SyncTableRow({ row }: { row: SyncRow }) {
 }
 
 // ─── Sync group (one connection) ──────────────────────────────────────────────
+
+function SyncGroupLastRun({
+  delta,
+  duration,
+  lastRunAt,
+  rhythm,
+}: {
+  delta: string | null;
+  duration: string | null;
+  lastRunAt: string | null;
+  rhythm: SyncRhythmTick[];
+}) {
+  return (
+    <div className="rr-sync-group__last-run">
+      {rhythm.length > 0 ? <Rhythm ticks={rhythm} /> : null}
+      {delta !== null ? <span className="rr-sync-group__delta">{delta}</span> : null}
+      {duration !== null ? <span className="rr-sync-group__duration">{duration}</span> : null}
+      {lastRunAt !== null ? (
+        <span className="rr-sync-group__when">
+          <IcTimestamp mode="relative" value={lastRunAt} />
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
 function SyncGroupBlock({
   group,
@@ -202,13 +247,18 @@ function SyncGroupBlock({
         <span className="rr-sync-group__count">
           {group.streams.length} {group.streams.length === 1 ? "stream" : "streams"}
         </span>
+        <SyncGroupLastRun
+          delta={group.lastRunDelta}
+          duration={group.lastRunDuration}
+          lastRunAt={group.lastRunAt}
+          rhythm={group.lastRunRhythm}
+        />
       </div>
       <Table cols={SYNC_COLS}>
         <TableHeaderRow>
           <TableHeader>stream</TableHeader>
           <TableHeader>cadence</TableHeader>
-          <TableHeader>recent</TableHeader>
-          <TableHeader>last result</TableHeader>
+          <TableHeader>collected (last run)</TableHeader>
           <TableHeader numeric>next</TableHeader>
         </TableHeaderRow>
         {group.streams.map((row) => {
@@ -216,39 +266,7 @@ function SyncGroupBlock({
           return <SyncTableRow key={key} row={row} />;
         })}
       </Table>
-      {group.hiddenStreamCount > 0 ? (
-        <p className="rr-sync-group__overflow">
-          Showing {group.streams.length.toLocaleString()} of {group.totalStreamCount.toLocaleString()} streams.{" "}
-          <Link className="rr-link" href={dashboardRoutes.connector(group.connectionId)} prefetch={false}>
-            Open source detail for {group.hiddenStreamCount.toLocaleString()} more →
-          </Link>
-        </p>
-      ) : null}
     </section>
-  );
-}
-
-function SyncsOverviewOverflow({ model }: { model: SyncsViewModel }) {
-  const parts = [
-    model.hiddenReviewCardCount > 0
-      ? `${model.hiddenReviewCardCount.toLocaleString()} more review card${
-          model.hiddenReviewCardCount === 1 ? "" : "s"
-        }`
-      : null,
-    model.hiddenGroupCount > 0
-      ? `${model.hiddenGroupCount.toLocaleString()} more source${model.hiddenGroupCount === 1 ? "" : "s"}`
-      : null,
-    model.hiddenStreamCount > 0
-      ? `${model.hiddenStreamCount.toLocaleString()} stream row${model.hiddenStreamCount === 1 ? "" : "s"}`
-      : null,
-  ].filter(Boolean);
-  if (parts.length === 0) {
-    return null;
-  }
-  return (
-    <p className="rr-sync__overflow" data-testid="syncs-overview-overflow">
-      This overview keeps first paint small. {parts.join(" and ")} are available from the exact source detail pages.
-    </p>
   );
 }
 
@@ -293,7 +311,6 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
         </div>
       )}
 
-      <SyncsOverviewOverflow model={model} />
     </div>
   );
 }

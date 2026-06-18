@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
+  RefCollectionReportEntry,
   RefConnectionHealthSnapshot,
   RefConnectorSummary,
   RefRenderedVerdict,
@@ -121,6 +122,19 @@ function connectorRun(overrides: Partial<NonNullable<RefConnectorSummary["last_r
     status: "succeeded",
     ...overrides,
   } satisfies NonNullable<RefConnectorSummary["last_run"]>;
+}
+
+function collectionEntry(overrides: Partial<RefCollectionReportEntry> & Pick<RefCollectionReportEntry, "stream">): RefCollectionReportEntry {
+  return {
+    checkpoint: "ok",
+    collected: 0,
+    considered: "unknown",
+    coverage_condition: "complete",
+    forward_disposition: "resumable",
+    pending_detail_gaps: 0,
+    skipped: null,
+    ...overrides,
+  };
 }
 
 function schedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
@@ -261,8 +275,8 @@ test("connector-wide runs are not attributed to every same-type connection", () 
   });
 
   assert.deepEqual(
-    model.groups.map((group) => group.streams[0]?.delta),
-    ["no recent run", "no recent run"],
+    model.groups.map((group) => group.lastRunDelta),
+    [null, null],
     "a connector-keyed run without exact connection identity must not paint either source"
   );
   assert.deepEqual(
@@ -299,9 +313,9 @@ test("browser surface profile keys attribute a run only to the matching connecti
   });
 
   const byConnection = new Map(model.groups.map((group) => [group.connectionId, group]));
-  assert.equal(byConnection.get("cin_chase_a")?.streams[0]?.delta, "no recent run");
+  assert.equal(byConnection.get("cin_chase_a")?.lastRunDelta, null);
   assert.equal(byConnection.get("cin_chase_a")?.streams[0]?.failed, false);
-  assert.equal(byConnection.get("cin_chase_b")?.streams[0]?.delta, "sync failed");
+  assert.equal(byConnection.get("cin_chase_b")?.lastRunDelta, "sync failed");
   assert.equal(byConnection.get("cin_chase_b")?.streams[0]?.failed, true);
 });
 
@@ -318,8 +332,8 @@ test("connection summary last_run remains available without connector-wide run a
     runs: [],
   });
 
-  assert.equal(model.groups[0]?.streams[0]?.delta, "+42 records");
-  assert.deepEqual(model.groups[0]?.streams[0]?.rhythm, ["ok"]);
+  assert.equal(model.groups[0]?.lastRunDelta, "+42 records");
+  assert.deepEqual(model.groups[0]?.lastRunRhythm, ["ok"]);
 });
 
 test("revoked connections are excluded from the live syncs surface", () => {
@@ -378,7 +392,7 @@ test("a failing connection holds its next and marks rows failed", () => {
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
   assert.equal(group?.streams[0]?.next, "held");
-  assert.equal(group?.streams[0]?.delta, "sync failed");
+  assert.equal(group?.lastRunDelta, "sync failed");
 });
 
 test("a broken connector does not rewrite a successful last run into sync failed", () => {
@@ -412,12 +426,12 @@ test("a broken connector does not rewrite a successful last run into sync failed
     runs: [],
   });
 
-  const row = model.groups[0]?.streams[0];
-  assert.equal(model.groups[0]?.health, "failing", "the group still shows the current connector state");
-  assert.equal(row?.delta, "+52 records", "last result remains the successful run fact");
-  assert.equal(row?.failed, false, "row failure style follows the actual last run, not the current verdict");
-  assert.equal(row?.next, "held", "the current verdict still blocks future collection");
-  assert.deepEqual(row?.rhythm, ["ok"], "rhythm agrees with the successful last run");
+  const group = model.groups[0];
+  assert.equal(group?.health, "failing", "the group still shows the current connector state");
+  assert.equal(group?.lastRunDelta, "+52 records", "last result remains the successful run fact");
+  assert.equal(group?.streams[0]?.failed, false, "row failure style follows the actual last run, not the current verdict");
+  assert.equal(group?.streams[0]?.next, "held", "the current verdict still blocks future collection");
+  assert.deepEqual(group?.lastRunRhythm, ["ok"], "rhythm agrees with the successful last run");
 });
 
 // ─── RenderedVerdict conformance matrix ──────────────────────────────────────
@@ -671,7 +685,6 @@ test("syncs overview collapses repeated unnamed fallback sources", () => {
   assert.equal(model.failureCards.length, 0, "duplicate advisory cards collapse into the duplicate review note");
   assert.equal(model.totalGroupCount, 4);
   assert.equal(model.totalStreamCount, 8);
-  assert.equal(model.hiddenStreamCount, 6);
 });
 
 test("syncs overview keeps small duplicate fallback sets visible", () => {
@@ -702,7 +715,7 @@ test("syncs overview keeps small duplicate fallback sets visible", () => {
   );
 });
 
-test("syncs overview caps stream rows while preserving exact source detail overflow", () => {
+test("syncs overview shows ALL streams with no truncation", () => {
   const model = buildSyncsViewModel({
     connectors: [
       connector({
@@ -716,14 +729,12 @@ test("syncs overview caps stream rows while preserving exact source detail overf
     runs: [],
   });
 
-  assert.equal(model.groups[0]?.streams.length, 3);
-  assert.equal(model.groups[0]?.hiddenStreamCount, 4);
+  assert.equal(model.groups[0]?.streams.length, 7, "all 7 streams render — no cap");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
-  assert.equal(model.hiddenStreamCount, 4);
   assert.equal(model.totalStreamCount, 7);
 });
 
-test("syncs overview caps lower-priority source groups", () => {
+test("syncs overview shows ALL source groups with no cap", () => {
   const connectors = Array.from({ length: 18 }, (_, index) =>
     connector({
       connection_id: `cin_${String(index).padStart(2, "0")}`,
@@ -735,13 +746,12 @@ test("syncs overview caps lower-priority source groups", () => {
   );
   const model = buildSyncsViewModel({ connectors, runs: [] });
 
-  assert.equal(model.groups.length, 6);
-  assert.equal(model.hiddenGroupCount, 12);
-  assert.equal(model.hiddenStreamCount, 12);
+  assert.equal(model.groups.length, 18, "all 18 groups render — no cap");
   assert.equal(model.totalGroupCount, 18);
+  assert.equal(model.totalStreamCount, 18);
 });
 
-test("syncs overview caps visible review cards while the band counts the full review set", () => {
+test("syncs overview shows ALL review cards (no cap) and the band counts the full set", () => {
   const advisoryVerdict = renderedVerdict({
     channel: "advisory",
     forward_statement: "Run a refresh to bring this up to date.",
@@ -760,9 +770,210 @@ test("syncs overview caps visible review cards while the band counts the full re
   );
   const model = buildSyncsViewModel({ connectors, runs: [] });
 
-  assert.equal(model.failureCards.length, 6);
+  assert.equal(model.failureCards.length, 8, "all 8 failure cards visible — no cap");
   assert.equal(model.band.needsReview, 8);
-  assert.equal(model.hiddenReviewCardCount, 2);
   assert.equal(model.totalReviewCardCount, 8);
   assert.equal(model.band.allClear, false);
+});
+
+// ─── Fix A: no-truncation correctness ────────────────────────────────────────
+
+test("all streams in a group are present with no truncation", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_many",
+        connector_id: "slack",
+        display_name: "Vana Slack",
+        streams: ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"],
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.equal(model.groups[0]?.streams.length, 7, "all 7 stream rows are present");
+  assert.equal(model.groups[0]?.totalStreamCount, 7);
+  assert.equal(model.totalStreamCount, 7);
+  const streamNames = model.groups[0]?.streams.map((r) => r.stream);
+  assert.deepEqual(streamNames, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]);
+});
+
+test("all groups are present when there are more than the old cap of 6", () => {
+  const connectors = Array.from({ length: 10 }, (_, i) =>
+    connector({
+      connection_id: `cin_${i}`,
+      connector_id: `src_${i}`,
+      display_name: `Source ${i}`,
+      streams: ["records"],
+    })
+  );
+  const model = buildSyncsViewModel({ connectors, runs: [] });
+
+  assert.equal(model.groups.length, 10, "all 10 groups render — no group cap");
+  assert.equal(model.totalGroupCount, 10);
+  assert.equal(
+    model.groups.map((g) => g.connectionId).join(","),
+    connectors.map((c) => c.connection_id).join(","),
+    "group order is deterministic"
+  );
+});
+
+// ─── Fix B: per-stream collection_report wiring ───────────────────────────────
+
+test("per-stream collectedThisRun is populated from collection_report when present", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_gh",
+        connector_id: "github",
+        display_name: "GitHub",
+        streams: ["commits", "pull_requests"],
+        collection_report: [
+          collectionEntry({ stream: "commits", collected: 120, coverage_condition: "complete" }),
+          collectionEntry({ stream: "pull_requests", collected: 8, coverage_condition: "partial" }),
+        ],
+      }),
+    ],
+    runs: [],
+  });
+
+  const group = model.groups[0];
+  assert.ok(group, "group must exist");
+  const byStream = new Map(group.streams.map((r) => [r.stream, r]));
+
+  const commits = byStream.get("commits");
+  assert.equal(commits?.collectedThisRun, 120, "commits stream carries its own collected count");
+  assert.equal(commits?.coverageCondition, "complete");
+
+  const prs = byStream.get("pull_requests");
+  assert.equal(prs?.collectedThisRun, 8, "pull_requests stream carries its own collected count");
+  assert.equal(prs?.coverageCondition, "partial");
+});
+
+test("two streams with different collection_report entries show DIFFERENT values — rows are not identical", () => {
+  // This is the core bug the fix proves: rows must not all share the connection total.
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_multi",
+        connector_id: "gmail",
+        display_name: "Gmail",
+        streams: ["messages", "attachments"],
+        collection_report: [
+          collectionEntry({ stream: "messages", collected: 42 }),
+          collectionEntry({ stream: "attachments", collected: 0 }),
+        ],
+      }),
+    ],
+    runs: [run({ connection_id: "cin_multi", event_count: 42, status: "succeeded" })],
+  });
+
+  const group = model.groups[0];
+  assert.ok(group, "group must exist");
+  const byStream = new Map(group.streams.map((r) => [r.stream, r]));
+
+  assert.equal(byStream.get("messages")?.collectedThisRun, 42);
+  assert.equal(byStream.get("attachments")?.collectedThisRun, 0);
+
+  assert.notEqual(
+    byStream.get("messages")?.collectedThisRun,
+    byStream.get("attachments")?.collectedThisRun,
+    "stream rows must carry DIFFERENT per-stream values, not the same connection total"
+  );
+});
+
+test("connection-level last-run facts live on the group, not on each stream row", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_chase",
+        connector_id: "chase",
+        display_name: "Chase",
+        last_run: connectorRun({ event_count: 99, status: "succeeded", first_at: "2026-06-13T04:00:00Z", last_at: "2026-06-13T04:00:06Z" }),
+        streams: ["transactions", "balances"],
+      }),
+    ],
+    runs: [],
+  });
+
+  const group = model.groups[0];
+  assert.ok(group, "group must exist");
+
+  // Connection-level facts on the group header.
+  assert.equal(group.lastRunDelta, "+99 records", "delta is on the group");
+  assert.equal(group.lastRunDuration, "6 s", "duration is on the group");
+  assert.ok(group.lastRunAt, "lastRunAt is on the group");
+  assert.ok(group.lastRunRhythm.length > 0, "rhythm ticks are on the group");
+
+  // Stream rows do NOT carry these connection-level fields.
+  for (const row of group.streams) {
+    assert.equal(
+      (row as unknown as { delta?: unknown }).delta,
+      undefined,
+      `row.delta must not exist on stream row '${row.stream}'`
+    );
+    assert.equal(
+      (row as unknown as { rhythm?: unknown }).rhythm,
+      undefined,
+      `row.rhythm must not exist on stream row '${row.stream}'`
+    );
+    assert.equal(
+      (row as unknown as { lastAt?: unknown }).lastAt,
+      undefined,
+      `row.lastAt must not exist on stream row '${row.stream}'`
+    );
+  }
+});
+
+test("honest empty state when collection_report is absent — no fabricated connection total on rows", () => {
+  // Connector with NO collection_report (pre-Tranche-C reference).
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_old",
+        connector_id: "old_source",
+        display_name: "Old Source",
+        streams: ["records"],
+        // collection_report intentionally absent
+      }),
+    ],
+    runs: [run({ connection_id: "cin_old", event_count: 55, status: "succeeded" })],
+  });
+
+  const row = model.groups[0]?.streams[0];
+  assert.ok(row, "row must exist");
+  assert.equal(row.collectedThisRun, null, "collectedThisRun is null when collection_report absent");
+  assert.equal(row.coverageCondition, null, "coverageCondition is null when collection_report absent");
+  assert.equal(row.streamSkipped, false, "streamSkipped is false when collection_report absent");
+
+  // The connection-level event_count (55) must NOT appear on the stream row.
+  assert.notEqual(
+    (row as unknown as { delta?: string }).delta,
+    "+55 records",
+    "the connection total must not be fabricated on the stream row"
+  );
+});
+
+test("streamSkipped is true only when collection_report entry has a skip", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_skip",
+        connector_id: "plaid",
+        display_name: "Plaid",
+        streams: ["transactions", "balances"],
+        collection_report: [
+          collectionEntry({ stream: "transactions", collected: 0, skipped: { reason: "rate_limited" } }),
+          collectionEntry({ stream: "balances", collected: 5 }),
+        ],
+      }),
+    ],
+    runs: [],
+  });
+
+  const group = model.groups[0];
+  assert.ok(group);
+  const byStream = new Map(group.streams.map((r) => [r.stream, r]));
+  assert.equal(byStream.get("transactions")?.streamSkipped, true, "skipped stream is marked");
+  assert.equal(byStream.get("balances")?.streamSkipped, false, "non-skipped stream is clean");
 });

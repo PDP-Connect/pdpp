@@ -25,7 +25,8 @@
 
 import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
-import type { RefConnectorSummary, RefRenderedVerdict, RefSchedule, RunSummary } from "../lib/ref-client.ts";
+import { indexCollectionReportByStream } from "../lib/collection-report.ts";
+import type { RefCollectionReportEntry, RefConnectorSummary, RefRenderedVerdict, RefSchedule, RunSummary } from "../lib/ref-client.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -42,22 +43,28 @@ export interface SyncRow {
   browseHref: string;
   /** Human cadence phrase, e.g. "every 15 min" / "daily" / "manual". */
   cadence: string;
-  /** Last-result delta phrase, e.g. "+38 records" / "no change" / "sync failed". */
-  delta: string;
-  /** Duration phrase for the last run, e.g. "6 s", or null when unknown. */
-  duration: string | null;
+  /**
+   * Per-stream collected count from the last run's collection_report entry.
+   * Null when the reference does not emit collection_report (pre-Tranche C
+   * instances). Do NOT fall back to the connection-level event_count here.
+   */
+  collectedThisRun: number | null;
+  /**
+   * Per-stream coverage condition from the last run's collection_report entry,
+   * e.g. "complete", "partial", "unknown". Null when collection_report absent.
+   */
+  coverageCondition: string | null;
   /** True when the last run for this stream failed (held cursor). */
   failed: boolean;
-  /** When the last run for this stream's connection happened (ISO), or null. */
-  lastAt: string | null;
   /** Next-due phrase or ISO; "held" when the connection is paused/holding. */
   next: string;
   /** Next-due ISO timestamp when one is scheduled, else null. */
   nextAt: string | null;
-  /** True when nothing changed on the last run — gets the quiet, reassuring tone. */
-  quiet: boolean;
-  /** Recent run outcomes oldest→newest, for the Rhythm sparkline. */
-  rhythm: SyncRhythmTick[];
+  /**
+   * True when the collection_report entry reports this stream was skipped.
+   * False when collection_report is absent (honest default).
+   */
+  streamSkipped: boolean;
   /** Stream name (the record stream this row tracks). */
   stream: string;
 }
@@ -70,13 +77,33 @@ export interface SyncGroup {
   connectorId: string;
   /** Reduced health driving the group dot. */
   health: SyncGroupHealth;
-  /** Hidden stream rows omitted from the overview; source detail remains exact. */
-  hiddenStreamCount: number;
+  /**
+   * Connection-level last-run delta phrase moved here from per-row. True for
+   * all streams in the group (it is derived from event_count, a cross-stream
+   * total). Null when there is no terminal run on record.
+   */
+  lastRunDelta: string | null;
+  /**
+   * Connection-level last-run duration phrase moved here from per-row.
+   * Null when unknown.
+   */
+  lastRunDuration: string | null;
+  /**
+   * ISO timestamp of the last run for this connection. Null when no run yet.
+   * Shown once in the group header rather than repeated on every stream row.
+   */
+  lastRunAt: string | null;
+  /**
+   * Connection-level Rhythm sparkline ticks (oldest to newest). Moved to the
+   * group header because the ticks represent the connection's run history, not
+   * an individual stream's history.
+   */
+  lastRunRhythm: SyncRhythmTick[];
   /** Connection display name. */
   name: string;
   /** The per-stream rows. */
   streams: SyncRow[];
-  /** Total stream count for this connection before overview truncation. */
+  /** Total stream count for this connection. */
   totalStreamCount: number;
 }
 
@@ -139,9 +166,6 @@ export interface SyncsViewModel {
   duplicateGroups: DuplicateSyncGroup[];
   failureCards: FailureCard[];
   groups: SyncGroup[];
-  hiddenGroupCount: number;
-  hiddenReviewCardCount: number;
-  hiddenStreamCount: number;
   totalGroupCount: number;
   totalReviewCardCount: number;
   totalStreamCount: number;
@@ -150,8 +174,6 @@ export interface SyncsViewModel {
 const HEALTHY_RUN_STATUSES = new Set(["succeeded", "success", "completed", "succeeded_with_gaps"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]);
 const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
-const MAX_SYNC_GROUPS = 6;
-const MAX_SYNC_STREAM_ROWS_PER_GROUP = 3;
 const RECENT_RUN_LIMIT = 7;
 
 /**
@@ -399,48 +421,52 @@ function describeNext(input: { schedule: RefSchedule | null | undefined; failing
 }
 
 /**
- * Build the per-connection sync rows. Each declared stream becomes one row; the
- * last-run facts (delta, duration, when, fail) come from the connection's most
- * recent run, and the Rhythm comes from its recent run history. Streams are a
- * per-instance list, so all rows in a group share the connection-level run
- * facts (the reference does not yet emit per-stream run outcomes; we are honest
- * about that by deriving the row from the connection's last run, not inventing
- * per-stream numbers).
+ * Build the per-connection sync rows. Each declared stream becomes one row.
+ *
+ * Connection-level run facts (delta, duration, lastAt, rhythm) have moved to
+ * SyncGroup so they render once in the group header rather than being repeated
+ * identically on every stream row. Per-stream facts come from the
+ * collection_report the reference already emits (Tranche C). When
+ * collection_report is absent (older reference instances), per-stream fields
+ * are null/false — never the connection total.
  */
 function buildSyncRows(input: {
   connector: RefConnectorSummary;
   connectionRuns: readonly RunSummary[];
   failing: boolean;
-}): SyncRow[] {
+}): { rows: SyncRow[]; lastFailed: boolean; lastRun: RunSummary | null } {
   const { connector, connectionRuns, failing } = input;
   const schedule = connector.schedule;
   const cadence = describeCadence(schedule);
-  const rhythm = deriveConnectionRhythm(connectionRuns);
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
   const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
-  const eventCount = lastRun ? lastRun.event_count : null;
-  const delta = describeDelta({ failed: lastFailed, eventCount });
-  const duration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
-  const lastAt = lastRun?.last_at ?? null;
   const { next, nextAt } = describeNext({ schedule, failing });
-  const quiet = !lastFailed && eventCount != null && eventCount <= 0;
+
+  // Index collection_report by stream name for O(1) per-row lookup.
+  const reportByStream: Map<string, RefCollectionReportEntry> = indexCollectionReportByStream(
+    connector.collection_report
+  );
 
   const streams = connector.streams.length > 0 ? connector.streams : [connector.connector_id];
-  return streams.map(
-    (stream): SyncRow => ({
-      stream,
-      cadence,
-      rhythm,
-      delta,
-      lastAt,
-      duration,
-      next,
-      nextAt,
-      quiet,
-      failed: lastFailed,
-      browseHref: browseStreamHref(connector.connection_id, stream),
-    })
+  const rows = streams.map(
+    (stream): SyncRow => {
+      const reportEntry = reportByStream.get(stream) ?? null;
+      return {
+        stream,
+        cadence,
+        next,
+        nextAt,
+        failed: lastFailed,
+        browseHref: browseStreamHref(connector.connection_id, stream),
+        // Per-stream facts from collection_report. Null when absent (honest
+        // empty state for pre-Tranche-C references).
+        collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
+        coverageCondition: reportEntry !== null ? reportEntry.coverage_condition : null,
+        streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
+      };
+    }
   );
+  return { rows, lastFailed, lastRun };
 }
 
 /**
@@ -542,15 +568,6 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
   };
 }
 
-function trimGroupForOverview(group: SyncGroup): SyncGroup {
-  const streams = group.streams.slice(0, MAX_SYNC_STREAM_ROWS_PER_GROUP);
-  return {
-    ...group,
-    hiddenStreamCount: Math.max(0, group.streams.length - streams.length),
-    streams,
-  };
-}
-
 /**
  * Build the entire Syncs view-model from the three real contracts.
  *
@@ -574,10 +591,14 @@ export function buildSyncsViewModel(input: {
     const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
-    const streams = buildSyncRows({ connector, connectionRuns, failing });
+    const { rows, lastFailed, lastRun } = buildSyncRows({ connector, connectionRuns, failing });
     const lastAt =
-      connectionRuns[0]?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
+      lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
     const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
+    const eventCount = lastRun ? lastRun.event_count : null;
+    const lastRunDelta = lastRun !== null ? describeDelta({ failed: lastFailed, eventCount }) : null;
+    const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
+    const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
 
     projections.push({
       connector,
@@ -589,18 +610,23 @@ export function buildSyncsViewModel(input: {
         connectionId: connector.connection_id,
         connectorId: connector.connector_id,
         health: failing ? "failing" : "ok",
-        hiddenStreamCount: 0,
-        streams,
-        totalStreamCount: streams.length,
+        lastRunDelta,
+        lastRunDuration,
+        lastRunAt: lastAt,
+        lastRunRhythm,
+        streams: rows,
+        totalStreamCount: rows.length,
       },
     });
   }
 
   const { duplicateGroups, visible } = collapseDuplicateFallbackProjections(projections);
   const ordered = [...visible].sort(compareProjection);
-  const selected = ordered.slice(0, MAX_SYNC_GROUPS);
-  const groups = selected.map((projection) => trimGroupForOverview(projection.group));
-  const failureCards = selected
+  // All groups and all streams are shown — no truncation. The full catalogue
+  // tops out at ~134 stream rows across 33 connectors, well under any
+  // virtualization threshold.
+  const groups = ordered.map((projection) => projection.group);
+  const failureCards = ordered
     .filter((projection) => projection.summary !== null)
     .map(
       (projection): FailureCard => ({
@@ -610,8 +636,8 @@ export function buildSyncsViewModel(input: {
         summary: projection.summary as FailureSummary,
       })
     );
-  const fullGroups = projections.map((projection) => projection.group);
-  const fullFailureCards = projections
+  const allGroups = projections.map((projection) => projection.group);
+  const allFailureCards = projections
     .filter((projection) => projection.summary !== null)
     .map(
       (projection): FailureCard => ({
@@ -621,19 +647,15 @@ export function buildSyncsViewModel(input: {
         summary: projection.summary as FailureSummary,
       })
     );
-  const totalStreamCount = fullGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
-  const shownStreamCount = groups.reduce((sum, group) => sum + group.streams.length, 0);
-  const band = buildHealthBand({ groups: fullGroups, failureCards: fullFailureCards });
+  const totalStreamCount = allGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
+  const band = buildHealthBand({ groups: allGroups, failureCards: allFailureCards });
   return {
     band,
     duplicateGroups,
     failureCards,
     groups,
-    hiddenGroupCount: Math.max(0, ordered.length - selected.length),
-    hiddenReviewCardCount: Math.max(0, fullFailureCards.length - failureCards.length),
-    hiddenStreamCount: Math.max(0, totalStreamCount - shownStreamCount),
     totalGroupCount: projections.length,
-    totalReviewCardCount: fullFailureCards.length,
+    totalReviewCardCount: allFailureCards.length,
     totalStreamCount,
   };
 }
