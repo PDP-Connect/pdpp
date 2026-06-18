@@ -2,13 +2,13 @@
 
 ## 1. Spec And Contract
 
-- [x] 1.1 Add a reference-only requirement for optional grant client metadata.
+- [x] 1.1 Add a reference-only requirement for optional grant and trace client metadata.
 - [x] 1.2 Validate `openspec validate surface-grant-client-metadata --strict`.
 
 ## 2. Reference Surface
 
-- [x] 2.1 Batch-enrich grant correlation summaries with registered client metadata for SQLite and Postgres.
-- [x] 2.2 Project the optional `client` object on `grant_summary` entries only.
+- [x] 2.1 Batch-enrich grant and trace correlation summaries with registered client metadata for SQLite and Postgres.
+- [x] 2.2 Project the optional `client` object on `grant_summary` and `trace_summary` entries only.
 - [x] 2.3 Add operation-level tests for the optional projection and missing-metadata fallback.
 
 ## 3. Console Consumer
@@ -16,6 +16,7 @@
 - [x] 3.1 Extend the console `GrantSummary` type with optional `client` metadata.
 - [x] 3.2 Prefer `grant.client.client_name` for relationship labels while preserving `client_id`.
 - [x] 3.3 Keep the owner-issued-client fallback for already-loaded metadata.
+- [x] 3.4 Prefer `trace.client.client_name` for recent-read labels.
 
 ## 4. Verification
 

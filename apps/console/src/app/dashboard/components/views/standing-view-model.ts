@@ -483,7 +483,8 @@ function denyReason(reason: string | null): string {
 
 function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
   return traces.slice(0, 6).map((tr) => {
-    const who = tr.client_id ?? tr.actor_id ?? "Someone";
+    const traceClientName = tr.client?.client_name?.trim() || null;
+    const who = clientLabel(traceClientName ?? tr.client_id, tr.actor_id ?? "Someone");
     const isDeny = tr.status.toLowerCase() === "denied" || tr.failure !== null;
     if (isDeny) {
       return {

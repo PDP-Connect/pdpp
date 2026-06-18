@@ -1392,7 +1392,7 @@ function clientMetadataFromOAuthRow(row: RegisteredClientMetadataRow): SpineClie
   };
 }
 
-function attachGrantClientMetadata(summaries: readonly SpineSummary[]): void {
+function attachClientMetadata(summaries: readonly SpineSummary[]): void {
   const clientIds = Array.from(
     new Set(summaries.map((s) => s.client_id).filter((value): value is string => typeof value === "string" && value.length > 0))
   );
@@ -1461,7 +1461,9 @@ function listSpineCorrelationsSqlite(
 
   if (key === "grant" && page.length > 0) {
     attachGrantPackageMembership(page);
-    attachGrantClientMetadata(page);
+  }
+  if ((key === "grant" || key === "trace") && page.length > 0) {
+    attachClientMetadata(page);
   }
 
   return { summaries: page, hasMore, nextCursor };

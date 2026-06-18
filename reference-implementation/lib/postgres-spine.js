@@ -743,6 +743,9 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
         return packageId ? { ...s, grant_package_id: packageId } : s;
       });
     }
+  }
+
+  if ((kind === 'grant' || kind === 'trace') && summaries.length > 0) {
     const clientIds = [...new Set(summaries
       .map((s) => s?.client_id)
       .filter((v) => typeof v === 'string' && v.length > 0))];

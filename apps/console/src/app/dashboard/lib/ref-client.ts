@@ -225,6 +225,11 @@ export interface FailureInfo {
 export interface TraceSummary {
   actor_id: string | null;
   actor_type: string | null;
+  client?: {
+    client_id: string;
+    client_name: string | null;
+    registration_mode: string | null;
+  };
   client_id: string | null;
   event_count: number;
   failure: FailureInfo | null;

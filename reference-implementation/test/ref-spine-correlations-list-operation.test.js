@@ -59,6 +59,37 @@ test('ref.spine.correlations.list emits trace_summary discriminator', async () =
   assert.equal(envelope.data[0].actor_type, 'system');
 });
 
+test('ref.spine.correlations.list projects optional trace client metadata without replacing client_id', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'trace', filters: {} },
+    {
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'trc_named',
+            client_id: 'cli_named',
+            client: {
+              client_id: 'cli_named',
+              client_name: 'Claude',
+              registration_mode: 'dynamic',
+            },
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  const entry = envelope.data[0];
+  assert.equal(entry.object, 'trace_summary');
+  assert.equal(entry.client_id, 'cli_named');
+  assert.deepEqual(entry.client, {
+    client_id: 'cli_named',
+    client_name: 'Claude',
+    registration_mode: 'dynamic',
+  });
+});
+
 test('ref.spine.correlations.list emits grant_summary discriminator with source fallback', async () => {
   const envelope = await executeRefSpineCorrelationsList(
     { kind: 'grant', filters: {} },

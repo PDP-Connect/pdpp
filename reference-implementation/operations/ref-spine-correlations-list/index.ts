@@ -127,6 +127,7 @@ export interface RefSpineTraceSummary {
   readonly grant_id: string | null;
   readonly run_id: string | null;
   readonly client_id: string | null;
+  readonly client?: RefSpineClientMetadata;
   readonly source: RefSpineSource | null;
   readonly actor_type: string;
   readonly actor_id: string;
@@ -234,6 +235,7 @@ export function summaryToTrace(s: RefSpineCorrelationSummary): RefSpineTraceSumm
     grant_id: s.grant_id,
     run_id: s.run_id,
     client_id: s.client_id,
+    ...(s.client ? { client: s.client } : {}),
     source: sourceFromSummary(s),
     actor_type: s.actor_type,
     actor_id: s.actor_id,
