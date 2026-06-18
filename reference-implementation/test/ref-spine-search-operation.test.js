@@ -70,6 +70,38 @@ test('ref.spine.search emits empty result when search returns no hits', async ()
   assert.deepEqual(envelope.runs, []);
 });
 
+test('ref.spine.search filters internal maintenance connectors when host supplies predicate', async () => {
+  const internal = {
+    ...summary('grt_internal'),
+    connector_id: 'pg_lexical_backfill_1780426329141_34951',
+    source_kind: 'connector',
+    source_id: 'pg_lexical_backfill_1780426329141_34951',
+  };
+  const visible = {
+    ...summary('grt_visible'),
+    connector_id: 'slack',
+    source_kind: 'connector',
+    source_id: 'slack',
+  };
+  const envelope = await executeRefSpineSearch(
+    { query: 'backfill' },
+    {
+      isInternalConnectorId: (id) => id.startsWith('pg_lexical_backfill_'),
+      searchSpine: () => ({
+        exact: { kind: 'grant', id: 'grt_internal' },
+        traces: [internal, visible],
+        grants: [internal, visible],
+        runs: [internal, visible],
+      }),
+    },
+  );
+  assert.equal(envelope.exact, null);
+  assert.deepEqual(envelope.traces.map((entry) => entry.trace_id), ['grt_visible']);
+  assert.deepEqual(envelope.grants.map((entry) => entry.grant_id), ['grt_visible']);
+  assert.deepEqual(envelope.runs.map((entry) => entry.run_id), ['grt_visible']);
+  assert.deepEqual(envelope.grants[0].source, { kind: 'connector', id: 'slack' });
+});
+
 test('ref.spine.search forwards the query string to the dependency unchanged', async () => {
   let received = null;
   await executeRefSpineSearch(

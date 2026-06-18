@@ -17,6 +17,7 @@ import {
   type RefSpineCorrelationKind,
   type RefSpineCorrelationPage,
 } from "../../operations/ref-spine-correlations-list/index.ts";
+import { isInternalConnectorId } from "../connector-key.js";
 import type { MiddlewareHandler } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -99,7 +100,7 @@ function mountKind(
     try {
       const envelope = await executeRefSpineCorrelationsList(
         { kind, filters: parseListFilters(req.query, ctx.canonicalConnectorKey) },
-        deps
+        { ...deps, isInternalConnectorId }
       );
       res.json(envelope);
     } catch (err) {

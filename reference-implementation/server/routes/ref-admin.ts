@@ -23,6 +23,7 @@ import {
 } from "../../operations/ref-records-timeline/index.ts";
 import { executeRefSchedulesList } from "../../operations/ref-schedules-list/index.ts";
 import { executeRefSpineSearch, type RefSpineSearchResult } from "../../operations/ref-spine-search/index.ts";
+import { isInternalConnectorId } from "../connector-key.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -208,7 +209,7 @@ export function mountRefSearch(app: AppLike, ctx: MountRefAdminContext): void {
       try {
         const envelope = await executeRefSpineSearch(
           { query: (req.query.q as string) || "" },
-          { searchSpine: (query) => ctx.searchSpine(query) }
+          { searchSpine: (query) => ctx.searchSpine(query), isInternalConnectorId }
         );
         res.json(envelope);
       } catch (err) {

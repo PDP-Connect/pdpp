@@ -104,6 +104,12 @@ export interface RefSpineCorrelationsListInput {
 
 export interface RefSpineCorrelationsListDependencies {
   /**
+   * Optional owner-surface guard supplied by the host. The pure operation does
+   * not import server connector-key helpers, but owner-facing lists must not
+   * expose reference-internal maintenance connectors.
+   */
+  isInternalConnectorId?(id: string): boolean;
+  /**
    * Returns a page of correlation summaries for the given kind and
    * filter set. The host implementation owns substrate access (cursor
    * decoding, SQL pagination); the operation projects each summary into
@@ -198,6 +204,27 @@ function sourceFromSummary(s: RefSpineCorrelationSummary): RefSpineSource | null
     return { kind: "connector", id: s.connector_id };
   }
   return null;
+}
+
+function summarySourceId(s: RefSpineCorrelationSummary): string | null {
+  if (s.source?.id) {
+    return s.source.id;
+  }
+  if (s.source_id) {
+    return s.source_id;
+  }
+  if (s.connector_id) {
+    return s.connector_id;
+  }
+  return null;
+}
+
+function isOwnerVisibleSummary(
+  summary: RefSpineCorrelationSummary,
+  isInternalConnectorId: RefSpineCorrelationsListDependencies["isInternalConnectorId"],
+): boolean {
+  const sourceId = summarySourceId(summary);
+  return !(sourceId && isInternalConnectorId?.(sourceId));
 }
 
 function connectionIdFromBrowserSurfaceProfileKey(profileKey: string | null | undefined): string | null {
@@ -304,7 +331,9 @@ export async function executeRefSpineCorrelationsList(
 ): Promise<RefSpineCorrelationsListEnvelope> {
   const page = await dependencies.listSpineCorrelations(input.kind, input.filters);
   const project = PROJECTORS[input.kind];
-  const data = page.summaries.map((summary) => project(summary));
+  const data = page.summaries
+    .filter((summary) => isOwnerVisibleSummary(summary, dependencies.isInternalConnectorId))
+    .map((summary) => project(summary));
   const envelope: RefSpineCorrelationsListEnvelope = {
     object: "list",
     data,

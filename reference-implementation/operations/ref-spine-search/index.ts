@@ -51,6 +51,12 @@ export interface RefSpineSearchInput {
 
 export interface RefSpineSearchDependencies {
   /**
+   * Optional owner-surface guard supplied by the host. The pure operation does
+   * not import server connector-key helpers, but artifact search must not expose
+   * reference-internal maintenance connectors.
+   */
+  isInternalConnectorId?(id: string): boolean;
+  /**
    * Run the spine artifact-jump search. The host implementation owns
    * substrate access; the operation projects the per-bucket summaries
    * into discriminated entries.
@@ -66,6 +72,53 @@ export interface RefSpineSearchEnvelope {
   readonly runs: readonly RefSpineRunSummary[];
 }
 
+function summarySourceId(s: RefSpineCorrelationSummary): string | null {
+  if (s.source?.id) {
+    return s.source.id;
+  }
+  if (s.source_id) {
+    return s.source_id;
+  }
+  if (s.connector_id) {
+    return s.connector_id;
+  }
+  return null;
+}
+
+function ownerVisibleSummaries(
+  summaries: readonly RefSpineCorrelationSummary[],
+  isInternalConnectorId: RefSpineSearchDependencies["isInternalConnectorId"],
+): readonly RefSpineCorrelationSummary[] {
+  return summaries.filter((summary) => {
+    const sourceId = summarySourceId(summary);
+    return !(sourceId && isInternalConnectorId?.(sourceId));
+  });
+}
+
+function exactIfVisible(
+  exact: RefSpineSearchExactRef | null,
+  original: {
+    readonly grants: readonly RefSpineCorrelationSummary[];
+    readonly runs: readonly RefSpineCorrelationSummary[];
+    readonly traces: readonly RefSpineCorrelationSummary[];
+  },
+  buckets: {
+    readonly grants: readonly RefSpineCorrelationSummary[];
+    readonly runs: readonly RefSpineCorrelationSummary[];
+    readonly traces: readonly RefSpineCorrelationSummary[];
+  },
+): RefSpineSearchExactRef | null {
+  if (!exact) {
+    return null;
+  }
+  const originalSummaries = exact.kind === "grant" ? original.grants : exact.kind === "run" ? original.runs : original.traces;
+  const filteredSummaries = exact.kind === "grant" ? buckets.grants : exact.kind === "run" ? buckets.runs : buckets.traces;
+  if (!originalSummaries.some((summary) => summary.id === exact.id)) {
+    return exact;
+  }
+  return filteredSummaries.some((summary) => summary.id === exact.id) ? exact : null;
+}
+
 /**
  * Execute the canonical `ref.spine.search` operation.
  *
@@ -78,11 +131,14 @@ export async function executeRefSpineSearch(
   dependencies: RefSpineSearchDependencies,
 ): Promise<RefSpineSearchEnvelope> {
   const result = await dependencies.searchSpine(input.query);
+  const traces = ownerVisibleSummaries(result.traces, dependencies.isInternalConnectorId);
+  const grants = ownerVisibleSummaries(result.grants, dependencies.isInternalConnectorId);
+  const runs = ownerVisibleSummaries(result.runs, dependencies.isInternalConnectorId);
   return {
     object: "search_result",
-    exact: result.exact,
-    traces: result.traces.map(summaryToTrace),
-    grants: result.grants.map(summaryToGrant),
-    runs: result.runs.map(summaryToRun),
+    exact: exactIfVisible(result.exact, result, { traces, grants, runs }),
+    traces: traces.map(summaryToTrace),
+    grants: grants.map(summaryToGrant),
+    runs: runs.map(summaryToRun),
   };
 }

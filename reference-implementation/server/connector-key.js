@@ -262,6 +262,7 @@ const INTERNAL_CONNECTOR_ID_PARTS = Object.freeze([
   'pg_runtime_',
   'pg_canonical_',
   'pg_expand_',
+  'pg_lexical_backfill_',
 ]);
 
 /**

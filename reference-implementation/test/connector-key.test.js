@@ -305,6 +305,7 @@ test('isInternalConnectorId identifies test/stub/internal connector ids', () => 
   assert.equal(isInternalConnectorId('pg_runtime_gmail'), true);
   assert.equal(isInternalConnectorId('pg_canonical_test'), true);
   assert.equal(isInternalConnectorId('pg_expand_records'), true);
+  assert.equal(isInternalConnectorId('pg_lexical_backfill_1780426329141_34951'), true);
   // First-party and native canonical keys must NOT match.
   assert.equal(isInternalConnectorId('gmail'), false);
   assert.equal(isInternalConnectorId('spotify'), false);

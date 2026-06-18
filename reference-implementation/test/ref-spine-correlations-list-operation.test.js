@@ -158,6 +158,37 @@ test('ref.spine.correlations.list omits grant client metadata when unavailable',
   assert.equal('client' in entry, false);
 });
 
+test('ref.spine.correlations.list filters internal maintenance connectors when host supplies predicate', async () => {
+  const envelope = await executeRefSpineCorrelationsList(
+    { kind: 'grant', filters: {} },
+    {
+      isInternalConnectorId: (id) => id.startsWith('pg_lexical_backfill_'),
+      listSpineCorrelations: () => ({
+        summaries: [
+          makeSummary({
+            id: 'grt_internal',
+            connector_id: 'pg_lexical_backfill_1780426329141_34951',
+            source_kind: 'connector',
+            source_id: 'pg_lexical_backfill_1780426329141_34951',
+          }),
+          makeSummary({
+            id: 'grt_real',
+            connector_id: 'gmail',
+            source_kind: 'connector',
+            source_id: 'gmail',
+          }),
+        ],
+        hasMore: false,
+        nextCursor: null,
+      }),
+    },
+  );
+  assert.equal(envelope.data.length, 1);
+  assert.equal(envelope.data[0].object, 'grant_summary');
+  assert.equal(envelope.data[0].grant_id, 'grt_real');
+  assert.deepEqual(envelope.data[0].source, { kind: 'connector', id: 'gmail' });
+});
+
 test('ref.spine.correlations.list does not project client metadata on run summaries', async () => {
   const envelope = await executeRefSpineCorrelationsList(
     { kind: 'run', filters: {} },
