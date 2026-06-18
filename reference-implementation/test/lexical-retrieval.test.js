@@ -647,7 +647,7 @@ test('filtered lexical search rejects invalid filter shapes and still-forbidden 
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'lexical filtered retrieval test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],
@@ -705,7 +705,7 @@ test('client-token streams[] not in grant returns grant_stream_not_allowed', asy
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'lexical retrieval test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }],  // posts only
@@ -774,7 +774,7 @@ test('client grant authorizing only one of two declared lexical_fields restricts
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'lexical retrieval test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }],
@@ -819,7 +819,7 @@ test('grant with zero overlap on searchable fields contributes zero hits and no 
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'lexical retrieval test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id'] }],

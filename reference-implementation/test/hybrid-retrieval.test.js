@@ -341,7 +341,7 @@ test('client-token hybrid search respects the same grant projection as lexical +
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'hybrid test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }],
@@ -374,7 +374,7 @@ test('client-token hybrid search rejects streams[] not in grant (same as lexical
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'grant enforcement',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }],

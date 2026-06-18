@@ -592,7 +592,7 @@ test('filtered semantic search rejects invalid filters and still-forbidden param
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'semantic filtered retrieval test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],
@@ -651,7 +651,7 @@ test('client-token streams[] not in grant returns grant_stream_not_allowed', asy
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'semantic test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }], // posts only
@@ -698,7 +698,7 @@ test('client grant authorizing only one of two declared semantic_fields restrict
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'semantic test subset',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title'] }],
@@ -742,7 +742,7 @@ test('stream declared in semantic_fields but with empty grant∩declared interse
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: connectorA,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'zero-intersection test',
       access_mode: 'continuous',
       streams: [{ name: 'comments', fields: ['id'] }], // id not in declared semantic_fields
@@ -1333,7 +1333,7 @@ test('semantic index metadata isolates instances and client search fans in acros
     const approved = await approveClientGrant(asUrl, {
       client_id: 'longview',
       connector_id: MANIFEST_A.connector_id,
-      purpose_code: 'analytics',
+      purpose_code: 'https://pdpp.org/purpose/analytics',
       purpose_description: 'semantic instance isolation test',
       access_mode: 'continuous',
       streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],

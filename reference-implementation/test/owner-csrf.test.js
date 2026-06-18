@@ -155,7 +155,7 @@ async function startPendingConsent(asUrl) {
         {
           type: 'https://pdpp.org/data-access',
           source: { kind: 'connector', id: SPOTIFY_MANIFEST.connector_id },
-          purpose_code: 'test',
+          purpose_code: 'https://pdpp.org/purpose/test',
           purpose_description: 'test',
           access_mode: 'single_use',
           streams: [{ name: 'top_artists' }],

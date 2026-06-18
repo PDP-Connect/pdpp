@@ -192,7 +192,7 @@ test('introspection: active client token returns documented fields (B3)', async 
     const approved = await issueClientGrant(asUrl, 'b3_introspect_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B3 introspection proof',
       access_mode: 'continuous',
       streams: [{ name: 'top_artists', fields: ['id', 'name', 'popularity'] }],
@@ -239,7 +239,7 @@ test('introspection: revoked grant returns active=false with inactive_reason (B3
     const approved = await issueClientGrant(asUrl, 'b3_revoke_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B3 revoke proof',
       access_mode: 'continuous',
       streams: [{ name: 'top_artists', fields: ['id', 'name'] }],
@@ -309,7 +309,7 @@ test('resources[] round-trip: grant contains resources, RS enforces them (B3)', 
     const approved = await issueClientGrant(asUrl, 'b3_resources_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.search',
+      purpose_code: 'https://pdpp.org/purpose/assist_search',
       purpose_description: 'B3 resources[] proof — two named artists',
       access_mode: 'single_use',
       streams: [
@@ -363,7 +363,7 @@ test('resources[] scoping applies to aggregate queries (B3)', async () => {
     const approved = await issueClientGrant(asUrl, 'b3_agg_resources_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B3 aggregate resources[] proof',
       access_mode: 'continuous',
       streams: [

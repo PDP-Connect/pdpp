@@ -270,7 +270,7 @@ test('blob lifecycle: upload → seed record → grant with blob_ref → fetch b
     const approved = await issueClientGrant(asUrl, 'b4_lifecycle_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.export',
+      purpose_code: 'https://pdpp.org/purpose/assist_export',
       purpose_description: 'Export Gmail attachment for B4 blob test.',
       access_mode: 'continuous',
       streams: [
@@ -396,7 +396,7 @@ test('blob grant enforcement: blob_not_found when token lacks visibility to the 
     const noBlob = await issueClientGrant(asUrl, 'b4_enforce_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B4 enforcement: no blob_ref in projection.',
       access_mode: 'continuous',
       streams: [
@@ -495,7 +495,7 @@ test('fetch_url is relative /v1/blobs/:blob_id — must prepend RS base URL (B4)
     const approved = await issueClientGrant(asUrl, 'b4_fetchurl_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.export',
+      purpose_code: 'https://pdpp.org/purpose/assist_export',
       purpose_description: 'B4 fetch_url shape test.',
       access_mode: 'continuous',
       streams: [

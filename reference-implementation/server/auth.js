@@ -543,6 +543,23 @@ function requireStagedRequestEnvelope(input) {
   return input.client_id.trim();
 }
 
+// A purpose_code must be a syntactically valid absolute URI (spec-core.md:428):
+// a scheme plus scheme-specific part, e.g. https://pdpp.org/purpose/analytics.
+// Bare tokens like "analytics" or "assist.summarize" are not absolute URIs and
+// are rejected for syntax; this is independent of whether the code is in any
+// registry (unknown absolute URIs MUST still be accepted).
+function isAbsoluteUriPurposeCode(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  // URL parsing accepts a scheme; require a non-empty scheme followed by ':'.
+  return typeof parsed.protocol === 'string' && parsed.protocol.length > 1;
+}
+
 function normalizeAuthorizationDetail(detail, index, opts = {}) {
   const invalidRequest = (message) => {
     const err = new Error(message);
@@ -565,6 +582,13 @@ function normalizeAuthorizationDetail(detail, index, opts = {}) {
   }
   if (!SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
     invalidRequest(`${at}.access_mode must be "single_use" or "continuous"`);
+  }
+  // purpose_code must be a syntactically valid absolute URI (spec-core.md:428).
+  // The AS validates SYNTAX only here; it MUST NOT reject a code merely for being
+  // unrecognized. Registry membership is advisory, enforced (if at all) by local
+  // policy elsewhere.
+  if (detail.purpose_code !== undefined && !isAbsoluteUriPurposeCode(detail.purpose_code)) {
+    invalidRequest(`${at}.purpose_code must be a syntactically valid absolute URI`);
   }
   for (const stream of detail.streams) {
     if (!stream || typeof stream !== 'object') {

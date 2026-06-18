@@ -1590,7 +1590,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -1632,7 +1632,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -1677,7 +1677,7 @@ test('PDPP CLI smoke', async (t) => {
             {
               type: 'https://pdpp.org/data-access',
               source: { kind: 'connector', id: spotifyManifest.connector_id },
-              purpose_code: 'compensation_planning',
+              purpose_code: 'https://pdpp.org/purpose/compensation_planning',
               purpose_description: 'Compare pay, equity, and benefits data',
               access_mode: 'single_use',
               streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -1726,7 +1726,7 @@ test('PDPP CLI smoke', async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: registration.json.client_id,
         source: { kind: 'connector', id: spotifyManifest.connector_id },
-        purpose_code: 'compensation_planning',
+        purpose_code: 'https://pdpp.org/purpose/compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
         streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -1771,7 +1771,7 @@ test('PDPP CLI smoke', async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
         source: { kind: 'connector', id: spotifyManifest.connector_id },
-        purpose_code: 'compensation_planning',
+        purpose_code: 'https://pdpp.org/purpose/compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
         streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -2037,7 +2037,7 @@ test('PDPP CLI smoke', async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         client_id: 'longview',
         source: { kind: 'connector', id: spotifyManifest.connector_id },
-        purpose_code: 'compensation_planning',
+        purpose_code: 'https://pdpp.org/purpose/compensation_planning',
         purpose_description: 'Compare pay, equity, and benefits data',
         access_mode: 'single_use',
         streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -2134,7 +2134,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [
@@ -2176,7 +2176,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -2247,7 +2247,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [{ name: 'saved_tracks', fields: ['id', 'name'] }],
@@ -2274,7 +2274,7 @@ test('PDPP CLI smoke', async (t) => {
           {
             type: 'https://pdpp.org/data-access',
             source: { kind: 'connector', id: spotifyManifest.connector_id },
-            purpose_code: 'compensation_planning',
+            purpose_code: 'https://pdpp.org/purpose/compensation_planning',
             purpose_description: 'Compare pay, equity, and benefits data',
             access_mode: 'single_use',
             streams: [{ name: 'saved_tracks', view: 'basic', fields: ['id', 'name'] }],

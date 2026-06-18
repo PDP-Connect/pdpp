@@ -185,7 +185,7 @@ test('single_use: grant returns access_mode single_use and a bounded expiry (B6)
     const approved = await issueClientGrant(asUrl, 'b6_su_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B6 single-use proof',
       access_mode: 'single_use',
       streams: [{ name: 'top_artists', fields: ['id', 'name', 'popularity'] }],
@@ -212,7 +212,7 @@ test('single_use: the issued token stays valid for RS queries after consumption 
     const approved = await issueClientGrant(asUrl, 'b6_query_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B6 single-use query proof',
       access_mode: 'single_use',
       streams: [{ name: 'top_artists', fields: ['id', 'name', 'popularity'] }],
@@ -242,7 +242,7 @@ test('single_use: second token issuance is rejected with grant_consumed (B6)', a
     const approved = await issueClientGrant(asUrl, 'b6_reissue_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B6 single-use re-issuance proof',
       access_mode: 'single_use',
       streams: [{ name: 'top_artists', fields: ['id', 'name', 'popularity'] }],
@@ -305,7 +305,7 @@ test('single_use control: a continuous grant re-issues freely (not consumed) (B6
     const approved = await issueClientGrant(asUrl, 'b6_cont_owner', {
       client_id: 'longview',
       connector_id: connectorId,
-      purpose_code: 'assist.summarize',
+      purpose_code: 'https://pdpp.org/purpose/assist_summarize',
       purpose_description: 'B6 continuous control',
       access_mode: 'continuous',
       streams: [{ name: 'top_artists', fields: ['id', 'name', 'popularity'] }],
