@@ -72,6 +72,9 @@ jobs:
       - name: Typecheck reference implementation
         run: pnpm --dir reference-implementation run typecheck
 
+      - name: Test console view models
+        run: pnpm --dir apps/console run test:view-models
+
       - name: Test reference implementation
         env:
           PDPP_TEST_CONCURRENCY: "2"

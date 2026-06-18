@@ -418,6 +418,41 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
 });
 
+test("source issues surface attention verdicts that have no owner action, even with a green pill", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "maintainer-only",
+      connection_id: "cin_maintainer",
+      display_name: "Maintainer-only source",
+      rendered_verdict: verdict({
+        channel: "attention",
+        pill: { label: "Healthy", tone: "green" },
+        forward_statement: "This source needs a maintainer action before it can make progress.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+
+  const sourceIssues = sourceIssueConnectionsFromConnectors(connectors);
+  assert.equal(sourceIssues.length, 1);
+  assert.equal(sourceIssues[0]?.label, "Maintainer-only source");
+  assert.equal(sourceIssues[0]?.routeId, "cin_maintainer");
+  assert.equal(sourceIssues[0]?.status, "is degraded");
+  assert.match(sourceIssues[0]?.what ?? "", /maintainer action/);
+});
+
 test("source issues fall back to legacy degraded health when rendered verdict is absent", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
