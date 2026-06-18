@@ -16,11 +16,7 @@ import {
   buildEffectiveFilter,
   normalizeExpandRequest,
 } from './record-expand-helpers.js';
-import {
-  createPostgresConnectorInstanceStore,
-  makeDefaultAccountConnectorInstanceId,
-} from './stores/connector-instance-store.js';
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { createPostgresConnectorInstanceStore } from './stores/connector-instance-store.js';
 import {
   buildLimitClampedWarning,
   clampRecordsPageLimit,
@@ -29,6 +25,12 @@ import {
   resolveRequestConnectionId,
 } from './connection-id-request.js';
 import { canonicalConnectorKey } from './connector-key.js';
+import {
+  getChangeHistoryLimit,
+  nowIso,
+  resolveStorageConnectorId,
+  resolveStorageConnectorInstanceId,
+} from './storage-utils.js';
 import {
   compileRequestFilters,
   nonNullSchemaTypes,
@@ -220,9 +222,6 @@ function mergeMetaCount(existingMeta, count) {
 }
 const KEY_SEPARATOR = '\u0001';
 
-function nowIso() {
-  return new Date().toISOString();
-}
 
 function encodeKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -235,28 +234,6 @@ function decodeKey(keyStr) {
   } catch {
     return keyStr;
   }
-}
-
-function resolveStorageConnectorId(storageTarget) {
-  const normalize = (value) => {
-    const trimmed = typeof value === 'string' ? value.trim() : null;
-    if (!trimmed) return null;
-    return canonicalConnectorKey(trimmed) ?? trimmed;
-  };
-  if (typeof storageTarget === 'string') return normalize(storageTarget);
-  if (storageTarget?.connector_id) return normalize(storageTarget.connector_id);
-  if (storageTarget?.connectorId) return normalize(storageTarget.connectorId);
-  throw new Error('storage target must include connector_id');
-}
-
-function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
-  if (storageTarget?.connector_instance_id) return storageTarget.connector_instance_id;
-  if (storageTarget?.connectorInstanceId) return storageTarget.connectorInstanceId;
-  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
-}
-
-function getChangeHistoryLimit() {
-  return Math.max(Number.parseInt(process.env.PDPP_CHANGE_HISTORY_LIMIT || '0', 10) || 0, 0);
 }
 
 function getStreamGrant(grant, stream) {
