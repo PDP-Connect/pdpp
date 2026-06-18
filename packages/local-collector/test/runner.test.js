@@ -901,7 +901,7 @@ test('local collector recover apply keeps draining while the backlog shrinks', a
       inspectStatus: () => statuses.shift() ?? status(0),
       runOnce: async () => {
         runCount += 1;
-        return baseRunResult({ ready: Math.max(0, 24 - runCount * 12), succeeded: 10, total: 10 });
+        return drainOnlyRunResult({ ready: Math.max(0, 24 - runCount * 12), succeeded: 10, total: 10 });
       },
     }
   );
@@ -969,7 +969,7 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
     ]),
     {
       inspectStatus: () => statuses.shift() ?? status(24),
-      runOnce: async () => baseRunResult({ ready: 24, succeeded: 10, total: 34 }),
+      runOnce: async () => drainOnlyRunResult({ ready: 24, succeeded: 10, total: 34 }),
     }
   );
 
@@ -977,6 +977,84 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
   assert.equal(result.drain_stopped_reason, 'no_progress');
   assert.equal(result.fully_drained, false);
   assert.match(result.note, /did not reduce the backlog/);
+});
+
+test('local collector recover apply keeps draining after a fresh scan queues new work', async () => {
+  const status = (pending) => ({
+    collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+    configured_device: {
+      device_id_configured: true,
+      device_token_configured: true,
+    },
+    coverage: {
+      observed: true,
+      record_batches: 1,
+    },
+    db: {
+      configured: true,
+      exists: true,
+      path: '/tmp/pdpp-test-collector.sqlite',
+    },
+    deployment_posture: PUBLISHED_POSTURE,
+    lifecycle_state: pending > 0 ? 'draining' : 'healthy_idle',
+    outbox: {
+      counts: {
+        dead_letter: 0,
+        leased: 0,
+        pending,
+        retrying: 0,
+        sent: 10,
+        total: 10 + pending,
+      },
+      expired_leases: 0,
+      oldest_pending_at: pending > 0 ? '2026-06-17T01:39:24.812Z' : null,
+    },
+    package: {
+      name: '@pdpp/local-collector',
+      version: '0.1.0-beta.7',
+    },
+    source: {
+      connection_id: 'dsrc_peregrine',
+      source_instance_id: 'dsrc_peregrine',
+    },
+  });
+  const statuses = [
+    status(24), // status_before
+    status(24), // after retry step
+    status(12), // stale backlog drains
+    status(100), // fresh scan found new source work; this must not be "no_progress"
+    status(40),
+    status(0),
+  ];
+  let runCount = 0;
+
+  const result = await recoverLocalCollector(
+    parseArgs([
+      'recover',
+      '--source-instance-id',
+      'dsrc_peregrine',
+      '--queue',
+      '/tmp/pdpp-test-collector.sqlite',
+      '--apply',
+      '--max-drain-passes',
+      '6',
+    ]),
+    {
+      inspectStatus: () => statuses.shift() ?? status(0),
+      runOnce: async () => {
+        runCount += 1;
+        if (runCount === 2) {
+          return { ...baseRunResult({ ready: 100, succeeded: 10, total: 110 }), enqueuedBatches: 100, recordsQueued: 999 };
+        }
+        return drainOnlyRunResult({ ready: Math.max(0, 24 - runCount * 12), succeeded: 10, total: 10 });
+      },
+    }
+  );
+
+  assert.equal(result.drain_attempts, 4);
+  assert.equal(result.drain_stopped_reason, 'drained');
+  assert.equal(result.fully_drained, true);
+  assert.equal(result.runs.length, 4);
 });
 
 test('local collector rejects conflicting source identity flags', () => {
@@ -1116,6 +1194,14 @@ function baseRunResult(outboxSummary) {
     skippedScanForBacklog: false,
     statePutFailed: false,
     streamingBufferHighWaterMark: 1,
+  };
+}
+
+function drainOnlyRunResult(outboxSummary) {
+  return {
+    ...baseRunResult(outboxSummary),
+    enqueuedBatches: 0,
+    recordsQueued: 0,
   };
 }
 

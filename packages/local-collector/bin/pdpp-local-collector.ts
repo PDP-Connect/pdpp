@@ -1358,11 +1358,12 @@ export async function recoverLocalCollector(
     runs.push(run);
     statusAfter = inspectStatus(resolved.options);
     const openWork = outboxOpenWork(statusAfter);
+    const discoveredNewWork = run.recordsQueued > 0 || run.enqueuedBatches > 0;
     if (openWork === 0) {
       stoppedReason = "drained";
       break;
     }
-    if (previousOpenAfterRun !== null && openWork >= previousOpenAfterRun) {
+    if (previousOpenAfterRun !== null && openWork >= previousOpenAfterRun && !discoveredNewWork) {
       stoppedReason = "no_progress";
       break;
     }
