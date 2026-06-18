@@ -68,6 +68,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     failedTraces: [],
     failedRuns: [],
     attentionConnections: [],
+    overviewLoadIssues: [],
     sourceIssues: [],
     ...over,
   };
@@ -413,6 +414,19 @@ test("hero ALARMs on a stale projection even with no failures", () => {
   stale.summary = { ...stale.summary, projection: { state: "stale" } } as StandingInputs["summary"];
   const hero = computeHero(stale);
   assert.equal(hero.tone, "alarm");
+});
+
+test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from partial data", () => {
+  const data = buildStandingData(baseInputs({ overviewLoadIssues: ["source_status"] }));
+
+  assert.equal(data.hero.tone, "alarm");
+  assert.equal(data.hero.kicker, "Overview is incomplete");
+  assert.match(data.hero.line.emphasis ?? "", /did not load/);
+  assert.match(data.hero.sub, /will not claim all-clear from partial data/);
+  assert.equal(data.hero.cta?.href, HREFS.deployment);
+  assert.equal(data.overviewIssues.length, 1);
+  assert.equal(data.overviewIssues[0]?.what, "Overview could not check everything");
+  assert.match(data.overviewIssues[0]?.why ?? "", /Refresh this page/);
 });
 
 test("hero is CALM with reassurance when all is well", () => {

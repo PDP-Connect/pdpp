@@ -176,12 +176,14 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
 
 function AttentionBlock({
   attention,
+  overviewIssues,
   sourceIssues,
 }: {
   attention: StandingData["attention"];
+  overviewIssues: StandingData["overviewIssues"];
   sourceIssues: StandingData["sourceIssues"];
 }) {
-  const rows = [...attention, ...sourceIssues];
+  const rows = [...attention, ...sourceIssues, ...overviewIssues];
   return (
     <section className="rr-stand-block">
       <h2 className="rr-stand-block__title">Anything wrong</h2>
@@ -229,7 +231,7 @@ export function StandingOverview({ data, grantsHref, tokensHref, tracesHref, not
         <RelationshipsBlock grantsHref={grantsHref} relationships={data.relationships} />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock attention={data.attention} sourceIssues={data.sourceIssues} />
+      <AttentionBlock attention={data.attention} overviewIssues={data.overviewIssues} sourceIssues={data.sourceIssues} />
     </div>
   );
 }

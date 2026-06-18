@@ -166,6 +166,7 @@ export interface StandingData {
   bearers: BearerView[];
   hero: StandingHero;
   lately: LatelyView[];
+  overviewIssues: AttentionRowView[];
   relationships: RelationshipView[];
   sourceIssues: AttentionRowView[];
 }
@@ -188,6 +189,11 @@ export interface StandingInputs {
   hrefs: StandingHrefs;
   /** Relative-time formatter (injected so the view-model stays clock-pure). */
   now: Date;
+  /**
+   * Dashboard sub-reads that failed while building the overview. Empty means
+   * the page checked every input. Non-empty must suppress all-clear copy.
+   */
+  overviewLoadIssues: string[];
   pendingApprovals: PendingApproval[];
   /**
    * Connections with material source issues that do NOT ask the owner to do
@@ -672,6 +678,24 @@ function toSourceIssues(sourceIssues: SourceIssueConnection[], hrefs: StandingHr
   }));
 }
 
+function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): AttentionRowView[] {
+  if (loadIssues.length === 0) {
+    return [];
+  }
+  const count = loadIssues.length;
+  return [
+    {
+      id: "overview:partial-data",
+      what: "Overview could not check everything",
+      why:
+        count === 1
+          ? "One dashboard check did not load. Refresh this page; if it keeps happening, check deployment."
+          : `${count} dashboard checks did not load. Refresh this page; if it keeps happening, check deployment.`,
+      href: hrefs.deployment,
+    },
+  ];
+}
+
 // ─── Hero tone (the one truth, computed from real state) ─────────────────
 
 /** DECIDE — a request is waiting on the owner. */
@@ -736,6 +760,21 @@ function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): S
   };
 }
 
+function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHrefs): StandingHero {
+  const count = loadIssues.length;
+  return {
+    tone: "alarm",
+    kicker: "Overview is incomplete",
+    line: {
+      text: count === 1 ? "One dashboard check " : `${count} dashboard checks `,
+      emphasis: "did not load",
+      tail: ".",
+    },
+    sub: "Refresh this page; if it keeps happening, check deployment. This page will not claim all-clear from partial data.",
+    cta: { label: "Check deployment", href: hrefs.deployment },
+  };
+}
+
 /** CALM — the reassurance moment. */
 function buildCalmHero(input: StandingInputs): StandingHero {
   const { summary, bearerClients } = input;
@@ -775,6 +814,9 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
+  if (input.overviewLoadIssues.length > 0) {
+    return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
+  }
   return buildCalmHero(input);
 }
 
@@ -787,6 +829,7 @@ export function buildStandingData(input: StandingInputs): StandingData {
     relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     lately: toLately(input.traces, input.now),
     attention: toAttention(input.attentionConnections, input.hrefs),
+    overviewIssues: toOverviewIssues(input.overviewLoadIssues, input.hrefs),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
   };
 }

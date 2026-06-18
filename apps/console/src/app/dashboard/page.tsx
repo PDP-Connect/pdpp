@@ -53,53 +53,71 @@ const HREFS: StandingHrefs = {
   trace: (id) => dashboardRoutes.trace(id),
 };
 
-/** Run a read, re-throwing control flow (redirects) but swallowing data errors. */
-async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+interface SafeRead<T> {
+  issue: string | null;
+  value: T;
+}
+
+/** Run a read, re-throwing control flow (redirects) but recording data errors. */
+async function safeRead<T>(issue: string, fn: () => Promise<T>, fallback: T): Promise<SafeRead<T>> {
   try {
-    return await fn();
+    return { issue: null, value: await fn() };
   } catch (err) {
     rethrowControlFlow(err);
-    return fallback;
+    return { issue, value: fallback };
   }
+}
+
+/** Run a non-critical read where the caller already has a better fallback. */
+async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  return (await safeRead("read_failed", fn, fallback)).value;
 }
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
   const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes] =
     await Promise.all([
-      safe(() => ds.getDatasetSummary(), null),
-      safe(() => ds.listGrants({ limit: 12 }), {
+      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
         data: [] as GrantSummary[],
         has_more: false,
         object: "list" as const,
       }),
-      safe(() => ds.listTraces({ limit: 6 }), { data: [] as TraceSummary[], has_more: false, object: "list" as const }),
-      safe(() => ds.listPendingApprovals(), {
+      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+        data: [] as TraceSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
         data: [] as PendingApproval[],
         has_more: false,
         object: "list" as const,
       }),
-      safe(() => listOwnerIssuedClients(), {
+      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
         data: [] as OwnerIssuedClient[],
         has_more: false,
         object: "list" as const,
       }),
       // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-      safe(() => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+      safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
     ]);
+  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes]
+    .map((result) => result.issue)
+    .filter((issue): issue is string => issue !== null);
 
   return {
     now: new Date(),
     hrefs: HREFS,
-    summary,
-    grants: grantsRes.data,
-    traces: tracesRes.data,
+    summary: summary.value,
+    grants: grantsRes.value.data,
+    traces: tracesRes.value.data,
     failedTraces: [],
     failedRuns: [],
-    pendingApprovals: pendingRes.data,
-    bearerClients: clientsRes.data,
-    attentionConnections: attentionConnectionsFromConnectors(connectorsRes.data),
-    sourceIssues: sourceIssueConnectionsFromConnectors(connectorsRes.data),
+    overviewLoadIssues,
+    pendingApprovals: pendingRes.value.data,
+    bearerClients: clientsRes.value.data,
+    attentionConnections: attentionConnectionsFromConnectors(connectorsRes.value.data),
+    sourceIssues: sourceIssueConnectionsFromConnectors(connectorsRes.value.data),
   };
 }
 
