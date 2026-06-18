@@ -836,8 +836,78 @@ test('canonical floor is at or below the audit floor for the same history', () =
 if (!POSTGRES_URL) {
   test('compact-record-history DB tests (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
 } else {
+  // Create the tables needed by compact-record-history on a fresh database.
+  // This mirrors the schema in server/postgres-storage.js so that the tests
+  // can run standalone against any empty Postgres database without requiring
+  // initPostgresStorage() to have been called first.
+  async function setupSchema(pool) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS records (
+        id BIGSERIAL PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        record_json JSONB NOT NULL,
+        emitted_at TEXT NOT NULL,
+        version BIGINT NOT NULL DEFAULT 1,
+        deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TEXT,
+        cursor_value TEXT,
+        primary_key_text TEXT NOT NULL,
+        UNIQUE(connector_instance_id, stream, record_key)
+      );
+      CREATE TABLE IF NOT EXISTS record_changes (
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        version BIGINT NOT NULL,
+        record_json JSONB,
+        emitted_at TEXT NOT NULL,
+        deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TEXT,
+        PRIMARY KEY(connector_instance_id, stream, version)
+      );
+      CREATE TABLE IF NOT EXISTS version_counter (
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        max_version BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+      CREATE TABLE IF NOT EXISTS retained_size_stream (
+        connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes BIGINT NOT NULL DEFAULT 0,
+        record_count BIGINT NOT NULL DEFAULT 0,
+        record_history_count BIGINT NOT NULL DEFAULT 0,
+        blob_count BIGINT NOT NULL DEFAULT 0,
+        dirty INTEGER NOT NULL DEFAULT 1,
+        computed_at TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+      CREATE TABLE IF NOT EXISTS retained_size_connection (
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes BIGINT NOT NULL DEFAULT 0,
+        record_count BIGINT NOT NULL DEFAULT 0,
+        record_history_count BIGINT NOT NULL DEFAULT 0,
+        blob_count BIGINT NOT NULL DEFAULT 0,
+        dirty INTEGER NOT NULL DEFAULT 1,
+        computed_at TEXT
+      );
+    `);
+  }
+
   async function withFixture(fn) {
     const pool = new Pool({ connectionString: POSTGRES_URL });
+    await setupSchema(pool);
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorInstanceId = `cin_compact_${suffix}`;
     const connectorId = `slack_compact_${suffix}`;
@@ -1098,6 +1168,7 @@ if (!POSTGRES_URL) {
     // while pinning the first version, the current version, and the
     // most-recent prior version with a *different* fingerprint.
     const pool = new Pool({ connectionString: POSTGRES_URL });
+    await setupSchema(pool);
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorInstanceId = `cin_compact_codex_${suffix}`;
     const connectorId = `local-device:codex`;
@@ -1234,6 +1305,7 @@ if (!POSTGRES_URL) {
     // 1145 / 1.000-ratio shape), while audit mode keeps the conservative
     // first+current (the 4605→2289 / ~2.0-ratio shape).
     const pool = new Pool({ connectionString: POSTGRES_URL });
+    await setupSchema(pool);
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorInstanceId = `cin_compact_chasetx_${suffix}`;
     const connectorId = 'chase';

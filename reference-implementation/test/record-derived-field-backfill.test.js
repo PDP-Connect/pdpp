@@ -82,12 +82,57 @@ if (!POSTGRES_URL) {
 } else {
   const SESSIONS_POLICY = REPAIR_POLICIES.sessions;
 
+  /**
+   * Creates the tables required by the repair tool and its cleanup queries.
+   * Mirrors the minimal schema used by backfill-usaa-account-stats.test.js so
+   * this suite is self-contained on a fresh database.
+   */
+  async function setupSchema(pool) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS records (
+        id BIGSERIAL PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        record_json JSONB NOT NULL,
+        emitted_at TEXT NOT NULL,
+        version BIGINT NOT NULL DEFAULT 1,
+        deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TEXT,
+        cursor_value TEXT,
+        primary_key_text TEXT NOT NULL,
+        UNIQUE(connector_instance_id, stream, record_key)
+      );
+      CREATE TABLE IF NOT EXISTS record_changes (
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        version BIGINT NOT NULL,
+        record_json JSONB,
+        emitted_at TEXT NOT NULL,
+        deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at TEXT,
+        PRIMARY KEY(connector_instance_id, stream, version)
+      );
+      CREATE TABLE IF NOT EXISTS version_counter (
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        max_version BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+    `);
+  }
+
   async function withFixture(fn) {
     const pool = new Pool({ connectionString: POSTGRES_URL });
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorInstanceId = `cin_repair_${suffix}`;
     const connectorId = `repair_${suffix}`;
     const stream = 'sessions';
+    await setupSchema(pool);
     try {
       await fn({ pool, connectorInstanceId, connectorId, stream });
     } finally {
