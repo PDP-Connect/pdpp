@@ -50,12 +50,31 @@ const SEED = [
 
 const GRANT = { streams: [{ name: STREAM, fields: ['id', 'created_at', 'body'] }] };
 
-async function seedAndQuery() {
+async function seedAndQuery(seed = SEED) {
   await registerConnector(MANIFEST);
-  for (const data of SEED) {
+  for (const data of seed) {
     await ingestRecord(CONNECTOR_ID, { stream: STREAM, key: data.id, data, emitted_at: data.created_at });
   }
   return queryRecords(CONNECTOR_ID, STREAM, GRANT, { window: 'exact', count: 'exact' }, MANIFEST);
+}
+
+// Rows whose consent_time carries non-UTC offsets and one unparseable value.
+// The chronological earliest is r_late (-07:00 == 13:00Z) vs r_early (+02:00
+// == 06:00Z); a lexicographic MIN/MAX would pick the wrong bound, and the
+// "-bad-date" value would lexically win MIN and silently drop bounds. Both
+// backends must agree on the chronological bounds over the parseable rows.
+const TZ_SEED = [
+  { id: 'z1', created_at: '2026-02-01T08:00:00+02:00', body: 'x' }, // 06:00Z (earliest)
+  { id: 'z2', created_at: '2026-02-01T06:00:00-07:00', body: 'y' }, // 13:00Z (latest)
+  { id: 'z3', created_at: '2026-02-01T10:00:00+00:00', body: 'z' }, // 10:00Z
+  { id: 'z4', created_at: '-bad-date', body: 'w' }, // unparseable, must be skipped
+];
+
+function assertTimezoneWindow(result, label) {
+  assert.ok(result?.meta?.window, `${label}: tz seed must produce meta.window`);
+  assert.equal(result.meta.window.total, 4, `${label}: total counts all 4 rows`);
+  assert.equal(result.meta.window.earliest_at, '2026-02-01T06:00:00.000Z', `${label}: chronological earliest`);
+  assert.equal(result.meta.window.latest_at, '2026-02-01T13:00:00.000Z', `${label}: chronological latest`);
 }
 
 // The behavioral contract both backends must satisfy. Asserting it in one place
@@ -84,6 +103,26 @@ test('SQLite: window:exact + count:exact produce bounds and count', async () => 
   }
 });
 
+test('SQLite: window bounds are chronological across non-UTC offsets, skipping unparseable rows', async () => {
+  initDb(':memory:');
+  try {
+    const result = await seedAndQuery(TZ_SEED);
+    assertTimezoneWindow(result, 'sqlite');
+  } finally {
+    closeDb();
+  }
+});
+
+// Clean every table the Postgres tests touch so they do not pollute other
+// suites sharing a Postgres test database.
+async function cleanupPostgres() {
+  for (const table of ['records', 'record_changes', 'version_counter', 'retained_size_stream', 'connectors']) {
+    const column = table === 'retained_size_stream' ? 'stream' : 'connector_id';
+    const value = table === 'retained_size_stream' ? STREAM : CONNECTOR_ID;
+    await postgresQuery(`DELETE FROM ${table} WHERE ${column} = $1`, [value]).catch(() => {});
+  }
+}
+
 if (!POSTGRES_URL) {
   test('Postgres: window/count parity (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
 } else {
@@ -91,12 +130,25 @@ if (!POSTGRES_URL) {
     initDb(':memory:');
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
     try {
-      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [CONNECTOR_ID]);
-      await postgresQuery('DELETE FROM retained_size_stream WHERE stream = $1', [STREAM]).catch(() => {});
+      await cleanupPostgres();
       const result = await seedAndQuery();
       assertWindowAndCount(result, 'postgres');
     } finally {
-      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [CONNECTOR_ID]).catch(() => {});
+      await cleanupPostgres();
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('Postgres: window bounds are chronological across non-UTC offsets, skipping unparseable rows (parity with SQLite)', async () => {
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      await cleanupPostgres();
+      const result = await seedAndQuery(TZ_SEED);
+      assertTimezoneWindow(result, 'postgres');
+    } finally {
+      await cleanupPostgres();
       await closePostgresStorage();
       closeDb();
     }

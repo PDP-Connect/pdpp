@@ -1308,10 +1308,20 @@ async function computePostgresRecordWindow({ requestParams, countWhere, countPar
   if (consentTimeField) {
     assertSafeJsonField(consentTimeField, 'consent_time_field');
     const ctExpr = jsonStringExpr(consentTimeField);
+    // MIN/MAX must compare CHRONOLOGICALLY, not lexicographically. Plain text
+    // MIN/MAX picks the wrong bound for non-UTC offsets (e.g. a "...T00:00-07:00"
+    // string sorts before "...T06:00+00:00" textually but is later in time), and
+    // a lexically-small non-date string (e.g. "-bad-date") would win MIN and
+    // then fail to parse, silently dropping bounds. Cast to timestamptz so
+    // Postgres orders by instant, and restrict to ISO-date-prefixed values so
+    // unparseable rows are skipped — mirroring the SQLite path's per-row
+    // `Number.isNaN(...) ? continue` behavior. timestamptz results come back
+    // UTC-normalized, so the downstream new Date(...).toISOString() is correct.
+    const isoPrefix = `${ctExpr} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'`;
     const boundsResult = await postgresQuery(
-      `SELECT MIN(${ctExpr}) AS earliest, MAX(${ctExpr}) AS latest
+      `SELECT MIN((${ctExpr})::timestamptz) AS earliest, MAX((${ctExpr})::timestamptz) AS latest
          FROM records ${countWhere}
-        AND ${ctExpr} IS NOT NULL AND ${ctExpr} <> ''`,
+        AND ${ctExpr} IS NOT NULL AND ${ctExpr} <> '' AND ${isoPrefix}`,
       countParams,
     );
     const earliest = boundsResult.rows[0]?.earliest;

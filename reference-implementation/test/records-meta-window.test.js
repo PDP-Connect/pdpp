@@ -23,9 +23,10 @@
  *
  * These exercise the SQLite reference path and the in-process fan-in merge
  * directly via `queryRecords` / `queryRecordsAcrossBindings`, mirroring
- * `storage-fan-in-read-contract.test.js`. The Postgres path validates the
- * `window` value but omits `meta.window` for this tranche (see
- * SUPPORTED_WINDOW_KINDS_PG in postgres-records.js).
+ * `storage-fan-in-read-contract.test.js`. These exercise the SQLite reference
+ * path; Postgres now computes `meta.window` to parity (see
+ * computePostgresRecordWindow in postgres-records.js), and that parity is
+ * pinned by `record-window-count-parity.test.js`.
  *
  * Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
  *       reference-implementation-architecture/spec.md

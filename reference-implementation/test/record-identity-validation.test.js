@@ -66,6 +66,22 @@ test('numeric vs string key values compare by string form (storage normalizes ke
   assert.equal(identityError(['id'], '42', { id: 42 }), null);
 });
 
+test('a numeric scalar key is accepted, not treated as an empty tuple', () => {
+  // Regression: a single-field key can arrive as a number; it must be coerced
+  // to its string form, not fall through to an empty keyParts tuple (which
+  // would compare String(undefined) and falsely throw).
+  assert.equal(identityError(['id'], 42, { id: 42 }), null);
+  const err = identityError(['id'], 42, { id: 99 });
+  assert.ok(err, 'a genuine numeric-key mismatch must still throw');
+  assert.equal(err.code, 'invalid_record_identity');
+});
+
+test('a key tuple shorter than the declared compound key does not falsely throw on the missing part', () => {
+  // Regression: when the key tuple omits a trailing field, the absent position
+  // must be skipped rather than compared against String(undefined).
+  assert.equal(identityError(['account_id', 'txn_id'], 'acc_1', { account_id: 'acc_1', txn_id: 'txn_9' }), null);
+});
+
 test('non-object data is a no-op (deletes / tombstones carry no data)', () => {
   assert.equal(identityError(['account_number'], '12345', null), null);
   assert.equal(identityError(['account_number'], '12345', undefined), null);

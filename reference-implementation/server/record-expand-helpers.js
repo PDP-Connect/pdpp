@@ -48,11 +48,18 @@ export function assertRecordIdentity(primaryKeyFields, key, data) {
     return;
   }
 
-  const keyParts = typeof key === 'string' ? [key] : Array.isArray(key) ? key : [];
+  // A single-field key arrives as a scalar (string or number; encodeKey stores
+  // either as a string downstream); a compound key arrives as an array.
+  const keyParts = typeof key === 'string' || typeof key === 'number' ? [String(key)] : Array.isArray(key) ? key : [];
   for (let i = 0; i < fields.length; i += 1) {
     const field = fields[i];
     const dataValue = data[field];
     if (dataValue === undefined) continue;
+    // The key tuple may be shorter than the declared primary_key (a key part
+    // can be absent); only compare positions the key actually provides, so a
+    // missing key part is not falsely reported as a mismatch against
+    // String(undefined).
+    if (keyParts[i] === undefined) continue;
     if (String(dataValue) !== String(keyParts[i])) {
       const err = new Error(
         `key and data disagree on primary-key field '${field}': key part=${keyParts[i]}, data.${field}=${dataValue}`,
