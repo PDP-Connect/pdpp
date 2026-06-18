@@ -113,14 +113,13 @@ function RelationshipsBlock({
       {relationships.length > 0 ? (
         <div className="rr-rel-list">
           {relationships.map((r) => {
-            const hasDistinctId = r.clientId !== r.who;
             return (
               <div className="rr-rel" key={r.clientId}>
                 <span className="rr-rel__who">
                   <Monogram name={r.who} />
                   <span>
                     <span title={r.who}>{r.who}</span>
-                    {hasDistinctId ? (
+                    {r.showClientId ? (
                       <span className="rr-bearer__client" title={r.clientId}>
                         {r.clientId}
                       </span>

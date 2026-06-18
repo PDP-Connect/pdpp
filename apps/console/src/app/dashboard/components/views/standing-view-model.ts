@@ -138,6 +138,8 @@ export interface RelationshipView {
   clientId: string;
   /** "reads only your pay and your spending" — humanized scope summary. */
   reads: string;
+  /** Whether the secondary verified client id is useful owner-facing context. */
+  showClientId: boolean;
   status: GrantEndorseStatus;
   /** "last active today · 3 grants" — meta line. */
   terms: string;
@@ -362,8 +364,38 @@ function approvalReads(a: PendingApproval): string {
   return "parts of your data";
 }
 
+function hostFromUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.hostname.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
+}
+
 function clientLabel(name: string | null, clientId: string): string {
-  return name?.trim() || clientId;
+  const raw = name?.trim() || clientId;
+  const host = hostFromUrl(raw);
+  if (host) {
+    return host;
+  }
+  if (looksLikeTechnicalId(raw)) {
+    return "Unnamed app";
+  }
+  return raw;
+}
+
+function shouldShowSecondaryClientId(clientId: string, who: string): boolean {
+  if (clientId === who) {
+    return false;
+  }
+  if (hostFromUrl(clientId)) {
+    return false;
+  }
+  if (looksLikeTechnicalId(clientId)) {
+    return false;
+  }
+  return true;
 }
 
 // ─── Bearer view ("what can act as you") ──────────────────────────────────
@@ -461,6 +493,7 @@ function toRelationships(
       actionLabel: "review",
       clientId: group.clientId,
       reads: group.phrases.size > 0 ? `reads only ${joinHuman(Array.from(group.phrases))}` : "reads a scoped slice of your data",
+      showClientId: shouldShowSecondaryClientId(group.clientId, group.who),
       status,
       terms: `last active ${relDay(group.lastAt, now)} · ${grantCount} ${grantWord}`,
       who: group.who,

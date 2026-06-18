@@ -715,6 +715,31 @@ test("relationships prefer grant client metadata over owner-token labels", () =>
   assert.equal(data.relationships[0]?.clientId, "cli_known");
 });
 
+test("relationships do not render raw URL client ids as owner-facing names", () => {
+  const urlClientId = "https://chatgpt.com/oauth/Dyp26IIu2iQg/client.json?token_endpoint_auth_method=none";
+  const grants: GrantSummary[] = [
+    {
+      object: "grant_summary",
+      grant_id: "g1",
+      client_id: urlClientId,
+      connector_id: "pdpp",
+      status: "active",
+      first_at: "2026-06-01T00:00:00Z",
+      last_at: "2026-06-12T12:00:00Z",
+      event_count: 7,
+      kinds: ["query.received"],
+      failure: null,
+    },
+  ];
+
+  const data = buildStandingData(baseInputs({ grants }));
+
+  assert.equal(data.relationships.length, 1);
+  assert.equal(data.relationships[0]?.who, "chatgpt.com");
+  assert.equal(data.relationships[0]?.clientId, urlClientId);
+  assert.equal(data.relationships[0]?.showClientId, false);
+});
+
 test("revoked grants are excluded from relationships", () => {
   const revoked: GrantSummary = {
     object: "grant_summary",
