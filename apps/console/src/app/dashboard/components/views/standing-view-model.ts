@@ -133,12 +133,13 @@ export interface BearerView {
 }
 
 export interface RelationshipView {
+  actionHref: string;
+  actionLabel: string;
+  clientId: string;
   /** "reads only your pay and your spending" — humanized scope summary. */
   reads: string;
-  /** href to the grant detail (revoke lives there). */
-  revokeHref: string;
   status: GrantEndorseStatus;
-  /** "expires in 12 days" / "open-ended" — meta line. */
+  /** "last active today · 3 grants" — meta line. */
   terms: string;
   who: string;
 }
@@ -325,17 +326,22 @@ const PROTOCOL_KIND_PREFIX_RE = /^(grant|trace|run|event)\./;
 const PROTOCOL_KIND_WORDS = new Set(["read", "issued", "approved", "revoked", "denied"]);
 
 export function grantReads(g: GrantSummary): string {
+  const phrases = grantReadPhrases(g);
+  if (phrases.length > 0) {
+    return `reads only ${joinHuman(phrases)}`;
+  }
+  return "reads a scoped slice of your data";
+}
+
+function grantReadPhrases(g: GrantSummary): string[] {
   const meaningfulKinds = g.kinds
     .map((k) => k.replace(PROTOCOL_KIND_PREFIX_RE, ""))
     .filter((k) => k && !PROTOCOL_KIND_WORDS.has(k));
   const phrases = Array.from(new Set(meaningfulKinds.map(scopeHuman))).filter(Boolean);
   if (phrases.length > 0) {
-    return `reads only ${joinHuman(phrases)}`;
+    return phrases;
   }
-  if (g.connector_id) {
-    return `reads only ${scopeHuman(g.connector_id)}`;
-  }
-  return "reads a scoped slice of your data";
+  return g.connector_id ? [scopeHuman(g.connector_id)] : [];
 }
 
 /** Humanize the streams a pending approval previews. */
@@ -379,14 +385,63 @@ function toBearers(clients: OwnerIssuedClient[], hrefs: StandingHrefs, now: Date
 
 // ─── Relationships view ("who can read parts of you") ────────────────────
 
+function newerIso(a: string | null, b: string | null): string | null {
+  if (!a) {
+    return b;
+  }
+  if (!b) {
+    return a;
+  }
+  return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
+}
+
 function toRelationships(grants: GrantSummary[], hrefs: StandingHrefs, now: Date): RelationshipView[] {
-  return grants.filter(isLiveGrant).map((g) => ({
-    who: clientLabel(g.client_id, g.grant_id),
-    reads: grantReads(g),
-    status: grantEndorseStatus(g.status),
-    terms: `last active ${relDay(g.last_at, now)}`,
-    revokeHref: hrefs.grant(g.grant_id),
-  }));
+  const groups = new Map<
+    string,
+    {
+      clientId: string;
+      grantIds: string[];
+      lastAt: string | null;
+      phrases: Set<string>;
+      statuses: GrantEndorseStatus[];
+      who: string;
+    }
+  >();
+  for (const grant of grants.filter(isLiveGrant)) {
+    const clientId = grant.client_id || grant.grant_id;
+    const existing =
+      groups.get(clientId) ??
+      {
+        clientId,
+        grantIds: [],
+        lastAt: null,
+        phrases: new Set<string>(),
+        statuses: [],
+        who: clientLabel(grant.client_id, grant.grant_id),
+      };
+    existing.grantIds.push(grant.grant_id);
+    existing.lastAt = newerIso(existing.lastAt, grant.last_at);
+    for (const phrase of grantReadPhrases(grant)) {
+      existing.phrases.add(phrase);
+    }
+    existing.statuses.push(grantEndorseStatus(grant.status));
+    groups.set(clientId, existing);
+  }
+
+  return Array.from(groups.values()).map((group) => {
+    const grantCount = group.grantIds.length;
+    const grantWord = grantCount === 1 ? "grant" : "grants";
+    const status = group.statuses.includes("expiring") ? "expiring" : (group.statuses[0] ?? "active");
+    return {
+      actionHref: grantCount === 1 ? hrefs.grant(group.grantIds[0] ?? "") : hrefs.grants,
+      actionLabel: "review",
+      clientId: group.clientId,
+      reads: group.phrases.size > 0 ? `reads only ${joinHuman(Array.from(group.phrases))}` : "reads a scoped slice of your data",
+      status,
+      terms: `last active ${relDay(group.lastAt, now)} · ${grantCount} ${grantWord}`,
+      who: group.who,
+    };
+  });
 }
 
 // ─── Lately view ("what's been read") ────────────────────────────────────

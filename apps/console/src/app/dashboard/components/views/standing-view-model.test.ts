@@ -487,10 +487,53 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   assert.match(data.bearers[0]?.how ?? "", BEARER_HOW_RE);
   assert.equal(data.relationships.length, 1);
   assert.equal(data.relationships[0]?.reads, "reads only your pay");
+  assert.equal(data.relationships[0]?.actionLabel, "review");
+  assert.equal(data.relationships[0]?.actionHref, HREFS.grant("g1"));
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.deny, false);
   assert.match(data.lately[0]?.text.rest ?? "", LATELY_READ_RE);
   assert.equal(data.attention.length, 0);
+});
+
+test("relationships summarize grants by client instead of repeating one row per grant", () => {
+  const grants: GrantSummary[] = [
+    {
+      object: "grant_summary",
+      grant_id: "g1",
+      client_id: "CLI agent",
+      connector_id: "pdpp",
+      status: "active",
+      first_at: "2026-06-01T00:00:00Z",
+      last_at: "2026-06-10T00:00:00Z",
+      event_count: 5,
+      kinds: ["token.issued", "query.received"],
+      failure: null,
+    },
+    {
+      object: "grant_summary",
+      grant_id: "g2",
+      client_id: "CLI agent",
+      connector_id: "pdpp",
+      status: "active",
+      first_at: "2026-06-02T00:00:00Z",
+      last_at: "2026-06-12T12:00:00Z",
+      event_count: 7,
+      kinds: ["disclosure.served", "query.rejected"],
+      failure: null,
+    },
+  ];
+
+  const data = buildStandingData(baseInputs({ grants }));
+
+  assert.equal(data.relationships.length, 1);
+  assert.equal(data.relationships[0]?.who, "CLI agent");
+  assert.equal(
+    data.relationships[0]?.reads,
+    "reads only token activity, read requests, data disclosures, and rejected reads"
+  );
+  assert.equal(data.relationships[0]?.terms, "last active yesterday · 2 grants");
+  assert.equal(data.relationships[0]?.actionLabel, "review");
+  assert.equal(data.relationships[0]?.actionHref, HREFS.grants);
 });
 
 test("revoked grants are excluded from relationships", () => {

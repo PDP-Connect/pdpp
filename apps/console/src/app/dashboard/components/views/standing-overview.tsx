@@ -113,7 +113,7 @@ function RelationshipsBlock({
       {relationships.length > 0 ? (
         <div className="rr-rel-list">
           {relationships.map((r) => (
-            <div className="rr-rel" key={`${r.who}:${r.revokeHref}`}>
+            <div className="rr-rel" key={r.clientId}>
               <span className="rr-rel__who">
                 <Monogram name={r.who} /> {r.who}
               </span>
@@ -121,8 +121,8 @@ function RelationshipsBlock({
                 {r.reads} · <Endorse status={r.status} />
               </span>
               <span className="rr-rel__meta">{r.terms}</span>
-              <a className="rr-rel__revoke" href={r.revokeHref}>
-                revoke
+              <a className="rr-rel__revoke" href={r.actionHref}>
+                {r.actionLabel}
               </a>
             </div>
           ))}
