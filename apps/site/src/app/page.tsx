@@ -27,9 +27,9 @@ export default function Home() {
           }
           description={
             <>
-              Clients request named records and fields.
+              PDPP builds on OAuth with one model for personal data.
               <br />
-              Every response stays inside the grant.
+              Owners decide which of their records and fields each app can read.
             </>
           }
           eyebrow={
@@ -54,9 +54,9 @@ export default function Home() {
           size="splash"
           title={
             <>
-              Granular access
+              An open protocol for
               <br />
-              to personal data
+              portable, user-owned data
             </>
           }
         />
