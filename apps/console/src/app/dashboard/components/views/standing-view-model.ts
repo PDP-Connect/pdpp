@@ -351,8 +351,16 @@ function clientLabel(name: string | null, clientId: string): string {
 
 // ─── Bearer view ("what can act as you") ──────────────────────────────────
 
+function activeBearerClients(clients: readonly OwnerIssuedClient[]): OwnerIssuedClient[] {
+  return clients.filter((c) => c.active_token_count > 0);
+}
+
+function activeOwnerTokenCount(clients: readonly OwnerIssuedClient[]): number {
+  return clients.reduce((sum, c) => sum + Math.max(0, c.active_token_count), 0);
+}
+
 function toBearers(clients: OwnerIssuedClient[], hrefs: StandingHrefs, now: Date): BearerView[] {
-  return clients.map((c) => {
+  return activeBearerClients(clients).map((c) => {
     const count = c.active_token_count;
     const tokenWord = count === 1 ? "token" : "tokens";
     return {
@@ -594,19 +602,22 @@ function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): S
 /** CALM — the reassurance moment. */
 function buildCalmHero(input: StandingInputs): StandingHero {
   const { summary, bearerClients } = input;
+  const activeClients = activeBearerClients(bearerClients);
+  const activeTokenCount = activeOwnerTokenCount(activeClients);
   const liveGrants = input.grants.filter(isLiveGrant);
   const records = summary ? fmtInt(summary.record_count) : "0";
   const sources = summary?.connector_count ?? 0;
   const sourceWord = sources === 1 ? "source" : "sources";
-  const bearerWord = bearerClients.length === 1 ? "token" : "tokens";
   const grantWord = liveGrants.length === 1 ? "app reads" : "apps read";
-  const withBearers = `${bearerClients.length} ${bearerWord} can act as you, with full access. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
-  const noBearers = `No token can act as you yet. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
+  const tokenWord = activeTokenCount === 1 ? "token" : "tokens";
+  const clientWord = activeClients.length === 1 ? "client holds" : "clients hold";
+  const withBearers = `${activeClients.length} ${clientWord} ${fmtInt(activeTokenCount)} active owner ${tokenWord} with full access. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
+  const noBearers = `No owner token can act as you yet. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
   return {
     tone: "calm",
     kicker: "Where you stand",
     line: { text: `${records} records from ${sources} ${sourceWord} — `, emphasis: "all yours to read", tail: "." },
-    sub: bearerClients.length > 0 ? withBearers : noBearers,
+    sub: activeTokenCount > 0 ? withBearers : noBearers,
   };
 }
 

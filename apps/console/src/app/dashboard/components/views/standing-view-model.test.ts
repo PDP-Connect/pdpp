@@ -36,7 +36,7 @@ const HREFS: StandingHrefs = {
 
 const NOW = new Date("2026-06-13T12:00:00Z");
 
-const CALM_SUB_RE = /1 token can act as you/;
+const CALM_SUB_RE = /1 client holds 1 active owner token/;
 const BEARER_HOW_RE = /2 active tokens/;
 const LATELY_READ_RE = /read 412 records/;
 const SAVED_RECORDS_RE = /saved records/;
@@ -411,6 +411,29 @@ test("hero is CALM with reassurance when all is well", () => {
   assert.equal(hero.tone, "calm");
   assert.equal(hero.line.emphasis, "all yours to read");
   assert.match(hero.sub, CALM_SUB_RE);
+});
+
+test("bearer section and hero count only active owner tokens", () => {
+  const clients: OwnerIssuedClient[] = [
+    { client_id: "inactive", client_name: "Old smoke client", active_token_count: 0, created_at: NOW.toISOString() },
+    { client_id: "active", client_name: "Claude Desktop", active_token_count: 2, created_at: NOW.toISOString() },
+  ];
+  const data = buildStandingData(baseInputs({ bearerClients: clients }));
+
+  assert.equal(data.bearers.length, 1);
+  assert.equal(data.bearers[0]?.clientId, "active");
+  assert.match(data.hero.sub, /1 client holds 2 active owner tokens/);
+  assert.doesNotMatch(data.hero.sub, /2 tokens can act as you/);
+});
+
+test("hero says no owner token can act when all issued clients are inactive", () => {
+  const clients: OwnerIssuedClient[] = [
+    { client_id: "inactive", client_name: "Old smoke client", active_token_count: 0, created_at: NOW.toISOString() },
+  ];
+  const data = buildStandingData(baseInputs({ bearerClients: clients }));
+
+  assert.equal(data.bearers.length, 0);
+  assert.match(data.hero.sub, /No owner token can act as you yet/);
 });
 
 // ─── full builder ─────────────────────────────────────────────────
