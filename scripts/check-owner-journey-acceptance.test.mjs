@@ -598,6 +598,69 @@ test("live semantic probe does not treat healthy refresh advisories as source is
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects healthy refresh advisories rendered as degraded issues", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_health: {
+                axes: { coverage: "complete", freshness: "stale", outbox: "unknown" },
+                reason_code: "stale_manual_refresh",
+                state: "healthy",
+              },
+              connection_id: "cin_reddit",
+              connector_id: "reddit",
+              display_name: "Reddit - dondochaka",
+              rendered_verdict: {
+                channel: "advisory",
+                forward_statement: "Run a refresh to bring this up to date.",
+                pill: { label: "Healthy", tone: "green" },
+                required_actions: [
+                  {
+                    audience: "owner",
+                    cta: "Refresh now",
+                    satisfied_when: { kind: "confirming_run_succeeded" },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/records/cin_reddit")) {
+      return response(200, "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>");
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><h2>Anything wrong</h2><a>Reddit - dondochaka is degraded Run a refresh to bring this up to date.</a></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-healthy-advisory-overstated"));
+  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+});
+
 test("live semantic probe rejects raw broken source facts hidden by a calm verdict", async () => {
   const response = (status, body) => ({
     status,

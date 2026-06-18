@@ -274,6 +274,24 @@ function isMaterialSourceIssue(connector) {
   );
 }
 
+function isHealthyRefreshAdvisory(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const verdict = renderedVerdict(connector);
+  if (!verdict || verdict.channel !== "advisory") {
+    return false;
+  }
+  const pill = verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {};
+  if (pill.tone !== "green" && pill.label !== "Healthy") {
+    return false;
+  }
+  const actionText = Array.isArray(verdict.required_actions)
+    ? verdict.required_actions.map((action) => `${action?.kind ?? ""} ${action?.cta ?? ""}`).join(" ")
+    : "";
+  return /\brefresh\b/i.test(`${verdict.forward_statement ?? ""} ${actionText}`);
+}
+
 function isRawMaterialSourceIssue(connector) {
   if (connector?.revoked_at) {
     return false;
@@ -425,6 +443,10 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     label: connectorLabel(connector),
     forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
   }));
+  const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
   const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
     label: connectorLabel(connector),
     reason: connector?.connection_health?.reason_code ?? connector?.last_run?.failure_reason ?? "raw source issue",
@@ -456,6 +478,24 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
           "The dashboard must not claim sources are syncing when the reference connector summary contains material non-owner source issues. The hero may stay calm, but the Anything wrong panel must disclose the issue.",
       });
     }
+  }
+
+  const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
+    const renderedAsBroken = dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
+    const renderedWithRefreshStatement =
+      issue.forwardStatement.length > 0 && dashboardText.includes(issue.label) && dashboardText.includes(issue.forwardStatement);
+    return renderedAsBroken || renderedWithRefreshStatement;
+  });
+  if (overstatedHealthyAdvisories.length > 0) {
+    findings.push({
+      ruleId: "dashboard-healthy-advisory-overstated",
+      class: "dashboard-trust-claim",
+      path: "live:/dashboard",
+      line: 0,
+      excerpt: overstatedHealthyAdvisories.map((issue) => issue.label).slice(0, 5).join(", "),
+      rationale:
+        "A healthy source with a refresh-available advisory must not appear in the dashboard issue list as degraded or broken. The source detail may offer Refresh now, but the dashboard must not manufacture urgency.",
+    });
   }
 
   if (sourceIssues.length > 0) {
@@ -497,7 +537,8 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       (f) =>
         f.ruleId === "dashboard-source-issue-all-clear" ||
         f.ruleId === "dashboard-source-issue-missing" ||
-        f.ruleId === "dashboard-raw-source-issue-missing"
+        f.ruleId === "dashboard-raw-source-issue-missing" ||
+        f.ruleId === "dashboard-healthy-advisory-overstated"
     )
       ? "fail"
       : "pass",
