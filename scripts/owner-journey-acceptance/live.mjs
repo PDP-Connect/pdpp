@@ -28,6 +28,7 @@ export const LIVE_SURFACES = [
   { path: "/dashboard/grants", tier: "normal" },
   { path: "/dashboard/traces", tier: "normal" },
   { path: "/dashboard/runs", tier: "normal" },
+  { path: "/dashboard/schedules", tier: "normal" },
   { path: "/dashboard/search", tier: "normal" },
   { path: "/dashboard/device-exporters", tier: "advanced" },
 ];
@@ -152,6 +153,54 @@ function asArrayList(raw) {
 function ownerSatisfiableAction(verdict) {
   const actions = Array.isArray(verdict?.required_actions) ? verdict.required_actions : [];
   return actions.some((action) => action?.audience === "owner" && action?.satisfied_when?.kind !== "none");
+}
+
+function ownerSatisfiableActions(verdict) {
+  const actions = Array.isArray(verdict?.required_actions) ? verdict.required_actions : [];
+  return actions.filter((action) => action?.audience === "owner" && action?.satisfied_when?.kind !== "none");
+}
+
+function compactStrings(values) {
+  return Array.from(
+    new Set(
+      values
+        .filter((value) => typeof value === "string")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  );
+}
+
+function nextStepTextCandidates(action) {
+  return compactStrings([
+    action?.cta,
+    action?.remediation?.label,
+    action?.remediation?.summary,
+    ...(Array.isArray(action?.remediation?.commands)
+      ? action.remediation.commands.map((command) => command?.label)
+      : []),
+  ]);
+}
+
+function owesOwnerNextStepFromRaw(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const health = connector?.connection_health;
+  if (health?.reason_code === "stale_manual_refresh") {
+    return true;
+  }
+  if (health?.axes?.outbox === "stalled") {
+    return true;
+  }
+  if (connector?.schedule?.human_attention_needed === true) {
+    return true;
+  }
+  return false;
+}
+
+function detailHasOwnerActionVerb(text) {
+  return /\b(Refresh now|Run a refresh|Recover|Retry|Reconnect|Reauthorize|Review|Set schedule|Sync now)\b/i.test(text);
 }
 
 function renderedVerdict(connector) {
@@ -429,6 +478,166 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       checkedSourceCounts === 0
         ? "no rendered configured source count claims to compare"
         : `${checkedSourceCounts} rendered source count claim(s) matched /_ref/connectors`,
+  });
+
+  const nextActionFindings = [];
+  const nextActionConnectors = connectors
+    .filter((connector) => !connector?.revoked_at)
+    .map((connector) => {
+      const verdict = renderedVerdict(connector);
+      const actions = ownerSatisfiableActions(verdict);
+      const textCandidates = actions.flatMap(nextStepTextCandidates);
+      return {
+        actions,
+        connector,
+        label: connectorLabel(connector),
+        routeId: connectorRouteId(connector),
+        textCandidates,
+        verdict,
+      };
+    })
+    .filter((entry) => entry.routeId && entry.textCandidates.length > 0);
+
+  for (const entry of nextActionConnectors) {
+    if (entry.verdict?.channel === "attention") {
+      const dashboardHasSource = dashboardText.includes(entry.label);
+      const dashboardHasAction = ["See what to do", "See recovery steps", ...entry.textCandidates].some((candidate) =>
+        dashboardText.includes(candidate)
+      );
+      if (!dashboardHasSource || !dashboardHasAction) {
+        const finding = {
+          ruleId: "dashboard-next-action-missing",
+          class: "source-next-action",
+          path: "live:/dashboard",
+          line: 0,
+          excerpt: `${entry.label}: ${entry.textCandidates[0]}`,
+          rationale:
+            "When the reference connector summary says an owner-satisfiable attention action exists, the dashboard must point the owner to that exact source and next step instead of leaving the action discoverable only by spelunking.",
+        };
+        nextActionFindings.push(finding);
+        findings.push(finding);
+      }
+    }
+
+    const path = `/dashboard/records/${encodeURIComponent(entry.routeId)}`;
+    try {
+      const res = await fetchImpl(`${base}${path}`, {
+        headers: { accept: "text/html", ...header },
+        redirect: "manual",
+      });
+      const status = res.status;
+      const html = await res.text();
+      if (status < 200 || status >= 300) {
+        const finding = {
+          ruleId: "source-next-action-detail-not-reached",
+          class: "source-next-action",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `status ${status}`,
+          rationale:
+            "The live probe could not reach the exact source detail route for an owner-satisfiable action. The owner cannot know what to do next if the action destination does not render.",
+        };
+        nextActionFindings.push(finding);
+        findings.push(finding);
+        continue;
+      }
+      const detailText = htmlToText(html);
+      const detailHasAction = entry.textCandidates.some((candidate) => detailText.includes(candidate));
+      if (!detailHasAction) {
+        const finding = {
+          ruleId: "source-next-action-copy-missing",
+          class: "source-next-action",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `${entry.label}: ${entry.textCandidates[0]}`,
+          rationale:
+            "The exact source detail route must render the owner-facing action from the reference verdict. A hidden or missing action breaks the owner's ability to decide the next step.",
+        };
+        nextActionFindings.push(finding);
+        findings.push(finding);
+      }
+    } catch (err) {
+      const finding = {
+        ruleId: "source-next-action-detail-fetch-failed",
+        class: "source-next-action",
+        path: `live:${path}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "The live probe could not fetch the exact source detail route for an owner-satisfiable action. The owner next-step check is inconclusive until the route is observable.",
+      };
+      nextActionFindings.push(finding);
+      findings.push(finding);
+    }
+  }
+
+  const rawNextStepConnectors = connectors
+    .filter(owesOwnerNextStepFromRaw)
+    .map((connector) => ({
+      connector,
+      label: connectorLabel(connector),
+      routeId: connectorRouteId(connector),
+    }))
+    .filter((entry) => entry.routeId);
+
+  for (const entry of rawNextStepConnectors) {
+    const path = `/dashboard/records/${encodeURIComponent(entry.routeId)}`;
+    try {
+      const res = await fetchImpl(`${base}${path}`, {
+        headers: { accept: "text/html", ...header },
+        redirect: "manual",
+      });
+      const status = res.status;
+      const html = await res.text();
+      if (status < 200 || status >= 300) {
+        const finding = {
+          ruleId: "raw-next-action-detail-not-reached",
+          class: "source-next-action",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `status ${status}`,
+          rationale:
+            "Raw connection evidence says this source needs an owner next step, but the exact source route did not render. The owner cannot know what to do next from a dead destination.",
+        };
+        nextActionFindings.push(finding);
+        findings.push(finding);
+        continue;
+      }
+      const detailText = htmlToText(html);
+      if (!detailHasOwnerActionVerb(detailText)) {
+        const finding = {
+          ruleId: "raw-next-action-affordance-missing",
+          class: "source-next-action",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: entry.label,
+          rationale:
+            "Raw connection evidence says this source needs an owner next step, but the exact source route did not render an owner-actionable verb such as Refresh now, Recover, Retry, or Reconnect.",
+        };
+        nextActionFindings.push(finding);
+        findings.push(finding);
+      }
+    } catch (err) {
+      const finding = {
+        ruleId: "raw-next-action-detail-fetch-failed",
+        class: "source-next-action",
+        path: `live:${path}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "The live probe could not fetch the exact source route for a raw owner next-step condition. The owner next-step check is inconclusive until the route is observable.",
+      };
+      nextActionFindings.push(finding);
+      findings.push(finding);
+    }
+  }
+  checks.push({
+    id: "whats-next-actionable",
+    status: nextActionFindings.length > 0 ? "fail" : "pass",
+    detail:
+      nextActionConnectors.length === 0 && rawNextStepConnectors.length === 0
+        ? "no rendered or raw owner next-step conditions to probe"
+        : `${nextActionConnectors.length} rendered action route(s) and ${rawNextStepConnectors.length} raw owner next-step route(s) rendered their next step`,
   });
 
   const singleTokenDenialCodes = new Set([

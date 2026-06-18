@@ -233,6 +233,8 @@ export interface AttentionConnection {
   actionLabel: string;
   /** Owner-facing connector type, for the human label ("Chase needs you"). */
   connectorKey: string;
+  /** Owner-facing connection/source label, for exact multi-account/device copy. */
+  label: string;
   /**
    * True when the action is a DEVICE-LOCAL recovery — the owner runs commands on
    * the host that holds the data; the dashboard cannot perform it. The CTA then
@@ -649,6 +651,7 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
         connectorKey: connector.connector_id,
         routeId: connectionRouteId(connector),
         deviceLocal: false,
+        label: connectorLabel(connector),
         what: summary.prose,
         actionLabel: summary.actionLabel ?? "Review source",
       });
@@ -665,6 +668,7 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
       connectorKey: connector.connector_id,
       routeId: connector.connector_instance_id ?? connector.connection_id,
       deviceLocal: action.remediation?.target.kind === "local_device",
+      label: connectorLabel(connector),
       what: verdict.forward_statement,
       actionLabel: action.cta,
     });
@@ -742,7 +746,7 @@ export function sourceIssueConnectionsFromConnectors(connectors: readonly RefCon
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return attention.map((a) => ({
     id: `connection:${a.routeId}`,
-    what: `${scopeHuman(a.connectorKey)} needs you`,
+    what: `${a.label} needs you`,
     why: a.what,
     href: hrefs.connection(a.routeId),
   }));
@@ -804,7 +808,7 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
     return {
       tone: "alarm",
       kicker: "One thing needs you",
-      line: { text: `${scopeHuman(only.connectorKey)} `, emphasis: "needs you", tail: "." },
+      line: { text: `${only.label} `, emphasis: "needs you", tail: "." },
       sub: only.what,
       // A device-local recovery is not performed by clicking — the CTA only
       // navigates to where the commands are. Use a navigation label ("See what

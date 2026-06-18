@@ -637,6 +637,260 @@ test("live semantic probe accepts visible source count claims that match connect
   );
 });
 
+test("live semantic probe rejects owner actions that are absent from the exact source route", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_local",
+              connector_id: "claude-code",
+              display_name: "peregrine Claude Code",
+              rendered_verdict: {
+                channel: "attention",
+                forward_statement: "The local collector has failed uploads.",
+                pill: { label: "Can't collect", tone: "red" },
+                required_actions: [
+                  {
+                    audience: "owner",
+                    cta: "Recover local collector uploads",
+                    remediation: {
+                      label: "Recover local collector uploads",
+                      summary: "The local collector has failed uploads.",
+                      target: { kind: "local_device" },
+                    },
+                    satisfied_when: { kind: "attention_resolved" },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><section>peregrine Claude Code needs you. See what to do.</section></main>"
+      );
+    }
+    if (href.endsWith("/dashboard/records/cin_local")) {
+      return response(200, "<main><section>Diagnostics are loading.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "source-next-action-copy-missing"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts owner actions visible on dashboard and exact source route", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_local",
+              connector_id: "claude-code",
+              display_name: "peregrine Claude Code",
+              rendered_verdict: {
+                channel: "attention",
+                forward_statement: "The local collector has failed uploads.",
+                pill: { label: "Can't collect", tone: "red" },
+                required_actions: [
+                  {
+                    audience: "owner",
+                    cta: "Recover local collector uploads",
+                    remediation: {
+                      commands: [
+                        {
+                          kind: "local_collector_recover_preview",
+                          label: "Preview recovery",
+                        },
+                      ],
+                      label: "Recover local collector uploads",
+                      summary: "The local collector has failed uploads.",
+                      target: { kind: "local_device" },
+                    },
+                    satisfied_when: { kind: "attention_resolved" },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><section>peregrine Claude Code needs you. See what to do.</section></main>"
+      );
+    }
+    if (href.endsWith("/dashboard/records/cin_local")) {
+      return response(
+        200,
+        "<main><h1>peregrine Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
+    "pass"
+  );
+});
+
+test("live semantic probe rejects raw stale manual sources without a visible next action", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_health: {
+                axes: { freshness: "stale", coverage: "complete", outbox: "unknown" },
+                reason_code: "stale_manual_refresh",
+              },
+              connection_id: "cin_reddit",
+              connector_id: "reddit",
+              display_name: "Reddit - dondochaka",
+              rendered_verdict: {
+                channel: "calm",
+                forward_statement: "Current and collecting normally.",
+                pill: { label: "Healthy", tone: "green" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/records/cin_reddit")) {
+      return response(200, "<main><section>Current and collecting normally.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "raw-next-action-affordance-missing"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts raw stale manual sources with a visible refresh action", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_health: {
+                axes: { freshness: "stale", coverage: "complete", outbox: "unknown" },
+                reason_code: "stale_manual_refresh",
+              },
+              connection_id: "cin_usaa",
+              connector_id: "usaa",
+              display_name: "USAA - Personal",
+              rendered_verdict: {
+                channel: "advisory",
+                forward_statement: "Run a refresh to bring this up to date.",
+                pill: { label: "Healthy", tone: "green" },
+                required_actions: [
+                  {
+                    audience: "owner",
+                    cta: "Refresh now",
+                    satisfied_when: { kind: "confirming_run_succeeded" },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/records/cin_usaa")) {
+      return response(200, "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>");
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>USAA - Personal refresh available.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects raw denial reason codes on dashboard", async () => {
   const response = (status, body) => ({
     status,

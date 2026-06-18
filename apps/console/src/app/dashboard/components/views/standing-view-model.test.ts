@@ -162,6 +162,7 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
           connectorKey: "claude-code",
           routeId: "ci_peregrine",
           deviceLocal: true,
+          label: "peregrine Claude Code",
           what: "The local collector has saved records on its host that did not upload to this server.",
           actionLabel: "Recover local collector uploads",
         },
@@ -170,6 +171,7 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
   );
   assert.equal(alarm.tone, "alarm");
   assert.equal(alarm.kicker, "One thing needs you");
+  assert.equal(alarm.line.text, "peregrine Claude Code ");
   assert.equal(alarm.cta?.href, HREFS.connection("ci_peregrine"));
   assert.notEqual(alarm.cta?.href, HREFS.traces);
   // The CTA is a NAVIGATION label, NOT the restated device action.
@@ -188,6 +190,7 @@ test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () 
           connectorKey: "chase",
           routeId: "cin_chase",
           deviceLocal: false,
+          label: "Chase - Personal",
           what: "Reconnect Chase.",
           actionLabel: "Reconnect",
         },
@@ -205,6 +208,7 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
           connectorKey: "claude-code",
           routeId: "ci_peregrine",
           deviceLocal: true,
+          label: "peregrine Claude Code",
           what: "Check the collector.",
           actionLabel: "Check the collector",
         },
@@ -212,6 +216,7 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
           connectorKey: "chase",
           routeId: "cin_chase",
           deviceLocal: false,
+          label: "Chase - Personal",
           what: "Reconnect Chase.",
           actionLabel: "Reconnect",
         },
@@ -242,7 +247,14 @@ test("decide wins over alarm", () => {
   const both = computeHero(
     baseInputs({
       attentionConnections: [
-        { connectorKey: "chase", routeId: "cin_chase", deviceLocal: false, what: "x", actionLabel: "Reconnect" },
+        {
+          connectorKey: "chase",
+          routeId: "cin_chase",
+          deviceLocal: false,
+          label: "Chase - Personal",
+          what: "x",
+          actionLabel: "Reconnect",
+        },
       ],
       pendingApprovals: [pending],
     })

@@ -920,6 +920,37 @@ test('golden: Amazon/Reddit stale manual — health remains Healthy, advisory Re
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
 });
 
+test('stale manual owner refresh survives optional checking streams', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale', coverage: 'complete' },
+    forward_disposition: 'owner_refresh_due',
+    reason_code: 'stale_manual_refresh',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ stream_id: 'comments', coverage: 'unknown', priority: 'optional' }),
+      stream({ stream_id: 'saved', coverage: 'unknown', priority: 'optional' }),
+    ],
+    MANUAL_REFRESH,
+    true,
+    {
+      mode: 'manual',
+      retained_records: 1770,
+      last_refreshed_at: '2026-06-16T00:00:00.000Z',
+      observed_at: '2026-06-18T00:00:00.000Z',
+    }
+  );
+
+  assert.equal(v.detail.forward_disposition, 'owner_refresh_due');
+  assert.equal(v.pill.tone, 'green');
+  assert.equal(v.pill.label, 'Healthy');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Run a refresh to bring this up to date.');
+  assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
+});
+
 test('golden: Chase — degraded/advisory with a retryable transactions gap', () => {
   const snap = snapshot({
     state: 'degraded',

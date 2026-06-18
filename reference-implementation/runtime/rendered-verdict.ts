@@ -517,6 +517,12 @@ function connectionDisposition(
       worst = disposition;
     }
   }
+  if (worst === "complete" && snapshot.forward_disposition === "owner_refresh_due") {
+    // The connection-level projection has already run through the forward
+    // disposition oracle. Do not let optional/checking stream rows erase a
+    // stale-manual owner refresh due at the connection level.
+    return "owner_refresh_due";
+  }
   return worst;
 }
 
