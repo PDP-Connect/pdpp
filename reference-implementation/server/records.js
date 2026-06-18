@@ -2543,7 +2543,7 @@ function attachRequestWarningsToResponse(response, warnings) {
   };
 }
 
-async function listRowsForAggregation(connectorInstanceId, stream) {
+export async function listRowsForAggregation(connectorInstanceId, stream) {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT record_key, record_json
