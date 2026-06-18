@@ -25,6 +25,11 @@ on:
       - "apps/site/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
+      - "scripts/check-console-health-surfaces.mjs"
+      - "scripts/check-console-health-surfaces.test.mjs"
+      - "scripts/check-owner-journey-acceptance.mjs"
+      - "scripts/check-owner-journey-acceptance.test.mjs"
+      - "scripts/owner-journey-acceptance/**"
   pull_request:
     paths:
       - ".github/workflows/reference-implementation.yml"
@@ -35,6 +40,11 @@ on:
       - "apps/site/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
+      - "scripts/check-console-health-surfaces.mjs"
+      - "scripts/check-console-health-surfaces.test.mjs"
+      - "scripts/check-owner-journey-acceptance.mjs"
+      - "scripts/check-owner-journey-acceptance.test.mjs"
+      - "scripts/owner-journey-acceptance/**"
   workflow_dispatch: {}
 
 concurrency:
@@ -74,6 +84,12 @@ jobs:
 
       - name: Test console view models
         run: pnpm --dir apps/console run test:view-models
+
+      - name: Test owner journey acceptance harness
+        run: pnpm owner-journey:acceptance:test
+
+      - name: Test console health surface gate
+        run: pnpm console:health-surface-gate:test
 
       - name: Test reference implementation
         env:
