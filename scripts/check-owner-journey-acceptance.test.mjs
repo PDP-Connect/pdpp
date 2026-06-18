@@ -536,6 +536,107 @@ test("live semantic probe passes when material source issues are represented on 
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects visible source count claims that diverge from connector summaries", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_amazon",
+              connector_id: "amazon",
+              display_name: "Amazon - Personal",
+              stream_count: 2,
+              streams: ["orders", "order_items"],
+              total_records: 2868,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/records")) {
+      return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,800 records · 2 streams</a></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "records-source-count-mismatch"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "records-counts-match-reality")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts visible source count claims that match connector summaries", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_amazon",
+              connector_id: "amazon",
+              display_name: "Amazon - Personal",
+              stream_count: 2,
+              streams: ["orders", "order_items"],
+              total_records: 2868,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/records")) {
+      return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,868 records · 2 streams</a></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "records-counts-match-reality")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects raw denial reason codes on dashboard", async () => {
   const response = (status, body) => ({
     status,

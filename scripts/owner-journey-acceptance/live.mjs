@@ -169,6 +169,20 @@ function connectorLabel(connector) {
   );
 }
 
+function sourceCountPhrase(connector) {
+  const records = Number(connector?.total_records);
+  const rawStreamCount = connector?.stream_count ?? (Array.isArray(connector?.streams) ? connector.streams.length : null);
+  const streams = Number(rawStreamCount);
+  if (!Number.isFinite(records) || !Number.isFinite(streams)) {
+    return null;
+  }
+  const recordCount = Math.max(0, Math.floor(records));
+  const streamCount = Math.max(0, Math.floor(streams));
+  return `${recordCount.toLocaleString()} ${recordCount === 1 ? "record" : "records"} · ${streamCount.toLocaleString()} ${
+    streamCount === 1 ? "stream" : "streams"
+  }`;
+}
+
 function connectorRouteId(connector) {
   const id = connector?.connector_instance_id ?? connector?.connection_id ?? null;
   return typeof id === "string" && id.trim() ? id.trim() : null;
@@ -363,6 +377,58 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       ? "fail"
       : "pass",
     detail: `${sourceIssues.length} material source issue(s) in /_ref/connectors`,
+  });
+
+  const recordsText = htmlToText(htmlByPath.get("/dashboard/records") ?? "");
+  const recordsCountFindings = [];
+  let checkedSourceCounts = 0;
+  for (const connector of connectors) {
+    if (connector?.revoked_at) {
+      continue;
+    }
+    const label = connectorLabel(connector);
+    if (!recordsText.includes(label)) {
+      continue;
+    }
+    const expectedCountPhrase = sourceCountPhrase(connector);
+    if (!expectedCountPhrase) {
+      continue;
+    }
+    checkedSourceCounts += 1;
+    if (!recordsText.includes(expectedCountPhrase)) {
+      const finding = {
+        ruleId: "records-source-count-mismatch",
+        class: "dashboard-data-claim",
+        path: "live:/dashboard/records",
+        line: 0,
+        excerpt: `${label} expected ${expectedCountPhrase}`,
+        rationale:
+          "The Sources page must render source record and stream counts that match the reference connector summary. Wrong visible counts break the owner's ability to know what data they have.",
+      };
+      recordsCountFindings.push(finding);
+      findings.push(finding);
+    }
+  }
+  if (connectors.length > 0 && checkedSourceCounts === 0 && /\bSources\b/i.test(recordsText)) {
+    const finding = {
+      ruleId: "records-source-counts-missing",
+      class: "dashboard-data-claim",
+      path: "live:/dashboard/records",
+      line: 0,
+      excerpt: "no configured source labels with counts found",
+      rationale:
+        "The Sources page looked like the owner source list but none of the configured source labels from the reference summary appeared with counts. The owner cannot verify what data they have.",
+    };
+    recordsCountFindings.push(finding);
+    findings.push(finding);
+  }
+  checks.push({
+    id: "records-counts-match-reality",
+    status: recordsCountFindings.length > 0 ? "fail" : "pass",
+    detail:
+      checkedSourceCounts === 0
+        ? "no rendered configured source count claims to compare"
+        : `${checkedSourceCounts} rendered source count claim(s) matched /_ref/connectors`,
   });
 
   const singleTokenDenialCodes = new Set([
