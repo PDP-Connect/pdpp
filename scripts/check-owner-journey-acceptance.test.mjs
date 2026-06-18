@@ -536,6 +536,110 @@ test("live semantic probe passes when material source issues are represented on 
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects raw broken source facts hidden by a calm verdict", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_health: {
+                axes: { coverage: "terminal_gap", freshness: "fresh", outbox: "unknown" },
+                reason_code: "qfx_download_failed",
+                state: "degraded",
+              },
+              connection_id: "cin_chase",
+              connector_id: "chase",
+              display_name: "Chase - Personal",
+              rendered_verdict: {
+                channel: "calm",
+                forward_statement: "Current and collecting normally.",
+                pill: { label: "Healthy", tone: "green" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-source-issue-missing"));
+  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+});
+
+test("live semantic probe accepts raw broken source facts represented on the dashboard", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_health: {
+                axes: { coverage: "terminal_gap", freshness: "fresh", outbox: "unknown" },
+                reason_code: "qfx_download_failed",
+                state: "degraded",
+              },
+              connection_id: "cin_chase",
+              connector_id: "chase",
+              display_name: "Chase - Personal",
+              rendered_verdict: {
+                channel: "calm",
+                forward_statement: "Current and collecting normally.",
+                pill: { label: "Healthy", tone: "green" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><h2>Anything wrong</h2><a>Chase - Personal needs a connector fix.</a></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks?.[0]?.status, "pass");
+});
+
 test("live semantic probe rejects visible source count claims that diverge from connector summaries", async () => {
   const response = (status, body) => ({
     status,

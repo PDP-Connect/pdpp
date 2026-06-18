@@ -258,6 +258,27 @@ function isMaterialSourceIssue(connector) {
   );
 }
 
+function isRawMaterialSourceIssue(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const health = connector?.connection_health;
+  const state = String(health?.state ?? "").toLowerCase();
+  if (state === "degraded" || state === "blocked") {
+    return true;
+  }
+  const coverage = String(health?.axes?.coverage ?? "").toLowerCase();
+  if (coverage === "terminal_gap" || coverage === "retryable_gap" || coverage === "partial") {
+    return true;
+  }
+  const outbox = String(health?.axes?.outbox ?? "").toLowerCase();
+  if (outbox === "stalled") {
+    return true;
+  }
+  const runStatus = String(connector?.last_run?.status ?? "").toLowerCase();
+  return runStatus === "failed" || runStatus === "rejected";
+}
+
 function shouldProbeSourceDetailRecoveryCopy(connector) {
   if (connector?.revoked_at) {
     return false;
@@ -388,9 +409,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     label: connectorLabel(connector),
     forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
   }));
+  const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    reason: connector?.connection_health?.reason_code ?? connector?.last_run?.failure_reason ?? "raw source issue",
+  }));
   const dashboardText = htmlToText(htmlByPath.get("/dashboard") ?? "");
 
-  if (sourceIssues.length > 0) {
+  if (sourceIssues.length > 0 || rawSourceIssues.length > 0) {
     const allClearRe = /Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
     if (allClearRe.test(dashboardText)) {
       findings.push({
@@ -403,7 +428,9 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
           "The dashboard must not claim sources are syncing when the reference connector summary contains material non-owner source issues. The hero may stay calm, but the Anything wrong panel must disclose the issue.",
       });
     }
+  }
 
+  if (sourceIssues.length > 0) {
     const representedIssue = sourceIssues.some((issue) => dashboardText.includes(issue.label));
     if (!representedIssue) {
       findings.push({
@@ -418,14 +445,35 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     }
   }
 
+  if (rawSourceIssues.length > 0) {
+    const representedRawIssue = rawSourceIssues.some((issue) => dashboardText.includes(issue.label));
+    if (!representedRawIssue) {
+      findings.push({
+        ruleId: "dashboard-raw-source-issue-missing",
+        class: "dashboard-trust-claim",
+        path: "live:/dashboard",
+        line: 0,
+        excerpt: rawSourceIssues
+          .map((issue) => `${issue.label}:${issue.reason}`)
+          .slice(0, 5)
+          .join(", "),
+        rationale:
+          "Raw connection-health evidence contains a material source issue, but none of those source labels appear on the rendered dashboard. The dashboard must disclose broken-source facts even if a rendered verdict projection regresses.",
+      });
+    }
+  }
+
   checks.push({
     id: "dashboard-source-issue-all-clear",
     status: findings.some(
-      (f) => f.ruleId === "dashboard-source-issue-all-clear" || f.ruleId === "dashboard-source-issue-missing"
+      (f) =>
+        f.ruleId === "dashboard-source-issue-all-clear" ||
+        f.ruleId === "dashboard-source-issue-missing" ||
+        f.ruleId === "dashboard-raw-source-issue-missing"
     )
       ? "fail"
       : "pass",
-    detail: `${sourceIssues.length} material source issue(s) in /_ref/connectors`,
+    detail: `${sourceIssues.length} rendered material source issue(s), ${rawSourceIssues.length} raw material source issue(s) in /_ref/connectors`,
   });
 
   const recordsText = htmlToText(htmlByPath.get("/dashboard/records") ?? "");
