@@ -45,6 +45,11 @@ test("runRowLabel strips the kind prefix from a source label", () => {
 test("traceRowLabel prefers source, then provider, then client, then kind", () => {
   assert.equal(traceRowLabel({ source: { kind: "connector", id: "github" } }), "github");
   assert.equal(traceRowLabel({ provider_id: "github" }), "github", "provider is formatted, not raw-prefixed");
+  assert.equal(
+    traceRowLabel({ client: { client_name: "Claude" }, client_id: "cli_42" }),
+    "Claude",
+    "registered client display metadata beats raw client ids"
+  );
   assert.equal(traceRowLabel({ client_id: "abc123" }), "client abc123");
   assert.equal(traceRowLabel({ kinds: ["", "  ", "record.write"] }), "record.write", "skips blank kinds");
   assert.equal(traceRowLabel({}), "Trace");
@@ -53,6 +58,11 @@ test("traceRowLabel prefers source, then provider, then client, then kind", () =
 test("grantRowLabel prefers source, then connector, then client, then provider", () => {
   assert.equal(grantRowLabel({ source: { kind: "connector", id: "slack" } }), "slack");
   assert.equal(grantRowLabel({ connector_id: "gmail" }), "gmail");
+  assert.equal(
+    grantRowLabel({ client: { client_name: "Claude" }, client_id: "cli_42" }),
+    "Claude",
+    "registered client display metadata beats raw client ids"
+  );
   assert.equal(grantRowLabel({ client_id: "cli_42" }), "client cli_42");
   assert.equal(grantRowLabel({ provider_id: "p9" }), "provider p9");
   assert.equal(grantRowLabel({}), "Grant");

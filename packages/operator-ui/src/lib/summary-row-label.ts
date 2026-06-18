@@ -21,6 +21,7 @@ interface RunLabelInput {
 }
 
 interface TraceLabelInput {
+  client?: ClientDisplayInput | null;
   client_id?: string | null;
   kinds?: string[] | null;
   provider_id?: string | null;
@@ -28,10 +29,15 @@ interface TraceLabelInput {
 }
 
 interface GrantLabelInput {
+  client?: ClientDisplayInput | null;
   client_id?: string | null;
   connector_id?: string | null;
   provider_id?: string | null;
   source?: SourceDisplayInput | null;
+}
+
+interface ClientDisplayInput {
+  client_name?: string | null;
 }
 
 function clean(value: string | null | undefined): string {
@@ -77,6 +83,10 @@ export function traceRowLabel(trace: TraceLabelInput): string {
   if (provider) {
     return formatConnectorKeyForDisplay(provider);
   }
+  const clientName = clean(trace.client?.client_name);
+  if (clientName) {
+    return clientName;
+  }
   const client = clean(trace.client_id);
   if (client) {
     return `client ${client}`;
@@ -97,6 +107,10 @@ export function grantRowLabel(grant: GrantLabelInput): string {
   const connector = clean(grant.connector_id);
   if (connector) {
     return formatConnectorKeyForDisplay(connector);
+  }
+  const clientName = clean(grant.client?.client_name);
+  if (clientName) {
+    return clientName;
   }
   const client = clean(grant.client_id);
   if (client) {

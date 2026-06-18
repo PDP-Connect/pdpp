@@ -525,6 +525,31 @@ test("lately uses trace client metadata instead of raw client ids", () => {
   assert.notEqual(data.lately[0]?.text.who, "cli_named");
 });
 
+test("lately does not bold raw technical client ids when metadata is missing", () => {
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_raw",
+    status: "succeeded",
+    actor_id: "cli_raw",
+    actor_type: "client",
+    client_id: "cli_raw",
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 3,
+    kinds: ["query.received"],
+    failure: null,
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+
+  assert.equal(data.lately.length, 1);
+  assert.equal(data.lately[0]?.text.who, "An app");
+  assert.notEqual(data.lately[0]?.text.who, "cli_raw");
+});
+
 test("relationships summarize grants by client instead of repeating one row per grant", () => {
   const grants: GrantSummary[] = [
     {

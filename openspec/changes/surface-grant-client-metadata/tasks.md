@@ -17,6 +17,8 @@
 - [x] 3.2 Prefer `grant.client.client_name` for relationship labels while preserving `client_id`.
 - [x] 3.3 Keep the owner-issued-client fallback for already-loaded metadata.
 - [x] 3.4 Prefer `trace.client.client_name` for recent-read labels.
+- [x] 3.5 Prefer client metadata in shared grant/trace list-row labels.
+- [x] 3.6 Avoid bolding raw technical client IDs in the calm recent-read fallback.
 
 ## 4. Verification
 

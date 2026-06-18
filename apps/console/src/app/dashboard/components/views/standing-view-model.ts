@@ -481,10 +481,44 @@ function denyReason(reason: string | null): string {
   return reason;
 }
 
+function looksLikeTechnicalId(value: string | null | undefined): boolean {
+  const v = value?.trim() ?? "";
+  return /^(cli|grt|trc|run|req|cin|dsrc|dexp|ldt)_[A-Za-z0-9_-]+$/.test(v);
+}
+
+function traceActorFallback(trace: TraceSummary): string {
+  const actorType = trace.actor_type?.trim().toLowerCase() ?? "";
+  if (actorType === "subject" || actorType === "owner") {
+    return "You";
+  }
+  if (actorType === "client") {
+    return "An app";
+  }
+  const actorId = trace.actor_id?.trim() ?? "";
+  if (actorId && !looksLikeTechnicalId(actorId) && actorId !== "owner_local") {
+    return actorId;
+  }
+  if (actorType === "runtime" || actorType === "system") {
+    return "The server";
+  }
+  return "Someone";
+}
+
+function traceWho(trace: TraceSummary): string {
+  const traceClientName = trace.client?.client_name?.trim() || null;
+  if (traceClientName) {
+    return traceClientName;
+  }
+  const clientId = trace.client_id?.trim() ?? "";
+  if (clientId && !looksLikeTechnicalId(clientId)) {
+    return clientId;
+  }
+  return traceActorFallback(trace);
+}
+
 function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
   return traces.slice(0, 6).map((tr) => {
-    const traceClientName = tr.client?.client_name?.trim() || null;
-    const who = clientLabel(traceClientName ?? tr.client_id, tr.actor_id ?? "Someone");
+    const who = traceWho(tr);
     const isDeny = tr.status.toLowerCase() === "denied" || tr.failure !== null;
     if (isDeny) {
       return {
