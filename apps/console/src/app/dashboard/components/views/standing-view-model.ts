@@ -692,7 +692,10 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
   if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
     return "can't collect";
   }
-  if (verdict.channel !== "calm" || verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
+  if (verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
+    return "is degraded";
+  }
+  if (verdict.channel === "attention") {
     return "is degraded";
   }
   return null;

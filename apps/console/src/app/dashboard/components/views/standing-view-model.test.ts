@@ -430,6 +430,38 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
 });
 
+test("source issues omit healthy advisory refresh hints", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "reddit",
+      connection_id: "cin_reddit",
+      display_name: "Reddit - dondochaka",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Healthy", tone: "green" },
+        forward_statement: "Run a refresh to bring this up to date.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+  assert.equal(sourceIssueConnectionsFromConnectors(connectors).length, 0);
+
+  const data = buildStandingData(baseInputs({ sourceIssues: sourceIssueConnectionsFromConnectors(connectors) }));
+  assert.equal(data.sourceIssues.length, 0);
+});
+
 test("source issues surface attention verdicts that have no owner action, even with a green pill", () => {
   const connectors: RefConnectorSummary[] = [
     connector({

@@ -268,9 +268,9 @@ function isMaterialSourceIssue(connector) {
   return (
     pill.tone === "red" ||
     pill.label === "Can't collect" ||
-    verdict.channel !== "calm" ||
     pill.tone === "amber" ||
-    pill.label === "Degraded"
+    pill.label === "Degraded" ||
+    verdict.channel === "attention"
   );
 }
 
