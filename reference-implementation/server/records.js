@@ -3205,6 +3205,36 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
  */
 
 /**
+ * Domain-local store for the connection-delete stream enumeration read.
+ *
+ * Selected once via `isPostgresStorageBackend()`. Each adapter performs the
+ * dialect-specific DISTINCT-stream read verbatim and returns RAW rows (each
+ * carrying a `stream` field); the caller owns the `.map((row) => row.stream)`
+ * shaping so the two adapters stay thin and dialect-only.
+ */
+function createConnectionStreamStore() {
+  if (isPostgresStorageBackend()) {
+    return {
+      async listInstanceStreams(connectorInstanceId) {
+        const streamRows = await postgresQuery(
+          `SELECT DISTINCT stream FROM records WHERE connector_instance_id = $1 ORDER BY stream ASC`,
+          [connectorInstanceId],
+        );
+        return streamRows.rows;
+      },
+    };
+  }
+  return {
+    async listInstanceStreams(connectorInstanceId) {
+      return allowUnboundedReadAcknowledged(
+        referenceQueries.recordsDeleteListStreamsByInstance,
+        [connectorInstanceId],
+      );
+    },
+  };
+}
+
+/**
  * Phase 1: enumerate the (instance) streams so the post-commit search teardown
  * knows which (instance, stream) pairs to clear. Backend-aware bounded read.
  * Returns `{ connectorId, connectorInstanceId, streams }`.
@@ -3212,17 +3242,8 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
 export async function enumerateConnectionStreams(storageTarget) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
-  if (isPostgresStorageBackend()) {
-    const streamRows = await postgresQuery(
-      `SELECT DISTINCT stream FROM records WHERE connector_instance_id = $1 ORDER BY stream ASC`,
-      [connectorInstanceId],
-    );
-    return { connectorId, connectorInstanceId, streams: streamRows.rows.map((row) => row.stream) };
-  }
-  const streamRows = allowUnboundedReadAcknowledged(
-    referenceQueries.recordsDeleteListStreamsByInstance,
-    [connectorInstanceId],
-  );
+  const store = createConnectionStreamStore();
+  const streamRows = await store.listInstanceStreams(connectorInstanceId);
   return { connectorId, connectorInstanceId, streams: streamRows.map((row) => row.stream) };
 }
 
