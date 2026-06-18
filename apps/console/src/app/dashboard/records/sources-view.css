@@ -89,21 +89,6 @@ a.rr-s-item {
   grid-column: 1;
 }
 
-/* Connector kind — quiet secondary metadata, inline at the end of the account
-   line. Small, muted, low-emphasis protocol mono; a leading separator dot keeps
-   it distinct from the account text without competing. */
-.rr-s-item__kind {
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-  opacity: 0.7;
-}
-.rr-s-item__kind::before {
-  content: " · ";
-  opacity: 0.6;
-}
-
 /* Health dot — pinned top-right on row 1, aligned with the name, so the
    identity + health pair is the clean primary scan line and the dot is never
    crowded by the kind label. */

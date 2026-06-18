@@ -289,13 +289,10 @@ function InstanceListItem({
   const inner = (
     <>
       <span className="rr-s-item__name">{instance.displayName}</span>
-      {/* The connector kind is quiet secondary metadata folded into the account
-          line (row 2) so it never competes with the bold name on row 1 nor
-          crowds / clips against the health dot at the card's right edge. */}
-      <span className="rr-s-item__line">
-        {instance.accountLine}
-        {instance.listKind ? <span className="rr-s-item__kind">{instance.listKind}</span> : null}
-      </span>
+      {/* Keep list rows comparable: connector kind lives in the selected detail
+          panel, while the list shows only the owner label, retained facts, and
+          health. */}
+      <span className="rr-s-item__line">{instance.accountLine}</span>
       <span className="rr-s-item__flag">
         {/* The dot is a decorative reinforcement of the status; the textual
             label is announced via the sr-only span so color is never the sole
