@@ -18,9 +18,14 @@ import { lineOf, scanForbiddenStrings } from "./scan.mjs";
  * rules for that tier are applied to the served HTML.
  */
 export const LIVE_SURFACES = [
+  { path: "/dashboard", tier: "normal" },
   { path: "/dashboard/connect", tier: "normal" },
   { path: "/dashboard/records", tier: "normal" },
   { path: "/dashboard/records/add", tier: "normal" },
+  { path: "/dashboard/grants", tier: "normal" },
+  { path: "/dashboard/traces", tier: "normal" },
+  { path: "/dashboard/runs", tier: "normal" },
+  { path: "/dashboard/search", tier: "normal" },
   { path: "/dashboard/device-exporters", tier: "advanced" },
 ];
 
@@ -112,6 +117,176 @@ async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
   return { header: {}, mode: "none", error: null };
 }
 
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function asArrayList(raw) {
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+  if (raw && typeof raw === "object" && Array.isArray(raw.data)) {
+    return raw.data;
+  }
+  return [];
+}
+
+function ownerSatisfiableAction(verdict) {
+  const actions = Array.isArray(verdict?.required_actions) ? verdict.required_actions : [];
+  return actions.some((action) => action?.audience === "owner" && action?.satisfied_when?.kind !== "none");
+}
+
+function renderedVerdict(connector) {
+  const verdict = connector?.rendered_verdict;
+  return verdict && typeof verdict === "object" ? verdict : null;
+}
+
+function connectorLabel(connector) {
+  return (
+    connector?.display_name ||
+    connector?.connector_display_name ||
+    connector?.connector_id ||
+    connector?.connection_id ||
+    "A source"
+  );
+}
+
+function isMaterialSourceIssue(connector) {
+  if (connector?.revoked_at) {
+    return false;
+  }
+  const verdict = renderedVerdict(connector);
+  if (!verdict) {
+    return false;
+  }
+  if (verdict.channel === "attention" && ownerSatisfiableAction(verdict)) {
+    return false;
+  }
+  const pill = verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {};
+  return (
+    pill.tone === "red" ||
+    pill.label === "Can't collect" ||
+    verdict.channel !== "calm" ||
+    pill.tone === "amber" ||
+    pill.label === "Degraded"
+  );
+}
+
+async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
+  try {
+    const res = await fetchImpl(`${base}${path}`, {
+      headers: { accept: "application/json", ...header },
+      redirect: "manual",
+    });
+    const status = res.status;
+    const body = await res.text();
+    if (status < 200 || status >= 300) {
+      return {
+        data: null,
+        finding: {
+          ruleId: "live-ref-surface-not-reached",
+          class: "live-probe-inconclusive",
+          path: `live:${path}`,
+          line: 0,
+          excerpt: `status ${status}`,
+          rationale:
+            "The live semantic probe could not reach the reference JSON surface. Owner-journey trust checks are inconclusive until the data source behind the rendered page is observed.",
+        },
+      };
+    }
+    return { data: JSON.parse(body), finding: null };
+  } catch (err) {
+    return {
+      data: null,
+      finding: {
+        ruleId: "live-ref-surface-fetch-failed",
+        class: "live-probe-inconclusive",
+        path: `live:${path}`,
+        line: 0,
+        excerpt: err instanceof Error ? err.message : String(err),
+        rationale:
+          "The live semantic probe could not fetch or parse the reference JSON surface. Owner-journey trust checks are inconclusive until the rendered page can be compared with its source data.",
+      },
+    };
+  }
+}
+
+async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
+  const findings = [];
+  const checks = [];
+
+  const connectorsResult = await fetchJsonOrFinding({
+    base,
+    header,
+    fetchImpl,
+    path: "/_ref/connectors?limit=200",
+  });
+  if (connectorsResult.finding) {
+    findings.push(connectorsResult.finding);
+    checks.push({
+      id: "dashboard-source-issue-all-clear",
+      status: "inconclusive",
+      detail: "connectors JSON unavailable",
+    });
+    return { findings, checks };
+  }
+
+  const connectors = asArrayList(connectorsResult.data);
+  const sourceIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
+  const dashboardText = htmlToText(htmlByPath.get("/dashboard") ?? "");
+
+  if (sourceIssues.length > 0) {
+    const allClearRe = /Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+    if (allClearRe.test(dashboardText)) {
+      findings.push({
+        ruleId: "dashboard-source-issue-all-clear",
+        class: "dashboard-trust-claim",
+        path: "live:/dashboard",
+        line: 0,
+        excerpt: dashboardText.match(allClearRe)?.[0] ?? "all-clear copy",
+        rationale:
+          "The dashboard must not claim sources are syncing when the reference connector summary contains material non-owner source issues. The hero may stay calm, but the Anything wrong panel must disclose the issue.",
+      });
+    }
+
+    const representedIssue = sourceIssues.some((issue) => dashboardText.includes(issue.label));
+    if (!representedIssue) {
+      findings.push({
+        ruleId: "dashboard-source-issue-missing",
+        class: "dashboard-trust-claim",
+        path: "live:/dashboard",
+        line: 0,
+        excerpt: sourceIssues.map((issue) => issue.label).slice(0, 5).join(", "),
+        rationale:
+          "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
+      });
+    }
+  }
+
+  checks.push({
+    id: "dashboard-source-issue-all-clear",
+    status: findings.some(
+      (f) => f.ruleId === "dashboard-source-issue-all-clear" || f.ruleId === "dashboard-source-issue-missing"
+    )
+      ? "fail"
+      : "pass",
+    detail: `${sourceIssues.length} material source issue(s) in /_ref/connectors`,
+  });
+  return { findings, checks };
+}
+
 /**
  * Fetch and scan the live owner surfaces. Network and auth failures are captured
  * as surface-level errors, not thrown, so the harness can still emit a report.
@@ -127,6 +302,7 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
   const { header, mode, error: authError } = await resolveOwnerAuthForLive({ base, env, fetchImpl });
   const findings = [];
   const surfaces = [];
+  const htmlByPath = new Map();
 
   if (authError) {
     findings.push({
@@ -160,6 +336,9 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
             rules: FORBIDDEN_STRING_RULES,
           }).map((f) => ({ ...f, live: true, line: f.line || lineOf(html, 0) }))
         : [];
+      if (reachedOwnerSurface) {
+        htmlByPath.set(surface.path, html);
+      }
       findings.push(...surfaceFindings);
       if (!reachedOwnerSurface) {
         findings.push({
@@ -200,10 +379,14 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
     }
   }
 
+  const semantic = await runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath });
+  findings.push(...semantic.findings);
+
   return {
     origin: base,
     authMode: mode,
     surfaces,
+    semanticChecks: semantic.checks,
     findings,
     ok: findings.length === 0,
   };

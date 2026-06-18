@@ -324,6 +324,10 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
       assert.equal(init.headers.cookie, "pdpp_owner_csrf=csrf-cookie");
       return response(302, "", "pdpp_owner_session=session-cookie; Path=/; HttpOnly");
     }
+    if (String(url).includes("/_ref/connectors")) {
+      cookieHeaders.push(init.headers?.cookie ?? "");
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
     cookieHeaders.push(init.headers?.cookie ?? "");
     return response(200, "<main>clean owner page</main>");
   };
@@ -343,6 +347,107 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   assert.ok(!JSON.stringify(result).includes("secret"), "result must not expose the owner password");
   assert.ok(!JSON.stringify(result).includes("session-cookie"), "result must not expose the owner session cookie");
   assert.equal(calls.some((call) => String(call.url).endsWith("/owner/login") && call.init.method === "POST"), true);
+});
+
+test("live semantic probe rejects dashboard all-clear when connector summaries contain source issues", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_chase",
+              connector_id: "chase",
+              display_name: "Chase - Personal",
+              rendered_verdict: {
+                channel: "advisory",
+                pill: { tone: "red", label: "Can't collect" },
+                forward_statement: "This connector needs a code fix before it can collect again.",
+                required_actions: [
+                  { audience: "maintainer", cta: "Code fix needed", satisfied_when: { kind: "none" } },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-source-issue-all-clear"));
+  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+});
+
+test("live semantic probe passes when material source issues are represented on the dashboard", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              connection_id: "cin_chase",
+              connector_id: "chase",
+              display_name: "Chase - Personal",
+              rendered_verdict: {
+                channel: "advisory",
+                pill: { tone: "red", label: "Can't collect" },
+                forward_statement: "This connector needs a code fix before it can collect again.",
+                required_actions: [
+                  { audience: "maintainer", cta: "Code fix needed", satisfied_when: { kind: "none" } },
+                ],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><h2>Anything wrong</h2><a>Chase - Personal can't collect This connector needs a code fix before it can collect again.</a></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
 // ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────

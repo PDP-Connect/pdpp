@@ -28,7 +28,8 @@ export function renderReport({ local, live, cleanShell = null, timestamp }) {
       "scans the normal owner setup surfaces for the failure classes that broke the " +
       "owner setup walkthrough: developer-only paths, unpublished CLI commands, raw " +
       "setup-planner labels, same-tab credential help links, and transient-only " +
-      "post-submit flows."
+      "post-submit flows. When a live origin is supplied, it also compares rendered " +
+      "owner-summary claims against the reference JSON surfaces for known trust regressions."
   );
   lines.push("");
 
@@ -113,6 +114,16 @@ export function renderReport({ local, live, cleanShell = null, timestamp }) {
       lines.push(`| \`${s.path}\` | ${status} | ${s.reachedOwnerSurface ? "yes" : "no"} | ${s.findingCount ?? 0} |`);
     }
     lines.push("");
+    if (Array.isArray(live.semanticChecks) && live.semanticChecks.length > 0) {
+      lines.push("Semantic checks:");
+      lines.push("");
+      lines.push("| Check | Status | Detail |");
+      lines.push("| --- | --- | --- |");
+      for (const check of live.semanticChecks) {
+        lines.push(`| \`${check.id}\` | ${check.status} | ${escapeCell(check.detail ?? "")} |`);
+      }
+      lines.push("");
+    }
     if (live.authMode === "none") {
       lines.push(
         "> Live auth was not supplied, so owner-only surfaces likely redirected to login " +
