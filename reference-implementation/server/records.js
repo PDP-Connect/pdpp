@@ -66,6 +66,7 @@ import {
   postgresQueryRecords,
 } from './postgres-records.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+import { createStorageBackend } from './storage-backend.js';
 import { canonicalConnectorKey } from './connector-key.js';
 import {
   getChangeHistoryLimit,
@@ -2543,29 +2544,9 @@ function attachRequestWarningsToResponse(response, warnings) {
   };
 }
 
-export async function listRowsForAggregation(connectorInstanceId, stream) {
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT record_key, record_json
-         FROM records
-        WHERE connector_instance_id = $1
-          AND stream = $2
-          AND deleted = FALSE
-        ORDER BY record_key ASC`,
-      [connectorInstanceId, stream],
-    );
-    return result.rows.map((row) => ({
-      record_key: row.record_key,
-      record_json: typeof row.record_json === 'string'
-        ? row.record_json
-        : JSON.stringify(row.record_json),
-    }));
-  }
-
-  return iterate(
-    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
-    [connectorInstanceId, stream],
-  );
+export function listRowsForAggregation(connectorInstanceId, stream) {
+  const backend = createStorageBackend();
+  return backend.listRowsForAggregation({ connectorInstanceId, stream });
 }
 
 /**
