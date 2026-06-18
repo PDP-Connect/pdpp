@@ -50,6 +50,17 @@ function classes(findings) {
   return new Set(findings.map((f) => f.class));
 }
 
+function defaultLiveOwnerPageHtml(url) {
+  const href = String(url);
+  if (href.endsWith("/dashboard/schedules")) {
+    return "<main><h1>Schedules</h1><p>0 scheduled · 3 unscheduled</p><section>Scheduled connections (0)</section><section>No scheduled connections yet</section></main>";
+  }
+  if (href.endsWith("/dashboard/explore")) {
+    return "<main><h1>Explore</h1><label>Search names, fields, and values — or type an operator</label><details><summary>Filters</summary></details><button>newest</button><button>oldest</button></main>";
+  }
+  return "<main>clean owner page</main>";
+}
+
 // ── 1. Failure-class units: forbidden strings ────────────────────────────────
 
 test("catches monorepo package path in normal owner UI", () => {
@@ -415,7 +426,7 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
       return response(200, JSON.stringify({ object: "list", data: [] }));
     }
     cookieHeaders.push(init.headers?.cookie ?? "");
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -472,7 +483,7 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
         "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -523,7 +534,7 @@ test("live semantic probe passes when material source issues are represented on 
         "<main><h2>Anything wrong</h2><a>Chase - Personal can't collect This connector needs a code fix before it can collect again.</a></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -585,7 +596,7 @@ test("live semantic probe does not treat healthy refresh advisories as source is
         "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -647,7 +658,7 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
         "<main><h2>Anything wrong</h2><a>Reddit - dondochaka is degraded Run a refresh to bring this up to date.</a></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -701,7 +712,7 @@ test("live semantic probe rejects raw broken source facts hidden by a calm verdi
         "<main><h2>Anything wrong</h2><div>Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.</div></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -752,7 +763,7 @@ test("live semantic probe accepts raw broken source facts represented on the das
     if (href.endsWith("/dashboard")) {
       return response(200, "<main><h2>Anything wrong</h2><a>Chase - Personal needs a connector fix.</a></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -782,7 +793,7 @@ test("live semantic probe rejects dashboard monograms that pollute client labels
         '<main><span class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -816,7 +827,7 @@ test("live semantic probe accepts decorative dashboard monograms", async () => {
         '<main><span aria-hidden="true" class="pdpp-monogram">CL</span><span>Claude</span> reads only your data</main>'
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -866,7 +877,7 @@ test("live semantic probe rejects visible source count claims that diverge from 
     if (href.endsWith("/dashboard/records")) {
       return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,800 records · 2 streams</a></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -917,7 +928,7 @@ test("live semantic probe accepts visible source count claims that match connect
     if (href.endsWith("/dashboard/records")) {
       return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,868 records · 2 streams</a></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -956,7 +967,7 @@ test("live semantic probe rejects direct browser-session new-source controls", a
         '<main><h1>Connect Amazon</h1><form action="/dashboard/connect/browser-session/amazon/start" method="post"><button>Start session</button></form></main>'
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -996,7 +1007,7 @@ test("live semantic probe accepts repair-only browser-session guidance", async (
         "<main><h1>Connect Amazon</h1><p>Adding a new Amazon source is not packaged here yet.</p><a>Open sources</a></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1009,6 +1020,42 @@ test("live semantic probe accepts repair-only browser-session guidance", async (
   assert.equal(
     result.semanticChecks?.find((check) => check.id === "browser-session-direct-new-source")?.status,
     "pass"
+  );
+});
+
+test("live semantic probe rejects shell-only Schedules and Explore pages", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard/schedules") || href.endsWith("/dashboard/explore")) {
+      return response(200, "<main>clean owner shell only</main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "schedules-content-rendered"));
+  assert.ok(result.findings.some((f) => f.ruleId === "explore-content-rendered"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "schedules-content-rendered")?.status,
+    "fail"
+  );
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "explore-content-rendered")?.status,
+    "fail"
   );
 });
 
@@ -1061,7 +1108,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
     if (href.endsWith("/dashboard/records/cin_local")) {
       return response(200, "<main><section>Diagnostics are loading.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1136,7 +1183,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
         "<main><h1>peregrine Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1188,7 +1235,7 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
     if (href.endsWith("/dashboard/records/cin_reddit")) {
       return response(200, "<main><section>Current and collecting normally.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1250,7 +1297,7 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
     if (href.endsWith("/dashboard")) {
       return response(200, "<main><section>USAA - Personal refresh available.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1280,7 +1327,7 @@ test("live semantic probe rejects raw denial reason codes on dashboard", async (
     if (href.endsWith("/dashboard")) {
       return response(200, "<main><section>slack tried to read — turned away, orphaned_started_run.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1311,7 +1358,7 @@ test("live semantic probe rejects single-token raw denial codes on dashboard", a
     if (href.endsWith("/dashboard")) {
       return response(200, "<main><section>slack tried to read — turned away, forbidden.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1345,7 +1392,7 @@ test("live semantic probe accepts humanized dashboard denial reasons", async () 
         "<main><section>slack tried to read — turned away, it was not tied to an active run.</section></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1395,7 +1442,7 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
     if (href.endsWith("/dashboard/records/cin_local")) {
       return response(200, "<main><section>Stuck on the device: 3 dead-letter.</section></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1449,7 +1496,7 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
         "<main><section>Stuck on the device: 3 failed uploads.</section><code>pdpp local-collector retry-dead-letters --connection-id cin_local</code></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1511,7 +1558,7 @@ test("live semantic probe rejects clean-success source detail copy when collecti
         "<main><section>Last 1 runs ✓ 0 failures · Open runs →</section><section>Known source runs succeeded run_1</section></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1574,7 +1621,7 @@ test("live semantic probe accepts partial source detail copy when collection gap
         "<main><section>Last 1 runs ⚠ 1 with gaps · Open runs →</section><section>Known source runs partial run_1</section></main>"
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1604,7 +1651,7 @@ test("live semantic probe rejects raw technical client ids as visible grant capt
     if (href.endsWith("/dashboard/grants")) {
       return response(200, "<main><article>slack active client cli_348b7036fe7172ba 7 hours ago</article></main>");
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({
@@ -1635,7 +1682,7 @@ test("live semantic probe rejects raw URL client ids as visible grant captions",
         '<main><article>github active client https://chatgpt.com/oauth/client.json?token_endpoint_auth_method=none</article></main>'
       );
     }
-    return response(200, "<main>clean owner page</main>");
+    return response(200, defaultLiveOwnerPageHtml(url));
   };
 
   const result = await runLiveAcceptance({

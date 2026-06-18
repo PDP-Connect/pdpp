@@ -25,6 +25,7 @@ export const LIVE_SURFACES = [
   { path: "/dashboard/connect/manual-upload/whatsapp", tier: "normal" },
   { path: "/dashboard/records", tier: "normal" },
   { path: "/dashboard/records/add", tier: "normal" },
+  { path: "/dashboard/explore", tier: "normal" },
   { path: "/dashboard/grants", tier: "normal" },
   { path: "/dashboard/traces", tier: "normal" },
   { path: "/dashboard/runs", tier: "normal" },
@@ -577,6 +578,52 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       ? "direct browser-session page can start a new source"
       : "direct browser-session page does not expose a new-source start control",
   });
+
+  const contentExpectations = [
+    {
+      id: "schedules-content-rendered",
+      path: "/dashboard/schedules",
+      title: "Schedules",
+      required: [
+        { label: "Schedules title", pattern: /\bSchedules\b/i },
+        { label: "schedule section", pattern: /\bScheduled connections\b|\bNo scheduled connections yet\b/i },
+        { label: "scheduled/unscheduled counts", pattern: /\bscheduled\b.*\bunscheduled\b/i },
+      ],
+    },
+    {
+      id: "explore-content-rendered",
+      path: "/dashboard/explore",
+      title: "Explore",
+      required: [
+        { label: "Explore title", pattern: /\bExplore\b/i },
+        { label: "record query controls", pattern: /Search names, fields, and values|Search records|text across every searchable stream|\boperators\b.*\bcon:/i },
+        { label: "record filters", pattern: /\bFilters\b/i },
+        { label: "record sort controls", pattern: /\bnewest\b.*\boldest\b/i },
+      ],
+    },
+  ];
+  for (const expectation of contentExpectations) {
+    const pageText = htmlToText(htmlByPath.get(expectation.path) ?? "");
+    const missing = expectation.required.filter((item) => !item.pattern.test(pageText));
+    if (missing.length > 0) {
+      findings.push({
+        ruleId: expectation.id,
+        class: "dashboard-content-missing",
+        path: `live:${expectation.path}`,
+        line: 0,
+        excerpt: missing.map((item) => item.label).join(", "),
+        rationale:
+          `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+      });
+    }
+    checks.push({
+      id: expectation.id,
+      status: missing.length > 0 ? "fail" : "pass",
+      detail: missing.length > 0
+        ? `missing ${missing.map((item) => item.label).join(", ")}`
+        : `${expectation.title} rendered core owner controls`,
+    });
+  }
 
   const recordsText = htmlToText(htmlByPath.get("/dashboard/records") ?? "");
   const recordsCountFindings = [];
