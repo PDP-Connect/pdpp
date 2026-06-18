@@ -163,13 +163,20 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
   );
 }
 
-function AttentionBlock({ attention }: { attention: StandingData["attention"] }) {
+function AttentionBlock({
+  attention,
+  sourceIssues,
+}: {
+  attention: StandingData["attention"];
+  sourceIssues: StandingData["sourceIssues"];
+}) {
+  const rows = [...attention, ...sourceIssues];
   return (
     <section className="rr-stand-block">
       <h2 className="rr-stand-block__title">Anything wrong</h2>
-      {attention.length > 0 ? (
+      {rows.length > 0 ? (
         <div className="rr-attn">
-          {attention.map((a) => (
+          {rows.map((a) => (
             <a className="rr-attn__row" href={a.href} key={a.id}>
               <span className="rr-attn__what">{a.what}</span>
               <span className="rr-rel__meta">look →</span>
@@ -180,7 +187,7 @@ function AttentionBlock({ attention }: { attention: StandingData["attention"] })
       ) : (
         <div className="rr-allclear">
           <span className="rr-allclear__text">
-            Nothing needs you. Grants are within their limits, backups are on, and everything's syncing.
+            Nothing needs you. Grants are within their limits, backups are on, and sources are syncing.
           </span>
         </div>
       )}
@@ -211,7 +218,7 @@ export function StandingOverview({ data, grantsHref, tokensHref, tracesHref, not
         <RelationshipsBlock grantsHref={grantsHref} relationships={data.relationships} />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock attention={data.attention} />
+      <AttentionBlock attention={data.attention} sourceIssues={data.sourceIssues} />
     </div>
   );
 }

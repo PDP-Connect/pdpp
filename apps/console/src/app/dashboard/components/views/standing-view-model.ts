@@ -161,6 +161,7 @@ export interface StandingData {
   hero: StandingHero;
   lately: LatelyView[];
   relationships: RelationshipView[];
+  sourceIssues: AttentionRowView[];
 }
 
 // ─── Inputs ────────────────────────────────────────────────────────────
@@ -182,6 +183,11 @@ export interface StandingInputs {
   /** Relative-time formatter (injected so the view-model stays clock-pure). */
   now: Date;
   pendingApprovals: PendingApproval[];
+  /**
+   * Connections with material source issues that do NOT ask the owner to do
+   * anything. These must still suppress "everything is syncing" all-clears.
+   */
+  sourceIssues: SourceIssueConnection[];
   summary: DatasetSummary | null;
   traces: TraceSummary[];
 }
@@ -228,6 +234,16 @@ export interface AttentionConnection {
    * a type (e.g. three Claude Code devices: only peregrine is in attention).
    */
   routeId: string;
+  /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
+  what: string;
+}
+
+export interface SourceIssueConnection {
+  /** Owner-facing source name ("Chase", "Gmail - work"). */
+  label: string;
+  routeId: string;
+  /** Source-state label derived from the server-owned verdict pill. */
+  status: "can't collect" | "is degraded";
   /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
   what: string;
 }
@@ -421,7 +437,7 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
     if (verdict?.channel !== "attention") {
       continue;
     }
-    const action = verdict.required_actions.find((a) => a.audience === "owner" && a.satisfied_when.kind !== "none");
+    const action = ownerSatisfiableAction(verdict);
     if (!action) {
       continue; // attention with no owner-resolvable action is a synthesis error (S1) — never alarm the owner here.
     }
@@ -436,6 +452,61 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
   return out;
 }
 
+function ownerSatisfiableAction(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>) {
+  return verdict.required_actions.find((a) => a.audience === "owner" && a.satisfied_when.kind !== "none") ?? null;
+}
+
+function connectionRouteId(connector: RefConnectorSummary): string {
+  return connector.connector_instance_id ?? connector.connection_id;
+}
+
+function connectorLabel(connector: RefConnectorSummary): string {
+  return connector.display_name?.trim() || connector.connector_display_name?.trim() || scopeHuman(connector.connector_id);
+}
+
+function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): SourceIssueConnection["status"] | null {
+  if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
+    return "can't collect";
+  }
+  if (verdict.channel !== "calm" || verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
+    return "is degraded";
+  }
+  return null;
+}
+
+/**
+ * Non-owner source issues for the dashboard "Anything wrong" panel. These are
+ * deliberately NOT owner-action attention rows: a maintainer/code-fix source
+ * should not alarm as "needs you", but it must also not disappear behind an
+ * all-clear that claims everything is syncing.
+ */
+export function sourceIssueConnectionsFromConnectors(connectors: readonly RefConnectorSummary[]): SourceIssueConnection[] {
+  const out: SourceIssueConnection[] = [];
+  for (const connector of connectors) {
+    if (connector.revoked_at) {
+      continue;
+    }
+    const verdict = connector.rendered_verdict;
+    if (!verdict) {
+      continue;
+    }
+    if (verdict.channel === "attention" && ownerSatisfiableAction(verdict)) {
+      continue;
+    }
+    const status = sourceIssueStatus(verdict);
+    if (!status) {
+      continue;
+    }
+    out.push({
+      label: connectorLabel(connector),
+      routeId: connectionRouteId(connector),
+      status,
+      what: verdict.forward_statement,
+    });
+  }
+  return out;
+}
+
 // ─── Attention view ("anything wrong") ───────────────────────────────────
 
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
@@ -444,6 +515,15 @@ function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): At
     what: `${scopeHuman(a.connectorKey)} needs you`,
     why: a.what,
     href: hrefs.connection(a.routeId),
+  }));
+}
+
+function toSourceIssues(sourceIssues: SourceIssueConnection[], hrefs: StandingHrefs): AttentionRowView[] {
+  return sourceIssues.map((issue) => ({
+    id: `source-issue:${issue.routeId}`,
+    what: `${issue.label} ${issue.status}`,
+    why: issue.what,
+    href: hrefs.connection(issue.routeId),
   }));
 }
 
@@ -533,7 +613,7 @@ function buildCalmHero(input: StandingInputs): StandingHero {
 /**
  * Compute the hero. Precedence: a pending approval is a DECIDE (it needs a
  * yes/no), a failure is an ALARM (something broke), a stale projection is a
- * soft ALARM (so we never claim "everything's syncing" when the summary is
+ * soft ALARM (so we never claim the overview is current when the summary is
  * stale), otherwise CALM with the reassurance line.
  */
 export function computeHero(input: StandingInputs): StandingHero {
@@ -559,5 +639,6 @@ export function buildStandingData(input: StandingInputs): StandingData {
     relationships: toRelationships(input.grants, input.hrefs, input.now),
     lately: toLately(input.traces, input.now),
     attention: toAttention(input.attentionConnections, input.hrefs),
+    sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
   };
 }

@@ -187,6 +187,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     failedTraces: [],
     failedRuns: [],
     attentionConnections: [],
+    sourceIssues: [],
   };
   if (scenario === "decide") {
     return { ...base, pendingApprovals: PENDING };

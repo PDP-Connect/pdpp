@@ -16,6 +16,7 @@ import {
   grantReads,
   joinHuman,
   relDay,
+  sourceIssueConnectionsFromConnectors,
   type StandingHrefs,
   type StandingInputs,
   scopeHuman,
@@ -67,6 +68,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     failedTraces: [],
     failedRuns: [],
     attentionConnections: [],
+    sourceIssues: [],
     ...over,
   };
 }
@@ -320,6 +322,48 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   // The local_device remediation target → deviceLocal true → hero/runs use a
   // navigation CTA instead of restating the action.
   assert.equal(attention[0]?.deviceLocal, true);
+});
+
+test("source issues show non-owner material verdicts without alarming as owner attention", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "chase",
+      connection_id: "cin_chase",
+      display_name: "Chase",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "This connector needs a code fix before it can collect again.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+    connector({ connector_id: "healthy", rendered_verdict: verdict({ channel: "calm", pill: { label: "Healthy", tone: "green" } }) }),
+    connector({ connector_id: "revoked", revoked_at: "2026-06-01T00:00:00Z", rendered_verdict: verdict({ pill: { label: "Can't collect", tone: "red" } }) }),
+  ];
+
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+
+  const sourceIssues = sourceIssueConnectionsFromConnectors(connectors);
+  assert.equal(sourceIssues.length, 1);
+  assert.equal(sourceIssues[0]?.label, "Chase");
+  assert.equal(sourceIssues[0]?.status, "can't collect");
+  assert.equal(sourceIssues[0]?.routeId, "cin_chase");
+
+  const data = buildStandingData(baseInputs({ sourceIssues }));
+  assert.equal(data.attention.length, 0);
+  assert.equal(data.sourceIssues.length, 1);
+  assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
+  assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
 });
 
 test("attention routeId targets the EXACT connection instance, not the connector type", () => {

@@ -21,6 +21,7 @@ import { StandingOverview } from "./components/views/standing-overview.tsx";
 import {
   attentionConnectionsFromConnectors,
   buildStandingData,
+  sourceIssueConnectionsFromConnectors,
   type StandingHrefs,
   type StandingInputs,
 } from "./components/views/standing-view-model.ts";
@@ -98,6 +99,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     pendingApprovals: pendingRes.data,
     bearerClients: clientsRes.data,
     attentionConnections: attentionConnectionsFromConnectors(connectorsRes.data),
+    sourceIssues: sourceIssueConnectionsFromConnectors(connectorsRes.data),
   };
 }
 
