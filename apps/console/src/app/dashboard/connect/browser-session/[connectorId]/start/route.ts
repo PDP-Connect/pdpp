@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { isBrowserBoundConnector } from "../../../../lib/connection-modality.ts";
 import { requireDashboardAccess } from "../../../../lib/dashboard-access.ts";
-import { createBrowserEnrollmentShell } from "../../../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -58,11 +57,6 @@ function readOptionalStringField(formData: FormData, name: string): string | nul
   return trimmed.length > 0 ? trimmed : null;
 }
 
-async function createSetupShell(connectorId: string): Promise<string> {
-  const shell = await createBrowserEnrollmentShell(connectorId);
-  return shell.connection_id;
-}
-
 export async function POST(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
   const { connectorId: rawConnectorId } = await params;
   const connectorId = decodeURIComponent(rawConnectorId);
@@ -96,10 +90,19 @@ export async function POST(request: Request, { params }: { params: Promise<Route
   }
 
   try {
-    const connectionId = existingConnectionId ?? (await createSetupShell(connectorId));
+    if (!existingConnectionId) {
+      return redirectTo(
+        request,
+        errorPath(
+          connectorId,
+          "Open an existing source and choose Reconnect. Adding a new browser-backed source is not packaged from this page yet."
+        )
+      );
+    }
+    const connectionId = existingConnectionId;
     const params = new URLSearchParams({
       connection_id: connectionId,
-      draft: existingConnectionId ? "0" : "1",
+      draft: "0",
     });
     return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
   } catch (err) {

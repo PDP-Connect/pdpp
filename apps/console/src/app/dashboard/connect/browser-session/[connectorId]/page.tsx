@@ -3,11 +3,11 @@
  *
  * Entry point for browser-bound connector setup and re-authentication.
  *
- * SETUP (no ?connectionId): creates a fresh browser-enrollment shell
- * (POST /_ref/connectors/:connectorId/browser-enrollment-shell), starts a
- * bounded enrollment run, and redirects the owner to the run's stream page
- * where the embedded browser surface lets them log into the provider.
- * Once login is captured the shell transitions to active and collection begins.
+ * SETUP (no ?connectionId): intentionally unavailable from this generic route.
+ * Browser-backed add-new is not packaged safely enough to mint a new source
+ * without an explicit owner choice, label, and add-another/account context.
+ * Direct visits therefore show honest guidance instead of creating a silent
+ * unnamed connection.
  *
  * REPAIR (?connectionId=<existing>): skips shell creation and starts a new run
  * against the existing connection (Plaid update-mode equivalent). The
@@ -53,6 +53,27 @@ function InlineError({ message }: { message: string }) {
   );
 }
 
+function UnavailableSetupCard({ displayName }: { displayName: string }) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
+      <h2 className="pdpp-title text-foreground">Adding a new {displayName} source is not packaged here yet</h2>
+      <p className="pdpp-body mt-3 text-muted-foreground">
+        Browser-backed sources need an explicit add-another flow so PDPP does not create an unnamed duplicate account by
+        accident. Open an existing source to reconnect it, or return to Add source to see what this dashboard can add
+        now.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link className={buttonVariants({ variant: "default", size: "sm" })} href="/dashboard/records">
+          Open sources
+        </Link>
+        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/dashboard/records/add">
+          Add source
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default async function BrowserSessionConnectPage({
   params,
   searchParams,
@@ -90,7 +111,7 @@ export default async function BrowserSessionConnectPage({
         description={
           repairMode
             ? `Log in to ${displayName} in the secure browser to restore collection. Your existing records and history are preserved.`
-            : `Log in to ${displayName} in the secure browser. Once your session is captured, collection begins automatically.`
+            : `This dashboard can repair an existing ${displayName} source, but it will not create a new browser-backed source from this generic page.`
         }
         title={pageTitle}
       />
@@ -98,44 +119,48 @@ export default async function BrowserSessionConnectPage({
       <div className="mx-auto max-w-lg space-y-6 px-4 py-8">
         {pageParams.error ? <InlineError message={pageParams.error} /> : null}
 
-        {/* How it works */}
-        <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
-          <h2 className="pdpp-title text-foreground">How this works</h2>
-          <ol className="pdpp-body mt-3 list-inside list-decimal space-y-2 text-muted-foreground">
-            <li>
-              Click <strong className="text-foreground">Start session</strong> below. PDPP opens a secure browser panel.
-            </li>
-            <li>
-              Log in to <strong className="text-foreground">{displayName}</strong> in that browser, exactly as you would
-              on your own machine. PDPP captures the session cookie — no credentials are stored.
-            </li>
-            <li>
-              Once login is detected, the browser closes and collection {repairMode ? "resumes" : "begins"}{" "}
-              automatically.
-            </li>
-          </ol>
+        {repairMode ? null : <UnavailableSetupCard displayName={displayName} />}
 
-          {repairMode && pageParams.connectionId ? (
-            <p className="pdpp-caption mt-4 text-muted-foreground">
-              Re-authenticating connection{" "}
-              <code className="font-mono text-foreground/80">{pageParams.connectionId}</code>. Your existing records and
-              history are unchanged.
-            </p>
-          ) : null}
-        </div>
+        {/* How it works */}
+        {repairMode ? (
+          <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
+            <h2 className="pdpp-title text-foreground">How this works</h2>
+            <ol className="pdpp-body mt-3 list-inside list-decimal space-y-2 text-muted-foreground">
+              <li>
+                Click <strong className="text-foreground">Start session</strong> below. PDPP opens a secure browser
+                panel.
+              </li>
+              <li>
+                Log in to <strong className="text-foreground">{displayName}</strong> in that browser, exactly as you
+                would on your own machine. PDPP captures the session cookie — no credentials are stored.
+              </li>
+              <li>Once login is detected, the browser closes and collection resumes automatically.</li>
+            </ol>
+
+            {pageParams.connectionId ? (
+              <p className="pdpp-caption mt-4 text-muted-foreground">
+                Re-authenticating connection{" "}
+                <code className="font-mono text-foreground/80">{pageParams.connectionId}</code>. Your existing records
+                and history are unchanged.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Primary CTA */}
-        <form action={`/dashboard/connect/browser-session/${encodeURIComponent(connectorId)}/start`} method="post">
-          {pageParams.connectionId ? (
-            <input name="connection_id" type="hidden" value={pageParams.connectionId} />
-          ) : null}
-          <button
-            className="w-full rounded-full bg-foreground px-6 py-3 font-medium text-background text-sm transition-opacity hover:opacity-90 active:opacity-75"
-            type="submit"
-          >
-            {repairMode ? `Reconnect ${displayName}` : `Start session — log in to ${displayName}`}
-          </button>
-        </form>
+        {repairMode ? (
+          <form action={`/dashboard/connect/browser-session/${encodeURIComponent(connectorId)}/start`} method="post">
+            {pageParams.connectionId ? (
+              <input name="connection_id" type="hidden" value={pageParams.connectionId} />
+            ) : null}
+            <button
+              className="w-full rounded-full bg-foreground px-6 py-3 font-medium text-background text-sm transition-opacity hover:opacity-90 active:opacity-75"
+              type="submit"
+            >
+              Reconnect {displayName}
+            </button>
+          </form>
+        ) : null}
 
         {/* Fallback guidance for when the browser panel cannot start. */}
         <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3">

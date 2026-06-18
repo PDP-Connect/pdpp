@@ -17,8 +17,8 @@ import type {
   RefSchedule,
 } from "../lib/ref-client.ts";
 import {
-  buildSourcesChurnAdvisory,
   buildDuplicateSourceReview,
+  buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
   collapseDuplicateFallbackSources,
   deriveRenderedSourceStatus,
@@ -579,13 +579,19 @@ test("toSourceInstanceView omits passport identity rows that duplicate the sourc
 
   assert.equal(view.displayName, "Amazon - Personal");
   assert.equal(view.listKind, null);
-  assert.deepEqual(
-    view.passportFields.map((field) => field.k).slice(0, 2),
-    ["config", "auth"]
+  assert.deepEqual(view.passportFields.map((field) => field.k).slice(0, 2), ["config", "auth"]);
+  assert.equal(
+    view.passportFields.some((field) => field.k === "kind"),
+    false
   );
-  assert.equal(view.passportFields.some((field) => field.k === "kind"), false);
-  assert.equal(view.passportFields.some((field) => field.k === "account"), false);
-  assert.equal(view.passportFields.some((field) => field.k === "type"), false);
+  assert.equal(
+    view.passportFields.some((field) => field.k === "account"),
+    false
+  );
+  assert.equal(
+    view.passportFields.some((field) => field.k === "type"),
+    false
+  );
 });
 
 test("toSourceInstanceView keeps connector type when the source title does not identify it", () => {
@@ -631,7 +637,7 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
 
   assert.equal(views[0]?.displayName, "Amazon · account 1");
   assert.equal(views[1]?.displayName, "Amazon · account 2");
-  assert.equal(views[0]?.accountLine, "Unnamed source");
+  assert.equal(views[0]?.accountLine, "Unnamed source · 100 records · 2 streams");
   assert.equal(views[2]?.displayName, "Amazon - Personal");
   assert.equal(views[2]?.accountLine, "100 records · 2 streams");
   assert.equal(views[2]?.listKind, null);

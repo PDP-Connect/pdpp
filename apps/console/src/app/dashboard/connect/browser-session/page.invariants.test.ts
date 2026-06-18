@@ -27,7 +27,8 @@ const START_ROUTE_POST_RE = /export async function POST/;
 const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId\)\)/;
 const START_ROUTE_ORIGIN_RE = /if \(!originMatchesHost\(request\)\)/;
 const START_ROUTE_STRING_FIELD_RE = /readOptionalStringField\(formData, "connection_id"\)/;
-const START_ROUTE_SETUP_RE = /createBrowserEnrollmentShell\(connectorId\)/;
+const START_ROUTE_NO_SILENT_NEW_SOURCE_RE = /Adding a new browser-backed source is not packaged from this page yet/;
+const START_ROUTE_FORBIDS_SETUP_RE = /createBrowserEnrollmentShell|browser-enrollment-shell/;
 const START_ROUTE_LAUNCH_REDIRECT_RE = /\$\{pagePath\(connectorId\)\}\/launch\?\$\{params\.toString\(\)\}/;
 const START_ROUTE_FORBIDS_SLOW_RUN_RE = /runConnectionNow|abandonBrowserEnrollmentShell/;
 const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
@@ -63,13 +64,14 @@ test("browser-session start uses a normal POST route, not Server Action fetch tr
   assert.match(route, START_ROUTE_POST_RE);
 });
 
-test("browser-session start route preserves auth and fast handoff semantics", async () => {
+test("browser-session start route preserves auth and repair handoff semantics", async () => {
   const route = await readFile(START_ROUTE_FILE, "utf8");
 
   assert.match(route, START_ROUTE_AUTH_RE);
   assert.match(route, START_ROUTE_ORIGIN_RE);
   assert.match(route, START_ROUTE_STRING_FIELD_RE);
-  assert.match(route, START_ROUTE_SETUP_RE);
+  assert.match(route, START_ROUTE_NO_SILENT_NEW_SOURCE_RE);
+  assert.doesNotMatch(route, START_ROUTE_FORBIDS_SETUP_RE);
   assert.match(route, START_ROUTE_LAUNCH_REDIRECT_RE);
   assert.doesNotMatch(route, START_ROUTE_FORBIDS_SLOW_RUN_RE);
   assert.match(route, START_ROUTE_PUBLIC_ORIGIN_RE);

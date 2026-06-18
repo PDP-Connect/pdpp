@@ -512,6 +512,31 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         : "dashboard monogram initials are decorative",
   });
 
+  const browserSessionPath = "/dashboard/connect/browser-session/amazon";
+  const browserSessionHtml = htmlByPath.get(browserSessionPath) ?? "";
+  const browserSessionText = htmlToText(browserSessionHtml);
+  const exposesDirectNewBrowserSource =
+    /\bStart session\b/i.test(browserSessionText) &&
+    /\/dashboard\/connect\/browser-session\/amazon\/start/.test(browserSessionHtml);
+  if (exposesDirectNewBrowserSource) {
+    findings.push({
+      ruleId: "browser-session-direct-new-source",
+      class: "dashboard-setup-integrity",
+      path: `live:${browserSessionPath}`,
+      line: 0,
+      excerpt: "Start session",
+      rationale:
+        "A direct browser-session setup URL must not expose a new-source start control. Without an explicit add-another flow, it can silently create duplicate unnamed browser-backed sources.",
+    });
+  }
+  checks.push({
+    id: "browser-session-direct-new-source",
+    status: exposesDirectNewBrowserSource ? "fail" : "pass",
+    detail: exposesDirectNewBrowserSource
+      ? "direct browser-session page can start a new source"
+      : "direct browser-session page does not expose a new-source start control",
+  });
+
   const recordsText = htmlToText(htmlByPath.get("/dashboard/records") ?? "");
   const recordsCountFindings = [];
   let checkedSourceCounts = 0;

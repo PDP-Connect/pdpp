@@ -531,7 +531,11 @@ function formatSourceListFacts(summary: RefConnectorSummary): string {
 }
 
 function normalizeLabelForContainment(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function listKindForDisplayName(displayName: string, kind: string): string | null {
@@ -585,7 +589,7 @@ export function toSourceInstanceView(
   const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
-    accountLine = "Unnamed source";
+    accountLine = `Unnamed source · ${formatSourceListFacts(summary)}`;
   } else {
     accountLine = formatSourceListFacts(summary);
   }

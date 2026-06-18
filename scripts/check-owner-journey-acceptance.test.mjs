@@ -808,6 +808,85 @@ test("live semantic probe accepts visible source count claims that match connect
   );
 });
 
+test("live semantic probe rejects direct browser-session new-source controls", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/connect/browser-session/amazon")) {
+      return response(
+        200,
+        '<main><h1>Connect Amazon</h1><form action="/dashboard/connect/browser-session/amazon/start" method="post"><button>Start session</button></form></main>'
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "browser-session-direct-new-source"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "browser-session-direct-new-source")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts repair-only browser-session guidance", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          data: [],
+        })
+      );
+    }
+    if (href.endsWith("/dashboard/connect/browser-session/amazon")) {
+      return response(
+        200,
+        "<main><h1>Connect Amazon</h1><p>Adding a new Amazon source is not packaged here yet.</p><a>Open sources</a></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "browser-session-direct-new-source")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects owner actions that are absent from the exact source route", async () => {
   const response = (status, body) => ({
     status,
