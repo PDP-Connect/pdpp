@@ -439,12 +439,22 @@ export function runLexicalRetrievalConformance({ label, test, makeDriver }) {
         // Strip optional truncation markers and compare on the
         // alphanumeric core. This tolerates `…`, `...`, FTS5 mark
         // characters, etc., without coupling the harness to one
-        // backend's snippet syntax.
-        const core = hit.snippet.text.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+        // backend's snippet syntax. Strip HTML-like highlight tags (`<mark>`,
+        // `</mark>`) FIRST so the tag-name letters do not pollute the core
+        // (SQLite emits one `<mark>…</mark>` pair; Postgres ts_headline marks
+        // each token, so the tags must be removed before alphanumeric coring).
+        const stripMarks = (s) => s.replace(/<\/?[a-zA-Z][^>]*>/g, '');
+        const core = stripMarks(hit.snippet.text).replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
         const sourceCore = distinctiveText.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+        // The snippet must carry real content: a non-empty core (an empty
+        // string is a substring of everything, so guard it) that is genuinely
+        // extracted from the source body. The matched marker token MUST appear
+        // in the snippet. A fabricated/generated snippet that merely echoes
+        // the query term, or an empty snippet, must fail.
+        assert.ok(core.length > 0, `snippet text must be non-empty after stripping marks. got=${hit.snippet.text}`);
         assert.ok(
-          sourceCore.includes(core) || core.includes('pdpp_snippet_marker'.toLowerCase()),
-          `snippet text must be derived from the source body. got=${hit.snippet.text}`,
+          core.includes('pdpp_snippet_marker') && sourceCore.includes(core),
+          `snippet text must be extracted from the source body and contain the matched marker. got=${hit.snippet.text}`,
         );
       }
     } finally {
