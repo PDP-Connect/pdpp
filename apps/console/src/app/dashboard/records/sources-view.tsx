@@ -294,7 +294,7 @@ function InstanceListItem({
           crowds / clips against the health dot at the card's right edge. */}
       <span className="rr-s-item__line">
         {instance.accountLine}
-        <span className="rr-s-item__kind">{instance.kind}</span>
+        {instance.listKind ? <span className="rr-s-item__kind">{instance.listKind}</span> : null}
       </span>
       <span className="rr-s-item__flag">
         {/* The dot is a decorative reinforcement of the status; the textual

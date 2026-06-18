@@ -161,6 +161,8 @@ export interface SourceInstanceView {
   isRunning: boolean;
   /** Connector type label (mono kind line in the list). */
   kind: string;
+  /** Quiet connector type tag for the list row; omitted when it repeats the name. */
+  listKind: string | null;
   /** Existing-source import route for manual/upload connectors. */
   manualUploadHref: string | null;
   /** True when the visible label is a generated fallback rather than owner-authored. */
@@ -528,6 +530,19 @@ function formatSourceListFacts(summary: RefConnectorSummary): string {
   return `${recordCount.toLocaleString()} ${recordNoun} · ${streamCount.toLocaleString()} ${streamNoun}`;
 }
 
+function normalizeLabelForContainment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function listKindForDisplayName(displayName: string, kind: string): string | null {
+  const display = normalizeLabelForContainment(displayName);
+  const kindLabel = normalizeLabelForContainment(kind);
+  if (!kindLabel || display.includes(kindLabel)) {
+    return null;
+  }
+  return kind;
+}
+
 /**
  * Project one `RefConnectorSummary` into a `SourceInstanceView`. Pure; takes no
  * I/O. Per-stream retained record counts come from the owner-only
@@ -567,6 +582,7 @@ export function toSourceInstanceView(
   const displayName = options.fallbackDisambiguator
     ? `${baseDisplayName} · ${options.fallbackDisambiguator}`
     : baseDisplayName;
+  const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
     accountLine = "Unnamed source";
@@ -635,6 +651,7 @@ export function toSourceInstanceView(
     detailHref: `/dashboard/records/${encodeURIComponent(routeId)}`,
     displayName,
     kind,
+    listKind,
     accountLine,
     revoked,
     isLocalDevicePush,
