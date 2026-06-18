@@ -516,26 +516,50 @@ function traceWho(trace: TraceSummary): string {
   return traceActorFallback(trace);
 }
 
+function repeatedLatelyRest(rest: string, count: number): string {
+  const base = rest.replace(/\.$/, "");
+  return `${base} ${count === 2 ? "twice" : `${count} times`}.`;
+}
+
 function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
-  return traces.slice(0, 6).map((tr) => {
+  const groups: Array<LatelyView & { count: number; key: string; originalRest: string }> = [];
+  for (const tr of traces.slice(0, 6)) {
     const who = traceWho(tr);
     const isDeny = tr.status.toLowerCase() === "denied" || tr.failure !== null;
+    let row: LatelyView;
     if (isDeny) {
-      return {
+      row = {
         id: tr.trace_id,
         when: relDay(tr.last_at, now),
         deny: true,
         text: { who, rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.` },
       };
+    } else {
+      const noun = tr.event_count === 1 ? "record" : "records";
+      row = {
+        id: tr.trace_id,
+        when: relDay(tr.last_at, now),
+        deny: false,
+        text: { who, rest: `read ${fmtInt(tr.event_count)} ${noun}.` },
+      };
     }
-    const noun = tr.event_count === 1 ? "record" : "records";
-    return {
-      id: tr.trace_id,
-      when: relDay(tr.last_at, now),
-      deny: false,
-      text: { who, rest: `read ${fmtInt(tr.event_count)} ${noun}.` },
-    };
-  });
+    const key = `${row.deny ? "deny" : "read"}|${row.when}|${row.text.who}|${row.text.rest}`;
+    const existing = groups.find((group) => group.key === key);
+    if (existing) {
+      existing.count += 1;
+      existing.id = `${existing.id}+${tr.trace_id}`;
+      continue;
+    }
+    groups.push({ ...row, count: 1, key, originalRest: row.text.rest });
+  }
+
+  return groups.slice(0, 6).map(({ count, key: _key, originalRest, ...row }) => ({
+    ...row,
+    text: {
+      ...row.text,
+      rest: count > 1 ? repeatedLatelyRest(originalRest, count) : row.text.rest,
+    },
+  }));
 }
 
 // ─── Attention truth (shared with /runs) ──────────────────────────────────

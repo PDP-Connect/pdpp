@@ -550,6 +550,48 @@ test("lately does not bold raw technical client ids when metadata is missing", (
   assert.notEqual(data.lately[0]?.text.who, "cli_raw");
 });
 
+test("lately summarizes identical recent reads instead of repeating the same row", () => {
+  const repeated = Array.from({ length: 5 }, (_, i): TraceSummary => ({
+    object: "trace_summary",
+    trace_id: `trc_longview_${i}`,
+    status: "succeeded",
+    actor_id: "client",
+    actor_type: "client",
+    client_id: "cli_longview",
+    client: {
+      client_id: "cli_longview",
+      client_name: "Longview CLI",
+      registration_mode: "pre_registered_public",
+    },
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 3,
+    kinds: ["query.received"],
+    failure: null,
+  }));
+  const baseRepeated = repeated[0]!;
+  const different: TraceSummary = {
+    ...baseRepeated,
+    trace_id: "trc_controller",
+    actor_id: "controller",
+    actor_type: "runtime",
+    client_id: null,
+    client: undefined,
+    event_count: 1,
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [...repeated, different] }));
+
+  assert.equal(data.lately.length, 2);
+  assert.equal(data.lately[0]?.text.who, "Longview CLI");
+  assert.equal(data.lately[0]?.text.rest, "read 3 records 5 times.");
+  assert.equal(data.lately[1]?.text.who, "controller");
+  assert.equal(data.lately[1]?.text.rest, "read 1 record.");
+});
+
 test("relationships summarize grants by client instead of repeating one row per grant", () => {
   const grants: GrantSummary[] = [
     {
