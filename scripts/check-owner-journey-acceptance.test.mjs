@@ -536,6 +536,101 @@ test("live semantic probe passes when material source issues are represented on 
   assert.equal(result.semanticChecks?.[0]?.status, "pass");
 });
 
+test("live semantic probe rejects raw denial reason codes on dashboard", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>slack tried to read — turned away, orphaned_started_run.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-denial-reason"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe rejects single-token raw denial codes on dashboard", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(200, "<main><section>slack tried to read — turned away, forbidden.</section></main>");
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-denial-reason"));
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    "fail"
+  );
+});
+
+test("live semantic probe accepts humanized dashboard denial reasons", async () => {
+  const response = (status, body) => ({
+    status,
+    headers: { get: () => null },
+    text: async () => body,
+  });
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [] }));
+    }
+    if (href.endsWith("/dashboard")) {
+      return response(
+        200,
+        "<main><section>slack tried to read — turned away, it was not tied to an active run.</section></main>"
+      );
+    }
+    return response(200, "<main>clean owner page</main>");
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    "pass"
+  );
+});
+
 test("live semantic probe rejects raw technical client ids as visible grant captions", async () => {
   const response = (status, body) => ({
     status,

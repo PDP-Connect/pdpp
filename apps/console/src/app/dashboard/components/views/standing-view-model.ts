@@ -509,16 +509,25 @@ function denyReason(reason: string | null): string {
     return "it wasn't allowed";
   }
   const r = reason.toLowerCase();
-  if (r.includes("scope")) {
+  if (r === "insufficient_scope" || r === "out_of_scope") {
     return "you never allowed it";
   }
-  if (r.includes("revoked")) {
+  if (r === "grant_revoked") {
     return "you'd revoked it";
   }
-  if (r.includes("expired")) {
+  if (r === "grant_expired") {
     return "the grant had expired";
   }
-  return reason;
+  if (r === "orphaned_started_run") {
+    return "it was not tied to an active run";
+  }
+  if (r === "permission_error" || r === "permanent_forbidden") {
+    return "the app was not allowed to do that";
+  }
+  if (r === "authentication_error" || r.includes("credential")) {
+    return "the app was not authorized";
+  }
+  return "the server rejected it";
 }
 
 function looksLikeTechnicalId(value: string | null | undefined): boolean {

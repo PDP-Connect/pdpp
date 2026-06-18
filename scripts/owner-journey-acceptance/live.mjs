@@ -317,6 +317,42 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       : "pass",
     detail: `${sourceIssues.length} material source issue(s) in /_ref/connectors`,
   });
+
+  const singleTokenDenialCodes = new Set([
+    "blocked",
+    "captcha",
+    "consumed",
+    "denied",
+    "disabled",
+    "expired",
+    "forbidden",
+    "revoked",
+    "unauthorized",
+    "unknown",
+  ]);
+  const rawDenialReasonCandidate =
+    dashboardText.match(/turned away,\s+([a-z][a-z0-9_]*)\b/i)?.[1]?.toLowerCase() ?? null;
+  const rawDenialReason =
+    rawDenialReasonCandidate &&
+    (rawDenialReasonCandidate.includes("_") || singleTokenDenialCodes.has(rawDenialReasonCandidate))
+      ? rawDenialReasonCandidate
+      : null;
+  if (rawDenialReason) {
+    findings.push({
+      ruleId: "dashboard-raw-denial-reason",
+      class: "dashboard-trust-claim",
+      path: "live:/dashboard",
+      line: 0,
+      excerpt: rawDenialReason,
+      rationale:
+        "The dashboard's recent-read summary must not render raw diagnostic denial reason codes. Overview copy should explain the denial in owner language and leave exact codes to trace detail surfaces.",
+    });
+  }
+  checks.push({
+    id: "dashboard-denial-reasons-humanized",
+    status: rawDenialReason ? "fail" : "pass",
+    detail: rawDenialReason ? `raw denial reason visible: ${rawDenialReason}` : "no raw denial reason visible",
+  });
   return { findings, checks };
 }
 

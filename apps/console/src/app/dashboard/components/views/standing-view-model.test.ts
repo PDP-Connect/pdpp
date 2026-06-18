@@ -604,6 +604,112 @@ test("lately uses trace client metadata instead of raw client ids", () => {
   assert.notEqual(data.lately[0]?.text.who, "cli_named");
 });
 
+test("lately humanizes live denial reason codes instead of rendering raw diagnostics", () => {
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_orphaned",
+    status: "denied",
+    actor_id: "slack",
+    actor_type: "client",
+    client_id: "slack",
+    grant_id: null,
+    run_id: "run_orphaned",
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 1,
+    kinds: ["query.rejected"],
+    failure: {
+      event_type: "run.started",
+      reason: "orphaned_started_run",
+    },
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+
+  assert.equal(data.lately.length, 1);
+  assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, it was not tied to an active run.");
+  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", /orphaned_started_run/);
+});
+
+test("lately does not fall through to unknown snake-case denial reasons", () => {
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_unknown_denial",
+    status: "denied",
+    actor_id: "client",
+    actor_type: "client",
+    client_id: "client",
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 1,
+    kinds: ["query.rejected"],
+    failure: {
+      event_type: "query.rejected",
+      reason: "new_internal_reason_code",
+    },
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+
+  assert.equal(data.lately.length, 1);
+  assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, the server rejected it.");
+  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", /new_internal_reason_code/);
+});
+
+test("lately does not overclaim off-surface expired or credential scope failures", () => {
+  const traces: TraceSummary[] = [
+    {
+      object: "trace_summary",
+      trace_id: "trc_state_expired",
+      status: "denied",
+      actor_id: "state_client",
+      actor_type: "client",
+      client_id: "state_client",
+      grant_id: null,
+      run_id: null,
+      request_id: null,
+      first_at: "2026-06-13T00:00:00Z",
+      last_at: "2026-06-13T00:00:00Z",
+      event_count: 1,
+      kinds: ["query.rejected"],
+      failure: {
+        event_type: "query.rejected",
+        reason: "state_expired",
+      },
+    },
+    {
+      object: "trace_summary",
+      trace_id: "trc_credential_scope",
+      status: "denied",
+      actor_id: "credential_client",
+      actor_type: "client",
+      client_id: "credential_client",
+      grant_id: null,
+      run_id: null,
+      request_id: null,
+      first_at: "2026-06-13T00:00:01Z",
+      last_at: "2026-06-13T00:00:01Z",
+      event_count: 1,
+      kinds: ["query.rejected"],
+      failure: {
+        event_type: "query.rejected",
+        reason: "github_credential_insufficient_scope",
+      },
+    },
+  ];
+
+  const data = buildStandingData(baseInputs({ traces }));
+  const rendered = data.lately.map((item) => item.text.rest);
+
+  assert.ok(rendered.includes("tried to read — turned away, the server rejected it."));
+  assert.ok(rendered.includes("tried to read — turned away, the app was not authorized."));
+  assert.doesNotMatch(rendered.join("\n"), /grant had expired|you never allowed it|state_expired|github_credential/);
+});
+
 test("lately does not bold raw technical client ids when metadata is missing", () => {
   const trace: TraceSummary = {
     object: "trace_summary",
