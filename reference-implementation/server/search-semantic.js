@@ -2233,6 +2233,71 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner, pageLimit 
   };
 }
 
+// ─── Semantic record-retrieval + snapshot store (one adapter per backend) ───
+//
+// Domain-local store for the structurally-identical, dialect-only seams in this
+// module's snapshot/hydration shell: the records-table read by key
+// (hydrateSemanticSearchResult) and the semantic_search_snapshots persist/load
+// (persistSemanticSnapshot / loadSemanticSnapshot). Each method is the SAME
+// conceptual op differing only by SQL dialect ($N vs ?, ::jsonb / ::text,
+// deleted = FALSE vs 0). The dialect SQL/queries move VERBATIM; adapters return
+// the RAW row (or perform the write) and any row-shaping
+// (materializeSemanticSnapshot, snippet extraction) stays caller-side. The
+// backend is selected ONCE per op via isPostgresStorageBackend(), mirroring the
+// lexical getSearchIndexStore() precedent in search.js and the existing
+// VectorIndex / BlobStore convention. Vector-index / embedding / distance /
+// HNSW operations are NOT part of this store; they keep their own backend
+// routing in postgres-search.js + the local VectorIndex.
+const postgresSemanticSearchStore = {
+  getRecordRow: ({ connectorId, connectorInstanceId, stream, recordKey }) =>
+    postgresGetSemanticRecord({ connectorId, connectorInstanceId, stream, recordKey }),
+  async persistSnapshot({ snapshotId, query, planHash, resultsJson }) {
+    await postgresQuery(
+      `
+      INSERT INTO semantic_search_snapshots(snapshot_id, query, plan_hash, results_json)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT(snapshot_id) DO UPDATE SET
+        query = excluded.query,
+        plan_hash = excluded.plan_hash,
+        results_json = excluded.results_json,
+        created_at = (now() AT TIME ZONE 'utc')::text
+      `,
+      [snapshotId, query, planHash, resultsJson],
+    );
+  },
+  async loadSnapshotRow(snapshotId) {
+    const { rows } = await postgresQuery(
+      `
+      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
+      FROM semantic_search_snapshots
+      WHERE snapshot_id = $1
+      `,
+      [snapshotId],
+    );
+    return rows[0];
+  },
+};
+
+const sqliteSemanticSearchStore = {
+  getRecordRow: ({ connectorInstanceId, stream, recordKey }) =>
+    getOne(
+      referenceQueries.searchSemanticRecordsGetRecordByKey,
+      [connectorInstanceId, stream, recordKey],
+    ),
+  persistSnapshot: ({ snapshotId, query, planHash, resultsJson }) => {
+    exec(
+      referenceQueries.searchSemanticSnapshotsInsert,
+      [snapshotId, query, planHash, resultsJson],
+    );
+  },
+  loadSnapshotRow: (snapshotId) =>
+    getOne(referenceQueries.searchSemanticSnapshotsGetById, [snapshotId]),
+};
+
+function getSemanticSearchStore() {
+  return isPostgresStorageBackend() ? postgresSemanticSearchStore : sqliteSemanticSearchStore;
+}
+
 // ─── search_result hydration + grant-safe snippets ─────────────────────────
 
 /**
@@ -2247,17 +2312,12 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner, pageLimit 
  * snippet is grant-safe by construction).
  */
 async function hydrateSemanticSearchResult({ hit }) {
-  const recordRow = isPostgresStorageBackend()
-    ? await postgresGetSemanticRecord({
-        connectorId: hit.connectorId,
-        connectorInstanceId: hit.connectorInstanceId ?? null,
-        stream: hit.stream,
-        recordKey: hit.recordKey,
-      })
-    : getOne(
-        referenceQueries.searchSemanticRecordsGetRecordByKey,
-        [hit.connectorInstanceId, hit.stream, hit.recordKey],
-      );
+  const recordRow = await getSemanticSearchStore().getRecordRow({
+    connectorId: hit.connectorId,
+    connectorInstanceId: hit.connectorInstanceId ?? null,
+    stream: hit.stream,
+    recordKey: hit.recordKey,
+  });
 
   const emittedAt = recordRow?.emitted_at ?? null;
   let authoredAt = null;
@@ -2393,53 +2453,22 @@ export function buildPostgresSemanticPlanRequests(planEntries = []) {
 }
 
 async function persistSemanticSnapshot(snapshot) {
+  // Store backend_hash alongside plan_hash so stale-cursor detection is
+  // deterministic across restarts: the snapshot row is the source of truth
+  // about what backend produced the cached distances.
   const planHash = JSON.stringify({ plan: snapshot.plan_hash, backend: snapshot.backend_hash });
   const resultsJson = JSON.stringify(snapshot.results);
 
-  if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `
-      INSERT INTO semantic_search_snapshots(snapshot_id, query, plan_hash, results_json)
-      VALUES ($1, $2, $3, $4::jsonb)
-      ON CONFLICT(snapshot_id) DO UPDATE SET
-        query = excluded.query,
-        plan_hash = excluded.plan_hash,
-        results_json = excluded.results_json,
-        created_at = (now() AT TIME ZONE 'utc')::text
-      `,
-      [snapshot.snapshot_id, snapshot.query, planHash, resultsJson],
-    );
-    return;
-  }
-
-  exec(
-    referenceQueries.searchSemanticSnapshotsInsert,
-    [
-      snapshot.snapshot_id,
-      snapshot.query,
-      // Store backend_hash alongside plan_hash so stale-cursor detection is
-      // deterministic across restarts — the snapshot row is the source of
-      // truth about what backend produced the cached distances.
-      planHash,
-      resultsJson,
-    ],
-  );
+  await getSemanticSearchStore().persistSnapshot({
+    snapshotId: snapshot.snapshot_id,
+    query: snapshot.query,
+    planHash,
+    resultsJson,
+  });
 }
 
 async function loadSemanticSnapshot(snapshotId) {
-  if (isPostgresStorageBackend()) {
-    const { rows } = await postgresQuery(
-      `
-      SELECT snapshot_id, query, plan_hash, results_json::text AS results_json, created_at
-      FROM semantic_search_snapshots
-      WHERE snapshot_id = $1
-      `,
-      [snapshotId],
-    );
-    return materializeSemanticSnapshot(rows[0]);
-  }
-
-  const row = getOne(referenceQueries.searchSemanticSnapshotsGetById, [snapshotId]);
+  const row = await getSemanticSearchStore().loadSnapshotRow(snapshotId);
   return materializeSemanticSnapshot(row);
 }
 

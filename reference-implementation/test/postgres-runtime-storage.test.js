@@ -1304,6 +1304,36 @@ if (!POSTGRES_URL) {
       );
       assert.ok(Number(semanticSnapshot.rows[0].count) > 0);
 
+      // Postgres record-retrieval (hydration) seam coverage: emitted_at and the
+      // verbatim snippet on each hit are produced ONLY by the migrated
+      // hydrateSemanticSearchResult records-table read (getSemanticSearchStore
+      // .getRecordRow on the Postgres adapter). Pin them against the canonical
+      // records row for the hit so a broken Postgres record-retrieval adapter
+      // (null record -> null emitted_at, no snippet) fails this test.
+      for (const page of [semanticPage, semanticNextPage]) {
+        const hit = page.envelope.data[0];
+        const stored = await postgresQuery(
+          `SELECT emitted_at, record_json->>'body' AS body
+             FROM records
+            WHERE connector_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
+          [connectorId, stream, hit.record_key],
+        );
+        const storedRow = stored.rows[0];
+        assert.ok(storedRow, `expected a stored records row for ${hit.record_key}`);
+        assert.equal(
+          hit.emitted_at,
+          storedRow.emitted_at,
+          'hydration must populate emitted_at from the records table on the Postgres path',
+        );
+        assert.ok(hit.snippet, 'hydration must produce a grant-safe snippet on the Postgres path');
+        assert.equal(hit.snippet.field, 'body');
+        const snippetText = hit.snippet.text.replace(/…$/, '');
+        assert.ok(
+          storedRow.body.includes(snippetText),
+          `snippet "${hit.snippet.text}" must be a verbatim substring of the stored body`,
+        );
+      }
+
       await revokeGrant(approved.grant.grant_id, {
         request_id: `req_${suffix}`,
         trace_id: traceId,

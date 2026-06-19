@@ -9,6 +9,11 @@ import {
   listRecordVersionGroundTruthForKeys,
   listRecordVersionGroundTruthStreams,
 } from '../server/record-version-stats.js';
+import {
+  closePostgresStorage,
+  initPostgresStorage,
+  postgresQuery,
+} from '../server/postgres-storage.js';
 import { ingestRecord } from '../server/records.js';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { startServer } from '../server/index.js';
@@ -947,3 +952,154 @@ test('dirty global projection keeps the unfiltered request bounded', async () =>
     closeDb();
   }
 });
+
+// ─── Postgres ground-truth parity (gated on PDPP_TEST_POSTGRES_URL) ───────────
+//
+// Drives the REAL exported listRecordVersionGroundTruthStreams /
+// listRecordVersionGroundTruthForKeys in Postgres mode against a seeded
+// records + record_changes corpus, asserting the same shaped ground-truth facts
+// the SQLite full-scan path produces. The two functions are the only seams in
+// record-version-stats.js that branch on isPostgresStorageBackend(); this
+// harness pins their Postgres dialect path so the seam migration is
+// behavior-preserving on BOTH backends.
+
+const PG_GT_CONNECTOR = 'https://test.pdpp.dev/connectors/vstats-pg';
+const PG_GT_INSTANCE = 'cin_vstats_pg';
+
+async function cleanupGroundTruthPostgres() {
+  await postgresQuery('DELETE FROM record_changes WHERE connector_instance_id = $1', [PG_GT_INSTANCE]);
+  await postgresQuery('DELETE FROM records WHERE connector_instance_id = $1', [PG_GT_INSTANCE]);
+}
+
+async function insertRecordChangePostgres(stream, recordKey, version, emittedAt) {
+  await postgresQuery(
+    `INSERT INTO record_changes(
+       connector_id, connector_instance_id, stream, record_key, version,
+       record_json, emitted_at, deleted, deleted_at
+     )
+     VALUES($1, $2, $3, $4, $5, $6::jsonb, $7, FALSE, NULL)`,
+    [
+      PG_GT_CONNECTOR,
+      PG_GT_INSTANCE,
+      stream,
+      recordKey,
+      version,
+      JSON.stringify({ id: recordKey, v: version }),
+      emittedAt,
+    ],
+  );
+}
+
+async function upsertCurrentRecordPostgres(stream, recordKey, version, emittedAt) {
+  await postgresQuery(
+    `INSERT INTO records(
+       connector_id, connector_instance_id, stream, record_key, record_json,
+       emitted_at, version, deleted, deleted_at, primary_key_text
+     )
+     VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $4)
+     ON CONFLICT (connector_instance_id, stream, record_key) DO UPDATE SET
+       record_json = EXCLUDED.record_json,
+       emitted_at = EXCLUDED.emitted_at,
+       version = EXCLUDED.version`,
+    [
+      PG_GT_CONNECTOR,
+      PG_GT_INSTANCE,
+      stream,
+      recordKey,
+      JSON.stringify({ id: recordKey, v: version }),
+      emittedAt,
+      version,
+    ],
+  );
+}
+
+// Mirror the SQLite seedHotpathCorpus shape directly into the Postgres
+// records + record_changes tables (the two tables the ground-truth functions
+// read), so the asserted facts are the byte-for-byte Postgres analogue of the
+// SQLite full-scan facts:
+//   - hot:  one key churned 30 times -> 30 history rows, 1 current row, 1 key
+//   - cold: 12 distinct keys, 1 version each -> 12 history, 12 current, vpr 1
+async function seedGroundTruthCorpusPostgres() {
+  for (let v = 1; v <= 30; v += 1) {
+    const emittedAt = `2026-05-01T00:00:${String(v).padStart(2, '0')}.000Z`;
+    await insertRecordChangePostgres('hot', 'h1', v, emittedAt);
+    // The current record is the latest version only (upsert overwrites).
+    await upsertCurrentRecordPostgres('hot', 'h1', v, emittedAt);
+  }
+  for (let i = 0; i < 12; i += 1) {
+    const emittedAt = `2026-05-02T00:00:${String(i).padStart(2, '0')}.000Z`;
+    // record_changes PK is (connector_instance_id, stream, version): each cold
+    // key is its own first version, so the version must be unique within the
+    // stream. The record stays at one version per key (vpr 1).
+    await insertRecordChangePostgres('cold', `c${i}`, i + 1, emittedAt);
+    await upsertCurrentRecordPostgres('cold', `c${i}`, 1, emittedAt);
+  }
+}
+
+test(
+  'Postgres ground-truth streams + for-keys produce the same shaped facts as SQLite',
+  { skip: !process.env.PDPP_TEST_POSTGRES_URL },
+  async () => {
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
+    try {
+      await cleanupGroundTruthPostgres();
+      await seedGroundTruthCorpusPostgres();
+
+      // Full-scan ground truth straight from record_changes on Postgres.
+      const full = await listRecordVersionGroundTruthStreams({});
+      const hotGt = streamRow(full, 'hot');
+      const coldGt = streamRow(full, 'cold');
+      assert.ok(hotGt, 'postgres full scan surfaces the hot stream');
+      assert.ok(coldGt, 'postgres full scan surfaces the cold stream');
+
+      // Hot stream facts match the SQLite full-scan facts exactly.
+      assert.equal(hotGt.record_history_count, 30);
+      assert.equal(hotGt.record_key_count, 1);
+      assert.equal(hotGt.current_record_count, 1);
+      assert.equal(hotGt.connector_id, PG_GT_CONNECTOR);
+      assert.equal(hotGt.connector_instance_id, PG_GT_INSTANCE);
+      assert.equal(hotGt.last_history_at, '2026-05-01T00:00:30.000Z');
+      assert.equal(hotGt.last_current_at, '2026-05-01T00:00:30.000Z');
+
+      // Cold (flat) stream: 12 history, 12 current, 12 keys.
+      assert.equal(coldGt.record_history_count, 12);
+      assert.equal(coldGt.record_key_count, 12);
+      assert.equal(coldGt.current_record_count, 12);
+
+      // Scoped full-scan: connectorInstanceId + stream filter narrows to one row.
+      const scoped = await listRecordVersionGroundTruthStreams({
+        connectorInstanceId: PG_GT_INSTANCE,
+        stream: 'hot',
+      });
+      assert.equal(scoped.length, 1, 'scoped full scan returns only the requested stream');
+      assert.deepEqual(scoped[0], hotGt, 'scoped facts byte-identical to full-scan facts');
+
+      // Bounded for-keys helper returns facts identical to the full scan, just
+      // like the SQLite "bounded for-keys helper returns facts identical to the
+      // full scan" test asserts.
+      const bounded = await listRecordVersionGroundTruthForKeys({
+        keys: [{ connectorInstanceId: PG_GT_INSTANCE, stream: 'hot' }],
+      });
+      assert.equal(bounded.length, 1, 'bounded helper returns only the requested key');
+      assert.deepEqual(bounded[0], hotGt, 'bounded facts byte-identical to full-scan facts');
+
+      // for-keys with both streams returns both, matching the full scan rows.
+      const both = await listRecordVersionGroundTruthForKeys({
+        keys: [
+          { connectorInstanceId: PG_GT_INSTANCE, stream: 'hot' },
+          { connectorInstanceId: PG_GT_INSTANCE, stream: 'cold' },
+        ],
+      });
+      assert.equal(both.length, 2);
+      assert.deepEqual(streamRow(both, 'hot'), hotGt);
+      assert.deepEqual(streamRow(both, 'cold'), coldGt);
+
+      // Empty key list short-circuits to [] on the Postgres path too.
+      const none = await listRecordVersionGroundTruthForKeys({ keys: [] });
+      assert.deepEqual(none, []);
+    } finally {
+      await cleanupGroundTruthPostgres();
+      await closePostgresStorage();
+    }
+  },
+);

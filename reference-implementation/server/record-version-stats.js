@@ -96,81 +96,206 @@ function shapeGroundTruthRow(row) {
   };
 }
 
-export async function listRecordVersionGroundTruthStreams({ connectorInstanceId, stream } = {}) {
+// Domain-local store for the record-version ground-truth aggregates. Two
+// adapters selected ONCE via isPostgresStorageBackend(), mirroring the
+// VectorIndex / BlobStore precedent: each method returns RAW rows for the
+// SAME history + current_records CTE, differing only by dialect (placeholder
+// shape, deleted = FALSE vs 0, ::bigint casts, the PG VALUES-list join vs the
+// SQLite temp-table join). Row-shaping (shapeGroundTruthRow) stays caller-side
+// so the adapters remain thin and dialect-only.
+function getRecordVersionStatsStore() {
   if (isPostgresStorageBackend()) {
-    const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'postgres');
-    const currentWhere = historyFilter.where
-      ? `${historyFilter.where} AND deleted = FALSE`
-      : 'WHERE deleted = FALSE';
-    const result = await postgresQuery(
-      `WITH history AS (
-          SELECT connector_instance_id, connector_id, stream,
-                 COUNT(*)::bigint AS record_history_count,
-                 COUNT(DISTINCT record_key)::bigint AS record_key_count,
-                 MAX(emitted_at) AS last_history_at
-            FROM record_changes
-            ${historyFilter.where}
-           GROUP BY connector_instance_id, connector_id, stream
-        ),
-        current_records AS (
-          SELECT connector_instance_id, stream,
-                 COUNT(*)::bigint AS current_record_count,
-                 MAX(emitted_at) AS last_current_at
-            FROM records
-            ${currentWhere}
-           GROUP BY connector_instance_id, stream
-        )
-        SELECT history.connector_instance_id, history.connector_id, history.stream,
-               COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
-               history.record_history_count,
-               history.record_key_count,
-               current_records.last_current_at,
-               history.last_history_at
-          FROM history
-          LEFT JOIN current_records
-            ON current_records.connector_instance_id = history.connector_instance_id
-           AND current_records.stream = history.stream`,
-      historyFilter.params,
-    );
-    return result.rows.map(shapeGroundTruthRow);
+    return {
+      async listGroundTruthStreams({ connectorInstanceId, stream } = {}) {
+        const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'postgres');
+        const currentWhere = historyFilter.where
+          ? `${historyFilter.where} AND deleted = FALSE`
+          : 'WHERE deleted = FALSE';
+        const result = await postgresQuery(
+          `WITH history AS (
+              SELECT connector_instance_id, connector_id, stream,
+                     COUNT(*)::bigint AS record_history_count,
+                     COUNT(DISTINCT record_key)::bigint AS record_key_count,
+                     MAX(emitted_at) AS last_history_at
+                FROM record_changes
+                ${historyFilter.where}
+               GROUP BY connector_instance_id, connector_id, stream
+            ),
+            current_records AS (
+              SELECT connector_instance_id, stream,
+                     COUNT(*)::bigint AS current_record_count,
+                     MAX(emitted_at) AS last_current_at
+                FROM records
+                ${currentWhere}
+               GROUP BY connector_instance_id, stream
+            )
+            SELECT history.connector_instance_id, history.connector_id, history.stream,
+                   COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
+                   history.record_history_count,
+                   history.record_key_count,
+                   current_records.last_current_at,
+                   history.last_history_at
+              FROM history
+              LEFT JOIN current_records
+                ON current_records.connector_instance_id = history.connector_instance_id
+               AND current_records.stream = history.stream`,
+          historyFilter.params,
+        );
+        return result.rows;
+      },
+      async listGroundTruthForKeys(keyList) {
+        // Build a VALUES list so a single bounded query covers every candidate key.
+        const params = [];
+        const tuples = keyList.map((k) => {
+          params.push(k.connectorInstanceId, k.stream);
+          return `($${params.length - 1}, $${params.length})`;
+        });
+        const valuesClause = tuples.join(', ');
+        const result = await postgresQuery(
+          `WITH wanted(connector_instance_id, stream) AS (
+              VALUES ${valuesClause}
+            ),
+            history AS (
+              SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
+                     COUNT(*)::bigint AS record_history_count,
+                     COUNT(DISTINCT rc.record_key)::bigint AS record_key_count,
+                     MAX(rc.emitted_at) AS last_history_at
+                FROM record_changes rc
+                JOIN wanted w
+                  ON w.connector_instance_id = rc.connector_instance_id
+                 AND w.stream = rc.stream
+               GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
+            ),
+            current_records AS (
+              SELECT r.connector_instance_id, r.stream,
+                     COUNT(*)::bigint AS current_record_count,
+                     MAX(r.emitted_at) AS last_current_at
+                FROM records r
+                JOIN wanted w
+                  ON w.connector_instance_id = r.connector_instance_id
+                 AND w.stream = r.stream
+               WHERE r.deleted = FALSE
+               GROUP BY r.connector_instance_id, r.stream
+            )
+            SELECT history.connector_instance_id, history.connector_id, history.stream,
+                   COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
+                   history.record_history_count,
+                   history.record_key_count,
+                   current_records.last_current_at,
+                   history.last_history_at
+              FROM history
+              LEFT JOIN current_records
+                ON current_records.connector_instance_id = history.connector_instance_id
+               AND current_records.stream = history.stream`,
+          params,
+        );
+        return result.rows;
+      },
+    };
   }
 
-  const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
-  const currentFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
-  const currentWhere = currentFilter.where
-    ? `${currentFilter.where} AND deleted = 0`
-    : 'WHERE deleted = 0';
-  const rows = getDb()
-    .prepare(
-      `WITH history AS (
-          SELECT connector_instance_id, connector_id, stream,
-                 COUNT(*) AS record_history_count,
-                 COUNT(DISTINCT record_key) AS record_key_count,
-                 MAX(emitted_at) AS last_history_at
-            FROM record_changes
-            ${historyFilter.where}
-           GROUP BY connector_instance_id, connector_id, stream
-        ),
-        current_records AS (
-          SELECT connector_instance_id, stream,
-                 COUNT(*) AS current_record_count,
-                 MAX(emitted_at) AS last_current_at
-            FROM records
-            ${currentWhere}
-           GROUP BY connector_instance_id, stream
+  return {
+    async listGroundTruthStreams({ connectorInstanceId, stream } = {}) {
+      const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
+      const currentFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
+      const currentWhere = currentFilter.where
+        ? `${currentFilter.where} AND deleted = 0`
+        : 'WHERE deleted = 0';
+      return getDb()
+        .prepare(
+          `WITH history AS (
+              SELECT connector_instance_id, connector_id, stream,
+                     COUNT(*) AS record_history_count,
+                     COUNT(DISTINCT record_key) AS record_key_count,
+                     MAX(emitted_at) AS last_history_at
+                FROM record_changes
+                ${historyFilter.where}
+               GROUP BY connector_instance_id, connector_id, stream
+            ),
+            current_records AS (
+              SELECT connector_instance_id, stream,
+                     COUNT(*) AS current_record_count,
+                     MAX(emitted_at) AS last_current_at
+                FROM records
+                ${currentWhere}
+               GROUP BY connector_instance_id, stream
+            )
+            SELECT history.connector_instance_id, history.connector_id, history.stream,
+                   COALESCE(current_records.current_record_count, 0) AS current_record_count,
+                   history.record_history_count,
+                   history.record_key_count,
+                   current_records.last_current_at,
+                   history.last_history_at
+              FROM history
+              LEFT JOIN current_records
+                ON current_records.connector_instance_id = history.connector_instance_id
+               AND current_records.stream = history.stream`,
         )
-        SELECT history.connector_instance_id, history.connector_id, history.stream,
-               COALESCE(current_records.current_record_count, 0) AS current_record_count,
-               history.record_history_count,
-               history.record_key_count,
-               current_records.last_current_at,
-               history.last_history_at
-          FROM history
-          LEFT JOIN current_records
-            ON current_records.connector_instance_id = history.connector_instance_id
-           AND current_records.stream = history.stream`,
-    )
-    .all(...historyFilter.params, ...currentFilter.params);
+        .all(...historyFilter.params, ...currentFilter.params);
+    },
+    listGroundTruthForKeys(keyList) {
+      // SQLite has no row-VALUES join idiom as ergonomic as Postgres'; a temp
+      // filter table keeps the query bounded and avoids an N-placeholder IN
+      // list blowing the SQLite variable limit on large candidate sets.
+      const db = getDb();
+      return db.transaction(() => {
+        db.prepare(
+          `CREATE TEMP TABLE IF NOT EXISTS _vstats_wanted_keys(
+             connector_instance_id TEXT NOT NULL,
+             stream TEXT NOT NULL,
+             PRIMARY KEY(connector_instance_id, stream)
+           )`,
+        ).run();
+        db.prepare('DELETE FROM _vstats_wanted_keys').run();
+        const insert = db.prepare(
+          'INSERT OR IGNORE INTO _vstats_wanted_keys(connector_instance_id, stream) VALUES (?, ?)',
+        );
+        for (const k of keyList) insert.run(k.connectorInstanceId, k.stream);
+        const rows = db
+          .prepare(
+            `WITH history AS (
+                SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
+                       COUNT(*) AS record_history_count,
+                       COUNT(DISTINCT rc.record_key) AS record_key_count,
+                       MAX(rc.emitted_at) AS last_history_at
+                  FROM record_changes rc
+                  JOIN _vstats_wanted_keys w
+                    ON w.connector_instance_id = rc.connector_instance_id
+                   AND w.stream = rc.stream
+                 GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
+              ),
+              current_records AS (
+                SELECT r.connector_instance_id, r.stream,
+                       COUNT(*) AS current_record_count,
+                       MAX(r.emitted_at) AS last_current_at
+                  FROM records r
+                  JOIN _vstats_wanted_keys w
+                    ON w.connector_instance_id = r.connector_instance_id
+                   AND w.stream = r.stream
+                 WHERE r.deleted = 0
+                 GROUP BY r.connector_instance_id, r.stream
+              )
+              SELECT history.connector_instance_id, history.connector_id, history.stream,
+                     COALESCE(current_records.current_record_count, 0) AS current_record_count,
+                     history.record_history_count,
+                     history.record_key_count,
+                     current_records.last_current_at,
+                     history.last_history_at
+                FROM history
+                LEFT JOIN current_records
+                  ON current_records.connector_instance_id = history.connector_instance_id
+                 AND current_records.stream = history.stream`,
+          )
+          .all();
+        db.prepare('DELETE FROM _vstats_wanted_keys').run();
+        return rows;
+      })();
+    },
+  };
+}
+
+export async function listRecordVersionGroundTruthStreams({ connectorInstanceId, stream } = {}) {
+  const rows = await getRecordVersionStatsStore().listGroundTruthStreams({ connectorInstanceId, stream });
   return rows.map(shapeGroundTruthRow);
 }
 
@@ -188,111 +313,8 @@ export async function listRecordVersionGroundTruthForKeys({ keys } = {}) {
   const keyList = Array.isArray(keys) ? keys.filter((k) => k && k.connectorInstanceId && k.stream) : [];
   if (keyList.length === 0) return [];
 
-  if (isPostgresStorageBackend()) {
-    // Build a VALUES list so a single bounded query covers every candidate key.
-    const params = [];
-    const tuples = keyList.map((k) => {
-      params.push(k.connectorInstanceId, k.stream);
-      return `($${params.length - 1}, $${params.length})`;
-    });
-    const valuesClause = tuples.join(', ');
-    const result = await postgresQuery(
-      `WITH wanted(connector_instance_id, stream) AS (
-          VALUES ${valuesClause}
-        ),
-        history AS (
-          SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
-                 COUNT(*)::bigint AS record_history_count,
-                 COUNT(DISTINCT rc.record_key)::bigint AS record_key_count,
-                 MAX(rc.emitted_at) AS last_history_at
-            FROM record_changes rc
-            JOIN wanted w
-              ON w.connector_instance_id = rc.connector_instance_id
-             AND w.stream = rc.stream
-           GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
-        ),
-        current_records AS (
-          SELECT r.connector_instance_id, r.stream,
-                 COUNT(*)::bigint AS current_record_count,
-                 MAX(r.emitted_at) AS last_current_at
-            FROM records r
-            JOIN wanted w
-              ON w.connector_instance_id = r.connector_instance_id
-             AND w.stream = r.stream
-           WHERE r.deleted = FALSE
-           GROUP BY r.connector_instance_id, r.stream
-        )
-        SELECT history.connector_instance_id, history.connector_id, history.stream,
-               COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
-               history.record_history_count,
-               history.record_key_count,
-               current_records.last_current_at,
-               history.last_history_at
-          FROM history
-          LEFT JOIN current_records
-            ON current_records.connector_instance_id = history.connector_instance_id
-           AND current_records.stream = history.stream`,
-      params,
-    );
-    return result.rows.map(shapeGroundTruthRow);
-  }
-
-  // SQLite has no row-VALUES join idiom as ergonomic as Postgres'; a temp filter
-  // table keeps the query bounded and avoids an N-placeholder IN list blowing the
-  // SQLite variable limit on large candidate sets.
-  const db = getDb();
-  return db.transaction(() => {
-    db.prepare(
-      `CREATE TEMP TABLE IF NOT EXISTS _vstats_wanted_keys(
-         connector_instance_id TEXT NOT NULL,
-         stream TEXT NOT NULL,
-         PRIMARY KEY(connector_instance_id, stream)
-       )`,
-    ).run();
-    db.prepare('DELETE FROM _vstats_wanted_keys').run();
-    const insert = db.prepare(
-      'INSERT OR IGNORE INTO _vstats_wanted_keys(connector_instance_id, stream) VALUES (?, ?)',
-    );
-    for (const k of keyList) insert.run(k.connectorInstanceId, k.stream);
-    const rows = db
-      .prepare(
-        `WITH history AS (
-            SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
-                   COUNT(*) AS record_history_count,
-                   COUNT(DISTINCT rc.record_key) AS record_key_count,
-                   MAX(rc.emitted_at) AS last_history_at
-              FROM record_changes rc
-              JOIN _vstats_wanted_keys w
-                ON w.connector_instance_id = rc.connector_instance_id
-               AND w.stream = rc.stream
-             GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
-          ),
-          current_records AS (
-            SELECT r.connector_instance_id, r.stream,
-                   COUNT(*) AS current_record_count,
-                   MAX(r.emitted_at) AS last_current_at
-              FROM records r
-              JOIN _vstats_wanted_keys w
-                ON w.connector_instance_id = r.connector_instance_id
-               AND w.stream = r.stream
-             WHERE r.deleted = 0
-             GROUP BY r.connector_instance_id, r.stream
-          )
-          SELECT history.connector_instance_id, history.connector_id, history.stream,
-                 COALESCE(current_records.current_record_count, 0) AS current_record_count,
-                 history.record_history_count,
-                 history.record_key_count,
-                 current_records.last_current_at,
-                 history.last_history_at
-            FROM history
-            LEFT JOIN current_records
-              ON current_records.connector_instance_id = history.connector_instance_id
-             AND current_records.stream = history.stream`,
-      )
-      .all();
-    db.prepare('DELETE FROM _vstats_wanted_keys').run();
-    return rows.map(shapeGroundTruthRow);
-  })();
+  const rows = await getRecordVersionStatsStore().listGroundTruthForKeys(keyList);
+  return rows.map(shapeGroundTruthRow);
 }
 
 /**
