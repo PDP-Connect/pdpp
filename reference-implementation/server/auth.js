@@ -3826,37 +3826,17 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
   };
 
   const parentPackageId = parentPackage ? parentPackage.package_id : null;
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO grant_packages(
-         package_id, subject_id, client_id, status, package_json,
-         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
-       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
-      [
-        packageId,
-        subjectId,
-        registeredClient.client_id,
-        JSON.stringify(packageEnvelope),
-        parentPackageId,
-        traceContext.trace_id,
-        traceContext.scenario_id,
-        createdAt,
-        createdAt,
-      ],
-    );
-  } else {
-    exec(referenceQueries.authGrantPackagesInsert, [
-      packageId,
-      subjectId,
-      registeredClient.client_id,
-      JSON.stringify(packageEnvelope),
-      parentPackageId,
-      traceContext.trace_id,
-      traceContext.scenario_id,
-      createdAt,
-      createdAt,
-    ]);
-  }
+  await getGrantPackageStore().insertPackage({
+    packageId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    packageJson: JSON.stringify(packageEnvelope),
+    parentPackageId,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+    createdAt,
+    approvedAt: createdAt,
+  });
 
   const childGrants = [];
   for (const resolved of resolvedEntries) {
@@ -3872,22 +3852,13 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
     });
     const source = describePackageMemberSource(grant);
     const addedAt = nowIso();
-    if (isPostgresStorageBackend()) {
-      await pgExec(
-        `INSERT INTO grant_package_members(
-           package_id, grant_id, token_id, source_json, status, added_at, revoked_at
-         ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
-        [packageId, grant.grant_id, token, JSON.stringify(source), addedAt],
-      );
-    } else {
-      exec(referenceQueries.authGrantPackageMembersInsert, [
-        packageId,
-        grant.grant_id,
-        token,
-        JSON.stringify(source),
-        addedAt,
-      ]);
-    }
+    await getGrantPackageStore().insertPackageMember({
+      packageId,
+      grantId: grant.grant_id,
+      tokenId: token,
+      sourceJson: JSON.stringify(source),
+      addedAt,
+    });
     childGrants.push({ grant, token, source });
   }
 
@@ -4095,39 +4066,20 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     expires_at: expiresAt,
   };
 
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO grants(
-         grant_id, subject_id, client_id, storage_binding_json, grant_json,
-         access_mode, issued_at, expires_at, trace_id, scenario_id
-       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
-      [
-        grantId,
-        subjectId,
-        registeredClient.client_id,
-        serializeStorageBinding(persistedStorageBinding),
-        JSON.stringify(grant),
-        selection.access_mode,
-        issuedAt,
-        expiresAt,
-        traceContext.trace_id,
-        traceContext.scenario_id,
-      ],
-    );
-  } else {
-    exec(referenceQueries.authGrantsInsert, [
-      grantId,
-      subjectId,
-      registeredClient.client_id,
-      serializeStorageBinding(persistedStorageBinding),
-      JSON.stringify(grant),
-      selection.access_mode,
-      issuedAt,
-      expiresAt,
-      traceContext.trace_id,
-      traceContext.scenario_id,
-    ]);
-  }
+  // Same grants-row INSERT the grant-package child-grant flow uses; reuse the
+  // shared store method so the two call sites cannot drift.
+  await getGrantPackageStore().insertChildGrant({
+    grantId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+    grantJson: JSON.stringify(grant),
+    accessMode: selection.access_mode,
+    issuedAt,
+    expiresAt,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+  });
 
   await emitSpineEvent({
     event_type: 'consent.approved',
