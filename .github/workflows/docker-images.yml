@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # reference-implementation/** is intentionally excluded to avoid rebuilding
+    # 4 images on every ref-impl commit (the repo's single largest CI cost).
+    # Coverage is preserved elsewhere:
+    #   - The console Docker image transpiles pdpp-reference-implementation, so
+    #     ref-impl changes CAN affect a Docker console build. That path is
+    #     exercised by reference-implementation.yml, which runs the console
+    #     standalone/integration builds on every ref-impl change.
+    #   - The release pipeline's validate-release-images job (semantic-release.yml)
+    #     still builds all Docker images before any publish.
+    # So removing this trigger trades earlier-but-redundant Docker feedback for a
+    # large cost saving, without losing build-safety on a real release.
     paths:
       - ".dockerignore"
       - ".env.docker.example"
@@ -16,9 +27,10 @@ on:
       - "packages/**"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "reference-implementation/**"
       - "scripts/docker-smoke.sh"
   pull_request:
+    # See the push trigger above: reference-implementation/** is excluded on
+    # purpose so ref-impl-only changes don't rebuild the Docker image matrix.
     paths:
       - ".dockerignore"
       - ".env.docker.example"
@@ -31,7 +43,6 @@ on:
       - "packages/**"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "reference-implementation/**"
       - "scripts/docker-smoke.sh"
   workflow_dispatch:
     inputs:
