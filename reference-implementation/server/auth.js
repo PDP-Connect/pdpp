@@ -1507,6 +1507,173 @@ function getOwnerDeviceAuthStore() {
   return isPostgresStorageBackend() ? postgresOwnerDeviceAuthStore : sqliteOwnerDeviceAuthStore;
 }
 
+// ─── Registered-client / CIMD-document / connector-catalog stores ────────────
+//
+// Three cohesive, domain-local stores for the oauth_clients,
+// cimd_client_documents, and connectors drift seams. Each method is the SAME
+// conceptual row op differing ONLY by SQL dialect (placeholder $1.. vs ?, the
+// ::jsonb / ::text casts, column order). Dialect SQL moves VERBATIM from the
+// old inline branches; the adapters return RAW rows (or perform the write) and
+// any caller-side concerns (mapRegisteredClientRow, the redirect_uris JSON
+// shaping, the active-token-count orchestration, spine events) stay in the
+// calling function. The backend is selected ONCE per op via
+// isPostgresStorageBackend(), mirroring the getPendingConsentStore /
+// getOwnerDeviceAuthStore precedent above. Each backend keeps its own read
+// primitive (postgresQuery/pgOne/pgExec vs getOne/exec/allowUnboundedReadAcknowledged).
+
+const postgresRegisteredClientStore = {
+  upsert: ({ clientId, registrationMode, tokenEndpointAuthMethod, clientSecret, persistedMetadataJson, timestamp }) =>
+    pgExec(
+      `INSERT INTO oauth_clients(
+         client_id, registration_mode, token_endpoint_auth_method,
+         client_secret, metadata_json, created_at, updated_at
+       ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)
+       ON CONFLICT (client_id) DO UPDATE SET
+         registration_mode = EXCLUDED.registration_mode,
+         token_endpoint_auth_method = EXCLUDED.token_endpoint_auth_method,
+         client_secret = EXCLUDED.client_secret,
+         metadata_json = EXCLUDED.metadata_json,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        clientId,
+        registrationMode,
+        tokenEndpointAuthMethod,
+        clientSecret,
+        persistedMetadataJson,
+        timestamp,
+        timestamp,
+      ],
+    ),
+  getByClientId: (clientId) =>
+    pgOne(
+      `SELECT client_id, registration_mode, token_endpoint_auth_method,
+              client_secret, metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE client_id = $1`,
+      [clientId],
+    ),
+  listByIssuerSubject: async (subjectId) =>
+    (await postgresQuery(
+      `SELECT client_id, client_secret, registration_mode, token_endpoint_auth_method,
+              metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE registration_mode = 'dynamic'
+         AND metadata_json->>'issuer_subject_id' = $1
+       ORDER BY created_at DESC`,
+      [subjectId],
+    )).rows,
+  countActiveTokensByClientId: (clientId) =>
+    pgOne(
+      `SELECT COUNT(*)::int AS active_token_count
+       FROM tokens
+       WHERE client_id = $1 AND revoked = FALSE`,
+      [clientId],
+    ),
+  deleteByClientId: (clientId) =>
+    pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]),
+};
+
+const sqliteRegisteredClientStore = {
+  upsert: ({ clientId, registrationMode, tokenEndpointAuthMethod, clientSecret, persistedMetadataJson, timestamp }) =>
+    exec(referenceQueries.authOauthClientsUpsert, [
+      clientId,
+      registrationMode,
+      tokenEndpointAuthMethod,
+      clientSecret,
+      persistedMetadataJson,
+      timestamp,
+      timestamp,
+    ]),
+  getByClientId: (clientId) =>
+    getOne(referenceQueries.authOauthClientsGetByClientId, [clientId]),
+  // REVIEWED-BOUNDED: per-operator dashboard-issued tokens are operator-scale
+  // (small in practice). The query's @max_rows=256 caps pathological growth.
+  listByIssuerSubject: (subjectId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authOauthClientsListByIssuerSubject, [subjectId]),
+  countActiveTokensByClientId: (clientId) =>
+    getOne(referenceQueries.authTokensCountActiveByClientId, [clientId]),
+  deleteByClientId: (clientId) =>
+    exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]),
+};
+
+function getRegisteredClientStore() {
+  return isPostgresStorageBackend() ? postgresRegisteredClientStore : sqliteRegisteredClientStore;
+}
+
+const postgresCimdStore = {
+  insert: ({ documentId, clientName, redirectUrisJson, logoUri, now }) =>
+    pgExec(
+      `INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at)
+       VALUES($1, $2, $3::jsonb, $4, $5, $6)`,
+      [documentId, clientName, redirectUrisJson, logoUri, now, now],
+    ),
+  getById: (documentId) =>
+    pgOne(
+      `SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at
+       FROM cimd_client_documents WHERE document_id = $1`,
+      [documentId],
+    ),
+  listAll: async () =>
+    (await postgresQuery(
+      'SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    )).rows,
+};
+
+const sqliteCimdStore = {
+  insert: ({ documentId, clientName, redirectUrisJson, logoUri, now }) =>
+    getDb().prepare(
+      'INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+    ).run(documentId, clientName, redirectUrisJson, logoUri, now, now),
+  getById: (documentId) =>
+    getDb().prepare(
+      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents WHERE document_id = ?',
+    ).get(documentId),
+  listAll: () =>
+    getDb().prepare(
+      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    ).all(),
+};
+
+function getCimdStore() {
+  return isPostgresStorageBackend() ? postgresCimdStore : sqliteCimdStore;
+}
+
+const postgresConnectorCatalogStore = {
+  upsert: ({ connectorId, manifestJson }) =>
+    pgExec(
+      `INSERT INTO connectors(connector_id, manifest)
+       VALUES($1, $2::jsonb)
+       ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest`,
+      [connectorId, manifestJson],
+    ),
+  listIds: async () =>
+    (await postgresQuery(
+      `SELECT connector_id
+       FROM connectors
+       ORDER BY connector_id ASC`,
+    )).rows,
+  getManifestById: (connectorId) =>
+    pgOne(
+      `SELECT manifest::text AS manifest
+       FROM connectors
+       WHERE connector_id = $1`,
+      [connectorId],
+    ),
+};
+
+const sqliteConnectorCatalogStore = {
+  upsert: ({ connectorId, manifestJson }) =>
+    exec(referenceQueries.authConnectorsUpsert, [connectorId, manifestJson]),
+  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
+  listIds: () => allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds),
+  getManifestById: (connectorId) =>
+    getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]),
+};
+
+function getConnectorCatalogStore() {
+  return isPostgresStorageBackend() ? postgresConnectorCatalogStore : sqliteConnectorCatalogStore;
+}
+
 async function getPendingConsentRow(deviceCode) {
   return getPendingConsentStore().getByDeviceCode(deviceCode);
 }
@@ -1699,39 +1866,14 @@ async function upsertRegisteredClient({
   const normalizedMetadata = normalizeClientRegistrationMetadata(inputForSpecNormalize);
   const persistedMetadata = { ...normalizedMetadata, ...referenceOnlyStamps };
   const timestamp = nowIso();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO oauth_clients(
-         client_id, registration_mode, token_endpoint_auth_method,
-         client_secret, metadata_json, created_at, updated_at
-       ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)
-       ON CONFLICT (client_id) DO UPDATE SET
-         registration_mode = EXCLUDED.registration_mode,
-         token_endpoint_auth_method = EXCLUDED.token_endpoint_auth_method,
-         client_secret = EXCLUDED.client_secret,
-         metadata_json = EXCLUDED.metadata_json,
-         updated_at = EXCLUDED.updated_at`,
-      [
-        clientId,
-        registrationMode,
-        normalizedMetadata.token_endpoint_auth_method,
-        clientSecret,
-        JSON.stringify(persistedMetadata),
-        timestamp,
-        timestamp,
-      ],
-    );
-    return;
-  }
-  exec(referenceQueries.authOauthClientsUpsert, [
+  await getRegisteredClientStore().upsert({
     clientId,
     registrationMode,
-    normalizedMetadata.token_endpoint_auth_method,
+    tokenEndpointAuthMethod: normalizedMetadata.token_endpoint_auth_method,
     clientSecret,
-    JSON.stringify(persistedMetadata),
+    persistedMetadataJson: JSON.stringify(persistedMetadata),
     timestamp,
-    timestamp,
-  ]);
+  });
 }
 
 export async function seedPreRegisteredClients(clients = [], opts = {}) {
@@ -1774,17 +1916,7 @@ export async function seedPreRegisteredClients(clients = [], opts = {}) {
 
 export async function getRegisteredClient(clientId) {
   if (!clientId) return null;
-  if (isPostgresStorageBackend()) {
-    const row = await pgOne(
-      `SELECT client_id, registration_mode, token_endpoint_auth_method,
-              client_secret, metadata_json::text AS metadata_json, created_at, updated_at
-       FROM oauth_clients
-       WHERE client_id = $1`,
-      [clientId],
-    );
-    return mapRegisteredClientRow(row || null);
-  }
-  const row = getOne(referenceQueries.authOauthClientsGetByClientId, [clientId]);
+  const row = await getRegisteredClientStore().getByClientId(clientId);
   return mapRegisteredClientRow(row || null);
 }
 
@@ -1795,34 +1927,19 @@ export async function createCimdDocument({ clientName, redirectUris, logoUri } =
   const documentId = `cimd_${rb(12).toString('hex')}`;
   const now = nowIso();
   const redirectUrisJson = JSON.stringify(Array.isArray(redirectUris) ? redirectUris : []);
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at)
-       VALUES($1, $2, $3::jsonb, $4, $5, $6)`,
-      [documentId, clientName || null, redirectUrisJson, logoUri || null, now, now],
-    );
-  } else {
-    getDb().prepare(
-      'INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at) VALUES(?,?,?,?,?,?)',
-    ).run(documentId, clientName || null, redirectUrisJson, logoUri || null, now, now);
-  }
+  await getCimdStore().insert({
+    documentId,
+    clientName: clientName || null,
+    redirectUrisJson,
+    logoUri: logoUri || null,
+    now,
+  });
   return documentId;
 }
 
 export async function getCimdDocument(documentId) {
   if (!documentId) return null;
-  let row;
-  if (isPostgresStorageBackend()) {
-    row = await pgOne(
-      `SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at
-       FROM cimd_client_documents WHERE document_id = $1`,
-      [documentId],
-    );
-  } else {
-    row = getDb().prepare(
-      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents WHERE document_id = ?',
-    ).get(documentId);
-  }
+  const row = await getCimdStore().getById(documentId);
   if (!row) return null;
   return {
     document_id: row.document_id,
@@ -1835,22 +1952,7 @@ export async function getCimdDocument(documentId) {
 }
 
 export async function listCimdDocuments() {
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      'SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
-    );
-    return result.rows.map((row) => ({
-      document_id: row.document_id,
-      client_name: row.client_name || null,
-      redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
-      logo_uri: row.logo_uri || null,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
-  }
-  const rows = getDb().prepare(
-    'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
-  ).all();
+  const rows = await getCimdStore().listAll();
   return rows.map((row) => ({
     document_id: row.document_id,
     client_name: row.client_name || null,
@@ -1957,47 +2059,20 @@ async function bindDynamicClientToApprovingOwner(registeredClient, subjectId) {
  */
 export async function listOwnerIssuedClients(subjectId) {
   if (!subjectId) return [];
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT client_id, client_secret, registration_mode, token_endpoint_auth_method,
-              metadata_json::text AS metadata_json, created_at, updated_at
-       FROM oauth_clients
-       WHERE registration_mode = 'dynamic'
-         AND metadata_json->>'issuer_subject_id' = $1
-       ORDER BY created_at DESC`,
-      [subjectId],
-    );
-    return Promise.all(result.rows.map(async (row) => {
-      const mapped = mapRegisteredClientRow(row);
-      if (!mapped) return null;
-      const countRow = await pgOne(
-        `SELECT COUNT(*)::int AS active_token_count
-         FROM tokens
-         WHERE client_id = $1 AND revoked = FALSE`,
-        [mapped.client_id],
-      );
-      return {
-        client_id: mapped.client_id,
-        client_name: mapped.metadata.client_name || null,
-        created_at: mapped.created_at,
-        active_token_count: countRow ? Number(countRow.active_token_count) || 0 : 0,
-      };
-    })).then((rows) => rows.filter(Boolean));
-  }
-  // REVIEWED-BOUNDED: per-operator dashboard-issued tokens are operator-scale
-  // (small in practice). The query's @max_rows=256 caps pathological growth.
-  const rows = allowUnboundedReadAcknowledged(referenceQueries.authOauthClientsListByIssuerSubject, [subjectId]);
-  return rows.map((row) => {
+  const store = getRegisteredClientStore();
+  const rows = await store.listByIssuerSubject(subjectId);
+  const projected = await Promise.all(rows.map(async (row) => {
     const mapped = mapRegisteredClientRow(row);
     if (!mapped) return null;
-    const countRow = getOne(referenceQueries.authTokensCountActiveByClientId, [mapped.client_id]);
+    const countRow = await store.countActiveTokensByClientId(mapped.client_id);
     return {
       client_id: mapped.client_id,
       client_name: mapped.metadata.client_name || null,
       created_at: mapped.created_at,
       active_token_count: countRow ? Number(countRow.active_token_count) || 0 : 0,
     };
-  }).filter(Boolean);
+  }));
+  return projected.filter(Boolean);
 }
 
 async function revokeClientAccessArtifacts(
@@ -2127,11 +2202,7 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
     disabledSubscriptionCount,
   } = await revokeClientAccessArtifacts(clientId, { requestId, traceId });
 
-  if (isPostgresStorageBackend()) {
-    await pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]);
-  } else {
-    exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]);
-  }
+  await getRegisteredClientStore().deleteByClientId(clientId);
 
   await emitSpineEvent({
     event_type: 'client.deleted',
@@ -2869,19 +2940,10 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
 export async function registerConnector(manifest, options = {}) {
   validateConnectorManifest(manifest);
   const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO connectors(connector_id, manifest)
-       VALUES($1, $2::jsonb)
-       ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest`,
-      [connectorId, JSON.stringify(storedManifest)],
-    );
-  } else {
-    exec(referenceQueries.authConnectorsUpsert, [
-      connectorId,
-      JSON.stringify(storedManifest),
-    ]);
-  }
+  await getConnectorCatalogStore().upsert({
+    connectorId,
+    manifestJson: JSON.stringify(storedManifest),
+  });
 
   if (isPostgresStorageBackend()) {
     const {
@@ -2944,16 +3006,7 @@ function normalizeConnectorManifestForStorage(manifest) {
  * fan-out) get deterministic enumeration.
  */
 export async function listRegisteredConnectorIds() {
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT connector_id
-       FROM connectors
-       ORDER BY connector_id ASC`,
-    );
-    return result.rows.map((row) => row.connector_id);
-  }
-  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
-  const rows = allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds);
+  const rows = await getConnectorCatalogStore().listIds();
   return rows.map((row) => row.connector_id);
 }
 
@@ -2977,25 +3030,12 @@ export async function getConnectorManifest(connectorId) {
 }
 
 async function getConnectorManifestRow(connectorId) {
-  const exact = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT manifest::text AS manifest
-         FROM connectors
-         WHERE connector_id = $1`,
-        [connectorId],
-      )
-    : getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  const store = getConnectorCatalogStore();
+  const exact = await store.getManifestById(connectorId);
   if (exact) return exact;
   const canonical = canonicalConnectorKey(connectorId);
   if (!canonical || canonical === connectorId) return null;
-  return isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT manifest::text AS manifest
-         FROM connectors
-         WHERE connector_id = $1`,
-        [canonical],
-      )
-    : getOne(referenceQueries.authConnectorsGetManifestById, [canonical]);
+  return store.getManifestById(canonical);
 }
 
 function parseAndValidateConnectorManifestRow(row, connectorId) {
