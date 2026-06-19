@@ -2073,9 +2073,7 @@ async function revokeClientAccessArtifacts(
   // Cascade-revoke any owner self-export tokens issued against this client.
   // This is what makes per-token DCR's "Revoke" button cascade to the bearer
   // for owner tokens (which never have a grant row).
-  const tokenRevoke = isPostgresStorageBackend()
-    ? await pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId])
-    : exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
+  const tokenRevoke = await getTokenStore().revokeByClientId(clientId);
   const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
   const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(
     clientId,
@@ -4284,24 +4282,7 @@ async function issueOAuthRefreshToken({ clientId, grantId, subjectId, expiresAt 
   const refreshToken = generateOAuthRefreshToken();
   const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
   const createdAt = nowIso();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt],
-    );
-  } else {
-    exec(referenceQueries.authOauthRefreshTokensInsert, [
-      refreshTokenHash,
-      clientId,
-      grantId,
-      subjectId,
-      createdAt,
-      expiresAt,
-    ]);
-  }
+  await getRefreshTokenStore().insert({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt });
   return refreshToken;
 }
 
@@ -4309,24 +4290,7 @@ async function issueOAuthRefreshTokenForPackage({ clientId, packageId, subjectId
   const refreshToken = generateOAuthRefreshToken();
   const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
   const createdAt = nowIso();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt],
-    );
-  } else {
-    exec(referenceQueries.authOauthRefreshTokensInsertPackage, [
-      refreshTokenHash,
-      clientId,
-      packageId,
-      subjectId,
-      createdAt,
-      expiresAt,
-    ]);
-  }
+  await getRefreshTokenStore().insertForPackage({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt });
   return refreshToken;
 }
 
@@ -4490,6 +4454,239 @@ const sqliteGrantPackageStore = {
 
 function getGrantPackageStore() {
   return isPostgresStorageBackend() ? postgresGrantPackageStore : sqliteGrantPackageStore;
+}
+
+// Three cohesive, domain-local stores for the dialect-only token /
+// oauth-authorization-code / oauth-refresh-token row seams. Each method is the
+// SAME conceptual row op differing ONLY by SQL dialect (placeholder $1.. vs ?,
+// the introspection join, status literals). Dialect SQL/queries move VERBATIM
+// from the old inline `isPostgresStorageBackend()` branches; the adapters
+// return RAW rows (or perform the write and return its `{ changes }`) and the
+// orchestration (row shaping, expiry checks, PKCE verification, error mapping,
+// spine events, single-use guards) stays in the calling functions. The backend
+// is selected ONCE per op via isPostgresStorageBackend(), mirroring the
+// existing getPendingConsentStore / getOwnerDeviceAuthStore / getGrantPackageStore
+// precedent.
+//
+// SKIPPED (left as honest inline keeps, not folded into these stores):
+//   - issueToken: the Postgres branch is a withPostgresTransaction(SELECT ...
+//     FOR UPDATE, UPDATE consumed, INSERT token) and the SQLite branch is a
+//     synchronous transaction(); divergent multi-statement control flow, not a
+//     single dialect-only op.
+//   - the grant-revoke and grant-package-revoke token / refresh-token cascades:
+//     multi-statement cascades already isolated in their orchestration
+//     (revokeGrant, markPackageRevokedCascade); wrapping adds an incidental hop.
+const postgresOAuthCodeStore = {
+  upsertPending: ({ id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_authorization_codes(
+         id, device_code, client_id, redirect_uri, state, code_challenge,
+         code_challenge_method, status, created_at, expires_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
+       ON CONFLICT(device_code) DO UPDATE SET
+         client_id = excluded.client_id,
+         redirect_uri = excluded.redirect_uri,
+         state = excluded.state,
+         code_challenge = excluded.code_challenge,
+         code_challenge_method = excluded.code_challenge_method,
+         status = 'pending',
+         code = NULL,
+         grant_id = NULL,
+         token_id = NULL,
+         created_at = excluded.created_at,
+         expires_at = excluded.expires_at,
+         issued_at = NULL,
+         consumed_at = NULL`,
+      [id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt],
+    ),
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
+      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+         FROM oauth_authorization_codes
+         WHERE device_code = $1`,
+      [deviceCode],
+    ),
+  markExpiredByDeviceCode: (deviceCode) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
+      [deviceCode],
+    ),
+  issueForPackageDeviceCode: ({ code, packageId, token, issuedAt, expiresAt, deviceCode }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = NULL, package_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  issueForDeviceCode: ({ code, grantId, token, issuedAt, expiresAt, deviceCode }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  getByCode: (code) =>
+    pgOne(
+      `SELECT id, code, client_id, redirect_uri, code_challenge, code_challenge_method,
+                status, grant_id, package_id, token_id, expires_at, consumed_at
+         FROM oauth_authorization_codes
+         WHERE code = $1`,
+      [code],
+    ),
+  consumeCode: ({ consumedAt, code }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+         SET status = 'consumed', consumed_at = $1
+         WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
+      [consumedAt, code],
+    ),
+};
+
+const sqliteOAuthCodeStore = {
+  upsertPending: ({ id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthAuthorizationCodesUpsertPending, [
+      id,
+      deviceCode,
+      clientId,
+      redirectUri,
+      state,
+      codeChallenge,
+      codeChallengeMethod,
+      createdAt,
+      expiresAt,
+    ]),
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]),
+  markExpiredByDeviceCode: (deviceCode) =>
+    exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]),
+  issueForPackageDeviceCode: ({ code, packageId, token, issuedAt, expiresAt, deviceCode }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssuePackageForDeviceCode,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  issueForDeviceCode: ({ code, grantId, token, issuedAt, expiresAt, deviceCode }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssueForDeviceCode,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  getByCode: (code) =>
+    getOne(referenceQueries.authOauthAuthorizationCodesGetByCode, [code]),
+  consumeCode: ({ consumedAt, code }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesConsumeCode,
+      [consumedAt, code],
+    ),
+};
+
+function getOAuthCodeStore() {
+  return isPostgresStorageBackend() ? postgresOAuthCodeStore : sqliteOAuthCodeStore;
+}
+
+const postgresRefreshTokenStore = {
+  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt],
+    ),
+  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt],
+    ),
+  getByTokenHash: (refreshTokenHash) =>
+    pgOne(
+      `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+                created_at, expires_at, last_used_at, revoked_at
+         FROM oauth_refresh_tokens
+         WHERE refresh_token_hash = $1`,
+      [refreshTokenHash],
+    ),
+  markUsed: ({ usedAt, refreshTokenHash }) =>
+    pgExec(
+      `UPDATE oauth_refresh_tokens
+       SET last_used_at = $1
+       WHERE refresh_token_hash = $2 AND status = 'active'`,
+      [usedAt, refreshTokenHash],
+    ),
+};
+
+const sqliteRefreshTokenStore = {
+  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthRefreshTokensInsert, [
+      refreshTokenHash,
+      clientId,
+      grantId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]),
+  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthRefreshTokensInsertPackage, [
+      refreshTokenHash,
+      clientId,
+      packageId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]),
+  getByTokenHash: (refreshTokenHash) =>
+    getOne(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]),
+  markUsed: ({ usedAt, refreshTokenHash }) =>
+    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]),
+};
+
+function getRefreshTokenStore() {
+  return isPostgresStorageBackend() ? postgresRefreshTokenStore : sqliteRefreshTokenStore;
+}
+
+const postgresTokenStore = {
+  insertOwner: ({ tokenId, subjectId, clientId, expiresAt }) =>
+    pgExec(
+      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, 'owner', $4)`,
+      [tokenId, subjectId, clientId, expiresAt],
+    ),
+  getIntrospection: (token) =>
+    pgOne(
+      `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+                g.status AS grant_status,
+                g.grant_json::text AS grant_json,
+                g.trace_id,
+                g.scenario_id,
+                gp.status AS package_status,
+                gp.package_json::text AS package_json,
+                gp.trace_id AS package_trace_id,
+                gp.scenario_id AS package_scenario_id,
+                g.storage_binding_json::text AS storage_binding_json
+         FROM tokens t
+         LEFT JOIN grants g ON t.grant_id = g.grant_id
+         LEFT JOIN grant_packages gp ON t.package_id = gp.package_id
+         WHERE t.token_id = $1`,
+      [token],
+    ),
+  revokeByClientId: (clientId) =>
+    pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId]),
+};
+
+const sqliteTokenStore = {
+  insertOwner: ({ tokenId, subjectId, clientId, expiresAt }) =>
+    exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, clientId, expiresAt]),
+  getIntrospection: (token) =>
+    getOne(referenceQueries.authTokensGetIntrospection, [token]),
+  revokeByClientId: (clientId) =>
+    exec(referenceQueries.authTokensRevokeByClientId, [clientId]),
+};
+
+function getTokenStore() {
+  return isPostgresStorageBackend() ? postgresTokenStore : sqliteTokenStore;
 }
 
 async function issuePackageToken(packageId, subjectId, clientId, expiresAt = null, meta = {}) {
@@ -5297,45 +5494,19 @@ export async function revokeGrantPackage(packageId, context = {}) {
 
 export async function issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, { packageId, token }) {
   if (!isNonEmptyString(deviceCode)) return null;
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
-         FROM oauth_authorization_codes
-         WHERE device_code = $1`,
-        [deviceCode],
-      )
-    : getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]);
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
 
   if (!row || row.status !== 'pending') return null;
   if (isExpired(row)) {
-    if (isPostgresStorageBackend()) {
-      await pgExec(
-        `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
-        [deviceCode],
-      );
-    } else {
-      exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]);
-    }
+    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
     throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
   }
 
   const code = generateId('oacode');
   const issuedAt = nowIso();
   const expiresAt = expiresInIso(300);
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE oauth_authorization_codes
-       SET code = $1, grant_id = NULL, package_id = $2, token_id = $3, status = 'issued',
-           issued_at = $4, expires_at = $5
-       WHERE device_code = $6 AND status = 'pending'`,
-      [code, packageId, token, issuedAt, expiresAt, deviceCode],
-    );
-  } else {
-    exec(
-      referenceQueries.authOauthAuthorizationCodesIssuePackageForDeviceCode,
-      [code, packageId, token, issuedAt, expiresAt, deviceCode],
-    );
-  }
+  await oauthCodeStore.issueForPackageDeviceCode({ code, packageId, token, issuedAt, expiresAt, deviceCode });
 
   return {
     code,
@@ -5380,99 +5551,36 @@ export async function stageOAuthAuthorizationCodeRequest({
     expiresAt: expiresInIso(expiresInSeconds),
   };
 
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO oauth_authorization_codes(
-         id, device_code, client_id, redirect_uri, state, code_challenge,
-         code_challenge_method, status, created_at, expires_at
-       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
-       ON CONFLICT(device_code) DO UPDATE SET
-         client_id = excluded.client_id,
-         redirect_uri = excluded.redirect_uri,
-         state = excluded.state,
-         code_challenge = excluded.code_challenge,
-         code_challenge_method = excluded.code_challenge_method,
-         status = 'pending',
-         code = NULL,
-         grant_id = NULL,
-         token_id = NULL,
-         created_at = excluded.created_at,
-         expires_at = excluded.expires_at,
-         issued_at = NULL,
-         consumed_at = NULL`,
-      [
-        row.id,
-        row.deviceCode,
-        row.clientId,
-        row.redirectUri,
-        row.state,
-        row.codeChallenge,
-        row.codeChallengeMethod,
-        row.createdAt,
-        row.expiresAt,
-      ],
-    );
-  } else {
-    exec(
-      referenceQueries.authOauthAuthorizationCodesUpsertPending,
-      [
-        row.id,
-        row.deviceCode,
-        row.clientId,
-        row.redirectUri,
-        row.state,
-        row.codeChallenge,
-        row.codeChallengeMethod,
-        row.createdAt,
-        row.expiresAt,
-      ],
-    );
-  }
+  await getOAuthCodeStore().upsertPending({
+    id: row.id,
+    deviceCode: row.deviceCode,
+    clientId: row.clientId,
+    redirectUri: row.redirectUri,
+    state: row.state,
+    codeChallenge: row.codeChallenge,
+    codeChallengeMethod: row.codeChallengeMethod,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+  });
 
   return { ...row, status: 'pending' };
 }
 
 export async function issueOAuthAuthorizationCodeForDeviceCode(deviceCode, { grantId, token }) {
   if (!isNonEmptyString(deviceCode)) return null;
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
-         FROM oauth_authorization_codes
-         WHERE device_code = $1`,
-        [deviceCode],
-      )
-    : getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]);
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
 
   if (!row || row.status !== 'pending') return null;
   if (isExpired(row)) {
-    if (isPostgresStorageBackend()) {
-      await pgExec(
-        `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
-        [deviceCode],
-      );
-    } else {
-      exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]);
-    }
+    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
     throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
   }
 
   const code = generateId('oacode');
   const issuedAt = nowIso();
   const expiresAt = expiresInIso(300);
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE oauth_authorization_codes
-       SET code = $1, grant_id = $2, token_id = $3, status = 'issued',
-           issued_at = $4, expires_at = $5
-       WHERE device_code = $6 AND status = 'pending'`,
-      [code, grantId, token, issuedAt, expiresAt, deviceCode],
-    );
-  } else {
-    exec(
-      referenceQueries.authOauthAuthorizationCodesIssueForDeviceCode,
-      [code, grantId, token, issuedAt, expiresAt, deviceCode],
-    );
-  }
+  await oauthCodeStore.issueForDeviceCode({ code, grantId, token, issuedAt, expiresAt, deviceCode });
 
   return {
     code,
@@ -5507,15 +5615,8 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError('invalid_request', 'code_verifier must be 43-128 unreserved URI characters');
   }
 
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT id, code, client_id, redirect_uri, code_challenge, code_challenge_method,
-                status, grant_id, package_id, token_id, expires_at, consumed_at
-         FROM oauth_authorization_codes
-         WHERE code = $1`,
-        [code],
-      )
-    : getOne(referenceQueries.authOauthAuthorizationCodesGetByCode, [code]);
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByCode(code);
 
   if (!row || row.status !== 'issued' || row.consumed_at) {
     throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
@@ -5539,17 +5640,7 @@ export async function exchangeOAuthAuthorizationCode({
   }
 
   const consumedAt = nowIso();
-  const updated = isPostgresStorageBackend()
-    ? await pgExec(
-        `UPDATE oauth_authorization_codes
-         SET status = 'consumed', consumed_at = $1
-         WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
-        [consumedAt, code],
-      )
-    : exec(
-        referenceQueries.authOauthAuthorizationCodesConsumeCode,
-        [consumedAt, code],
-      );
+  const updated = await oauthCodeStore.consumeCode({ consumedAt, code });
 
   if (!updated.changes) {
     throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
@@ -5599,15 +5690,8 @@ export async function exchangeOAuthRefreshToken({
   }
 
   const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-                created_at, expires_at, last_used_at, revoked_at
-         FROM oauth_refresh_tokens
-         WHERE refresh_token_hash = $1`,
-        [refreshTokenHash],
-      )
-    : getOne(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]);
+  const refreshTokenStore = getRefreshTokenStore();
+  const row = await refreshTokenStore.getByTokenHash(refreshTokenHash);
 
   if (!row || row.status !== 'active' || row.revoked_at) {
     throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token is invalid');
@@ -5653,16 +5737,7 @@ export async function exchangeOAuthRefreshToken({
   }
 
   const usedAt = nowIso();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE oauth_refresh_tokens
-       SET last_used_at = $1
-       WHERE refresh_token_hash = $2 AND status = 'active'`,
-      [usedAt, refreshTokenHash],
-    );
-  } else {
-    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]);
-  }
+  await refreshTokenStore.markUsed({ usedAt, refreshTokenHash });
 
   return {
     access_token: accessToken,
@@ -6277,15 +6352,7 @@ async function issueOwnerTokenRecord(subjectId, meta = {}) {
   // Record the issuing client_id when the caller knows it (per-token DCR
   // path). Pre-DCR callers pass NULL and the row stays as before.
   // See openspec/changes/dcr-per-owner-token-with-revoke/.
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-       VALUES($1, NULL, $2, $3, 'owner', $4)`,
-      [tokenId, subjectId, meta.clientId || null, expiresAt],
-    );
-  } else {
-    exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, meta.clientId || null, expiresAt]);
-  }
+  await getTokenStore().insertOwner({ tokenId, subjectId, clientId: meta.clientId || null, expiresAt });
   await emitSpineEvent({
     event_type: 'token.issued',
     trace_id: meta.traceContext?.trace_id || undefined,
@@ -6322,25 +6389,7 @@ export async function issueOwnerToken(subjectId, meta = {}) {
  * RFC 7662-style introspection with PDPP extensions
  */
 export async function introspect(token) {
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
-                g.status AS grant_status,
-                g.grant_json::text AS grant_json,
-                g.trace_id,
-                g.scenario_id,
-                gp.status AS package_status,
-                gp.package_json::text AS package_json,
-                gp.trace_id AS package_trace_id,
-                gp.scenario_id AS package_scenario_id,
-                g.storage_binding_json::text AS storage_binding_json
-         FROM tokens t
-         LEFT JOIN grants g ON t.grant_id = g.grant_id
-         LEFT JOIN grant_packages gp ON t.package_id = gp.package_id
-         WHERE t.token_id = $1`,
-        [token],
-      )
-    : getOne(referenceQueries.authTokensGetIntrospection, [token]);
+  const row = await getTokenStore().getIntrospection(token);
 
   if (!row) return { active: false };
 
