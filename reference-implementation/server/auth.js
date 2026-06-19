@@ -4330,17 +4330,171 @@ async function issueOAuthRefreshTokenForPackage({ clientId, packageId, subjectId
   return refreshToken;
 }
 
-async function issuePackageToken(packageId, subjectId, clientId, expiresAt = null, meta = {}) {
-  const tokenId = generateToken();
-  if (isPostgresStorageBackend()) {
-    await pgExec(
+// Grant-package row operations. One adapter per backend; the dialect SQL
+// moves verbatim from the inline `isPostgresStorageBackend()` branches that
+// previously lived in each helper below. Every method is a single conceptual
+// row operation (one statement, or the cohesive revoke cascade); all
+// orchestration (spine events, the child-grant loop, envelope building,
+// row normalization, partial-failure accounting) stays caller-side so the
+// adapters remain thin and dialect-only.
+const postgresGrantPackageStore = {
+  insertPackageToken: ({ tokenId, packageId, subjectId, clientId, expiresAt }) =>
+    pgExec(
       `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
        VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
       [tokenId, packageId, subjectId, clientId, expiresAt],
+    ),
+  getPackageById: (packageId) =>
+    pgOne(
+      `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+              parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+         FROM grant_packages
+         WHERE package_id = $1`,
+      [packageId],
+    ),
+  insertChildGrant: ({ grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId }) =>
+    pgExec(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, issued_at, expires_at, trace_id, scenario_id
+       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+      [grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId],
+    ),
+  insertPackage: ({ packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt }) =>
+    pgExec(
+      `INSERT INTO grant_packages(
+         package_id, subject_id, client_id, status, package_json,
+         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
+      [packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt],
+    ),
+  insertPackageMember: ({ packageId, grantId, tokenId, sourceJson, addedAt }) =>
+    pgExec(
+      `INSERT INTO grant_package_members(
+         package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+       ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
+      [packageId, grantId, tokenId, sourceJson, addedAt],
+    ),
+  listActiveMembers: async (packageId) =>
+    (await postgresQuery(
+      `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
+              gm.status, gm.added_at, gm.revoked_at,
+              g.status AS grant_status, g.grant_json::text AS grant_json,
+              g.storage_binding_json::text AS storage_binding_json,
+              t.revoked AS token_revoked, t.expires_at AS token_expires_at
+       FROM grant_package_members gm
+       JOIN grants g ON gm.grant_id = g.grant_id
+       JOIN tokens t ON gm.token_id = t.token_id
+       WHERE gm.package_id = $1
+         AND gm.status = 'active'
+       ORDER BY gm.added_at, gm.grant_id`,
+      [packageId],
+    )).rows,
+  listAllMembers: async (packageId) =>
+    (await postgresQuery(
+      `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
+              gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
+              g.status AS grant_status
+         FROM grant_package_members gm
+         JOIN grants g ON gm.grant_id = g.grant_id
+         WHERE gm.package_id = $1
+         ORDER BY gm.added_at, gm.grant_id`,
+      [packageId],
+    )).rows,
+  getPackageIdForGrant: (grantId) =>
+    pgOne(
+      `SELECT package_id
+         FROM grant_package_members
+         WHERE grant_id = $1
+         ORDER BY added_at
+         LIMIT 1`,
+      [grantId],
+    ),
+  markMemberRevoked: ({ packageId, grantId, revokedAt }) =>
+    pgExec(
+      `UPDATE grant_package_members
+       SET status = 'revoked', revoked_at = $1
+       WHERE package_id = $2 AND grant_id = $3 AND status = 'active'`,
+      [revokedAt, packageId, grantId],
+    ),
+  markPackageRevokedCascade: async ({ packageId, revokedAt }) => {
+    await pgExec(
+      "UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
     );
-  } else {
-    exec(referenceQueries.authTokensInsertMcpPackage, [tokenId, packageId, subjectId, clientId, expiresAt]);
-  }
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
+    await pgExec(
+      "UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    await pgExec(
+      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+  },
+};
+
+const sqliteGrantPackageStore = {
+  insertPackageToken: ({ tokenId, packageId, subjectId, clientId, expiresAt }) =>
+    exec(referenceQueries.authTokensInsertMcpPackage, [tokenId, packageId, subjectId, clientId, expiresAt]),
+  getPackageById: (packageId) =>
+    getOne(referenceQueries.authGrantPackagesGetById, [packageId]),
+  insertChildGrant: ({ grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId }) =>
+    exec(referenceQueries.authGrantsInsert, [
+      grantId,
+      subjectId,
+      clientId,
+      storageBindingJson,
+      grantJson,
+      accessMode,
+      issuedAt,
+      expiresAt,
+      traceId,
+      scenarioId,
+    ]),
+  insertPackage: ({ packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt }) =>
+    exec(referenceQueries.authGrantPackagesInsert, [
+      packageId,
+      subjectId,
+      clientId,
+      packageJson,
+      parentPackageId,
+      traceId,
+      scenarioId,
+      createdAt,
+      approvedAt,
+    ]),
+  insertPackageMember: ({ packageId, grantId, tokenId, sourceJson, addedAt }) =>
+    exec(referenceQueries.authGrantPackageMembersInsert, [
+      packageId,
+      grantId,
+      tokenId,
+      sourceJson,
+      addedAt,
+    ]),
+  listActiveMembers: (packageId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]),
+  listAllMembers: (packageId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListAllByPackage, [packageId]),
+  getPackageIdForGrant: (grantId) =>
+    getOne(referenceQueries.authGrantPackageMembersGetPackageIdByGrant, [grantId]),
+  markMemberRevoked: ({ packageId, grantId, revokedAt }) =>
+    exec(referenceQueries.authGrantPackageMembersMarkRevokedByGrant, [revokedAt, packageId, grantId]),
+  markPackageRevokedCascade: ({ packageId, revokedAt }) => {
+    exec(referenceQueries.authGrantPackagesMarkRevoked, [revokedAt, packageId]);
+    exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
+    exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [revokedAt, packageId]);
+    exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [revokedAt, packageId]);
+  },
+};
+
+function getGrantPackageStore() {
+  return isPostgresStorageBackend() ? postgresGrantPackageStore : sqliteGrantPackageStore;
+}
+
+async function issuePackageToken(packageId, subjectId, clientId, expiresAt = null, meta = {}) {
+  const tokenId = generateToken();
+  await getGrantPackageStore().insertPackageToken({ tokenId, packageId, subjectId, clientId, expiresAt });
 
   await emitSpineEvent({
     event_type: 'token.issued',
@@ -4399,15 +4553,7 @@ function normalizePackageRow(row) {
  */
 async function getGrantPackageRow(packageId) {
   if (!isNonEmptyString(packageId)) return null;
-  const row = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
-                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
-           FROM grant_packages
-           WHERE package_id = $1`,
-        [packageId],
-      )
-    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  const row = await getGrantPackageStore().getPackageById(packageId);
   return normalizePackageRow(row);
 }
 
@@ -4541,39 +4687,18 @@ async function persistChildGrantForPackage({
     expires_at: expiresAt,
   };
 
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO grants(
-         grant_id, subject_id, client_id, storage_binding_json, grant_json,
-         access_mode, issued_at, expires_at, trace_id, scenario_id
-       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
-      [
-        grantId,
-        subjectId,
-        registeredClient.client_id,
-        serializeStorageBinding(persistedStorageBinding),
-        JSON.stringify(grant),
-        selection.access_mode,
-        issuedAt,
-        expiresAt,
-        traceContext.trace_id,
-        traceContext.scenario_id,
-      ],
-    );
-  } else {
-    exec(referenceQueries.authGrantsInsert, [
-      grantId,
-      subjectId,
-      registeredClient.client_id,
-      serializeStorageBinding(persistedStorageBinding),
-      JSON.stringify(grant),
-      selection.access_mode,
-      issuedAt,
-      expiresAt,
-      traceContext.trace_id,
-      traceContext.scenario_id,
-    ]);
-  }
+  await getGrantPackageStore().insertChildGrant({
+    grantId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+    grantJson: JSON.stringify(grant),
+    accessMode: selection.access_mode,
+    issuedAt,
+    expiresAt,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+  });
 
   await emitSpineEvent({
     event_type: 'grant.issued',
@@ -4660,37 +4785,17 @@ export async function createHostedMcpGrantPackage({
     source_bounded_child_grants: true,
   };
 
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `INSERT INTO grant_packages(
-         package_id, subject_id, client_id, status, package_json,
-         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
-       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
-      [
-        packageId,
-        subjectId,
-        clientId,
-        JSON.stringify(packageEnvelope),
-        null,
-        traceContext.trace_id,
-        traceContext.scenario_id,
-        createdAt,
-        createdAt,
-      ],
-    );
-  } else {
-    exec(referenceQueries.authGrantPackagesInsert, [
-      packageId,
-      subjectId,
-      clientId,
-      JSON.stringify(packageEnvelope),
-      null,
-      traceContext.trace_id,
-      traceContext.scenario_id,
-      createdAt,
-      createdAt,
-    ]);
-  }
+  await getGrantPackageStore().insertPackage({
+    packageId,
+    subjectId,
+    clientId,
+    packageJson: JSON.stringify(packageEnvelope),
+    parentPackageId: null,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+    createdAt,
+    approvedAt: createdAt,
+  });
 
   const childGrants = [];
   for (const [index, detail] of authorizationDetails.entries()) {
@@ -4724,22 +4829,13 @@ export async function createHostedMcpGrantPackage({
     const connectionId = isNonEmptyString(connectionIds[index]) ? connectionIds[index] : null;
     const source = describePackageMemberSource(grant, connectionId, sourceMetadata[index]);
     const addedAt = nowIso();
-    if (isPostgresStorageBackend()) {
-      await pgExec(
-        `INSERT INTO grant_package_members(
-           package_id, grant_id, token_id, source_json, status, added_at, revoked_at
-         ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
-        [packageId, grant.grant_id, token, JSON.stringify(source), addedAt],
-      );
-    } else {
-      exec(referenceQueries.authGrantPackageMembersInsert, [
-        packageId,
-        grant.grant_id,
-        token,
-        JSON.stringify(source),
-        addedAt,
-      ]);
-    }
+    await getGrantPackageStore().insertPackageMember({
+      packageId,
+      grantId: grant.grant_id,
+      tokenId: token,
+      sourceJson: JSON.stringify(source),
+      addedAt,
+    });
     childGrants.push({ grant, token, source, connection_id: connectionId });
   }
 
@@ -4794,36 +4890,14 @@ export async function createHostedMcpGrantPackage({
  */
 export async function getGrantPackageAccess(packageId) {
   if (!isNonEmptyString(packageId)) return null;
-  const packageRow = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
-                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
-         FROM grant_packages
-         WHERE package_id = $1`,
-        [packageId],
-      )
-    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  const store = getGrantPackageStore();
+  const packageRow = await store.getPackageById(packageId);
   const grantPackage = normalizePackageRow(packageRow);
   if (!grantPackage || grantPackage.status !== 'active') {
     return null;
   }
 
-  const memberRows = isPostgresStorageBackend()
-    ? (await postgresQuery(
-        `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
-                gm.status, gm.added_at, gm.revoked_at,
-                g.status AS grant_status, g.grant_json::text AS grant_json,
-                g.storage_binding_json::text AS storage_binding_json,
-                t.revoked AS token_revoked, t.expires_at AS token_expires_at
-         FROM grant_package_members gm
-         JOIN grants g ON gm.grant_id = g.grant_id
-         JOIN tokens t ON gm.token_id = t.token_id
-         WHERE gm.package_id = $1
-           AND gm.status = 'active'
-         ORDER BY gm.added_at, gm.grant_id`,
-        [packageId],
-      )).rows
-    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]);
+  const memberRows = await store.listActiveMembers(packageId);
 
   const activeMembers = [];
   for (const row of memberRows) {
@@ -4967,15 +5041,8 @@ export async function listGrantPackagesForOwner(opts = {}) {
  */
 export async function getGrantPackageForOwner(packageId) {
   if (!isNonEmptyString(packageId)) return null;
-  const packageRow = isPostgresStorageBackend()
-    ? await pgOne(
-        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
-                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
-           FROM grant_packages
-           WHERE package_id = $1`,
-        [packageId],
-      )
-    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  const store = getGrantPackageStore();
+  const packageRow = await store.getPackageById(packageId);
   const grantPackage = normalizePackageRow(packageRow);
   if (!grantPackage) return null;
 
@@ -4983,18 +5050,7 @@ export async function getGrantPackageForOwner(packageId) {
   // marked revoked, so the operator can see the cascade history on a
   // revoked package detail page. The MCP fan-out path uses
   // `getGrantPackageAccess`, which intentionally hides revoked rows.
-  const memberRows = isPostgresStorageBackend()
-    ? (await postgresQuery(
-        `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
-                gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
-                g.status AS grant_status
-           FROM grant_package_members gm
-           JOIN grants g ON gm.grant_id = g.grant_id
-           WHERE gm.package_id = $1
-           ORDER BY gm.added_at, gm.grant_id`,
-        [packageId],
-      )).rows
-    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListAllByPackage, [packageId]);
+  const memberRows = await store.listAllMembers(packageId);
 
   const children = await Promise.all(memberRows.map(async (row) => ({
     grant_id: row.grant_id,
@@ -5145,76 +5201,21 @@ export async function getCumulativeClientAccessForPackage(packageId) {
  */
 export async function getGrantPackageIdForGrant(grantId) {
   if (!isNonEmptyString(grantId)) return null;
-  if (isPostgresStorageBackend()) {
-    const row = await pgOne(
-      `SELECT package_id
-         FROM grant_package_members
-         WHERE grant_id = $1
-         ORDER BY added_at
-         LIMIT 1`,
-      [grantId],
-    );
-    return row?.package_id ?? null;
-  }
-  const row = getOne(referenceQueries.authGrantPackageMembersGetPackageIdByGrant, [grantId]);
+  const row = await getGrantPackageStore().getPackageIdForGrant(grantId);
   return row?.package_id ?? null;
 }
 
 async function listActiveGrantPackageMembersForRevocation(packageId) {
   if (!isNonEmptyString(packageId)) return [];
-  if (isPostgresStorageBackend()) {
-    return (await postgresQuery(
-      `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
-              gm.status, gm.added_at, gm.revoked_at,
-              g.status AS grant_status, g.grant_json::text AS grant_json,
-              g.storage_binding_json::text AS storage_binding_json,
-              t.revoked AS token_revoked, t.expires_at AS token_expires_at
-         FROM grant_package_members gm
-         JOIN grants g ON gm.grant_id = g.grant_id
-         JOIN tokens t ON gm.token_id = t.token_id
-         WHERE gm.package_id = $1
-           AND gm.status = 'active'
-         ORDER BY gm.added_at, gm.grant_id`,
-      [packageId],
-    )).rows;
-  }
-  return allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]);
+  return getGrantPackageStore().listActiveMembers(packageId);
 }
 
 async function markGrantPackageMemberRevoked(packageId, grantId, revokedAt) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      `UPDATE grant_package_members
-       SET status = 'revoked', revoked_at = $1
-       WHERE package_id = $2 AND grant_id = $3 AND status = 'active'`,
-      [revokedAt, packageId, grantId],
-    );
-    return;
-  }
-  exec(referenceQueries.authGrantPackageMembersMarkRevokedByGrant, [revokedAt, packageId, grantId]);
+  await getGrantPackageStore().markMemberRevoked({ packageId, grantId, revokedAt });
 }
 
 async function markGrantPackageRevoked(packageId, revokedAt) {
-  if (isPostgresStorageBackend()) {
-    await pgExec(
-      "UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
-      [revokedAt, packageId],
-    );
-    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
-    await pgExec(
-      "UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
-      [revokedAt, packageId],
-    );
-    await pgExec(
-      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
-      [revokedAt, packageId],
-    );
-    return;
-  }
-  exec(referenceQueries.authGrantPackagesMarkRevoked, [revokedAt, packageId]);
-  exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
-  exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [revokedAt, packageId]);
-  exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [revokedAt, packageId]);
+  await getGrantPackageStore().markPackageRevokedCascade({ packageId, revokedAt });
 }
 
 function normalizePackageRevokeError(grantId, err) {
