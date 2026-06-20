@@ -100,3 +100,20 @@ pre-commit:
     # block at function entry covers multiple calls in the body. PR
     # review is the right tool for "is this escape hatch justified?";
     # lefthook is the right tool for "did you bypass the wrapper?".
+
+# Pre-push gate. Deliberately the FAST gate only (reference-implementation
+# typecheck, ~4s), not the full test suite — a multi-minute pre-push hook on a
+# high-velocity direct-to-main workflow would just get bypassed with
+# --no-verify. Typecheck catches the most common pre-merge break (the type
+# errors that previously sat red on main for days). The full suite still runs
+# in CI / as the required check before merge.
+#
+# Scoped to changes under reference-implementation so unrelated pushes (docs,
+# other packages) aren't taxed. Run `git push --no-verify` to bypass in a
+# genuine emergency.
+pre-push:
+  parallel: false
+  jobs:
+    - name: reference-implementation:typecheck
+      glob: "reference-implementation/**/*.{ts,tsx}"
+      run: pnpm --dir reference-implementation run typecheck

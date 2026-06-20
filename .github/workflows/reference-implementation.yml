@@ -14,22 +14,13 @@ name: reference-implementation
 # split-public-site-and-operator-console migration; the triggers moved with them.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/reference-implementation.yml"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "apps/console/**"
-      - "apps/site/**"
-      - "packages/reference-contract/**"
-      - "reference-implementation/**"
-      - "scripts/check-console-health-surfaces.mjs"
-      - "scripts/check-console-health-surfaces.test.mjs"
-      - "scripts/check-owner-journey-acceptance.mjs"
-      - "scripts/check-owner-journey-acceptance.test.mjs"
-      - "scripts/owner-journey-acceptance/**"
+  # PR-only (no push-to-main trigger). This is now a REQUIRED check on the main
+  # ruleset, so it runs before merge on every PR and gates landing. Running it
+  # again on the post-merge push would re-do the work the merging PR already
+  # validated — ~7x the runs for no added safety on this single-author repo.
+  # Combined with the pre-push typecheck hook (lefthook.yml), the common break
+  # (type errors) is caught even earlier. Use workflow_dispatch to re-run on
+  # demand against main if ever needed.
   pull_request:
     paths:
       - ".github/workflows/reference-implementation.yml"
