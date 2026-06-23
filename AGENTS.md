@@ -4,6 +4,8 @@ This repo is spec-driven. When an agent is asked to design, plan, refactor, or i
 
 If you are doing a trivial fix (typo, one-line bug, test tweak, comment), skip OpenSpec. Everything else: use it.
 
+Do not commit private names, personal handles, private absolute paths, or third-party personal references in docs, code, fixtures, or reports; use role-neutral labels unless explicitly approved.
+
 Read `openspec/README.md` before non-trivial planning work. It is the local rulebook for OpenSpec lifecycle, closeout, and the design-note intake lane.
 
 For multi-agent work, worker handoffs, or parallel implementation lanes, read
