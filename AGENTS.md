@@ -44,6 +44,9 @@ openspec/
       specs/<capability>/spec.md    # spec delta: ADDED / MODIFIED / REMOVED Requirements
       design-notes/                 # optional non-canonical notes tightly scoped to the change
 design-notes/                       # cross-cutting non-canonical question intake
+docs/
+  research/                         # evidence base: web research, prior-art, deep findings (cite, don't restate)
+  positioning/                      # canonical "where does PDPP sit / why not just X" stances; see docs/positioning/README.md
 ```
 
 Capability names mirror existing folders under `openspec/specs/`. Prefer updating an existing capability over minting a new one.
@@ -88,6 +91,10 @@ Use these only when they materially reduce repeated exploration or browser work:
 - When delegation is explicitly in scope, use low-cost subagents for bounded data gathering or isolated implementation lanes. Give them exact read/write scope, ask for a concise report under `tmp/workstreams/`, and close/reuse agents rather than spawning redundant ones.
 - Before asking for another human live run, exhaust existing timeline events, fixtures, telemetry, container logs, and local reproducible checks. A new run should either validate a concrete fix or capture specifically missing evidence.
 - Commit verified tranches as you go, but never use broad restore/checkout commands over files with uncommitted user or worker edits.
+
+## Positioning
+
+`docs/positioning/` holds the settled answers to the recurring "where does PDPP sit / why not just X" questions (OAuth, DTI/DTP, durable grants, persistence/self-sovereignty, why-now). When answering a reviewer, investor, or standards body on one of these, draw from here rather than re-deriving — and update the relevant position if the analysis advances. Each position cites evidence in `docs/research/` and follows the format in `docs/positioning/README.md` (asked-as / short answer / why it's true / what we do NOT claim / status). Spec *gaps* a position surfaces belong in an OpenSpec change, not in the position file.
 
 ## Design notes
 
