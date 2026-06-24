@@ -1610,6 +1610,39 @@ const ExploreRecordsResponseSchema = {
   ],
 };
 
+const ExploreRecordBucketSchema = {
+  type: "object" as const,
+  additionalProperties: false,
+  properties: {
+    start: { type: "string", format: "date-time" },
+    end: { type: "string", format: "date-time" },
+    count: { type: "integer", minimum: 0 },
+  },
+  required: ["start", "end", "count"],
+} as const;
+
+const ExploreRecordBucketsResponseSchema = {
+  type: "object" as const,
+  additionalProperties: false,
+  properties: {
+    object: { const: "explore_record_buckets" },
+    granularity: { type: "string", enum: ["hour", "day", "week", "month", "quarter", "year"] },
+    time_zone: { const: "UTC" },
+    extent: {
+      type: "object" as const,
+      additionalProperties: false,
+      properties: {
+        start: { type: ["string", "null"], format: "date-time" },
+        end: { type: ["string", "null"], format: "date-time" },
+        count: { type: "integer", minimum: 0 },
+      },
+      required: ["start", "end", "count"],
+    },
+    buckets: { type: "array", items: ExploreRecordBucketSchema },
+  },
+  required: ["object", "granularity", "time_zone", "extent", "buckets"],
+} as const;
+
 export const referenceManifests = [
   {
     id: "refSearch",
@@ -2735,6 +2768,42 @@ export const referenceManifests = [
       200: { schema: RefEventSubscriptionDetailSchema, description: "Subscription after disabling." },
       400: { schema: ErrorObjectSchema, description: "Invalid request" },
       404: { schema: ErrorObjectSchema, description: "Subscription not found" },
+    },
+  },
+  {
+    id: "refExploreRecordBuckets",
+    method: "GET",
+    path: "/_ref/explore/records/buckets",
+    surface: "reference",
+    tags: ["explore", "reference"],
+    summary:
+      "Owner Explore surface: exact dense over-time bucket counts across the scoped merged record set. " +
+      "The server derives populated extent and auto granularity in one owner-session call.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          connection_id: { type: "string" },
+          connection: { type: "string" },
+          connections: { type: "string" },
+          stream: { type: "string" },
+          streams: { type: "string" },
+          xconnection: { type: "string" },
+          xconnection_id: { type: "string" },
+          xconnections: { type: "string" },
+          xstream: { type: "string" },
+          xstreams: { type: "string" },
+          since: { type: "string" },
+          until: { type: "string" },
+          granularity: { type: "string", enum: ["auto", "hour", "day", "week", "month", "quarter", "year"] },
+          time_zone: { const: "UTC" },
+        },
+      },
+    },
+    responses: {
+      200: { schema: ExploreRecordBucketsResponseSchema },
+      ...CommonErrors,
     },
   },
   {

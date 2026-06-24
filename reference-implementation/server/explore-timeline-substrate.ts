@@ -35,6 +35,12 @@ import type {
   UpcomingPartitionPosition,
 } from "../operations/rs-explore-timeline/index.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import type {
+  ExploreRecordBucketGranularity,
+  ExploreRecordBucketQueryInput,
+  ExploreRecordBucketSparseRow,
+  ExploreRecordBucketsDependencies,
+} from "../operations/rs-explore-record-buckets/index.ts";
 
 // Wall-clock helper. Isolated so the cursor TTL has a single time source.
 function nowMs(): number {
@@ -868,6 +874,225 @@ export function buildPostgresExploreTimelineDeps(): ExploreTimelineDependencies 
     saveCursorBlob: postgresSaveCursorBlob,
     loadCursorBlob: postgresLoadCursorBlob,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Explore bucket aggregate substrate
+// ---------------------------------------------------------------------------
+
+const EXPLORE_SEMANTIC_TIME_SQL = "COALESCE(NULLIF(semantic_time, ''), emitted_at)";
+
+function parseBucketRow(row: {
+  bucketStart: string | null;
+  count: number | string | null;
+  extentStart: string | null;
+  extentEnd: string | null;
+  extentCount: number | string | null;
+  granularity: string;
+}): ExploreRecordBucketSparseRow {
+  return {
+    bucketStart: row.bucketStart,
+    count: Number(row.count ?? 0),
+    extentStart: row.extentStart,
+    extentEnd: row.extentEnd,
+    extentCount: Number(row.extentCount ?? 0),
+    granularity: row.granularity as ExploreRecordBucketGranularity,
+  };
+}
+
+function sqliteBucketStartExpression(granularityExpr: string, semanticExpr: string): string {
+  return `CASE ${granularityExpr}
+    WHEN 'hour' THEN strftime('%Y-%m-%dT%H:00:00.000Z', ${semanticExpr})
+    WHEN 'day' THEN strftime('%Y-%m-%dT00:00:00.000Z', ${semanticExpr})
+    WHEN 'week' THEN strftime('%Y-%m-%dT00:00:00.000Z', date(${semanticExpr}, '-' || ((CAST(strftime('%w', ${semanticExpr}) AS INTEGER) + 6) % 7) || ' days'))
+    WHEN 'month' THEN strftime('%Y-%m-01T00:00:00.000Z', ${semanticExpr})
+    WHEN 'quarter' THEN printf('%04d-%02d-01T00:00:00.000Z',
+      CAST(strftime('%Y', ${semanticExpr}) AS INTEGER),
+      CAST(((CAST(strftime('%m', ${semanticExpr}) AS INTEGER) - 1) / 3) AS INTEGER) * 3 + 1
+    )
+    ELSE strftime('%Y-01-01T00:00:00.000Z', ${semanticExpr})
+  END`;
+}
+
+function sqliteGranularityExpression(input: ExploreRecordBucketQueryInput): string {
+  if (input.granularity !== "auto") return `'${input.granularity}'`;
+  const monthSpan = `((CAST(strftime('%Y', extent_end) AS INTEGER) - CAST(strftime('%Y', extent_start) AS INTEGER)) * 12 + (CAST(strftime('%m', extent_end) AS INTEGER) - CAST(strftime('%m', extent_start) AS INTEGER)) + 1)`;
+  return `CASE
+    WHEN total = 0 THEN 'day'
+    WHEN ((julianday(extent_end) - julianday(extent_start)) * 24) + 1 <= 60 THEN 'hour'
+    WHEN (julianday(extent_end) - julianday(extent_start)) + 1 <= 60 THEN 'day'
+    WHEN ((julianday(extent_end) - julianday(extent_start)) / 7) + 1 <= 60 THEN 'week'
+    WHEN ${monthSpan} <= 60 THEN 'month'
+    WHEN (${monthSpan} / 3) + 1 <= 60 THEN 'quarter'
+    ELSE 'year'
+  END`;
+}
+
+function sqliteFetchExploreBucketRows(input: ExploreRecordBucketQueryInput): readonly ExploreRecordBucketSparseRow[] {
+  const semExpr = EXPLORE_SEMANTIC_TIME_SQL;
+  const whereParts = ["deleted = 0", `${semExpr} IS NOT NULL`, `${semExpr} <= ?`];
+  const binds: (string | number)[] = [input.until];
+  if (input.since) {
+    whereParts.push(`${semExpr} >= ?`);
+    binds.push(input.since);
+  }
+  appendSqliteScope(whereParts, binds, input);
+
+  const bucketExpr = sqliteBucketStartExpression("resolved.granularity", "scoped.semantic_time");
+  const sql = `
+    WITH scoped AS (
+      SELECT ${semExpr} AS semantic_time
+      FROM records
+      WHERE ${whereParts.join(" AND ")}
+    ),
+    extent AS (
+      SELECT MIN(semantic_time) AS extent_start, MAX(semantic_time) AS extent_end, COUNT(*) AS total
+      FROM scoped
+    ),
+    resolved AS (
+      SELECT extent_start, extent_end, total, ${sqliteGranularityExpression(input)} AS granularity
+      FROM extent
+    ),
+    bucketed AS (
+      SELECT ${bucketExpr} AS bucket_start, COUNT(*) AS count
+      FROM scoped CROSS JOIN resolved
+      GROUP BY bucket_start
+    )
+    SELECT
+      bucketed.bucket_start AS bucketStart,
+      COALESCE(bucketed.count, 0) AS count,
+      resolved.extent_start AS extentStart,
+      resolved.extent_end AS extentEnd,
+      resolved.total AS extentCount,
+      resolved.granularity AS granularity
+    FROM resolved
+    LEFT JOIN bucketed ON 1=1
+    ORDER BY bucketed.bucket_start ASC
+  `;
+
+  // REVIEWED-DYNAMIC: fixed SQL fragments only; caller values are bound above.
+  return Array.from(
+    iterateDynamicSqlAcknowledged<{
+      bucketStart: string | null;
+      count: number | null;
+      extentStart: string | null;
+      extentEnd: string | null;
+      extentCount: number | null;
+      granularity: string;
+    }>(sql, binds),
+    parseBucketRow
+  );
+}
+
+function postgresBucketStartExpression(granularityExpr: string, semanticExpr: string): string {
+  return `CASE ${granularityExpr}
+    WHEN 'hour' THEN date_trunc('hour', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+    WHEN 'day' THEN date_trunc('day', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+    WHEN 'week' THEN date_trunc('week', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+    WHEN 'month' THEN date_trunc('month', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+    WHEN 'quarter' THEN date_trunc('quarter', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+    ELSE date_trunc('year', ${semanticExpr} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+  END`;
+}
+
+function postgresGranularityExpression(input: ExploreRecordBucketQueryInput, params: (string | number | readonly string[])[]): string {
+  if (input.granularity !== "auto") {
+    params.push(input.granularity);
+    return `$${params.length}::text`;
+  }
+  const monthSpan = `((date_part('year', extent_end_ts) - date_part('year', extent_start_ts)) * 12 + (date_part('month', extent_end_ts) - date_part('month', extent_start_ts)) + 1)`;
+  return `CASE
+    WHEN total = 0 THEN 'day'
+    WHEN (extract(epoch FROM (extent_end_ts - extent_start_ts)) / 3600) + 1 <= 60 THEN 'hour'
+    WHEN (extract(epoch FROM (extent_end_ts - extent_start_ts)) / 86400) + 1 <= 60 THEN 'day'
+    WHEN (extract(epoch FROM (extent_end_ts - extent_start_ts)) / 604800) + 1 <= 60 THEN 'week'
+    WHEN ${monthSpan} <= 60 THEN 'month'
+    WHEN (${monthSpan} / 3) + 1 <= 60 THEN 'quarter'
+    ELSE 'year'
+  END`;
+}
+
+async function postgresFetchExploreBucketRows(input: ExploreRecordBucketQueryInput): Promise<readonly ExploreRecordBucketSparseRow[]> {
+  const semText = EXPLORE_SEMANTIC_TIME_SQL;
+  const semTs = `(${semText})::timestamptz`;
+  const whereParts = ["deleted = FALSE", `${semText} IS NOT NULL`];
+  const params: (string | number | readonly string[])[] = [];
+  params.push(input.until);
+  whereParts.push(`${semText} <= $${params.length}`);
+  if (input.since) {
+    params.push(input.since);
+    whereParts.push(`${semText} >= $${params.length}`);
+  }
+  appendPostgresScope(whereParts, params, input);
+  const granularityExpr = postgresGranularityExpression(input, params);
+  const bucketExpr = postgresBucketStartExpression("resolved.granularity", "scoped.semantic_ts");
+  const sql = `
+    WITH scoped AS (
+      SELECT ${semText} AS semantic_time, ${semTs} AS semantic_ts
+      FROM records
+      WHERE ${whereParts.join(" AND ")}
+    ),
+    extent AS (
+      SELECT
+        MIN(semantic_time) AS extent_start,
+        MAX(semantic_time) AS extent_end,
+        MIN(semantic_ts) AS extent_start_ts,
+        MAX(semantic_ts) AS extent_end_ts,
+        COUNT(*)::bigint AS total
+      FROM scoped
+    ),
+    resolved AS (
+      SELECT extent_start, extent_end, total, ${granularityExpr} AS granularity
+      FROM extent
+    ),
+    bucketed AS (
+      SELECT ${bucketExpr} AS bucket_start, COUNT(*)::bigint AS count
+      FROM scoped CROSS JOIN resolved
+      GROUP BY bucket_start
+    )
+    SELECT
+      to_char(bucketed.bucket_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "bucketStart",
+      COALESCE(bucketed.count, 0)::bigint AS "count",
+      resolved.extent_start AS "extentStart",
+      resolved.extent_end AS "extentEnd",
+      resolved.total AS "extentCount",
+      resolved.granularity AS "granularity"
+    FROM resolved
+    LEFT JOIN bucketed ON TRUE
+    ORDER BY bucketed.bucket_start ASC
+  `;
+  const result = await postgresQuery(sql, params);
+  return result.rows.map((row: unknown) =>
+    parseBucketRow(
+      row as {
+        bucketStart: string | null;
+        count: string | number | null;
+        extentStart: string | null;
+        extentEnd: string | null;
+        extentCount: string | number | null;
+        granularity: string;
+      }
+    )
+  );
+}
+
+export function buildSqliteExploreRecordBucketsDeps(): ExploreRecordBucketsDependencies {
+  return {
+    fetchBucketRows: sqliteFetchExploreBucketRows,
+  };
+}
+
+export function buildPostgresExploreRecordBucketsDeps(): ExploreRecordBucketsDependencies {
+  return {
+    fetchBucketRows: postgresFetchExploreBucketRows,
+  };
+}
+
+export function buildExploreRecordBucketsDeps(): ExploreRecordBucketsDependencies {
+  if (isPostgresStorageBackend()) {
+    return buildPostgresExploreRecordBucketsDeps();
+  }
+  return buildSqliteExploreRecordBucketsDeps();
 }
 
 // ---------------------------------------------------------------------------

@@ -24,12 +24,16 @@ import {
 import { executeRefSchedulesList } from "../../operations/ref-schedules-list/index.ts";
 import { executeRefSpineSearch, type RefSpineSearchResult } from "../../operations/ref-spine-search/index.ts";
 import {
+  executeExploreRecordBuckets,
+  InvalidExploreRecordBucketsRequestError,
+} from "../../operations/rs-explore-record-buckets/index.ts";
+import {
   executeExploreTimeline,
   executeExploreUpcoming,
   InvalidCompositeCursorError,
 } from "../../operations/rs-explore-timeline/index.ts";
 import { isInternalConnectorId } from "../connector-key.js";
-import { buildExploreTimelineDeps } from "../explore-timeline-substrate.ts";
+import { buildExploreRecordBucketsDeps, buildExploreTimelineDeps } from "../explore-timeline-substrate.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -430,6 +434,48 @@ export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminCont
       } catch (err) {
         if ((err as { code?: unknown })?.code === "not_found") {
           ctx.pdppError(res, 404, "not_found", err instanceof Error ? err.message : "CIMD document not found");
+          return;
+        }
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// GET /_ref/explore/records/buckets
+//
+// One-call, index-backed over-time bucket aggregate for the owner Explore chart.
+// Uses the same scoped record set as the merged timeline endpoint, but reads no
+// record JSON payloads and returns dense zero-filled calendar buckets.
+export function mountRefExploreRecordBuckets(app: AppLike, ctx: MountRefAdminContext): void {
+  app.get(
+    "/_ref/explore/records/buckets",
+    { contract: "refExploreRecordBuckets" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const deps = buildExploreRecordBucketsDeps();
+        const connectionIds = readQueryStringList(req.query, "connection", "connection_id", "connections");
+        const streams = readQueryStringList(req.query, "stream", "streams");
+        const excludeConnectionIds = readQueryStringList(req.query, "xconnection", "xconnection_id", "xconnections");
+        const excludeStreams = readQueryStringList(req.query, "xstream", "xstreams");
+        const result = await executeExploreRecordBuckets(
+          {
+            connectionIds,
+            streams,
+            excludeConnectionIds,
+            excludeStreams,
+            since: typeof req.query.since === "string" ? req.query.since : null,
+            until: typeof req.query.until === "string" ? req.query.until : null,
+            granularity: typeof req.query.granularity === "string" ? req.query.granularity : null,
+            timeZone: typeof req.query.time_zone === "string" ? req.query.time_zone : null,
+          },
+          deps
+        );
+        res.json(result);
+      } catch (err) {
+        if (err instanceof InvalidExploreRecordBucketsRequestError) {
+          ctx.pdppError(res, 400, "invalid_request", err.message);
           return;
         }
         ctx.handleError(res, err);

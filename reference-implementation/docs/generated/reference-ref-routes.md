@@ -72,6 +72,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/event-subscriptions` | `refListEventSubscriptions` | Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes. |
 | **GET** | `/_ref/event-subscriptions/{subscription_id}` | `refGetEventSubscription` | Operator oversight: get a single subscription with delivery attempt history. |
 | **POST** | `/_ref/event-subscriptions/{subscription_id}/disable` | `refDisableEventSubscription` | Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned. |
+| **GET** | `/_ref/explore/records/buckets` | `refExploreRecordBuckets` | Owner Explore surface: exact dense over-time bucket counts across the scoped merged record set. The server derives populated extent and auto granularity in one owner-session call. |
 | **GET** | `/_ref/explore/records` | `refExploreRecords` | Owner Explore surface: cross-source merged timeline with a single composite keyset cursor. Returns time-ordered records (<= a pinned now boundary) spanning all (connection, stream) partitions with point-in-time snapshot stability, a new_since_snapshot count for the N-new pill, and a SEPARATE upcoming (future-dated) projection with a true upcoming_total count. |
 
 ## refSearch
@@ -1297,6 +1298,36 @@ Operator safety valve: forcibly disable a subscription. Accepts an optional `rea
 - `200` — Subscription after disabling.
 - `400` — Invalid request
 - `404` — Subscription not found
+
+## refExploreRecordBuckets
+
+`GET /_ref/explore/records/buckets`
+
+Owner Explore surface: exact dense over-time bucket counts across the scoped merged record set. The server derives populated extent and auto granularity in one owner-session call.
+
+### Query parameters
+
+- `connection_id` — string
+- `connection` — string
+- `connections` — string
+- `stream` — string
+- `streams` — string
+- `xconnection` — string
+- `xconnection_id` — string
+- `xconnections` — string
+- `xstream` — string
+- `xstreams` — string
+- `since` — string
+- `until` — string
+- `granularity` — enum `auto | hour | day | week | month | quarter | year`
+- `time_zone` — const `UTC`
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
 
 ## refExploreRecords
 
