@@ -32,6 +32,8 @@ on:
       - "packages/mcp-server/**"
       - "packages/read-core/**"
       - "packages/reference-contract/**"
+      - "openspec/changes/complete-mcp-slvp-surface/**"
+      - "docs/research/mcp-slvp-*.md"
       - "reference-implementation/**"
       - "scripts/check-console-health-surfaces.mjs"
       - "scripts/check-console-health-surfaces.test.mjs"

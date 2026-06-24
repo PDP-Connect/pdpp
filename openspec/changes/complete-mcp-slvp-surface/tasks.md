@@ -47,8 +47,8 @@
 - [ ] 5.7 Run `openspec validate --all --strict`.
 - [ ] 5.8 Run `git diff --check`.
 - [ ] 5.9 Merge to main only after green gates and review.
-- [ ] 5.10 Deploy with live-stack mutex and smoke deployed revision.
-- [ ] 5.11 Run fresh ChatGPT client retest and record result under `docs/research/`.
+- [x] 5.10 Deploy with live-stack mutex and smoke deployed revision. (`v0.15.0-4-g72df54ec1`)
+- [x] 5.11 Run fresh ChatGPT client retest and record result under `docs/research/`.
 
 ## 6. SLVP-Ideal Retest Closeout
 
@@ -56,4 +56,4 @@
 - [x] 6.2 Widen SQLite and Postgres lexical snippets so ordinary matched text is classification-useful in search results.
 - [x] 6.3 Remove ordinary `read_record_field` `pdpp://field-window/...` resource exposure from model-visible structured output when the explicit `read_record_field` continuation is the reliable path.
 - [x] 6.4 Update hostile-client and server integration tests to assert no dead field-window resource handle is visible on ordinary bounded reads.
-- [ ] 6.5 Merge, deploy, and live-smoke contextual search evidence plus no visible field-window resource handle before another ChatGPT retest.
+- [x] 6.5 Merge, deploy, and live-smoke contextual search evidence plus no visible field-window resource handle before another ChatGPT retest.
