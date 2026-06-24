@@ -1,7 +1,7 @@
 import {
   buildRecordContentLadder as buildSharedRecordContentLadder,
   summarizeRecordEvidence,
-} from '@pdpp/read-evidence';
+} from '@pdpp/read-core';
 import { z } from 'zod';
 
 const READ_ONLY_ANNOTATIONS = {

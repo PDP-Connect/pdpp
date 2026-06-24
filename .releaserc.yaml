@@ -45,14 +45,14 @@ plugins:
             scope: mcp-server
             section: "Performance Improvements (@pdpp/mcp-server)"
           - type: feat
-            scope: read-evidence
-            section: "Features (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Features (@pdpp/read-core)"
           - type: fix
-            scope: read-evidence
-            section: "Bug Fixes (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Bug Fixes (@pdpp/read-core)"
           - type: perf
-            scope: read-evidence
-            section: "Performance Improvements (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Performance Improvements (@pdpp/read-core)"
           - type: feat
             section: "Features"
           - type: fix
@@ -114,14 +114,14 @@ plugins:
             scope: mcp-server
             section: "Performance Improvements (@pdpp/mcp-server)"
           - type: feat
-            scope: read-evidence
-            section: "Features (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Features (@pdpp/read-core)"
           - type: fix
-            scope: read-evidence
-            section: "Bug Fixes (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Bug Fixes (@pdpp/read-core)"
           - type: perf
-            scope: read-evidence
-            section: "Performance Improvements (@pdpp/read-evidence)"
+            scope: read-core
+            section: "Performance Improvements (@pdpp/read-core)"
           - type: feat
             section: "Features"
           - type: fix
@@ -158,7 +158,7 @@ plugins:
   - - "@semantic-release/npm"
     - pkgRoot: "packages/mcp-server"
   - - "@semantic-release/npm"
-    - pkgRoot: "packages/read-evidence"
+    - pkgRoot: "packages/read-core"
   - - "@semantic-release/github"
     - successComment: false
       failComment: false

@@ -23,7 +23,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@pdpp/cli": "workspace:*",
-    "@pdpp/read-evidence": "workspace:^",
+    "@pdpp/read-core": "workspace:^",
     "zod": "^3.25.76"
   },
   "keywords": [

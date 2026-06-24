@@ -1,12 +1,12 @@
 {
-  "name": "@pdpp/read-evidence",
+  "name": "@pdpp/read-core",
   "version": "0.0.0",
   "type": "module",
-  "description": "Shared PDPP read/evidence primitives for bounded previews and continuation descriptors.",
+  "description": "Pure, adapter-agnostic primitives for shaping PDPP read results into bounded previews, continuation descriptors, handle metadata, and escalation paths.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vana-com/pdpp.git",
-    "directory": "packages/read-evidence"
+    "directory": "packages/read-core"
   },
   "engines": {
     "node": ">=22.14.0"
@@ -25,7 +25,7 @@
   "keywords": [
     "pdpp",
     "personal-data",
-    "evidence",
+    "read",
     "read-surface"
   ],
   "license": "Apache-2.0",

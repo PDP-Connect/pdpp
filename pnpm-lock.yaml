@@ -279,9 +279,9 @@ importers:
       '@pdpp/cli':
         specifier: workspace:*
         version: link:../cli
-      '@pdpp/read-evidence':
+      '@pdpp/read-core':
         specifier: workspace:^
-        version: link:../read-evidence
+        version: link:../read-core
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -436,7 +436,7 @@ importers:
         specifier: 7.6.0
         version: 7.6.0
 
-  packages/read-evidence: {}
+  packages/read-core: {}
 
   packages/reference-contract:
     dependencies:
