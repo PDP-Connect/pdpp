@@ -3,6 +3,9 @@
 Local stdio and hosted Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io/)
 adapter for grant-scoped access to a [PDPP](https://pdpp.vivid.fish) resource server.
 
+For the current hosted-client evidence-ladder smoke, see
+[`docs/research/mcp-read-evidence-live-smoke-2026-06-24.md`](../../docs/research/mcp-read-evidence-live-smoke-2026-06-24.md).
+
 The adapter is a thin client of the PDPP resource server (RS). It does not run connectors,
 issue grants, or replicate any RS authorization logic. Every data-bearing tool call is a
 forwarded request to an existing `/v1/*` endpoint, authenticated with the scoped client

@@ -396,6 +396,9 @@ pnpm reference-contract:check-generated
 For an end-to-end operator runbook (Docker host or RunPod CPU Pod, env vars,
 dashboard verification, MCP wiring), see
 [`docs/operator/selfhost-quickstart.md`](../docs/operator/selfhost-quickstart.md).
+
+For the current live MCP read-evidence smoke, see
+[`docs/research/mcp-read-evidence-live-smoke-2026-06-24.md`](../docs/research/mcp-read-evidence-live-smoke-2026-06-24.md).
 The notes below are the topology reference; the quickstart is the procedure.
 
 The supported Docker path is a root-level Compose assembly for the live
