@@ -261,6 +261,11 @@ Plus a top-3 `top_connectors` list. Used by the operator-console hero band;
 see `openspec/changes/reference-implementation-program/design-notes/dashboard-hero-plan-2026-04-22.md`
 for the design rationale.
 
+Time-bucketed aggregate reads are manifest-declared: a stream supports
+`group_by_time` only for fields listed in its connector manifest's
+`query.aggregations.group_by_time` array, and registration rejects entries that
+are not string `date` or `date-time` fields.
+
 ### Reference-only owner-auth placeholder
 
 The reference ships a minimal local-only owner-auth placeholder for the current owner/operator browser surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product. See

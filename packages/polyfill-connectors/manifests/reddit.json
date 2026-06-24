@@ -16,7 +16,9 @@
     }
   },
   "capabilities": {
-    "human_interaction": ["credentials"],
+    "human_interaction": [
+      "credentials"
+    ],
     "refresh_policy": {
       "recommended_mode": "manual",
       "maximum_staleness_seconds": 86400,
@@ -179,6 +181,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
+          ]
         }
       }
     },
@@ -297,6 +305,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
+          ]
         }
       }
     },
@@ -398,6 +412,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
           ]
         }
       }
@@ -525,6 +545,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
+          ]
         }
       }
     },
@@ -651,6 +677,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
+          ]
         }
       }
     },
@@ -776,6 +808,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_utc"
           ]
         }
       }

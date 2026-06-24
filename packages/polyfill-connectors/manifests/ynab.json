@@ -198,6 +198,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_modified_on"
+          ]
         }
       }
     },
@@ -459,6 +465,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
           ]
         }
       }
@@ -1169,6 +1181,9 @@
             "cleared",
             "approved",
             "account_type"
+          ],
+          "group_by_time": [
+            "date"
           ]
         }
       }
@@ -1330,6 +1345,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "date_next"
+          ]
         }
       }
     },
@@ -1443,6 +1464,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "month"
           ]
         }
       }
@@ -1732,6 +1759,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "month"
           ]
         }
       }

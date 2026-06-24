@@ -180,6 +180,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
+          ]
         }
       }
     },
@@ -350,13 +356,16 @@
           "group_by": [
             "currency",
             "category"
+          ],
+          "group_by_time": [
+            "date"
           ]
         }
       }
     },
     {
       "name": "statements",
-      "description": "Statement index per account. Always includes title, delivery date, and account reference. When the connector successfully hydrates a statement PDF (by driving the 'Options → Download' menu on /my/documents), the row additionally carries `document_url` (file:// URI of the stored PDF), `pdf_path` (absolute on-disk path), and `pdf_sha256` (content hash). The PDFs themselves are stored under ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf — per owner direction the archive is persistent, not scratch.",
+      "description": "Statement index per account. Always includes title, delivery date, and account reference. When the connector successfully hydrates a statement PDF (by driving the 'Options \u2192 Download' menu on /my/documents), the row additionally carries `document_url` (file:// URI of the stored PDF), `pdf_path` (absolute on-disk path), and `pdf_sha256` (content hash). The PDFs themselves are stored under ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf \u2014 per owner direction the archive is persistent, not scratch.",
       "display": {
         "label": "Your USAA statements",
         "detail": "Monthly statements across all accounts: document title, delivery date, and account reference. PDF download URL, local path, and content hash are populated when blob hydration has run; otherwise null."
@@ -410,7 +419,7 @@
               "string",
               "null"
             ],
-            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — re-encrypted per download, so it churns on no-op re-fetches). Populated only after blob hydration; null on index-only scrapes."
+            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint \u2014 re-encrypted per download, so it churns on no-op re-fetches). Populated only after blob hydration; null on index-only scrapes."
           },
           "pdf_text_sha256": {
             "type": [
@@ -467,6 +476,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "date_delivered"
           ]
         }
       }
@@ -547,6 +562,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "date_received"
           ]
         }
       }
@@ -760,6 +781,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
           ]
         }
       }

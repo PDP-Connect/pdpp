@@ -44,19 +44,23 @@
           "identity": true,
           "autocomplete": "off",
           "placeholder": "myteam (from myteam.slack.com)",
-          "help_text": "Enter just the subdomain — e.g. 'myteam' from myteam.slack.com.",
-          "env": ["SLACK_WORKSPACE"]
+          "help_text": "Enter just the subdomain \u2014 e.g. 'myteam' from myteam.slack.com.",
+          "env": [
+            "SLACK_WORKSPACE"
+          ]
         },
         {
           "name": "slack_token",
-          "label": "Slack session token (xoxc-…)",
+          "label": "Slack session token (xoxc-\u2026)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
           "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
-          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
-          "env": ["SLACK_TOKEN"]
+          "help_text": "Copy the xoxc-\u2026 token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "env": [
+            "SLACK_TOKEN"
+          ]
         },
         {
           "name": "slack_cookie",
@@ -66,7 +70,9 @@
           "secret": true,
           "autocomplete": "off",
           "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
-          "env": ["SLACK_COOKIE"]
+          "env": [
+            "SLACK_COOKIE"
+          ]
         }
       ]
     }
@@ -191,6 +197,12 @@
             "domain",
             "enterprise_name",
             "url"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "fetched_at"
           ]
         }
       }
@@ -506,12 +518,18 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
+          ]
         }
       }
     },
     {
       "name": "channel_memberships",
-      "description": "Channel ↔ user edges where slackdump could enumerate members.",
+      "description": "Channel \u2194 user edges where slackdump could enumerate members.",
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
@@ -1752,6 +1770,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "starred_at"
+          ]
         }
       }
     },
@@ -1991,6 +2015,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "scheduled_at"
+          ]
         }
       }
     },
@@ -2091,6 +2121,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_read"
           ]
         }
       }

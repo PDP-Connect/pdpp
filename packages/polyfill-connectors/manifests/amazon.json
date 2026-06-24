@@ -187,6 +187,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
+          ]
         }
       }
     },
@@ -313,6 +319,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
           ]
         }
       }

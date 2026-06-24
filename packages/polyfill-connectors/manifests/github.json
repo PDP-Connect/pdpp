@@ -186,7 +186,13 @@
             "default_limit": 30,
             "max_limit": 365
           }
-        ]
+        ],
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at"
+          ]
+        }
       },
       "relationships": [
         {
@@ -291,6 +297,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
           ]
         }
       }
@@ -504,6 +516,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "pushed_at"
+          ]
         }
       }
     },
@@ -594,6 +612,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "starred_at"
           ]
         }
       }
@@ -799,12 +823,18 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at"
+          ]
         }
       }
     },
     {
       "name": "pull_requests",
-      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included — that requires a follow-up reviewer: query.",
+      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included \u2014 that requires a follow-up reviewer: query.",
       "display": {
         "label": "Your pull requests",
         "detail": "PRs you authored, including merge timestamp and committer, additions/deletions, changed files count, base and head refs, requested reviewers, and review-comment counts."
@@ -1094,6 +1124,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at"
+          ]
         }
       }
     },
@@ -1235,6 +1271,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at"
           ]
         }
       }

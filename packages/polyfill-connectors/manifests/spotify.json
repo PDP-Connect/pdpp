@@ -190,6 +190,12 @@
             "name",
             "album_name"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "added_at"
+          ]
         }
       }
     },
@@ -312,6 +318,12 @@
           "lexical_fields": [
             "track_name",
             "album_name"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "played_at"
           ]
         }
       }

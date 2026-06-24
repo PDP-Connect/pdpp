@@ -325,6 +325,9 @@
             "is_flagged",
             "is_answered",
             "is_draft"
+          ],
+          "group_by_time": [
+            "received_at"
           ]
         },
         "expand": [
@@ -447,6 +450,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_message_date"
+          ]
         }
       }
     },
@@ -510,7 +519,7 @@
       "description": "Full text and/or HTML body of each message, keyed 1:1 with messages. Kept in a separate stream so body content (sensitive, large) is independently grantable from headers/metadata.",
       "display": {
         "label": "The text of your emails",
-        "detail": "This is the stream that carries the actual written content of each email — the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
+        "detail": "This is the stream that carries the actual written content of each email \u2014 the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
       },
       "semantics": "append_only",
       "schema": {
@@ -767,6 +776,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "message_received_at"
           ]
         }
       }
