@@ -55,6 +55,27 @@ unavailable. Under that harness:
   `next_cursor`, or equivalent continuation.
 - File/materialized output is not acceptable for ordinary small text inspection.
 
+## Tool Topology Decision
+
+`read_record_field` is intentional essential complexity in the normal MCP read
+surface. Earlier tool-surface research preferred a five-tool default, but live
+ChatGPT client tests showed that `fetch` and MCP resources do not cover the same
+interaction: `fetch` is record/document scale, and host-dependent resource
+materialization can force user approval. Ordinary evidence inspection needs a
+bounded field/window read that stays inline and exposes continuation metadata.
+
+The SLVP target is not the fewest possible tools. The target is the smallest
+surface that preserves a best-in-class evidence ladder without hidden dead ends.
+A separate bounded-read tool is justified because it removes a class of
+false-success workflows where search proves a match exists but the model cannot
+inspect the matching text without a full fetch or file artifact.
+
+`record_uri` values are operational record handles. They SHALL be accepted by
+model-callable read tools such as `fetch` and `read_record_field`; they are not
+promised to be generic MCP resources readable through every host's
+`resources/read` implementation. A URI-shaped value is a dead end only when no
+model-callable continuation can consume it.
+
 ## Alternatives
 
 ### Resource-only ladder

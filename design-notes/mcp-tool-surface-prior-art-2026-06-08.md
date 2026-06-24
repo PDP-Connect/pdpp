@@ -377,3 +377,7 @@ Practical next move:
   five-tool design.
 - Keep setup UX to one recommended command/URL per client before any advanced
   verification copy.
+
+## Decision Log
+
+- 2026-06-24: The earlier five-tool default is superseded for the ChatGPT MVP read-evidence ladder. Live ChatGPT retests showed that `fetch` and MCP resources do not replace an inline bounded field/window read: `fetch` is record/document scale, and host-dependent resource materialization can force user approval. `read_record_field` is therefore accepted as essential complexity in the normal read surface, provided it remains narrow, grant scoped, and tested as part of the shared search/read/fetch ladder. The SLVP invariant is not "fewest tools"; it is the smallest surface that gives bounded visible evidence and deterministic continuation without dead ends.

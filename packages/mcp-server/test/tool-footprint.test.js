@@ -105,6 +105,16 @@ test('instructions first 512 chars mention schema-first, connection_id, typed fi
   );
 });
 
+test('instructions keep resource reads optional for ordinary evidence', () => {
+  assert.match(PDPP_MCP_INSTRUCTIONS, /read_record_field/);
+  assert.match(PDPP_MCP_INSTRUCTIONS, /projected records/);
+  assert.match(PDPP_MCP_INSTRUCTIONS, /bounded field windows/);
+  assert.doesNotMatch(
+    PDPP_MCP_INSTRUCTIONS,
+    /read the returned `pdpp:\/\/record\/\.\.\.` and `pdpp:\/\/field-window\/\.\.\.` resource URIs/
+  );
+});
+
 test('tools/list exposes exact profile-free normal read surface', async () => {
   const { client, server } = await connectClient();
   try {

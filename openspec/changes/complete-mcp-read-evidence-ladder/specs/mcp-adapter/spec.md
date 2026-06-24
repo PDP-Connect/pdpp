@@ -87,3 +87,10 @@ MCP adapter SHALL render proven search match-window evidence before generic sear
 - **THEN** `content[]` SHALL render a compact evidence excerpt before generic result wrappers
 - **AND** the excerpt SHALL include matched field path, bounded snippet, self-contained result id, and model-callable read tool hint
 - **AND** the excerpt SHALL NOT rely on a `pdpp://field-window/...` URI as the only visible continuation
+
+#### Scenario: Visible record URI is a bounded-read handle
+- **WHEN** a search result exposes a `record_uri` value in visible text or structured content
+- **AND** the model calls the MCP field-read tool with that `record_uri` as the record identity
+- **THEN** the MCP adapter SHALL resolve the URI to the same grant-scoped record as the self-contained result id
+- **AND** the bounded field read SHALL return inline text when the requested field window is ordinary small text
+- **AND** failure of a generic MCP `resources/read` call for that URI SHALL NOT by itself make the visible item a dead end

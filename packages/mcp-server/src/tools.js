@@ -2584,6 +2584,9 @@ function parseRecordResultId(id) {
   if (typeof id !== 'string' || id.length === 0) {
     throw new Error('id is required');
   }
+  if (id.startsWith('pdpp://record/')) {
+    return parseRecordResultId(decodeURIComponent(id.slice('pdpp://record/'.length)));
+  }
   const connectionSeparator = id.indexOf('/');
   if (connectionSeparator === -1) {
     return { ...parseStreamRecordId(id), connectionId: null };

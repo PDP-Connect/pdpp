@@ -404,6 +404,10 @@ dashboard verification, MCP wiring), see
 
 For the current live MCP read-evidence smoke, see
 [`docs/research/mcp-read-evidence-live-smoke-2026-06-24.md`](../docs/research/mcp-read-evidence-live-smoke-2026-06-24.md).
+For the SLVP closeout retest and audit, see
+[`docs/research/mcp-slvp-closeout-chatgpt-retest-2026-06-24.md`](../docs/research/mcp-slvp-closeout-chatgpt-retest-2026-06-24.md)
+and
+[`docs/research/mcp-slvp-closeout-audit-2026-06-24.md`](../docs/research/mcp-slvp-closeout-audit-2026-06-24.md).
 The notes below are the topology reference; the quickstart is the procedure.
 
 The supported Docker path is a root-level Compose assembly for the live

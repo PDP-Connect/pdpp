@@ -52,3 +52,4 @@
 - [x] 6.8 Prepare LAND/HOLD summary with residual hosted-client smoke status.
 - [x] 6.9 Rerun full gates and live-backed MCP smoke after structured-preview fix.
 - [x] 6.10 Rerun full gates and live-backed MCP smoke after hiding model-visible field-window resource URIs.
+- [x] 6.11 Add hostile-client coverage proving visible `pdpp://record/...` handles are accepted by `read_record_field.id`.

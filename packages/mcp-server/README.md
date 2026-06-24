@@ -70,6 +70,12 @@ The adapter writes only MCP protocol messages to stdout. Diagnostics go to stder
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
 | `read_record_field` | `GET /v1/streams/{stream}/records/{record_id}/field-window` |
 
+`read_record_field` is separate from `fetch` intentionally. `fetch` returns a
+record/document, optionally projected with `fields`; `read_record_field` returns
+one bounded text window with truncation and match metadata. Keeping the bounded
+read as its own tool prevents ordinary evidence inspection from escalating to a
+full record fetch, resource link, or file/materialized artifact.
+
 Resource templates:
 
 - `pdpp://stream/{name}` → `GET /v1/streams/{name}`.

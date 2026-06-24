@@ -266,3 +266,34 @@ test('read_record_field is an inline small-text fallback, not a resource-only pa
   assert.doesNotMatch(JSON.stringify(result.structuredContent), /pdpp:\/\/field-window\//);
   assert.match(result._meta.resource.uri, /^pdpp:\/\/field-window\//);
 });
+
+test('read_record_field accepts visible record_uri handles', async () => {
+  const { fetch, calls } = hostileSearchFixture();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: {
+      id: 'pdpp://record/cin_slack%2Fmessages%3Am1',
+      field_path: 'text',
+      q: 'Hyperlane',
+      before_chars: 120,
+      after_chars: 120,
+      limit_chars: 400,
+    },
+  });
+
+  const visible = textContent(result);
+  await Promise.allSettled([client.close(), server.close()]);
+
+  assert.equal(result.isError, undefined);
+  assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.equal(
+    calls.some((call) =>
+      call.url.includes('/v1/streams/messages/records/m1/field-window') &&
+      call.url.includes('connection_id=cin_slack')
+    ),
+    true,
+    'visible pdpp://record handle must route to the bounded field read'
+  );
+});
