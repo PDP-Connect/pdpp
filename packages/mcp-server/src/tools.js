@@ -1390,19 +1390,6 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
     type: firstString(field.type, rawWindow.type),
     text_like: true,
   };
-  const resourceUri = encodeResourceUri('field-window', {
-    connection_id: connectionId,
-    stream,
-    record_id: recordId,
-    field_path: fieldInfo.path,
-    offset_chars: window.start_chars,
-    limit_chars: window.limit_chars,
-  });
-  const resource = {
-    uri: resourceUri,
-    mime_type: 'text/plain',
-    handle_semantics: 'live_lookup',
-  };
   const header = [
     `record=${record.id}`,
     `field=${fieldInfo.path}`,
@@ -1451,12 +1438,8 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
       record,
       field: fieldInfo,
       window,
-      resource,
       provider_url: providerUrl,
       request_id: response.requestId ?? null,
-    },
-    _meta: {
-      resource,
     },
   };
 }

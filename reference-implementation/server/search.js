@@ -1434,7 +1434,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
       // (negative-leaning). The public score exposes that implementation-
       // relative ordering honestly rather than normalizing it.
       const snippetExpr = allowsSnippets
-        ? `snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 16)`
+        ? `snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 48)`
         : `NULL`;
       const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
         ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`

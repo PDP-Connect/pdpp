@@ -361,8 +361,8 @@ test('read_record_field is an inline small-text fallback, not a resource-only pa
     false,
     'ordinary small text inspection must not trigger resource/file materialization'
   );
-  assert.match(result.structuredContent.resource.uri, /^pdpp:\/\/field-window\//);
-  assert.match(result._meta.resource.uri, /^pdpp:\/\/field-window\//);
+  assert.equal(result.structuredContent.resource, undefined);
+  assert.equal(result._meta?.resource, undefined);
 });
 
 test('read_record_field incomplete windows expose exact visible continuation calls', async () => {

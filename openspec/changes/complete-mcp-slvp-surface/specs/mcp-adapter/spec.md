@@ -12,6 +12,12 @@ The MCP adapter SHALL expose an evidence ladder in model-visible output: compact
 **AND** the preview SHALL include enough identity to request the bounded field/window read
 **AND** the adapter SHALL NOT rely on hidden `structuredContent` as the only path to the evidence.
 
+#### Scenario: Search evidence includes bounded surrounding context
+
+**WHEN** a search result match occurs inside an ordinary text field with surrounding visible text
+**THEN** the evidence preview SHALL include bounded surrounding text around the marked match
+**AND** the preview SHALL NOT collapse to only the highlighted query term unless the source field has no additional visible text available.
+
 #### Scenario: Preview without proven body match does not invent evidence
 
 **WHEN** a search result matches only metadata or an unproven field
@@ -35,6 +41,12 @@ The MCP adapter SHALL ensure every visible record, field, field-window, cursor, 
 **THEN** the adapter SHALL either make that URI readable through MCP resource reading
 **OR** accept that URI directly in a documented model-callable bounded field/window read
 **AND** failure of generic resource reading SHALL NOT be the only available next step.
+
+#### Scenario: Ordinary bounded reads hide unreliable field-window resources
+
+**WHEN** a bounded field read returns ordinary inline text and the reliable continuation path is `read_record_field`
+**THEN** the adapter SHALL expose inline text, offsets, truncation state, match metadata when available, and next/previous `read_record_field` arguments
+**AND** the adapter SHALL NOT expose a model-visible `pdpp://field-window/...` URI unless that URI is proven readable through the host's generic resource reader.
 
 ### Requirement: Ordinary Evidence Stays Inline
 

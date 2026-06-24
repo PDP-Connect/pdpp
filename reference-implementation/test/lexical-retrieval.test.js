@@ -808,6 +808,36 @@ test('client grant authorizing only one of two declared lexical_fields restricts
 
 // ─── 9.12 — zero overlap → zero hits ────────────────────────────────────────
 
+test('lexical evidence excerpts include bounded surrounding context', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      {
+        id: 'p_context',
+        title: 'bridge planning',
+        selftext:
+          'Before the decision we compared routes carefully. Are we going to bridge using Hyperlane or LayerZero for this rollout? LayerZero for sure, but keep the fallback documented.',
+        source_created_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/search?q=Hyperlane&streams=posts`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    const hit = body.data.find((r) => r.record_key === 'p_context');
+    assert.ok(hit, 'context hit should appear');
+    const excerpt = hit.evidence_excerpts?.find((item) => item.field_path === 'selftext')?.preview_text;
+    assert.ok(excerpt, 'search hit must include a selftext evidence excerpt');
+    assert.notEqual(excerpt.trim(), '<mark>Hyperlane</mark>');
+    assert.match(excerpt, /bridge using/);
+    assert.match(excerpt, /<mark>Hyperlane<\/mark>/);
+    assert.match(excerpt, /LayerZero/);
+  });
+});
+
 test('grant with zero overlap on searchable fields contributes zero hits and no per-stream error', async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);

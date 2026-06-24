@@ -229,7 +229,7 @@ export async function postgresLexicalSearch({
             r.record_json::text AS record_json,
             ts_rank_cd(lsi.document, plainto_tsquery('simple', $3)) AS score,
             ts_headline('simple', lsi.value, plainto_tsquery('simple', $3),
-              'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
+              'StartSel=<mark>, StopSel=</mark>, MaxWords=48, MinWords=12') AS snippet_text
      FROM candidates lsi
      JOIN records r
        ON r.connector_instance_id = $1
@@ -244,7 +244,7 @@ export async function postgresLexicalSearch({
             r.record_json::text AS record_json,
             ts_rank_cd(document, plainto_tsquery('simple', $3)) AS score,
             ts_headline('simple', value, plainto_tsquery('simple', $3),
-              'StartSel=<mark>, StopSel=</mark>, MaxWords=16, MinWords=1') AS snippet_text
+              'StartSel=<mark>, StopSel=</mark>, MaxWords=48, MinWords=12') AS snippet_text
      FROM lexical_search_index lsi
      JOIN records r
        ON r.connector_instance_id = lsi.connector_instance_id

@@ -926,10 +926,12 @@ test('read_record_field reads bounded windows and advertises adjacent cursors', 
   assert.equal(result.structuredContent.window.text, 'Pasta order ');
   assert.equal(result.structuredContent.window.next_cursor, '12');
 
-  const fieldWindowResource = await client.readResource({ uri: result.structuredContent.resource.uri });
-  assert.equal(fieldWindowResource.contents.length, 1);
-  assert.equal(fieldWindowResource.contents[0].mimeType, 'text/plain');
-  assert.match(fieldWindowResource.contents[0].text, /Pasta order /);
+  assert.equal(
+    result.structuredContent.resource,
+    undefined,
+    'ordinary bounded reads must not expose a generic field-window resource URI when tool continuations are available',
+  );
+  assert.equal(result._meta?.resource, undefined);
 
   const routeCall = calls.find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
   assert.ok(routeCall, 'read_record_field must call the RS field-window route');
@@ -1114,38 +1116,42 @@ test('parseRecordResultId accepts canonical base64url, plain self-contained URI,
   assert.deepEqual(__internal.parseRecordResultId('conn_orders/orders:o2'), expected);
 });
 
-test('read_record_field structured resource is readable through resources/read without content resource_link', async () => {
+test('read_record_field omits dead field-window resources and exposes tool continuations', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
+
   const result = await client.callTool({
     name: 'read_record_field',
     arguments: { id: 'conn_orders/orders:o2', field_path: 'text', limit_chars: 12 },
   });
+  const visible = result.content
+    .filter((item) => item.type === 'text')
+    .map((item) => item.text)
+    .join('\n');
 
+  await Promise.allSettled([client.close(), server.close()]);
+
+  assert.equal(result.isError ?? false, false);
   assert.equal(
     result.content.some((item) => item.type === 'resource_link'),
     false,
-    'ordinary small field reads must not trigger resource/file materialization'
+    'ordinary small field reads must not trigger materialization',
   );
-  assert.match(result.structuredContent.resource.uri, /^pdpp:\/\/field-window\//);
-  const uri = result._meta.resource.uri;
-  assert.match(uri, /^pdpp:\/\/field-window\//);
-
-  const before = calls.length;
-  const resource = await client.readResource({ uri });
-  assert.equal(resource.contents.length, 1);
-  assert.equal(resource.contents[0].mimeType, 'text/plain');
-  assert.match(resource.contents[0].text, /record=conn_orders\/orders:o2/);
-  assert.match(resource.contents[0].text, /Pasta order /);
-
-  const resourceCall = calls.slice(before).find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
-  assert.ok(resourceCall, 'resources/read must call the RS field-window route');
-  const resourceUrl = new URL(resourceCall.url);
-  assert.equal(resourceUrl.searchParams.get('connection_id'), 'conn_orders');
-  assert.equal(resourceUrl.searchParams.get('field'), 'text');
-  await server.close();
+  assert.equal(
+    result.structuredContent.resource,
+    undefined,
+    'field-window resource URIs are not model-visible unless generic resource reads are proven reliable',
+  );
+  assert.equal(result._meta?.resource, undefined);
+  assert.match(visible, /next read_record_field args=/);
+  assert.match(visible, /"id":"conn_orders\/orders:o2"/);
+  assert.match(visible, /"field_path":"text"/);
+  assert.equal(
+    calls.some((call) => call.url.includes('/v1/streams/orders/records/o2/field-window')),
+    true,
+    'bounded read must still use the field-window endpoint internally',
+  );
 });
-
 test('field-window resource rejects malformed handles', async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
