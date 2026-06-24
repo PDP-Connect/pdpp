@@ -1,26 +1,32 @@
 /**
  * Over-time chart SCOPE honesty — through the real `assembleExplorerData` path.
  *
- * The chart's bars come from the server `group_by_time` aggregate
- * (`aggregateRecordsByTime`), which structurally CANNOT receive a free-text
- * query and is NOT passed `since`/`until` (those only pick the granularity). The
- * caption used to say "Matching records over time," producing two lies:
+ * The chart's bars come from the index-backed bucket endpoint
+ * (`listExploreRecordBuckets` → `GET /_ref/explore/records/buckets`), ONE call
+ * that structurally CANNOT receive a free-text query. The endpoint IS scoped to
+ * the SAME structural (connection, stream) targets the feed shows. The caption
+ * used to say "Matching records over time," producing two lies:
  *
  *  1. SEARCH: a search result-set (keyword_pageable) is not an honest
- *     time-distribution — the aggregate sums the FULL corpus while the feed shows
+ *     time-distribution — the endpoint counts the FULL corpus while the feed shows
  *     only the matches. FIX: suppress the chart entirely when `fromSearch`.
- *  2. The aggregate IS scoped to the SAME structural (connection, stream) targets
- *     the feed shows — these tests prove the assembler SENDS that scope so the
- *     bars reconcile with the feed's structural scope.
+ *  2. The bucket call IS scoped to the SAME structural (connection, stream) targets
+ *     the feed shows — these tests prove the assembler SENDS that scope (one call,
+ *     not N) so the bars reconcile with the feed's structural scope.
  *
  * These tests exercise the assembler end-to-end (no mock of the chart) and
- * capture the exact aggregate calls + the resulting `bucketSeries`.
+ * capture the exact bucket-endpoint scope + the resulting `bucketSeries`.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
 import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
-import type { ConnectorManifest, SearchResultHit, SearchResultPage, TimeBucketAggregate } from "../lib/rs-client.ts";
+import type {
+  ConnectorManifest,
+  ExploreRecordBucketsResponse,
+  SearchResultHit,
+  SearchResultPage,
+} from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
 // ── Fixtures: two connections, each with a stream that DECLARES a time field ──
@@ -83,41 +89,40 @@ function browsePage(): ExploreTimelinePage {
   } as ExploreTimelinePage;
 }
 
-/** One aggregate call the chart fan-in made: the structural scope it carried. */
-interface AggCall {
-  connectionId: string | null | undefined;
-  connectorId: string;
-  granularity: string;
-  stream: string;
+/** One bucket-endpoint call the chart made: the structural scope it carried. */
+interface BucketCall {
+  connections: readonly string[];
+  streams: readonly string[];
+  excludeStreams: readonly string[] | undefined;
+  since: string | null | undefined;
+  until: string | null | undefined;
 }
 
 const notStubbed = () => Promise.reject(new Error("not stubbed"));
 
-function aggregateFor(stream: string): TimeBucketAggregate {
+function bucketsResponse(): ExploreRecordBucketsResponse {
   return {
-    approximate: false,
-    filtered_record_count: 2,
+    object: "explore_record_buckets",
     granularity: "day",
-    group_by_time: "occurred_at",
-    groups: [{ key: "2026-06-05", count: 2 }],
-    metric: "count",
-    object: "aggregation",
-    stream,
     time_zone: "UTC",
+    extent: { start: "2026-06-05T00:00:00.000Z", end: "2026-06-05T00:00:00.000Z", count: 2 },
+    buckets: [{ start: "2026-06-05T00:00:00.000Z", end: "2026-06-06T00:00:00.000Z", count: 2 }],
   };
 }
 
-function chartDs(opts?: { aggCalls?: AggCall[]; searchHits?: SearchResultHit[] }): DashboardDataSource {
+function chartDs(opts?: { bucketCalls?: BucketCall[]; searchHits?: SearchResultHit[] }): DashboardDataSource {
   return {
     kind: "sandbox" as const,
-    aggregateRecordsByTime: (connectorId, stream, o) => {
-      opts?.aggCalls?.push({
-        connectorId,
-        stream,
-        connectionId: o.connectionId,
-        granularity: o.granularity,
+    aggregateRecordsByTime: notStubbed,
+    listExploreRecordBuckets: (o) => {
+      opts?.bucketCalls?.push({
+        connections: o.connections ?? [],
+        streams: o.streams ?? [],
+        excludeStreams: o.excludeStreams,
+        since: o.since,
+        until: o.until,
       });
-      return Promise.resolve(aggregateFor(stream));
+      return Promise.resolve(bucketsResponse());
     },
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
@@ -155,34 +160,41 @@ function chartDs(opts?: { aggCalls?: AggCall[]; searchHits?: SearchResultHit[] }
 
 // ── (b) Non-search browse feed: chart renders + aggregate carries STRUCTURAL scope ──
 
-test("BROWSE feed: the chart renders and the aggregate is called per in-scope (connection, stream) target", async () => {
-  const aggCalls: AggCall[] = [];
-  const result = await assembleExplorerData({}, chartDs({ aggCalls }), "https://rs.test");
+test("BROWSE feed: the chart renders and ONE bucket call carries the in-scope (connection, stream) targets", async () => {
+  const bucketCalls: BucketCall[] = [];
+  const result = await assembleExplorerData({}, chartDs({ bucketCalls }), "https://rs.test");
 
   assert.equal(result.fromSearch, false, "this is the browse lens, not search");
   assert.ok(result.bucketSeries, "the chart renders over a non-search exhaustive feed");
-  // The aggregate was scoped to the SAME structural targets the feed shows: one
-  // call per (connection, stream), each carrying its connection identity.
-  const scoped = aggCalls.map((c) => `${c.connectorId}/${c.stream}@${c.connectionId}`).sort();
+  // ONE index-backed call (not N per-target), scoped to the SAME structural
+  // (connection, stream) targets the feed shows.
+  assert.equal(bucketCalls.length, 1, "the chart makes exactly ONE bucket call (not a per-target fan-out)");
+  const call = bucketCalls[0];
+  assert.ok(call, "the single bucket call was captured");
   assert.deepEqual(
-    scoped,
-    ["chase/transactions@cin_chase", "ynab/transactions@cin_ynab"],
-    "aggregate is scoped to the feed's connection/stream targets (structural filter passed)"
+    [...call.connections].sort(),
+    ["cin_chase", "cin_ynab"],
+    "bucket call is scoped to the feed's connection targets (structural filter passed)"
   );
+  assert.deepEqual([...call.streams].sort(), ["transactions"], "bucket call carries the in-scope streams");
+  // The EXACT reachable total comes from extent.count, not summed bars.
+  assert.equal(result.bucketSeries?.total, 2, "total is the exact reachable extent.count");
 });
 
-test("CONNECTION-FILTERED feed: the aggregate scope NARROWS to the selected connection (matches the feed)", async () => {
+test("CONNECTION-FILTERED feed: the bucket scope NARROWS to the selected connection (matches the feed)", async () => {
   // Selecting only cin_ynab must scope the bars to ynab too — the chart's bars
   // reconcile with the feed's structural scope (no all-corpus leak).
-  const aggCalls: AggCall[] = [];
-  const result = await assembleExplorerData({ connection: "cin_ynab" }, chartDs({ aggCalls }), "https://rs.test");
+  const bucketCalls: BucketCall[] = [];
+  const result = await assembleExplorerData({ connection: "cin_ynab" }, chartDs({ bucketCalls }), "https://rs.test");
 
   assert.ok(result.bucketSeries, "chart still renders on a structurally-filtered feed");
-  const scoped = aggCalls.map((c) => `${c.connectorId}/${c.stream}@${c.connectionId}`).sort();
+  assert.equal(bucketCalls.length, 1, "still ONE bucket call when structurally filtered");
+  const call = bucketCalls[0];
+  assert.ok(call, "the single bucket call was captured");
   assert.deepEqual(
-    scoped,
-    ["ynab/transactions@cin_ynab"],
-    "aggregate scope NARROWS to the selected connection — never the all-corpus union"
+    [...call.connections].sort(),
+    ["cin_ynab"],
+    "bucket scope NARROWS to the selected connection — never the all-corpus union"
   );
 });
 
@@ -211,26 +223,26 @@ const SEARCH_HITS: SearchResultHit[] = [
   },
 ];
 
-test("SEARCH feed: the chart is SUPPRESSED (bucketSeries null) — the aggregate cannot scope to the query", async () => {
-  const aggCalls: AggCall[] = [];
+test("SEARCH feed: the chart is SUPPRESSED (bucketSeries null) — the bucket call cannot scope to the query", async () => {
+  const bucketCalls: BucketCall[] = [];
   const result = await assembleExplorerData(
     { q: "invoice" },
-    chartDs({ aggCalls, searchHits: SEARCH_HITS }),
+    chartDs({ bucketCalls, searchHits: SEARCH_HITS }),
     "https://rs.test"
   );
 
   assert.equal(result.fromSearch, true, "this exercises the SEARCH lens");
   assert.equal(result.bucketSeries, null, "chart suppressed during search (no honest time-distribution)");
-  assert.equal(aggCalls.length, 0, "the aggregate is NEVER fired during search (cannot be query-scoped)");
+  assert.equal(bucketCalls.length, 0, "the bucket call is NEVER fired during search (cannot be query-scoped)");
 });
 
-test("NEGATIVE CONTROL: the SAME data source WITHOUT a query renders the chart and fires the aggregate", async () => {
+test("NEGATIVE CONTROL: the SAME data source WITHOUT a query renders the chart and fires the bucket call", async () => {
   // Proves the suppression is caused by the SEARCH lens, not by a broken fixture:
-  // dropping `q` (same ds shape) flips bucketSeries non-null and fires aggregates.
-  const aggCalls: AggCall[] = [];
-  const result = await assembleExplorerData({}, chartDs({ aggCalls, searchHits: SEARCH_HITS }), "https://rs.test");
+  // dropping `q` (same ds shape) flips bucketSeries non-null and fires the bucket call.
+  const bucketCalls: BucketCall[] = [];
+  const result = await assembleExplorerData({}, chartDs({ bucketCalls, searchHits: SEARCH_HITS }), "https://rs.test");
 
   assert.equal(result.fromSearch, false);
   assert.ok(result.bucketSeries, "without a query the chart renders");
-  assert.ok(aggCalls.length > 0, "without a query the aggregate fires");
+  assert.ok(bucketCalls.length > 0, "without a query the bucket call fires");
 });

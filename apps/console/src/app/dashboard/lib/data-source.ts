@@ -48,12 +48,14 @@ import {
   aggregateRecordsByTime,
   type ConnectorManifest,
   type ConnectorOverview,
+  type ExploreRecordBucketsResponse,
   getConnectorOverview,
   getRecord,
   getStreamMetadata,
   isHybridRetrievalAdvertised,
   isSemanticRetrievalAdvertised,
   listConnectorManifests,
+  listExploreRecordBuckets,
   listStreams,
   queryRecords,
   type RecordsPage,
@@ -109,6 +111,23 @@ export interface DashboardDataSource {
   listConnectorManifests(): Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
   listConnectorSummaries(): Promise<RefConnectorSummariesResponse>;
+  /**
+   * Index-backed, single-call over-time bucket aggregate for the Explore chart —
+   * the honest replacement for the per-(connection, stream) `aggregateRecordsByTime`
+   * fan-out. Returns DENSE zero-filled calendar buckets plus an EXACT reachable
+   * `extent.count` (count == reachability) over the SAME structural scope the feed
+   * shows, so the bars reconcile with the list. `GET /_ref/explore/records/buckets`.
+   */
+  listExploreRecordBuckets(opts: {
+    connections?: readonly string[];
+    streams?: readonly string[];
+    excludeConnections?: readonly string[];
+    excludeStreams?: readonly string[];
+    since?: string | null;
+    until?: string | null;
+    granularity?: TimeBucketGranularity | "auto";
+    timeZone?: string;
+  }): Promise<ExploreRecordBucketsResponse>;
   // ── Explore merged timeline (Phase 3) ─────────────────────────────────
   listExploreTimeline(opts?: {
     connectionIds?: readonly string[];
@@ -179,6 +198,7 @@ export const liveDashboardDataSource: DashboardDataSource = {
   getStreamMetadata,
   getConnectorOverview,
   aggregateRecordsByTime,
+  listExploreRecordBuckets,
   queryRecords,
   getRecord,
   refSearch,

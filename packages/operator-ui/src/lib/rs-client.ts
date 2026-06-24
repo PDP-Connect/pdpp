@@ -69,6 +69,35 @@ export interface TimeBucketAggregate {
   time_zone: string;
 }
 
+/**
+ * One dense calendar bucket from `GET /_ref/explore/records/buckets`. Buckets are
+ * zero-filled and contiguous across the data extent; `start`/`end` are ISO (UTC)
+ * instants, `count` is the TRUE per-bucket total over the index-scoped set.
+ */
+export interface ExploreRecordBucket {
+  count: number;
+  end: string;
+  start: string;
+}
+
+/**
+ * Response of `GET /_ref/explore/records/buckets` — the single-call, index-backed
+ * over-time bucket aggregate for the Explore chart (replaces the per-stream
+ * `aggregateRecordsByTime` fan-out). `extent.count` is the EXACT reachable total
+ * (count == reachability).
+ */
+export interface ExploreRecordBucketsResponse {
+  buckets: ExploreRecordBucket[];
+  extent: {
+    count: number;
+    end: string | null;
+    start: string | null;
+  };
+  granularity: TimeBucketGranularity;
+  object: "explore_record_buckets";
+  time_zone: string;
+}
+
 export interface RecordsPage {
   data: StreamRecord[];
   has_more: boolean;

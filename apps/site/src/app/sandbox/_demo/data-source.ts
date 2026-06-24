@@ -44,6 +44,8 @@ import type {
   ConnectorManifest,
   ConnectorOverview,
   ConnectorRunRef,
+  ExploreRecordBucket,
+  ExploreRecordBucketsResponse,
   RecordsPage,
   SearchResultHit,
   SearchResultPage,
@@ -673,6 +675,87 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       approximate: false,
       filtered_record_count: filtered,
       groups,
+    };
+  },
+
+  async listExploreRecordBuckets(opts: {
+    connections?: readonly string[];
+    streams?: readonly string[];
+    excludeConnections?: readonly string[];
+    excludeStreams?: readonly string[];
+    since?: string | null;
+    until?: string | null;
+    granularity?: TimeBucketGranularity | "auto";
+    timeZone?: string;
+  }): Promise<ExploreRecordBucketsResponse> {
+    // Deterministic single-call analogue of the live index-backed bucket
+    // endpoint: dense UTC DAY buckets over the (fixed) demo corpus, scoped to the
+    // SAME (connection, stream) structure the feed shows, with an EXACT
+    // `extent.count` over the in-scope set. The sandbox has no future drift, so
+    // this is a true total — the demo analogue of count == reachability.
+    const connections = new Set(opts.connections ?? []);
+    const streams = new Set(opts.streams ?? []);
+    const excludeConnections = new Set(opts.excludeConnections ?? []);
+    const excludeStreams = new Set(opts.excludeStreams ?? []);
+    const inScope = DEMO_RECORDS.filter(
+      (r) =>
+        (connections.size === 0 || connections.has(r.connector_id)) &&
+        (streams.size === 0 || streams.has(r.stream)) &&
+        !excludeConnections.has(r.connector_id) &&
+        !excludeStreams.has(r.stream)
+    );
+
+    // Per-day counts (UTC day-prefix), the chart's resting-view granularity.
+    const dayCounts = new Map<string, number>();
+    let minMs = Number.POSITIVE_INFINITY;
+    let maxMs = Number.NEGATIVE_INFINITY;
+    for (const r of inScope) {
+      const ms = Date.parse(r.record_time);
+      if (Number.isNaN(ms)) {
+        continue;
+      }
+      minMs = Math.min(minMs, ms);
+      maxMs = Math.max(maxMs, ms);
+      const dayKey = new Date(ms).toISOString().slice(0, 10);
+      dayCounts.set(dayKey, (dayCounts.get(dayKey) ?? 0) + 1);
+    }
+
+    // `minMs`/`maxMs` move together (set in the same loop step), so an unbounded
+    // `minMs` means no in-scope record had a parseable time → an empty series.
+    if (!Number.isFinite(minMs)) {
+      return {
+        object: "explore_record_buckets",
+        granularity: "day",
+        time_zone: opts.timeZone ?? "UTC",
+        extent: { start: null, end: null, count: 0 },
+        buckets: [],
+      };
+    }
+
+    // DENSE zero-filled day buckets across [floor(min day), floor(max day)].
+    const MS_PER_DAY = 86_400_000;
+    const floorDay = (ms: number): number => Date.parse(`${new Date(ms).toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const buckets: ExploreRecordBucket[] = [];
+    for (let cursor = floorDay(minMs); cursor <= floorDay(maxMs); cursor += MS_PER_DAY) {
+      const start = new Date(cursor).toISOString();
+      const dayKey = start.slice(0, 10);
+      buckets.push({
+        start,
+        end: new Date(cursor + MS_PER_DAY).toISOString(),
+        count: dayCounts.get(dayKey) ?? 0,
+      });
+    }
+
+    return {
+      object: "explore_record_buckets",
+      granularity: "day",
+      time_zone: opts.timeZone ?? "UTC",
+      extent: {
+        start: new Date(minMs).toISOString(),
+        end: new Date(maxMs).toISOString(),
+        count: inScope.length,
+      },
+      buckets,
     };
   },
 

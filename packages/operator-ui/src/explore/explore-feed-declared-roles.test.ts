@@ -113,6 +113,7 @@ function makeDataSource(page: ExploreTimelinePage): DashboardDataSource {
   return {
     kind: "live",
     aggregateRecordsByTime: notStubbed,
+    listExploreRecordBuckets: notStubbed,
     listConnectorSummaries: () =>
       Promise.resolve({ object: "list" as const, data: [chatgptSummary()], has_more: false }),
     listConnectorManifests: () => Promise.resolve([chatgptManifest()]),

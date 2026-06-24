@@ -170,6 +170,7 @@ function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKe
   return {
     kind: "live",
     aggregateRecordsByTime: notStubbed,
+    listExploreRecordBuckets: notStubbed,
     listConnectorSummaries: () => Promise.resolve({ object: "list" as const, data: [ynabSummary()], has_more: false }),
     listConnectorManifests: () => Promise.resolve([ynabManifest()]),
     listExploreTimeline: (opts): Promise<ExploreTimelinePage> => {

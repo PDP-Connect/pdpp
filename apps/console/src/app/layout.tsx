@@ -48,6 +48,14 @@ export const metadata: Metadata = {
 export const viewport = {
   width: "device-width",
   initialScale: 1,
+  // The console is a dark-first app. Without an explicit themeColor the PWA
+  // splash/chrome falls back to white, flashing a white screen before the
+  // dark app paints. Match the dark `--background` token (oklch(0.16 0.005 260)
+  // ≈ #0c0d0f); light scheme stays the warm paper.
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0c0d0f" },
+    { media: "(prefers-color-scheme: light)", color: "#f8f6f0" },
+  ],
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

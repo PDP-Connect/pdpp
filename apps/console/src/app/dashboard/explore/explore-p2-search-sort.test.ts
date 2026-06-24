@@ -131,6 +131,7 @@ function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataS
   const stub: DashboardDataSource = {
     kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed("aggregateRecordsByTime"),
+    listExploreRecordBuckets: notStubbed("listExploreRecordBuckets"),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorSummaries: notStubbed("listConnectorSummaries"),

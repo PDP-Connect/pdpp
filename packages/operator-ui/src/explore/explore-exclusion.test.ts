@@ -114,6 +114,7 @@ function twoConnectorDs(capture?: {
   return {
     kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
+    listExploreRecordBuckets: notStubbed,
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorSummaries: async () =>

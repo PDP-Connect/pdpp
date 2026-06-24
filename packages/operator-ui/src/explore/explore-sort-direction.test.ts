@@ -64,6 +64,7 @@ function makeDirectionCapturingSource(
   return {
     kind: "live",
     aggregateRecordsByTime: notStubbed,
+    listExploreRecordBuckets: notStubbed,
     supportsExploreTimelineDirection: async () => supportsTimelineDirection,
     listConnectorSummaries: () => Promise.resolve({ object: "list" as const, data: [ynabSummary()], has_more: false }),
     listConnectorManifests: () => Promise.resolve([ynabManifest()]),

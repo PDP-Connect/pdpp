@@ -76,6 +76,9 @@ test("empty-query Explore keeps first-paint endpoint call bounded", async () => 
     aggregateRecordsByTime: async () => {
       throw new Error("aggregateRecordsByTime not stubbed");
     },
+    listExploreRecordBuckets: async () => {
+      throw new Error("listExploreRecordBuckets not stubbed");
+    },
     listConnectorSummaries: async () => ({ object: "list", data: summaries, has_more: false }),
     listConnectorManifests: async () => summaries.map((_, i) => manifest(i)),
     listExploreTimeline: async (opts): Promise<ExploreTimelinePage> => {

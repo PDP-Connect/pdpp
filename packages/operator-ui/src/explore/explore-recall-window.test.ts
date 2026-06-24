@@ -110,6 +110,7 @@ function dataSource(page: SearchResultPage): DashboardDataSource {
   return {
     kind: "live",
     aggregateRecordsByTime: unused,
+    listExploreRecordBuckets: unused,
     listConnectorSummaries: (): Promise<ListResponse<RefConnectorSummary>> =>
       Promise.resolve({ object: "list", data: summaries, has_more: false }),
     listConnectorManifests: () => Promise.resolve([manifest()]),

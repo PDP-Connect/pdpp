@@ -43,13 +43,11 @@ import {
   searchTimestampMetadataKey,
 } from "../lib/search-record-timestamps.ts";
 import {
-  type AggregateSource,
+  type Bucket,
   BUCKET_TIME_ZONE,
   type BucketGranularity,
   type BucketSeries,
   chartIsVisible,
-  deriveBucketSeries,
-  deriveGranularity,
 } from "./over-time-chart.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
@@ -2596,15 +2594,17 @@ export interface ExplorerSearchParams {
 
 // ─── Over-time chart volume band (the honesty engine) ─────────────────────
 //
-// The bars come from the SERVER time-bucket aggregate (true per-bucket totals
-// over the filtered, grant-scoped corpus), NOT from loaded feed entries. We fan
-// the per-stream `aggregateRecordsByTime` across the SAME in-scope (connection,
-// stream) targets the feed shows and union the bucket series (design §2). A
-// target whose manifest declares no time aggregate (no `consent_time_field`), or
-// whose aggregate read fails, is a PARTIAL source — its counts are never
-// fabricated, and the series is flagged `partial` so the caption can say "Some
-// counts unavailable" rather than imply a complete total. Bucketing is UTC to
-// MATCH the feed's day-grouping (design §4.3).
+// The bars come from the SERVER over-time bucket aggregate (true per-bucket
+// totals over the index-scoped corpus), NOT from loaded feed entries. A SINGLE
+// index-backed call (`listExploreRecordBuckets` → `GET /_ref/explore/records/
+// buckets`) returns DENSE zero-filled calendar buckets plus an EXACT reachable
+// `extent.count`, scoped to the SAME in-scope (connection, stream) targets the
+// feed shows. This replaces the prior per-(connection, stream)
+// `aggregateRecordsByTime` fan-out (up to CHART_FAN_IN_TARGET_CAP calls) with one
+// call on the critical path. A target whose manifest declares no time aggregate
+// (no `consent_time_field`), or a capped fan-in, still marks the series PARTIAL
+// ("Some counts unavailable") — its counts are never fabricated. Bucketing is
+// UTC to MATCH the feed's day-grouping (design §4.3).
 
 interface ChartTarget {
   connectionId: string | null;
@@ -2735,39 +2735,86 @@ async function loadBucketSeries(args: {
     return null;
   }
 
-  // Granularity from the active window span; default `day` when unfiltered.
-  const sinceMs = args.since ? Date.parse(`${args.since.slice(0, 10)}T00:00:00.000Z`) : Number.NaN;
-  const untilMs = args.until ? Date.parse(`${args.until.slice(0, 10)}T23:59:59.999Z`) : Number.NaN;
-  const spanMs = Number.isNaN(sinceMs) || Number.isNaN(untilMs) ? 0 : untilMs - sinceMs;
-  const granularity: BucketGranularity = deriveGranularity(spanMs);
-
-  const sources: AggregateSource[] = await Promise.all(
-    targets.map(async (target): Promise<AggregateSource> => {
-      try {
-        const agg = await args.dataSource.aggregateRecordsByTime(target.connectorId, target.stream, {
-          connectionId: target.connectionId,
-          connectorInstanceId: target.connectorInstanceId,
-          granularity,
-          groupByTime: target.groupByTime,
-          timeZone: BUCKET_TIME_ZONE,
-        });
-        return {
-          granularity,
-          groups: agg.groups.map((g) => ({ key: g.key, count: g.count })),
-          ok: true,
-        };
-      } catch {
-        // Undeclared/ungranted aggregate or a read fault: partial source, never
-        // a fabricated total. The stream's bars are simply absent from the union.
-        return { granularity, groups: [], ok: false };
-      }
-    })
+  // Scope the ONE bucket call to the SAME structural (connection, stream) targets
+  // the fan-out queried — so the bars reconcile with the feed's structural scope.
+  // Deriving from `targets` reproduces the prior per-target scope exactly (an
+  // excluded stream never became a target; a connection-filtered feed yields only
+  // its connections), with NO all-corpus leak.
+  const connections = uniqueStrings(
+    targets.map((t) => t.connectionId).filter((id): id is string => typeof id === "string" && id.length > 0)
   );
+  const streams = uniqueStrings(targets.map((t) => t.stream));
 
-  const series = deriveBucketSeries(sources, granularity);
-  // A capped fan-in or a stream with no declared time field also makes the band
-  // partial (honest "Some counts unavailable", never a fabricated complete total).
-  return targetsPartial ? { ...series, partial: true } : series;
+  // ONE index-backed call (was up to CHART_FAN_IN_TARGET_CAP `aggregateRecordsByTime`
+  // calls). The server snaps `granularity: "auto"` to a calm calendar ladder and
+  // returns DENSE zero-filled buckets + an EXACT reachable `extent.count`.
+  const response = await args.dataSource.listExploreRecordBuckets({
+    connections,
+    streams,
+    since: args.since || undefined,
+    until: args.until || undefined,
+    granularity: "auto",
+    timeZone: BUCKET_TIME_ZONE,
+  });
+
+  // Map the dense response → the chart's `Bucket` shape. `start`/`end` are the
+  // server's ISO bucket bounds (UTC); `key` is the day-prefix slice for day/week/
+  // month (IDENTICAL to the feed's `displayAt.slice(0, 10)` dayKey) or the full
+  // ISO for sub-day buckets, so a bar can never land in a different feed day-header.
+  const buckets: Bucket[] = response.buckets.map((b): Bucket => {
+    const startMs = Date.parse(b.start);
+    const endMs = Date.parse(b.end);
+    return {
+      count: b.count,
+      endMs,
+      key: bucketKeyFromIso(b.start, response.granularity),
+      startMs,
+    };
+  });
+
+  return {
+    buckets,
+    granularity: toBucketGranularity(response.granularity),
+    // `extent.count` is the EXACT reachable total over the scoped set — never a
+    // fabricated/summed-bar total. The series stays `partial` only when the prior
+    // honesty signal said so (a stream with no declared time field, or a capped
+    // fan-in): "Some counts unavailable", never a silent complete-total claim.
+    partial: targetsPartial,
+    total: response.extent.count,
+  };
+}
+
+/**
+ * Snap the server's bucket granularity (which can be `minute`/`quarter`/`year`)
+ * down to the chart's `BucketGranularity` ladder (`hour`/`day`/`week`/`month`).
+ * Sub-day → `hour`; supra-month → `month`. Only the chart's span/label math reads
+ * this; the true bar bounds come from the server's `start`/`end` instants.
+ */
+function toBucketGranularity(granularity: string): BucketGranularity {
+  switch (granularity) {
+    case "hour":
+    case "day":
+    case "week":
+    case "month":
+      return granularity;
+    case "minute":
+      return "hour";
+    default:
+      return "month";
+  }
+}
+
+/**
+ * The chart bucket `key` for a server bucket start instant. For day/week/month the
+ * key is the ISO date prefix (`YYYY-MM-DD`) — IDENTICAL to the live feed's
+ * `displayAt.slice(0, 10)` dayKey, so a bar can never land in a different feed
+ * day-header. Sub-day (hour/minute) keeps the full ISO instant.
+ */
+function bucketKeyFromIso(start: string, granularity: string): string {
+  if (granularity === "hour" || granularity === "minute") {
+    return start;
+  }
+  return start.slice(0, 10);
 }
 
 /**

@@ -121,6 +121,7 @@ function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataS
   const stub: DashboardDataSource = {
     kind: "sandbox" as const,
     aggregateRecordsByTime: async () => { throw new Error("aggregateRecordsByTime not stubbed"); },
+    listExploreRecordBuckets: async () => { throw new Error("listExploreRecordBuckets not stubbed"); },
     isHybridRetrievalAdvertised: async () => false,
     isSemanticRetrievalAdvertised: async () => false,
     listConnectorSummaries: async () => { throw new Error("listConnectorSummaries not stubbed"); },

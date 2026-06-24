@@ -338,6 +338,78 @@ export async function aggregateRecordsByTime(
 }
 
 /**
+ * One dense calendar bucket from `GET /_ref/explore/records/buckets`. Buckets are
+ * zero-filled and contiguous across the data extent at the chosen granularity:
+ * `start`/`end` are ISO instants (UTC), `count` is the TRUE per-bucket total over
+ * the index-scoped record set (not a loaded page).
+ */
+export interface ExploreRecordBucket {
+  count: number;
+  end: string;
+  start: string;
+}
+
+/**
+ * Response of `GET /_ref/explore/records/buckets` — the index-backed, single-call
+ * over-time bucket aggregate for the owner Explore chart. Replaces the per-stream
+ * `aggregateRecordsByTime` fan-out. `extent.count` is the EXACT reachable total
+ * over the scoped record set (count == reachability); `granularity` is the
+ * concrete calendar unit the server snapped to (auto → ~30-60-bar ladder).
+ */
+export interface ExploreRecordBucketsResponse {
+  buckets: ExploreRecordBucket[];
+  extent: {
+    count: number;
+    end: string | null;
+    start: string | null;
+  };
+  granularity: TimeBucketGranularity;
+  object: "explore_record_buckets";
+  time_zone: string;
+}
+
+/**
+ * Index-backed over-time bucket aggregate — the single-call honest data source
+ * for the Explore chart's bars (replaces the per-(connection, stream)
+ * `aggregateRecordsByTime` fan-out). Calls `GET /_ref/explore/records/buckets`
+ * under the owner session and returns DENSE zero-filled calendar buckets plus an
+ * exact reachable `extent.count`. Scope (connections/streams/since/until) is
+ * carried verbatim so the bars reconcile with the feed's structural scope.
+ *
+ * The route reads its list params as either repeated keys OR a single
+ * comma-separated string (`readQueryStringList`), so the array scope is sent as
+ * comma-joined values through the scalar `authedFetch` query builder. The
+ * timezone is sent as `time_zone` (the route's param name).
+ */
+export async function listExploreRecordBuckets(opts: {
+  connections?: readonly string[];
+  streams?: readonly string[];
+  excludeConnections?: readonly string[];
+  excludeStreams?: readonly string[];
+  since?: string | null;
+  until?: string | null;
+  granularity?: TimeBucketGranularity | "auto";
+  timeZone?: string;
+}): Promise<ExploreRecordBucketsResponse> {
+  const joinList = (values: readonly string[] | undefined): string | undefined =>
+    values && values.length > 0 ? values.join(",") : undefined;
+  const body = (await authedFetch("/_ref/explore/records/buckets", {
+    connections: joinList(opts.connections),
+    streams: joinList(opts.streams),
+    xconnections: joinList(opts.excludeConnections),
+    xstreams: joinList(opts.excludeStreams),
+    since: opts.since ?? undefined,
+    until: opts.until ?? undefined,
+    granularity: opts.granularity,
+    time_zone: opts.timeZone,
+  })) as ExploreRecordBucketsResponse;
+  return {
+    ...body,
+    buckets: Array.isArray(body.buckets) ? body.buckets : [],
+  };
+}
+
+/**
  * Fetch a single record by its envelope key.
  *
  * Uses the spec endpoint `GET /v1/streams/:stream/records/:id`. The :id in the
