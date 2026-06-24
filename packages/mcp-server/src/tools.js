@@ -1590,7 +1590,7 @@ function searchMatchWindowRead(window, recordId, fieldPath) {
 }
 
 function searchMatchWindowReadArgs(args, recordId, fieldPath) {
-  const rawArgs = objectValue(args);
+  const rawArgs = objectValue(args) ?? {};
   if (firstString(rawArgs.id, rawArgs.record_uri)) return rawArgs;
   const connectionId = firstString(rawArgs.connection_id, rawArgs.connector_instance_id);
   const stream = firstString(rawArgs.stream);

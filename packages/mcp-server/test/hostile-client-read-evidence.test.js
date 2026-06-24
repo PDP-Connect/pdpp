@@ -91,6 +91,43 @@ function hostileSearchFixture() {
         });
       }
 
+      if (url.searchParams.get('q') === 'rest-read-shape') {
+        return jsonResponse({
+          data: [
+            {
+              object: 'search_result',
+              stream: 'messages',
+              record_key: 'm1',
+              connector_id: 'slack',
+              connection_id: 'cin_slack',
+              connector_instance_id: 'cin_slack',
+              display_name: 'Vana Slack',
+              snippet: { field: 'text', text: '<mark>Hyperlane</mark>' },
+              evidence_excerpts: [
+                {
+                  object: 'evidence_excerpt',
+                  field_path: 'text',
+                  preview_text: '<mark>Hyperlane</mark>',
+                  truncated: true,
+                  provenance: 'lexical_match',
+                  read: {
+                    object: 'field_window_read',
+                    method: 'GET',
+                    route: '/v1/streams/messages/records/m1/field-window',
+                    stream: 'messages',
+                    record_id: 'm1',
+                    field: 'text',
+                    connection_id: 'cin_slack',
+                  },
+                },
+              ],
+            },
+          ],
+          links: { self: '/v1/search?q=rest-read-shape' },
+          meta: { count: { kind: 'estimated', value: 1 } },
+        });
+      }
+
       return jsonResponse({
         hits: [
           {
@@ -470,6 +507,22 @@ function realEnvelopeSearchFixture() {
   };
   return { calls, fetch };
 }
+
+test('REST evidence_excerpts read descriptors synthesize callable read args', async () => {
+  const { fetch } = hostileSearchFixture();
+  const { client, server } = await connectClient(fetch);
+
+  const search = await client.callTool({ name: 'search', arguments: { q: 'rest-read-shape' } });
+  const visible = textContent(search);
+
+  await Promise.allSettled([client.close(), server.close()]);
+
+  assert.equal(search.isError, undefined);
+  assert.match(visible, /Evidence excerpts:/);
+  assert.match(visible, /Hyperlane/);
+  assert.match(visible, /read=read_record_field/);
+  assert.match(visible, /id=cin_slack\/messages:m1/);
+});
 
 test('search-visible record_uri is the callable handle for evidence continuations', async () => {
   const { fetch, calls } = hostileSearchFixture();

@@ -29,6 +29,8 @@ on:
       - "pnpm-workspace.yaml"
       - "apps/console/**"
       - "apps/site/**"
+      - "packages/mcp-server/**"
+      - "packages/read-core/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
       - "scripts/check-console-health-surfaces.mjs"
