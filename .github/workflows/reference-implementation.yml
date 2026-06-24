@@ -36,6 +36,10 @@ on:
       - "scripts/check-owner-journey-acceptance.mjs"
       - "scripts/check-owner-journey-acceptance.test.mjs"
       - "scripts/owner-journey-acceptance/**"
+      - ".releaserc.yaml"
+      - "scripts/check-package-release-policy.mjs"
+      - "scripts/check-package-release-policy.test.mjs"
+      - "packages/*/package.json"
   workflow_dispatch: {}
 
 concurrency:

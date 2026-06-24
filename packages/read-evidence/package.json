@@ -1,8 +1,16 @@
 {
   "name": "@pdpp/read-evidence",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "description": "Shared PDPP read/evidence primitives for bounded previews and continuation descriptors.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/pdpp.git",
+    "directory": "packages/read-evidence"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
   "exports": {
     ".": "./src/index.js"
   },
