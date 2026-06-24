@@ -112,6 +112,16 @@ fixed schema. Dual-backend substrate tests pin parity.
   a new feature violates the semantic-boundary rule; the bucket aggregate gets
   its own change on top of this foundation.
 
+## Direction follow-on
+
+`direction=asc` is the server half of the Explore sort cell. It is a real
+keyset traversal over the same semantic-time key, not a reversal of one loaded
+page. The substrate flips the partition seek predicate and `ORDER BY` for both
+SQLite and Postgres. The operation flips the k-way merge comparator and stores
+the direction in the composite cursor, so every page of an oldest-first walk
+continues ascending from the same snapshot. The existing `nowCeiling` clamp stays
+in force in both directions; future records remain in the Upcoming projection.
+
 ## Out of scope
 
 - The bucket-aggregate / over-time-chart count endpoint (separate, later change).

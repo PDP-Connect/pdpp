@@ -113,6 +113,15 @@ endpoint; that is a separate later change that builds on this foundation.
 - **AND** a record ingested after the first-page snapshot SHALL NOT appear in an
   already-returned page and SHALL instead be reflected in `new_since_snapshot`
 
+#### Scenario: Oldest-first paging is a real server keyset walk
+
+- **WHEN** the caller requests the merged feed with `direction=asc`
+- **THEN** the response SHALL page records by `COALESCE(NULLIF(semantic_time, ''), emitted_at)` ASC
+  and `record_key` ASC from the genuinely-oldest reachable record
+- **AND** returned cursors SHALL preserve that direction for subsequent pages
+- **AND** the `nowCeiling` past/future clamp SHALL remain in force so future records
+  stay in the Upcoming projection rather than the main feed
+
 #### Scenario: A stale or unknown cursor handle is rejected cleanly
 
 - **WHEN** the caller presents a cursor handle that is stale, expired, or unknown

@@ -261,6 +261,12 @@ function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResul
   // REVIEWED-DYNAMIC: keyset WHERE clause varies by cursor presence and
   // snapshot anchor; all values are bound as parameters.
   const { connectorId, stream, snapshotSeq, afterPosition, limit, nowCeiling } = input;
+  // Scan direction over semantic time. "desc" (default) = newest-first browse;
+  // "asc" = the order=oldest re-page (earliest past record first). The keyset
+  // seek predicate and the ORDER BY both flip with the direction; the nowCeiling
+  // upper-bound clamp is kept either way, so "asc" walks the PAST partition from
+  // its floor up to the ceiling and never surfaces the future partition.
+  const direction = input.direction === "asc" ? "asc" : "desc";
 
   // The merged timeline ORDERS by SEMANTIC time (when the thing happened), not
   // ingest time. A row not yet backfilled has semantic_time '' -> COALESCE to
@@ -279,15 +285,17 @@ function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResul
   }
 
   if (afterPosition !== null && afterPosition.lastSemanticTime !== null && afterPosition.lastRecordKey !== null) {
-    // Keyset seek on (semantic_time, record_key) DESC: rows strictly older than
-    // the cursor position.
-    whereParts.push(`(${semExpr} < ? OR (${semExpr} = ? AND record_key < ?))`);
+    // Keyset seek on (semantic_time, record_key): rows strictly AFTER the cursor
+    // position in the scan direction — "<" (older) for desc, ">" (newer) for asc.
+    const seekOp = direction === "asc" ? ">" : "<";
+    whereParts.push(`(${semExpr} ${seekOp} ? OR (${semExpr} = ? AND record_key ${seekOp} ?))`);
     binds.push(afterPosition.lastSemanticTime, afterPosition.lastSemanticTime, afterPosition.lastRecordKey);
   }
 
   // Fetch limit+1 to detect hasMore without an extra COUNT query.
   binds.push(limit + 1);
 
+  const orderDir = direction === "asc" ? "ASC" : "DESC";
   const sql = `
     SELECT connector_instance_id AS connectorId, connector_id AS connectorType,
            stream, record_key AS recordKey,
@@ -295,7 +303,7 @@ function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResul
            ${semExpr} AS semanticTime
     FROM records
     WHERE ${whereParts.join(" AND ")}
-    ORDER BY ${semExpr} DESC, record_key DESC
+    ORDER BY ${semExpr} ${orderDir}, record_key ${orderDir}
     LIMIT ?
   `;
 
@@ -649,6 +657,11 @@ async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; sna
 
 async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<PartitionPageResult> {
   const { connectorId, stream, snapshotSeq, afterPosition, limit, nowCeiling } = input;
+  // Scan direction over semantic time. "desc" (default) = newest-first; "asc" =
+  // the order=oldest re-page. The keyset seek predicate and ORDER BY flip with
+  // it; the nowCeiling clamp is kept either way (asc walks the PAST partition
+  // floor→ceiling, never the future partition).
+  const direction = input.direction === "asc" ? "asc" : "desc";
 
   // The merged timeline ORDERS by SEMANTIC time (when the thing happened), not
   // ingest time. A row not yet backfilled has semantic_time '' -> COALESCE to
@@ -669,16 +682,18 @@ async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<Pa
     nowClause = `AND ${semExpr} <= $${params.length}`;
   }
 
+  const seekOp = direction === "asc" ? ">" : "<";
   let cursorClause = "";
   if (afterPosition !== null && afterPosition.lastSemanticTime !== null && afterPosition.lastRecordKey !== null) {
-    // Keyset seek on (semantic_time, record_key) DESC: rows strictly older than
-    // the cursor position.
+    // Keyset seek on (semantic_time, record_key): rows strictly AFTER the cursor
+    // position in the scan direction — "<" (older) for desc, ">" (newer) for asc.
     params.push(afterPosition.lastSemanticTime, afterPosition.lastSemanticTime, afterPosition.lastRecordKey);
-    cursorClause = `AND (${semExpr} < $${params.length - 2} OR (${semExpr} = $${params.length - 1} AND record_key < $${params.length}))`;
+    cursorClause = `AND (${semExpr} ${seekOp} $${params.length - 2} OR (${semExpr} = $${params.length - 1} AND record_key ${seekOp} $${params.length}))`;
   }
 
   params.push(limit + 1);
 
+  const orderDir = direction === "asc" ? "ASC" : "DESC";
   const result = await postgresQuery(
     `SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType",
             stream, record_key AS "recordKey", record_json AS "recordJson",
@@ -690,7 +705,7 @@ async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<Pa
        AND id <= $3
        ${nowClause}
        ${cursorClause}
-     ORDER BY ${semExpr} DESC, record_key DESC
+     ORDER BY ${semExpr} ${orderDir}, record_key ${orderDir}
      LIMIT $${params.length}`,
     params
   );

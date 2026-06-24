@@ -133,6 +133,16 @@ export interface CompositeCursorPayload {
    */
   readonly nowCeiling: string;
   /**
+   * The PINNED scan direction for this traversal. "asc" = oldest-first
+   * (`order=oldest`), "desc" = newest-first (default browse). Carried so every
+   * page of an oldest-first walk keeps paging ascending (and the keyset seek
+   * predicate stays correct). Direction is feed-defining, so a flip starts a
+   * fresh cursor — it never changes mid-traversal. OPTIONAL for backward
+   * compatibility: a cursor minted before this field decodes as "desc", so no
+   * version bump is needed (the keyset key, snapshot, and ceiling are unchanged).
+   */
+  readonly direction?: "asc" | "desc";
+  /**
    * Per-partition positions. Partitions that have been exhausted are omitted
    * (no point carrying them; they contribute nothing to future pages).
    */
@@ -199,6 +209,18 @@ export interface PartitionPageInput {
    * (legacy behavior, no future/past split).
    */
   readonly nowCeiling?: string | null;
+  /**
+   * Scan DIRECTION over the partition's semantic-time order. "desc" (default) =
+   * newest-first (the standard browse feed); "asc" = oldest-first — the
+   * `order=oldest` re-page that walks from the partition's EARLIEST record
+   * forward. Both directions keep the `nowCeiling` upper-bound clamp, so "asc"
+   * pages the PAST partition from the floor up to the ceiling and never surfaces
+   * the future partition into the main feed. The keyset seek predicate flips with
+   * the direction (`<` for desc, `>` for asc). Display key == cursor key ==
+   * semantic_time in BOTH directions (display == sort by construction), so an
+   * oldest-first page is monotone across page boundaries exactly like newest-first.
+   */
+  readonly direction?: "asc" | "desc";
 }
 
 /**
@@ -279,6 +301,20 @@ export interface ExploreTimelineInput {
    * `limit` when omitted (legacy). Normalized to the same [MIN, MAX] bounds.
    */
   readonly upcomingLimit?: number | null;
+  /**
+   * Sort DIRECTION for the main feed over its semantic-time order. "desc"
+   * (default) = newest-first browse; "asc" = the `order=oldest` re-page that
+   * walks from the EARLIEST past record forward. This is the honest replacement
+   * for the old client-side window reverse: "asc" is a real server keyset walk
+   * that reaches the true earliest record and pages forward in time. Direction is
+   * FEED-DEFINING (a fresh snapshot/cursor), and it is also carried inside the
+   * composite cursor so every page of an oldest-first traversal keeps walking
+   * ascending. The `nowCeiling` past/future clamp is preserved in both directions:
+   * "asc" never leaks the future (Upcoming) partition into the main feed.
+   * Omitted/invalid → "desc" (backward compatible: existing cursors have no
+   * direction field and decode as "desc").
+   */
+  readonly direction?: "asc" | "desc" | null;
 }
 
 export interface ExploreTimelineOutput {
@@ -528,11 +564,15 @@ export function decodeCompositeCursor(cursor: string): CompositeCursorPayload {
       lastRecordKey: typeof part.lastRecordKey === "string" ? part.lastRecordKey : null,
     };
   });
+  // Direction is OPTIONAL: a cursor minted before the field decodes as "desc"
+  // (the prior newest-first-only behavior), so no version bump is required.
+  const direction = obj.direction === "asc" ? "asc" : "desc";
   return {
     version: CURSOR_VERSION,
     snapshotSeq: obj.snapshotSeq as number,
     snapshotAt: obj.snapshotAt as string,
     nowCeiling: obj.nowCeiling as string,
+    direction,
     partitions,
   };
 }
@@ -716,6 +756,27 @@ function compareRowsDesc(a: PartitionRow, b: PartitionRow): number {
 }
 
 /**
+ * Compare two records for ASC ordering (oldest first) — the `order=oldest`
+ * re-page. Returns negative if a < b (a is older, should come first). Mirrors
+ * the per-partition substrate ORDER BY (semantic_time ASC, record_key ASC) so
+ * the globally-OLDEST head the merge picks matches the partition fetch order;
+ * the keys MUST match or pages mis-order. Membership (id <= snapshotSeq) is a
+ * different key and is not compared here — direction only changes ORDER.
+ */
+function compareRowsAsc(a: PartitionRow, b: PartitionRow): number {
+  if (a.semanticTime < b.semanticTime) return -1;
+  if (a.semanticTime > b.semanticTime) return 1;
+  if (a.recordKey < b.recordKey) return -1;
+  if (a.recordKey > b.recordKey) return 1;
+  return 0;
+}
+
+/** The merge comparator for a scan direction (newest-first vs oldest-first). */
+function compareRowsForDirection(direction: "asc" | "desc"): (a: PartitionRow, b: PartitionRow) => number {
+  return direction === "asc" ? compareRowsAsc : compareRowsDesc;
+}
+
+/**
  * Refill a partition bucket from the dependency, advancing its cursor.
  * Fetches `fetchSize` rows and appends them to the bucket's buffer (newest first).
  */
@@ -739,7 +800,8 @@ async function refillBucket(
   snapshotSeq: number,
   fetchSize: number,
   deps: ExploreTimelineDependencies,
-  nowCeiling: string | null
+  nowCeiling: string | null,
+  direction: "asc" | "desc"
 ): Promise<void> {
   if (bucket.exhausted) return;
 
@@ -750,6 +812,7 @@ async function refillBucket(
     afterPosition: bucket.cursorPosition,
     limit: fetchSize,
     nowCeiling,
+    direction,
   });
 
   if (result.rows.length === 0) {
@@ -757,7 +820,8 @@ async function refillBucket(
     return;
   }
 
-  // Rows come back newest-first from the dependency.
+  // Rows come back in the requested direction (newest-first for "desc",
+  // oldest-first for "asc") from the dependency.
   bucket.buffer.push(...result.rows);
 
   if (!result.hasMore) {
@@ -808,7 +872,13 @@ export async function executeExploreTimeline(
   // Restored verbatim from the cursor on resume so the past/future split is stable
   // across the whole traversal. See the CompositeCursorPayload.nowCeiling doc.
   let nowCeiling: string;
+  // The PINNED scan direction for this traversal. On resume the cursor's
+  // direction WINS (so an oldest-first walk keeps paging ascending); on a fresh
+  // page the input picks it. Direction is feed-defining (a flip resets the
+  // cursor upstream), so it never changes mid-traversal.
+  let direction: "asc" | "desc";
   let initialPositions: Map<string, PartitionCursorPosition>;
+  const requestedDirection: "asc" | "desc" = input.direction === "asc" ? "asc" : "desc";
 
   if (input.cursor) {
     // Resuming from a prior page. The URL carries either an opaque server-side
@@ -840,6 +910,10 @@ export async function executeExploreTimeline(
     snapshotSeq = decoded.snapshotSeq;
     snapshotAt = decoded.snapshotAt;
     nowCeiling = decoded.nowCeiling;
+    // The cursor's direction is authoritative on resume (a cursor without the
+    // field decodes as "desc"). A flip is feed-defining and resets the cursor
+    // upstream, so the input never disagrees with a live cursor's direction.
+    direction = decoded.direction === "asc" ? "asc" : "desc";
     if (rewindToFirstPage) {
       // REWIND: keep the cursor's snapshot, but discard its partition positions and
       // re-enumerate from the start — re-rendering page 1 of the ORIGINAL snapshot.
@@ -865,6 +939,9 @@ export async function executeExploreTimeline(
     // PIN the past/future boundary at first-page capture. `deps.now` is injectable
     // for deterministic tests; production uses the real wall clock.
     nowCeiling = deps.now ? deps.now() : new Date().toISOString();
+    // Fresh page: the request picks the direction (oldest-first re-page or the
+    // default newest-first browse). It is then pinned into this page's cursor.
+    direction = requestedDirection;
     initialPositions = new Map();
   }
 
@@ -915,14 +992,21 @@ export async function executeExploreTimeline(
   // carried in the cursor) so future-dated rows (e.g. YNAB future budget months)
   // never dominate the newest-first feed above today, and the split stays consistent
   // across every page. See CompositeCursorPayload.nowCeiling.
-  await Promise.all(buckets.map((b) => refillBucket(b, snapshotSeq, fetchSize, deps, nowCeiling)));
+  await Promise.all(buckets.map((b) => refillBucket(b, snapshotSeq, fetchSize, deps, nowCeiling, direction)));
 
   // ── Phase 3: k-way merge ────────────────────────────────────────────────
+  //
+  // The comparator follows the scan direction: "desc" picks the globally-NEWEST
+  // head (browse), "asc" picks the globally-OLDEST head (the order=oldest
+  // re-page). It MUST match the per-partition substrate ORDER BY for the same
+  // direction or pages mis-order.
+  const compareRows = compareRowsForDirection(direction);
 
   const emitted: ExploreTimelineRecord[] = [];
 
   while (emitted.length < limit) {
-    // Find the bucket with the globally-newest head row.
+    // Find the bucket whose head is first in the scan direction (newest for
+    // "desc", oldest for "asc").
     let bestBucket: PartitionBucket | null = null;
     let bestRow: PartitionRow | null = null;
 
@@ -931,14 +1015,14 @@ export async function executeExploreTimeline(
       if (bucket.buffer.length === 0 && !bucket.exhausted) {
         // This is the sequential refill path: we exhaust the previous batch
         // before fetching the next one for this bucket.
-        await refillBucket(bucket, snapshotSeq, fetchSize, deps, nowCeiling);
+        await refillBucket(bucket, snapshotSeq, fetchSize, deps, nowCeiling, direction);
       }
       if (bucket.buffer.length === 0) {
         // Truly exhausted.
         continue;
       }
       const head = bucket.buffer[0];
-      if (head !== undefined && (bestRow === null || compareRowsDesc(head, bestRow) < 0)) {
+      if (head !== undefined && (bestRow === null || compareRows(head, bestRow) < 0)) {
         bestBucket = bucket;
         bestRow = head;
       }
@@ -983,8 +1067,9 @@ export async function executeExploreTimeline(
   let nextCursor: string | null = null;
   if (hasMore && emitted.length > 0) {
     // Build the next composite cursor from each live bucket's last-consumed position.
-    // Include all buckets that are NOT exhausted OR that have a position (they may
-    // still have rows we haven't fetched yet on the next page).
+    // Omit a bucket only after `refillBucket` has exhausted a snapshotSeq-bounded
+    // read. At that point the partition has returned every row visible in this
+    // pinned snapshot, so there is no later reachable row for the cursor to preserve.
     const partitionPositions: PartitionCursorPosition[] = [];
     for (const bucket of buckets) {
       if (bucket.cursorPosition !== null) {
@@ -993,7 +1078,9 @@ export async function executeExploreTimeline(
           // Still has rows left: include position so we continue from where we stopped.
           partitionPositions.push(bucket.cursorPosition);
         }
-        // else: exhausted after contributing, no buffered rows left — omit.
+        // else: exhausted after contributing, no buffered rows left. This is
+        // snapshot-safe to omit: `exhausted` means a snapshotSeq-bounded refill
+        // returned no further rows for this partition.
       } else {
         // This bucket has not yet contributed any row to any page.
         if (bucket.buffer.length > 0 || !bucket.exhausted) {
@@ -1008,7 +1095,7 @@ export async function executeExploreTimeline(
             lastRecordKey: null,
           });
         }
-        // else: no buffer and exhausted (empty partition) — omit.
+        // else: no buffer and exhausted (empty partition in this snapshot) — omit.
       }
     }
     const blob = encodeCompositeCursor({
@@ -1016,6 +1103,10 @@ export async function executeExploreTimeline(
       snapshotSeq,
       snapshotAt,
       nowCeiling,
+      // Carry direction only for an oldest-first walk so the next page keeps
+      // paging ascending; the default "desc" is omitted so existing newest-first
+      // cursors stay byte-identical (backward compatible).
+      ...(direction === "asc" ? { direction } : {}),
       partitions: partitionPositions,
     });
     // Persist the blob server-side and hand back a short opaque handle so the

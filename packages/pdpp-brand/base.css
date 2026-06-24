@@ -185,9 +185,14 @@
   --content-width: 760px;
   --content-wide-width: 1200px;
   --chrome-height: 3.5rem;
+  --data-list-row-py: 0.5rem;
 
   /* Sidebar width — stepped across desktop breakpoints. Below 1024 = drawer. */
   --pdpp-sidebar-width: 240px;
+}
+
+html[data-density="compact"] {
+  --data-list-row-py: 0.3125rem;
 }
 
 @media (min-width: 1440px) {
@@ -707,6 +712,10 @@ samp {
    color from the --status-*-fg token tier (same tier the Tailwind bg classes use
    for the fill). The dark-mode background override here wins over Tailwind
    utilities — it reads from --status-*-bg which already has the dark value. */
+.pdpp-data-list-row {
+  padding-block: var(--data-list-row-py);
+}
+
 .pdpp-status-badge[data-status-tone="success"] {
   color: var(--status-success-fg);
 }

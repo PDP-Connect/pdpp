@@ -62,6 +62,14 @@ export const GRANT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   staged: { label: "pending", tone: "warning" },
 };
 
+// Schedule state: the durable refresh-cadence row's posture.
+export const SCHEDULE_STATE_VOCABULARY: StatusVocabulary = {
+  active: { label: "active", tone: "success" },
+  paused: { label: "paused", tone: "neutral" },
+  not_runnable: { label: "not runnable", tone: "warning" },
+  unscheduled: { label: "unscheduled", tone: "neutral" },
+};
+
 // Change/spec authoring lifecycle: maturity states of durable artifacts.
 export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   "in-progress": { label: "in progress", tone: "warning" },

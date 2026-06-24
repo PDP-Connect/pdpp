@@ -481,6 +481,9 @@ export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext):
         // and cursor — exact counts, no client-side shrinking.
         const excludeConnectionIds = readQueryStringList(req.query, "xconnection", "xconnections");
         const excludeStreams = readQueryStringList(req.query, "xstream", "xstreams");
+        // Sort DIRECTION for the main feed: "asc" = the order=oldest re-page
+        // (earliest record first, paging forward); anything else = newest-first.
+        const direction = req.query.direction === "asc" ? "asc" : "desc";
         // Separate cursor for paging the Upcoming (future) projection to exhaustion.
         // When present, this request pages ONLY the future set (the main feed is not
         // re-traversed) — count==reachability for "188 upcoming, all reachable".
@@ -522,6 +525,7 @@ export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext):
             streams,
             excludeConnectionIds,
             excludeStreams,
+            direction,
           },
           deps
         );

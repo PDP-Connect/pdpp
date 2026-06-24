@@ -2,6 +2,8 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { Schibsted_Grotesk } from "next/font/google";
 import { cookies } from "next/headers";
+import DensityProvider from "@/components/density/density-provider.tsx";
+import { DENSITY_KEY, normalizeDensity } from "@/components/density/density-state.ts";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
@@ -58,6 +60,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // the OS preference, but CSS can.
   const cookieStore = await cookies();
   const choice = normalizeThemeChoice(cookieStore.get(THEME_KEY)?.value);
+  const density = normalizeDensity(cookieStore.get(DENSITY_KEY)?.value);
   // For "dark" we add the `dark` class so Tailwind/shadcn dark variants apply
   // immediately. For "light" and "system" we omit the class entirely; CSS
   // resolves "system" via @media (prefers-color-scheme: dark).
@@ -66,14 +69,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html
       className={[schibstedGrotesk.variable, htmlClassName].filter(Boolean).join(" ")}
+      data-density={density}
       data-theme={choice}
       lang="en"
     >
       <body>
         <ThemeProvider>
-          <RootProvider theme={{ enabled: false }}>
-            <TooltipProvider>{children}</TooltipProvider>
-          </RootProvider>
+          <DensityProvider initialDensity={density}>
+            <RootProvider theme={{ enabled: false }}>
+              <TooltipProvider>{children}</TooltipProvider>
+            </RootProvider>
+          </DensityProvider>
         </ThemeProvider>
       </body>
     </html>

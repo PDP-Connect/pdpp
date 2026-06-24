@@ -67,10 +67,10 @@ export function RunRow({
   // Danger tint: left border + low-alpha fill. When peeked, bg-muted wins to
   // keep the selected row clearly highlighted.
   const rowClass = isDanger
-    ? `block border-l-2 py-2 pr-3 pl-[10px] transition-colors [border-left-color:var(--status-danger-fg)] [background-color:var(--status-danger-bg)] ${
+    ? `pdpp-data-list-row block border-l-2 pr-3 pl-[10px] transition-colors [border-left-color:var(--status-danger-fg)] [background-color:var(--status-danger-bg)] ${
         peeked ? "bg-muted" : ""
       }`
-    : `block px-3 py-2 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/50"}`;
+    : `pdpp-data-list-row block px-3 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/50"}`;
 
   return (
     <Link aria-current={peeked ? "true" : undefined} className={rowClass} href={href} scroll={false}>

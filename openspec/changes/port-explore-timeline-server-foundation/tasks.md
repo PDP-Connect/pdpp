@@ -95,3 +95,17 @@
   `COALESCE(NULLIF(semantic_time, ''), emitted_at)`; pre-migration rows fall back
   to `emitted_at` and are not mis-attributed.
 - No bucket-aggregate endpoint is introduced by this change (out of scope).
+
+## 9. Follow-on: server oldest-first direction
+
+- [x] 9.1 Add `direction=asc` support to `rs.explore.timeline` and carry the
+      direction inside the composite cursor so every page of one traversal uses
+      the same keyset direction.
+- [x] 9.2 Flip both SQLite and Postgres partition seek predicates and `ORDER BY`
+      clauses for `direction=asc`, while preserving the `nowCeiling` past/future
+      clamp.
+- [x] 9.3 Parse `direction=asc` on `GET /_ref/explore/records`; default all other
+      values to newest-first (`desc`).
+- [x] 9.4 Add `rs-explore-timeline-oldest-ascending.test.js` proving oldest-first
+      pages from the genuinely-oldest record across partitions to the end without
+      client reversal.

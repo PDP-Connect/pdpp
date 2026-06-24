@@ -41,6 +41,9 @@ port; it does **not** add the bucket-aggregate endpoint.
 - Port `explore-timeline-substrate.ts` and the `rs.explore.timeline` operation
   (k-way merge across `(connector_instance_id, stream)` partitions, ingest-id
   snapshot anchor, semantic-time ordering, dual-dialect deps factory).
+- Add `direction=asc` to the merged timeline route so oldest-first paging is a
+  server keyset traversal from the genuinely-oldest record, with direction pinned
+  in the cursor.
 - Mount the reference-only route `GET /_ref/explore/records` that the operator
   console's Explore feed consumes.
 
