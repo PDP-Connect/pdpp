@@ -12,11 +12,13 @@
  *
  * THE FEED-DEFINING vs PIN-PRESERVING DISTINCTION (the anchor-leak fix):
  *   A feed-defining change (query / search_sort / connection / stream / since /
- *   until) starts a brand-new snapshot, so it MUST drop BOTH the cursor trail AND
- *   the snapshot `anchor`. A stale anchor leaking into the next Load-more would pin
- *   the new feed to the wrong snapshot timestamp (and skew the "N new" count). Only
- *   Load-more (`appendCursor`) and pure peek/order/selection moves carry the trail
- *   and anchor forward, so the accumulated view stays stable within ONE snapshot.
+ *   until / an order FLIP newest↔oldest) starts a brand-new snapshot, so it MUST
+ *   drop BOTH the cursor trail AND the snapshot `anchor`. A stale anchor leaking
+ *   into the next Load-more would pin the new feed to the wrong snapshot timestamp
+ *   (and skew the "N new" count); a trail minted in the old direction would
+ *   mis-seek the new one. Only Load-more (`appendCursor`) and pure peek/selection
+ *   moves (and an order param that does NOT change value) carry the trail and
+ *   anchor forward, so the accumulated view stays stable within ONE snapshot.
  */
 
 export type SortOrder = "newest" | "oldest";
@@ -181,8 +183,14 @@ export function buildHref(base: string, opts: HrefOpts): string {
  *
  * Non-feed-defining moves are EXCLUDED so the accumulated view + its anchor survive:
  *   - Load-more (`appendCursor`) — accumulate within the SAME snapshot.
- *   - Pure peek/selection (`peek`) and display re-sort (`order`) — same feed.
+ *   - Pure peek/selection (`peek`) — same feed.
  *   - The "N new" pill (`clearCursor`) — handled separately; it drops both already.
+ *
+ * NOTE on `order`: an order FLIP (newest↔oldest) IS feed-defining, but it depends
+ * on the PRIOR direction (`state.order`), which this opts-only predicate can't see.
+ * So `order` is intentionally absent here; `buildNavigateHref` resets the feed when
+ * `opts.order` differs from `state.order` (a same-value `order` carried forward by a
+ * peek is correctly a same-feed move).
  */
 export function isFeedDefiningNavigation(opts: NavigateOpts): boolean {
   return (
@@ -224,11 +232,19 @@ function nextAccumulatingTrail(
 }
 
 export function buildNavigateHref(explorePath: string, state: NavigateState, opts: NavigateOpts): string {
+  // An ORDER change (newest↔oldest) is FEED-DEFINING: "oldest" is a real server
+  // keyset re-page ASCENDING from the earliest record (direction=asc), not a
+  // client reverse, so flipping it must reset the cursor trail + anchor and
+  // re-page from the new direction's start (page 1). A trail minted in the old
+  // direction would mis-seek the new one. A no-op `order` (same value, e.g. a peek
+  // that carries order forward) is NOT a flip and keeps the trail. The `order`
+  // param itself is appended below by `withOrderSuffix`.
+  const orderChanged = opts.order !== undefined && opts.order !== state.order;
   // A feed-defining change (query / search_sort / connection / stream / since /
-  // until) AND the "N new" pill (clearCursor) both reset the feed: drop the trail
-  // AND the anchor so the next load takes a FRESH snapshot. Only Load-more and pure
-  // peek/order/selection moves carry the anchor forward for snapshot stability.
-  const resetFeed = opts.clearCursor || isFeedDefiningNavigation(opts);
+  // until / order flip) AND the "N new" pill (clearCursor) both reset the feed:
+  // drop the trail AND the anchor so the next load takes a FRESH snapshot. Only
+  // Load-more and pure peek/selection moves carry the anchor forward for stability.
+  const resetFeed = opts.clearCursor || orderChanged || isFeedDefiningNavigation(opts);
   const forwardAnchor = resetFeed ? undefined : (state.snapshotAnchor ?? undefined);
   // Recent-lens pagination: Load-more APPENDS to the current trail (accumulate).
   // Every OTHER navigation resets the trail — exactly like the single `cursor`

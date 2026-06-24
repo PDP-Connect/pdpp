@@ -72,8 +72,10 @@ export default async function RecordsExplorerPage({
     peek?: string;
     since?: string;
     until?: string;
-    // Display sort order. Consumed by ExploreCanvas only — the live fetch is
-    // always recency-desc; "oldest" reverses the loaded window client-side.
+    // Feed sort direction. "newest" (default) pages the merged timeline
+    // newest-first; "oldest" RE-PAGES the server keyset ASCENDING from the
+    // earliest record (direction=asc) — a real feed-defining server re-page that
+    // reaches the true earliest record, not a client reverse of the loaded window.
     order?: string;
     // P2: search sort toggle ("relevance"|"recent") and single-page search cursor.
     search_sort?: string;
@@ -99,10 +101,11 @@ export default async function RecordsExplorerPage({
   await getOwnerToken();
 
   const params = await searchParams;
-  const order = params.order === "oldest" ? "oldest" : "newest";
+  const requestedOrder = params.order === "oldest" ? "oldest" : "newest";
 
   try {
     const data = await assembleExplorerData(params, liveDashboardDataSource, getRsInternalUrl());
+    const order = data.supportsTimelineDirection && requestedOrder === "oldest" ? "oldest" : "newest";
     // Relationships for the inspected record come from declared metadata via the
     // SAME `records/lib/relationships.ts` helpers the records detail page uses —
     // resolved server-side here (links are plain serializable data) and passed

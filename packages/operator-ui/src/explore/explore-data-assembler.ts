@@ -1022,6 +1022,11 @@ async function loadMergedTimelineFeed(
   // from BOTH the past feed and the Upcoming projection, applied client-side over the
   // loaded window. Empty sets drop nothing.
   exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> },
+  // Feed direction: "desc" (newest-first browse) or "asc" (the order=oldest
+  // re-page — pages the keyset ascending from the earliest record). Passed to
+  // EVERY page request (page 1 + each trail cursor) so an oldest-first walk stays
+  // ascending; the server also pins it inside the cursor for defence-in-depth.
+  direction: "asc" | "desc",
   dataSource: DashboardDataSource
 ): Promise<FeedLoadResult> {
   // Records may be rejected if they belong to unselected connections (defence in
@@ -1083,6 +1088,10 @@ async function loadMergedTimelineFeed(
         streams: [...filterStreams],
         excludeConnectionIds,
         excludeStreams,
+        // Direction defines the feed (newest-first vs the order=oldest re-page).
+        // Re-passed on every page so an oldest-first walk stays ascending; "desc"
+        // is omitted so the default newest-first request URL stays clean.
+        ...(direction === "asc" ? { direction } : {}),
       })
     )
   );
@@ -2046,6 +2055,12 @@ async function dispatchFeed(args: {
   excludeStreamSet: ReadonlySet<string>;
   /** All summaries (unfiltered) so exclusion can resolve instance ids for excluded connections. */
   summaries: RefConnectorSummary[];
+  /**
+   * Recent-lens feed direction: "desc" (newest-first browse, default) or "asc"
+   * (the order=oldest re-page — pages the merged-timeline keyset ascending from
+   * the earliest record). Only the merged-timeline lens consumes it.
+   */
+  feedDirection: "asc" | "desc";
   dataSource: DashboardDataSource;
 }): Promise<FeedDispatch> {
   const {
@@ -2067,6 +2082,7 @@ async function dispatchFeed(args: {
     excludeConnectionSet,
     excludeStreamSet,
     summaries,
+    feedDirection,
     dataSource,
   } = args;
   const hasTimeWindow = since !== "" || until !== "";
@@ -2126,6 +2142,7 @@ async function dispatchFeed(args: {
     filterConnectionSet,
     timestampMetadata,
     exclude,
+    feedDirection,
     dataSource
   );
   return { feed: mergedFeed, lens: "recent" };
@@ -2531,6 +2548,14 @@ export interface ExplorerSearchParams {
    * (query / sort / filters / range), exactly like `cursor`.
    */
   cursors?: string | string[];
+  /**
+   * Feed sort direction for the recent merged-timeline lens. "newest" (default)
+   * = newest-first browse; "oldest" = the order=oldest re-page that walks the
+   * server keyset ASCENDING from the earliest record forward (the honest
+   * replacement for the old client-side window reverse). Feed-defining: a flip
+   * resets the cursor trail upstream. Only meaningful for the empty-query feed.
+   */
+  order?: string;
   peek?: string;
   q?: string;
   /**
@@ -2800,6 +2825,12 @@ export async function assembleExplorerData(
   // Search sort mode: "relevance" (default) or "recent" (chronological).
   // Only meaningful when query is set; ignored for recency/time-range feeds.
   const searchSort: "relevance" | "recent" = params.search_sort === "recent" ? "recent" : "relevance";
+  const supportsTimelineDirection = (await dataSource.supportsExploreTimelineDirection?.()) ?? false;
+  // Feed direction for the empty-query recent lens: "oldest" is only active when
+  // the server explicitly supports true ascending keyset paging. Before that
+  // foundation exists, a manual `order=oldest` URL no-ops to newest-first.
+  const feedDirection: "asc" | "desc" =
+    supportsTimelineDirection && params.order === "oldest" ? "asc" : "desc";
   // Opaque cursor: the SINGLE-page cursor for search pagination (lexical / single
   // -stream Most-recent). The recent merged-timeline lens instead accumulates via
   // the `cursors` TRAIL below. Both are cleared when query/sort/filters/range change.
@@ -2843,6 +2874,7 @@ export async function assembleExplorerData(
       excludeConnectionSet,
       excludeStreamSet,
       summaries,
+      feedDirection,
       dataSource,
     }),
     buildPeek(params.peek, summaryByConnectionId(summaries), dataSource, rsBaseUrl),
@@ -2922,6 +2954,7 @@ export async function assembleExplorerData(
     // SET-DESCRIPTOR: propagate the engine-level truth about completeness and ordering.
     // The canvas switches on this to decide what it may claim about the set.
     descriptor: feedResult.descriptor,
+    supportsTimelineDirection,
     selectedConnectionIds,
     selectedStreams,
     excludeConnectionIds,

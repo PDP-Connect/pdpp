@@ -297,6 +297,7 @@ export interface RecordsExplorerData {
    * only for non-search lenses (recent, time_range). Empty for search results.
    */
   streamSeeAllLinks: ExplorerStreamSeeAllLink[];
+  supportsTimelineDirection: boolean;
   /** True when the feed was truncated to the explorer's fan-out cap. */
   truncated: boolean;
   /** ISO date (yyyy-mm-dd) for the `until` filter, or empty when unset. */

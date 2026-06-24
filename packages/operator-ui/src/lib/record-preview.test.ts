@@ -1,132 +1,120 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import test from "node:test";
 import { buildRecordPreview } from "./record-preview.ts";
 
 test("returns null when no record body is available", () => {
   assert.equal(buildRecordPreview("message", null), null);
 });
 
-test("builds a money preview from cents fields without inventing schema semantics", () => {
-  assert.deepEqual(buildRecordPreview("money", { amount_cents: -1245, merchant: "Cafe", memo: "Lunch" }), {
-    kind: "money",
-    amount: "-$12.45",
-    amountPositive: false,
-    title: "Cafe",
-    body: "Lunch",
-  });
+test("falls back to a generic field table when no presentation roles are declared", () => {
+  const preview = buildRecordPreview("money", { amount_cents: -1245, merchant: "Cafe", memo: "Lunch" });
+
+  assert.equal(preview?.kind, "generic");
+  assert.equal(preview?.amount, undefined);
+  assert.deepEqual(
+    preview?.fields?.map(({ name, value }) => [name, value]),
+    [
+      ["amount_cents", "-1245"],
+      ["merchant", "Cafe"],
+      ["memo", "Lunch"],
+    ]
+  );
 });
 
-test("formats a chase bare `amount` declared `currency` as integer cents", () => {
-  // The live UAT bug: chase `amount` is signed integer cents (declared
-  // `x_pdpp_type: currency`). Without the declared-type signal the small
-  // magnitude (-1245) fell through to the whole-dollars branch and rendered
-  // `-$1245.00`. The declared type must pin it to cents → `-$12.45`.
+test("builds a role-backed money preview and formats declared currency cents", () => {
+  const preview = buildRecordPreview(
+    "money",
+    { amount: -1245, currency: "USD", merchant: "Bluebird Bakery", memo: "Lunch" },
+    { amount: "currency" },
+    { amount: "amount", merchant: "primary-title", memo: "secondary" }
+  );
+
   assert.deepEqual(
-    buildRecordPreview("money", { amount: -1245, currency: "USD", name: "Bluebird Bakery" }, { amount: "currency" }),
     {
-      kind: "money",
+      amount: preview?.amount,
+      amountPositive: preview?.amountPositive,
+      body: preview?.body,
+      kind: preview?.kind,
+      title: preview?.title,
+    },
+    {
       amount: "-$12.45",
       amountPositive: false,
+      body: "Lunch",
+      kind: "money",
       title: "Bluebird Bakery",
-      body: undefined,
     }
   );
 });
 
-test("a declared `currency` amount above the milliunit threshold still formats as cents", () => {
-  // 438120 cents = $4381.20. The magnitude heuristic would have mis-divided this
-  // by 1000 (→ $438.12); the declared type must win regardless of magnitude.
-  const preview = buildRecordPreview("money", { amount: 438_120, currency: "USD" }, { amount: "currency" });
-  assert.equal(preview?.amount, "$4381.20");
-  assert.equal(preview?.amountPositive, true);
-});
-
 test("an explicit declared milliunits type divides by 1000", () => {
-  const preview = buildRecordPreview("money", { amount: -12_450 }, { amount: "currency_milliunits" });
+  const preview = buildRecordPreview("money", { amount: -12_450 }, { amount: "currency_milliunits" }, { amount: "amount" });
+
   assert.equal(preview?.amount, "-$12.45");
 });
 
-test("preserves the legacy milliunit magnitude heuristic when no type is declared", () => {
-  // YNAB-style: no declared field type. A large bare `amount` is milliunits
-  // (÷1000); a small one is whole dollars. This is the un-annotated fallback
-  // the sandbox/YNAB summaries still rely on.
-  assert.equal(buildRecordPreview("money", { amount: -12_450 })?.amount, "-$12.45");
-  assert.equal(buildRecordPreview("money", { amount: 42 })?.amount, "$42.00");
+test("builds a role-backed message preview", () => {
+  const preview = buildRecordPreview(
+    "message",
+    { sender: "Ada", subject: "Thread", content: "Hello" },
+    null,
+    { sender: "actor", subject: "primary-title", content: "secondary" }
+  );
+
+  assert.deepEqual(
+    { author: preview?.author, body: preview?.body, kind: preview?.kind, title: preview?.title },
+    { author: "Ada", body: "Hello", kind: "message", title: "Thread" }
+  );
 });
 
-test("builds a message preview from author and body fields", () => {
-  assert.deepEqual(buildRecordPreview("message", { role: "user", content: "hello from the thread" }), {
-    kind: "message",
-    author: "user",
-    title: undefined,
-    body: "hello from the thread",
-  });
+test("builds a role-backed event preview with a UTC time label", () => {
+  const preview = buildRecordPreview(
+    "event",
+    { title: "Launch", starts_at: "2026-05-22T18:00:00Z", notes: "Room 1" },
+    null,
+    { title: "primary-title", starts_at: "event-time", notes: "secondary" }
+  );
+
+  assert.deepEqual(
+    { body: preview?.body, eventTime: preview?.eventTime, kind: preview?.kind, title: preview?.title },
+    { body: "Room 1", eventTime: "6:00 PM", kind: "event", title: "Launch" }
+  );
 });
 
-test("builds an event preview with a stable UTC time label", () => {
-  assert.deepEqual(buildRecordPreview("event", { title: "Dentist", start: "2026-05-29T15:30:00Z" }), {
-    kind: "event",
-    title: "Dentist",
-    eventTime: "3:30 PM",
-    body: undefined,
-  });
+test("builds a role-backed titled preview", () => {
+  const preview = buildRecordPreview(
+    "titled",
+    { title: "On Protocols", body: "Long form", author: "Ada" },
+    null,
+    { title: "primary-title", body: "secondary", author: "actor" }
+  );
+
+  assert.deepEqual(
+    { author: preview?.author, body: preview?.body, kind: preview?.kind, title: preview?.title },
+    { author: "Ada", body: "Long form", kind: "titled", title: "On Protocols" }
+  );
 });
 
-test("does not produce a preview for generic records", () => {
-  assert.equal(buildRecordPreview("generic", { content: "opaque" }), null);
+test("generic preview uses declared title and body roles only", () => {
+  const preview = buildRecordPreview(
+    "generic",
+    { id: "rec_1", name: "Opaque record", summary: "Declared summary", amount_cents: 1245 },
+    null,
+    { name: "primary-title", summary: "secondary" }
+  );
+
+  assert.equal(preview?.kind, "generic");
+  assert.equal(preview?.title, "Opaque record");
+  assert.equal(preview?.body, "Declared summary");
+  assert.deepEqual(preview?.fields?.map(({ name, value }) => [name, value]), [["amount_cents", "1245"]]);
 });
 
-test("builds an activity preview with a formatted stat strip", () => {
-  const preview = buildRecordPreview("activity", {
-    name: "Morning Run",
-    distance: 5200,
-    duration: 1830,
-    elevation: 42,
-  });
-  assert.equal(preview?.kind, "activity");
-  assert.equal(preview?.title, "Morning Run");
-  assert.deepEqual(preview?.stats, [
-    { label: "distance", value: "5.2 km" },
-    { label: "duration", value: "30m 30s" },
-    { label: "elevation", value: "42 m" },
-  ]);
-});
+test("kinds without role-backed card slots render as generic previews", () => {
+  for (const kind of ["activity", "location", "reader"] as const) {
+    const preview = buildRecordPreview(kind, { name: "Run", distance: 5000, lat: 37.77, lng: -122.41 });
 
-test("activity preview falls back to a lone score for sleep-style records", () => {
-  const preview = buildRecordPreview("activity", { type: "Sleep", score: 88 });
-  assert.equal(preview?.title, "Sleep");
-  assert.deepEqual(preview?.stats, [{ label: "score", value: "88" }]);
-});
-
-test("activity preview formats sub-kilometer distance in meters", () => {
-  const preview = buildRecordPreview("activity", { name: "Walk", distance: 800 });
-  assert.deepEqual(preview?.stats, [{ label: "distance", value: "800 m" }]);
-});
-
-test("builds a reader preview with a long body excerpt and optional author", () => {
-  const body = `${"Long-form content. ".repeat(20)}`;
-  const preview = buildRecordPreview("reader", { title: "On Protocols", body, author: "Ada Lovelace" });
-  assert.equal(preview?.kind, "reader");
-  assert.equal(preview?.title, "On Protocols");
-  assert.equal(preview?.author, "Ada Lovelace");
-  assert.ok((preview?.body?.length ?? 0) > 0);
-});
-
-test("builds a location preview with a 4-decimal coordinate pair", () => {
-  assert.deepEqual(buildRecordPreview("location", { name: "Dolores Park", lat: 37.7596, lng: -122.4269 }), {
-    kind: "location",
-    title: "Dolores Park",
-    coordinates: "37.7596, -122.4269",
-  });
-});
-
-test("location preview defaults the title to 'Location' when none is present", () => {
-  const preview = buildRecordPreview("location", { latitude: 1.234_56, longitude: 6.543_21 });
-  assert.equal(preview?.title, "Location");
-  assert.equal(preview?.coordinates, "1.2346, 6.5432");
-});
-
-test("location preview coerces string coordinates", () => {
-  const preview = buildRecordPreview("location", { caption: "Trailhead", lat: "44.5", lon: "-110.5" });
-  assert.equal(preview?.coordinates, "44.5000, -110.5000");
+    assert.equal(preview?.kind, "generic");
+    assert.equal(preview?.coordinates, undefined);
+    assert.equal(preview?.stats, undefined);
+  }
 });

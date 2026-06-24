@@ -1,0 +1,4407 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   INK CARBON — Component Classes
+   packages/pdpp-brand-react/src/components.css
+
+   Plain CSS classes for the Ink Carbon component system.
+   These classes are used by the React components in this directory.
+   All values reference tokens from tokens.css — never hard-code colors.
+
+   Square paper. Typed protocol voice. Spent color only inside endorsements.
+   No resting shadows. No left-border accents. No gradients.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Sheet — the basic paper artifact ─────────────────────────── */
+.pdpp-sheet {
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+}
+.pdpp-sheet__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.pdpp-sheet__title {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+}
+.pdpp-sheet__serial {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.pdpp-sheet__body { padding: 14px 18px; }
+.pdpp-sheet__foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 11px 18px;
+  border-top: 1px solid var(--border-strong);
+}
+
+/* ─── Carbon duplicate — the server's retained copy ──────────────
+   Wrap a sheet in .pdpp-carbon ONLY when the server retains it on
+   the owner's behalf: staged consent, held grant, export in flight.
+   Never decoration — if nothing is retained, no carbon. ≤2/screen. */
+.pdpp-carbon { position: relative; }
+.pdpp-carbon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translate(var(--carbon-offset), var(--carbon-offset));
+  background: var(--carbon-fill);
+  border: 1px solid var(--carbon-outline);
+  pointer-events: none;
+}
+.pdpp-carbon > * { position: relative; }
+
+/* The carbon caption that accompanies a retained object. */
+.pdpp-copyline {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+/* ─── Scope row — one stream inside a consent sheet ─────────────── */
+.pdpp-scope {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 14px;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.pdpp-scope:last-child { border-bottom: 0; }
+.pdpp-scope__name {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.pdpp-scope__terms {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  align-self: center;
+}
+.pdpp-scope__desc {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  grid-column: 1 / -1;
+}
+/* Declined scope — struck, not erased */
+.pdpp-scope--off .pdpp-scope__name {
+  color: var(--muted-foreground);
+  font-weight: 400;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+/* ─── Table — the aligned list primitive ─────────────────────────
+   Every list shares ONE column template via --cols on the wrapper, so
+   every cell in a column sits on the same axis in every row. Headers
+   are mandatory. Numeric columns use .u-r (right-align, tabular-nums). */
+.pdpp-table { width: 100%; }
+.pdpp-table__hrow,
+.pdpp-table__row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  gap: 0 18px;
+  align-items: center;
+  padding: 10px 0;
+}
+.pdpp-table__hrow {
+  padding: 0 0 7px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.pdpp-table__h {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.pdpp-table__row { border-bottom: 1px solid var(--border); position: relative; }
+.pdpp-table .u-r { text-align: right; justify-self: stretch; font-variant-numeric: tabular-nums; }
+
+/* ─── Data list — dense rows for the console ─────────────────────── */
+.pdpp-data-list { width: 100%; }
+.pdpp-data-row {
+  display: grid;
+  grid-template-columns: var(--cols, 26px minmax(0, 1.25fr) minmax(0, 1.6fr) 112px 128px);
+  gap: 0 18px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.pdpp-data-row__who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pdpp-data-row__title {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdpp-data-row__id {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.pdpp-data-row__detail {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdpp-data-row__meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+/* Revoked row — struck, not erased. The record survives revocation. */
+.pdpp-data-row--revoked .pdpp-data-row__title,
+.pdpp-data-row--revoked .pdpp-data-row__detail {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--muted-foreground);
+}
+
+/* ─── Monogram — 2-letter protocol client mark ───────────────────── */
+.pdpp-monogram {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.pdpp-monogram::before {
+  content: attr(data-initials);
+}
+.pdpp-data-row--revoked .pdpp-monogram { opacity: 0.5; }
+
+/* ─── Endorsement — status typed by the protocol ─────────────────
+   Spent color lives here. State color must ONLY appear inside .pdpp-endorse.
+   The background and border are derived from currentColor so the color
+   set by the variant modifier drives the entire badge automatically. */
+.pdpp-endorse {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  padding: 3px 8px;
+  background: color-mix(in oklab, currentColor 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 42%, transparent);
+}
+.pdpp-endorse--active    { color: var(--success); }
+.pdpp-endorse--continuous { color: var(--primary); }
+.pdpp-endorse--expiring  { color: var(--warning); }
+.pdpp-endorse--revoked {
+  color: var(--muted-foreground);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.pdpp-endorse--denied    { color: var(--destructive); }
+
+/* ─── Tag — taxonomy label, neutral, no color spent ─────────────── */
+.pdpp-tag {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 400;
+  white-space: nowrap;
+  padding: 3px 8px;
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* ─── Buttons ─────────────────────────────────────────────────────
+   Default = protocol ink (dark bg, light text) — the machine confirms.
+   Human = copper — the owner consents. Use ONLY for owner consent acts.
+   Ghost = outline — secondary/cancel/secondary action.
+   Destructive = red outline — irreversible acts only. */
+.pdpp-btn {
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 700;
+  padding: 9px 18px;
+  border: 1.5px solid var(--foreground);
+  background: var(--foreground);
+  color: var(--background);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  transition: background var(--motion-state), border-color var(--motion-state);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdpp-btn:focus { outline: none; }
+.pdpp-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.pdpp-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+.pdpp-btn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--foreground) 86%, var(--background));
+}
+/* The owner's act — the one warm element on a protocol surface. */
+.pdpp-btn--human {
+  background: var(--human);
+  border-color: var(--human);
+  color: var(--human-foreground);
+}
+.pdpp-btn--human:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--human) 88%, var(--background));
+  border-color: color-mix(in oklab, var(--human) 88%, var(--background));
+}
+.pdpp-btn--ghost {
+  background: transparent;
+  color: var(--foreground);
+  border-color: var(--input);
+  font-weight: 600;
+}
+.pdpp-btn--ghost:hover:not(:disabled) {
+  background: var(--muted);
+  border-color: var(--border-strong);
+}
+.pdpp-btn--destructive {
+  background: transparent;
+  color: var(--destructive);
+  border-color: var(--destructive);
+}
+.pdpp-btn--destructive:hover:not(:disabled) { background: var(--destructive-tint); }
+.pdpp-btn--sm { font-size: 0.75rem; padding: 6px 12px; }
+.pdpp-btn--lg { font-size: 0.92rem; padding: 12px 22px; }
+
+/* ─── Inputs + Fields ─────────────────────────────────────────────── */
+.pdpp-input {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 8px 12px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  width: 100%;
+  transition: border-color var(--motion-state);
+}
+.pdpp-input:focus { outline: none; border-color: var(--ring); }
+.pdpp-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.pdpp-input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
+
+.pdpp-field { display: flex; flex-direction: column; gap: 4px; }
+.pdpp-field__label {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.pdpp-field__hint {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+
+/* ─── Select ──────────────────────────────────────────────────────
+   base-ui Select skinned to Ink Carbon. base-ui owns: keyboard nav,
+   type-ahead, ARIA listbox, positioning, form hidden-input. We own
+   ONLY the visual chrome: trigger geometry matching IcInput, and a
+   fully styled popup that native <select> can never deliver.
+
+   Trigger: same geometry as IcInput (radius-control, hairline --border,
+   --card bg, mono font) with a typographic › caret at right.
+   Popup: radius 0, hairline --border-strong, --card bg, menu shadow
+   (the ONE elevation exception, same as dialog), mono items. */
+
+/* ── Trigger wrapper: positions the caret pseudo-element ── */
+.pdpp-select {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+}
+
+/* ── Trigger button (base-ui renders a <button>) ── */
+.pdpp-select__trigger {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  text-align: left;
+  /* Right padding leaves room for the › caret. */
+  padding: 8px 30px 8px 12px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  width: 100%;
+  cursor: pointer;
+  transition: border-color var(--motion-state);
+  /* Reset <button> chrome. */
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+}
+.pdpp-select__trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-color: var(--ring);
+}
+.pdpp-select__trigger[data-disabled],
+.pdpp-select__trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* Open state: tint the border so the trigger reads as active. */
+.pdpp-select__trigger[data-popup-open] {
+  border-color: var(--ring);
+}
+
+/* Disclosure caret — a › glyph turned a quarter-turn to point down.
+   Painted by the wrapper so it sits over the trigger at the right edge. */
+.pdpp-select::after {
+  content: "›";
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%) rotate(90deg);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+/* ── Positioner: base-ui manages z-index/position; we just anchor it ── */
+.pdpp-select-positioner {
+  z-index: 60;
+  outline: none;
+}
+
+/* ── Popup: the win — OS never styled this. radius 0, hairline, menu shadow ── */
+.pdpp-select-popup {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* Same elevation exception as IcDialog: a floating surface earns one shadow. */
+  box-shadow: 0 8px 24px -6px color-mix(in oklab, var(--foreground) 28%, transparent);
+  outline: none;
+  min-width: var(--anchor-width, 120px);
+  padding: 4px 0;
+  /* Fade on open/close (base-ui data attrs). */
+  transition: opacity var(--motion-state);
+}
+.pdpp-select-popup[data-starting-style],
+.pdpp-select-popup[data-ending-style] {
+  opacity: 0;
+}
+
+/* ── List: scrollable container for items ── */
+.pdpp-select-list {
+  max-height: 260px;
+  overflow-y: auto;
+  outline: none;
+}
+
+/* ── Item: mono, hover/highlight = --primary-tint, selected = --primary accent ── */
+.pdpp-select-item {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 7px 32px 7px 12px;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  transition: background var(--motion-state);
+  outline: none;
+  user-select: none;
+}
+/* Highlighted (keyboard or pointer hover) */
+.pdpp-select-item[data-highlighted] {
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+}
+/* Selected item */
+.pdpp-select-item[data-selected] {
+  color: var(--primary);
+}
+/* Disabled item */
+.pdpp-select-item[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── ItemIndicator: the ✓ checkmark shown for the selected item ── */
+.pdpp-select-item-indicator {
+  position: absolute;
+  right: 10px;
+  font-size: 0.75rem;
+  color: var(--primary);
+}
+
+/* ─── Timestamp ───────────────────────────────────────────────────
+   A <time> element in the mono protocol voice. Muted by default;
+   tabular-nums keeps digit columns aligned in tables and rows. The
+   relative label ("5 minutes ago") is post-mount; the absolute value
+   rides along as the title tooltip. */
+.pdpp-timestamp {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Unparseable / empty value falls back to an em dash, still muted. */
+.pdpp-timestamp--empty {
+  color: var(--muted-foreground);
+}
+
+/* ─── Dialog ──────────────────────────────────────────────────────
+   A modal surface skinned over @base-ui/react's Dialog (base-ui owns
+   focus-trap / dismissal / portal). A dialog floats above the page, so
+   it earns the ONE resting-shadow exception the kit grants modal/menu
+   surfaces — flat document surfaces never get a shadow. Square corners,
+   a hairline --border, --card paper, mono title eyebrow. */
+.pdpp-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in oklab, var(--foreground) 32%, transparent);
+  transition: opacity var(--motion-state);
+}
+.pdpp-dialog-backdrop[data-starting-style],
+.pdpp-dialog-backdrop[data-ending-style] {
+  opacity: 0;
+}
+.pdpp-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 32rem;
+  padding: 20px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  /* The one shadow exception: a floating modal earns soft elevation. */
+  box-shadow: 0 16px 48px -12px color-mix(in oklab, var(--foreground) 40%, transparent);
+  outline: none;
+  transition: opacity var(--motion-state), transform var(--motion-state);
+}
+.pdpp-dialog[data-starting-style],
+.pdpp-dialog[data-ending-style] {
+  opacity: 0;
+}
+/* Mono eyebrow title — protocol voice for the modal heading. */
+.pdpp-dialog__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+.pdpp-dialog__desc {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  color: var(--muted-foreground);
+}
+
+/* ─── KV block — typed record key/value pairs ────────────────────── */
+.pdpp-kv { display: flex; flex-direction: column; }
+.pdpp-kv__row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 14px;
+  padding: 5px 0;
+  align-items: baseline;
+}
+.pdpp-kv__k {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.pdpp-kv__v {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
+}
+
+/* ─── Stat band — the dataset summary strip ─────────────────────── */
+.pdpp-band {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border: 1px solid var(--border);
+}
+.pdpp-band__cell {
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pdpp-band__cell:first-child { border-left: 0; }
+.pdpp-band__v {
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.pdpp-band__k {
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* ─── Surface wrappers — flat tints, no accent stripe, no gradient ──
+   Temperature surfaces. The author shows in the VOICE (mono vs grotesk),
+   not in a colored stripe. */
+[data-surface="human"] {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+}
+[data-surface="protocol"] {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+}
+/* Legacy class aliases */
+.pdpp-surface-human {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+}
+.pdpp-surface-protocol {
+  border: 1px solid var(--border);
+  background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+}
+
+/* ─── Type scale — utility classes ──────────────────────────────────
+   For cases where you need a type step without a full semantic component.
+   Mono = protocol (IDs, scopes, timestamps, terms).
+   Grotesk = human (labels, descriptions, UI copy). */
+.pdpp-display-lg {
+  font-family: var(--font-sans);
+  font-size: 3.75rem;
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.028em;
+}
+.pdpp-display {
+  font-family: var(--font-sans);
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.022em;
+}
+.pdpp-heading {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.012em;
+}
+.pdpp-title {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.pdpp-body-lg {
+  font-family: var(--font-sans);
+  font-size: 1.125rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.pdpp-body {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.pdpp-label {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.pdpp-caption {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+/* The protocol's own voice */
+.pdpp-typed {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+.pdpp-typed-sm {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.pdpp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* ─── Focus policy — rings only for keyboards ─────────────────────── */
+.pdpp-sheet button:focus,
+.pdpp-table button:focus,
+.pdpp-btn:focus { outline: none; }
+:is(button, a, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RECORD BODY — the one record renderer (record-render.tsx)
+   Money hero, derived image, reading region, dual-key field rows.
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-recbody { display: flex; flex-direction: column; }
+.rr-recbody__empty { margin: 0; padding: 8px 0; font-size: 0.8rem; font-style: italic; color: var(--muted-foreground); }
+
+/* Money hero — the amount IS the record. */
+.rr-hero { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 14px; }
+.rr-hero--money .rr-hero__amount {
+  font-family: var(--font-mono);
+  font-size: 2rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.rr-hero__amount.is-neg { color: var(--foreground); }
+.rr-hero__cap { font-size: 0.8rem; color: var(--foreground); font-weight: 500; }
+.rr-hero__wire { font-size: 0.66rem; color: var(--muted-foreground); }
+
+/* Derived image field — heuristic, never declared. */
+.rr-rec-image { margin: 0 0 14px; display: flex; flex-direction: column; gap: 5px; }
+.rr-rec-image__img {
+  width: 100%;
+  height: 180px;
+  display: block;
+  background-color: var(--muted);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  border: 1px solid var(--border);
+}
+.rr-rec-image__cap { font-size: 0.66rem; color: var(--muted-foreground); }
+
+/* Long-text reading region. */
+.rr-bodytext {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--muted);
+  margin-bottom: 12px;
+}
+.rr-bodytext__label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-bodytext__text {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+/* Dual-key field rows — human label + the wire key a client receives. */
+.rr-flds { display: flex; flex-direction: column; }
+.rr-fld {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: baseline;
+  /* Dual-key rows (human label + wire key stacked on the left) need vertical
+     room so the two lines don't crowd the value or the neighbouring rows. */
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rr-fld:last-child { border-bottom: 0; }
+.rr-fld__id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rr-fld__label { font-size: 0.8rem; font-weight: 500; }
+.rr-fld__wire { font-family: var(--font-mono); font-size: 0.62rem; color: var(--muted-foreground); }
+.rr-fld__val {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.rr-fld__val.is-num { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+/* Empty value — null/undefined/empty token, struck quiet, never blank. */
+.rr-fld__val.is-empty { color: var(--muted-foreground); font-style: italic; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   RHYTHM — run-history sparkline (rhythm.tsx)
+   Oldest → newest. ok = quiet success, fail = louder warning.
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-rhythm { display: inline-flex; gap: 3px; align-items: center; }
+.rr-rhythm__tick {
+  width: 6px;
+  height: 14px;
+  background: var(--success);
+  opacity: 0.7;
+}
+.rr-rhythm__tick.is-fail { background: var(--warning); opacity: 1; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   COPY-MONO — click-to-copy protocol id (copy-mono.tsx)
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-copyid {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--motion-state);
+}
+.rr-copyid:hover { color: var(--primary); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   SYNCS — the Runs route reskin (syncs-view.tsx).
+   Ported from docs/design/ink-carbon/project/recordroom/syncs.css.
+   Health-first: a failure is a CARD with an action, not a row. All
+   state color via tokens (success/warning only), radius 0.
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-sync { display: flex; flex-direction: column; gap: 26px; }
+
+.rr-sync__masthead { display: flex; flex-direction: column; gap: 4px; }
+.rr-sync__title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.rr-sync__sub { font-size: 0.82rem; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
+.rr-sync__seeded { align-self: flex-start; margin-top: 4px; }
+
+.rr-sync__fixes { display: flex; flex-direction: column; gap: 12px; }
+.rr-sync__duplicates { display: flex; flex-direction: column; gap: 10px; }
+.rr-sync__groups { display: flex; flex-direction: column; gap: 26px; }
+.rr-sync__empty {
+  padding: 18px;
+  border: 1px solid var(--border);
+}
+.rr-sync__overflow {
+  margin: -6px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  max-width: 78ch;
+}
+
+/* The health band holds only real stats (a balanced 2-up of numbers). The
+   reassurance note reads as a caption BELOW the band — prose no longer crammed
+   into a stat slot, so the band keeps its number rhythm. */
+.rr-sync-health {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rr-sync-health__note {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  max-width: 80ch;
+}
+.rr-sync-health .pdpp-band__cell.is-warn .pdpp-band__v { color: var(--warning); }
+
+/* The failure as a card with an action — not a row. */
+.rr-fix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 16px 18px;
+  background: var(--warning-tint);
+  border: 1px solid var(--warning);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+/* `wait` = cooldown/throttle — lower severity than `reconnect`.
+   The card stays informational (no action needed), so chrome steps
+   down from full warning amber to a quieter muted tint. */
+.rr-fix[data-cta="wait"] {
+  background: var(--muted);
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+.rr-fix__body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.rr-fix__title { font-size: 0.95rem; font-weight: 700; margin: 0; }
+.rr-fix__expl { font-size: 0.8rem; line-height: 1.55; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
+.rr-fix__meta { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted-foreground); margin: 0; }
+.rr-fix__act { align-self: center; display: flex; align-items: center; }
+/* The `wait` branch has no button — the status is a quiet eyebrow anchored to
+   the top of the card (aligned with the title), not floating mid-card. */
+.rr-fix[data-cta="wait"] .rr-fix__act { align-self: start; }
+.rr-fix__waiting {
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  padding: 3px 8px;
+}
+
+.rr-sync-duplicates {
+  padding: 14px 16px;
+  background: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.rr-sync-duplicates__eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rr-sync-duplicates__head {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+.rr-sync-duplicates__note {
+  margin: 5px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  max-width: 72ch;
+}
+.rr-sync-duplicates__link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.72rem;
+}
+/* At mobile the side-by-side (body | action) layout crushes both columns.
+   Stack body then action full-width so Reconnect / wait badge sits clearly
+   beneath the prose rather than squeezing into a narrow auto column. */
+@media (max-width: 560px) {
+  .rr-fix {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .rr-fix__act {
+    align-self: auto;
+    justify-self: start;
+  }
+  .rr-fix[data-cta="wait"] .rr-fix__act {
+    align-self: auto;
+  }
+}
+
+/* Per-connection group. content-visibility skips layout/paint for off-screen
+   groups so scroll performance stays fast even at the ~134-row catalogue ceiling. */
+.rr-sync-group { display: flex; flex-direction: column; gap: 8px; content-visibility: auto; contain-intrinsic-size: 0 var(--sync-group-intrinsic, 300px); }
+.rr-sync-group__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 2px;
+}
+.rr-sync-group__dot {
+  width: 7px;
+  height: 7px;
+  align-self: center;
+  flex-shrink: 0;
+}
+.rr-sync-group__dot.is-ok { background: var(--success); }
+.rr-sync-group__dot.is-fail { background: var(--warning); }
+.rr-sync-group__name { font-size: 0.9rem; font-weight: 700; }
+.rr-sync-group__status {
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rr-sync-group__status.is-ok { color: var(--success); }
+.rr-sync-group__status.is-fail { color: var(--warning); }
+.rr-sync-group__cin {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted-foreground);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rr-sync-group__count {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-sync-group__last-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.rr-sync-group__delta {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rr-sync-group__duration {
+  white-space: nowrap;
+}
+.rr-sync-group__when {
+  white-space: nowrap;
+}
+.rr-sync-group__run-link {
+  color: var(--foreground);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.rr-sync-group__run-link:hover { text-decoration: underline; }
+
+/* Sync row — composed over the kit Table (pdpp-table__row). */
+.rr-sync-row-shell { margin: 0; }
+.rr-sync-row-shell > summary { list-style: none; }
+.rr-sync-row-shell > summary::-webkit-details-marker { display: none; }
+.rr-sync-row-shell[open] .rr-sync-row { border-bottom-color: transparent; }
+.rr-sync-row { cursor: pointer; transition: background var(--motion-state); }
+.rr-sync-row:hover { background: var(--muted); }
+.rr-sync-row__stream {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-sync-row__cadence {
+  font-family: var(--font-mono);
+  font-size: 0.69rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-sync-row__delta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  min-width: 0;
+}
+.rr-sync-row__delta.is-quiet { color: var(--muted-foreground); font-weight: 400; }
+.rr-sync-row__delta.is-failed { color: var(--warning); font-weight: 600; }
+.rr-sync-row__when {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.rr-sync-row__empty {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.rr-sync-row__coverage {
+  font-size: 0.69rem;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.rr-sync-row__next {
+  font-family: var(--font-mono);
+  font-size: 0.69rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.rr-sync-row.is-failed .rr-sync-row__next { color: var(--warning); }
+
+/* Expanded detail under a sync row. */
+.rr-sync-detail {
+  padding: 12px 2px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.rr-sync-detail__browse { font-size: 0.72rem; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   STANDING — the Overview ("home as point of view") view.
+   Ported from docs/design/ink-carbon/project/recordroom/overview.css.
+   Strong hierarchy, one warm moment. All color via tokens.
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-stand {
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+  max-width: 1080px;
+}
+
+/* ─── The hero: the one truth, set large ─── */
+.rr-stand-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 30px 32px 28px;
+  border: 1px solid var(--border-strong);
+  position: relative;
+}
+.rr-stand-hero__kicker {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-stand-hero__line {
+  font-family: var(--font-sans);
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin: 0;
+  max-width: 22ch;
+  text-wrap: balance;
+}
+.rr-stand-hero__line em {
+  font-style: normal;
+}
+.rr-stand-hero__sub {
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  margin: 2px 0 0;
+  max-width: 60ch;
+}
+.rr-stand-hero__foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+/* Tone: calm — the one place warmth is spent */
+.rr-stand-hero.is-calm {
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-stand-hero.is-calm .rr-stand-hero__line em {
+  color: var(--human);
+}
+
+/* Tone: decide — a request awaits */
+.rr-stand-hero.is-decide {
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-stand-hero.is-decide .rr-stand-hero__line em {
+  color: var(--human);
+  font-weight: 700;
+}
+
+/* Tone: alarm — something needs you */
+.rr-stand-hero.is-alarm {
+  border-color: var(--warning);
+  box-shadow: inset 3px 0 0 var(--warning);
+  background: var(--warning-tint);
+}
+.rr-stand-hero.is-alarm .rr-stand-hero__line em {
+  color: var(--warning);
+  font-weight: 700;
+}
+
+/* ─── Section link affordance ─── */
+.rr-link {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.rr-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ─── What can act as you — the bearer tier, weightier on purpose ─── */
+.rr-bearer {
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-bearer__row {
+  display: grid;
+  /* [identity: flexes + truncates] [tag] [revoke]. The identity column is the
+     ONLY flexible track (min-width:0) so a long machine client_id truncates
+     instead of pushing the tag or the revoke action off-row. */
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+}
+/* Identity block: the human name (grotesk, prominent) stacked over the raw
+   machine client_id (mono, muted, secondary). The NAME is the identity, so it
+   WRAPS up to two lines and stays readable; the disposable machine client_id
+   is the only part that truncates (full value on hover via title=). */
+.rr-bearer__id {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rr-bearer__who {
+  font-size: 0.95rem;
+  font-weight: 700;
+  min-width: 0;
+  /* The name wins: wrap to at most two lines rather than ellipsis-truncate. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.rr-bearer__client {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--muted-foreground);
+  min-width: 0;
+  /* The disposable machine id truncates instead of crowding the row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rr-bearer__tag {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--human);
+  padding: 2px 7px;
+  box-shadow: inset 0 0 0 1px var(--human);
+  white-space: nowrap;
+}
+.rr-bearer__how {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  grid-column: 1 / 3;
+  grid-row: 2;
+  overflow-wrap: anywhere;
+}
+.rr-bearer__row .rr-rel__revoke {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  opacity: 1;
+  align-self: center;
+  white-space: nowrap;
+}
+.rr-bearer__note {
+  margin: 0;
+  padding: 11px 16px 13px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+/* ─── Two-question grid ─── */
+.rr-stand-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+}
+.rr-stand-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rr-stand-block__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 8px;
+}
+.rr-stand-block__title {
+  font-family: var(--font-sans);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+/* Who can read you — relationships, not scope IDs */
+.rr-rel-list {
+  display: flex;
+  flex-direction: column;
+}
+.rr-rel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.rr-rel:last-child {
+  border-bottom: 0;
+}
+.rr-rel__who {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.rr-rel__reads {
+  grid-column: 1;
+  font-size: 0.84rem;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+.rr-rel__meta {
+  grid-column: 1;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--muted-foreground);
+}
+.rr-rel__revoke {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--destructive);
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-state);
+  text-decoration: none;
+}
+.rr-rel:hover .rr-rel__revoke,
+.rr-rel:focus-within .rr-rel__revoke {
+  opacity: 1;
+}
+.rr-rel__revoke:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* What's been read */
+.rr-lately {
+  display: flex;
+  flex-direction: column;
+}
+.rr-lately__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.rr-lately__row:last-child {
+  border-bottom: 0;
+}
+.rr-lately__row.is-deny {
+  box-shadow: inset 2px 0 0 var(--warning);
+  padding-left: 10px;
+}
+.rr-lately__text {
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+.rr-lately__when {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* Anything wrong — attention list rows */
+.rr-attn {
+  display: flex;
+  flex-direction: column;
+}
+.rr-attn__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--warning);
+  padding-left: 12px;
+}
+.rr-attn__row:last-child {
+  border-bottom: 0;
+}
+.rr-attn__what {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.rr-attn__why {
+  grid-column: 1;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+
+/* All clear */
+.rr-allclear {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  box-shadow: inset 3px 0 0 var(--human);
+}
+.rr-allclear__text {
+  font-size: 0.88rem;
+  color: var(--foreground);
+}
+.rr-stand-empty {
+  font-size: 0.84rem;
+  color: var(--muted-foreground);
+  margin: 8px 0 0;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 900px) {
+  .rr-stand-grid {
+    grid-template-columns: 1fr;
+    gap: 26px;
+  }
+  .rr-stand-hero__line {
+    font-size: 2rem;
+  }
+}
+@media (max-width: 560px) {
+  .rr-stand-hero {
+    padding: 22px 18px;
+  }
+  .rr-stand-hero__line {
+    font-size: 1.6rem;
+  }
+  /* Bearer rows: at narrow viewports the 3-column grid
+     (identity | READS EVERYTHING | revoke) is too tight.
+     Stack into 2 rows: identity on row 1, then tag+revoke
+     on row 2 aligned baseline so neither collides nor clips. */
+  .rr-bearer__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 10px;
+  }
+  .rr-bearer__id {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .rr-bearer__tag {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+    justify-self: start;
+  }
+  .rr-bearer__how {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .rr-bearer__row .rr-rel__revoke {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: center;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   EXPLORE — the reading room (dashboard/explore/explore-canvas.tsx)
+   3-column reading room: facet rail | feed | record inspector.
+   Ported from the Recordroom design (explore.css), token-driven, radius 0.
+   ═══════════════════════════════════════════════════════════════════ */
+.rr-x {
+  position: relative;
+  display: grid;
+  /* D2 (Codex plan-check 2026-06-22): list-primary explorer. DEFAULT = 2 columns
+     (rail | feed); the feed claims the freed width and there is NO reserved-empty
+     inspector column. The inspector is a 3rd column ONLY with `.has-selection`
+     (a record peeked) — this removes both the dead canvas and the query-bar /
+     inspector overlap that the starved middle column caused at 1366/1440. */
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+/* Selected/peek state (desktop): reveal the inspector as the 3rd column. The
+   420px inspector width (P0-3: long IDs/values don't wrap chaotically) is paid
+   for ONLY when there is a record to read. */
+.rr-x.has-selection {
+  grid-template-columns: 230px minmax(0, 1fr) 420px;
+}
+/* With no selection the inspector renders its empty "reading room" placeholder
+   (RecordInspector with record===null). It must NOT occupy or reserve a column
+   in the 2-col grid — hide it entirely until a record is selected. The component
+   render stays unchanged (peek wiring + URL-addressability untouched); CSS owns
+   the visibility, so the inspector mounts the instant `.has-selection` flips. */
+.rr-x:not(.has-selection) > .rr-inspector {
+  display: none;
+}
+
+/* ─── Facet rail ─── */
+/* 4px rhythm. Section gap matches the 28px column gutter so the rail breathes
+   in step with the 3-column grid; facet rows carry their own 4px gap.
+   The rail is a <details> so it can fold on phones (see Responsive); on desktop
+   the disclosure chrome is neutralized and the body lays the facet groups out
+   exactly as the original flex column did. */
+.rr-x-rail {
+  min-width: 0;
+}
+/* When shown, the body is a flex column of facet groups. Visibility is left to
+   the UA `details[open]` semantics on mobile (native collapse); on desktop a
+   min-width rule force-shows it regardless of `open` (see below), so the rail
+   never collapses on wide viewports even before the open-sync effect runs. */
+.rr-x-rail__body {
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+.rr-x-rail[open] > .rr-x-rail__body {
+  display: flex;
+}
+/* Desktop force-show: the rail renders as a closed <details> (phones lead with
+   the feed), but above the phone breakpoint the body is always a visible flex
+   column whether or not the disclosure is open. */
+@media (min-width: 861px) {
+  .rr-x-rail > .rr-x-rail__body {
+    display: flex;
+  }
+}
+/* Desktop: the rail is always-open and the toggle is inert chrome. The marker
+   is removed so no disclosure triangle leaks into the static rail. */
+.rr-x-rail__toggle {
+  display: none;
+}
+.rr-x-rail__toggle::-webkit-details-marker {
+  display: none;
+}
+/* ─── VIEWS section (SLVP recomposition) ───
+   A calm sidebar header above SOURCES: Explore (in-view count) + Upcoming (188).
+   Matches the prototype's left-sidebar VIEWS block. Counts right-aligned, muted;
+   active view in the accent. */
+.rr-x-views {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+.rr-x-views__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.rr-x-views__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--foreground);
+}
+.rr-x-views__item.is-active {
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+  font-weight: 500;
+}
+.rr-x-views__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Saved-view tabs (R5) ──────────────────────────────────────────
+   A quiet horizontal tab row under the command-bar: [All] [saved…] [+ Save].
+   User-authored named queries (NOT guessed presets). Tab names are SANS (user
+   content); the active-view count is MONO (a machine value). The row scrolls
+   horizontally on narrow widths rather than wrapping, so it never grows the
+   chrome height. */
+.rr-x-views-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 0 2px;
+}
+.rr-x-views-tabs::-webkit-scrollbar {
+  display: none;
+}
+.rr-x-views-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.rr-x-views-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-views-tab:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.rr-x-views-tab.is-active {
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+  font-weight: 500;
+}
+.rr-x-views-tab__name {
+  white-space: nowrap;
+}
+/* Count rides ONLY on the active tab → mono (machine value), muted. */
+.rr-x-views-tab__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-views-tab.is-active .rr-x-views-tab__count {
+  color: var(--primary);
+}
+/* Quiet × delete, revealed on hover of the saved-tab wrapper. */
+.rr-x-views-tab__del {
+  flex: 0 0 auto;
+  margin-left: -2px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-state), color var(--motion-state);
+}
+.rr-x-views-tab-wrap:hover .rr-x-views-tab__del,
+.rr-x-views-tab__del:focus-visible {
+  opacity: 1;
+}
+.rr-x-views-tab__del:hover {
+  color: var(--foreground);
+}
+/* "+ Save view" reads as a quiet action, distinct from a real view tab. */
+.rr-x-views-tab--save {
+  color: var(--primary);
+}
+.rr-x-views-tab__input {
+  flex: 0 0 auto;
+  width: 7.5rem;
+  padding: 2px 8px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.rr-x-facets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rr-x-facets__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-strong);
+  /* Give the section eyebrow real room below before the first facet row. */
+  margin-bottom: 8px;
+}
+/* F4: the "N in view" magnitude badge beside a facet section eyebrow, so the
+   stream rail reads as a bounded, countable set rather than an endless wall. */
+.rr-x-facets__count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* F4: capped, scrollable facet region. A long stream list (≈70 streams) scrolls
+   inside the 230px rail instead of pushing the feed down a flat wall. The cap is a
+   relative max-height so short lists are unaffected; the rail rule keeps the
+   active filters + non-empty streams pinned to the top (see StreamFacets). On
+   mobile the whole rail already lives in a <details> with its own scroll, so the
+   inner cap is relaxed there to avoid a nested scroll trap. */
+.rr-x-facets__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+.rr-x-facets__note {
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  padding: 0 0 4px;
+  line-height: 1.4;
+}
+/* W4: "search within filters" box — tames many sources/streams without a flat
+   wall (prior art: Datadog/Linear search-in-filter). Reuses the form-control
+   tokens (border, radius, ring) so it matches the rest of the console. */
+.rr-x-facets__search {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--foreground);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  transition: border-color var(--motion-state);
+}
+.rr-x-facets__search::placeholder {
+  color: var(--muted-foreground);
+}
+.rr-x-facets__search:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+}
+/* W4: source-grouped stream facets — a collapsible <details> per source (parent
+   source → its streams). Default-collapsed (the rail is a builder, not a wall);
+   StreamFacets force-opens a group when it holds an active filter or matches an
+   active search. Mirrors the rail's own <details> disclosure idiom. */
+.rr-x-source-group {
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-source-group__summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 0;
+  color: var(--muted-foreground);
+  transition: color var(--motion-state);
+}
+.rr-x-source-group__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-x-source-group__summary:hover {
+  color: var(--foreground);
+}
+/* A quiet disclosure caret (▸ collapsed / ▾ open) so the parent reads as a group
+   the owner can fold, without a heavy icon. */
+.rr-x-source-group__summary::before {
+  content: "▸";
+  font-size: 9px;
+  color: var(--muted-foreground);
+  transition: transform var(--motion-state);
+}
+.rr-x-source-group[open] > .rr-x-source-group__summary::before {
+  transform: rotate(90deg);
+}
+.rr-x-source-group__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-x-source-group__n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rr-x-source-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 8px 12px;
+}
+/* "Show all N streams" — top-N-then-more within a busy source group. A quiet
+   text affordance, never a heavy button, matching the rail's lens vocabulary. */
+.rr-x-source-group__more {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color var(--motion-state);
+}
+.rr-x-source-group__more:hover {
+  color: var(--foreground);
+}
+.rr-x-facet {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: baseline;
+  min-height: 34px;
+  padding: 6px 0;
+  background: none;
+  border: 0;
+  color: var(--muted-foreground);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-state);
+}
+.rr-x-facet:hover {
+  color: var(--foreground);
+}
+.rr-x-facet.is-on {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.rr-x-facet__name {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-x-facet__name--mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.rr-x-facet.is-revoked .rr-x-facet__name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.rr-x-facet__flag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-x-facet__flag.is-warn {
+  color: var(--warning);
+}
+.rr-x-facet__n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* "in view" qualifier — a facet/day count is the LOADED-window count, never a
+   claimed total (item #8 / Codex day-count red line). The quiet qualifier makes
+   the bare number unmistakably "what's loaded", not "the total". */
+.rr-x-facet__inview {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  /* Sidebar count contrast (verifier polish): lifted from 0.75 so the "in view"
+     qualifier is legible, not a ghost. */
+  opacity: 0.9;
+}
+
+/* ─── Facet row: INCLUDE toggle + "is not" EXCLUDE toggle (Linear) ─── */
+.rr-x-facet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px;
+}
+.rr-x-facet-row .rr-x-facet {
+  min-width: 0;
+}
+/* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
+   active so an exclusion reads as a distinct, intentional negative scope. */
+.rr-x-facet-not {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 4px 5px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity var(--motion-state), color var(--motion-state);
+}
+.rr-x-facet-row:hover .rr-x-facet-not {
+  opacity: 0.8;
+}
+.rr-x-facet-not.is-on {
+  color: var(--warning);
+  opacity: 1;
+}
+/* An excluded row strikes through the name so "everything except X" is legible. */
+.rr-x-facet-row.is-excluded .rr-x-facet__name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--warning);
+}
+
+/* ─── Inline marks (image / derived title) ─── */
+.rr-x-mark {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  padding: 1px 5px;
+  margin-right: 7px;
+  vertical-align: 1px;
+}
+
+/* ─── Lens / link controls ─── */
+.rr-lens {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 1px solid var(--border-strong);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: color var(--motion-state), border-color var(--motion-state);
+}
+.rr-lens:hover {
+  color: var(--foreground);
+}
+.rr-lens.is-on {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+.rr-link {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.rr-link:hover {
+  text-decoration: underline;
+}
+
+/* ─── Controls ─── */
+.rr-x-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.rr-x-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rr-x-searchrow {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+.rr-x-search {
+  flex: 1 1 auto;
+  /* min-width: 280px ensures the placeholder is never truncated on desktop;
+     the flex item still shrinks below this on very narrow viewports (mobile
+     is governed by the column-direction override in the phone media query). */
+  min-width: 280px;
+  width: auto;
+}
+.rr-x-searchcommit {
+  align-self: center;
+  flex-shrink: 0;
+}
+/* D12: sort + Options controls sub-row. On desktop this is a transparent flex
+   wrapper — sort and Options items sit inline in the parent searchrow. On mobile
+   (≤860px) this becomes the "row 2" compact strip (see mobile media query). */
+.rr-x-searchrow__controls {
+  display: contents;
+}
+.rr-x-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.rr-x-sort__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+/* (.rr-x-ranges removed — the four standalone date buttons were replaced by the
+   single Date chip below; the class is no longer rendered.) */
+.rr-x-copyview {
+  margin-left: auto;
+}
+
+/* ─── Date chip — the ONE date control (display + editor) ───
+   One quiet chip in the command bar; clicking it opens a hybrid popover with
+   presets (apply instantly) + a Custom From/To range (explicit Apply). The chip
+   phrase is SANS (a human statement of the active window); mono lives ONLY on the
+   literal date inputs (machine values) — the mono-rule (THE-LENS Gate 1). It sits
+   at the same weight as the Options disclosure beside it. */
+.rr-x-datechip {
+  position: relative;
+  flex: 0 0 auto;
+}
+/* The chip shell carries the border + active tint; the trigger + × sit inside it
+   as borderless sibling controls (no button-in-a-button). */
+.rr-x-datechip__chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  transition: border-color var(--motion-state), background var(--motion-state);
+}
+.rr-x-datechip__chip:hover {
+  border-color: var(--border-strong);
+}
+/* Active window: the chip reads as a live filter (primary tint), like a chip. */
+.rr-x-datechip__chip.is-active {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+.rr-x-datechip__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 8px;
+  white-space: nowrap;
+  transition: color var(--motion-state);
+}
+.rr-x-datechip__chip:hover .rr-x-datechip__trigger,
+.rr-x-datechip__chip.is-active .rr-x-datechip__trigger {
+  color: var(--foreground);
+}
+.rr-x-datechip__chip.is-active .rr-x-datechip__trigger {
+  color: var(--primary);
+}
+.rr-x-datechip__trigger:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+.rr-x-datechip__phrase {
+  font-family: var(--font-sans);
+}
+.rr-x-datechip__x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--primary);
+  background: none;
+  border: 0;
+  opacity: 0.7;
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 4px 6px 4px 2px;
+}
+.rr-x-datechip__x:hover,
+.rr-x-datechip__x:focus-visible {
+  opacity: 1;
+  outline: none;
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
+}
+/* The popover — same card/elevation grammar as the Options disclosure body. */
+.rr-x-datechip__popover {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(280px, calc(100vw - 32px));
+  max-width: min(280px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.rr-x-datechip__presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rr-x-datechip__preset {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  color: var(--foreground);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-datechip__preset:hover {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.rr-x-datechip__preset:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: -2px;
+}
+/* The active preset reads as selected (the radio's current value). */
+.rr-x-datechip__preset.is-on {
+  color: var(--primary);
+  background: var(--primary-tint);
+  font-weight: 500;
+}
+.rr-x-datechip__custom {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.rr-x-datechip__custom-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.rr-x-datechip__fields {
+  display: flex;
+  gap: 8px;
+}
+.rr-x-datechip__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.rr-x-datechip__field-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+/* The literal date inputs are MACHINE values → mono (the mono-rule). */
+.rr-x-datechip__date {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 5px 6px;
+  width: 100%;
+  min-width: 0;
+}
+.rr-x-datechip__date:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--primary);
+}
+.rr-x-datechip__apply {
+  align-self: flex-end;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--primary-foreground, #fff);
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: opacity var(--motion-state);
+}
+.rr-x-datechip__apply:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.rr-x-datechip__apply:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.rr-x-datechip__apply:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+/* Search-mode header: the descriptor-claim title + its escape ramp / sort toggle.
+   Without an explicit layout the title span and the escape link ran together
+   ("…'stream:messages'Browse matching records…"). Lay it out as a wrapping row so
+   the title reads as the primary claim and the escape/sort reads as a secondary
+   action beside it. */
+.rr-x-search-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.rr-x-search-header__title {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.rr-x-browse-all-escape {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rr-x-browse-all-escape:hover {
+  color: var(--primary);
+}
+.rr-x-search-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rr-x-goto {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding-top: 2px;
+}
+.rr-x-goto__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-goto__input {
+  min-width: 0;
+}
+.rr-x-goto__feedback {
+  grid-column: 2 / -1;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* ─── Unified query input (ONE box: text + chips + id-jump) ─── */
+/* design.md §4 / wireframe A — Gmail's one-bar exemplar. The input, the inline
+   "Jump to record" affordance, and the typeahead menu all live in one relative
+   container so the menu/jump anchor below the field. */
+.rr-x-queryinput {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 280px;
+}
+.rr-x-searchrow__input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rr-x-queryinput__icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+  opacity: 0.6;
+  user-select: none;
+}
+.rr-x-queryinput .rr-x-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* The search field is the primary PROSE-entry affordance, so it is SANS — not
+     the .pdpp-input base mono. A mono search box is the single biggest "developer
+     console" tell (SLVP redesign: mono is for ids/operators/amounts only, never
+     the natural-language search input). Operator tokens still render mono via the
+     typeahead (.rr-x-typeahead__op) and chips, where mono IS correct. */
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+}
+.rr-x-queryinput__chevron {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  background: none;
+  border: 1px solid var(--border-strong);
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: color var(--motion-state), border-color var(--motion-state);
+}
+.rr-x-queryinput__chevron:hover {
+  color: var(--foreground);
+}
+/* Inline "↵ Jump to record <id>" — command-palette style, NOT a second box. */
+.rr-x-queryinput__jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary);
+  background: var(--primary-tint);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.rr-x-queryinput__jump-id {
+  color: var(--foreground);
+  opacity: 0.85;
+}
+/* Typeahead recognition menu — anchored card, each item == its operator.
+   VIEWPORT CLAMP (Slice 5, #6 — "the operators popup runs off the screen"): the
+   menu is anchored to the relatively-positioned `.rr-x-queryinput` and stretched
+   `left:0; right:0`, so it is already width-bounded to the input and CANNOT
+   overflow the right edge on desktop or mobile (no JS measurement needed). Two
+   pure-CSS guards harden the remaining edges:
+     • `max-width: 100vw` is a belt-and-suspenders cap so the card never exceeds
+       the viewport width even if an ancestor is wider than the screen.
+     • `max-height: min(280px, 60vh)` + `overflow-y: auto` clamps the BOTTOM edge:
+       on a short viewport the list scrolls internally instead of running past the
+       fold. SSR-safe (no measurement, no client positioning). */
+.rr-x-typeahead {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  max-width: 100vw;
+  max-height: min(280px, 60vh);
+  overflow-y: auto;
+}
+.rr-x-typeahead__item {
+  display: block;
+}
+.rr-x-typeahead__btn.is-active,
+.rr-x-typeahead__btn:hover {
+  background: var(--muted);
+}
+.rr-x-typeahead__btn {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.rr-x-typeahead__label {
+  font-size: 12px;
+  color: var(--foreground);
+}
+.rr-x-typeahead__op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Section label rendered above the first item of each group (SOURCES / STREAMS / FILTERS / SEARCH). */
+.rr-x-typeahead__section {
+  display: block;
+  padding: 6px 8px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  /* Separate from the previous group without a visible divider. */
+  margin-top: 2px;
+}
+.rr-x-typeahead__section:first-child {
+  margin-top: 0;
+}
+/* Count badge: honest record count shown next to source/stream suggestions. */
+.rr-x-typeahead__count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rr-x-help {
+  position: relative;
+}
+.rr-x-help > summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary);
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+}
+.rr-x-help > summary:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.rr-x-help > summary::-webkit-details-marker {
+  display: none;
+}
+.rr-x-help__body {
+  position: absolute;
+  z-index: 50;
+  /* 2px gap — close enough to read as anchored to the trigger, not floating */
+  top: calc(100% + 2px);
+  /* P1: anchor to the RIGHT edge of the operators link so the popup extends
+     leftward (into the feed area), not rightward into the inspector column.
+     right:0 means "flush with the right edge of the relative-positioned
+     .rr-x-help"; the popup grows leftward, staying in the feed column. */
+  right: 0;
+  left: auto;
+  /* D-6: clamp to viewport width so the popup never escapes on 390px screens */
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  /* Ink Carbon card treatment: --card bg, hairline --border-strong, menu
+     shadow, comfortable padding, radius 0 (square paper).
+     border-top uses --primary at low opacity so the card reads visually
+     anchored to its trigger (the primary-colored "operators" summary). */
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  font-size: 11px;
+  line-height: 2;
+  color: var(--muted-foreground);
+  /* D-12: allow inline code chips to wrap rather than overflow */
+  overflow-wrap: break-word;
+}
+.rr-x-help__body code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--foreground);
+  background: var(--muted);
+  padding: 1px 5px;
+  /* inline-block so chips can wrap to the next line */
+  display: inline-block;
+}
+
+/* ─── Options disclosure (SLVP recomposition) ───
+   The date ranges + operators help + copy-view-link were a flat second toolbar
+   row; they now collapse into ONE quiet "Options" disclosure beside the search
+   input, so the command-bar is a single calm row. Mirrors the .rr-x-help popover
+   pattern: relative trigger, absolute viewport-clamped body anchored to the right
+   so it grows leftward into the feed column (never off-screen on 390px). */
+.rr-x-options {
+  position: relative;
+  flex: 0 0 auto;
+}
+.rr-x-options__summary {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+}
+.rr-x-options__summary:hover {
+  color: var(--foreground);
+}
+.rr-x-options__summary:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+.rr-x-options__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-x-options__body {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 2px);
+  right: 0;
+  left: auto;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.rr-x-options__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rr-x-options__label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+/* ─── Chip bar ─── */
+.rr-x-active {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+/* 3-zone chip: [property][operator][value][×]
+   Matches prototype chip anatomy (Concept C):
+   property pill → operator pill (click to toggle is/is-not) → value pill → × dismiss */
+.rr-x-chip {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  flex-shrink: 0;
+  user-select: none;
+  /* keep the legacy color on the container for border/background tinting */
+  color: var(--primary);
+}
+/* Property zone — muted label so the value leads */
+.rr-x-chip__property {
+  padding: 3px 6px;
+  background: var(--primary-tint);
+  font-weight: 500;
+  color: var(--primary);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
+}
+/* Operator zone — secondary; click toggles is ↔ is not when canNegate */
+.rr-x-chip__op {
+  padding: 3px 5px;
+  background: color-mix(in oklab, var(--primary-tint) 60%, var(--background));
+  font-weight: 400;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-chip__op[role="button"] {
+  cursor: pointer;
+}
+.rr-x-chip__op[role="button"]:hover,
+.rr-x-chip__op[role="button"]:focus-visible {
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
+  color: var(--foreground);
+  outline: none;
+}
+/* Negated operator gets a stronger tint so "is not" reads as distinct */
+.rr-x-chip__op--negated {
+  background: color-mix(in oklab, var(--destructive, #dc2626) 10%, var(--background));
+  color: var(--destructive, #dc2626);
+}
+/* Value zone */
+.rr-x-chip__value {
+  padding: 3px 6px;
+  background: var(--primary-tint);
+  font-weight: 400;
+  color: var(--primary);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
+}
+/* × dismiss button */
+.rr-x-chip__x {
+  padding: 3px 7px 3px 5px;
+  background: var(--primary-tint);
+  color: var(--primary);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+  font-family: inherit;
+  transition: opacity var(--motion-state), background var(--motion-state);
+}
+.rr-x-chip__x:hover {
+  opacity: 1;
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
+}
+.rr-x-clearall {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 4px;
+}
+.rr-x-clearall:hover {
+  color: var(--foreground);
+}
+
+/* ─── Compiled-call line — quiet disclosure, engineers one step away ─── */
+.rr-x-compiled {
+  /* <details> element: sits below the feed controls as a calm affordance */
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+.rr-x-compiled__label {
+  /* <summary> cursor for the disclosure */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  outline: none;
+  user-select: none;
+}
+.rr-x-compiled__label::-webkit-details-marker {
+  display: none;
+}
+.rr-x-compiled__label::before {
+  content: "›";
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.rr-x-compiled[open] .rr-x-compiled__label::before {
+  transform: rotate(90deg);
+}
+.rr-x-compiled__label:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+  opacity: 1;
+}
+.rr-x-compiled .rr-copyid {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  color: var(--foreground);
+  margin-top: 6px;
+  display: block;
+}
+.rr-x-raw {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+}
+.rr-x-raw > summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+}
+.rr-x-raw > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.rr-x-raw > pre {
+  margin: 0;
+  overflow-x: auto;
+  border-top: 1px solid var(--border);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.rr-x-stream-all {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.rr-x-stream-all:hover {
+  color: var(--primary);
+}
+
+/* ─── Count + lens-description line ─── */
+.rr-x-pulse__note {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+.rr-x-scope-note {
+  color: var(--muted-foreground);
+}
+.rr-x-feeddesc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  margin: 0;
+  max-width: 70ch;
+}
+/* Mobile chrome recomposition (live re-walk D12): on a phone the default-feed
+   description ("Recent across every visible connection…") duplicates the count line
+   and pushes content below the fold — hide it ≤860px. The SEARCH-state descriptions
+   carry real honesty disclosures (retrieval method / connection identity), so this
+   only hides the redundant DEFAULT-feed prose, kept via the .is-default modifier. */
+@media (max-width: 860px) {
+  .rr-x-feeddesc.is-default {
+    display: none;
+  }
+}
+
+/* ─── Warnings — calm product notice, plain language leads ─── */
+.rr-x-warn {
+  /* Stripe-style inline notice: hairline border, card background, no state color */
+  border-left: 2px solid var(--border-strong);
+  background: var(--card);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* The human message is the headline — legible, plain language, sentence-case */
+.rr-x-warn__msg {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+/* The machine code is secondary — present for engineers/reviewers but not shouting.
+   Ink Carbon: state colors live only inside .pdpp-endorse; free-floating neutral. */
+.rr-x-warn__line {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
+/* ─── Day groups ─── */
+.rr-x-days {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.rr-x-day {
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-day__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  /* Day-header craft (D8, aligned to the approved prototype .day-header): the date
+     reads as a calm section marker via WEIGHT + caps + breathing room — NOT a rule
+     line. The prototype has no header border (it leans on whitespace + the sticky
+     blur); the hairline here read as one more table rule, so it is removed. */
+  padding-bottom: 8px;
+}
+/* Day/section header: smaller + heavier + uppercase LABEL, quieter by COLOR than the
+   row primary but structural by WEIGHT (W2 consensus: Vercel caption, Primer subhead).
+   It reads as structure via weight/caps/letter-spacing while staying recessive in
+   color, so it never out-shouts the actual records. */
+.rr-x-day__label {
+  /* §4 / prototype .day-label: 11px / 600 / uppercase / 0.07em / MUTED. The date is
+     structure (read via weight + caps + tracking), recessive in COLOR so it never
+     out-shouts the actual records below it. An earlier polish made this 12.5px full-
+     foreground non-caps — that out-competed the row titles; reverted to the gate. */
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-day__n {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+/* "in view" qualifier on the day header — the count is records LOADED for the day,
+   not a true day total (Codex red line: a bare number reads like a total). */
+.rr-x-day__inview {
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+/* ─── Upcoming (future-dated) section ───
+   Collapsed-by-default pill at the top of the recent timeline so scheduled /
+   future-dated records never sit above today. Muted so today's activity leads. */
+.rr-x-upcoming {
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-upcoming__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.rr-x-upcoming__toggle:hover {
+  color: var(--foreground);
+}
+.rr-x-upcoming__chevron {
+  color: var(--muted-foreground);
+}
+.rr-x-upcoming__count {
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-upcoming__hint {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-x-upcoming__body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-top: 16px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+/* "Load more upcoming" affordance: walks the future projection to exhaustion so
+   the "N upcoming" count is fully reachable (count==reachability). */
+.rr-x-upcoming__more {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-left: 12px;
+}
+.rr-x-upcoming__more-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* ─── Burst (same-stream cluster) ───
+   A burst is a (connection, stream) cluster that crossed BURST_THRESHOLD within a
+   day. SLVP preview-content-by-default (Codex plan-check 2026-06-22): it NEVER
+   renders as a content-less count header — it always shows its first PREVIEW_COUNT
+   rows (rr-x-burst__rows), with the head as a quiet LEFT-ALIGNED summary line and
+   an explicit "Show all M" toggle. The head + toggle mirror the muted/mono
+   typography of the day header and the Upcoming toggle. */
+.rr-x-burst {
+  display: flex;
+  flex-direction: column;
+}
+/* Summary line: "<count> <connection / stream> in view". LEFT-aligned and muted
+   so it reads as a quiet group label above its preview rows, never centered (the
+   F6 center-alignment defect) and never competing with the rows themselves. */
+.rr-x-burst__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  text-align: left;
+  padding: 4px 0 2px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.rr-x-burst__count {
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-burst__stream {
+  color: var(--primary);
+}
+/* "Show all M ↓" / "Collapse to first N ↑" — a quiet left-aligned action, mirroring
+   the Upcoming toggle. Only rendered when hidden rows exist (hiddenCount > 0). */
+.rr-x-burst__toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-state);
+}
+.rr-x-burst__toggle:hover {
+  color: var(--foreground);
+}
+/* Burst count qualifier: the count is the records LOADED for this (connection,
+   stream) within the day, not a claimed complete day-total — so it reads "N in
+   view", never implying completeness the client can't prove. */
+.rr-x-burst__inview {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ─── Record rows ───
+   W1 content-first anatomy + W2 typography (prior art: Primer ActionList, Sentry,
+   Stripe, Linear, Geist). The row is a HORIZONTAL track:
+     [type-glyph fixed slot] [body: content line over muted source/time] [time] [action]
+   so every primary content line left-aligns to one x and is scannable by category.
+   Body text is proportional SANS (var(--font-sans), the inherited default) — mono is
+   reserved for protocol strings (ids/hashes), NOT the feed body. Hierarchy is carried
+   by weight + size + a foreground→muted color ladder, not by family or color shouting. */
+.rr-x-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  /* D6/D11 calibration vs the approved prototype (.record-row): rows are
+     SEPARATED BY WHITESPACE, not a per-row table rule. The 1px border-bottom
+     read as a ledger/terminal line on every row (the look the redesign exists to
+     kill); the benchmarks (Linear/Things/Superhuman feeds) use borderless rows
+     with hover/selection states. Day groups stay separated by .rr-x-days gap:22px.
+     A min-height gives the calm, scannable cadence the border used to imply. */
+  padding: 9px 0 10px;
+  min-height: 48px;
+  cursor: pointer;
+  /* Selection MOTION (Slice 5, #7): the row crossfades background AND its selected
+     inset outline via the design-system state token, so becoming the peek row feels
+     intentional, not an instant flip. Both animated properties (background, box-
+     shadow) are paint-only — zero layout shift, no reflow of the feed. The token
+     collapses to an instant cut under reduced-motion (base.css zeroes --duration-*). */
+  transition: background var(--motion-state), box-shadow var(--motion-state);
+  min-width: 0;
+}
+/* Reset anchor chrome when .rr-x-row is used on an <a> (mobile push nav). */
+a.rr-x-row {
+  text-decoration: none;
+}
+.rr-x-row:hover {
+  background: var(--muted);
+}
+.rr-x-row.is-selected {
+  background: var(--primary-tint);
+  box-shadow: inset 0 0 0 1px var(--carbon-outline);
+}
+/* Leading type-glyph in a FIXED slot (Primer leadingVisual: a reserved area so
+   mixed rows align). Quiet by color — a category cue, never a content shout. */
+.rr-x-row__glyph {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  user-select: none;
+}
+/* The content column: primary line over the muted secondary/meta line. min-width:0
+   so its children can ellipsis-truncate inside the flex track. */
+.rr-x-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Line 2 wrapper: the optional snippet then the source/stream/time attribute line,
+   both muted and below the content. */
+.rr-x-row__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rr-x-row__attr {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+/* Stream name = a quiet label (sans, lightly accented by color). Not a protocol
+   string, so NOT mono — it rides as supporting context alongside the content. */
+.rr-x-row__stream {
+  font-size: 12px;
+  color: var(--primary);
+  white-space: nowrap;
+}
+.rr-x-row__con {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.rr-x-row__rel {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Per-record time-of-day, right-aligned, abbreviated, recede-able (tertiary tier:
+   12px / muted / tabular). The day-group header carries the date; the row carries
+   the time. Tabular figures so times align vertically without a mono font. */
+.rr-x-row__time {
+  flex: 0 0 auto;
+  /* A timestamp is a machine value → MONO (the SLVP type rule: mono only for
+     ids/timestamps/amounts/operators). It was sans; this aligns it with the
+     verified target type scale. tabular-nums keeps the times column-aligned. */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+.rr-x-row__action {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 1px 6px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rr-x-row:hover .rr-x-row__action,
+.rr-x-row:focus-visible .rr-x-row__action {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.rr-x-row.is-selected .rr-x-row__action {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+/* Primary tier: content line, 14px / 500 / full foreground, SANS. The 500 weight
+   (not 600) matches the verified target type scale (Geist label-14 / Primer
+   body-medium): primary by color + a restrained weight step, never heavy. This is
+   what flips the list from "terminal" to "product". */
+.rr-x-row__title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+/* Neutral-fallback primary (no declared content): still SANS, just quieter by weight
+   and color so a content-bearing row reads at full strength. NOT mono — the terminal
+   look came from mono here; sans + muted keeps it a product. */
+.rr-x-row__title.is-derived {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+/* Secondary tier: snippet, 13px / 400 / foreground. */
+.rr-x-row__snippet {
+  font-size: 13px;
+  /* Secondary text reads QUIETER than the title — muted, not full foreground — so
+     the title clearly leads (the two-tier hierarchy the benchmarks converge on).
+     Was --foreground (same darkness as the title); now muted. */
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+/* F3 (mobile 390 right-edge clip): the snippet line is a flex row, so the
+   container's text-overflow:ellipsis cannot truncate the bare text child. The
+   text gets its OWN min-width:0 + overflow:hidden + ellipsis so it shrinks and
+   truncates inside the flex row instead of hard-clipping at the viewport edge. */
+.rr-x-row__snippet-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The matched terms inside a search excerpt — bold + foreground so the user sees
+   WHAT matched at a glance (the rest of the excerpt stays muted via the parent). */
+.rr-x-snippet-hit {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* ─── Honest generic key/value card (design.md §5.4) ─────────────────────────
+   The reference-honest fallback for an undeclared record: a readable key/value
+   table of declared fields with humanized labels, never a guessed typed card.
+   Used by the inspector peek pane and the full-record card (records-explorer-
+   view GenericBody). A two-column label/value grid; the label is quiet, the
+   value carries the foreground weight. Design-system tokens only. */
+.rr-x-kv {
+  display: grid;
+  grid-template-columns: minmax(6rem, 11rem) 1fr;
+  gap: 2px 14px;
+  margin: 0;
+}
+.rr-x-kv__row {
+  display: contents;
+}
+.rr-x-kv__label {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.rr-x-kv__value {
+  font-size: 0.78rem;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+/* ─── In-page navigation loading states ──────────────────────────────────────
+   Feedback for soft same-route `router.push` navigations (filters, sort, range,
+   search submit, Load-more, peek, "N new"). A soft same-route push does NOT fire
+   the route-level `loading.tsx`, so these are the only "the server is
+   re-rendering" signals while a `useTransition` is pending.
+
+   MOTION = design-system tokens ONLY. Token-based TRANSITIONS collapse under the
+   `:root` reduced-motion duration reset in base.css (--motion-state etc.).
+   KEYFRAME animations do NOT — base.css only zeroes the duration tokens — so
+   every keyframe here (the indeterminate slide, the spinner) is gated behind
+   `@media (prefers-reduced-motion: no-preference)` and falls back to a STATIC,
+   visible state. Reduced-motion users never see a moving/flashing indicator.
+   Reuses base.css keyframes `spin` + `fade-in`; the indeterminate sweep loop is
+   the one new keyframe (`rr-x-progress-slide`), its 1.5s cadence derived from
+   --duration-slow (matches the documented brand skeleton shimmer). */
+
+/* Top route-progress bar (Vercel/Linear signature). Absolutely positioned across
+   the top edge of the canvas so it never reflows content (no layout shift when it
+   appears/disappears on each navigation). The wrapper fades in; the bar sweeps.
+   The bar is decorative (aria-hidden in JSX); the wrapper is the polite live
+   region. */
+.rr-x-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  background: var(--border);
+  z-index: 2;
+  /* Base rule = the static, immediately-visible state (no keyframes). The track
+     is already visible; reduced-motion users get a present "loading" mark with
+     zero animation. ALL keyframes (the fade-in enter + the bar slide) live under
+     no-preference below. */
+}
+.rr-x-progress__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: var(--primary);
+  /* Reduced-motion fallback: a static, visible primary segment at the start.
+     No movement, no flash — just a clearly-present "loading" mark. */
+  transform: translateX(0);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-progress {
+    /* Token-based one-shot fade-in; only when motion is allowed. */
+    animation: fade-in var(--motion-enter) both;
+  }
+  .rr-x-progress__bar {
+    animation: rr-x-progress-slide calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+/* Feed busy state: while a navigation is in flight the region carries
+   `aria-busy` (assistive tech hears "updating") but the already-rendered records
+   stay at FULL opacity and FULL interactivity. useTransition keeps the current UI
+   live during the transition, so the owner can keep clicking / peeking / opening
+   records while more load — dimming the feed would falsely signal "inert" content
+   the user can in fact still use. The loading signal lives in the top progress bar
+   and the Load-more control, never on the interactive content itself. No
+   pointer-events block, no opacity dim. */
+
+/* Load-more button — resting + pending. Inline feed control in the `.rr-lens`
+   idiom; inline-flex so the spinner sits beside the label. Pending = disabled +
+   inline spinner + "Loading…" label (set in JSX). */
+.rr-x-loadmore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color var(--motion-state), border-color var(--motion-state), opacity var(--motion-state);
+}
+.rr-x-loadmore:hover:not(:disabled) {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.rr-x-loadmore:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.rr-x-loadmore__spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  /* Reduced-motion fallback: a static ring (no spin). Still reads as a busy
+     marker because the label already says "Loading…". */
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-loadmore__spinner {
+    animation: spin var(--duration-slow) linear infinite;
+  }
+}
+
+/* Row Link inline pending: a thin sweep along the bottom of the tapped row while
+   its `<Link>` navigation is in flight (Next `useLinkStatus`). Decorative
+   (aria-hidden in JSX). Fades in (token), sweeps (gated keyframe). */
+.rr-x-row__pending {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  /* Base rule = static, immediately-visible solid bar (no keyframes). Reduced-
+     motion users get a present pending mark with zero animation. The fade-in
+     enter + the sweep keyframes live under no-preference below. */
+  background: var(--primary);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-row__pending {
+    /* Token-based one-shot fade-in + the brighter sweep across the base. */
+    background: linear-gradient(90deg, var(--primary) 0%, var(--carbon-outline) 50%, var(--primary) 100%);
+    background-size: 200% 100%;
+    animation: fade-in var(--motion-enter) both, rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+/* Load-more skeleton rows (W3 / RL4 — insertion-point pending feedback).
+   Reserved-height row-shaped placeholders appended at the FOOT of the loaded feed
+   (above the Load-more button) while a Load-more push is in flight. They are
+   purely additive (the loaded rows above stay mounted, full-opacity, interactive)
+   and decorative (aria-hidden in JSX; a sibling polite live region carries the
+   announcement). The block reserves vertical space so the appended real page
+   does not push content with a layout jump (prior art finding 7).
+
+   MOTION = design-system tokens + the EXISTING `rr-x-row-pending-sweep` keyframe.
+   Base rule = a STATIC, visible placeholder (no keyframes) so reduced-motion
+   users see a present "loading" mark with zero flash; the shimmer sweep lives
+   ONLY under @media (prefers-reduced-motion: no-preference) below. No new
+   tokens, no new keyframe, no drop shadow. */
+.rr-x-loadmore-skeleton {
+  display: flex;
+  flex-direction: column;
+}
+/* Mirrors `.rr-x-row` box model so the placeholders occupy the row footprint
+   (same vertical rhythm + hairline divider), previewing where content lands. */
+.rr-x-skel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-skel-bar {
+  height: 9px;
+  border-radius: var(--radius-control);
+  /* Base (reduced-motion) fallback: a flat muted bar — present, no movement. */
+  background: var(--muted);
+}
+.rr-x-skel-bar--attr {
+  width: 38%;
+  height: 8px;
+}
+.rr-x-skel-bar--title {
+  width: 64%;
+}
+.rr-x-skel-bar--snippet {
+  width: 50%;
+  height: 8px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-loadmore-skeleton {
+    /* One-shot token fade-in on appear (matches rr-x-progress / rr-x-row__pending). */
+    animation: fade-in var(--motion-enter) both;
+  }
+  .rr-x-skel-bar {
+    /* Reuse the existing brand shimmer sweep keyframe + cadence (the documented
+       1.5s skeleton shimmer = --duration-slow * 3). Paint-only (background-position),
+       zero layout shift. */
+    background: linear-gradient(90deg, var(--muted) 0%, var(--border) 50%, var(--muted) 100%);
+    background-size: 200% 100%;
+    animation: rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+@keyframes rr-x-progress-slide {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+@keyframes rr-x-row-pending-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ─── Group-expansion + load-more continuity motion (Slice 5, #7) ─────────────
+   Three model-state reveals share ONE `rr-x-reveal` keyframe — a short opacity +
+   small translateY settle:
+     • `.rr-x-upcoming__body` — the Upcoming disclosure body when it expands.
+     • `.rr-x-burst__rows`    — a burst's rows container. Under the preview-by-default
+       model this container is STABLE: it mounts ONCE (holding the preview rows) when
+       the burst first arrives in the feed and persists across the in-place
+       preview→expanded toggle (same React key path via burst.key). So the reveal
+       fires once on burst ARRIVAL (the "this cluster just appeared" settle, like a
+       day group), NOT on the Show-all toggle — the preview rows themselves render
+       statically, never a flash, and expansion appends rows without re-animating.
+     • `.rr-x-day`            — a day group on MOUNT. Because expand-state and feed
+       order are keyed by stable group id, an existing day group keeps its React
+       key across a load-more and does NOT re-animate; only a day group that is
+       NEWLY mounted (a just-revealed Upcoming/burst section, or a new day prepended
+       by load-more) plays the reveal. That makes the reveal communicate "this group
+       just arrived here" — load-more continuity, not decorative churn.
+
+   The motion animates ONLY opacity + transform, so it is PAINT/COMPOSITE-ONLY —
+   ZERO layout shift, no reflow of surrounding content (it never animates
+   height/margin/width). The container holds its real height immediately; only the
+   already-laid-out content settles into place.
+
+   Reduced-motion contract (matches the rr-x-progress / rr-x-row__pending
+   precedent): the base rule is the STATIC, fully-visible state (opacity:1, no
+   transform). The keyframe lives ONLY inside @media (prefers-reduced-motion:
+   no-preference), so reduced-motion users get the content immediately with zero
+   movement — never a fade/slide they did not ask for. */
+.rr-x-burst__rows {
+  /* Mirror the column flow rows use everywhere else, so wrapping the expanded
+     burst in a reveal container does not change row stacking/spacing. */
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-upcoming__body,
+.rr-x-burst__rows,
+.rr-x-day {
+  /* Static fallback: present and readable with no animation. */
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-upcoming__body,
+  .rr-x-burst__rows,
+  .rr-x-day {
+    animation: rr-x-reveal var(--motion-enter) var(--ease-standard) both;
+  }
+}
+@keyframes rr-x-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Desktop row: the peek button (row body) and the Open escalation sit on ONE
+   line. Clicking the row body PEEKS (in-place inspect); the separate "Open →"
+   link routes to the full record-detail page — two DISTINCT outcomes so Open is
+   never a redundant row click (design.md §6, feedback #12). Airtable/Linear
+   pattern: row = expand/peek, a distinct full-detail escalation. */
+.rr-x-row-wrap--desktop {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+.rr-x-row-wrap--desktop > .rr-x-row {
+  flex: 1;
+  min-width: 0;
+}
+/* The Open escalation. Always keyboard-reachable (no display:none), but visually
+   quiet until the row is hovered, focused-within, or selected — so it does not
+   add per-row noise the way the removed "view full stream" link did (#11). */
+.rr-x-row-open {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-state), color var(--motion-state), border-color var(--motion-state);
+}
+.rr-x-row-wrap--desktop:hover .rr-x-row-open,
+.rr-x-row-wrap--desktop:focus-within .rr-x-row-open,
+.rr-x-row-wrap--desktop:has(.rr-x-row.is-selected) .rr-x-row-open {
+  opacity: 1;
+}
+.rr-x-row-open:hover,
+.rr-x-row-open:focus-visible {
+  opacity: 1;
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.rr-x-row-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.rr-x-role {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+/* ─── Empty state ─── */
+.rr-x-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+}
+.rr-x-empty__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-x-empty__line {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  max-width: 50ch;
+  line-height: 1.55;
+  margin: 0;
+}
+/* A hairline preview of the three inspector sections — the column reads as an
+   intentional empty state that teaches what a selected record will show, not a
+   void. Mirrors the real inspector's label/value rhythm. */
+.rr-x-empty__preview {
+  margin: 2px 0 0;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-empty__preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-empty__preview-k {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-empty__preview-v {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: color-mix(in oklab, var(--muted-foreground) 80%, var(--foreground));
+}
+
+/* ─── Zero-results routing ───
+   Replaces the dead-end empty state with a routing component: honest explanation
+   + 2-4 escape actions. Light list-items (NOT heavy filled cards) matching
+   the prototype escape-action pattern (styles.css §escape-*).
+   count==reachability: the heading and description never contradict the counts. */
+.rr-x-zero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 4px 0;
+}
+.rr-x-zero__icon {
+  font-size: 22px;
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+.rr-x-zero__heading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+  letter-spacing: -0.2px;
+}
+.rr-x-zero__desc {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.55;
+  max-width: 58ch;
+  margin: -8px 0 0;
+}
+.rr-x-zero__label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: var(--font-sans);
+  margin-top: 4px;
+}
+.rr-x-zero__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  max-width: 480px;
+}
+.rr-x-zero__action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Lighter, Raycast-style list-item escape actions (verifier polish): no filled
+     card/border at rest — just a quiet row that tints on hover. Less heavy than
+     a stack of bordered cards. */
+  padding: 9px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--motion-state);
+}
+.rr-x-zero__action:hover {
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
+}
+.rr-x-zero__action:hover {
+  background: color-mix(in oklab, var(--muted) 30%, var(--background));
+  border-color: var(--border-strong);
+}
+.rr-x-zero__action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.rr-x-zero__action-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.rr-x-zero__action-desc {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+.rr-x-zero__action-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.rr-x-zero__clearall {
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+/* ─── Record inspector (right column) ─── */
+.rr-inspector {
+  position: sticky;
+  top: 8px;
+}
+/* The empty inspector is not sticky — it stands as a full panel at the top of
+   the column rather than a thin card floating over a void. */
+.rr-inspector--empty {
+  position: static;
+  background: color-mix(in oklab, var(--card) 60%, transparent);
+}
+.rr-x-foldnote {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* Grant lens selector — read this record AS a watcher. */
+.rr-ex-lens {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rr-ex-lens__label {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-ex-lens__row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Withheld fields — "Stays with you". */
+.rr-ex-keep {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rr-ex-keep__label {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.rr-ex-keep__fields {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.rr-ex-keep__note {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+/* Relationship rail — bidirectional, derived app-side. */
+.rr-x-rel {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rr-x-rel__row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.rr-x-rel__row:hover .rr-x-rel__v {
+  color: var(--primary);
+}
+.rr-x-rel__k {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-rel__v {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Navigable relation → protocol link (anchor); inert advisory → muted text. */
+.rr-x-rel__row--link {
+  text-decoration: none;
+}
+.rr-x-rel__row--link:hover .rr-x-rel__v {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rr-x-rel__row--inert {
+  cursor: default;
+}
+.rr-x-rel__row--inert .rr-x-rel__v {
+  color: var(--muted-foreground);
+}
+
+/* ─── Record blob affordance (server-declared) ─── */
+.rr-x-blob {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rr-x-blob__img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  display: block;
+  background-color: var(--muted);
+  border: 1px solid var(--border);
+}
+.rr-x-blob__open {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+.rr-x-blob__open:hover {
+  text-decoration: underline;
+}
+.rr-x-blob--off {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border);
+  padding: 2px 8px;
+  border-radius: 999px;
+  align-self: flex-start;
+}
+
+/* ─── Responsive ─── */
+/* P0-3: bump breakpoint slightly to keep 3-col layout visible longer */
+@media (max-width: 1280px) {
+  /* ≤1280: the inspector drops out of the column track and STACKS below the feed
+     (grid-column: 2; position: static) — for BOTH states. The `.has-selection`
+     selector must be matched explicitly here: `.rr-x.has-selection` (specificity
+     0,2,0) outranks a bare `.rr-x` (0,1,0) regardless of source order, so without
+     this a selected record would keep forcing the 3-col 420px track below 1280. */
+  .rr-x,
+  .rr-x.has-selection {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .rr-x .rr-inspector {
+    grid-column: 2;
+    position: static;
+  }
+}
+@media (max-width: 980px) {
+  .rr-x,
+  .rr-x.has-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rr-x .rr-inspector {
+    grid-column: 1;
+  }
+  /* Tablet: lay the two facet groups side-by-side so the rail stays a short
+     band above the feed instead of a tall single column. */
+  .rr-x-rail__body {
+    flex-direction: row;
+    gap: 28px;
+  }
+  .rr-x-facets {
+    flex: 1;
+    min-width: 0;
+  }
+}
+/* ── ≤860px — the phone grammar ──
+   Mobile push navigation: tapping a feed row navigates to the full-page
+   record detail route (rr-x-row--mobile Link). The inspector is hidden
+   entirely — it is never populated from mobile taps, so showing it would
+   only add dead scroll depth. Desktop button affordance also hidden.
+   The facet rail folds into a collapsible "Filters" disclosure. */
+@media (max-width: 860px) {
+  /* Loading position (Slice 5, #2): on the desktop layout the route-progress bar
+     is absolutely positioned at the TOP of the `.rr-x` canvas (document top). On a
+     phone the owner scrolls the feed, so a document-top bar is scrolled ABOVE THE
+     FOLD and a filter/search/load-more gives no visible feedback. Pinning it
+     `position: fixed; top: 0` anchors it to the top of the VISIBLE viewport, so the
+     "server is re-rendering" signal is always in view no matter how far down the
+     feed the owner has scrolled (the wireframe's "⟳ loading… (sticky TOP)").
+     `fixed` takes it out of flow → ZERO layout shift when it appears/disappears,
+     and it dims NOTHING — already-rendered records stay fully readable and
+     interactive (Codex red line: loading must not block readable records). */
+  .rr-x-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+  }
+  /* D12 mobile: collapse the 2-column grid to a single column so the rail
+     stacks above the feed. The rail's 230px column at 390px viewport left
+     only ~132px for the main column — completely broken. Single column puts
+     the rail above, feed below, matching the prototype's stacked layout. */
+  .rr-x {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .rr-x.has-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* D12 mobile: the Filters rail loses the heavy grey blob and border.
+     It becomes a transparent container whose only visible chrome is the
+     quiet toggle button and the open body — no background slab. */
+  .rr-x-rail {
+    border: none;
+    background: transparent;
+  }
+  /* D12 mobile: the Filters toggle becomes a small, compact control —
+     matches the Options button appearance (border + radius + muted text).
+     Not a full-width heavy bar; a quiet inline affordance. */
+  .rr-x-rail__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--muted-foreground);
+    user-select: none;
+    outline: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    white-space: nowrap;
+  }
+  .rr-x-rail__toggle:hover {
+    color: var(--foreground);
+  }
+  .rr-x-rail__toggle:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+    outline-offset: 2px;
+  }
+  .rr-x-rail__toggle::-webkit-details-marker {
+    display: none;
+  }
+  /* Remove the right-aligned caret from the old full-width bar style */
+  .rr-x-rail__toggle::after {
+    content: none;
+  }
+  .rr-x-rail[open] > .rr-x-rail__toggle {
+    color: var(--foreground);
+    border-color: var(--border-strong);
+  }
+  .rr-x-rail__toggle-n {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--primary);
+    font-variant-numeric: tabular-nums;
+  }
+  /* D12 mobile: when the rail is open, its body renders as a card below the toggle row,
+     with a top border for separation. Compact padding — not the desktop sidebar spacing. */
+  .rr-x-rail__body {
+    flex-direction: column;
+    gap: 18px;
+    padding: 12px 16px 14px;
+    border: 1px solid var(--border);
+    border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+    background: var(--card);
+    margin-top: 4px;
+  }
+  /* F4: on mobile the whole rail is already a scrollable <details> disclosure, so
+     the desktop inner-scroll cap on the stream list would nest a second scroll
+     region (a scroll trap). Relax it — the facet list flows naturally inside the
+     disclosure. */
+  .rr-x-facets__scroll {
+    max-height: none;
+    overflow: visible;
+  }
+  .rr-x-facet {
+    min-height: 42px;
+    padding-block: 8px;
+  }
+  /* D12 mobile: the command bar is a 2-row layout.
+     Row 1: the search input spans full width (no min-width constraint).
+     Row 2: sort controls + Options disclosure sit as a compact inline
+     strip — flex-wrap so they fit without overflowing 390px. */
+  .rr-x-searchrow {
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* D12 mobile: the controls sub-row becomes a real flex row so sort + Options
+     sit side-by-side on one line, not stacked (display:contents on desktop
+     makes it invisible to the layout; on mobile it's a real row). */
+  .rr-x-searchrow__controls {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  /* Sort + Options sub-row: keep them on one horizontal strip, not stacked. */
+  .rr-x-sort {
+    flex-shrink: 0;
+  }
+  .rr-x-options {
+    flex-shrink: 0;
+  }
+  .rr-x-datechip {
+    flex-shrink: 0;
+  }
+  /* Mobile: the Date popover becomes a full-width sheet anchored to the command bar,
+     so the From/To inputs and presets have room at 390px (matches the mobile filter
+     sheet grammar — a card that spans the column, not a clipped 280px float). */
+  .rr-x-datechip__popover {
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+  }
+  .rr-x-datechip__preset {
+    /* Comfortable touch targets in the sheet. */
+    min-height: 40px;
+  }
+  /* F6 (mobile orphaned "Search" button): in the desktop row the commit button is
+     `align-self: center` (vertically centered beside the input). In the stacked
+     mobile column that resolves to a horizontally-CENTERED, detached button. Pin it
+     to `stretch` so it spans the full column width directly under the full-width
+     input — a coherent search affordance, not a floating orphan. */
+  .rr-x-searchcommit {
+    align-self: stretch;
+  }
+  /* Mobile: the unified query input goes full-width (no desktop min-width) and the
+     chips/typeahead survive (Gmail mobile parity). The typeahead is already clamped
+     to left:0/right:0 of the input, so it stays within the viewport. */
+  .rr-x-queryinput {
+    min-width: 0;
+    width: 100%;
+  }
+  .rr-x-goto {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .rr-x-goto__label {
+    white-space: normal;
+  }
+  .rr-x-copyview {
+    margin-left: 0;
+  }
+  /* Mobile push nav: show the Link affordance, hide the desktop peek+Open
+     affordances. On phones a row tap IS open (the full route), so the desktop
+     peek button and the separate "Open" escalation are both irrelevant.
+     Double-class specificity beats the unconditional .rr-x-row base rule. */
+  .rr-x-row-wrap--desktop {
+    display: none;
+  }
+  .rr-x-row.rr-x-row--desktop {
+    display: none;
+  }
+  /* Hide the record inspector entirely on mobile — taps push to the full-page
+     record detail route, so the inspector is never populated here. This
+     eliminates dead scroll depth from both the empty placeholder and any
+     previously-selected filled inspector. */
+  .rr-x .rr-inspector {
+    display: none;
+  }
+
+  /* §7 Mobile chip strip: when active filters are present, .rr-x-active becomes
+     a horizontal-scroll strip so chips are always visible before the first data
+     row. Max 3 fixed chrome rows before first data row on 390px:
+     Row 1: heading/topbar  Row 2: search input  Row 3: chip strip (conditional)
+     The strip must NOT wrap (no line breaks — it is a single-axis scroll region).
+     scrollbar-width:none / -webkit-scrollbar hides the system scrollbar (prototype §gap-fix #1). */
+  .rr-x-active {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding: 6px 0;
+    gap: 6px;
+    /* Ensure strip is visible and doesn't collapse when empty — handled by
+       the parent not rendering it when chips.length === 0 */
+  }
+  .rr-x-active::-webkit-scrollbar {
+    display: none;
+  }
+  /* On mobile the clearall link follows the chip row inline */
+  .rr-x-clearall {
+    flex-shrink: 0;
+  }
+}
+
+/* Desktop (>860px): show the peek button + Open escalation, hide the mobile
+   tap Link. Double-class specificity beats the unconditional .rr-x-row base. */
+@media (min-width: 861px) {
+  .rr-x-row.rr-x-row--mobile {
+    display: none;
+  }
+}
+
+/* ─── Traces table mobile (P0-2 / D-9) ────────────────────────────
+   P0-2: At ≤640px the 5-column table grid overflows 390px. We reflow
+   each row into a 2-line card: subject+id on top, then a wrapped meta
+   line (status · kinds · events · time). The header row is hidden
+   (labels redundant with inline ordering). No horizontal scroll.
+   D-9: collapse the peek split to single column when a detail panel
+   is open — hide the list, show the panel full-width. */
+
+/* ── Card reflow at ≤640px ── */
+@media (max-width: 640px) {
+  /* Hide the desktop header row — column labels are implicit in card order */
+  .rr-traces-table-scroll .pdpp-table__hrow {
+    display: none;
+  }
+  /* Each data row becomes a flex column (card) */
+  .rr-traces-table-scroll .pdpp-table__row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px 0;
+    align-items: stretch;
+  }
+  /* Subject cell (second child in source order — status is first) */
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(2) {
+    order: -1; /* Subject first */
+  }
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(1) {
+    order: 0;  /* Status below subject */
+  }
+  /* Meta row: kinds + events + time wrap inline */
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(3),
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(4),
+  .rr-traces-table-scroll .pdpp-table__row > *:nth-child(5) {
+    order: 1;
+    display: inline;
+  }
+  /* Wrap the trailing three cells into one flex meta line */
+  .rr-traces-table-scroll .pdpp-table__row {
+    flex-wrap: nowrap;
+  }
+  /* All cells lose their grid sizing in card mode */
+  .rr-traces-table-scroll .pdpp-table__row > * {
+    width: auto;
+    text-align: left;
+    justify-self: auto;
+  }
+  /* D-9: collapse the peek split to single column; hide the list, show only
+     the detail panel full-width (detail panel is the second child). */
+  .rr-traces-split {
+    grid-template-columns: 1fr !important;
+  }
+  .rr-traces-split > *:first-child:has(+ *) {
+    display: none;
+  }
+}
+
+/* ── Trace card meta line — status / kinds / events / time on one row ── */
+.rr-traces-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+/* ─── P0-3: Null / empty / bracket token de-emphasis ───────────────
+   RecordBody emits .rr-field-null / .rr-field-empty for these tokens.
+   We also cover raw bracket/null strings rendered as TypedSm inside
+   the inspector via the data-null / data-empty attributes. Muted + smaller
+   so they don't compete visually with real values. */
+.rr-field-null,
+.rr-field-empty,
+[data-field-null="true"],
+[data-field-empty="true"] {
+  color: var(--muted-foreground);
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+/* ─── P1: Compiled call line — native <details> on all viewports ──────
+   The element is now a <details> disclosure everywhere; on mobile it
+   simply inherits the same collapsed-by-default behaviour with tighter
+   label text. No JS toggle needed. */
+@media (max-width: 640px) {
+  .rr-x-compiled__label {
+    font-size: 8.5px;
+  }
+  /* Operators help text — also secondary on mobile */
+  .rr-x-help > summary {
+    font-size: 9px;
+  }
+}
+
+/* ─── P1: Facet rail — sticky apply/close footer on mobile ─────────
+   When the rail <details> is open on mobile (≤860px), a sticky footer
+   bar with a "Close filters" affordance pins to the bottom of the open
+   rail so the user is never trapped in an endless checklist. */
+@media (max-width: 860px) {
+  .rr-x-rail[open] {
+    position: relative;
+  }
+  .rr-x-rail__close {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--card);
+    /* Sticky inside the open <details> — sticks to bottom of the element */
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+}
+/* Hide the close button on desktop (rail is always open, no toggle) */
+@media (min-width: 861px) {
+  .rr-x-rail__close {
+    display: none;
+  }
+}
+
+/* ─── P1: Connect page — command copy card mobile/desktop treatment ──
+   Desktop (>640px): compact single-line pill — items-center keeps the
+   copy icon vertically centered on one line; no stacking.
+   Mobile (≤640px): code block and copy button are a tight attached block;
+   code wraps cleanly, copy icon is inline-centered (not a separate tall row). */
+@media (max-width: 640px) {
+  .rr-copy-row__cmd {
+    /* Keep as row on mobile: code fills left, copy icon stays right — compact block */
+    flex-direction: row;
+    align-items: stretch;
+  }
+  /* Wrapping mono text: normal whitespace, tighter padding than desktop */
+  .rr-copy-row__text {
+    white-space: normal;
+    overflow-x: hidden;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+  /* Copy icon stays attached on right; shrink-0 keeps it from squishing */
+  .rr-copy-row__btn {
+    /* Keep left border (vertical divider) — button stays side-attached */
+    align-self: stretch;
+    align-items: center;
+    min-width: 44px;
+    /* 44px touch target via padding instead of fixed height so it scales with text */
+    padding: 0 10px;
+  }
+}
+
+/* D-14: Copy-ID buttons — expand the tap zone to ≥44×44px without
+   changing the visible icon size. The padding creates invisible touch area. */
+.rr-copyid {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SYSTEMIC TOKEN FIXES (part B)
+   ═══════════════════════════════════════════════════════════════════
+
+   B-1  Focus rings — the existing :is(button,a,...):focus-visible rule
+        handles most elements. Below we add explicit :focus-visible rules
+        on nav items and chrome buttons that previously had outline:none
+        on :focus with no :focus-visible override, leaving keyboard users
+        with no visible ring.
+
+   B-2  Active-nav / selected-row / selected-card — unified to ONE
+        treatment: inset-left-2 --primary accent + --primary-tint fill.
+        Covers rr-nav-item.is-active, rr-x-row.is-selected, rr-s-item.is-on.
+
+   B-3  Eyebrow letter-spacing at ≤390px — reduce from 0.12em → 0.07em
+        so all-caps mono eyebrows don't feel noisy on narrow screens.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* B-1 — suppress browser-default blue :focus outline on custom interactive
+   chrome; replace with design-system ring on :focus-visible only. */
+.rr-nav-item:focus,
+.rr-chrome-btn:focus,
+.rr-side__theme:focus,
+.rr-lens:focus,
+.rr-x-facet:focus,
+.rr-x-chip:focus,
+.rr-copyid:focus,
+.rr-rel__revoke:focus,
+.rr-link:focus,
+.rr-s-item:focus,
+.rr-x-row:focus {
+  outline: none;
+}
+
+/* B-1 — keyboard-visible focus rings on interactive chrome */
+.rr-nav-item:focus-visible,
+.rr-chrome-btn:focus-visible,
+.rr-side__theme:focus-visible,
+.rr-lens:focus-visible,
+.rr-x-facet:focus-visible,
+.rr-x-chip:focus-visible,
+.rr-copyid:focus-visible,
+.rr-rel__revoke:focus-visible,
+.rr-link:focus-visible,
+.rr-s-item:focus-visible,
+.rr-x-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/* B-2 — unified active / selected treatment */
+.rr-nav-item.is-active {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+.rr-x-row.is-selected {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+/* B-4 — Sources list item (rr-s-item): full Ink Carbon button treatment.
+   No rr-s-item CSS existed before; browsers were showing their default blue
+   focus ring on every Sources row click/tab. */
+.rr-s-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px 9px 12px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--motion-state), box-shadow var(--motion-state);
+}
+.rr-s-item:hover {
+  background: var(--muted);
+}
+/* is-on = selected source: inset accent + tint fill, matching nav/feed selection */
+.rr-s-item.is-on {
+  background: var(--primary-tint);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.rr-s-item.is-on:hover {
+  background: color-mix(in oklab, var(--primary-tint) 70%, var(--muted));
+}
+/* is-revoked: muted appearance to signal inactive state */
+.rr-s-item.is-revoked {
+  opacity: 0.5;
+}
+.rr-s-item__name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-item__line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-item__kind {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  opacity: 0.75;
+}
+.rr-s-item__flag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+}
+.rr-s-dot {
+  font-size: 10px;
+}
+
+/* B-3 — narrow-screen eyebrow relief */
+@media (max-width: 390px) {
+  .pdpp-eyebrow,
+  .rr-x-facets__label,
+  .pdpp-table__h,
+  .pdpp-copyline,
+  .rr-stand-hero__kicker {
+    letter-spacing: 0.07em;
+    font-size: 0.63rem;
+  }
+}

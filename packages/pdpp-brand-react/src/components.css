@@ -3280,6 +3280,109 @@ a.rr-x-row {
   color: var(--foreground);
 }
 
+/* ─── Shared record-identity cell (RecordIdentity) ───────────────────────────
+   ONE markup-neutral identity primitive across feed / stream-table / mobile card
+   / detail H1, so a record can NEVER render two ways (THE-LENS Gate 3). It emits
+   only <span>s; the host owns the wrapper (<li>/<td>/<h1>). Design-system tokens
+   only. The honesty styling lives HERE once: primary is SANS (never mono); the
+   key is the only mono token; weight steps with declaration. */
+.rr-x-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+/* Leading kind-glyph in a fixed slot (Primer leadingVisual): a quiet category cue,
+   never a content shout. Matches the feed row's .rr-x-row__glyph treatment. */
+.rr-x-identity__glyph {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  user-select: none;
+}
+.rr-x-identity__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Primary tier: content line, 14px / 500 / foreground, SANS (mono is forbidden on
+   the title — the SLVP type rule). tabular-nums keeps amounts/digits aligned
+   without a mono font. */
+.rr-x-identity__primary {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+/* Derived/generic primary (no declared title): SANS still, quieter by weight +
+   color so an id/uuid or arbitrary key:value never reads like an authored title. */
+.rr-x-identity__primary.is-derived {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+/* Secondary tier: the next honest slot, muted, below the primary (feed/card). */
+.rr-x-identity__secondary {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* The record key: a quiet MONO token (machine value — mono is correct here),
+   muted, never the visual lead. */
+.rr-x-identity__key {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Table-cell density: tighter, single-line, no leading-glyph indentation cost. */
+.rr-x-identity--table-cell {
+  gap: 7px;
+}
+.rr-x-identity--table-cell .rr-x-identity__primary {
+  font-weight: 400;
+}
+/* The detail H1 lead uses the surrounding header type scale; the cell only
+   supplies the glyph + honest weight, letting the <h1> own the size. SCOPED to a
+   DECLARED (non-derived) primary: only a real title earns the bold-700 foreground
+   <h1> treatment by inheriting it. A derived/key-fallback primary must NOT inherit
+   the heading weight/color (THE-LENS Gate 1: "Raw snake_case/UUID is never an H1").*/
+.rr-x-identity--header .rr-x-identity__primary:not(.is-derived) {
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+/* Derived header primary (no declared title → fell back to the record key): the
+   header variant MUST keep the demotion — never the bold-700 foreground H1. Per
+   Gate-1's detail-H1 fallback order, a derived header shows the key as "record key
+   (mono, secondary)", not a confident authored title. The higher specificity
+   (.--header + .is-derived) beats the non-derived inherit above, so it overrides
+   the heading inheritance and restores the quiet mono key treatment. */
+.rr-x-identity--header .rr-x-identity__primary.is-derived {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 /* ─── Honest generic key/value card (design.md §5.4) ─────────────────────────
    The reference-honest fallback for an undeclared record: a readable key/value
    table of declared fields with humanized labels, never a guessed typed card.

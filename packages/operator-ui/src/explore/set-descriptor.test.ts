@@ -26,15 +26,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   type CompleteChronologicalDescriptor,
-  type FilteredExactDescriptor,
-  type KeywordPageableDescriptor,
-  type RelevanceBoundedDescriptor,
-  type SetDescriptor,
   descriptorHasMore,
   descriptorHasTotal,
   descriptorIsTimeOrdered,
   descriptorNextCursor,
+  type FilteredExactDescriptor,
   feedHeaderLabel,
+  type KeywordPageableDescriptor,
+  legalSortOptions,
+  type RelevanceBoundedDescriptor,
+  type SetDescriptor,
 } from "./set-descriptor.ts";
 
 // ── (a) relevance_bounded: CANNOT claim "newest first" or "complete" ──────────
@@ -100,10 +101,7 @@ test("relevance_bounded: a renderer that bypasses the descriptor would fail thes
   assert.equal(descriptor.has_more, false);
   // Prove the label cannot be made to say "newest first":
   const label = feedHeaderLabel(descriptor);
-  assert.ok(
-    !label.toLowerCase().includes("newest"),
-    `Expected label not to contain 'newest', got: '${label}'`
-  );
+  assert.ok(!label.toLowerCase().includes("newest"), `Expected label not to contain 'newest', got: '${label}'`);
 });
 
 // ── (b) keyword_pageable with ordering=time: genuinely newest-first ───────────
@@ -128,10 +126,7 @@ test("keyword_pageable ordering=time: feedHeaderLabel claims newest-first", () =
     cursor: null,
   };
   const label = feedHeaderLabel(descriptor);
-  assert.ok(
-    label.toLowerCase().includes("newest"),
-    `Expected label to include 'newest', got: '${label}'`
-  );
+  assert.ok(label.toLowerCase().includes("newest"), `Expected label to include 'newest', got: '${label}'`);
 });
 
 test("keyword_pageable ordering=relevance: descriptorIsTimeOrdered returns false", () => {
@@ -145,10 +140,7 @@ test("keyword_pageable ordering=relevance: descriptorIsTimeOrdered returns false
   assert.equal(descriptorIsTimeOrdered(descriptor), false);
   // Label must NOT claim newest-first for relevance ordering:
   const label = feedHeaderLabel(descriptor);
-  assert.ok(
-    !label.toLowerCase().includes("newest"),
-    `Expected label not to contain 'newest', got: '${label}'`
-  );
+  assert.ok(!label.toLowerCase().includes("newest"), `Expected label not to contain 'newest', got: '${label}'`);
 });
 
 test("keyword_pageable: descriptorHasMore and cursor forward correctly", () => {
@@ -301,7 +293,14 @@ test("feedHeaderLabel handles all four descriptor kinds without throwing", () =>
     { kind: "relevance_bounded", ordering: "relevance", completeness: "bounded_sample", has_more: false, cursor: null },
     { kind: "keyword_pageable", ordering: "relevance", completeness: "pageable", has_more: false, cursor: null },
     { kind: "keyword_pageable", ordering: "time", completeness: "pageable", has_more: false, cursor: null },
-    { kind: "filtered_exact", ordering: "owner_chosen", completeness: "exact", total: 10, has_more: false, cursor: null },
+    {
+      kind: "filtered_exact",
+      ordering: "owner_chosen",
+      completeness: "exact",
+      total: 10,
+      has_more: false,
+      cursor: null,
+    },
   ];
   for (const d of descriptors) {
     const label = feedHeaderLabel(d);
@@ -364,4 +363,98 @@ test("F2 fix: keyword_pageable/time IS allowed to claim newest-first (it is genu
   // Has real pagination:
   assert.equal(descriptorHasMore(descriptor), true);
   assert.equal(descriptorNextCursor(descriptor), "cursor-abc");
+});
+
+// ── legalSortOptions: the descriptor-gated legal sort surface (sort cell §3) ──
+//
+// The sort cell's cardinal contract: a sort key may ONLY be a server-DECLARED
+// sortable field (today exactly the stream's cursor/time field → a time
+// DIRECTION); there is no amount/name/sender sort because no connector declares
+// those sortable. The legal surface is gated by descriptor.kind — an
+// unrepresentable claim (e.g. an in-set sort over a bounded sample) is
+// structurally unreachable. These tests prove the matrix.
+
+test("T1 legalSortOptions: complete_chronological → time axis {newest, oldest}", () => {
+  const descriptor: CompleteChronologicalDescriptor = {
+    kind: "complete_chronological",
+    ordering: "time",
+    completeness: "exhaustive",
+    has_more: true,
+    cursor: "c1",
+  };
+  const sort = legalSortOptions(descriptor);
+  assert.equal(sort.axis, "time");
+  assert.deepEqual(sort.axis === "time" ? sort.options : null, ["newest", "oldest"]);
+});
+
+test("T2 legalSortOptions: filtered_exact → time axis {newest, oldest}", () => {
+  const descriptor: FilteredExactDescriptor = {
+    kind: "filtered_exact",
+    ordering: "owner_chosen",
+    completeness: "exact",
+    total: 42,
+    has_more: false,
+    cursor: null,
+  };
+  const sort = legalSortOptions(descriptor);
+  assert.equal(sort.axis, "time");
+  assert.deepEqual(sort.axis === "time" ? sort.options : null, ["newest", "oldest"]);
+});
+
+test("T3 legalSortOptions: keyword_pageable → rank axis {relevance, recent}", () => {
+  const descriptor: KeywordPageableDescriptor = {
+    kind: "keyword_pageable",
+    ordering: "relevance",
+    completeness: "pageable",
+    has_more: true,
+    cursor: "c1",
+  };
+  const sort = legalSortOptions(descriptor);
+  assert.equal(sort.axis, "rank");
+  assert.deepEqual(sort.axis === "rank" ? sort.options : null, ["relevance", "recent"]);
+});
+
+test("T4 legalSortOptions: relevance_bounded → axis 'none' (escape only, no in-set sort)", () => {
+  const descriptor: RelevanceBoundedDescriptor = {
+    kind: "relevance_bounded",
+    ordering: "relevance",
+    completeness: "bounded_sample",
+    has_more: false,
+    cursor: null,
+  };
+  const sort = legalSortOptions(descriptor);
+  assert.equal(sort.axis, "none");
+  // Structural: a bounded sample exposes NO options array at all — there is no
+  // newest/oldest/in-set toggle to render. (T13: oldest never on a bounded sample.)
+  assert.ok(!("options" in sort), "relevance_bounded must not expose any sort options");
+});
+
+test("T5/T6 legalSortOptions reads ONLY the descriptor — no field-name / x_pdpp_role sort", () => {
+  // The legal sort surface is a function of descriptor.kind alone. It NEVER
+  // references a field name or role, so an x_pdpp_role:amount (a PRESENTATION
+  // role, not a sort capability) can never produce an "amount" sort. We assert
+  // the only surfaced options are the canonical axis vocab — zero field names.
+  const kinds: SetDescriptor[] = [
+    { kind: "complete_chronological", ordering: "time", completeness: "exhaustive", has_more: false, cursor: null },
+    {
+      kind: "filtered_exact",
+      ordering: "owner_chosen",
+      completeness: "exact",
+      total: 8,
+      has_more: false,
+      cursor: null,
+    },
+    { kind: "keyword_pageable", ordering: "time", completeness: "pageable", has_more: false, cursor: null },
+    { kind: "relevance_bounded", ordering: "relevance", completeness: "bounded_sample", has_more: false, cursor: null },
+  ];
+  const allowed = new Set(["newest", "oldest", "relevance", "recent"]);
+  const forbidden = ["amount", "name", "sender", "subject", "price", "total"];
+  for (const d of kinds) {
+    const sort = legalSortOptions(d);
+    const options: readonly string[] = "options" in sort ? sort.options : [];
+    for (const opt of options) {
+      assert.ok(allowed.has(opt), `unexpected sort option '${opt}' for kind=${d.kind}`);
+      assert.ok(!forbidden.includes(opt), `field-name/role sort '${opt}' must never appear`);
+    }
+  }
 });

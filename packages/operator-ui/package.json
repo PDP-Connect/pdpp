@@ -17,6 +17,7 @@
     "./lib/connector-display": "./src/lib/connector-display.ts",
     "./lib/summary-row-label": "./src/lib/summary-row-label.ts",
     "./components/empty-state": "./src/components/empty-state.tsx",
+    "./components/record-identity": "./src/components/record-identity.tsx",
     "./components/primitives": "./src/components/primitives.tsx",
     "./components/copy-button": "./src/components/copy-button.tsx",
     "./components/connect-agent-card": "./src/components/connect-agent-card.tsx",

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Explore · Zero Results — Final Synthesis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="page-wrap">
+
+  <!-- Proto nav -->
+  <nav class="proto-nav" aria-label="Prototype states">
+    <span class="proto-nav-label">Final Synthesis:</span>
+    <a href="feed-desktop.html" class="proto-link">Feed + Autocomplete</a>
+    <a href="search-desktop.html" class="proto-link">Search results</a>
+    <a href="zero-desktop.html" class="proto-link current">Zero-results routing</a>
+    <span class="proto-nav-label" style="margin-left:12px;">↕ Resize to 390px for mobile</span>
+  </nav>
+
+  <!-- App shell -->
+  <div class="app">
+
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar" role="navigation" aria-label="Main navigation">
+      <div class="sidebar-header">
+        <div class="sidebar-logo" aria-label="PDPP">P</div>
+        <span class="sidebar-title">Personal Data</span>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="sidebar-section-label">Views</div>
+        <a class="sidebar-item active" href="#" role="menuitem">
+          <span class="sidebar-item-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="2" rx="1" fill="currentColor"/><rect x="1" y="7" width="10" height="2" rx="1" fill="currentColor"/><rect x="1" y="11" width="12" height="2" rx="1" fill="currentColor"/></svg>
+          </span>
+          Explore
+          <span class="sidebar-item-count">0</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          Upcoming
+          <span class="sidebar-item-count">188</span>
+        </a>
+
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section-label">Sources</div>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💻</span>
+          Claude Code
+          <span class="sidebar-item-count">18k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">🤖</span>
+          ChatGPT
+          <span class="sidebar-item-count">4.2k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💬</span>
+          Vana Slack
+          <span class="sidebar-item-count">3.1k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💰</span>
+          YNAB
+          <span class="sidebar-item-count">2.8k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">📊</span>
+          Oura
+          <span class="sidebar-item-count">847</span>
+        </a>
+      </nav>
+    </aside>
+
+    <!-- ===== MAIN ===== -->
+    <main class="main" role="main">
+
+      <!-- Topbar with chips showing the contradictory state -->
+      <div class="topbar">
+        <div class="topbar-title">Explore</div>
+
+        <div class="command-bar-wrap" role="search">
+          <div class="command-bar" tabindex="0"
+               role="combobox" aria-expanded="false" aria-haspopup="listbox"
+               aria-label="Search and filter records">
+            <span class="command-bar-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="#b0b0b0" stroke-width="1.5"/><path d="m10.5 10.5 2.5 2.5" stroke="#b0b0b0" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </span>
+
+            <!-- Active filter chips — 3-zone [Property][Operator][Value] (graft from C, §4) -->
+            <div class="filter-chip chip-accent" role="group" aria-label="stream filter">
+              <span class="chip-prop">stream</span>
+              <span class="chip-op" title="Click to negate">is</span>
+              <span class="chip-val">messages</span>
+              <span class="chip-remove" title="Remove filter" onclick="removeChip(event, this)">×</span>
+            </div>
+
+            <div class="filter-chip chip-accent" role="group" aria-label="role filter">
+              <span class="chip-prop">role</span>
+              <span class="chip-op" title="Click to negate">is</span>
+              <span class="chip-val">assistant</span>
+              <span class="chip-remove" title="Remove filter" onclick="removeChip(event, this)">×</span>
+            </div>
+
+            <!-- Clear all (§4: appears when ≥2 chips active) -->
+            <a href="feed-desktop.html" class="clear-all-link" tabindex="0">Clear all</a>
+
+            <input
+              class="command-bar-input"
+              type="text"
+              placeholder="Refine search…"
+              autocomplete="off"
+              aria-label="Search and filter"
+            />
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="topbar-btn" aria-label="Sort options">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 5h12M4 8h8M6 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Sort
+          </button>
+        </div>
+      </div>
+
+      <!-- View tabs — all counts reflect zero since filters remove everything -->
+      <div class="view-tabs-bar" role="tablist" aria-label="Saved views">
+        <a class="view-tab active" role="tab" aria-selected="true" href="#">
+          All
+          <span class="view-tab-count">0</span>
+        </a>
+        <a class="view-tab" role="tab" aria-selected="false" href="#">Money</a>
+        <a class="view-tab" role="tab" aria-selected="false" href="#">Messages</a>
+        <a class="view-tab" role="tab" aria-selected="false" href="#">This week</a>
+        <a class="view-tab view-tab-save" role="tab" aria-selected="false" href="#">+ Save view</a>
+      </div>
+
+      <!-- Content split -->
+      <div class="content-split">
+
+        <!-- Feed panel — zero state -->
+        <div class="feed-panel">
+          <div class="feed-header">
+            <span class="feed-header-title">No results</span>
+            <span class="feed-header-count">0</span>
+          </div>
+
+          <div class="feed-list" role="status" aria-live="polite" aria-label="Zero results state">
+
+            <div class="zero-state">
+              <div class="zero-icon" aria-hidden="true">⊘</div>
+
+              <div>
+                <div class="zero-title">No assistant-role records in these results</div>
+                <div class="zero-desc" style="margin-top:6px;">
+                  The query <code>stream:messages role:assistant</code>
+                  matched 25 records, but the <code>role:assistant</code>
+                  filter removed all of them. The 25 matched records contain messages
+                  from all roles (user, assistant, tool) — none are role:assistant only.
+                </div>
+              </div>
+
+              <div>
+                <div class="escape-label">Try instead</div>
+                <div class="escape-actions">
+
+                  <!-- Action 1: Remove the most-restrictive filter — most common fix -->
+                  <a class="escape-action" href="search-desktop.html"
+                     aria-label="Remove role:assistant filter, show 25 records">
+                    <div class="escape-icon">🔓</div>
+                    <div class="escape-text">
+                      <div class="escape-action-title">Remove <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:1px 4px;">role:assistant</code> filter</div>
+                      <div class="escape-action-desc">Show all 25 message records regardless of role</div>
+                    </div>
+                    <div class="escape-count">25 records</div>
+                  </a>
+
+                  <!-- Action 2: Relax role constraint -->
+                  <div class="escape-action" role="button" tabindex="0"
+                       aria-label="Keep stream filter, drop role constraint">
+                    <div class="escape-icon">🔍</div>
+                    <div class="escape-text">
+                      <div class="escape-action-title">Relax to: any role in messages</div>
+                      <div class="escape-action-desc">Keep <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:1px 4px;">stream:messages</code>, drop role constraint</div>
+                    </div>
+                    <div class="escape-count">~18k</div>
+                  </div>
+
+                  <!-- Action 3: Search all streams -->
+                  <div class="escape-action" role="button" tabindex="0"
+                       aria-label="Remove stream filter, search all sources">
+                    <div class="escape-icon">🌐</div>
+                    <div class="escape-text">
+                      <div class="escape-action-title">Search all streams</div>
+                      <div class="escape-action-desc">Remove <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:1px 4px;">stream:messages</code> — search everywhere</div>
+                    </div>
+                    <div class="escape-count">search all</div>
+                  </div>
+
+                  <!-- Action 4: Clear everything -->
+                  <a class="escape-action" href="feed-desktop.html"
+                     aria-label="Clear all filters, return to full feed">
+                    <div class="escape-icon">✕</div>
+                    <div class="escape-text">
+                      <div class="escape-action-title">Clear all filters</div>
+                      <div class="escape-action-desc">Return to the full unfiltered feed</div>
+                    </div>
+                    <div class="escape-count">32 records</div>
+                  </a>
+
+                </div>
+              </div>
+            </div>
+
+          </div><!-- /feed-list -->
+        </div><!-- /feed-panel -->
+
+        <!-- ===== PEEK PANE — §3 gap-fix #2: neutral empty state, NO stale record ===== -->
+        <div class="peek-panel" id="peek-panel">
+          <div class="peek-toolbar">
+            <button class="peek-btn" aria-label="Close">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Close
+            </button>
+            <button class="peek-nav-btn" aria-label="Previous" disabled style="opacity:.3;">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="m10 4-4 4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="peek-nav-btn" aria-label="Next" disabled style="opacity:.3;">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+
+          <div class="peek-content">
+            <!-- §3 gap-fix #2: CLEAR the detail pane on zero-results — neutral empty state -->
+            <!-- Previous record is NOT shown here (eliminates the "orphan record" bug) -->
+            <div class="peek-empty" style="display:flex;">
+              <svg width="40" height="40" viewBox="0 0 40 40" fill="none" opacity=".25">
+                <circle cx="20" cy="20" r="12" stroke="#8f8f8f" stroke-width="1.5"/>
+                <path d="M14 20h12M20 14v12" stroke="#8f8f8f" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <div class="peek-empty-text">
+                Select a record from the list to preview it here.<br>
+                <span style="color:var(--text-faint);font-size:11px;margin-top:4px;display:block;">
+                  No records match the current filters.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /content-split -->
+    </main>
+  </div><!-- /app -->
+</div><!-- /page-wrap -->
+
+<script>
+// Chip operator toggle (§4: click operator to negate)
+document.querySelectorAll('.chip-op').forEach(op => {
+  op.addEventListener('click', (e) => {
+    e.stopPropagation();
+    op.textContent = op.textContent.trim() === 'is' ? 'is not' : 'is';
+  });
+  op.title = 'Click to toggle is / is not';
+});
+
+function removeChip(e, btn) {
+  e.stopPropagation();
+  const chip = btn.closest('.filter-chip');
+  chip.remove();
+  // If no chips remain, redirect to feed
+  const remaining = document.querySelectorAll('.filter-chip');
+  if (remaining.length === 0) {
+    window.location.href = 'feed-desktop.html';
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    window.location.href = 'feed-desktop.html';
+  }
+});
+</script>
+</body>
+</html>

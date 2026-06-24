@@ -10,7 +10,15 @@
  *
  * These tests assert the rule on `buildNavigateHref`/`isFeedDefiningNavigation`
  * directly (the functions are pure, no React). Feed-defining → no `anchor`, no
- * `cursors`. Pin-preserving (Load-more / peek / order) → `anchor` survives.
+ * `cursors`. Pin-preserving (Load-more / peek / a same-value `order` carried
+ * forward) → `anchor` survives.
+ *
+ * SORT-CELL UPDATE (docs/research/explore-design-cells/sort/design.md §2): an
+ * order FLIP (newest↔oldest) is now FEED-DEFINING, because "oldest" is a real
+ * server keyset re-page ASCENDING (direction=asc), not a client reverse — so a
+ * flip must re-page from page 1 (drop the trail + anchor; a trail minted in the
+ * old direction would mis-seek the new one). A same-value `order` (carried
+ * forward by a peek) stays a same-feed move.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -129,13 +137,27 @@ test("peek/selection PRESERVES anchor and the trail (same feed)", () => {
   assert.equal(params.get("cursors"), "cursor-p2", "peek carries the feed trail forward unchanged");
 });
 
-test("order re-sort PRESERVES anchor (pure display change, same snapshot)", () => {
-  const state = accumulatingState();
+test("order FLIP is feed-defining: re-pages from page 1 (drops anchor + cursor trail)", () => {
+  // newest→oldest is a real server keyset re-page ASCENDING (direction=asc), not a
+  // client reverse, so it MUST reset to page 1: a trail minted newest-first would
+  // mis-seek the ascending walk, and a stale anchor would pin the wrong snapshot.
+  const state = accumulatingState(); // order: "newest"
   const href = buildNavigateHref(EXPLORE, state, { order: "oldest" });
   const params = paramsOf(href);
-  assert.equal(params.get("anchor"), "2026-06-20T00:00:00Z", "order change must keep the snapshot anchor");
   assert.ok(href.includes("order=oldest"), "order=oldest suffix is appended");
-  assert.equal(params.get("cursors"), "cursor-p2", "a pure re-sort keeps the accumulated feed trail");
+  assert.equal(params.get("anchor"), null, "an order flip must drop the stale snapshot anchor");
+  assert.equal(params.get("cursors"), null, "an order flip must reset the feed cursor trail to page 1");
+  assert.equal(params.get("ucursors"), null, "an order flip resets the upcoming trail too (fresh snapshot)");
+});
+
+test("a same-value order (carried forward by a peek) is NOT feed-defining (same feed)", () => {
+  // A peek that carries the current order forward unchanged (newest == state.order)
+  // is a pure same-feed move — the accumulated trail + anchor must survive.
+  const state = accumulatingState(); // order: "newest"
+  const params = paramsOf(buildNavigateHref(EXPLORE, state, { order: "newest", peek: "amazon/orders/abc" }));
+  assert.equal(params.get("anchor"), "2026-06-20T00:00:00Z", "a same-value order keeps the snapshot anchor");
+  assert.equal(params.get("cursors"), "cursor-p2", "a same-value order keeps the accumulated feed trail");
+  assert.ok(!paramsOf(buildNavigateHref(EXPLORE, state, { order: "newest" })).has("order"), "newest stays out of URL");
 });
 
 // ─── "N new" pill (clearCursor) DROPS both (unchanged behavior) ───────────────
@@ -175,9 +197,12 @@ test("feed Load-more CARRIES the upcoming trail forward unchanged (revealed futu
   assert.equal(params.get("cursors"), "cursor-p2,cursor-p3", "the feed trail still appends");
 });
 
-test("peek/order CARRY the upcoming trail forward (same feed)", () => {
-  const state = accumulatingState();
-  for (const opts of [{ peek: "amazon/orders/abc" }, { order: "oldest" as const }]) {
+test("peek (and a same-value order) CARRY the upcoming trail forward (same feed)", () => {
+  // A peek, and a same-value `order` carried forward, are same-feed moves: the
+  // revealed upcoming pages persist. (An order FLIP is feed-defining and resets
+  // the upcoming trail — covered in the order-flip test above.)
+  const state = accumulatingState(); // order: "newest"
+  for (const opts of [{ peek: "amazon/orders/abc" }, { order: "newest" as const }]) {
     const params = paramsOf(buildNavigateHref(EXPLORE, state, opts));
     assert.equal(params.get("ucursors"), "ucursor-u1", `${JSON.stringify(opts)} keeps the upcoming trail`);
   }

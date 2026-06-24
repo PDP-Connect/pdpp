@@ -121,6 +121,14 @@ export interface DashboardDataSource {
      * feed `limit` so the common-case future set is revealed on first expand.
      */
     upcomingLimit?: number;
+    /**
+     * Sort DIRECTION for the merged feed over its semantic-time order. "desc"
+     * (default) = newest-first browse; "asc" = the `order=oldest` re-page that
+     * walks from the EARLIEST record forward (the honest replacement for the old
+     * client-side window reverse — it reaches the true earliest record and pages
+     * forward in time). Feed-defining: a flip resets the cursor trail.
+     */
+    direction?: "asc" | "desc";
   }): Promise<ExploreTimelinePage>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
   listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
@@ -157,4 +165,5 @@ export interface DashboardDataSource {
     query: string,
     opts?: { streams?: string[]; limit?: number; cursor?: string }
   ): Promise<SearchResultPage>;
+  supportsExploreTimelineDirection?: () => Promise<boolean>;
 }

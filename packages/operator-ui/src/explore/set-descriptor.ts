@@ -170,3 +170,56 @@ export function descriptorIsTimeOrdered(descriptor: SetDescriptor): boolean {
 export function descriptorHasTotal(descriptor: SetDescriptor): descriptor is FilteredExactDescriptor {
   return descriptor.kind === "filtered_exact";
 }
+
+/**
+ * The LEGAL sort surface a set may offer, gated by its descriptor kind (the
+ * sort-cell honesty contract; see docs/research/explore-design-cells/sort/design.md §3).
+ *
+ * There are TWO orthogonal sort axes, never a stack:
+ *   - "time" — a DIRECTION over the set's declared cursor/time order
+ *     ({newest, oldest}). Surfaced as the semantic-time display order. The only
+ *     FIELD-level sort the data can declare (the stream's `cursor_field`); there
+ *     is no amount/name/sender sort because no connector declares those sortable
+ *     (`field_capabilities` has no `sortable` flag, and `x_pdpp_role:amount` is a
+ *     presentation role, not a sort capability — using it would be the cardinal
+ *     name/role-guessing sin).
+ *   - "rank" — the search ROW lens ({relevance, recent}); `recent` is
+ *     time-direction-newest applied to the lexical candidate set.
+ *
+ * A `relevance_bounded` ranked SAMPLE has NO honest in-set sort — its only door
+ * is the chronological escape (handled in the search header). So it returns
+ * `{axis:"none"}` and the canvas renders no in-set sort control for it.
+ *
+ * This is a switch on `descriptor.kind`, so an unrepresentable sort claim is
+ * structurally impossible (mirrors `feedHeaderLabel`/`descriptorIsTimeOrdered`),
+ * not a runtime check to forget. It reads ONLY the descriptor — never a field
+ * name — so it holds for arbitrary connectors.
+ */
+export type LegalSortOptions =
+  | { axis: "time"; options: readonly ["newest", "oldest"] }
+  | { axis: "rank"; options: readonly ["relevance", "recent"] }
+  | { axis: "none" };
+
+export function legalSortOptions(descriptor: SetDescriptor): LegalSortOptions {
+  switch (descriptor.kind) {
+    case "complete_chronological":
+    case "filtered_exact":
+      // Browse + filtered-exact: a time DIRECTION over the declared cursor key.
+      // The UI may expose "oldest" only when the backing data source advertises
+      // true server ascending keyset paging; without that support it must no-op.
+      return { axis: "time", options: ["newest", "oldest"] };
+    case "keyword_pageable":
+      // Search, pageable: the relevance/recent rank lens (the search header owns
+      // this control). "recent" == time-newest over the lexical candidate set.
+      return { axis: "rank", options: ["relevance", "recent"] };
+    case "relevance_bounded":
+      // Ranked bounded sample: no honest in-set re-order; escape link only.
+      return { axis: "none" };
+    default: {
+      // Exhaustiveness guard: a new descriptor kind must declare its legal sort
+      // surface here, or this is a compile error — the contract, not a lint fix.
+      const _exhaustive: never = descriptor;
+      return _exhaustive;
+    }
+  }
+}

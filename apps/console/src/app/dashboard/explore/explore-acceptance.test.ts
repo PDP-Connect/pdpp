@@ -225,6 +225,33 @@ test("P1 invariant: no '(window capped)' or silent-cap string in explore-canvas.
   assert.ok(!src.includes("silently capped"), "explore-canvas.tsx must not describe truncation as silent to the owner");
 });
 
+test("P1 invariant (sort T15): the client '.reverse()' display hack is GONE from the browse path", async () => {
+  const src = await readFile(CANVAS_FILE, "utf8");
+  // The OLD "oldest" was a client `[...list].reverse()` of the loaded window — a
+  // reachability lie (it could never reach the true earliest record). The fix
+  // makes "oldest" a real server re-page ASCENDING, so the canvas must NOT
+  // reverse the feed. (Allow `.reverse()` nowhere on the feed list.)
+  assert.ok(
+    !src.includes("[...list].reverse()"),
+    "explore-canvas.tsx must not client-reverse the feed window — 'oldest' is a server ASCENDING re-page (direction=asc)"
+  );
+  // The honest wiring: order flows to the assembler as a server direction, and the
+  // inline time sort is descriptor-gated (legalSortOptions), never an unconditional
+  // claim. Both must be present.
+  assert.ok(
+    src.includes("legalSortOptions"),
+    "explore-canvas.tsx must gate the inline sort by legalSortOptions(descriptor) — the descriptor gates the claim"
+  );
+  assert.ok(
+    src.includes("showTimeSort"),
+    "the inline newest/oldest control must be gated by the descriptor's legal time-sort surface"
+  );
+  assert.ok(
+    src.includes("data.supportsTimelineDirection"),
+    "the inline newest/oldest control must also be gated by server timeline-direction support"
+  );
+});
+
 test("P1 invariant: a burst does not present its loaded count as a complete day-total (count==reachability)", async () => {
   const src = await readFile(CANVAS_FILE, "utf8");
   // The burst expand affordance must NOT say "show all" — that implied the loaded

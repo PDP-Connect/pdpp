@@ -24,14 +24,14 @@
 import type { DashboardDataSource } from "@pdpp/operator-ui/lib/data-source";
 import type {
   DeploymentDiagnostics,
+  ExploreTimelinePage,
+  ExploreTimelineRecord,
   ListQuery,
   ListResponse,
   DatasetSummary as LiveDatasetSummary,
   GrantSummary as LiveGrantSummary,
   RunSummary as LiveRunSummary,
   TraceSummary as LiveTraceSummary,
-  ExploreTimelinePage,
-  ExploreTimelineRecord,
   PendingApproval,
   RefConnectorRunSummary,
   RefConnectorSummary,
@@ -604,6 +604,7 @@ function sandboxBucketKey(recordTime: string, granularity: TimeBucketGranularity
 
 export const sandboxDashboardDataSource: DashboardDataSource = {
   kind: "sandbox",
+  supportsExploreTimelineDirection: async () => true,
 
   async listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
     const connectors = getDemoConnectors();
@@ -682,17 +683,22 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       limit?: number;
       rewindToFirstPage?: boolean;
       streams?: readonly string[];
+      direction?: "asc" | "desc";
     } = {}
   ): Promise<ExploreTimelinePage> {
-    // Merged cross-source timeline: every demo record, newest first, paged by a
-    // simple offset cursor. The sandbox is a fixed snapshot so new_since_snapshot
-    // is always 0 (no live ingestion behind the demo).
+    // Merged cross-source timeline: every demo record, newest first (or oldest
+    // first when direction="asc" — the order=oldest re-page), paged by a simple
+    // offset cursor. The sandbox is a fixed snapshot so new_since_snapshot is
+    // always 0 (no live ingestion behind the demo).
     const connectionIds = new Set(opts.connectionIds ?? []);
     const streams = new Set(opts.streams ?? []);
+    const ascending = opts.direction === "asc";
     const merged: ExploreTimelineRecord[] = [...DEMO_RECORDS]
       .filter((r) => connectionIds.size === 0 || connectionIds.has(r.connector_id))
       .filter((r) => streams.size === 0 || streams.has(r.stream))
-      .sort((a, b) => b.record_time.localeCompare(a.record_time))
+      .sort((a, b) =>
+        ascending ? a.record_time.localeCompare(b.record_time) : b.record_time.localeCompare(a.record_time)
+      )
       .map((r) => ({
         object: "timeline_record" as const,
         connector_id: r.connector_id,

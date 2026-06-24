@@ -14,6 +14,7 @@ test("pickSearchDisplayTimestamp prefers manifest-declared record time over emit
   });
   assert.deepEqual(display, {
     emittedAt: "2026-05-22T18:00:00Z",
+    isSemantic: true,
     label: "date",
     value: "2026-05-14",
   });
@@ -28,6 +29,7 @@ test("pickSearchDisplayTimestamp falls back to emitted time when record time is 
     }),
     {
       emittedAt: "2026-05-22T18:00:00Z",
+      isSemantic: false,
       label: "emitted",
       value: "2026-05-22T18:00:00Z",
     }

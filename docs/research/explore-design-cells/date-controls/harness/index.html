@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Date-controls harness — real components.css</title>
+<!-- Real brand tokens + the real (worktree) Explore CSS, so the screenshot reflects what ships. -->
+<link rel="stylesheet" href="./base.css" />
+<link rel="stylesheet" href="./components.css" />
+<style>
+  body { background: var(--background); padding: 28px; display: flex; flex-direction: column; gap: 28px; }
+  .case { display: flex; flex-direction: column; gap: 8px; }
+  .case > .label { font: 600 11px var(--font-sans); color: var(--muted-foreground);
+    text-transform: uppercase; letter-spacing: 0.07em; }
+  .chiprow { display: flex; align-items: center; gap: 8px; padding: 8px 0;
+    border-bottom: 1px solid var(--border); background: var(--card); }
+</style>
+</head>
+<body>
+
+  <!-- CASE 1: resting, no filter — quiet "Any time" chip in the chip row -->
+  <div class="case">
+    <span class="label">1 · Resting (no date filter) — sits in the chip row</span>
+    <div class="chiprow">
+      <div class="rr-x-datechip">
+        <div class="rr-x-datechip__chip">
+          <button class="rr-x-datechip__trigger" aria-expanded="false" aria-haspopup="dialog" type="button">
+            <span class="rr-x-datechip__phrase">Any time</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CASE 2: active (fixed window) — chip shows the honest phrase + clear × -->
+  <div class="case">
+    <span class="label">2 · Active — fixed window (one honest phrase, × clears)</span>
+    <div class="chiprow">
+      <div class="rr-x-datechip">
+        <div class="rr-x-datechip__chip is-active">
+          <button class="rr-x-datechip__trigger" aria-expanded="false" aria-haspopup="dialog" type="button">
+            <span class="rr-x-datechip__phrase">May 1 – May 14</span>
+          </button>
+          <button class="rr-x-datechip__x" aria-label="Clear date filter" type="button">✕</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CASE 3: active (sliding preset) — proves sliding label distinct from fixed -->
+  <div class="case">
+    <span class="label">3 · Active — sliding preset (reads as relative, not frozen)</span>
+    <div class="chiprow">
+      <div class="rr-x-datechip">
+        <div class="rr-x-datechip__chip is-active">
+          <button class="rr-x-datechip__trigger" aria-expanded="false" aria-haspopup="dialog" type="button">
+            <span class="rr-x-datechip__phrase">Last 7 days</span>
+          </button>
+          <button class="rr-x-datechip__x" aria-label="Clear date filter" type="button">✕</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CASE 4: popover open — presets radio group + Custom From/To + Apply -->
+  <div class="case">
+    <span class="label">4 · Popover open — presets + custom range (one control, picker inside)</span>
+    <div class="chiprow" style="position: relative; height: 230px; align-items: flex-start;">
+      <div class="rr-x-datechip">
+        <div class="rr-x-datechip__chip is-active">
+          <button class="rr-x-datechip__trigger" aria-expanded="true" aria-haspopup="dialog" type="button">
+            <span class="rr-x-datechip__phrase">Last 7 days</span>
+          </button>
+          <button class="rr-x-datechip__x" aria-label="Clear date filter" type="button">✕</button>
+        </div>
+        <div class="rr-x-datechip__popover" role="dialog" aria-label="Date filter">
+          <div class="rr-x-datechip__presets" role="radiogroup" aria-label="Date presets">
+            <button class="rr-x-datechip__preset" role="radio" aria-checked="false" type="button">Today</button>
+            <button class="rr-x-datechip__preset is-on" role="radio" aria-checked="true" type="button">Last 7 days</button>
+            <button class="rr-x-datechip__preset" role="radio" aria-checked="false" type="button">Last 30 days</button>
+            <button class="rr-x-datechip__preset" role="radio" aria-checked="false" type="button">All time</button>
+          </div>
+          <form class="rr-x-datechip__custom">
+            <span class="rr-x-datechip__custom-label">Custom range</span>
+            <div class="rr-x-datechip__fields">
+              <label class="rr-x-datechip__field">
+                <span class="rr-x-datechip__field-label">From</span>
+                <input class="rr-x-datechip__date" type="date" value="2026-05-01" />
+              </label>
+              <label class="rr-x-datechip__field">
+                <span class="rr-x-datechip__field-label">To</span>
+                <input class="rr-x-datechip__date" type="date" value="2026-05-14" />
+              </label>
+            </div>
+            <button class="rr-x-datechip__apply" type="submit">Apply</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

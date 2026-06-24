@@ -11,6 +11,15 @@ export const metadata: Metadata = {
   description:
     "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
   metadataBase: new URL("https://pdpp.dev"),
+  // Mirror the console's favicon declaration so pdpp.dev serves the
+  // edge-to-edge two-rectangle mark instead of auto-detecting the
+  // rounded-plate icon.svg (whose cream plate reads as white padding
+  // at favicon scale). /brand/pdpp-favicon.svg is the padding-free mark.
+  icons: {
+    icon: [
+      { url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" },
+    ],
+  },
   openGraph: {
     title: "PDPP — Personal Data Portability Protocol",
     description:

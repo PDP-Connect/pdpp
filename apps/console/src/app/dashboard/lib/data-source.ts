@@ -121,6 +121,11 @@ export interface DashboardDataSource {
      */
     rewindToFirstPage?: boolean;
     streams?: readonly string[];
+    /**
+     * Sort DIRECTION for the merged feed. "desc" (default) = newest-first;
+     * "asc" = the `order=oldest` re-page (earliest record first, paging forward).
+     */
+    direction?: "asc" | "desc";
   }): Promise<ExploreTimelinePage>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
   listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
@@ -157,6 +162,7 @@ export interface DashboardDataSource {
     query: string,
     opts?: { streams?: string[]; limit?: number; cursor?: string }
   ): Promise<SearchResultPage>;
+  supportsExploreTimelineDirection?: () => Promise<boolean>;
 }
 
 /**
@@ -166,6 +172,7 @@ export interface DashboardDataSource {
  */
 export const liveDashboardDataSource: DashboardDataSource = {
   kind: "live",
+  supportsExploreTimelineDirection: async () => process.env.PDPP_EXPLORE_TIMELINE_DIRECTION === "1",
   listConnectorSummaries,
   listConnectorManifests,
   listStreams,

@@ -1236,6 +1236,12 @@ export async function listExploreTimeline(
     upcomingCursor?: string | null;
     /** Page-1 head size for the bounded Upcoming set, independent of `limit`. */
     upcomingLimit?: number;
+    /**
+     * Sort DIRECTION for the merged feed. "desc" (default) = newest-first browse;
+     * "asc" = the `order=oldest` re-page (earliest record first). Sent as
+     * `direction=asc` only when non-default so the newest-first URL stays clean.
+     */
+    direction?: "asc" | "desc";
   } = {}
 ): Promise<ExploreTimelinePage> {
   if (opts.upcomingCursor) {
@@ -1258,6 +1264,8 @@ export async function listExploreTimeline(
     stream: stream || undefined,
     xconnection: xconnection || undefined,
     xstream: xstream || undefined,
+    // Only the oldest-first re-page sends a direction; newest-first is the default.
+    direction: opts.direction === "asc" ? "asc" : undefined,
   })) as ExploreTimelinePage;
 }
 

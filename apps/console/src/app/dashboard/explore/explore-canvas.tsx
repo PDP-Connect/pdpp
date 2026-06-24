@@ -37,6 +37,7 @@
 "use client";
 
 import { IcInput } from "@pdpp/brand-react";
+import { kindGlyph, RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
 import { feedDescription, feedSectionTitle } from "@pdpp/operator-ui/components/views/explorer-utils";
 import {
   type ExplorerConnectionFacet,
@@ -53,6 +54,7 @@ import {
   descriptorIsTimeOrdered,
   descriptorNextCursor,
   feedHeaderLabel,
+  legalSortOptions,
 } from "@pdpp/operator-ui/explore/set-descriptor";
 import { rowPrimary, rowSecondary } from "@pdpp/operator-ui/lib/record-preview";
 import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
@@ -462,6 +464,10 @@ function passesClientFilter(
 // per-source loaded counts) live in ./explore-facet-groups.ts — a pure module
 // node --test exercises directly for the count-honesty/no-misattribution
 // guarantees (W4 / RL2 / RL3).
+
+function canShowTimeSort(data: RecordsExplorerData): boolean {
+  return data.supportsTimelineDirection && legalSortOptions(data.descriptor).axis === "time";
+}
 
 interface FilterChip {
   /** Whether this chip can be toggled between is/is-not. Only connection/stream facets support it. */
@@ -1309,6 +1315,7 @@ function FeedControls({
   onToggleConnection,
   onToggleStream,
   onClearAll,
+  showTimeSort,
 }: {
   draft: string;
   order: SortOrder;
@@ -1337,6 +1344,11 @@ function FeedControls({
   onToggleConnection: (id: string) => void;
   onToggleStream: (s: string) => void;
   onClearAll: () => void;
+  /**
+   * Whether the inline newest/oldest TIME sort is legal for the active set.
+   * Descriptor-gated so an unhonorable sort claim is structurally unreachable.
+   */
+  showTimeSort: boolean;
 }) {
   return (
     <div className="rr-x-controls">
@@ -1373,25 +1385,27 @@ function FeedControls({
               operators help, and copy-view-link — collapses into ONE quiet "Options"
               disclosure so the command-bar is a single calm row, not a 16-control toolbar
               (the SLVP recomposition; every capability stays reachable). */}
-          <div className="rr-x-sort">
-            <span className="rr-x-sort__label">sort</span>
-            <button
-              aria-pressed={order === "newest"}
-              className={["rr-lens", order === "newest" ? "is-on" : ""].filter(Boolean).join(" ")}
-              onClick={() => onSetOrder("newest")}
-              type="button"
-            >
-              newest
-            </button>
-            <button
-              aria-pressed={order === "oldest"}
-              className={["rr-lens", order === "oldest" ? "is-on" : ""].filter(Boolean).join(" ")}
-              onClick={() => onSetOrder("oldest")}
-              type="button"
-            >
-              oldest
-            </button>
-          </div>
+          {showTimeSort ? (
+            <div className="rr-x-sort">
+              <span className="rr-x-sort__label">sort</span>
+              <button
+                aria-pressed={order === "newest"}
+                className={["rr-lens", order === "newest" ? "is-on" : ""].filter(Boolean).join(" ")}
+                onClick={() => onSetOrder("newest")}
+                type="button"
+              >
+                newest
+              </button>
+              <button
+                aria-pressed={order === "oldest"}
+                className={["rr-lens", order === "oldest" ? "is-on" : ""].filter(Boolean).join(" ")}
+                onClick={() => onSetOrder("oldest")}
+                type="button"
+              >
+                oldest
+              </button>
+            </div>
+          ) : null}
           {/* The ONE Date control — replaces the four standalone today/7d/30d/all
               buttons AND the separate "Since…" chip. One chip, one popover, one honest
               statement of the active window (date-controls cell). */}
@@ -1770,32 +1784,6 @@ function StreamFacets({
 
 // ─── Feed row ─────────────────────────────────────────────────────
 
-/**
- * The leading type-glyph label for a row's fixed-size category slot (W1 row anatomy,
- * prior art: Primer ActionList leadingVisual, Sentry, Stripe). It is a CATEGORY
- * marker derived from the record's already-honest presentation `kind` — NOT row
- * content and NOT a content inference: it lets the eye triage rows by category before
- * reading, while the content line answers "what is this?". A short glyph keeps the
- * fixed slot narrow so every row's content left-aligns to one x. Unknown/absent kind
- * falls to a neutral dot.
- */
-const KIND_GLYPHS: Record<RecordKindLabel, string> = {
-  message: "✉",
-  money: "$",
-  event: "◷",
-  activity: "▣",
-  reader: "¶",
-  location: "⌖",
-  titled: "▤",
-  generic: "•",
-};
-
-type RecordKindLabel = "message" | "money" | "event" | "activity" | "reader" | "location" | "titled" | "generic";
-
-function kindGlyph(kind: ExplorerFeedEntry["kind"]): string {
-  return (kind && KIND_GLYPHS[kind as RecordKindLabel]) || "•";
-}
-
 function FeedRow({
   entry,
   recordsBasePath,
@@ -1831,17 +1819,12 @@ function FeedRow({
   // stream name, kind noun, or a derived summary. (The field-name-guessing timeline
   // summary is DELETED; a search hit's matched text rides below as a labelled excerpt,
   // never promoted to the primary. The old `nounFor(stream)` stream-name leak is gone.)
+  // The honest primary line (declared title → first honest generic field → neutral
+  // record-id fallback) and its derived/generic weight treatment are now owned by the
+  // SHARED RecordIdentity cell (rendered below) — the feed no longer styles an
+  // arbitrary key:value or an id/uuid as if it were an authored title; that invariant
+  // lives in ONE place. `primaryLine` is still derived here for the row's aria-labels.
   const primaryLine = rowPrimary(entry.preview ?? null, entry.recordId);
-  // A primary line earns the full-weight AUTHORED-title treatment ONLY when it comes
-  // from a manifest-declared display role (title / body / amount / actor). When the
-  // record declares NO role and the primary falls to a generic key/value field or the
-  // neutral record-id fallback, it is `derived` → rendered NEUTRAL/generic, never a
-  // confident weight-600 title (Codex record-presentation gate: the UI must not style an
-  // arbitrary first key/value pair, or an id/uuid, as if it were an authored title).
-  // The honest fix for a richer title is manifest-authored `x_pdpp_role`, NOT client-side
-  // field ranking — so generic and record-id-fallback rows stay visually generic.
-  const declaredTitle = entry.preview?.title ?? entry.preview?.body ?? entry.preview?.amount ?? entry.preview?.author;
-  const derived = !declaredTitle;
   const role = entry.preview?.author ?? (entry.kind === "message" ? "message" : undefined);
   // Secondary snippet: the NEXT honest content slot (never repeating the primary).
   const snippet = rowSecondary(entry.preview ?? null);
@@ -1861,16 +1844,26 @@ function FeedRow({
   const inner = (actionLabel: "inspect" | "open" | "selected") => (
     <>
       {/* Leading type-glyph in a FIXED slot (W1, prior art: Primer leadingVisual) so
-          rows are scannable by category and every primary line left-aligns to one x. */}
+          rows are scannable by category and every primary line left-aligns to one x.
+          The glyph map is the SHARED one promoted into record-identity.tsx. */}
       <span aria-hidden="true" className="rr-x-row__glyph" data-kind={entry.kind ?? "generic"}>
-        {kindGlyph(entry.kind)}
+        {kindGlyph(entry.kind ?? null)}
       </span>
       <span className="rr-x-row__body">
-        {/* Line 1 = CONTENT (the headline IS data, not a type token). */}
-        <span className={["rr-x-row__title", derived ? "is-derived" : ""].filter(Boolean).join(" ")}>
-          {entryHasImage(entry) ? <span className="rr-x-mark">image</span> : null}
-          {primaryLine}
-        </span>
+        {/* Line 1 = CONTENT identity, rendered through the ONE shared RecordIdentity
+            cell so the feed, the stream table, the mobile card, and the detail H1
+            cannot render the same record's primary line two ways (THE-LENS Gate 3).
+            The feed owns its own glyph slot (above) and its rich meta block (below),
+            so the cell suppresses its glyph/secondary/key here — it supplies ONLY
+            the honest primary line + the surface-supplied image mark. */}
+        <RecordIdentity
+          hasImage={entryHasImage(entry)}
+          preview={entry.preview ?? null}
+          recordKey={entry.recordId}
+          showGlyph={false}
+          showKey={false}
+          variant="feed"
+        />
         {/* Line 2 = secondary context: an honest snippet (when distinct) PLUS the
             lightweight source/stream/time metadata, MUTED and alongside content —
             never replacing it (W1, prior art: Primer block description, Sentry). */}
@@ -2804,7 +2797,6 @@ function SaveViewAction({ onSave }: { onSave: (name: string) => void }) {
     <span className="rr-x-views-tab-wrap">
       <input
         aria-label="Name this view"
-        // biome-ignore lint/a11y/noAutofocus: focus belongs on the just-revealed input
         autoFocus
         className="rr-x-views-tab__input"
         onBlur={commit}
@@ -2938,6 +2930,7 @@ function SavedViewTabs({
 
 // ─── ExploreCanvas ────────────────────────────────────────────────
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ExploreCanvas orchestrates the full workbench state; this cell only swaps the shared record identity renderer.
 export function ExploreCanvas({ data, explorePath, order = "newest", peekRelationships = null }: ExploreCanvasProps) {
   const router = useRouter();
 
@@ -3072,13 +3065,14 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // Server-backed slice of the feed is already scoped by the SSR fetch
   // (selected connections, streams, since/until, free-text q, and declared
   // exact-match filters). Only server-inexpressible operators narrow further.
-  const visibleFeed = useMemo(() => {
-    let list = data.feed.filter((e) => passesClientFilter(e, parsed, serverFilterableFields));
-    if (order === "oldest") {
-      list = [...list].reverse();
-    }
-    return list;
-  }, [data.feed, parsed, order, serverFilterableFields]);
+  // `data.feed` is already in the requested server order. "Oldest" must be a
+  // server ascending keyset page, not a client reversal of the loaded window.
+  const visibleFeed = useMemo(
+    () => data.feed.filter((e) => passesClientFilter(e, parsed, serverFilterableFields)),
+    [data.feed, parsed, serverFilterableFields]
+  );
+
+  const showTimeSort = canShowTimeSort(data);
 
   // Facet counts: reactive over the CURRENTLY VISIBLE feed, ignoring the
   // facet's own axis. Honest within the loaded window — labeled "in view".
@@ -3680,6 +3674,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           selectedConnectionIds={selectedConnectionIds}
           selectedStream={selectedStreams.length === 1 ? (selectedStreams[0] ?? null) : null}
           selectedStreams={selectedStreams}
+          showTimeSort={showTimeSort}
           streamCounts={streamCountsMap}
           streamSuggestions={streamSuggestions}
         />
@@ -3713,9 +3708,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           truncated={data.truncated}
           visibleCount={visibleFeed.length}
         />
-        <p className={`rr-x-feeddesc${data.fromSearch ? "" : "is-default"}`}>
-          {feedDescription(data.lens)}
-        </p>
+        <p className={`rr-x-feeddesc${data.fromSearch ? "" : "is-default"}`}>{feedDescription(data.lens)}</p>
 
         <WarningList warnings={data.warnings} />
 

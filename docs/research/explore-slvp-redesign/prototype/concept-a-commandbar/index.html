@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Explore — Concept A: Command-Bar-Led</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ======================================================
+     DESKTOP VIEW
+     ====================================================== -->
+<div id="desktop-view">
+
+  <!-- Demo state switcher (prototype chrome) -->
+  <div class="demo-switcher" role="toolbar" aria-label="Prototype states">
+    <span class="demo-switcher-label">State:</span>
+    <button class="demo-tab active" onclick="setView('feed')" id="tab-feed">Feed + Autocomplete</button>
+    <button class="demo-tab" onclick="setView('search')" id="tab-search">Search results</button>
+    <button class="demo-tab" onclick="setView('zero')" id="tab-zero">Zero-results routing</button>
+    <button class="demo-tab" onclick="setView('mobile')" id="tab-mobile">Mobile (390px)</button>
+  </div>
+
+  <div class="app" id="app-shell">
+
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar" role="navigation" aria-label="Main navigation">
+      <div class="sidebar-header">
+        <div class="sidebar-logo" aria-label="PDPP">P</div>
+        <span class="sidebar-title">Personal Data</span>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="sidebar-section-label">Views</div>
+        <a class="sidebar-item active" href="#" role="menuitem">
+          <span class="sidebar-item-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="2" rx="1" fill="currentColor"/><rect x="1" y="7" width="10" height="2" rx="1" fill="currentColor"/><rect x="1" y="11" width="12" height="2" rx="1" fill="currentColor"/></svg>
+          </span>
+          Explore
+          <span class="sidebar-item-count">32</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          Upcoming
+          <span class="sidebar-item-count">188</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13 3H3L7 8.5V13l2-1V8.5L13 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          </span>
+          Saved
+        </a>
+
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-section-label">Sources</div>
+
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💻</span>
+          Claude Code
+          <span class="sidebar-item-count">18k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">🤖</span>
+          ChatGPT
+          <span class="sidebar-item-count">4.2k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💬</span>
+          Vana Slack
+          <span class="sidebar-item-count">3.1k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">💰</span>
+          YNAB
+          <span class="sidebar-item-count">2.8k</span>
+        </a>
+        <a class="sidebar-item" href="#" role="menuitem">
+          <span class="sidebar-item-icon">📊</span>
+          Oura
+          <span class="sidebar-item-count">847</span>
+        </a>
+      </nav>
+    </aside>
+
+    <!-- ===== MAIN ===== -->
+    <main class="main" role="main">
+
+      <!-- === TOPBAR === -->
+      <div class="topbar">
+        <div class="topbar-title" id="topbar-title">Explore</div>
+
+        <!-- THE COMMAND BAR — ONE input for search + operators + commands -->
+        <div class="command-bar-wrap" role="search">
+          <div class="command-bar" id="command-bar" tabindex="0" role="combobox" aria-expanded="true" aria-haspopup="listbox" aria-label="Search and filter records">
+
+            <!-- Search icon -->
+            <span class="command-bar-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="#a0a0a8" stroke-width="1.5"/><path d="m10.5 10.5 2.5 2.5" stroke="#a0a0a8" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </span>
+
+            <!-- Active filter chips (inline in bar) -->
+            <div id="active-chips" style="display:contents"></div>
+
+            <!-- Text input -->
+            <input
+              class="command-bar-input"
+              id="cmd-input"
+              type="text"
+              placeholder="Search records, or type source: stream: role: to filter…"
+              autocomplete="off"
+              aria-label="Search and filter"
+              value="con"
+            />
+
+            <div class="command-bar-hint" aria-hidden="true">
+              <span class="kbd">⌘</span><span class="kbd">K</span>
+              <span style="margin-left:4px">commands</span>
+            </div>
+          </div>
+
+          <!-- AUTOCOMPLETE DROPDOWN — open state showing "con" prefix completions -->
+          <div class="autocomplete-dropdown" id="autocomplete" role="listbox" aria-label="Filter suggestions">
+
+            <!-- Section: Operator suggestions matching "con" -->
+            <div class="ac-section-label">Operators</div>
+
+            <div class="ac-row selected" role="option" aria-selected="true" onclick="applyFilter('source', 'Claude Code')">
+              <div class="ac-glyph">💻</div>
+              <div>
+                <span class="ac-token">source:</span>
+                <span class="ac-label">Claude Code</span>
+              </div>
+              <div class="ac-desc">peregrine Claude Code · messages, memory_notes, attachments</div>
+              <div class="ac-count">18,421</div>
+            </div>
+
+            <div class="ac-row" role="option" aria-selected="false" onclick="applyFilter('source', 'ChatGPT')">
+              <div class="ac-glyph">🤖</div>
+              <div>
+                <span class="ac-token">source:</span>
+                <span class="ac-label">ChatGPT</span>
+              </div>
+              <div class="ac-desc">ChatGPT - everyone@appears.blue</div>
+              <div class="ac-count">4,218</div>
+            </div>
+
+            <div class="ac-row" role="option" aria-selected="false" onclick="applyFilter('source', 'Vana Slack')">
+              <div class="ac-glyph">💬</div>
+              <div>
+                <span class="ac-token">source:</span>
+                <span class="ac-label">Vana Slack</span>
+              </div>
+              <div class="ac-desc">Vana Slack · messages, message_attachments</div>
+              <div class="ac-count">3,142</div>
+            </div>
+
+            <div class="ac-divider"></div>
+
+            <!-- Section: Stream matching "con" -->
+            <div class="ac-section-label">Streams</div>
+
+            <div class="ac-row" role="option" aria-selected="false" onclick="applyFilter('stream', 'conversations')">
+              <div class="ac-glyph" style="font-size:10px; color: var(--text-muted);">#</div>
+              <div>
+                <span class="ac-token">stream:</span>
+                <span class="ac-label">conversations</span>
+              </div>
+              <div class="ac-desc">Claude Code conversation roots</div>
+              <div class="ac-count">1,204</div>
+            </div>
+
+            <div class="ac-divider"></div>
+
+            <!-- Section: Free-text search affirmation -->
+            <div class="ac-section-label">Search</div>
+
+            <div class="ac-row" role="option" aria-selected="false" onclick="doSearch('con')">
+              <div class="ac-glyph" style="color: var(--text-muted);">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="m10.5 10.5 2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </div>
+              <div>
+                <span class="ac-label">Search for </span>
+                <span class="ac-token">"con"</span>
+              </div>
+              <div class="ac-desc">Full-text + semantic across all records</div>
+            </div>
+
+            <div class="ac-footer" aria-hidden="true">
+              <span class="kbd">↑↓</span> navigate
+              <span style="margin-left:8px"><span class="kbd">↵</span> apply</span>
+              <span style="margin-left:8px"><span class="kbd">Esc</span> close</span>
+              <span style="margin-left:auto">Type <code style="font-family:var(--font-mono);font-size:10px;background:var(--bg-chip);padding:1px 3px;border-radius:2px">source:</code> <code style="font-family:var(--font-mono);font-size:10px;background:var(--bg-chip);padding:1px 3px;border-radius:2px">stream:</code> <code style="font-family:var(--font-mono);font-size:10px;background:var(--bg-chip);padding:1px 3px;border-radius:2px">role:</code> to filter</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="topbar-btn" aria-label="Toggle columns">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="7" y="3" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+            Columns
+          </button>
+        </div>
+      </div>
+
+      <!-- === CONTENT SPLIT: FEED + PEEK === -->
+      <div class="content-split">
+
+        <!-- ====== FEED PANEL ====== -->
+        <div class="feed-panel">
+          <div class="feed-header">
+            <span class="feed-header-title" id="feed-header-title">All records</span>
+            <span class="feed-header-count" id="feed-header-count">32</span>
+            <div class="feed-header-right">
+              <button class="sort-pill" aria-label="Sort and date options">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M2 5h12M4 8h8M6 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                Newest first
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="feed-list" id="feed-list" role="listbox" aria-label="Records feed">
+            <!-- FEED STATE rendered by JS -->
+          </div>
+        </div>
+
+        <!-- ====== PEEK / DETAIL PANE ====== -->
+        <div class="peek-panel" id="peek-panel">
+          <div class="peek-toolbar">
+            <button class="peek-close-btn" onclick="closePeek()" aria-label="Close detail">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Close
+            </button>
+            <button class="peek-nav-btn" aria-label="Previous record">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="m10 4-4 4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="peek-nav-btn" aria-label="Next record">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="peek-actions">
+              <button class="topbar-btn" aria-label="Save record">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v9M4 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Save
+              </button>
+              <button class="topbar-btn" aria-label="Open full record">Open
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M9 3h4v4M13 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="peek-content" id="peek-content">
+            <!-- Default: no selection hint -->
+            <div id="peek-empty" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;color:var(--text-faint);">
+              <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="8" y="12" width="24" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M13 19h14M13 23h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <div style="font-size:13px;text-align:center;max-width:180px;line-height:1.5;color:var(--text-faint);">Select a record to preview it here, or press <span style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:0 4px">↵</span> on a row</div>
+            </div>
+            <div id="peek-detail" style="display:none"></div>
+          </div>
+        </div>
+
+      </div><!-- /content-split -->
+    </main>
+  </div><!-- /app -->
+</div><!-- /desktop-view -->
+
+<!-- ======================================================
+     MOBILE VIEW WRAP (390px phone frame)
+     ====================================================== -->
+<div id="mobile-view-wrap">
+  <div class="mobile-view-label">390 × 844 · iPhone-class · push-nav model</div>
+
+  <div class="mobile-demo">
+    <!-- Status bar -->
+    <div class="mobile-statusbar">
+      <span>9:41</span>
+      <div class="mobile-statusbar-right">
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="none"><rect x="0" y="4" width="2" height="6" rx="0.5" fill="currentColor" opacity=".4"/><rect x="3" y="2.5" width="2" height="7.5" rx="0.5" fill="currentColor" opacity=".6"/><rect x="6" y="1" width="2" height="9" rx="0.5" fill="currentColor" opacity=".8"/><rect x="9" y="0" width="2" height="10" rx="0.5" fill="currentColor"/></svg>
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="none"><path d="M7 8.5C8.8 8.5 10.4 7.8 11.6 6.6L12.8 7.8C11.2 9.4 9.2 10.4 7 10.4S2.8 9.4 1.2 7.8L2.4 6.6C3.6 7.8 5.2 8.5 7 8.5Z" fill="currentColor" opacity=".4"/><path d="M7 5.5C8 5.5 8.9 5.9 9.6 6.6L10.8 5.4C9.7 4.3 8.4 3.6 7 3.6S4.3 4.3 3.2 5.4L4.4 6.6C5.1 5.9 6 5.5 7 5.5Z" fill="currentColor" opacity=".7"/><circle cx="7" cy="2" r="1.5" fill="currentColor"/></svg>
+        🔋
+      </div>
+    </div>
+
+    <!-- Mobile topbar -->
+    <div class="mobile-topbar">
+      <div class="mobile-page-title">Explore</div>
+      <button class="topbar-btn" style="border-radius:8px;padding:6px 10px;font-size:12px;" aria-label="Filter options">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M5 8h6M7 12h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Filters
+      </button>
+    </div>
+
+    <!-- Mobile command bar — PROMINENT, full width -->
+    <div class="mobile-command-bar-wrap">
+      <div class="mobile-command-bar">
+        <span class="mobile-command-bar-icon">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="m10.5 10.5 2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </span>
+        <!-- Shows active filter chip inline -->
+        <span class="chip-inline">source: Claude Code ✕</span>
+        <span class="mobile-command-bar-text" style="color:var(--text-faint);">Search…</span>
+      </div>
+    </div>
+
+    <!-- Mobile feed -->
+    <div class="mobile-feed" id="mobile-feed-content">
+      <!-- Day group: Today -->
+      <div class="day-group">
+        <div class="day-header">
+          <span class="day-label">Today</span>
+          <span class="day-count">18 in view</span>
+        </div>
+
+        <!-- Row 1 — memory note (titled) -->
+        <div class="record-row" style="padding-left:12px;padding-right:12px;" role="option">
+          <div class="record-row-glyph glyph-memory">🧠</div>
+          <div class="record-row-body">
+            <div class="record-title">project_explore_slvp_consolidated_sweep_v1</div>
+            <div class="record-snippet">Explore SLVP consolidated sweep (P0b/P0/P1) DEPLOYED + live-verified</div>
+          </div>
+          <div class="record-row-right">
+            <span class="record-time">17m</span>
+            <span class="record-source-badge">memory</span>
+          </div>
+        </div>
+
+        <!-- Row 2 — message assistant -->
+        <div class="record-row" style="padding-left:12px;padding-right:12px;" role="option">
+          <div class="record-row-glyph glyph-message">💬</div>
+          <div class="record-row-body">
+            <div class="record-title">Confirmed: <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);padding:0 3px;border-radius:2px">git diff 41a671ef..HEAD</code></div>
+            <div class="record-snippet">assistant · 1 line (just the diff header…)</div>
+          </div>
+          <div class="record-row-right">
+            <span class="record-time">25m</span>
+            <span class="record-source-badge">messages</span>
+          </div>
+        </div>
+
+        <!-- Row 3 — tool use -->
+        <div class="record-row" style="padding-left:12px;padding-right:12px;" role="option">
+          <div class="record-row-glyph glyph-message" style="font-size:10px;background:#f5f3ff;border-color:#ddd6fe;color:#7c3aed;">[T]</div>
+          <div class="record-row-body">
+            <div class="record-title">[tool_use: Bash]</div>
+            <div class="record-snippet">assistant · Claude Code</div>
+          </div>
+          <div class="record-row-right">
+            <span class="record-time">25m</span>
+            <span class="record-source-badge">messages</span>
+          </div>
+        </div>
+
+        <!-- Row 4 — deploy attachment (fallback content, not color) -->
+        <div class="record-row" style="padding-left:12px;padding-right:12px;background:var(--bg-row-selected);border-left-color:var(--accent);border-left-width:2px;" role="option" aria-selected="true">
+          <div class="record-row-glyph glyph-deploy">🚀</div>
+          <div class="record-row-body">
+            <div class="record-title">Successfully deployed a6e2ec5 to Preview</div>
+            <div class="record-snippet">vana-com/unity-surfaces → unity-surfaces-opendatalabs.vercel.app</div>
+          </div>
+          <div class="record-row-right">
+            <span class="record-time">1h</span>
+            <span class="record-source-badge">Vana Slack</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upcoming section -->
+      <div class="upcoming-section">
+        <div class="upcoming-header">
+          <span class="upcoming-label">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Upcoming
+          </span>
+          <span class="upcoming-count">188 · YNAB budget months</span>
+        </div>
+        <div class="upcoming-desc">Future-dated records · pinned past today's ceiling</div>
+
+        <div class="record-row" style="padding-left:12px;padding-right:12px;" role="option">
+          <div class="record-row-glyph glyph-money">💸</div>
+          <div class="record-row-body">
+            <div class="record-title">Toys</div>
+            <div class="record-snippet">ynab · month_categories · August 2026</div>
+          </div>
+          <div class="record-row-right">
+            <span class="amount" style="font-size:12px;">$150.00</span>
+            <span class="record-source-badge">YNAB</span>
+          </div>
+        </div>
+
+        <div class="record-row" style="padding-left:12px;padding-right:12px;" role="option">
+          <div class="record-row-glyph glyph-money">💸</div>
+          <div class="record-row-body">
+            <div class="record-title">Collateral Repayment</div>
+            <div class="record-snippet">ynab · month_categories · August 2026</div>
+          </div>
+          <div class="record-row-right">
+            <span class="amount negative" style="font-size:12px;">−$750.00</span>
+            <span class="record-source-badge">YNAB</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile filter sheet (shown on Filters tap) -->
+    <div class="mobile-filter-sheet" id="mobile-sheet" style="display:none">
+      <div class="sheet-handle"></div>
+      <div class="sheet-title">Filters</div>
+      <div class="sheet-operators">
+        <div class="sheet-op-row">
+          <div class="sheet-op-label">
+            <span class="sheet-op-token">source:</span>
+            <span class="sheet-op-name">Source</span>
+          </div>
+          <span class="sheet-op-value">Claude Code</span>
+        </div>
+        <div class="sheet-op-row">
+          <div class="sheet-op-label">
+            <span class="sheet-op-token">stream:</span>
+            <span class="sheet-op-name">Stream</span>
+          </div>
+          <span class="sheet-op-value">Any</span>
+        </div>
+        <div class="sheet-op-row">
+          <div class="sheet-op-label">
+            <span class="sheet-op-token">role:</span>
+            <span class="sheet-op-name">Role</span>
+          </div>
+          <span class="sheet-op-value">Any</span>
+        </div>
+        <div class="sheet-op-row">
+          <div class="sheet-op-label">
+            <span class="sheet-op-token">date:</span>
+            <span class="sheet-op-name">Date</span>
+          </div>
+          <span class="sheet-op-value">Today</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile tab bar -->
+    <div class="mobile-tabbar">
+      <div class="mobile-tab active">
+        <span class="mobile-tab-icon">☰</span>
+        <span>Explore</span>
+      </div>
+      <div class="mobile-tab">
+        <span class="mobile-tab-icon">🕐</span>
+        <span>Upcoming</span>
+      </div>
+      <div class="mobile-tab">
+        <span class="mobile-tab-icon">🔗</span>
+        <span>Sources</span>
+      </div>
+      <div class="mobile-tab">
+        <span class="mobile-tab-icon">⚙️</span>
+        <span>Settings</span>
+      </div>
+    </div>
+  </div>
+</div><!-- /mobile-view-wrap -->
+
+
+<script>
+// ============================================================
+// DATA FIXTURE — from live pdpp.vivid.fish 2026-06-23
+// ============================================================
+const RECORDS = [
+  {
+    id: 'r1',
+    kind: 'memory_note',
+    glyph: '🧠',
+    glyphClass: 'glyph-memory',
+    title: 'project_explore_slvp_consolidated_sweep_v1',
+    snippet: 'Explore SLVP consolidated sweep (P0b/P0/P1) DEPLOYED + live-verified',
+    source: 'Claude Code',
+    stream: 'memory_notes',
+    time: '17m ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: 'Explore SLVP consolidated sweep (P0b/P0/P1) DEPLOYED + live-verified',
+      bodyText: 'All 15 Tim-feedback items live. P0b: inverted hierarchy fix — title now primary dark, meta muted. P0: toolbar collapsed to command bar. P1: zero-results routing with escape actions. Live at pdpp.vivid.fish.',
+      fields: [
+        { key: 'Kind', val: 'memory_note', mono: false },
+        { key: 'Stream', val: 'memory_notes', mono: true },
+        { key: 'Source', val: 'peregrine Claude Code', mono: false },
+        { key: 'Record key', val: 'project_explore_slvp_consolidated_sweep_v1', mono: true },
+        { key: 'Emitted', val: '2026-06-23T23:01:12Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 'r2',
+    kind: 'message',
+    glyph: '💬',
+    glyphClass: 'glyph-message',
+    title: '[tool_result]',
+    snippet: 'user · Claude Code',
+    source: 'Claude Code',
+    stream: 'messages',
+    time: '25m ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: '[tool_result]',
+      bodyText: 'Content: (tool result response). Actor: user.',
+      fields: [
+        { key: 'Actor', val: 'user', mono: false },
+        { key: 'Kind', val: 'message', mono: false },
+        { key: 'Stream', val: 'messages', mono: true },
+        { key: 'Source', val: 'peregrine Claude Code', mono: false },
+        { key: 'Sent at', val: '2026-06-23T23:02:14Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 'r3',
+    kind: 'message',
+    glyph: '⚙️',
+    glyphClass: 'glyph-message',
+    title: '[tool_use: Bash]',
+    snippet: 'assistant · rtk git diff 41a671ef..HEAD -- apps/console/…',
+    source: 'Claude Code',
+    stream: 'messages',
+    time: '25m ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: '[tool_use: Bash]',
+      bodyText: 'Command: rtk git diff 41a671ef..HEAD -- apps/console/app/dashboard/explore/explore-canvas.tsx',
+      fields: [
+        { key: 'Actor', val: 'assistant', mono: false },
+        { key: 'Tool', val: 'Bash', mono: true },
+        { key: 'Stream', val: 'messages', mono: true },
+        { key: 'Source', val: 'peregrine Claude Code', mono: false },
+        { key: 'Sent at', val: '2026-06-23T23:02:14Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 'r4',
+    kind: 'message',
+    glyph: '💬',
+    glyphClass: 'glyph-message',
+    title: 'Confirmed: git diff 41a671ef..HEAD for that file = 1 line',
+    snippet: 'assistant · (just the diff header — explore-canvas.tsx unchanged)',
+    source: 'Claude Code',
+    stream: 'messages',
+    time: '25m ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: 'Confirmed: git diff 41a671ef..HEAD for that file = 1 line',
+      bodyText: 'Confirmed: `git diff 41a671ef..HEAD` for that file = 1 line (just the diff header) — explore-canvas.tsx is unchanged since the base commit. The SLVP hierarchy fix is isolated to the CSS layer only.',
+      fields: [
+        { key: 'Actor', val: 'assistant', mono: false },
+        { key: 'Stream', val: 'messages', mono: true },
+        { key: 'Source', val: 'peregrine Claude Code', mono: false },
+        { key: 'Sent at', val: '2026-06-23T23:02:14Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 'r5',
+    kind: 'attachment',
+    glyph: '📎',
+    glyphClass: 'glyph-attach',
+    title: 'Hook: PreToolUse:Bash',
+    snippet: 'Event type: attachment · 2026-06-22T23:15:44Z',
+    source: 'Claude Code',
+    stream: 'attachments',
+    time: '25m ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: 'Hook attachment: PreToolUse:Bash',
+      bodyText: 'Pre-tool-use hook event captured as attachment. No title or text content — readable fields only.',
+      fields: [
+        { key: 'Hook name', val: 'PreToolUse:Bash', mono: true },
+        { key: 'Event type', val: 'attachment', mono: false },
+        { key: 'Stream', val: 'attachments', mono: true },
+        { key: 'Timestamp', val: '2026-06-22T23:15:44Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 'r6',
+    kind: 'deploy',
+    glyph: '🚀',
+    glyphClass: 'glyph-deploy',
+    title: 'Successfully deployed a6e2ec5 to Preview',
+    snippet: 'vana-com/unity-surfaces → unity-surfaces-opendatalabs.vercel.app',
+    source: 'Vana Slack',
+    stream: 'message_attachments',
+    time: '1h ago',
+    day: 'Today',
+    detail: {
+      bodyTitle: 'Successfully deployed a6e2ec5 to Preview',
+      bodyText: '[vana-com/unity-surfaces] Successfully deployed a6e2ec5 to unity-surfaces-opendatalabs.vercel.app (Preview). Branch: feature/new-ui.',
+      fields: [
+        { key: 'Source', val: 'Vana Slack', mono: false },
+        { key: 'Stream', val: 'message_attachments', mono: true },
+        { key: 'Commit', val: 'a6e2ec5c', mono: true },
+        { key: 'Environment', val: 'Preview', mono: false },
+        { key: 'Received', val: '2026-06-23T22:05:00Z', mono: true },
+      ]
+    }
+  },
+];
+
+const UPCOMING_RECORDS = [
+  {
+    id: 'u1',
+    kind: 'budget',
+    glyph: '💸',
+    glyphClass: 'glyph-money',
+    title: 'Toys',
+    snippet: 'ynab · month_categories · August 2026',
+    source: 'YNAB',
+    stream: 'month_categories',
+    time: 'Aug 2026',
+    amount: '$150.00',
+    amountClass: '',
+    detail: {
+      bodyTitle: 'Toys — YNAB Budget Category · August 2026',
+      bodyText: 'Budget category for discretionary spending on toys and hobbies. August 2026 allocation.',
+      fields: [
+        { key: 'Category', val: 'Toys', mono: false },
+        { key: 'Month', val: '2026-08', mono: true },
+        { key: 'Budgeted', val: '$150.00', mono: true },
+        { key: 'Stream', val: 'month_categories', mono: true },
+        { key: 'Source', val: 'YNAB', mono: false },
+      ]
+    }
+  },
+  {
+    id: 'u2',
+    kind: 'budget',
+    glyph: '💸',
+    glyphClass: 'glyph-money',
+    title: 'Collateral Repayment',
+    snippet: 'ynab · month_categories · August 2026',
+    source: 'YNAB',
+    stream: 'month_categories',
+    time: 'Aug 2026',
+    amount: '−$750.00',
+    amountClass: 'negative',
+    detail: {
+      bodyTitle: 'Collateral Repayment — YNAB Budget Category · August 2026',
+      bodyText: 'Scheduled collateral repayment obligation for August 2026.',
+      fields: [
+        { key: 'Category', val: 'Collateral Repayment', mono: false },
+        { key: 'Month', val: '2026-08', mono: true },
+        { key: 'Budgeted', val: '−$750.00', mono: true },
+        { key: 'Stream', val: 'month_categories', mono: true },
+        { key: 'Source', val: 'YNAB', mono: false },
+      ]
+    }
+  },
+  {
+    id: 'u3',
+    kind: 'budget',
+    glyph: '💸',
+    glyphClass: 'glyph-money',
+    title: 'Groceries',
+    snippet: 'ynab · month_categories · September 2026',
+    source: 'YNAB',
+    stream: 'month_categories',
+    time: 'Sep 2026',
+    amount: '$600.00',
+    amountClass: '',
+    detail: {
+      bodyTitle: 'Groceries — YNAB Budget Category · September 2026',
+      bodyText: 'Monthly grocery budget allocation for September 2026.',
+      fields: [
+        { key: 'Category', val: 'Groceries', mono: false },
+        { key: 'Month', val: '2026-09', mono: true },
+        { key: 'Budgeted', val: '$600.00', mono: true },
+        { key: 'Stream', val: 'month_categories', mono: true },
+        { key: 'Source', val: 'YNAB', mono: false },
+      ]
+    }
+  }
+];
+
+const SEARCH_RESULTS = [
+  {
+    id: 's1',
+    kind: 'message',
+    glyph: '💬',
+    glyphClass: 'glyph-message',
+    title: 'deploy a separate Modal function per user or force containers to shut down after each user',
+    snippet: 'MATCH: "deploy a separate Modal function per user or force containers…"',
+    source: 'ChatGPT',
+    stream: 'messages',
+    time: '2:16 AM',
+    isMatch: true,
+    matchText: 'deploy',
+    detail: {
+      bodyTitle: 'deploy a separate Modal function per user or force containers to shut down after each user',
+      bodyText: 'Full message: "Should we deploy a separate Modal function per user or force containers to shut down after each user session ends? The tradeoff is isolation vs cold-start latency."',
+      fields: [
+        { key: 'Source', val: 'ChatGPT - everyone@appears.blue', mono: false },
+        { key: 'Stream', val: 'messages', mono: true },
+        { key: 'Retrieval', val: 'hybrid (lexical + semantic)', mono: false },
+        { key: 'Sent at', val: '2026-06-23T02:16:00Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 's2',
+    kind: 'message',
+    glyph: '💬',
+    glyphClass: 'glyph-message',
+    title: 'deploy',
+    snippet: 'MATCH: exact term · ChatGPT conversation',
+    source: 'ChatGPT',
+    stream: 'messages',
+    time: '9:05 AM',
+    isMatch: true,
+    matchText: 'deploy',
+    detail: {
+      bodyTitle: 'deploy',
+      bodyText: 'Short message containing exactly "deploy". Context: brief affirmation in a multi-turn conversation about deployment strategies.',
+      fields: [
+        { key: 'Source', val: 'ChatGPT - everyone@appears.blue', mono: false },
+        { key: 'Stream', val: 'messages', mono: true },
+        { key: 'Retrieval', val: 'hybrid (lexical + semantic)', mono: false },
+        { key: 'Sent at', val: '2026-06-23T09:05:00Z', mono: true },
+      ]
+    }
+  },
+  {
+    id: 's3',
+    kind: 'deploy',
+    glyph: '🚀',
+    glyphClass: 'glyph-deploy',
+    title: 'Deploying — vana-com/unity-surfaces',
+    snippet: 'MATCH: "Deploying" · Slack deployment notification · April 20',
+    source: 'Vana Slack',
+    stream: 'message_attachments',
+    time: 'Apr 20',
+    isMatch: true,
+    matchText: 'Deploying',
+    detail: {
+      bodyTitle: 'Deploying — vana-com/unity-surfaces',
+      bodyText: 'Slack deployment notification: Deploying vana-com/unity-surfaces to production. Triggered by merge to main.',
+      fields: [
+        { key: 'Source', val: 'Vana Slack', mono: false },
+        { key: 'Stream', val: 'message_attachments', mono: true },
+        { key: 'Retrieval', val: 'hybrid (lexical + semantic)', mono: false },
+        { key: 'Received', val: '2026-04-20T00:00:00Z', mono: true },
+      ]
+    }
+  }
+];
+
+// ============================================================
+// VIEW STATE
+// ============================================================
+let currentView = 'feed';
+let selectedRecord = null;
+
+function setView(v) {
+  currentView = v;
+  // Update tab states
+  document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + v)?.classList.add('active');
+
+  // Show/hide mobile view
+  const desktopView = document.getElementById('desktop-view');
+  const mobileWrap = document.getElementById('mobile-view-wrap');
+  const appShell = document.getElementById('app-shell');
+
+  if (v === 'mobile') {
+    desktopView.querySelector('.app').style.display = 'none';
+    mobileWrap.classList.add('visible');
+    return;
+  }
+
+  desktopView.querySelector('.app').style.display = '';
+  mobileWrap.classList.remove('visible');
+
+  renderFeed();
+}
+
+function renderFeed() {
+  const feedList = document.getElementById('feed-list');
+  const feedTitle = document.getElementById('feed-header-title');
+  const feedCount = document.getElementById('feed-header-count');
+  const topbarTitle = document.getElementById('topbar-title');
+  const autocomplete = document.getElementById('autocomplete');
+  const cmdInput = document.getElementById('cmd-input');
+  const activeChips = document.getElementById('active-chips');
+
+  if (currentView === 'feed') {
+    autocomplete.style.display = 'block'; // show open autocomplete as the demo state
+    cmdInput.value = 'con';
+    feedTitle.textContent = 'All records';
+    feedCount.textContent = '32';
+    topbarTitle.textContent = 'Explore';
+    activeChips.innerHTML = '';
+
+    let html = '';
+
+    // Today group
+    html += `<div class="day-group" role="group" aria-label="Today">
+      <div class="day-header">
+        <span class="day-label">Today</span>
+        <span class="day-count">32 in view</span>
+      </div>`;
+
+    RECORDS.forEach(r => {
+      html += renderRow(r);
+    });
+
+    html += `</div>`;
+
+    // Upcoming section
+    html += `<div class="upcoming-section" role="group" aria-label="Upcoming">
+      <div class="upcoming-header">
+        <span class="upcoming-label">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Upcoming
+        </span>
+        <span class="upcoming-count">188 records</span>
+      </div>
+      <div class="upcoming-desc">Future-dated YNAB budget months · pinned past today's ceiling</div>`;
+
+    UPCOMING_RECORDS.forEach(r => {
+      html += renderRow(r, true);
+    });
+
+    html += `</div>`;
+
+    feedList.innerHTML = html;
+
+  } else if (currentView === 'search') {
+    autocomplete.style.display = 'none';
+    cmdInput.value = 'deploy';
+    feedTitle.textContent = 'Search results';
+    feedCount.textContent = '25';
+    topbarTitle.textContent = 'Explore';
+    activeChips.innerHTML = '';
+
+    let html = `
+      <div class="search-state-header">
+        <div class="search-state-title">Top matches for 'deploy'</div>
+        <div class="search-state-sub">Browse matching records, newest first · 25 in view</div>
+      </div>
+      <div class="search-disclosure">
+        <span class="hybrid-badge">Hybrid</span>
+        <span>Lexical + semantic retrieval, deduplicated by record key. Results from all connected sources.</span>
+      </div>
+      <div class="day-group">`;
+
+    SEARCH_RESULTS.forEach(r => {
+      html += renderRow(r, false, true);
+    });
+
+    html += `</div>`;
+    feedList.innerHTML = html;
+
+  } else if (currentView === 'zero') {
+    autocomplete.style.display = 'none';
+    feedTitle.textContent = 'No results';
+    feedCount.textContent = '0';
+    topbarTitle.textContent = 'Explore';
+
+    // Show chips for the contradiction state
+    activeChips.innerHTML = `
+      <div class="filter-chip chip-accent">
+        <span class="chip-key">stream:</span>
+        <span class="chip-op">is</span>
+        <span class="chip-val">messages</span>
+        <span class="chip-remove" title="Remove filter">×</span>
+      </div>
+      <div class="filter-chip chip-accent">
+        <span class="chip-key">role:</span>
+        <span class="chip-op">is</span>
+        <span class="chip-val">assistant</span>
+        <span class="chip-remove" title="Remove filter">×</span>
+      </div>`;
+    cmdInput.value = '';
+    cmdInput.placeholder = 'Refine search…';
+
+    feedList.innerHTML = `
+      <div class="zero-results" role="status" aria-live="polite">
+        <div class="zero-results-icon">⊘</div>
+        <div>
+          <div class="zero-results-title">No assistant-role records in these results</div>
+          <div class="zero-results-desc" style="margin-top:6px;">
+            The query <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:1px 5px">stream:messages role:assistant</code>
+            matched 25 records, but the <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-chip);border:1px solid var(--border-chip);border-radius:3px;padding:1px 5px">role:assistant</code> filter removed all of them.
+          </div>
+        </div>
+        <div>
+          <div class="zero-results-escape-label">Try instead</div>
+          <div class="zero-results-actions">
+            <div class="escape-action" onclick="setView('search')">
+              <div class="escape-action-icon">🔓</div>
+              <div>
+                <div class="escape-action-label">Remove role:assistant filter</div>
+                <div class="escape-action-desc">Show all 25 message records regardless of role</div>
+              </div>
+              <div class="escape-action-right">25 records</div>
+            </div>
+            <div class="escape-action">
+              <div class="escape-action-icon">🌐</div>
+              <div>
+                <div class="escape-action-label">Search all streams</div>
+                <div class="escape-action-desc">Remove stream:messages — search everything</div>
+              </div>
+              <div class="escape-action-right">search all</div>
+            </div>
+            <div class="escape-action">
+              <div class="escape-action-icon">🔍</div>
+              <div>
+                <div class="escape-action-label">Relax to: any role matches</div>
+                <div class="escape-action-desc">Keep stream:messages, drop role constraint</div>
+              </div>
+              <div class="escape-action-right">~18k</div>
+            </div>
+            <div class="escape-action" onclick="setView('feed')">
+              <div class="escape-action-icon">✕</div>
+              <div>
+                <div class="escape-action-label">Clear all filters</div>
+                <div class="escape-action-desc">Return to the full unfiltered feed</div>
+              </div>
+              <div class="escape-action-right">32 records</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+}
+
+function renderRow(r, isUpcoming = false, isSearch = false) {
+  const isSelected = r.id === selectedRecord;
+  const selectedClass = isSelected ? 'selected' : '';
+
+  const amountHtml = r.amount
+    ? `<span class="amount ${r.amountClass || ''}" style="font-size:12px;">${r.amount}</span>`
+    : '';
+
+  const matchBadge = isSearch && r.isMatch
+    ? `<span class="match-badge">MATCH</span>`
+    : '';
+
+  const titleHtml = isSearch && r.isMatch
+    ? r.title.replace(new RegExp(`(${r.matchText})`, 'gi'), '<mark class="match-highlight">$1</mark>')
+    : escHtml(r.title);
+
+  const snippetHtml = isSearch
+    ? `<span style="color:var(--accent-hover);font-size:11px;">${escHtml(r.snippet)}</span>`
+    : escHtml(r.snippet);
+
+  return `<div class="record-row ${selectedClass}" role="option" aria-selected="${isSelected}"
+    data-record-id="${r.id}" onclick="selectRecord('${r.id}')">
+    <div class="record-row-glyph ${r.glyphClass}">${r.glyph}</div>
+    <div class="record-row-body">
+      <div class="record-title" style="display:flex;align-items:baseline;gap:5px;">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${titleHtml}</span>
+        ${matchBadge}
+      </div>
+      <div class="record-snippet">${snippetHtml}</div>
+    </div>
+    <div class="record-row-right">
+      ${amountHtml}
+      <span class="record-time">${r.time}</span>
+      <span class="record-source-badge">${escHtml(r.source)}</span>
+    </div>
+  </div>`;
+}
+
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function selectRecord(id) {
+  // Close autocomplete when explicitly selecting a record (not on auto-init)
+  if (document.activeElement.tagName !== 'INPUT') {
+    document.getElementById('autocomplete').style.display = 'none';
+  }
+
+  const allData = [...RECORDS, ...UPCOMING_RECORDS, ...SEARCH_RESULTS];
+  const rec = allData.find(r => r.id === id);
+  if (!rec) return;
+
+  selectedRecord = id;
+
+  // Update row selection visuals
+  document.querySelectorAll('.record-row').forEach(row => {
+    const rid = row.dataset.recordId;
+    if (rid === id) {
+      row.classList.add('selected');
+      row.setAttribute('aria-selected', 'true');
+    } else {
+      row.classList.remove('selected');
+      row.setAttribute('aria-selected', 'false');
+    }
+  });
+
+  // Render peek detail — starts at CONTENT, not uuid
+  const d = rec.detail;
+  const fieldsHtml = d.fields.map(f =>
+    `<div class="peek-field-key">${escHtml(f.key)}</div>
+     <div class="peek-field-val ${f.mono ? 'mono' : ''}">${escHtml(f.val)}</div>`
+  ).join('');
+
+  document.getElementById('peek-empty').style.display = 'none';
+  const peekDetail = document.getElementById('peek-detail');
+  peekDetail.style.display = 'block';
+  peekDetail.innerHTML = `
+    <!-- Source line — lightweight, NO uuid banner at top -->
+    <div class="peek-source-line">
+      <div class="peek-source-glyph">${rec.glyph}</div>
+      <span class="peek-source-name">${escHtml(rec.source)} · ${escHtml(rec.stream)}</span>
+      <span class="peek-source-time">${escHtml(rec.time)}</span>
+    </div>
+
+    <!-- CONTENT LEADS — body title before any field grid -->
+    <div class="peek-body-title">${escHtml(d.bodyTitle)}</div>
+
+    <div class="peek-body-text">
+      <p>${escHtml(d.bodyText)}</p>
+    </div>
+
+    <div class="peek-section-divider"></div>
+
+    <!-- Field grid: metadata below content -->
+    <div class="peek-field-grid">
+      ${fieldsHtml}
+    </div>
+  `;
+}
+
+function closePeek() {
+  selectedRecord = null;
+  document.querySelectorAll('.record-row').forEach(r => {
+    r.classList.remove('selected');
+    r.setAttribute('aria-selected', 'false');
+  });
+  document.getElementById('peek-empty').style.display = 'flex';
+  document.getElementById('peek-detail').style.display = 'none';
+}
+
+function applyFilter(key, val) {
+  document.getElementById('autocomplete').style.display = 'none';
+  document.getElementById('cmd-input').value = '';
+  document.getElementById('cmd-input').placeholder = 'Add another filter or search…';
+
+  const activeChips = document.getElementById('active-chips');
+  activeChips.innerHTML = `
+    <div class="filter-chip chip-accent">
+      <span class="chip-key">${escHtml(key)}:</span>
+      <span class="chip-op">is</span>
+      <span class="chip-val">${escHtml(val)}</span>
+      <span class="chip-remove" onclick="clearChips(event)" title="Remove filter">×</span>
+    </div>`;
+}
+
+function clearChips(e) {
+  e.stopPropagation();
+  document.getElementById('active-chips').innerHTML = '';
+  document.getElementById('cmd-input').placeholder = 'Search records, or type source: stream: role: to filter…';
+}
+
+function doSearch(query) {
+  setView('search');
+}
+
+// ============================================================
+// KEYBOARD
+// ============================================================
+document.addEventListener('keydown', (e) => {
+  const ac = document.getElementById('autocomplete');
+  const rows = document.querySelectorAll('.record-row');
+  const allData = [...RECORDS, ...UPCOMING_RECORDS, ...SEARCH_RESULTS];
+
+  if (e.key === 'Escape') {
+    if (ac.style.display !== 'none') {
+      ac.style.display = 'none';
+    } else {
+      closePeek();
+    }
+    return;
+  }
+
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('cmd-input').focus();
+    return;
+  }
+
+  if (e.key === 'j' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    const idx = allData.findIndex(r => r.id === selectedRecord);
+    const next = allData[Math.min(idx + 1, allData.length - 1)];
+    if (next) selectRecord(next.id);
+    return;
+  }
+  if (e.key === 'k' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    const idx = allData.findIndex(r => r.id === selectedRecord);
+    const prev = allData[Math.max(idx - 1, 0)];
+    if (prev) selectRecord(prev.id);
+    return;
+  }
+});
+
+document.getElementById('cmd-input').addEventListener('input', (e) => {
+  const val = e.target.value;
+  const ac = document.getElementById('autocomplete');
+  if (val.length > 0) {
+    ac.style.display = 'block';
+  } else {
+    ac.style.display = 'none';
+  }
+});
+
+document.getElementById('cmd-input').addEventListener('focus', () => {
+  const val = document.getElementById('cmd-input').value;
+  if (val.length > 0 || currentView === 'feed') {
+    document.getElementById('autocomplete').style.display = 'block';
+  }
+});
+
+// ============================================================
+// INIT
+// ============================================================
+renderFeed();
+// Auto-select the deploy row (peek populated from start); keep autocomplete open
+setTimeout(() => {
+  // Select without closing autocomplete
+  const id = 'r6';
+  const allData = [...RECORDS, ...UPCOMING_RECORDS, ...SEARCH_RESULTS];
+  const rec = allData.find(r => r.id === id);
+  if (!rec) return;
+  selectedRecord = id;
+  document.querySelectorAll('.record-row').forEach(row => {
+    const rid = row.dataset.recordId;
+    if (rid === id) { row.classList.add('selected'); row.setAttribute('aria-selected', 'true'); }
+    else { row.classList.remove('selected'); row.setAttribute('aria-selected', 'false'); }
+  });
+  const d = rec.detail;
+  const fieldsHtml = d.fields.map(f =>
+    `<div class="peek-field-key">${escHtml(f.key)}</div>
+     <div class="peek-field-val ${f.mono ? 'mono' : ''}">${escHtml(f.val)}</div>`
+  ).join('');
+  document.getElementById('peek-empty').style.display = 'none';
+  const peekDetail = document.getElementById('peek-detail');
+  peekDetail.style.display = 'block';
+  peekDetail.innerHTML = `
+    <div class="peek-source-line">
+      <div class="peek-source-glyph">${rec.glyph}</div>
+      <span class="peek-source-name">${escHtml(rec.source)} · ${escHtml(rec.stream)}</span>
+      <span class="peek-source-time">${escHtml(rec.time)}</span>
+    </div>
+    <div class="peek-body-title">${escHtml(d.bodyTitle)}</div>
+    <div class="peek-body-text"><p>${escHtml(d.bodyText)}</p></div>
+    <div class="peek-section-divider"></div>
+    <div class="peek-field-grid">${fieldsHtml}</div>
+  `;
+  // Keep autocomplete visible for the demo state
+  document.getElementById('autocomplete').style.display = 'block';
+}, 50);
+</script>
+</body>
+</html>

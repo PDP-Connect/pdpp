@@ -1,11 +1,23 @@
 import { IcTimestamp } from "@pdpp/brand-react";
-import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
-import Link from "next/link";
+import { PageHeader } from "@pdpp/operator-ui/components/primitives";
+import { RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
+import { buildBlobAffordance, buildPeekFields } from "@pdpp/operator-ui/components/views/explorer-utils";
+import { declaredRolesFromCapabilities } from "@pdpp/operator-ui/explore/explore-data-assembler";
+import { deriveDeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-field-format";
+import { classifyRecordKind } from "@pdpp/operator-ui/lib/record-kind";
+import { buildRecordPreview } from "@pdpp/operator-ui/lib/record-preview";
 import { notFound } from "next/navigation";
+import { RecordInspector } from "@/app/dashboard/components/record-inspector.tsx";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
+import {
+  formatSemanticTimestamp,
+  humanizeFieldName,
+  pickSemanticTimestamp,
+  primaryTimestamp,
+} from "../../../../lib/record-timestamps.ts";
 import {
   type ExpandCapability,
   getRecord,
@@ -14,7 +26,11 @@ import {
   type StreamMetadata,
   type StreamRecord,
 } from "../../../../lib/rs-client.ts";
-import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
+import {
+  connectorInstanceIdForConnection,
+  resolveConnectionForRecordsRoute,
+  sourceLabelForConnection,
+} from "../../../connection-route.ts";
 import {
   buildRelatedLinks,
   candidateParentStreamsForChild,
@@ -22,13 +38,10 @@ import {
   findManifestForConnectorId,
   findParentBackLink,
   mergeParentBackLinks,
-  parentBackLinkDedupKey,
   parentRelationsForChild,
-  type RelatedLink,
   reverseChildListDedupKey,
   reverseChildListLinksFromManifest,
 } from "../../../lib/relationships.ts";
-import { RecordFields } from "./record-fields.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +57,8 @@ export default async function RecordDetailPage({
 
   let record: StreamRecord;
   let connectionId = routeId;
+  let connectorId = routeId;
+  let sourceLabel = routeId;
   let recordMetadata: StreamMetadata | null = null;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
@@ -63,14 +78,16 @@ export default async function RecordDetailPage({
       notFound();
     }
     connectionId = connection.connection_id;
+    connectorId = connection.connector_id;
+    sourceLabel = sourceLabelForConnection(connection);
     const connectorInstanceId = connectorInstanceIdForConnection(connection);
     // Fetch the record, this stream's metadata (for parent → child relations),
     // and the connector manifest together. The manifest is used only to prune
     // parent metadata reads; child → parent link semantics come from live
     // `expand_capabilities`, not fabricated manifest fields.
     const [recordResult, metadataResult, manifests] = await Promise.all([
-      getRecord(connection.connector_id, streamName, recordId, { connectorInstanceId }),
-      getStreamMetadata(connection.connector_id, streamName, { connectorInstanceId }).catch(() => null),
+      getRecord(connection.connector_id, streamName, recordId, { connectionId, connectorInstanceId }),
+      getStreamMetadata(connection.connector_id, streamName, { connectionId, connectorInstanceId }).catch(() => null),
       listConnectorManifests().catch(() => []),
     ]);
     record = recordResult;
@@ -81,9 +98,10 @@ export default async function RecordDetailPage({
     childManifestStream = connectorStreams.find((s) => s.name === streamName);
     const parentMetadata = await Promise.all(
       candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
-        const metadata = await getStreamMetadata(connection.connector_id, parentStream, { connectorInstanceId }).catch(
-          () => null
-        );
+        const metadata = await getStreamMetadata(connection.connector_id, parentStream, {
+          connectionId,
+          connectorInstanceId,
+        }).catch(() => null);
         return {
           parentStream,
           expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
@@ -113,16 +131,66 @@ export default async function RecordDetailPage({
     throw err;
   }
 
-  const envelope = {
-    id: record.id,
-    stream: record.stream,
-    emitted_at: record.emitted_at,
-    data: record.data,
-  };
-  const pretty = JSON.stringify(envelope, null, 2);
-
   const connectorHref = `/dashboard/records/${encodeURIComponent(connectionId)}`;
   const streamHref = `${connectorHref}/${encodeURIComponent(streamName)}`;
+  const recordReadUrl = `/v1/streams/${encodeURIComponent(streamName)}/records/${encodeURIComponent(record.id)}?${new URLSearchParams(
+    {
+      connection_id: connectionId,
+      connector_id: connectorId,
+    }
+  ).toString()}`;
+  const fieldCapabilities = Object.entries(recordMetadata?.field_capabilities ?? {}).map(([name, capability]) => ({
+    granted: capability.granted !== false,
+    name,
+    // Carry the declared presentation ROLE too (not just the type) so the detail
+    // page can derive the same honest display title the feed row uses — otherwise
+    // the H1 falls back to the raw record key (the live "snake_case/uuid as H1" defect).
+    role: typeof capability.role === "string" ? capability.role : undefined,
+    type: typeof capability.type === "string" ? capability.type : undefined,
+  }));
+  // StreamMetadata uses [k: string]: unknown, so narrow consent_time_field /
+  // cursor_field to the typed shape pickSemanticTimestamp expects. Drives both
+  // the page header (below) and the inspector's authored-date row.
+  const tsMetadata = recordMetadata
+    ? {
+        consent_time_field:
+          typeof recordMetadata.consent_time_field === "string" ? recordMetadata.consent_time_field : null,
+        cursor_field: typeof recordMetadata.cursor_field === "string" ? recordMetadata.cursor_field : null,
+      }
+    : null;
+  const semanticTs = pickSemanticTimestamp(tsMetadata, record.data);
+  const ts = primaryTimestamp(semanticTs, record.emitted_at);
+  const inspectorRecord = {
+    bodyJson: JSON.stringify(record.data, null, 2),
+    connectionDisplayName: sourceLabel,
+    connectionId,
+    connectorId,
+    emittedAt: record.emitted_at,
+    error: null,
+    fields: buildPeekFields(record.data, fieldCapabilities),
+    readUrl: recordReadUrl,
+    recordId: record.id,
+    // Honest: the authored date only when a semantic field is actually declared;
+    // null otherwise (the inspector falls back to showing "Emitted").
+    semanticTimestamp: semanticTs
+      ? { label: humanizeFieldName(semanticTs.field), value: formatSemanticTimestamp(semanticTs.value) }
+      : null,
+    stream: streamName,
+  };
+
+  // Honest display TITLE for the H1 — built from the SAME canonical RecordPreview the
+  // feed/peek/stream-table use, then rendered through the ONE shared RecordIdentity cell
+  // below (NOT a second inline copy of the view logic). The cell leads with the declared
+  // title when present, else the first honest generic field, else the record key rendered
+  // quiet/derived — never a raw uuid styled as an authored title.
+  const declaredRoles = declaredRolesFromCapabilities(fieldCapabilities);
+  const declaredTypes = deriveDeclaredFieldTypes({ field_capabilities: recordMetadata?.field_capabilities });
+  const detailKind = classifyRecordKind(streamName, record.data, declaredTypes, undefined, declaredRoles).kind;
+  const detailPreview = buildRecordPreview(detailKind, record.data, declaredTypes, declaredRoles);
+  // The reliable, server-declared image signal (declared blob field with a usable
+  // fetch_url) — the SAME signal the inspector resolves; passed to the cell so the H1
+  // shows the image mark from a reliable signal, never a preview sniff.
+  const detailHasImage = buildBlobAffordance(record.data, fieldCapabilities)?.state === "available";
 
   // Parent → child relations declared on THIS (parent) stream.
   const relatedLinks = buildRelatedLinks(expandCapabilities, { connectionId, parentRecordKey: record.id });
@@ -158,84 +226,37 @@ export default async function RecordDetailPage({
       <PageHeader
         breadcrumbs={[
           { label: "Sources", href: "/dashboard/records" },
-          { label: connectionId, href: connectorHref },
+          { label: sourceLabel, href: connectorHref },
           { label: streamName, href: streamHref },
           { label: recordId },
         ]}
         description={
           <>
-            emitted_at <IcTimestamp className="text-foreground" value={record.emitted_at} />
+            {ts.label} <IcTimestamp className="text-foreground" value={ts.value} />
+            {ts.secondary ? (
+              <>
+                {" · "}
+                {ts.secondary.label} <IcTimestamp className="text-muted-foreground" value={ts.secondary.value} />
+              </>
+            ) : null}
           </>
         }
-        title={<code className="break-all font-mono">{recordId}</code>}
+        title={
+          <RecordIdentity hasImage={detailHasImage} preview={detailPreview} recordKey={recordId} variant="header" />
+        }
       />
 
       <WarningsBanner warnings={record.warnings} />
 
-      <Section title="Record">
-        <RecordFields data={record.data} metadata={recordMetadata} />
-        <details className="mt-4">
-          <summary className="pdpp-caption cursor-pointer text-muted-foreground hover:text-foreground">
-            Raw JSON
-          </summary>
-          <pre className="pdpp-caption mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-4 font-mono">
-            {pretty}
-          </pre>
-        </details>
-      </Section>
-
-      {(relatedLinks.length > 0 || allParentBackLinks.length > 0 || reverseChildListLinks.length > 0) && (
-        <Section title="Related">
-          <ul className="space-y-2">
-            {allParentBackLinks.map((backLink) => (
-              <li
-                className="pdpp-caption"
-                key={parentBackLinkDedupKey(backLink.parentStream, backLink.childParentKeyField)}
-              >
-                <span className="text-muted-foreground">{backLink.parentStream} · </span>
-                <Link
-                  className="font-mono text-foreground underline underline-offset-2 hover:no-underline"
-                  href={backLink.href}
-                >
-                  {backLink.childParentKeyField} → parent
-                </Link>
-              </li>
-            ))}
-            {relatedLinks.map((link) => (
-              <RelatedRow key={link.relation} link={link} />
-            ))}
-            {reverseChildListLinks.map((link) => (
-              <li className="pdpp-caption" key={`reverse:${link.childStream}:${link.foreignKey}`}>
-                <Link
-                  className="font-mono text-foreground underline underline-offset-2 hover:no-underline"
-                  href={link.href}
-                >
-                  {link.childStream} (has_many) →
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
+      <RecordInspector
+        record={inspectorRecord}
+        relationships={{
+          parentBackLinks: allParentBackLinks,
+          relatedLinks,
+          reverseChildListLinks,
+        }}
+        streamRecordsHref={streamHref}
+      />
     </RecordroomShellWithPalette>
-  );
-}
-
-function RelatedRow({ link }: { link: RelatedLink }) {
-  const label = `${link.relation} (${link.cardinality})`;
-  if (link.navigable && link.href) {
-    return (
-      <li className="pdpp-caption">
-        <Link className="font-mono text-foreground underline underline-offset-2 hover:no-underline" href={link.href}>
-          {label} →
-        </Link>
-      </li>
-    );
-  }
-  return (
-    <li className="pdpp-caption text-muted-foreground" title={link.advisory}>
-      <span className="font-mono">{label}</span>
-      {link.advisory ? <span> — {link.advisory}</span> : null}
-    </li>
   );
 }
