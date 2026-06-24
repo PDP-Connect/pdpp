@@ -365,6 +365,7 @@ import {
   mountRefCimdClientDocuments,
   mountRefClients,
   mountRefDeployment,
+  mountRefExploreRecords,
   mountRefRecordsTimeline,
   mountRefSchedules,
   mountRefSearch,
@@ -3578,6 +3579,7 @@ function buildAsApp(opts = {}) {
   mountRefConnectorDetail(app, refConnectorsContext);
 
   mountRefRecordsTimeline(app, refAdminContext);
+  mountRefExploreRecords(app, refAdminContext);
   mountRefSchedules(app, refAdminContext);
 
   mountRefConnectorScheduleGet(app, refConnectorsContext);

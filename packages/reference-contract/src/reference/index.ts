@@ -1552,6 +1552,64 @@ const EventSubscriptionIdParamSchema = {
   required: ["subscription_id"],
 };
 
+// One record in the merged timeline (and in the upcoming projection). Forward-
+// compatible (additionalProperties: true), but the known fields are declared so
+// omission/shape drift is caught (the boot-crash class taught us route shapes need
+// explicit gates).
+const ExploreTimelineRecordSchema = {
+  type: "object" as const,
+  additionalProperties: true,
+  properties: {
+    object: { const: "timeline_record" },
+    connector_id: { type: "string" },
+    connector_instance_id: { type: "string" },
+    stream: { type: "string" },
+    record_key: { type: "string" },
+    emitted_at: { type: "string" },
+    // The authoritative semantic/display time the feed is ordered by; clients use it
+    // directly as the display timestamp (display == sort by construction).
+    semantic_time: { type: "string" },
+    data: { type: ["object", "null"] },
+  },
+  required: ["object", "connector_id", "connector_instance_id", "stream", "record_key", "emitted_at", "semantic_time"],
+};
+
+// The 200 response: the main feed (`data`, clamped to <= the pinned now boundary),
+// pagination/snapshot fields, and the SEPARATE `upcoming` (future-dated) projection
+// with a true `upcoming_total` count.
+const ExploreRecordsResponseSchema = {
+  type: "object" as const,
+  additionalProperties: true,
+  properties: {
+    object: { const: "list" },
+    data: { type: "array", items: ExploreTimelineRecordSchema },
+    has_more: { type: "boolean" },
+    next_cursor: { type: ["string", "null"] },
+    snapshot_at: { type: "string" },
+    new_since_snapshot: { type: "integer" },
+    upcoming: { type: "array", items: ExploreTimelineRecordSchema },
+    upcoming_total: { type: "integer" },
+    // Opaque cursor for the NEXT page of Upcoming (future) records, walking the
+    // future projection to exhaustion (count==reachability: every one of the N
+    // "upcoming" records is reachable, not just a capped head). Null when the
+    // future set is fully returned by this page. Independent of `next_cursor`.
+    upcoming_next_cursor: { type: ["string", "null"] },
+    upcoming_has_more: { type: "boolean" },
+  },
+  required: [
+    "object",
+    "data",
+    "has_more",
+    "next_cursor",
+    "snapshot_at",
+    "new_since_snapshot",
+    "upcoming",
+    "upcoming_total",
+    "upcoming_next_cursor",
+    "upcoming_has_more",
+  ],
+};
+
 export const referenceManifests = [
   {
     id: "refSearch",
@@ -2677,6 +2735,41 @@ export const referenceManifests = [
       200: { schema: RefEventSubscriptionDetailSchema, description: "Subscription after disabling." },
       400: { schema: ErrorObjectSchema, description: "Invalid request" },
       404: { schema: ErrorObjectSchema, description: "Subscription not found" },
+    },
+  },
+  {
+    id: "refExploreRecords",
+    method: "GET",
+    path: "/_ref/explore/records",
+    surface: "reference",
+    tags: ["explore", "reference"],
+    summary:
+      "Owner Explore surface: cross-source merged timeline with a single composite keyset cursor. " +
+      "Returns time-ordered records (<= a pinned now boundary) spanning all (connection, stream) " +
+      "partitions with point-in-time snapshot stability, a new_since_snapshot count for the N-new pill, " +
+      "and a SEPARATE upcoming (future-dated) projection with a true upcoming_total count.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          limit: { type: "integer", minimum: 1, maximum: 500 },
+          cursor: { type: "string" },
+          // REWIND: when "1"/"true" AND `cursor` is set, re-render page 1 pinned
+          // to the cursor's ORIGINAL snapshot (snapshotSeq) instead of capturing a
+          // fresh snapshot. The console "Load more" accumulator uses this for page 1
+          // so an after-snapshot backfill can never displace an original page-1 row.
+          rewind: { type: "string", enum: ["1", "true"] },
+          connection_id: { type: "string" },
+          stream: { type: "string" },
+        },
+      },
+    },
+    responses: {
+      200: {
+        schema: ExploreRecordsResponseSchema,
+      },
+      400: { schema: ErrorObjectSchema, description: "Invalid cursor or request parameters" },
     },
   },
 ];

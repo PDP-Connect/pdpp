@@ -23,7 +23,13 @@ import {
 } from "../../operations/ref-records-timeline/index.ts";
 import { executeRefSchedulesList } from "../../operations/ref-schedules-list/index.ts";
 import { executeRefSpineSearch, type RefSpineSearchResult } from "../../operations/ref-spine-search/index.ts";
+import {
+  executeExploreTimeline,
+  executeExploreUpcoming,
+  InvalidCompositeCursorError,
+} from "../../operations/rs-explore-timeline/index.ts";
 import { isInternalConnectorId } from "../connector-key.js";
+import { buildExploreTimelineDeps } from "../explore-timeline-substrate.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -112,6 +118,27 @@ function readOptionalString(body: Record<string, unknown>, ...names: string[]): 
     }
   }
   return null;
+}
+
+function readQueryStringList(query: Readonly<Record<string, unknown>>, ...names: string[]): readonly string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const raw = query[name];
+    const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+    for (const value of values) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+  return out;
 }
 
 function isLoopbackRedirect(url: URL): boolean {
@@ -403,6 +430,105 @@ export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminCont
       } catch (err) {
         if ((err as { code?: unknown })?.code === "not_found") {
           ctx.pdppError(res, 404, "not_found", err instanceof Error ? err.message : "CIMD document not found");
+          return;
+        }
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// GET /_ref/explore/records
+//
+// Cross-source merged timeline for the owner's Explore surface (Phase 3).
+//
+// Returns a page of time-ordered records spanning all (connector_instance_id, stream)
+// partitions with ONE composite cursor for stable, keyset-pageable deep pagination.
+// Point-in-time stability: the snapshot anchor in the composite cursor ensures that
+// records ingested after page 1 do not appear in or shift already-returned pages.
+// The `new_since_snapshot` field counts new records the UI can surface as an "N new" pill.
+//
+// This is a reference/operator surface, not the PDPP protocol. Clients must not
+// depend on the response shape — it is shaped for the console Explore canvas.
+export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext): void {
+  app.get(
+    "/_ref/explore/records",
+    { contract: "refExploreRecords" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const rawLimit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
+        const limit = Number.isFinite(rawLimit) && rawLimit != null && rawLimit > 0 ? rawLimit : null;
+        // Page-1 upcoming head size, independent of the feed `limit` (the bounded
+        // future set is revealed on first expand, not dripped 32 at a time).
+        const rawUpcomingLimit =
+          req.query.upcoming_limit == null ? null : Number.parseInt(String(req.query.upcoming_limit), 10);
+        const upcomingLimit =
+          Number.isFinite(rawUpcomingLimit) && rawUpcomingLimit != null && rawUpcomingLimit > 0
+            ? rawUpcomingLimit
+            : null;
+        const cursor = typeof req.query.cursor === "string" && req.query.cursor.length > 0 ? req.query.cursor : null;
+        // REWIND: re-render page 1 pinned to the cursor's ORIGINAL snapshot
+        // (snapshotSeq), not a fresh one. The console accumulator passes
+        // `rewind=1` with the page-1 cursor so an after-snapshot backfill can
+        // never displace an original page-1 row ("Load more hides records above").
+        const rewindRaw = req.query.rewind;
+        const rewindToFirstPage = rewindRaw === "1" || rewindRaw === "true";
+        const connectionIds = readQueryStringList(req.query, "connection", "connection_id", "connections");
+        const streams = readQueryStringList(req.query, "stream", "streams");
+        // EXCLUDE scope ("is not" facet / `-con:`/`-stream:`): applied at partition
+        // enumeration so excluded partitions are absent from the feed, Upcoming, counts,
+        // and cursor — exact counts, no client-side shrinking.
+        const excludeConnectionIds = readQueryStringList(req.query, "xconnection", "xconnections");
+        const excludeStreams = readQueryStringList(req.query, "xstream", "xstreams");
+        // Separate cursor for paging the Upcoming (future) projection to exhaustion.
+        // When present, this request pages ONLY the future set (the main feed is not
+        // re-traversed) — count==reachability for "188 upcoming, all reachable".
+        const upcomingCursor =
+          typeof req.query.upcoming_cursor === "string" && req.query.upcoming_cursor.length > 0
+            ? req.query.upcoming_cursor
+            : null;
+
+        const deps = buildExploreTimelineDeps();
+
+        if (upcomingCursor) {
+          // Page the rest of the bounded future set with the upcoming limit so one
+          // "Load more upcoming" reveals everything remaining (not 32 at a time).
+          const upcomingPage = await executeExploreUpcoming({ upcomingCursor, limit: upcomingLimit ?? limit }, deps);
+          // Shape to the same response contract: the feed fields are empty (this is
+          // an upcoming-only page), and the client carries upcoming_total from page 1.
+          res.json({
+            object: "list" as const,
+            data: [],
+            has_more: false,
+            next_cursor: null,
+            snapshot_at: upcomingPage.snapshot_at,
+            new_since_snapshot: 0,
+            upcoming: upcomingPage.upcoming,
+            upcoming_total: 0,
+            upcoming_next_cursor: upcomingPage.upcoming_next_cursor,
+            upcoming_has_more: upcomingPage.upcoming_has_more,
+          });
+          return;
+        }
+
+        const result = await executeExploreTimeline(
+          {
+            limit,
+            upcomingLimit,
+            cursor,
+            rewindToFirstPage,
+            connectionIds,
+            streams,
+            excludeConnectionIds,
+            excludeStreams,
+          },
+          deps
+        );
+        res.json(result);
+      } catch (err) {
+        if (err instanceof InvalidCompositeCursorError || (err as { code?: unknown })?.code === "invalid_cursor") {
+          ctx.pdppError(res, 400, "invalid_cursor", err instanceof Error ? err.message : "Invalid cursor");
           return;
         }
         ctx.handleError(res, err);

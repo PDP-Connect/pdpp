@@ -334,6 +334,45 @@ function cursorValue(data, manifestStream) {
   return value === undefined || value === null ? null : String(value);
 }
 
+// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
+// Unix MILLISECONDS. Mirrors search-record-timestamps.ts and the SQLite ingest
+// path in records.js so all three coerce timestamps identically.
+const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
+
+function coerceSemanticTimeValue(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
+}
+
+// SEMANTIC time (when the thing happened) to stamp on a record at ingest, for
+// the Explore merged-timeline sort. Resolves the manifest consent_time_field
+// (preferred) then cursor_field from `data`, coerced epoch-aware, falling back
+// to `effectiveEmittedAt` when no semantic field is declared or the value is
+// missing/unparseable. Never empty. Mirrors computeIngestSemanticTime in the
+// SQLite path (records.js).
+function semanticTimeValue(data, manifestStream, effectiveEmittedAt) {
+  if (!data || typeof data !== 'object') return effectiveEmittedAt;
+  const candidates = [];
+  for (const field of [manifestStream?.consent_time_field, manifestStream?.cursor_field]) {
+    if (typeof field === 'string' && field && !candidates.includes(field)) {
+      candidates.push(field);
+    }
+  }
+  for (const field of candidates) {
+    const coerced = coerceSemanticTimeValue(data[field]);
+    if (coerced) return coerced;
+  }
+  return effectiveEmittedAt;
+}
+
 const manifestStreamCache = new Map();
 
 function manifestStreamCacheKey(connectorId, stream) {
@@ -877,6 +916,11 @@ export async function postgresIngestRecord(storageTarget, record) {
   const storedPrimaryKeyText = op === 'delete'
     ? recordKey
     : primaryKeyText(data, recordKey, manifestStream);
+  // SEMANTIC time for the Explore merged-timeline sort (upserts only; a delete
+  // keeps the row's existing semantic_time). Falls back to emitted_at.
+  const storedSemanticTime = op === 'delete'
+    ? null
+    : semanticTimeValue(data, manifestStream, effectiveEmittedAt);
 
   const outcome = await withPostgresTransaction(async (client) => {
     // No-op equivalence is computed at the `jsonb` level via a server-side
@@ -954,8 +998,8 @@ export async function postgresIngestRecord(storageTarget, record) {
     } else {
       const stored = await client.query(
         `INSERT INTO records
-           (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
+           (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text, semantic_time)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9, $10)
          ON CONFLICT (connector_instance_id, stream, record_key) DO UPDATE
            SET connector_id = EXCLUDED.connector_id,
                record_json = EXCLUDED.record_json,
@@ -964,7 +1008,8 @@ export async function postgresIngestRecord(storageTarget, record) {
                deleted = FALSE,
                deleted_at = NULL,
                cursor_value = EXCLUDED.cursor_value,
-               primary_key_text = EXCLUDED.primary_key_text
+               primary_key_text = EXCLUDED.primary_key_text,
+               semantic_time = EXCLUDED.semantic_time
          RETURNING COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes`,
         [
           connectorId,
@@ -976,6 +1021,7 @@ export async function postgresIngestRecord(storageTarget, record) {
           nextVersion,
           storedCursorValue,
           storedPrimaryKeyText,
+          storedSemanticTime,
         ],
       );
       nextRecordJsonBytes = Number(stored.rows[0]?.record_json_bytes || 0);

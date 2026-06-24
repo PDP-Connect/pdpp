@@ -821,6 +821,13 @@ CREATE TABLE IF NOT EXISTS records (
   record_key    TEXT NOT NULL,
   record_json   TEXT NOT NULL,
   emitted_at    TEXT NOT NULL,
+  -- The record's SEMANTIC time (when the thing happened): the manifest
+  -- consent_time_field / cursor_field value from record_json, coerced to ISO
+  -- (epoch-aware), falling back to emitted_at when no semantic field is declared
+  -- or the value is missing/unparseable. Drives the Explore merged-timeline SORT
+  -- (ORDER BY semantic_time DESC); pagination/membership stays anchored on the
+  -- monotonic id. Never null.
+  semantic_time TEXT NOT NULL DEFAULT '',
   version       INTEGER NOT NULL DEFAULT 1,
   deleted       INTEGER NOT NULL DEFAULT 0,
   deleted_at    TEXT,
@@ -832,6 +839,16 @@ CREATE INDEX IF NOT EXISTS idx_records_lookup
 
 CREATE INDEX IF NOT EXISTS idx_records_version
   ON records(connector_id, stream, version);
+
+-- NOTE: the keyset index for the Explore merged-timeline
+-- (idx_records_semantic_time, an EXPRESSION index on
+-- COALESCE(NULLIF(semantic_time,''), emitted_at) DESC, record_key DESC matching
+-- the read ORDER BY so it stays index-backed before the Step-B backfill) is
+-- NOT created here. The inline SCHEMA runs on a pre-existing records table whose
+-- CREATE TABLE IF NOT EXISTS is a no-op, so the semantic_time column may not
+-- exist yet (it is added by migrateRecordSemanticTimeColumn). Creating the index
+-- here would fail with no-such-column: semantic_time. It is created in the
+-- post-migration index block below, after the column is guaranteed present.
 
 CREATE TABLE IF NOT EXISTS record_changes (
   connector_id  TEXT NOT NULL,
@@ -1982,6 +1999,20 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
     opts.onSchemaMigration({ name: 'local_device_connector_instances', ...result });
   }
   return result;
+}
+
+// Add the `records.semantic_time` column on an EXISTING db (CREATE TABLE IF NOT
+// EXISTS does not alter an existing table). DEFAULT '' makes this O(1) — no mass
+// UPDATE on a large records table at boot. Existing rows keep ''; the substrate
+// read COALESCEs '' -> emitted_at, so the merged-timeline sort is no worse than
+// the prior emitted_at order until the chunked per-record semantic backfill
+// (Step B) populates the real values. New writes set semantic_time at ingest.
+function migrateRecordSemanticTimeColumn(raw) {
+  if (hasTableColumn(raw, 'records', 'semantic_time')) {
+    return { added: false };
+  }
+  raw.exec(`ALTER TABLE records ADD COLUMN semantic_time TEXT NOT NULL DEFAULT ''`);
+  return { added: true };
 }
 
 function migrateRecordStorageInstanceColumns(raw, opts = {}) {
@@ -3363,6 +3394,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateSemanticSearchInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateLexicalSearchInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateLocalDeviceConnectorInstances(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateRecordSemanticTimeColumn(raw, opts));
   raw.exec(`
 DROP INDEX IF EXISTS idx_records_lookup;
 DROP INDEX IF EXISTS idx_records_version;
@@ -3370,6 +3402,7 @@ DROP INDEX IF EXISTS idx_record_changes_record;
 DROP INDEX IF EXISTS idx_blob_bindings_record;
 CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
 CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
+CREATE INDEX IF NOT EXISTS idx_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC);
 CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
 CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at);
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);

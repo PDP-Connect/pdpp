@@ -1160,6 +1160,12 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         record_key TEXT NOT NULL,
         record_json JSONB NOT NULL,
         emitted_at TEXT NOT NULL,
+        -- Record SEMANTIC time (manifest consent_time_field/cursor_field from
+        -- record_json, coerced/epoch-aware, fallback emitted_at). Drives the
+        -- Explore merged-timeline SORT; pagination/membership stays anchored on
+        -- the monotonic id. Never null; defaults to '' at create, set at ingest.
+        -- See docs/research/explore-semantic-time-sort-design-2026-06-20.md.
+        semantic_time TEXT NOT NULL DEFAULT '',
         version BIGINT NOT NULL DEFAULT 1,
         deleted BOOLEAN NOT NULL DEFAULT FALSE,
         deleted_at TEXT,
@@ -2193,10 +2199,24 @@ async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
   await client.query('DROP INDEX IF EXISTS idx_pg_record_changes_record');
   await client.query('DROP INDEX IF EXISTS idx_pg_blob_bindings_record');
   await client.query('DROP INDEX IF EXISTS idx_pg_semantic_search_scope');
+  // semantic_time on EXISTING records tables: add (idempotent), DEFAULT '' so the
+  // boot migration is O(1) (no mass UPDATE on the live multi-million-row table —
+  // that bloat/lock is avoided). Existing rows keep ''; the substrate read
+  // COALESCEs '' -> emitted_at, so the merged-timeline sort is no worse than the
+  // prior order until the chunked per-record semantic backfill (Step B) populates
+  // the real values. New writes set semantic_time at ingest.
+  await client.query("ALTER TABLE records ADD COLUMN IF NOT EXISTS semantic_time TEXT NOT NULL DEFAULT ''");
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_connector_stream_deleted ON records(connector_id, stream, deleted)');
+  // EXPRESSION index matching the Explore read ORDER BY EXACTLY. The read sorts
+  // by COALESCE(NULLIF(semantic_time, ''), emitted_at) (un-backfilled rows fall
+  // back to emitted_at) — a plain semantic_time index does NOT back that
+  // expression, so the planner would Seq Scan + Sort the whole records table on
+  // every page. The expression index keeps the hot path index-backed BEFORE the
+  // Step-B backfill. Verified via EXPLAIN: Index Scan, no Sort.
+  await client.query("CREATE INDEX IF NOT EXISTS idx_pg_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC)");
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
   // Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped
   // by (connector_instance_id, stream). The record-keyed index above omits

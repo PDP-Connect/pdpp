@@ -312,6 +312,14 @@ export async function ingestRecord(storageTarget, record) {
   validateRecordIdentity({ connectorId, stream, key, data });
 
   const effectiveEmittedAt = emitted_at || nowIso();
+  // SEMANTIC time (when the thing happened) for the Explore merged-timeline sort.
+  // Resolved from the manifest consent_time_field/cursor_field of `data`,
+  // epoch-aware, falling back to emitted_at. Only meaningful for upserts (a
+  // delete keeps the row's existing semantic_time); computed unconditionally for
+  // a simpler, branch-free bind below — the delete path does not write it.
+  const semanticTime = op === 'delete'
+    ? effectiveEmittedAt
+    : computeIngestSemanticTime(connectorId, stream, data, effectiveEmittedAt);
   const changeHistoryLimit = getChangeHistoryLimit();
 
   // Durable mutation unit: returns the operation outcome so derived index
@@ -383,7 +391,7 @@ export async function ingestRecord(storageTarget, record) {
     } else {
       exec(
         referenceQueries.recordsIngestUpsertRecord,
-        [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
+        [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, semanticTime],
       );
       maybeFault('after-records-mutation', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
       exec(
@@ -4566,6 +4574,67 @@ function getManifestConsentTimeField(connectorId, streamName) {
   const field = stream?.consent_time_field;
   if (typeof field !== 'string' || !field) return null;
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(field) ? field : null;
+}
+
+// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
+// Unix MILLISECONDS. 1e12 seconds is the year 33658 and 1e12 ms is 2001 — any
+// real record date is unambiguous against this boundary. Mirrors the constant in
+// packages/operator-ui/src/lib/search-record-timestamps.ts so ingest and search
+// coerce timestamps identically.
+const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
+
+// Coerce a manifest-declared timestamp field value to a clean ISO-8601 string,
+// matching coerceTimestampValue in search-record-timestamps.ts: an ISO string
+// passes through (trimmed); a positive finite NUMBER is a Unix epoch (seconds
+// below the threshold, ms at/above) -> ISO. Anything else -> null so the caller
+// falls back to emitted_at.
+function coerceSemanticTimeValue(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
+}
+
+// Compute the SEMANTIC time (when the thing happened) to stamp on a record at
+// ingest. Resolves the stream's manifest consent_time_field (preferred) then
+// cursor_field, reads that field from the record `data`, and coerces it
+// epoch-aware. Falls back to `effectiveEmittedAt` when no semantic field is
+// declared or the value is missing/unparseable — so semantic_time is never
+// empty and the merged-timeline sort degrades gracefully to ingest order. Loads
+// the manifest via the same query getManifestConsentTimeField uses.
+function computeIngestSemanticTime(connectorId, streamName, data, effectiveEmittedAt) {
+  if (!data || typeof data !== 'object') return effectiveEmittedAt;
+  const row = getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  if (!row?.manifest) return effectiveEmittedAt;
+  let manifest;
+  try {
+    manifest = JSON.parse(row.manifest);
+  } catch {
+    return effectiveEmittedAt;
+  }
+  const stream = Array.isArray(manifest?.streams)
+    ? manifest.streams.find((candidate) => candidate?.name === streamName)
+    : null;
+  if (!stream) return effectiveEmittedAt;
+  // consent_time_field is the declared semantic/authored time; cursor_field is
+  // the incremental sort field (often the same authored time). Prefer the former.
+  const candidates = [];
+  for (const field of [stream.consent_time_field, stream.cursor_field]) {
+    if (typeof field === 'string' && field && !candidates.includes(field)) {
+      candidates.push(field);
+    }
+  }
+  for (const field of candidates) {
+    const coerced = coerceSemanticTimeValue(data[field]);
+    if (coerced) return coerced;
+  }
+  return effectiveEmittedAt;
 }
 
 // Returns the manifest-declared primary_key field names for a stream, or null
