@@ -143,6 +143,48 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
 }
 
+const CONTROLLER_RUN_STATUSES = new Set([
+  "abandoned",
+  "active",
+  "cancelled",
+  "completed",
+  "deferred",
+  "expired",
+  "failed",
+  "leased",
+  "released",
+  "starting_surface",
+  "surface_failed",
+  "waiting_for_browser_surface",
+]);
+
+function normalizeControllerRunStatus(value: unknown): RunStatusEnvelope["status"] {
+  return typeof value === "string" && CONTROLLER_RUN_STATUSES.has(value)
+    ? (value as RunStatusEnvelope["status"])
+    : "active";
+}
+
+function normalizeRunFailure(value: unknown): RunStatusEnvelope["failure"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const failure = value as Record<string, unknown>;
+  return {
+    connector_error_message:
+      typeof failure.connector_error_message === "string" ? failure.connector_error_message : null,
+    message: typeof failure.message === "string" ? failure.message : null,
+    origin: typeof failure.origin === "string" ? failure.origin : null,
+    reason: typeof failure.reason === "string" ? failure.reason : null,
+  };
+}
+
+function normalizeRunLinks(value: unknown): RunStatusEnvelope["links"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { timeline: "" };
+  }
+  return { timeline: String((value as Record<string, unknown>).timeline ?? "") };
+}
+
 function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
   const r = (raw || {}) as {
     completed_at?: unknown;
@@ -157,42 +199,13 @@ function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
     terminal_reason?: unknown;
     trace_id?: unknown;
   };
-  const status =
-    r.status === "abandoned" ||
-    r.status === "active" ||
-    r.status === "cancelled" ||
-    r.status === "completed" ||
-    r.status === "deferred" ||
-    r.status === "expired" ||
-    r.status === "failed" ||
-    r.status === "leased" ||
-    r.status === "released" ||
-    r.status === "starting_surface" ||
-    r.status === "surface_failed" ||
-    r.status === "waiting_for_browser_surface"
-      ? r.status
-      : "active";
-  const failure =
-    r.failure && typeof r.failure === "object" && !Array.isArray(r.failure)
-      ? (r.failure as Record<string, unknown>)
-      : null;
+  const status = normalizeControllerRunStatus(r.status);
   return {
     completed_at: typeof r.completed_at === "string" ? r.completed_at : null,
     connector_id: typeof r.connector_id === "string" ? r.connector_id : null,
     connector_instance_id: typeof r.connector_instance_id === "string" ? r.connector_instance_id : null,
-    failure: failure
-      ? {
-          connector_error_message:
-            typeof failure.connector_error_message === "string" ? failure.connector_error_message : null,
-          message: typeof failure.message === "string" ? failure.message : null,
-          origin: typeof failure.origin === "string" ? failure.origin : null,
-          reason: typeof failure.reason === "string" ? failure.reason : null,
-        }
-      : null,
-    links:
-      r.links && typeof r.links === "object" && !Array.isArray(r.links)
-        ? { timeline: String((r.links as Record<string, unknown>).timeline ?? "") }
-        : { timeline: "" },
+    failure: normalizeRunFailure(r.failure),
+    links: normalizeRunLinks(r.links),
     object: "run_status",
     run_id: typeof r.run_id === "string" ? r.run_id : "",
     started_at: typeof r.started_at === "string" ? r.started_at : null,
@@ -1153,6 +1166,101 @@ export async function listWebPushSubscriptions(): Promise<ListResponse<WebPushSu
   return (await refFetch("/_ref/web-push/subscriptions")) as ListResponse<WebPushSubscriptionSummary>;
 }
 
+/**
+ * Response envelope for GET /_ref/explore/records (Phase 3 merged timeline).
+ * Mirrors `ExploreTimelineOutput` from the rs-explore-timeline operation.
+ */
+export interface ExploreTimelinePage {
+  data: ExploreTimelineRecord[];
+  has_more: boolean;
+  new_since_snapshot: number;
+  next_cursor: string | null;
+  object: "list";
+  snapshot_at: string;
+}
+
+/**
+ * Carries BOTH identity fields:
+ *   - `connector_id`: connector TYPE (e.g. "amazon") — use for display labels and
+ *     manifest/registry lookup.
+ *   - `connector_instance_id`: connection INSTANCE (e.g. "cin_...") — use for
+ *     per-connection API reads and connection-detail URLs.
+ *
+ * Never render raw `connector_instance_id` as a display name; resolve the
+ * human label via `connector_id` against the connector registry.
+ */
+export interface ExploreTimelineRecord {
+  /** Connector TYPE id (e.g. "amazon"). Use for display labels and manifest lookup. */
+  connector_id: string;
+  /** Connection INSTANCE id (e.g. "cin_..."). Use for per-connection API reads. */
+  connector_instance_id: string;
+  data: unknown;
+  emitted_at: string;
+  object: "timeline_record";
+  record_key: string;
+  stream: string;
+}
+
+/**
+ * Fetch one page of the Phase 3 merged cross-source timeline.
+ *
+ * Route: GET /_ref/explore/records
+ * Auth: owner session cookie (same as all /_ref routes).
+ *
+ * The composite cursor encodes all per-partition positions + the snapshot
+ * anchor for point-in-time stability. Pass the returned `next_cursor` as
+ * `cursor` to page forward; pass `null`/`undefined` for the first page.
+ */
+export async function listExploreTimeline(
+  opts: {
+    connectionIds?: readonly string[];
+    cursor?: string | null;
+    limit?: number;
+    /**
+     * REWIND: re-render page 1 pinned to `cursor`'s ORIGINAL snapshot
+     * (snapshotSeq) instead of capturing a fresh one. The Explore "Load more"
+     * accumulator sets this for the page-1 fetch (cursor = the page-1 → page-2
+     * cursor) so an after-snapshot backfill can never displace an original
+     * page-1 row. Only meaningful when `cursor` is set.
+     */
+    rewindToFirstPage?: boolean;
+    streams?: readonly string[];
+    /** EXCLUDE scope ("is not" facet / `-con:`/`-stream:`), applied server-side. */
+    excludeConnectionIds?: readonly string[];
+    excludeStreams?: readonly string[];
+    /**
+     * Page the Upcoming (future) projection to exhaustion. When set, the request
+     * pages ONLY the future set (the cursor carries the pinned snapshot + scope +
+     * per-partition positions), so `cursor`/`rewind`/scope are not sent.
+     */
+    upcomingCursor?: string | null;
+    /** Page-1 head size for the bounded Upcoming set, independent of `limit`. */
+    upcomingLimit?: number;
+  } = {}
+): Promise<ExploreTimelinePage> {
+  if (opts.upcomingCursor) {
+    return (await refFetch("/_ref/explore/records", {
+      limit: opts.limit,
+      upcoming_cursor: opts.upcomingCursor,
+      upcoming_limit: opts.upcomingLimit,
+    })) as ExploreTimelinePage;
+  }
+  const connection = opts.connectionIds?.filter((v) => typeof v === "string" && v.length > 0).join(",");
+  const stream = opts.streams?.filter((v) => typeof v === "string" && v.length > 0).join(",");
+  const xconnection = opts.excludeConnectionIds?.filter((v) => typeof v === "string" && v.length > 0).join(",");
+  const xstream = opts.excludeStreams?.filter((v) => typeof v === "string" && v.length > 0).join(",");
+  return (await refFetch("/_ref/explore/records", {
+    connection: connection || undefined,
+    cursor: opts.cursor ?? undefined,
+    limit: opts.limit,
+    upcoming_limit: opts.upcomingLimit,
+    rewind: opts.rewindToFirstPage ? 1 : undefined,
+    stream: stream || undefined,
+    xconnection: xconnection || undefined,
+    xstream: xstream || undefined,
+  })) as ExploreTimelinePage;
+}
+
 export async function listConnectorSummaries(
   options: { connectionRouteId?: string } = {}
 ): Promise<RefConnectorSummariesResponse> {
@@ -1581,10 +1689,14 @@ export async function getStaticSecretSetup(connectorId: string): Promise<StaticS
 
 export async function createStaticSecretDraftConnection(
   connectorId: string,
-  setupFields: Record<string, string>
+  setupFields: Record<string, string>,
+  options: { displayName?: string | null } = {}
 ): Promise<StaticSecretDraftConnection> {
   return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, undefined, {
-    body: JSON.stringify({ setup_fields: setupFields }),
+    body: JSON.stringify({
+      setup_fields: setupFields,
+      ...(options.displayName ? { display_name: options.displayName } : {}),
+    }),
     headers: { "content-type": "application/json" },
     method: "POST",
   })) as StaticSecretDraftConnection;
@@ -1625,13 +1737,17 @@ export async function captureStaticSecretCredential(input: {
 // vocabulary the rest of the dashboard uses.
 export type StaticSecretSetupStateValue =
   | "active"
+  | "awaiting_browser_login"
   | "awaiting_credential"
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_zero_yield"
   | "paused"
   | "revoked"
   | "unknown";
+
+export type ConnectionSetupKind = "browser_session" | "manual_upload" | "static_secret" | "unknown";
 
 export interface ConnectionSetupStatus {
   account_identity: string | null;
@@ -1678,15 +1794,17 @@ export interface ConnectionSetupStatus {
   pending: boolean;
   run: {
     finished_at: string | null;
+    records_emitted: number | null;
+    reported_records_emitted: number | null;
     run_id: string | null;
     started_at: string | null;
     status: string | null;
   } | null;
   running: boolean;
-  setup_kind: "manual_upload" | "static_secret" | "unknown";
+  setup_kind: ConnectionSetupKind;
   setup_material: {
     captured_at: string | null;
-    kind: "manual_upload" | "static_secret" | "unknown";
+    kind: ConnectionSetupKind;
     label: string;
     present: boolean;
   };
@@ -2132,8 +2250,8 @@ export interface GrantPackageDetail {
 
 /**
  * Cumulative per-client view across one client's lineage of incremental
- * add-source packages linked by `parent_package_id`. Reference-experimental.
- * Lineage is grouping/audit metadata only — every child grant remains
+ * add-source authorization records linked by `parent_package_id`.
+ * Lineage is grouping/audit metadata only — every source authorization remains
  * independently revocable.
  */
 export interface CumulativeClientPackage {
@@ -2211,8 +2329,10 @@ function parseGrantPackageRevokeResult(bodyText: string): GrantPackageRevokeResu
 
 function formatGrantPackageRevokePartialFailure(result: GrantPackageRevokeResult): string {
   const failed = result.not_revoked_child_grants.map((entry) => `${entry.grant_id} (${entry.error.code})`).join(", ");
-  const failedSummary = failed || "unknown child grant";
-  return `Partial revoke: ${result.revoked_child_count} child grant(s) revoked; ${result.not_revoked_child_count} not revoked: ${failedSummary}. Package remains active.`;
+  const failedSummary = failed || "unknown source authorization";
+  return `Partial revoke: ${result.revoked_child_count} source authorization${
+    result.revoked_child_count === 1 ? "" : "s"
+  } revoked; ${result.not_revoked_child_count} not revoked: ${failedSummary}. Access remains active.`;
 }
 
 export async function listGrantPackages(): Promise<ListResponse<GrantPackageSummary>> {
@@ -2256,8 +2376,8 @@ export async function getGrantPackage(packageId: string): Promise<GrantPackageDe
 }
 
 /**
- * Cumulative per-client view across the lineage a package belongs to.
- * Returns null when the package id is unknown. Reference-experimental.
+ * Cumulative per-client view across the related access records.
+ * Returns null when the access-group id is unknown.
  */
 export async function getCumulativeClientAccess(packageId: string): Promise<CumulativeClientAccess | null> {
   try {
@@ -2323,9 +2443,13 @@ export interface BrowserEnrollmentShell {
  * Owner-session cookie required. Returns a draft connection_id + TTL that the
  * browser-session connect page uses to start an enrollment run.
  */
-export async function createBrowserEnrollmentShell(connectorId: string): Promise<BrowserEnrollmentShell> {
+export async function createBrowserEnrollmentShell(
+  connectorId: string,
+  options: { displayName?: string | null } = {}
+): Promise<BrowserEnrollmentShell> {
+  const body = options.displayName?.trim() ? { display_name: options.displayName.trim() } : {};
   return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/browser-enrollment-shell`, undefined, {
-    body: "{}",
+    body: JSON.stringify(body),
     headers: { "content-type": "application/json" },
     method: "POST",
   })) as BrowserEnrollmentShell;

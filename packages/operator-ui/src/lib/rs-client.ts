@@ -33,10 +33,47 @@ export interface RecordsWindowMeta {
   total: number;
 }
 
+export interface RecordsCountMeta {
+  kind: "estimated" | "exact" | "none";
+  value?: number;
+}
+
+/**
+ * One time bucket from the `group_by_time` aggregate. `key` is the ISO
+ * bucket-start (`YYYY-MM-DD` for day/week/month, `…THH:MM` for hour) or null.
+ * `count` is the TRUE total over the filtered, grant-scoped corpus.
+ */
+export interface AggregateTimeBucket {
+  count: number;
+  key: string | null;
+}
+
+/** Granularities the server's `group_by_time` aggregate accepts. */
+export type TimeBucketGranularity = "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year";
+
+/**
+ * Response of the `group_by_time` count aggregate — the honest data source for
+ * the over-time chart's bars (true per-bucket totals over the filtered corpus,
+ * NOT loaded entries).
+ */
+export interface TimeBucketAggregate {
+  approximate: boolean;
+  filtered_record_count: number;
+  granularity: string;
+  group_by_time: string;
+  groups: AggregateTimeBucket[];
+  metric: "count";
+  object: "aggregation";
+  other_count?: number;
+  stream: string;
+  time_zone: string;
+}
+
 export interface RecordsPage {
   data: StreamRecord[];
   has_more: boolean;
   meta?: {
+    count?: RecordsCountMeta;
     window?: RecordsWindowMeta;
     [k: string]: unknown;
   };
@@ -61,6 +98,11 @@ export interface StreamMetadata {
 
 export interface ConnectorManifest {
   connector_id: string;
+  // Canonical short key (e.g. "usaa", "claude-code"). Bundled manifests set
+  // `connector_id` to the registry URI (https://registry.pdpp.org/connectors/usaa)
+  // but `connector_key` to the plain key — and stored records carry the plain key.
+  // Anything keying per-connector metadata against record rows must use this.
+  connector_key?: string;
   display_name?: string;
   name?: string;
   provider_id?: string;
@@ -100,11 +142,52 @@ export interface SearchResultHit {
   stream: string;
 }
 
+/**
+ * Recall accuracy of a lexical count, per the `disclose-lexical-recall-windows`
+ * OpenSpec. `exact`: `count` is the true total. `lower_bound`: more matches may
+ * exist beyond the ranked candidate window. `not_counted`: no count computed.
+ */
+export type SearchCountAccuracy = "exact" | "lower_bound" | "not_counted";
+
+/**
+ * Where the ranker drew its candidates from. `all_matches` ranked every match
+ * (exhaustive recall); `candidate_window` ranked a bounded slice (recall is NOT
+ * exhaustive — the result set is a bounded sample, never "all matching
+ * records"). These are the exact values the reference server emits
+ * (reference-implementation/server/search.js); do not rename without changing
+ * the server, or the exhaustive gate silently never matches.
+ */
+export type SearchRankingScope = "all_matches" | "candidate_window" | "unknown";
+
+/**
+ * Response-level recall disclosure (see `disclose-lexical-recall-windows`). A
+ * forward-compatible client reads it to decide whether a result set may honestly
+ * claim exhaustive recall. Absent on older RS builds; treat absence as "recall
+ * unknown" — never assume complete.
+ */
+export interface SearchRecallMeta {
+  /** Bounded-window cap the ranker applied, when reported. */
+  candidate_window_limit?: number;
+  /** True ONLY when every match was ranked (all_matches). False = bounded window. */
+  complete: boolean;
+  /** How many candidates the ranker actually scored, when reported. */
+  ranked_candidate_count?: number;
+  ranking_scope: SearchRankingScope;
+}
+
 export interface SearchResultPage {
+  /** Caller-visible match count; interpret via `count_accuracy`, never alone. */
+  count?: number | null;
+  /** Accuracy of `count` (exact / lower_bound / not_counted). */
+  count_accuracy?: SearchCountAccuracy;
   data: SearchResultHit[];
   has_more: boolean;
+  /** Response-level recall disclosure, nested under `meta` by some adapters. */
+  meta?: { recall?: SearchRecallMeta };
   next_cursor?: string;
   object: "list";
+  /** Response-level recall disclosure surfaced at the top level by some adapters. */
+  recall?: SearchRecallMeta;
   url?: string;
 }
 

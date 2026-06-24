@@ -30,6 +30,8 @@ import type {
   GrantSummary as LiveGrantSummary,
   RunSummary as LiveRunSummary,
   TraceSummary as LiveTraceSummary,
+  ExploreTimelinePage,
+  ExploreTimelineRecord,
   PendingApproval,
   RefConnectorRunSummary,
   RefConnectorSummary,
@@ -38,6 +40,7 @@ import type {
   TimelineEnvelope,
 } from "@pdpp/operator-ui/lib/ref-client";
 import type {
+  AggregateTimeBucket,
   ConnectorManifest,
   ConnectorOverview,
   ConnectorRunRef,
@@ -47,6 +50,8 @@ import type {
   StreamMetadata,
   StreamRecord,
   StreamSummary,
+  TimeBucketAggregate,
+  TimeBucketGranularity,
 } from "@pdpp/operator-ui/lib/rs-client";
 import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import {
@@ -556,6 +561,45 @@ function buildSandboxDeploymentDiagnostics(): DeploymentDiagnostics {
   };
 }
 
+/**
+ * UTC bucket key for a demo record's time, matching the over-time chart's
+ * bucketing (UTC, the same zone the feed groups by). Day/week/month keyed by
+ * `YYYY-MM-DD`; hour by `…THH:00`; null/unparseable → `__null__`.
+ */
+function sandboxBucketKey(recordTime: string, granularity: TimeBucketGranularity): string {
+  const ms = Date.parse(recordTime);
+  if (Number.isNaN(ms)) {
+    return "__null__";
+  }
+  const d = new Date(ms);
+  const iso = d.toISOString();
+  switch (granularity) {
+    case "minute":
+      return iso.slice(0, 16);
+    case "hour":
+      return `${iso.slice(0, 13)}:00`;
+    case "day":
+      return iso.slice(0, 10);
+    case "week": {
+      const dow = d.getUTCDay();
+      const offset = dow === 0 ? 6 : dow - 1;
+      const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - offset));
+      return monday.toISOString().slice(0, 10);
+    }
+    case "month":
+      return `${iso.slice(0, 7)}-01`;
+    case "quarter": {
+      const month = d.getUTCMonth();
+      const qStart = month - (month % 3);
+      return `${d.getUTCFullYear()}-${String(qStart + 1).padStart(2, "0")}-01`;
+    }
+    case "year":
+      return `${d.getUTCFullYear()}-01-01`;
+    default:
+      return iso.slice(0, 10);
+  }
+}
+
 // ─── DashboardDataSource implementation ───────────────────────────────────
 
 export const sandboxDashboardDataSource: DashboardDataSource = {
@@ -580,6 +624,96 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
 
   async getStreamMetadata(connectorId: string, stream: string): Promise<StreamMetadata> {
     return buildSandboxStreamMetadata(connectorId, stream);
+  },
+
+  async aggregateRecordsByTime(
+    connectorId: string,
+    stream: string,
+    opts: {
+      connectionId?: string | null;
+      connectorInstanceId?: string | null;
+      granularity: TimeBucketGranularity;
+      groupByTime: string;
+      timeZone?: string;
+    }
+  ): Promise<TimeBucketAggregate> {
+    // Deterministic time-bucket COUNT over the demo corpus. Buckets the SAME
+    // `record_time` the merged timeline orders by, in UTC (the chart's bucketing
+    // zone), so the sandbox chart and feed agree. This is a true total over the
+    // (fixed) demo set — the sandbox analogue of the live `window=exact` floor.
+    const counts = new Map<string, number>();
+    let filtered = 0;
+    for (const r of DEMO_RECORDS) {
+      if (r.connector_id !== connectorId || r.stream !== stream) {
+        continue;
+      }
+      filtered += 1;
+      const key = sandboxBucketKey(r.record_time, opts.granularity);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const groups: AggregateTimeBucket[] = [...counts.entries()]
+      .map(([key, count]) => ({ key: key === "__null__" ? null : key, count }))
+      .sort((a, b) => {
+        if (a.key == null) {
+          return b.key == null ? 0 : 1;
+        }
+        if (b.key == null) {
+          return -1;
+        }
+        return a.key.localeCompare(b.key);
+      });
+    return {
+      object: "aggregation",
+      stream,
+      metric: "count",
+      group_by_time: opts.groupByTime,
+      granularity: opts.granularity,
+      time_zone: opts.timeZone ?? "UTC",
+      approximate: false,
+      filtered_record_count: filtered,
+      groups,
+    };
+  },
+
+  async listExploreTimeline(
+    opts: {
+      connectionIds?: readonly string[];
+      cursor?: string | null;
+      limit?: number;
+      rewindToFirstPage?: boolean;
+      streams?: readonly string[];
+    } = {}
+  ): Promise<ExploreTimelinePage> {
+    // Merged cross-source timeline: every demo record, newest first, paged by a
+    // simple offset cursor. The sandbox is a fixed snapshot so new_since_snapshot
+    // is always 0 (no live ingestion behind the demo).
+    const connectionIds = new Set(opts.connectionIds ?? []);
+    const streams = new Set(opts.streams ?? []);
+    const merged: ExploreTimelineRecord[] = [...DEMO_RECORDS]
+      .filter((r) => connectionIds.size === 0 || connectionIds.has(r.connector_id))
+      .filter((r) => streams.size === 0 || streams.has(r.stream))
+      .sort((a, b) => b.record_time.localeCompare(a.record_time))
+      .map((r) => ({
+        object: "timeline_record" as const,
+        connector_id: r.connector_id,
+        connector_instance_id: r.connector_id,
+        stream: r.stream,
+        record_key: r.record_id,
+        emitted_at: r.record_time,
+        data: r.fields,
+      }));
+    // REWIND: the demo has no snapshot drift (fixed corpus), so re-rendering page 1
+    // means paginating from the start. Honor it by ignoring the cursor offset.
+    const cursorForPage = opts.rewindToFirstPage ? undefined : (opts.cursor ?? undefined);
+    const page = paginate(merged, { cursor: cursorForPage, limit: opts.limit });
+    return {
+      object: "list",
+      data: page.data,
+      has_more: page.has_more,
+      next_cursor: page.next_cursor ?? null,
+      snapshot_at: merged[0]?.emitted_at ?? new Date(0).toISOString(),
+      new_since_snapshot: 0,
+    };
   },
 
   async getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {

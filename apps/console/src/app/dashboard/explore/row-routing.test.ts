@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 
+// Hoisted per useTopLevelRegex: the LIVE FeedRow row-action source invariants.
+// The LIVE Explore component is explore-canvas.tsx (records-explorer-view.tsx is
+// a types-only/dead import). On desktop the row body PEEKS (button onClick=onSelect)
+// and a SEPARATE Open link routes to the full record-detail href; on mobile the row
+// Link navigates to that same full route (R4). The two outcomes differ on desktop.
+const MOBILE_ROW_LINK_RE = /className=\{`\$\{rowCls\} rr-x-row--mobile`\}[\s\S]{0,40}href=\{detailHref\}/;
+const DESKTOP_ROW_PEEK_BUTTON_RE = /className=\{`\$\{rowCls\} rr-x-row--desktop`\}[\s\S]{0,160}onClick=\{onSelect\}/;
+const DESKTOP_OPEN_LINK_RE = /className="rr-x-row-open"[\s\S]{0,40}href=\{detailHref\}/;
+
 // The view renders <Link href={routes.record(entry.connectionId ?? entry.connectorId, …)}>.
 // `resolveConnectionForRecordsRoute` accepts either a connection_id (preferred)
 // or a connector_id (falls back to the FIRST matching connection). To avoid
@@ -43,4 +52,41 @@ test("row link routes two same-connector connections to distinct paths", () => {
   assert.notEqual(personal, work);
   assert.equal(personal, "/dashboard/records/conn-personal/messages/rec-1");
   assert.equal(work, "/dashboard/records/conn-work/messages/rec-1");
+});
+
+// Row-action contract (design.md §6, feedback #12), pinned on the LIVE FeedRow:
+//   - Desktop: row body click = PEEK (button onClick=onSelect); a SEPARATE Open
+//     link routes to the full record-detail href. Distinct outcomes — Open is
+//     never a duplicate of the row click.
+//   - Mobile: the row Link navigates to the full record-detail route (R4 — the
+//     peek pane is hidden on phones, so ?peek would render nothing).
+// PIN: this guards the mobile R4 fix (so a tap never lands on ?peek) and the
+// desktop peek-vs-open distinction (so Open never collapses into a row click).
+test("LIVE FeedRow: mobile tap routes to the full record detail (R4)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const canvasPath = path.join(here, "explore-canvas.tsx");
+  const src = readFileSync(canvasPath, "utf8");
+  assert.match(src, MOBILE_ROW_LINK_RE, "mobile row Link must navigate to the full record route via detailHref (R4)");
+});
+
+test("LIVE FeedRow: desktop row body peeks; a separate Open routes to the full record (distinct #12)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const canvasPath = path.join(here, "explore-canvas.tsx");
+  const src = readFileSync(canvasPath, "utf8");
+  assert.match(
+    src,
+    DESKTOP_ROW_PEEK_BUTTON_RE,
+    "desktop row body (button) must open the in-place peek via onClick={onSelect}"
+  );
+  assert.match(
+    src,
+    DESKTOP_OPEN_LINK_RE,
+    "a SEPARATE desktop 'Open' Link must route to the full record-detail href — distinct from the peek (#12)"
+  );
 });

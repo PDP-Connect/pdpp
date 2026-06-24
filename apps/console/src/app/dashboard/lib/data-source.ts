@@ -22,6 +22,7 @@
 import {
   type DatasetSummary,
   type DeploymentDiagnostics,
+  type ExploreTimelinePage,
   type GrantSummary,
   getDatasetSummary,
   getDeploymentDiagnostics,
@@ -31,6 +32,7 @@ import {
   type ListQuery,
   type ListResponse,
   listConnectorSummaries,
+  listExploreTimeline,
   listGrants,
   listPendingApprovals,
   listRuns,
@@ -43,6 +45,7 @@ import {
   type TraceSummary,
 } from "./ref-client.ts";
 import {
+  aggregateRecordsByTime,
   type ConnectorManifest,
   type ConnectorOverview,
   getConnectorOverview,
@@ -61,9 +64,27 @@ import {
   searchRecordsHybrid,
   searchRecordsLexical,
   searchRecordsSemantic,
+  type TimeBucketAggregate,
+  type TimeBucketGranularity,
 } from "./rs-client.ts";
 
 export interface DashboardDataSource {
+  /**
+   * Time-bucket COUNT aggregate over one stream — the honest data source for the
+   * over-time chart's bars. True per-bucket totals over the filtered, grant-scoped
+   * corpus (NOT loaded entries).
+   */
+  aggregateRecordsByTime(
+    connectorId: string,
+    stream: string,
+    opts: {
+      connectionId?: string | null;
+      connectorInstanceId?: string | null;
+      granularity: TimeBucketGranularity;
+      groupByTime: string;
+      timeZone?: string;
+    }
+  ): Promise<TimeBucketAggregate>;
   getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview>;
   // ── Overview / deployment / approvals ──────────────────────────────────
   getDatasetSummary(): Promise<DatasetSummary>;
@@ -88,6 +109,19 @@ export interface DashboardDataSource {
   listConnectorManifests(): Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
   listConnectorSummaries(): Promise<RefConnectorSummariesResponse>;
+  // ── Explore merged timeline (Phase 3) ─────────────────────────────────
+  listExploreTimeline(opts?: {
+    connectionIds?: readonly string[];
+    cursor?: string | null;
+    limit?: number;
+    /**
+     * REWIND: re-render page 1 pinned to `cursor`'s ORIGINAL snapshot so an
+     * after-snapshot backfill can never displace an original page-1 row. Only
+     * meaningful with `cursor` set. Used by the "Load more" accumulator for page 1.
+     */
+    rewindToFirstPage?: boolean;
+    streams?: readonly string[];
+  }): Promise<ExploreTimelinePage>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
   listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
   listPendingApprovals(): Promise<ListResponse<PendingApproval>>;
@@ -100,6 +134,7 @@ export interface DashboardDataSource {
     opts?: {
       connectorInstanceId?: string | null;
       cursor?: string;
+      count?: "estimated" | "exact" | "none";
       limit?: number;
       order?: "asc" | "desc";
       window?: "exact" | "none";
@@ -116,7 +151,7 @@ export interface DashboardDataSource {
   searchRecordsHybrid(query: string, opts?: { streams?: string[]; limit?: number }): Promise<SearchResultPage>;
   searchRecordsLexical(
     query: string,
-    opts?: { streams?: string[]; limit?: number; cursor?: string }
+    opts?: { streams?: string[]; limit?: number; cursor?: string; order?: "relevance" | "recent" }
   ): Promise<SearchResultPage>;
   searchRecordsSemantic(
     query: string,
@@ -136,6 +171,7 @@ export const liveDashboardDataSource: DashboardDataSource = {
   listStreams,
   getStreamMetadata,
   getConnectorOverview,
+  aggregateRecordsByTime,
   queryRecords,
   getRecord,
   refSearch,
@@ -144,6 +180,7 @@ export const liveDashboardDataSource: DashboardDataSource = {
   searchRecordsHybrid,
   isSemanticRetrievalAdvertised,
   isHybridRetrievalAdvertised,
+  listExploreTimeline,
   listGrants,
   listRuns,
   listTraces,

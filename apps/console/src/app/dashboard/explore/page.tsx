@@ -64,13 +64,30 @@ export default async function RecordsExplorerPage({
   searchParams: Promise<{
     q?: string;
     connection?: string | string[];
+    // EXCLUDED connections/streams (the facet "is not" toggle / `-con:` operator).
+    // Bounded: one repeatable param per excluded id, mirroring connection/stream.
+    xconnection?: string | string[];
     stream?: string | string[];
+    xstream?: string | string[];
     peek?: string;
     since?: string;
     until?: string;
     // Display sort order. Consumed by ExploreCanvas only — the live fetch is
     // always recency-desc; "oldest" reverses the loaded window client-side.
     order?: string;
+    // P2: search sort toggle ("relevance"|"recent") and single-page search cursor.
+    search_sort?: string;
+    cursor?: string;
+    // Recent merged-timeline lens: accumulating cursor TRAIL (`cursors=c1,c2,…`).
+    // "Load more" appends the next_cursor so prior pages stay visible (the recent
+    // lens accumulates instead of replacing). Empty/absent = first page.
+    cursors?: string | string[];
+    // Upcoming (future) accumulating cursor TRAIL (`ucursors=u1,u2,…`). "Load more
+    // upcoming" appends the upcoming_next_cursor so revealed future records stay
+    // visible (count==reachability: all N upcoming reachable). Empty/absent = head only.
+    ucursors?: string | string[];
+    // P3: snapshot anchor for point-in-time stability. Forwarded unchanged across pages.
+    anchor?: string;
   }>;
 }) {
   // Empty-query loads still need the DAL gate; verifying once up front keeps

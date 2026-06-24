@@ -52,6 +52,13 @@ export function shouldIncludeSearchHit(
     allowedConnectors: ReadonlySet<string>;
     allowedConnectionIds: ReadonlySet<string>;
     enforceConnectionFilter: boolean;
+    /**
+     * EXCLUDE scope ("is not" facet / `-con:`): drop a hit whose connection identity
+     * is in this set ("everything except X"). Matched against the hit's concrete
+     * connection identity (connection_id or its connector_instance_id alias). Empty
+     * = exclude nothing.
+     */
+    excludeConnectionIds?: ReadonlySet<string>;
   }
 ): boolean {
   if (opts.allowedConnectors.size > 0 && !opts.allowedConnectors.has(hit.connector_id)) {
@@ -60,6 +67,18 @@ export function shouldIncludeSearchHit(
   if (opts.enforceConnectionFilter) {
     const hitConnectionId = pickHitConnectionId(hit);
     if (hitConnectionId && !opts.allowedConnectionIds.has(hitConnectionId)) {
+      return false;
+    }
+  }
+  // EXCLUDE: a hit on an excluded connection is dropped (everything except X). The
+  // excluded id may be the connection_id OR the connector_instance_id alias.
+  if (opts.excludeConnectionIds && opts.excludeConnectionIds.size > 0) {
+    const hitConnectionId = pickHitConnectionId(hit);
+    if (
+      (hitConnectionId && opts.excludeConnectionIds.has(hitConnectionId)) ||
+      (hit.connector_instance_id && opts.excludeConnectionIds.has(hit.connector_instance_id)) ||
+      (hit.connection_id && opts.excludeConnectionIds.has(hit.connection_id))
+    ) {
       return false;
     }
   }

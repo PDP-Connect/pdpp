@@ -26,6 +26,8 @@
  * filter, grant, or retrieval semantics.
  */
 
+import type { DeclaredFieldRoles } from "./declared-field-roles.ts";
+
 export type RecordKind = "message" | "money" | "event" | "activity" | "reader" | "location" | "titled" | "generic";
 
 export interface RecordKindDescriptor {
@@ -45,54 +47,13 @@ const KIND_LABELS: Record<RecordKind, string> = {
   generic: "record",
 };
 
-// Stream-name signals. Matched case-insensitively against the stream id.
-// Ordered by specificity: a `transactions` stream is money even though it is
-// not "message"-shaped, so money/event/message checks are independent and
-// the first that matches wins in `classifyByStreamName`.
-const MESSAGE_STREAM_RE = /(message|chat|conversation|thread|dm|email|mail|comment|post)/i;
-const MONEY_STREAM_RE =
-  /(transaction|payment|pay_statement|paystub|payroll|invoice|charge|expense|budget|ledger|order)/i;
-// Physical/measured activity: a workout, ride, or sleep session that leads with
-// numeric stats (distance / duration / score), distinct from a calendar `event`
-// (which leads with a start/end time). Checked ahead of EVENT so a `workout`
-// stream becomes an activity card rather than a bare event.
-const ACTIVITY_STREAM_RE = /(workout|exercise|activit(y|ies)|ride|run|swim|sleep|fitness|step)/i;
-const EVENT_STREAM_RE = /(visit|appointment|event|booking|reservation|session|trip)/i;
-// Geo / place streams: a check-in, saved place, or location ping that leads
-// with coordinates. Field-level lat/lng is the strong signal (below); the name
-// is a weak hint.
-const LOCATION_STREAM_RE = /(location|place|check[-_ ]?in|geo|visit_place|where|trip_point)/i;
-const TITLED_STREAM_RE =
-  /(document|file|issue|pull_request|repository|repo|gist|note|memory|channel|album|track|playlist|page|record|statement)/i;
-
-// Field-name signals. A money record carries an amount-shaped field; an event
-// carries a when-shaped field other than the envelope timestamps.
-const MONEY_FIELD_RE = /(amount|_cents$|^cents$|price|balance|total|gross_pay|net_pay|income|budgeted)/i;
-const MESSAGE_FIELD_RE = /^(content|text|message|body|snippet)$/i;
-const MESSAGE_AUTHOR_RE = /^(author|author_role|role|from|sender|user|username)$/i;
-const TITLE_FIELD_RE = /^(title|name|subject|merchant|provider_name|employer|document_kind|full_name)$/i;
-// Geo coordinate pair — the unambiguous location signal. A record carrying both
-// a latitude- and longitude-shaped field is a place regardless of stream name.
-const LAT_FIELD_RE = /^(lat|latitude)$/i;
-const LNG_FIELD_RE = /^(lng|lon|long|longitude)$/i;
-// Measured-activity stats — distance / duration / elevation / a score. A pair
-// (or a distance/duration alone) marks a workout-style record. `steps` and
-// `calories` are common fitness aggregates.
-const ACTIVITY_STAT_RE = /^(distance|distance_m|duration|elapsed|elapsed_time|elevation|elev_gain|steps|calories)$/i;
-// A long-text body field — the reader signal. Same names as the message body,
-// but reader is gated on the body actually being long (see hasLongBody).
-const LONG_BODY_RE = /^(body|content|article|text|markdown|html)$/i;
-// Minimum characters for a body field to count as "long-form" reading material.
-const READER_MIN_BODY_CHARS = 280;
-
-function hasField(data: Record<string, unknown>, re: RegExp): boolean {
-  for (const key of Object.keys(data)) {
-    if (re.test(key)) {
-      return true;
-    }
-  }
-  return false;
-}
+// NOTE: the stream-name / field-name guessing engine (MESSAGE_STREAM_RE, MONEY_FIELD_RE,
+// LAT/LNG_FIELD_RE, ACTIVITY_STAT_RE, LONG_BODY_RE, hasField, classifyByStreamName /
+// StrongField / WeakField / refineByBody) was DELETED. `kind` is now derived SOLELY from
+// declared `x_pdpp_type` signals (classifyByDeclaredTypes). An undeclared stream is
+// `generic` with a neutral glyph — never name-guessed. This makes the kind glyph uniform
+// with the content honesty gate: every presentation fact is manifest-authored or honestly
+// generic, and `reader` (which required measuring a long body) folds into titled/generic.
 
 /**
  * A map of declared field name → declared presentation `type`, taken from the
@@ -205,167 +166,77 @@ function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | n
   return null;
 }
 
-function classifyByStreamName(stream: string): RecordKind | null {
-  if (MESSAGE_STREAM_RE.test(stream)) {
-    return "message";
-  }
-  if (MONEY_STREAM_RE.test(stream)) {
+/**
+ * Dispatch a kind from declared presentation ROLES — the OTHER declared signal
+ * (alongside types). A role is a manifest declaration, not a name guess, so it is
+ * an equally honest kind source — but ONLY for the kinds a role unambiguously
+ * implies: a declared `amount` role is money; a declared `event-time` role is an
+ * event. Anything else with a title/secondary/actor is `titled`.
+ *
+ * `actor` does NOT imply `message` (Codex end-review blocker, 2026-06-22): an
+ * `actor` role means "authored / attributed by", which is equally true of a music
+ * TRACK (artist), a pull request (author), and a chat turn. There is no declared
+ * signal that a record is CONVERSATIONAL, so claiming `message` from `actor` alone
+ * over-claims. The `message` kind requires a declared TYPE pair (person + text),
+ * handled by classifyByDeclaredTypes. A role-authored stream that declares an actor
+ * (e.g. chatgpt/messages) renders as `titled`; its declared actor still surfaces in
+ * the card via the declared-actor display (record-preview.ts), so the author is not
+ * lost — only the unwarranted `message` glyph is.
+ *
+ * Returns null when no role implies a distinct kind.
+ */
+function classifyByDeclaredRoles(roles: DeclaredFieldRoles): RecordKind | null {
+  const declared = new Set(Object.values(roles));
+  if (declared.has("amount")) {
     return "money";
   }
-  // Activity and location are checked ahead of the broad EVENT match so a
-  // `workouts` or `check_ins` stream gets its specific card instead of a bare
-  // event. Both are narrowly named, so this does not steal calendar events.
-  if (ACTIVITY_STREAM_RE.test(stream)) {
-    return "activity";
-  }
-  if (LOCATION_STREAM_RE.test(stream)) {
-    return "location";
-  }
-  if (EVENT_STREAM_RE.test(stream)) {
+  if (declared.has("event-time")) {
     return "event";
   }
-  if (TITLED_STREAM_RE.test(stream)) {
+  if (declared.has("primary-title") || declared.has("secondary") || declared.has("actor")) {
     return "titled";
   }
   return null;
 }
 
 /**
- * Strong field signal - overrides the stream-name guess. A genuine
- * amount-shaped field means money regardless of how the stream is named (an
- * `orders` or opaque `records` stream that carries `amount_cents` is money);
- * a genuine lat/lng pair means a location for the same reason.
- */
-function classifyByStrongField(data: Record<string, unknown>): RecordKind | null {
-  if (hasField(data, MONEY_FIELD_RE)) {
-    return "money";
-  }
-  // A genuine coordinate pair is as unambiguous as an amount field: a record
-  // carrying both lat and lng is a place no matter how the stream is named.
-  if (hasField(data, LAT_FIELD_RE) && hasField(data, LNG_FIELD_RE)) {
-    return "location";
-  }
-  return null;
-}
-
-/** True when the body has a long-form text field (the reader signal). */
-function hasLongBody(data: Record<string, unknown>): boolean {
-  for (const [k, v] of Object.entries(data)) {
-    if (typeof v === "string" && v.trim().length >= READER_MIN_BODY_CHARS && LONG_BODY_RE.test(k)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** True when the body carries a measured-activity stat field. */
-function hasActivityStat(data: Record<string, unknown>): boolean {
-  return hasField(data, ACTIVITY_STAT_RE);
-}
-
-/**
- * Weak field signal - only promotes a stream the name could not classify
- * (`generic`). A title or message field refines an unknown stream but must
- * not override a confident event/message/money stream-name match (a clinical
- * `visit` stays an event even though it carries a `provider_name` title).
- */
-function classifyByWeakField(data: Record<string, unknown>): RecordKind | null {
-  if (hasField(data, MESSAGE_FIELD_RE) && hasField(data, MESSAGE_AUTHOR_RE)) {
-    return "message";
-  }
-  if (hasField(data, TITLE_FIELD_RE)) {
-    return "titled";
-  }
-  return null;
-}
-
-/**
- * Classify a feed row.
+ * Classify a feed row's presentation `kind` — the leading glyph + kind tag.
  *
- * `data` is the record body when the lens has it (recency / time-range) and
- * `null` for search hits, which carry only a snippet.
+ * `kind` is derived SOLELY from DECLARED signals: declared `x_pdpp_type`
+ * (classifyByDeclaredTypes) and declared `x_pdpp_role` (classifyByDeclaredRoles).
+ * There is NO stream-name / field-name / body-shape guessing: a stream that
+ * declares no recognized type OR role is `generic` with a neutral glyph, exactly
+ * as the content honesty gate renders an undeclared record as the honest generic
+ * card. Types win first (they carry the money/geo/activity distinctions); roles
+ * fill in the message/event/titled kinds a role-authored stream declares (e.g.
+ * chatgpt/messages: content→primary-title + role→actor ⇒ message). This keeps the
+ * glyph honest — manifest-authored or neutral, never inferred from a name.
  *
- * `fieldTypes` is the optional declared presentation-type map for the stream
- * (`field_capabilities[].type`, sourced from the manifest). When the manifest
- * declares types, they are the **preferred** dispatch signal and win over the
- * stream-name / field-name heuristic — a declared `currency` type is a money
- * card by declaration, not by guess. When no declared type is recognized (or
- * none is declared at all), the row falls through to the original heuristic
- * unchanged.
- *
- * `manifestFieldNames` is an optional list of field names taken from the
- * connector manifest's `schema.properties` keys. When the record body is
- * absent (search hits), manifest fields provide the same heuristic signals
- * that the body's actual keys would provide — without any new network call.
- * This improves kind tags for streams whose names are opaque (e.g.
- * `accounts` carrying `balance_cents`). The manifest hint is:
- *   - only consulted when `data` is null (body wins when present);
- *   - treated as the same heuristic tier as body field names (not a
- *     protocol claim), so the result stays presentation-only.
+ * Signature note: `_data` and `_manifestFieldNames` are retained for call-site
+ * compatibility but are NO LONGER consulted (they were the body/manifest-name
+ * guessing inputs). `reader` is no longer reachable (it required measuring a long
+ * body); a long-text stream is `titled`/`message` per its declared type/role.
  */
 export function classifyRecordKind(
-  stream: string,
-  data: Record<string, unknown> | null,
+  _stream: string,
+  _data: Record<string, unknown> | null,
   fieldTypes?: DeclaredFieldTypes | null,
-  manifestFieldNames?: readonly string[] | null
+  _manifestFieldNames?: readonly string[] | null,
+  roles?: DeclaredFieldRoles | null
 ): RecordKindDescriptor {
-  // Declared field types are the preferred signal. When present, they decide
-  // the kind ahead of the stream-name / field-name heuristic. They are still
-  // presentation-only — the precise card body (`buildRecordPreview`) requires
-  // an actual record body, so a no-body search hit gets at most a kind tag,
-  // never an invented precise card.
   if (declaredTypesPresent(fieldTypes)) {
     const declared = classifyByDeclaredTypes(fieldTypes as DeclaredFieldTypes);
     if (declared) {
       return { kind: declared, label: KIND_LABELS[declared] };
     }
-    // Declared types present but none carried a recognized kind signal: fall
-    // through to the heuristic rather than forcing `generic`.
   }
-
-  const byStream = classifyByStreamName(stream);
-  // A strong (money / coordinate) field signal overrides the stream-name guess;
-  // a weak (title/message) field signal only fills in when the stream name
-  // itself could not classify the row. Two body-only refinements sit between
-  // them: a measured-activity stat promotes an event/unclassified row to
-  // `activity`, and a long-form text body promotes a titled/unclassified row to
-  // `reader`. Neither overrides a confident message/money/location match.
-  if (data) {
-    const strong = classifyByStrongField(data);
-    const weak = classifyByWeakField(data);
-    const base = strong ?? byStream ?? weak ?? "generic";
-    const kind = refineByBody(base, data);
-    return { kind, label: KIND_LABELS[kind] };
-  }
-  // No body — try manifest fields as a fallback heuristic before giving up.
-  // `reader` is intentionally not derivable here: it requires an actual long
-  // body, which field names alone cannot establish.
-  if (manifestFieldNames && manifestFieldNames.length > 0) {
-    const fakeFields = Object.fromEntries(manifestFieldNames.map((k) => [k, true]));
-    const strong = classifyByStrongField(fakeFields);
-    const weak = classifyByWeakField(fakeFields);
-    let kind = strong ?? byStream ?? weak ?? "generic";
-    if ((kind === "generic" || kind === "event") && hasActivityStat(fakeFields)) {
-      kind = "activity";
+  // Declared ROLES are an equally-honest declared signal (not a name guess).
+  if (roles && Object.keys(roles).length > 0) {
+    const byRole = classifyByDeclaredRoles(roles);
+    if (byRole) {
+      return { kind: byRole, label: KIND_LABELS[byRole] };
     }
-    return { kind, label: KIND_LABELS[kind] };
   }
-  const kind = byStream ?? "generic";
-  return { kind, label: KIND_LABELS[kind] };
-}
-
-/**
- * Body-only refinements applied after the strong/stream/weak base is chosen.
- * An activity stat promotes an `event` or unclassified row to `activity`; a
- * long-form body promotes a `titled` or unclassified row to `reader`. A
- * confident `message`/`money`/`location` base is never overridden.
- */
-function refineByBody(base: RecordKind, data: Record<string, unknown>): RecordKind {
-  if ((base === "event" || base === "generic" || base === "titled") && hasActivityStat(data)) {
-    return "activity";
-  }
-  if ((base === "titled" || base === "generic") && hasLongBody(data)) {
-    return "reader";
-  }
-  return base;
+  // No declared type or role signal → honest neutral `generic` glyph.
+  return { kind: "generic", label: KIND_LABELS.generic };
 }

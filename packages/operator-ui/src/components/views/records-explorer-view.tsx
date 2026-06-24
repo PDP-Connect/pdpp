@@ -13,6 +13,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
+import { humanizeFieldLabel } from "../../lib/field-label.ts";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
@@ -33,8 +34,11 @@ export type {
   ExplorerFieldCapability,
   ExplorerLens,
   ExplorerPeekData,
+  ExplorerStreamDoor,
+  ExplorerStreamSeeAllLink,
   ExplorerWarning,
   RecordsExplorerData,
+  SetDescriptor,
 } from "./explorer-utils.ts";
 // biome-ignore lint/performance/noBarrelFile: This view preserves the historical import seam while helpers live in a framework-free module.
 export {
@@ -54,7 +58,6 @@ export {
 } from "./explorer-utils.ts";
 
 import type {
-  ExplorerActivityCell,
   ExplorerActivitySummary,
   ExplorerBlobAffordance,
   ExplorerConnectionFacet,
@@ -66,17 +69,13 @@ import type {
 } from "./explorer-utils.ts";
 import {
   buildExplorerHref,
-  computeActivityStripCells,
   emptyFeedMessage,
   explorerPeekParam,
   feedCountLabel,
   feedDescription,
   feedSectionTitle,
   groupFeedByDay,
-  isoDayFromMs,
 } from "./explorer-utils.ts";
-
-const MS_PER_DAY = 86_400_000;
 
 interface ExplorerFilterItem {
   label: string;
@@ -97,7 +96,6 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
     activitySummary,
     peek,
     fromSearch,
-    hybridUsed,
     lens,
     truncated,
     warnings,
@@ -108,7 +106,6 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       activitySummary={activitySummary}
       connections={connections}
       feed={feed}
-      hybridUsed={hybridUsed}
       lens={lens}
       peekId={peek ? explorerPeekParam(peek) : null}
       query={query}
@@ -247,7 +244,6 @@ function ExplorerMain({
   until,
   feed,
   activitySummary,
-  hybridUsed,
   lens,
   truncated,
   peekId,
@@ -262,7 +258,6 @@ function ExplorerMain({
   until: string;
   feed: ExplorerFeedEntry[];
   activitySummary: ExplorerActivitySummary | null;
-  hybridUsed: boolean;
   lens: ExplorerLens;
   truncated: boolean;
   peekId: string | null;
@@ -320,18 +315,14 @@ function ExplorerMain({
 
       {activitySummary?.source === "exact_window" ? <CorpusSummary summary={activitySummary} /> : null}
 
-      {lens === "recent" && feed.length > 0 ? (
-        <ActivityStrip
-          cells={computeActivityStripCells(feed)}
-          query={query}
-          routes={routes}
-          selectedConnectionIds={selectedConnectionIds}
-          selectedStreams={selectedStreams}
-          totalRecords={feed.length}
-        />
-      ) : null}
+      {/* The legacy loaded-only ActivityStrip ("from the most recent N records")
+          was RETIRED (over-time-chart cell §0/§8): a histogram fed by loaded
+          entries and labeled "most recent N" is a count-reachability lie. The
+          honest, brushable volume band — TRUE per-bucket totals over the filtered
+          grant-scoped corpus (server group_by_time aggregate) — renders in the
+          live ExploreCanvas (over-time-chart.tsx). Two strips can never both ship. */}
 
-      <Section description={feedDescription(lens, hybridUsed)} title={feedSectionTitle(lens)}>
+      <Section description={feedDescription(lens)} title={feedSectionTitle(lens)}>
         <ExplorerFeedContent
           connections={connections}
           feed={feed}
@@ -703,85 +694,6 @@ function CorpusSummary({ summary }: { summary: ExplorerActivitySummary }) {
   );
 }
 
-// Server-deterministic day label for the strip tooltip. Locale-pinned, UTC.
-const ACTIVITY_CELL_LABEL_FMT = new Intl.DateTimeFormat("en-US", {
-  weekday: "short",
-  month: "short",
-  day: "numeric",
-  timeZone: "UTC",
-});
-
-function ActivityStrip({
-  cells,
-  query,
-  routes,
-  selectedConnectionIds,
-  selectedStreams,
-  totalRecords,
-}: {
-  cells: ExplorerActivityCell[];
-  query: string;
-  routes: Routes;
-  selectedConnectionIds: string[];
-  selectedStreams: string[];
-  totalRecords: number;
-}) {
-  if (cells.length === 0) {
-    return null;
-  }
-  const max = cells.reduce((m, c) => Math.max(m, c.count), 0);
-  return (
-    <section aria-label={`activity over the last ${cells.length} days`} className="mb-5">
-      <div className="mb-1.5 flex items-baseline justify-between gap-3">
-        <h2 className="pdpp-eyebrow text-muted-foreground">Activity · last {cells.length} days</h2>
-        <span className="pdpp-caption text-muted-foreground tabular-nums">
-          from the most recent {totalRecords.toLocaleString()} records
-        </span>
-      </div>
-      <div className="flex h-10 items-end gap-[2px]">
-        {cells.map((c) => {
-          const intensity = max === 0 || c.count === 0 ? 0 : 0.18 + 0.82 * (c.count / max);
-          const nextDay = isoDayFromMs(Date.parse(`${c.day}T00:00:00Z`) + MS_PER_DAY);
-          const dayLabel = ACTIVITY_CELL_LABEL_FMT.format(new Date(`${c.day}T00:00:00Z`));
-          const title = `${dayLabel} · ${c.count.toLocaleString()} record${c.count === 1 ? "" : "s"}`;
-          const wrapperClass = `relative flex h-full min-w-[6px] flex-1 flex-col justify-end rounded-sm ${
-            c.isToday ? "ring-1 ring-foreground/40" : ""
-          }`;
-          const fill = (
-            <span
-              aria-hidden
-              className="block w-full rounded-sm bg-foreground"
-              style={{
-                height: c.count === 0 ? "8%" : `${Math.round(intensity * 100)}%`,
-                opacity: c.count === 0 ? 0.12 : 1,
-              }}
-            />
-          );
-          if (c.count === 0) {
-            return (
-              <span className={wrapperClass} key={c.day} title={title}>
-                {fill}
-              </span>
-            );
-          }
-          const href = buildExplorerHref(routes, {
-            query,
-            connectionIds: selectedConnectionIds,
-            streams: selectedStreams,
-            since: c.day,
-            until: nextDay,
-          });
-          return (
-            <Link className={`${wrapperClass} hover:opacity-80`} href={href} key={c.day} title={title}>
-              {fill}
-            </Link>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
 function BlobAffordance({ affordance }: { affordance: ExplorerBlobAffordance }) {
   if (affordance.state === "unavailable") {
     return (
@@ -844,31 +756,13 @@ function CardEyebrow({ entry }: { entry: ExplorerFeedEntry }) {
   );
 }
 
-function RetrievalBadge({ entry }: { entry: ExplorerFeedEntry }) {
-  if (entry.retrievalMode !== "semantic" && entry.retrievalMode !== "hybrid") {
-    return null;
-  }
-  return (
-    <span
-      className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-      title={
-        entry.retrievalMode === "hybrid"
-          ? "Found by hybrid retrieval (experimental)."
-          : "Found by semantic retrieval (experimental)."
-      }
-    >
-      {entry.retrievalMode}
-    </span>
-  );
-}
-
 function SummaryBody({ entry }: { entry: ExplorerFeedEntry }) {
-  return (
-    <p className="break-words text-foreground text-sm">
-      {entry.summary}
-      <RetrievalBadge entry={entry} />
-    </p>
-  );
+  // The old field-name-guessing `entry.summary` is gone. Show honest content: the
+  // declared-role preview title/body, else a search hit's matched snippet, else the
+  // neutral record id — never a guessed summary. (This view is the non-live explorer
+  // path; the live feed renders via explore-canvas's rowPrimary/rowSecondary.)
+  const line = entry.preview?.title ?? entry.preview?.body ?? entry.snippet ?? entry.recordId;
+  return <p className="break-words text-foreground text-sm">{line}</p>;
 }
 
 function MoneyBody({ preview }: { preview: RecordPreview }) {
@@ -992,10 +886,42 @@ function LocationBody({ preview }: { preview: RecordPreview }) {
   );
 }
 
+// The HONEST GENERIC card (design.md §5.4). An undeclared record renders the
+// manifest-authored stream label (the card eyebrow, shared) + the declared
+// event time (the row timestamp, shared) + the record identity (the eyebrow
+// carries connection/stream; the peek carries the record id) + a readable
+// key/value table of its declared fields with humanized labels. It NEVER
+// guesses a message/money/photo shape. Prior art: Datadog's generic log
+// attribute table. `title`/`body` appear ONLY when a manifest declared those
+// roles (the empty default leaves them absent → pure table).
+function GenericBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.title || preview.body || preview.fields?.length)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+      {preview.body ? (
+        <p className="mt-0.5 line-clamp-2 text-muted-foreground text-sm leading-snug">{preview.body}</p>
+      ) : null}
+      {preview.fields?.length ? (
+        <dl className="rr-x-kv mt-1.5">
+          {preview.fields.map((field) => (
+            <div className="rr-x-kv__row" key={field.name}>
+              <dt className="rr-x-kv__label">{field.label}</dt>
+              <dd className="rr-x-kv__value">{field.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
 const PREVIEW_BODY_BY_KIND: Record<RecordKind, (preview: RecordPreview) => ReactNode> = {
   activity: (preview) => <ActivityBody preview={preview} />,
   event: (preview) => <EventBody preview={preview} />,
-  generic: () => null,
+  generic: (preview) => <GenericBody preview={preview} />,
   location: (preview) => <LocationBody preview={preview} />,
   message: (preview) => <MessageBody preview={preview} />,
   money: (preview) => <MoneyBody preview={preview} />,
@@ -1036,16 +962,36 @@ function ExplorerCard({
   const surface = selected
     ? "border-foreground/30 bg-muted/50"
     : "border-border/70 bg-card hover:border-border hover:bg-muted/20";
+  // Row body — shared by the desktop and mobile links below.
+  const cardBody = (
+    <>
+      <div className="mb-1 flex items-baseline justify-between gap-3">
+        <CardEyebrow entry={entry} />
+        <span className="pdpp-caption shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
+          {/* Day-grouped feed: the section header carries the date ("Today",
+              "Monday, June 15"), so the row shows TIME-OF-DAY only (relative when
+              recent) — the Slack / iMessage / Outlook timeline pattern. The full
+              date+time stays in the hover title. See
+              docs/research/explore-timeline-legibility-stability-validation-2026-06-19.md */}
+          <Timestamp precision="time" value={entry.displayAt} />
+        </span>
+      </div>
+      <CardBody entry={entry} />
+    </>
+  );
   return (
     <div className={`${rule} ${surface} transition-colors`}>
-      <Link className="block py-2.5 pr-3 pl-4" href={peekHref}>
-        <div className="mb-1 flex items-baseline justify-between gap-3">
-          <CardEyebrow entry={entry} />
-          <span className="pdpp-caption shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
-            <Timestamp value={entry.displayAt} />
-          </span>
-        </div>
-        <CardBody entry={entry} />
+      {/* Responsive master-detail dual-link (mirrors SplitLayout's `xl` peek
+          breakpoint): on desktop the peek pane is visible, so the row opens it
+          via ?peek=; on mobile the peek pane is HIDDEN (SplitLayout), so the row
+          must navigate to the full-page record detail route instead — otherwise
+          a mobile tap sets ?peek and nothing renders. See
+          docs/research/explore-chatgpt-three-bugs-2026-06-20.md (bug 3). */}
+      <Link className="hidden py-2.5 pr-3 pl-4 xl:block" href={peekHref}>
+        {cardBody}
+      </Link>
+      <Link className="block py-2.5 pr-3 pl-4 xl:hidden" href={recordHref}>
+        {cardBody}
       </Link>
       {entry.blobAffordance ? (
         <div className="border-border/50 border-t px-4 py-1.5">
@@ -1110,6 +1056,12 @@ function ExplorerPeek({
           <div className="pdpp-eyebrow mb-1">Record id</div>
           <code className="break-all font-mono text-foreground">{peek.recordId}</code>
         </div>
+        {peek.semanticTimestamp ? (
+          <div>
+            <div className="pdpp-eyebrow mb-1">{peek.semanticTimestamp.label}</div>
+            <Timestamp value={peek.semanticTimestamp.value} />
+          </div>
+        ) : null}
         <div>
           <div className="pdpp-eyebrow mb-1">Emitted</div>
           <Timestamp value={peek.emittedAt} />
@@ -1137,9 +1089,16 @@ function PeekBody({ peek }: { peek: ExplorerPeekData }) {
         {peek.fields.map((field) => (
           <div className="grid gap-1 px-2 py-2 sm:grid-cols-[minmax(8rem,12rem)_1fr]" key={field.name}>
             <dt className="min-w-0">
-              <code className="break-all font-mono text-foreground">{field.name}</code>
+              {/* Humanized label is the primary, readable key (the honest generic
+                  card, design.md §5.4); the raw field key stays beneath it in
+                  mono so the inspector remains debuggable. The humanization is a
+                  LABEL transform only — never a type/role signal. */}
+              <span className="break-words font-medium text-foreground">{humanizeFieldLabel(field.name)}</span>
+              <code className="block break-all font-mono text-[0.7rem] text-muted-foreground">{field.name}</code>
               {field.type ? (
-                <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-muted-foreground">{field.type}</span>
+                <span className="mt-0.5 inline-block rounded bg-muted px-1 py-0.5 text-muted-foreground">
+                  {field.type}
+                </span>
               ) : null}
             </dt>
             <dd className="min-w-0">

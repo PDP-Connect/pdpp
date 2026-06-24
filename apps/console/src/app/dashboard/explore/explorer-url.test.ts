@@ -35,6 +35,16 @@ test("buildExplorerHref returns the bare path when nothing is set", () => {
   assert.equal(href, "/dashboard/explore");
 });
 
+// U1 — canonical-default URL lock (THE-LENS Gate 1: "the default 'All' view is the BARE
+// canonical path with NO query params; defaults are never serialized"). This forbids the
+// param-injection anti-pattern (e.g. `?lens=recent` / `?sort=newest`) that would create a
+// second representation of "All" and break isAllView. See honesty-copy/design.md §2, U1.
+test("U1: the default Explore view emits the bare canonical path with NO querystring", () => {
+  const href = buildExplorerHref(dashboardRoutes, {});
+  assert.equal(href, dashboardRoutes.section.explore, "default href must equal the canonical section route");
+  assert.ok(!href.includes("?"), `default href must carry no querystring, got "${href}"`);
+});
+
 test("buildExplorerHref carries the date window when set", () => {
   const href = buildExplorerHref(dashboardRoutes, {
     since: "2026-05-21",
@@ -171,7 +181,6 @@ function fakeEntry(displayAt: string, recordId: string): ExplorerFeedEntry {
     recordId,
     emittedAt: displayAt,
     displayAt,
-    summary: `summary ${recordId}`,
   };
 }
 
@@ -289,24 +298,51 @@ test("emptyFeedMessage returns distinct copy for each lens family", () => {
   assert.equal(emptyFeedMessage("search"), emptyFeedMessage("search_with_ignored_time_window"));
 });
 
-test("feedDescription returns a non-empty string for every lens × hybridUsed combination", () => {
+// Honesty-copy lock (THE-LENS Gate 1 / Part 0 "AI-slop copy"): owner-facing feed copy
+// carries ZERO engine vocabulary. Asserted against the RENDERED string outputs only —
+// never whole-source, which would false-positive on the retained `retrievalMode` type
+// and the data-field use that gates the match excerpt. "retrieval" is deliberately NOT
+// in this regex (it survives in code comments/identifiers); the badge-render absence is
+// guarded by source-regex in page.invariants.test.ts instead.
+const ENGINE_VOCAB_RE = /hybrid|lexical|semantic|embedding|BM25|deduplicat|consent-time/i;
+
+test("feedDescription returns a non-empty, human, engine-vocabulary-free string for every lens", () => {
   for (const lens of ALL_LENSES) {
-    for (const hybrid of [true, false]) {
-      const desc = feedDescription(lens, hybrid);
-      assert.ok(desc.length > 0, `feedDescription("${lens}", ${hybrid}) returned empty string`);
-    }
+    const desc = feedDescription(lens);
+    assert.ok(desc.length > 0, `feedDescription("${lens}") returned empty string`);
+    assert.doesNotMatch(desc, ENGINE_VOCAB_RE, `feedDescription("${lens}") leaks engine vocabulary: "${desc}"`);
+    // Sentence-case + real prose: starts uppercase, ends with a period.
+    assert.match(desc, /^[A-Z].*\.$/, `feedDescription("${lens}") is not a sentence-case sentence: "${desc}"`);
   }
 });
 
-test("feedDescription distinguishes hybrid from lexical for search lenses", () => {
-  assert.notEqual(feedDescription("search", true), feedDescription("search", false));
-  assert.notEqual(
-    feedDescription("search_with_ignored_time_window", true),
-    feedDescription("search_with_ignored_time_window", false)
-  );
-  // hybridUsed is irrelevant for non-search lenses
-  assert.equal(feedDescription("recent", true), feedDescription("recent", false));
-  assert.equal(feedDescription("time_range", true), feedDescription("time_range", false));
+test("feedDescription search copy claims relevance/best-matches, never ordering or completeness", () => {
+  // The relevance-bounded set cannot page to the end and is not time-ordered: its copy
+  // must say "best matches" and must NOT claim "newest first" / "all" / "complete".
+  for (const lens of ["search", "search_with_ignored_time_window"] as const) {
+    const desc = feedDescription(lens);
+    assert.match(desc.toLowerCase(), /best matches/, `search copy ("${lens}") must say "best matches": "${desc}"`);
+    assert.doesNotMatch(
+      desc.toLowerCase(),
+      /newest first|\ball\b|complete/,
+      `search copy ("${lens}") must not claim ordering/completeness: "${desc}"`
+    );
+  }
+});
+
+test("feedDescription search_with_ignored_time_window preserves the date-range-not-applied caveat", () => {
+  // The boundary fact is owner-actionable ("clear the search") and must survive the rewrite.
+  const desc = feedDescription("search_with_ignored_time_window").toLowerCase();
+  assert.match(desc, /date range isn't applied|date range is not applied/, `time-window caveat lost: "${desc}"`);
+});
+
+test("feedDescription time-ordered lenses may say newest first; the exclusion caveat survives", () => {
+  // recent + time_range ARE chronological, so "newest first" is honest there.
+  assert.match(feedDescription("recent").toLowerCase(), /newest first/);
+  const timeRange = feedDescription("time_range");
+  assert.match(timeRange.toLowerCase(), /newest first/);
+  // time_range still tells the owner sources without a time field are excluded.
+  assert.match(timeRange.toLowerCase(), /aren't shown|not shown|excluded/, `time_range exclusion caveat lost: "${timeRange}"`);
 });
 
 test("feedCountLabel formats counts with locale separators and singular grammar", () => {

@@ -78,6 +78,7 @@ export interface ListWithPeekParams<T> {
   routes: Routes;
   rowKey: (item: T) => string;
   subject: TimelineSubject;
+  subjectLabel?: string;
   title: string;
 }
 
@@ -93,6 +94,7 @@ function subjectHref(subject: TimelineSubject, id: string, routes: Routes): stri
 
 function PeekContent<T>({ params }: { params: ListWithPeekParams<T> }) {
   const { peekId, peekEnvelope, routes, subject, peekCliCommand, buildListHref } = params;
+  const subjectLabel = params.subjectLabel ?? subject;
   if (!peekId) {
     return <PeekEmpty />;
   }
@@ -100,8 +102,8 @@ function PeekContent<T>({ params }: { params: ListWithPeekParams<T> }) {
   const openHref = subjectHref(subject, peekId, routes);
   if (!peekEnvelope) {
     return (
-      <PeekPane closeHref={closeHref} openHref={openHref} title={`${subject} ${peekId}`}>
-        <p className="text-muted-foreground">{titleCase(subject)} not found.</p>
+      <PeekPane closeHref={closeHref} openHref={openHref} title={`${subjectLabel} ${peekId}`}>
+        <p className="text-muted-foreground">{titleCase(subjectLabel)} not found.</p>
       </PeekPane>
     );
   }
@@ -110,7 +112,7 @@ function PeekContent<T>({ params }: { params: ListWithPeekParams<T> }) {
       cliCommand={peekCliCommand(peekId)}
       closeHref={closeHref}
       openHref={openHref}
-      title={`${subject} ${peekId}`}
+      title={`${subjectLabel} ${peekId}`}
     >
       <PeekPivots envelope={peekEnvelope} routes={routes} subject={subject} />
       <div className="pdpp-caption mb-2 text-muted-foreground">{peekEnvelope.events.length} events</div>
@@ -267,11 +269,16 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
     </>
   );
 
+  const pageCount = result.data.length;
+  const countBasis = result.has_more
+    ? `${pageCount.toLocaleString()} on this page`
+    : `${pageCount.toLocaleString()} shown`;
+
   return (
     <>
       <PageHeader
         actions={headerActions}
-        count={`${result.data.length}${result.has_more ? "+" : ""}`}
+        count={countBasis}
         description={description}
         title={title}
       />

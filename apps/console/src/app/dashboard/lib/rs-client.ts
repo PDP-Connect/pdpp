@@ -59,10 +59,16 @@ export interface RecordsWindowMeta {
   total: number;
 }
 
+export interface RecordsCountMeta {
+  kind: "estimated" | "exact" | "none";
+  value?: number;
+}
+
 export interface RecordsPage {
   data: StreamRecord[];
   has_more: boolean;
   meta?: {
+    count?: RecordsCountMeta;
     window?: RecordsWindowMeta;
     [k: string]: unknown;
   };
@@ -181,13 +187,15 @@ async function authedFetch(path: string, params?: Record<string, string | number
 }
 
 interface ConnectionReadOptions {
+  connectionId?: string | null;
   connectorInstanceId?: string | null;
 }
 
 export async function listStreams(connectorId: string, opts: ConnectionReadOptions = {}): Promise<StreamSummary[]> {
   const body = (await authedFetch("/v1/streams", {
     connector_id: connectorId,
-    connector_instance_id: opts.connectorInstanceId,
+    connection_id: opts.connectionId,
+    connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as {
     data: StreamSummary[];
   };
@@ -201,7 +209,8 @@ export async function getStreamMetadata(
 ): Promise<StreamMetadata> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}`, {
     connector_id: connectorId,
-    connector_instance_id: opts.connectorInstanceId,
+    connection_id: opts.connectionId,
+    connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as StreamMetadata;
 }
 
@@ -209,8 +218,10 @@ export async function queryRecords(
   connectorId: string,
   stream: string,
   opts: {
+    connectionId?: string | null;
     connectorInstanceId?: string | null;
     cursor?: string;
+    count?: "estimated" | "exact" | "none";
     /**
      * Exact-match payload filters, encoded on the wire as `filter[field]=value`.
      * Used by relationship navigation to scope a child stream's list to one
@@ -231,7 +242,9 @@ export async function queryRecords(
   }
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
-    connector_instance_id: opts.connectorInstanceId,
+    connection_id: opts.connectionId,
+    connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
+    count: opts.count,
     limit: opts.limit ?? 50,
     cursor: opts.cursor,
     order: opts.order,
@@ -255,6 +268,76 @@ export async function queryRecords(
 }
 
 /**
+ * One time bucket from the `group_by_time` aggregate (the server's `groups[]`).
+ * `key` is the ISO bucket-start (`YYYY-MM-DD` for day/week/month, `…THH:MM` for
+ * hour) or null (the null/unparseable bucket). `count` is the TRUE total over
+ * the filtered, grant-scoped corpus — not a loaded page.
+ */
+export interface AggregateTimeBucket {
+  count: number;
+  key: string | null;
+}
+
+/** Granularities the server's `group_by_time` aggregate accepts. */
+export type TimeBucketGranularity = "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year";
+
+/**
+ * Response of `GET /v1/streams/{stream}/aggregate` with `group_by_time`. The
+ * `groups` ARE the true per-bucket totals (the in-process floor counts every
+ * visible row, not a page), so the chart's bar heights == reachable reality.
+ */
+export interface TimeBucketAggregate {
+  approximate: boolean;
+  filtered_record_count: number;
+  granularity: string;
+  group_by_time: string;
+  groups: AggregateTimeBucket[];
+  metric: "count";
+  object: "aggregation";
+  other_count?: number;
+  stream: string;
+  time_zone: string;
+  warnings: CanonicalReadWarning[];
+}
+
+/**
+ * Time-bucket COUNT aggregate over a stream — the honest data source for the
+ * over-time chart's bars (design §2). Calls the already-shipped
+ * `GET /v1/streams/{stream}/aggregate` with `metric=count` +
+ * `group_by_time=<timestamp field>` + `granularity` + `time_zone`, returning the
+ * TRUE per-bucket totals over the filtered, grant-scoped corpus (NOT loaded
+ * entries). The stream's manifest must declare `query.aggregations.group_by_time`
+ * for the timestamp field and grant it; an undeclared/ungranted stream throws,
+ * which the caller treats as a partial source (never a fabricated total).
+ */
+export async function aggregateRecordsByTime(
+  connectorId: string,
+  stream: string,
+  opts: {
+    connectionId?: string | null;
+    connectorInstanceId?: string | null;
+    groupByTime: string;
+    granularity: TimeBucketGranularity;
+    timeZone?: string;
+  }
+): Promise<TimeBucketAggregate> {
+  const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
+    connector_id: connectorId,
+    connection_id: opts.connectionId,
+    connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
+    metric: "count",
+    group_by_time: opts.groupByTime,
+    granularity: opts.granularity,
+    time_zone: opts.timeZone,
+  })) as TimeBucketAggregate;
+  return {
+    ...body,
+    groups: Array.isArray(body.groups) ? body.groups : [],
+    warnings: extractReadWarnings(body),
+  };
+}
+
+/**
  * Fetch a single record by its envelope key.
  *
  * Uses the spec endpoint `GET /v1/streams/:stream/records/:id`. The :id in the
@@ -271,7 +354,8 @@ export async function getRecord(
 ): Promise<StreamRecord> {
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
     connector_id: connectorId,
-    connector_instance_id: opts.connectorInstanceId,
+    connection_id: opts.connectionId,
+    connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as StreamRecord;
   return {
     ...body,
@@ -337,7 +421,7 @@ export interface SearchResultPage {
  */
 export async function searchRecordsLexical(
   query: string,
-  opts: { streams?: string[]; limit?: number; cursor?: string } = {}
+  opts: { streams?: string[]; limit?: number; cursor?: string; order?: "relevance" | "recent" } = {}
 ): Promise<SearchResultPage> {
   await verifyDashboardSession();
   const token = await getOwnerToken();
@@ -348,6 +432,11 @@ export async function searchRecordsLexical(
   }
   if (typeof opts.cursor === "string" && opts.cursor) {
     url.searchParams.set("cursor", opts.cursor);
+  }
+  // order=recent produces genuine emitted_at DESC ordering within the lexical
+  // candidate window. Default (omit or "relevance") keeps BM25 score order.
+  if (opts.order === "recent") {
+    url.searchParams.set("order", "recent");
   }
   // Repeated `streams=` entries — server normalizes to an array.
   for (const s of opts.streams ?? []) {
@@ -917,6 +1006,7 @@ async function paginateSampleRecords(
   while (records.length < sampleLimit) {
     const remaining = sampleLimit - records.length;
     const page = await queryRecords(connectorId, streamName, {
+      connectionId: opts.connectionId,
       connectorInstanceId: opts.connectorInstanceId,
       limit: Math.min(pageSize, remaining),
       cursor,
@@ -1079,17 +1169,24 @@ function computeFieldSummary(fields: FieldHealth[]) {
 export async function streamHealth(
   connectorId: string,
   streamName: string,
-  opts: { connectorInstanceId?: string | null; sampleSize?: number; pageSize?: number } = {}
+  opts: {
+    connectionId?: string | null;
+    connectorInstanceId?: string | null;
+    sampleSize?: number;
+    pageSize?: number;
+  } = {}
 ): Promise<StreamHealth> {
   const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20_000));
   const pageSize = Math.max(1, Math.min(opts.pageSize ?? 500, 1000));
 
   const { cursorField, declaredProps } = await resolveStreamDef(connectorId, streamName);
   const totalRecords = await resolveTotalRecords(connectorId, streamName, {
+    connectionId: opts.connectionId,
     connectorInstanceId: opts.connectorInstanceId,
   });
 
   const records = await paginateSampleRecords(connectorId, streamName, sampleLimit, pageSize, {
+    connectionId: opts.connectionId,
     connectorInstanceId: opts.connectorInstanceId,
   });
   const fieldNames = collectFieldNames(declaredProps, records);

@@ -981,6 +981,16 @@
 .rr-sync-group__dot.is-ok { background: var(--success); }
 .rr-sync-group__dot.is-fail { background: var(--warning); }
 .rr-sync-group__name { font-size: 0.9rem; font-weight: 700; }
+.rr-sync-group__status {
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rr-sync-group__status.is-ok { color: var(--success); }
+.rr-sync-group__status.is-fail { color: var(--warning); }
 .rr-sync-group__cin {
   font-family: var(--font-mono);
   font-size: 0.62rem;
@@ -1015,6 +1025,14 @@
 .rr-sync-group__when {
   white-space: nowrap;
 }
+.rr-sync-group__run-link {
+  color: var(--foreground);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.rr-sync-group__run-link:hover { text-decoration: underline; }
 
 /* Sync row — composed over the kit Table (pdpp-table__row). */
 .rr-sync-row-shell { margin: 0; }
@@ -1488,11 +1506,30 @@
    Ported from the Recordroom design (explore.css), token-driven, radius 0.
    ═══════════════════════════════════════════════════════════════════ */
 .rr-x {
+  position: relative;
   display: grid;
-  /* P0-3: widen inspector column (350→420px) so long IDs/values don't wrap chaotically */
-  grid-template-columns: 230px minmax(0, 1fr) 420px;
+  /* D2 (Codex plan-check 2026-06-22): list-primary explorer. DEFAULT = 2 columns
+     (rail | feed); the feed claims the freed width and there is NO reserved-empty
+     inspector column. The inspector is a 3rd column ONLY with `.has-selection`
+     (a record peeked) — this removes both the dead canvas and the query-bar /
+     inspector overlap that the starved middle column caused at 1366/1440. */
+  grid-template-columns: 230px minmax(0, 1fr);
   gap: 28px;
   align-items: start;
+}
+/* Selected/peek state (desktop): reveal the inspector as the 3rd column. The
+   420px inspector width (P0-3: long IDs/values don't wrap chaotically) is paid
+   for ONLY when there is a record to read. */
+.rr-x.has-selection {
+  grid-template-columns: 230px minmax(0, 1fr) 420px;
+}
+/* With no selection the inspector renders its empty "reading room" placeholder
+   (RecordInspector with record===null). It must NOT occupy or reserve a column
+   in the 2-col grid — hide it entirely until a record is selected. The component
+   render stays unchanged (peek wiring + URL-addressability untouched); CSS owns
+   the visibility, so the inspector mounts the instant `.has-selection` flips. */
+.rr-x:not(.has-selection) > .rr-inspector {
+  display: none;
 }
 
 /* ─── Facet rail ─── */
@@ -1532,12 +1569,154 @@
 .rr-x-rail__toggle::-webkit-details-marker {
   display: none;
 }
+/* ─── VIEWS section (SLVP recomposition) ───
+   A calm sidebar header above SOURCES: Explore (in-view count) + Upcoming (188).
+   Matches the prototype's left-sidebar VIEWS block. Counts right-aligned, muted;
+   active view in the accent. */
+.rr-x-views {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+.rr-x-views__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.rr-x-views__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--foreground);
+}
+.rr-x-views__item.is-active {
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+  font-weight: 500;
+}
+.rr-x-views__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Saved-view tabs (R5) ──────────────────────────────────────────
+   A quiet horizontal tab row under the command-bar: [All] [saved…] [+ Save].
+   User-authored named queries (NOT guessed presets). Tab names are SANS (user
+   content); the active-view count is MONO (a machine value). The row scrolls
+   horizontally on narrow widths rather than wrapping, so it never grows the
+   chrome height. */
+.rr-x-views-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 0 2px;
+}
+.rr-x-views-tabs::-webkit-scrollbar {
+  display: none;
+}
+.rr-x-views-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.rr-x-views-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-views-tab:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.rr-x-views-tab.is-active {
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+  font-weight: 500;
+}
+.rr-x-views-tab__name {
+  white-space: nowrap;
+}
+/* Count rides ONLY on the active tab → mono (machine value), muted. */
+.rr-x-views-tab__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-views-tab.is-active .rr-x-views-tab__count {
+  color: var(--primary);
+}
+/* Quiet × delete, revealed on hover of the saved-tab wrapper. */
+.rr-x-views-tab__del {
+  flex: 0 0 auto;
+  margin-left: -2px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-state), color var(--motion-state);
+}
+.rr-x-views-tab-wrap:hover .rr-x-views-tab__del,
+.rr-x-views-tab__del:focus-visible {
+  opacity: 1;
+}
+.rr-x-views-tab__del:hover {
+  color: var(--foreground);
+}
+/* "+ Save view" reads as a quiet action, distinct from a real view tab. */
+.rr-x-views-tab--save {
+  color: var(--primary);
+}
+.rr-x-views-tab__input {
+  flex: 0 0 auto;
+  width: 7.5rem;
+  padding: 2px 8px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
 .rr-x-facets {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 .rr-x-facets__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.1em;
@@ -1548,18 +1727,138 @@
   /* Give the section eyebrow real room below before the first facet row. */
   margin-bottom: 8px;
 }
+/* F4: the "N in view" magnitude badge beside a facet section eyebrow, so the
+   stream rail reads as a bounded, countable set rather than an endless wall. */
+.rr-x-facets__count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* F4: capped, scrollable facet region. A long stream list (≈70 streams) scrolls
+   inside the 230px rail instead of pushing the feed down a flat wall. The cap is a
+   relative max-height so short lists are unaffected; the rail rule keeps the
+   active filters + non-empty streams pinned to the top (see StreamFacets). On
+   mobile the whole rail already lives in a <details> with its own scroll, so the
+   inner cap is relaxed there to avoid a nested scroll trap. */
+.rr-x-facets__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 22rem;
+  overflow-y: auto;
+}
 .rr-x-facets__note {
   font-size: 10.5px;
   color: var(--muted-foreground);
   padding: 0 0 4px;
   line-height: 1.4;
 }
+/* W4: "search within filters" box — tames many sources/streams without a flat
+   wall (prior art: Datadog/Linear search-in-filter). Reuses the form-control
+   tokens (border, radius, ring) so it matches the rest of the console. */
+.rr-x-facets__search {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--foreground);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  transition: border-color var(--motion-state);
+}
+.rr-x-facets__search::placeholder {
+  color: var(--muted-foreground);
+}
+.rr-x-facets__search:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+}
+/* W4: source-grouped stream facets — a collapsible <details> per source (parent
+   source → its streams). Default-collapsed (the rail is a builder, not a wall);
+   StreamFacets force-opens a group when it holds an active filter or matches an
+   active search. Mirrors the rail's own <details> disclosure idiom. */
+.rr-x-source-group {
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-source-group__summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 0;
+  color: var(--muted-foreground);
+  transition: color var(--motion-state);
+}
+.rr-x-source-group__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-x-source-group__summary:hover {
+  color: var(--foreground);
+}
+/* A quiet disclosure caret (▸ collapsed / ▾ open) so the parent reads as a group
+   the owner can fold, without a heavy icon. */
+.rr-x-source-group__summary::before {
+  content: "▸";
+  font-size: 9px;
+  color: var(--muted-foreground);
+  transition: transform var(--motion-state);
+}
+.rr-x-source-group[open] > .rr-x-source-group__summary::before {
+  transform: rotate(90deg);
+}
+.rr-x-source-group__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-x-source-group__n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rr-x-source-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 8px 12px;
+}
+/* "Show all N streams" — top-N-then-more within a busy source group. A quiet
+   text affordance, never a heavy button, matching the rail's lens vocabulary. */
+.rr-x-source-group__more {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color var(--motion-state);
+}
+.rr-x-source-group__more:hover {
+  color: var(--foreground);
+}
 .rr-x-facet {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: baseline;
-  padding: 4px 0;
+  min-height: 34px;
+  padding: 6px 0;
   background: none;
   border: 0;
   color: var(--muted-foreground);
@@ -1602,6 +1901,57 @@
   font-family: var(--font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+/* "in view" qualifier — a facet/day count is the LOADED-window count, never a
+   claimed total (item #8 / Codex day-count red line). The quiet qualifier makes
+   the bare number unmistakably "what's loaded", not "the total". */
+.rr-x-facet__inview {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  /* Sidebar count contrast (verifier polish): lifted from 0.75 so the "in view"
+     qualifier is legible, not a ghost. */
+  opacity: 0.9;
+}
+
+/* ─── Facet row: INCLUDE toggle + "is not" EXCLUDE toggle (Linear) ─── */
+.rr-x-facet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px;
+}
+.rr-x-facet-row .rr-x-facet {
+  min-width: 0;
+}
+/* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
+   active so an exclusion reads as a distinct, intentional negative scope. */
+.rr-x-facet-not {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 4px 5px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity var(--motion-state), color var(--motion-state);
+}
+.rr-x-facet-row:hover .rr-x-facet-not {
+  opacity: 0.8;
+}
+.rr-x-facet-not.is-on {
+  color: var(--warning);
+  opacity: 1;
+}
+/* An excluded row strikes through the name so "everything except X" is legible. */
+.rr-x-facet-row.is-excluded .rr-x-facet__name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--warning);
 }
 
 /* ─── Inline marks (image / derived title) ─── */
@@ -1676,6 +2026,16 @@
   min-width: 280px;
   width: auto;
 }
+.rr-x-searchcommit {
+  align-self: center;
+  flex-shrink: 0;
+}
+/* D12: sort + Options controls sub-row. On desktop this is a transparent flex
+   wrapper — sort and Options items sit inline in the parent searchrow. On mobile
+   (≤860px) this becomes the "row 2" compact strip (see mobile media query). */
+.rr-x-searchrow__controls {
+  display: contents;
+}
 .rr-x-sort {
   display: flex;
   align-items: center;
@@ -1689,15 +2049,412 @@
   text-transform: uppercase;
   color: var(--muted-foreground);
 }
-.rr-x-ranges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.rr-x-jump {
+/* (.rr-x-ranges removed — the four standalone date buttons were replaced by the
+   single Date chip below; the class is no longer rendered.) */
+.rr-x-copyview {
   margin-left: auto;
 }
+
+/* ─── Date chip — the ONE date control (display + editor) ───
+   One quiet chip in the command bar; clicking it opens a hybrid popover with
+   presets (apply instantly) + a Custom From/To range (explicit Apply). The chip
+   phrase is SANS (a human statement of the active window); mono lives ONLY on the
+   literal date inputs (machine values) — the mono-rule (THE-LENS Gate 1). It sits
+   at the same weight as the Options disclosure beside it. */
+.rr-x-datechip {
+  position: relative;
+  flex: 0 0 auto;
+}
+/* The chip shell carries the border + active tint; the trigger + × sit inside it
+   as borderless sibling controls (no button-in-a-button). */
+.rr-x-datechip__chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  transition: border-color var(--motion-state), background var(--motion-state);
+}
+.rr-x-datechip__chip:hover {
+  border-color: var(--border-strong);
+}
+/* Active window: the chip reads as a live filter (primary tint), like a chip. */
+.rr-x-datechip__chip.is-active {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+.rr-x-datechip__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 8px;
+  white-space: nowrap;
+  transition: color var(--motion-state);
+}
+.rr-x-datechip__chip:hover .rr-x-datechip__trigger,
+.rr-x-datechip__chip.is-active .rr-x-datechip__trigger {
+  color: var(--foreground);
+}
+.rr-x-datechip__chip.is-active .rr-x-datechip__trigger {
+  color: var(--primary);
+}
+.rr-x-datechip__trigger:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+.rr-x-datechip__phrase {
+  font-family: var(--font-sans);
+}
+.rr-x-datechip__x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--primary);
+  background: none;
+  border: 0;
+  opacity: 0.7;
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 4px 6px 4px 2px;
+}
+.rr-x-datechip__x:hover,
+.rr-x-datechip__x:focus-visible {
+  opacity: 1;
+  outline: none;
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
+}
+/* The popover — same card/elevation grammar as the Options disclosure body. */
+.rr-x-datechip__popover {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(280px, calc(100vw - 32px));
+  max-width: min(280px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.rr-x-datechip__presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rr-x-datechip__preset {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  color: var(--foreground);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-datechip__preset:hover {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.rr-x-datechip__preset:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: -2px;
+}
+/* The active preset reads as selected (the radio's current value). */
+.rr-x-datechip__preset.is-on {
+  color: var(--primary);
+  background: var(--primary-tint);
+  font-weight: 500;
+}
+.rr-x-datechip__custom {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.rr-x-datechip__custom-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.rr-x-datechip__fields {
+  display: flex;
+  gap: 8px;
+}
+.rr-x-datechip__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.rr-x-datechip__field-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+/* The literal date inputs are MACHINE values → mono (the mono-rule). */
+.rr-x-datechip__date {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 5px 6px;
+  width: 100%;
+  min-width: 0;
+}
+.rr-x-datechip__date:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--primary);
+}
+.rr-x-datechip__apply {
+  align-self: flex-end;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--primary-foreground, #fff);
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: opacity var(--motion-state);
+}
+.rr-x-datechip__apply:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.rr-x-datechip__apply:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.rr-x-datechip__apply:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+/* Search-mode header: the descriptor-claim title + its escape ramp / sort toggle.
+   Without an explicit layout the title span and the escape link ran together
+   ("…'stream:messages'Browse matching records…"). Lay it out as a wrapping row so
+   the title reads as the primary claim and the escape/sort reads as a secondary
+   action beside it. */
+.rr-x-search-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.rr-x-search-header__title {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.rr-x-browse-all-escape {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rr-x-browse-all-escape:hover {
+  color: var(--primary);
+}
+.rr-x-search-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rr-x-goto {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding-top: 2px;
+}
+.rr-x-goto__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-goto__input {
+  min-width: 0;
+}
+.rr-x-goto__feedback {
+  grid-column: 2 / -1;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* ─── Unified query input (ONE box: text + chips + id-jump) ─── */
+/* design.md §4 / wireframe A — Gmail's one-bar exemplar. The input, the inline
+   "Jump to record" affordance, and the typeahead menu all live in one relative
+   container so the menu/jump anchor below the field. */
+.rr-x-queryinput {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 280px;
+}
+.rr-x-searchrow__input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rr-x-queryinput__icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+  opacity: 0.6;
+  user-select: none;
+}
+.rr-x-queryinput .rr-x-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* The search field is the primary PROSE-entry affordance, so it is SANS — not
+     the .pdpp-input base mono. A mono search box is the single biggest "developer
+     console" tell (SLVP redesign: mono is for ids/operators/amounts only, never
+     the natural-language search input). Operator tokens still render mono via the
+     typeahead (.rr-x-typeahead__op) and chips, where mono IS correct. */
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+}
+.rr-x-queryinput__chevron {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  background: none;
+  border: 1px solid var(--border-strong);
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: color var(--motion-state), border-color var(--motion-state);
+}
+.rr-x-queryinput__chevron:hover {
+  color: var(--foreground);
+}
+/* Inline "↵ Jump to record <id>" — command-palette style, NOT a second box. */
+.rr-x-queryinput__jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary);
+  background: var(--primary-tint);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.rr-x-queryinput__jump-id {
+  color: var(--foreground);
+  opacity: 0.85;
+}
+/* Typeahead recognition menu — anchored card, each item == its operator.
+   VIEWPORT CLAMP (Slice 5, #6 — "the operators popup runs off the screen"): the
+   menu is anchored to the relatively-positioned `.rr-x-queryinput` and stretched
+   `left:0; right:0`, so it is already width-bounded to the input and CANNOT
+   overflow the right edge on desktop or mobile (no JS measurement needed). Two
+   pure-CSS guards harden the remaining edges:
+     • `max-width: 100vw` is a belt-and-suspenders cap so the card never exceeds
+       the viewport width even if an ancestor is wider than the screen.
+     • `max-height: min(280px, 60vh)` + `overflow-y: auto` clamps the BOTTOM edge:
+       on a short viewport the list scrolls internally instead of running past the
+       fold. SSR-safe (no measurement, no client positioning). */
+.rr-x-typeahead {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  max-width: 100vw;
+  max-height: min(280px, 60vh);
+  overflow-y: auto;
+}
+.rr-x-typeahead__item {
+  display: block;
+}
+.rr-x-typeahead__btn.is-active,
+.rr-x-typeahead__btn:hover {
+  background: var(--muted);
+}
+.rr-x-typeahead__btn {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.rr-x-typeahead__label {
+  font-size: 12px;
+  color: var(--foreground);
+}
+.rr-x-typeahead__op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+/* Section label rendered above the first item of each group (SOURCES / STREAMS / FILTERS / SEARCH). */
+.rr-x-typeahead__section {
+  display: block;
+  padding: 6px 8px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  /* Separate from the previous group without a visible divider. */
+  margin-top: 2px;
+}
+.rr-x-typeahead__section:first-child {
+  margin-top: 0;
+}
+/* Count badge: honest record count shown next to source/stream suggestions. */
+.rr-x-typeahead__count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .rr-x-help {
   position: relative;
 }
@@ -1758,6 +2515,71 @@
   display: inline-block;
 }
 
+/* ─── Options disclosure (SLVP recomposition) ───
+   The date ranges + operators help + copy-view-link were a flat second toolbar
+   row; they now collapse into ONE quiet "Options" disclosure beside the search
+   input, so the command-bar is a single calm row. Mirrors the .rr-x-help popover
+   pattern: relative trigger, absolute viewport-clamped body anchored to the right
+   so it grows leftward into the feed column (never off-screen on 390px). */
+.rr-x-options {
+  position: relative;
+  flex: 0 0 auto;
+}
+.rr-x-options__summary {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+}
+.rr-x-options__summary:hover {
+  color: var(--foreground);
+}
+.rr-x-options__summary:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
+  outline-offset: 2px;
+}
+.rr-x-options__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-x-options__body {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 2px);
+  right: 0;
+  left: auto;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.rr-x-options__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rr-x-options__label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
 /* ─── Chip bar ─── */
 .rr-x-active {
   display: flex;
@@ -1765,26 +2587,83 @@
   gap: 7px;
   align-items: center;
 }
+
+/* 3-zone chip: [property][operator][value][×]
+   Matches prototype chip anatomy (Concept C):
+   property pill → operator pill (click to toggle is/is-not) → value pill → × dismiss */
 .rr-x-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  padding: 4px 6px 4px 9px;
-  background: var(--primary-tint);
-  color: var(--primary);
+  overflow: hidden;
   border: 1px solid var(--primary);
   border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  flex-shrink: 0;
+  user-select: none;
+  /* keep the legacy color on the container for border/background tinting */
+  color: var(--primary);
+}
+/* Property zone — muted label so the value leads */
+.rr-x-chip__property {
+  padding: 3px 6px;
+  background: var(--primary-tint);
+  font-weight: 500;
+  color: var(--primary);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
+}
+/* Operator zone — secondary; click toggles is ↔ is not when canNegate */
+.rr-x-chip__op {
+  padding: 3px 5px;
+  background: color-mix(in oklab, var(--primary-tint) 60%, var(--background));
+  font-weight: 400;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
+  transition: background var(--motion-state), color var(--motion-state);
+}
+.rr-x-chip__op[role="button"] {
   cursor: pointer;
 }
+.rr-x-chip__op[role="button"]:hover,
+.rr-x-chip__op[role="button"]:focus-visible {
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
+  color: var(--foreground);
+  outline: none;
+}
+/* Negated operator gets a stronger tint so "is not" reads as distinct */
+.rr-x-chip__op--negated {
+  background: color-mix(in oklab, var(--destructive, #dc2626) 10%, var(--background));
+  color: var(--destructive, #dc2626);
+}
+/* Value zone */
+.rr-x-chip__value {
+  padding: 3px 6px;
+  background: var(--primary-tint);
+  font-weight: 400;
+  color: var(--primary);
+  font-size: 11px;
+  border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
+}
+/* × dismiss button */
 .rr-x-chip__x {
+  padding: 3px 7px 3px 5px;
+  background: var(--primary-tint);
+  color: var(--primary);
+  border: none;
+  cursor: pointer;
   font-size: 13px;
   line-height: 1;
+  display: flex;
+  align-items: center;
   opacity: 0.7;
+  font-family: inherit;
+  transition: opacity var(--motion-state), background var(--motion-state);
 }
-.rr-x-chip:hover .rr-x-chip__x {
+.rr-x-chip__x:hover {
   opacity: 1;
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
 }
 .rr-x-clearall {
   font-family: var(--font-mono);
@@ -1847,11 +2726,53 @@
   margin-top: 6px;
   display: block;
 }
+.rr-x-raw {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+}
+.rr-x-raw > summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+}
+.rr-x-raw > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.rr-x-raw > pre {
+  margin: 0;
+  overflow-x: auto;
+  border-top: 1px solid var(--border);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.rr-x-stream-all {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.rr-x-stream-all:hover {
+  color: var(--primary);
+}
 
 /* ─── Count + lens-description line ─── */
 .rr-x-pulse__note {
   font-family: var(--font-mono);
   font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+.rr-x-scope-note {
   color: var(--muted-foreground);
 }
 .rr-x-feeddesc {
@@ -1860,6 +2781,119 @@
   color: var(--muted-foreground);
   margin: 0;
   max-width: 70ch;
+}
+/* Mobile chrome recomposition (live re-walk D12): on a phone the default-feed
+   description ("Recent across every visible connection…") duplicates the count line
+   and pushes content below the fold — hide it ≤860px. The SEARCH-state descriptions
+   carry real honesty disclosures (retrieval method / connection identity), so this
+   only hides the redundant DEFAULT-feed prose, kept via the .is-default modifier. */
+@media (max-width: 860px) {
+  .rr-x-feeddesc.is-default {
+    display: none;
+  }
+}
+
+/* ─── Over-time chart — a quiet Grafana-style VOLUME BAND above the feed ───
+   Records-per-time-bucket of the SAME filtered set the feed shows (TRUE totals
+   from the server group_by_time aggregate). Brushable into the ONE canonical
+   (since,until). Calm single band, never a hero panel: two text colors, the one
+   accent for the selection, tabular-nums on the count, sharp Ink-Carbon corners.
+   See over-time-chart.tsx + explore-over-time-chart.ts. */
+.rr-x-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rr-x-chart__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rr-x-chart__caption {
+  /* Prose caption (sans) — names the set kind + bucket unit; never a machine wall. */
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+.rr-x-chart__total {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-x-chart__total-num {
+  /* The count is a machine value → tabular-nums, mono. */
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+.rr-x-chart__partial {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.rr-x-chart__band {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 48px;
+  /* A faint baseline so an all-empty span still reads as a present time axis. */
+  border-bottom: 1px solid var(--border);
+  touch-action: pan-y;
+}
+.rr-x-chart__bar {
+  /* Each bar fills its share of the band width; the inner fill carries height. */
+  flex: 1 1 0;
+  min-width: 3px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+.rr-x-chart__band.is-brushable .rr-x-chart__bar {
+  cursor: pointer;
+}
+.rr-x-chart__bar-fill {
+  display: block;
+  width: 100%;
+  background: var(--foreground);
+  opacity: 0.82;
+  transition: opacity var(--motion-state), background var(--motion-state);
+}
+.rr-x-chart__bar.is-empty .rr-x-chart__bar-fill {
+  /* An empty bucket is an explicit faint baseline tick — present, never a gap. */
+  opacity: 0.12;
+}
+.rr-x-chart__bar.is-hovered .rr-x-chart__bar-fill {
+  opacity: 1;
+}
+/* Selection band (focus + context): the shaded span over the FULL strip, in the
+   one accent at low opacity, derived purely from since/until. The whole
+   distribution stays visible while the selection narrows. */
+.rr-x-chart__bar.is-selected .rr-x-chart__bar-fill,
+.rr-x-chart__bar.is-dragging .rr-x-chart__bar-fill {
+  background: var(--primary);
+  opacity: 0.9;
+}
+.rr-x-chart__bar.is-selected.is-empty .rr-x-chart__bar-fill,
+.rr-x-chart__bar.is-dragging.is-empty .rr-x-chart__bar-fill {
+  opacity: 0.32;
+}
+.rr-x-chart__readout {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--primary);
+}
+/* Mobile (≤860px): a compact band; touch = tap-a-bar (drag-brush is a desktop
+   enhancement — the Date popover sheet is the precise touch path). */
+@media (max-width: 860px) {
+  .rr-x-chart__band {
+    height: 36px;
+  }
 }
 
 /* ─── Warnings — calm product notice, plain language leads ─── */
@@ -1906,35 +2940,195 @@
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border-strong);
+  /* Day-header craft (D8, aligned to the approved prototype .day-header): the date
+     reads as a calm section marker via WEIGHT + caps + breathing room — NOT a rule
+     line. The prototype has no header border (it leans on whitespace + the sticky
+     blur); the hairline here read as one more table rule, so it is removed. */
+  padding-bottom: 8px;
 }
+/* Day/section header: smaller + heavier + uppercase LABEL, quieter by COLOR than the
+   row primary but structural by WEIGHT (W2 consensus: Vercel caption, Primer subhead).
+   It reads as structure via weight/caps/letter-spacing while staying recessive in
+   color, so it never out-shouts the actual records. */
 .rr-x-day__label {
-  font-size: 12.5px;
-  font-weight: 700;
+  /* §4 / prototype .day-label: 11px / 600 / uppercase / 0.07em / MUTED. The date is
+     structure (read via weight + caps + tracking), recessive in COLOR so it never
+     out-shouts the actual records below it. An earlier polish made this 12.5px full-
+     foreground non-caps — that out-competed the row titles; reverted to the gate. */
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 .rr-x-day__n {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
+/* "in view" qualifier on the day header — the count is records LOADED for the day,
+   not a true day total (Codex red line: a bare number reads like a total). */
+.rr-x-day__inview {
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
 
-/* ─── Record rows ─── */
-.rr-x-row {
+/* ─── Upcoming (future-dated) section ───
+   Collapsed-by-default pill at the top of the recent timeline so scheduled /
+   future-dated records never sit above today. Muted so today's activity leads. */
+.rr-x-upcoming {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+}
+.rr-x-upcoming__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.rr-x-upcoming__toggle:hover {
+  color: var(--foreground);
+}
+.rr-x-upcoming__chevron {
+  color: var(--muted-foreground);
+}
+.rr-x-upcoming__count {
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-upcoming__hint {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-x-upcoming__body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-top: 16px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+/* "Load more upcoming" affordance: walks the future projection to exhaustion so
+   the "N upcoming" count is fully reachable (count==reachability). */
+.rr-x-upcoming__more {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-left: 12px;
+}
+.rr-x-upcoming__more-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* ─── Burst (same-stream cluster) ───
+   A burst is a (connection, stream) cluster that crossed BURST_THRESHOLD within a
+   day. SLVP preview-content-by-default (Codex plan-check 2026-06-22): it NEVER
+   renders as a content-less count header — it always shows its first PREVIEW_COUNT
+   rows (rr-x-burst__rows), with the head as a quiet LEFT-ALIGNED summary line and
+   an explicit "Show all M" toggle. The head + toggle mirror the muted/mono
+   typography of the day header and the Upcoming toggle. */
+.rr-x-burst {
+  display: flex;
+  flex-direction: column;
+}
+/* Summary line: "<count> <connection / stream> in view". LEFT-aligned and muted
+   so it reads as a quiet group label above its preview rows, never centered (the
+   F6 center-alignment defect) and never competing with the rows themselves. */
+.rr-x-burst__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  text-align: left;
+  padding: 4px 0 2px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.rr-x-burst__count {
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-x-burst__stream {
+  color: var(--primary);
+}
+/* "Show all M ↓" / "Collapse to first N ↑" — a quiet left-aligned action, mirroring
+   the Upcoming toggle. Only rendered when hidden rows exist (hiddenCount > 0). */
+.rr-x-burst__toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-state);
+}
+.rr-x-burst__toggle:hover {
+  color: var(--foreground);
+}
+/* Burst count qualifier: the count is the records LOADED for this (connection,
+   stream) within the day, not a claimed complete day-total — so it reads "N in
+   view", never implying completeness the client can't prove. */
+.rr-x-burst__inview {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ─── Record rows ───
+   W1 content-first anatomy + W2 typography (prior art: Primer ActionList, Sentry,
+   Stripe, Linear, Geist). The row is a HORIZONTAL track:
+     [type-glyph fixed slot] [body: content line over muted source/time] [time] [action]
+   so every primary content line left-aligns to one x and is scannable by category.
+   Body text is proportional SANS (var(--font-sans), the inherited default) — mono is
+   reserved for protocol strings (ids/hashes), NOT the feed body. Hierarchy is carried
+   by weight + size + a foreground→muted color ladder, not by family or color shouting. */
+.rr-x-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
   width: 100%;
   text-align: left;
   background: none;
   border: 0;
-  border-bottom: 1px solid var(--border);
   color: inherit;
+  /* D6/D11 calibration vs the approved prototype (.record-row): rows are
+     SEPARATED BY WHITESPACE, not a per-row table rule. The 1px border-bottom
+     read as a ledger/terminal line on every row (the look the redesign exists to
+     kill); the benchmarks (Linear/Things/Superhuman feeds) use borderless rows
+     with hover/selection states. Day groups stay separated by .rr-x-days gap:22px.
+     A min-height gives the calm, scannable cadence the border used to imply. */
   padding: 9px 0 10px;
+  min-height: 48px;
   cursor: pointer;
-  transition: background var(--motion-state);
+  /* Selection MOTION (Slice 5, #7): the row crossfades background AND its selected
+     inset outline via the design-system state token, so becoming the peek row feels
+     intentional, not an instant flip. Both animated properties (background, box-
+     shadow) are paint-only — zero layout shift, no reflow of the feed. The token
+     collapses to an instant cut under reduced-motion (base.css zeroes --duration-*). */
+  transition: background var(--motion-state), box-shadow var(--motion-state);
   min-width: 0;
 }
 /* Reset anchor chrome when .rr-x-row is used on an <a> (mobile push nav). */
@@ -1948,21 +3142,49 @@ a.rr-x-row {
   background: var(--primary-tint);
   box-shadow: inset 0 0 0 1px var(--carbon-outline);
 }
+/* Leading type-glyph in a FIXED slot (Primer leadingVisual: a reserved area so
+   mixed rows align). Quiet by color — a category cue, never a content shout. */
+.rr-x-row__glyph {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  user-select: none;
+}
+/* The content column: primary line over the muted secondary/meta line. min-width:0
+   so its children can ellipsis-truncate inside the flex track. */
+.rr-x-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Line 2 wrapper: the optional snippet then the source/stream/time attribute line,
+   both muted and below the content. */
+.rr-x-row__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .rr-x-row__attr {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
+/* Stream name = a quiet label (sans, lightly accented by color). Not a protocol
+   string, so NOT mono — it rides as supporting context alongside the content. */
 .rr-x-row__stream {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--primary);
   white-space: nowrap;
 }
 .rr-x-row__con {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted-foreground);
   white-space: nowrap;
   overflow: hidden;
@@ -1970,27 +3192,68 @@ a.rr-x-row {
   flex: 1;
   min-width: 0;
 }
-.rr-x-row__rel {
+/* Per-record time-of-day, right-aligned, abbreviated, recede-able (tertiary tier:
+   12px / muted / tabular). The day-group header carries the date; the row carries
+   the time. Tabular figures so times align vertically without a mono font. */
+.rr-x-row__time {
+  flex: 0 0 auto;
+  /* A timestamp is a machine value → MONO (the SLVP type rule: mono only for
+     ids/timestamps/amounts/operators). It was sans; this aligns it with the
+     verified target type scale. tabular-nums keeps the times column-aligned. */
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted-foreground);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
 }
+.rr-x-row__action {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 1px 6px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rr-x-row:hover .rr-x-row__action,
+.rr-x-row:focus-visible .rr-x-row__action {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.rr-x-row.is-selected .rr-x-row__action {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+/* Primary tier: content line, 14px / 500 / full foreground, SANS. The 500 weight
+   (not 600) matches the verified target type scale (Geist label-14 / Primer
+   body-medium): primary by color + a restrained weight step, never heavy. This is
+   what flips the list from "terminal" to "product". */
 .rr-x-row__title {
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--foreground);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
+/* Neutral-fallback primary (no declared content): still SANS, just quieter by weight
+   and color so a content-bearing row reads at full strength. NOT mono — the terminal
+   look came from mono here; sans + muted keeps it a product. */
 .rr-x-row__title.is-derived {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
   font-weight: 400;
   color: var(--muted-foreground);
 }
+/* Secondary tier: snippet, 13px / 400 / foreground. */
 .rr-x-row__snippet {
-  font-size: 12px;
+  font-size: 13px;
+  /* Secondary text reads QUIETER than the title — muted, not full foreground — so
+     the title clearly leads (the two-tier hierarchy the benchmarks converge on).
+     Was --foreground (same darkness as the title); now muted. */
   color: var(--muted-foreground);
   white-space: nowrap;
   overflow: hidden;
@@ -2000,8 +3263,369 @@ a.rr-x-row {
   gap: 7px;
   min-width: 0;
 }
-.rr-x-role {
+/* F3 (mobile 390 right-edge clip): the snippet line is a flex row, so the
+   container's text-overflow:ellipsis cannot truncate the bare text child. The
+   text gets its OWN min-width:0 + overflow:hidden + ellipsis so it shrinks and
+   truncates inside the flex row instead of hard-clipping at the viewport edge. */
+.rr-x-row__snippet-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The matched terms inside a search excerpt — bold + foreground so the user sees
+   WHAT matched at a glance (the rest of the excerpt stays muted via the parent). */
+.rr-x-snippet-hit {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* ─── Honest generic key/value card (design.md §5.4) ─────────────────────────
+   The reference-honest fallback for an undeclared record: a readable key/value
+   table of declared fields with humanized labels, never a guessed typed card.
+   Used by the inspector peek pane and the full-record card (records-explorer-
+   view GenericBody). A two-column label/value grid; the label is quiet, the
+   value carries the foreground weight. Design-system tokens only. */
+.rr-x-kv {
+  display: grid;
+  grid-template-columns: minmax(6rem, 11rem) 1fr;
+  gap: 2px 14px;
+  margin: 0;
+}
+.rr-x-kv__row {
+  display: contents;
+}
+.rr-x-kv__label {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.rr-x-kv__value {
+  font-size: 0.78rem;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+/* ─── In-page navigation loading states ──────────────────────────────────────
+   Feedback for soft same-route `router.push` navigations (filters, sort, range,
+   search submit, Load-more, peek, "N new"). A soft same-route push does NOT fire
+   the route-level `loading.tsx`, so these are the only "the server is
+   re-rendering" signals while a `useTransition` is pending.
+
+   MOTION = design-system tokens ONLY. Token-based TRANSITIONS collapse under the
+   `:root` reduced-motion duration reset in base.css (--motion-state etc.).
+   KEYFRAME animations do NOT — base.css only zeroes the duration tokens — so
+   every keyframe here (the indeterminate slide, the spinner) is gated behind
+   `@media (prefers-reduced-motion: no-preference)` and falls back to a STATIC,
+   visible state. Reduced-motion users never see a moving/flashing indicator.
+   Reuses base.css keyframes `spin` + `fade-in`; the indeterminate sweep loop is
+   the one new keyframe (`rr-x-progress-slide`), its 1.5s cadence derived from
+   --duration-slow (matches the documented brand skeleton shimmer). */
+
+/* Top route-progress bar (Vercel/Linear signature). Absolutely positioned across
+   the top edge of the canvas so it never reflows content (no layout shift when it
+   appears/disappears on each navigation). The wrapper fades in; the bar sweeps.
+   The bar is decorative (aria-hidden in JSX); the wrapper is the polite live
+   region. */
+.rr-x-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  background: var(--border);
+  z-index: 2;
+  /* Base rule = the static, immediately-visible state (no keyframes). The track
+     is already visible; reduced-motion users get a present "loading" mark with
+     zero animation. ALL keyframes (the fade-in enter + the bar slide) live under
+     no-preference below. */
+}
+.rr-x-progress__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: var(--primary);
+  /* Reduced-motion fallback: a static, visible primary segment at the start.
+     No movement, no flash — just a clearly-present "loading" mark. */
+  transform: translateX(0);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-progress {
+    /* Token-based one-shot fade-in; only when motion is allowed. */
+    animation: fade-in var(--motion-enter) both;
+  }
+  .rr-x-progress__bar {
+    animation: rr-x-progress-slide calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+/* Feed busy state: while a navigation is in flight the region carries
+   `aria-busy` (assistive tech hears "updating") but the already-rendered records
+   stay at FULL opacity and FULL interactivity. useTransition keeps the current UI
+   live during the transition, so the owner can keep clicking / peeking / opening
+   records while more load — dimming the feed would falsely signal "inert" content
+   the user can in fact still use. The loading signal lives in the top progress bar
+   and the Load-more control, never on the interactive content itself. No
+   pointer-events block, no opacity dim. */
+
+/* Load-more button — resting + pending. Inline feed control in the `.rr-lens`
+   idiom; inline-flex so the spinner sits beside the label. Pending = disabled +
+   inline spinner + "Loading…" label (set in JSX). */
+.rr-x-loadmore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
   font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color var(--motion-state), border-color var(--motion-state), opacity var(--motion-state);
+}
+.rr-x-loadmore:hover:not(:disabled) {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.rr-x-loadmore:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.rr-x-loadmore__spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  /* Reduced-motion fallback: a static ring (no spin). Still reads as a busy
+     marker because the label already says "Loading…". */
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-loadmore__spinner {
+    animation: spin var(--duration-slow) linear infinite;
+  }
+}
+
+/* Row Link inline pending: a thin sweep along the bottom of the tapped row while
+   its `<Link>` navigation is in flight (Next `useLinkStatus`). Decorative
+   (aria-hidden in JSX). Fades in (token), sweeps (gated keyframe). */
+.rr-x-row__pending {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  /* Base rule = static, immediately-visible solid bar (no keyframes). Reduced-
+     motion users get a present pending mark with zero animation. The fade-in
+     enter + the sweep keyframes live under no-preference below. */
+  background: var(--primary);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-row__pending {
+    /* Token-based one-shot fade-in + the brighter sweep across the base. */
+    background: linear-gradient(90deg, var(--primary) 0%, var(--carbon-outline) 50%, var(--primary) 100%);
+    background-size: 200% 100%;
+    animation: fade-in var(--motion-enter) both, rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+/* Load-more skeleton rows (W3 / RL4 — insertion-point pending feedback).
+   Reserved-height row-shaped placeholders appended at the FOOT of the loaded feed
+   (above the Load-more button) while a Load-more push is in flight. They are
+   purely additive (the loaded rows above stay mounted, full-opacity, interactive)
+   and decorative (aria-hidden in JSX; a sibling polite live region carries the
+   announcement). The block reserves vertical space so the appended real page
+   does not push content with a layout jump (prior art finding 7).
+
+   MOTION = design-system tokens + the EXISTING `rr-x-row-pending-sweep` keyframe.
+   Base rule = a STATIC, visible placeholder (no keyframes) so reduced-motion
+   users see a present "loading" mark with zero flash; the shimmer sweep lives
+   ONLY under @media (prefers-reduced-motion: no-preference) below. No new
+   tokens, no new keyframe, no drop shadow. */
+.rr-x-loadmore-skeleton {
+  display: flex;
+  flex-direction: column;
+}
+/* Mirrors `.rr-x-row` box model so the placeholders occupy the row footprint
+   (same vertical rhythm + hairline divider), previewing where content lands. */
+.rr-x-skel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-skel-bar {
+  height: 9px;
+  border-radius: var(--radius-control);
+  /* Base (reduced-motion) fallback: a flat muted bar — present, no movement. */
+  background: var(--muted);
+}
+.rr-x-skel-bar--attr {
+  width: 38%;
+  height: 8px;
+}
+.rr-x-skel-bar--title {
+  width: 64%;
+}
+.rr-x-skel-bar--snippet {
+  width: 50%;
+  height: 8px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-loadmore-skeleton {
+    /* One-shot token fade-in on appear (matches rr-x-progress / rr-x-row__pending). */
+    animation: fade-in var(--motion-enter) both;
+  }
+  .rr-x-skel-bar {
+    /* Reuse the existing brand shimmer sweep keyframe + cadence (the documented
+       1.5s skeleton shimmer = --duration-slow * 3). Paint-only (background-position),
+       zero layout shift. */
+    background: linear-gradient(90deg, var(--muted) 0%, var(--border) 50%, var(--muted) 100%);
+    background-size: 200% 100%;
+    animation: rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+  }
+}
+
+@keyframes rr-x-progress-slide {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+@keyframes rr-x-row-pending-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ─── Group-expansion + load-more continuity motion (Slice 5, #7) ─────────────
+   Three model-state reveals share ONE `rr-x-reveal` keyframe — a short opacity +
+   small translateY settle:
+     • `.rr-x-upcoming__body` — the Upcoming disclosure body when it expands.
+     • `.rr-x-burst__rows`    — a burst's rows container. Under the preview-by-default
+       model this container is STABLE: it mounts ONCE (holding the preview rows) when
+       the burst first arrives in the feed and persists across the in-place
+       preview→expanded toggle (same React key path via burst.key). So the reveal
+       fires once on burst ARRIVAL (the "this cluster just appeared" settle, like a
+       day group), NOT on the Show-all toggle — the preview rows themselves render
+       statically, never a flash, and expansion appends rows without re-animating.
+     • `.rr-x-day`            — a day group on MOUNT. Because expand-state and feed
+       order are keyed by stable group id, an existing day group keeps its React
+       key across a load-more and does NOT re-animate; only a day group that is
+       NEWLY mounted (a just-revealed Upcoming/burst section, or a new day prepended
+       by load-more) plays the reveal. That makes the reveal communicate "this group
+       just arrived here" — load-more continuity, not decorative churn.
+
+   The motion animates ONLY opacity + transform, so it is PAINT/COMPOSITE-ONLY —
+   ZERO layout shift, no reflow of surrounding content (it never animates
+   height/margin/width). The container holds its real height immediately; only the
+   already-laid-out content settles into place.
+
+   Reduced-motion contract (matches the rr-x-progress / rr-x-row__pending
+   precedent): the base rule is the STATIC, fully-visible state (opacity:1, no
+   transform). The keyframe lives ONLY inside @media (prefers-reduced-motion:
+   no-preference), so reduced-motion users get the content immediately with zero
+   movement — never a fade/slide they did not ask for. */
+.rr-x-burst__rows {
+  /* Mirror the column flow rows use everywhere else, so wrapping the expanded
+     burst in a reveal container does not change row stacking/spacing. */
+  display: flex;
+  flex-direction: column;
+}
+.rr-x-upcoming__body,
+.rr-x-burst__rows,
+.rr-x-day {
+  /* Static fallback: present and readable with no animation. */
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rr-x-upcoming__body,
+  .rr-x-burst__rows,
+  .rr-x-day {
+    animation: rr-x-reveal var(--motion-enter) var(--ease-standard) both;
+  }
+}
+@keyframes rr-x-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Desktop row: the peek button (row body) and the Open escalation sit on ONE
+   line. Clicking the row body PEEKS (in-place inspect); the separate "Open →"
+   link routes to the full record-detail page — two DISTINCT outcomes so Open is
+   never a redundant row click (design.md §6, feedback #12). Airtable/Linear
+   pattern: row = expand/peek, a distinct full-detail escalation. */
+.rr-x-row-wrap--desktop {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+.rr-x-row-wrap--desktop > .rr-x-row {
+  flex: 1;
+  min-width: 0;
+}
+/* The Open escalation. Always keyboard-reachable (no display:none), but visually
+   quiet until the row is hovered, focused-within, or selected — so it does not
+   add per-row noise the way the removed "view full stream" link did (#11). */
+.rr-x-row-open {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-state), color var(--motion-state), border-color var(--motion-state);
+}
+.rr-x-row-wrap--desktop:hover .rr-x-row-open,
+.rr-x-row-wrap--desktop:focus-within .rr-x-row-open,
+.rr-x-row-wrap--desktop:has(.rr-x-row.is-selected) .rr-x-row-open {
+  opacity: 1;
+}
+.rr-x-row-open:hover,
+.rr-x-row-open:focus-visible {
+  opacity: 1;
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.rr-x-row-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.rr-x-role {
   font-size: 9px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2063,6 +3687,106 @@ a.rr-x-row {
   font-size: 12px;
   line-height: 1.4;
   color: color-mix(in oklab, var(--muted-foreground) 80%, var(--foreground));
+}
+
+/* ─── Zero-results routing ───
+   Replaces the dead-end empty state with a routing component: honest explanation
+   + 2-4 escape actions. Light list-items (NOT heavy filled cards) matching
+   the prototype escape-action pattern (styles.css §escape-*).
+   count==reachability: the heading and description never contradict the counts. */
+.rr-x-zero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 4px 0;
+}
+.rr-x-zero__icon {
+  font-size: 22px;
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+.rr-x-zero__heading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+  letter-spacing: -0.2px;
+}
+.rr-x-zero__desc {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.55;
+  max-width: 58ch;
+  margin: -8px 0 0;
+}
+.rr-x-zero__label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: var(--font-sans);
+  margin-top: 4px;
+}
+.rr-x-zero__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  max-width: 480px;
+}
+.rr-x-zero__action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Lighter, Raycast-style list-item escape actions (verifier polish): no filled
+     card/border at rest — just a quiet row that tints on hover. Less heavy than
+     a stack of bordered cards. */
+  padding: 9px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--motion-state);
+}
+.rr-x-zero__action:hover {
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
+}
+.rr-x-zero__action:hover {
+  background: color-mix(in oklab, var(--muted) 30%, var(--background));
+  border-color: var(--border-strong);
+}
+.rr-x-zero__action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.rr-x-zero__action-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.rr-x-zero__action-desc {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+.rr-x-zero__action-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.rr-x-zero__clearall {
+  font-size: 12px;
+  margin-top: -4px;
 }
 
 /* ─── Record inspector (right column) ─── */
@@ -2221,7 +3945,13 @@ a.rr-x-row {
 /* ─── Responsive ─── */
 /* P0-3: bump breakpoint slightly to keep 3-col layout visible longer */
 @media (max-width: 1280px) {
-  .rr-x {
+  /* ≤1280: the inspector drops out of the column track and STACKS below the feed
+     (grid-column: 2; position: static) — for BOTH states. The `.has-selection`
+     selector must be matched explicitly here: `.rr-x.has-selection` (specificity
+     0,2,0) outranks a bare `.rr-x` (0,1,0) regardless of source order, so without
+     this a selected record would keep forcing the 3-col 420px track below 1280. */
+  .rr-x,
+  .rr-x.has-selection {
     grid-template-columns: 200px minmax(0, 1fr);
   }
   .rr-x .rr-inspector {
@@ -2230,7 +3960,8 @@ a.rr-x-row {
   }
 }
 @media (max-width: 980px) {
-  .rr-x {
+  .rr-x,
+  .rr-x.has-selection {
     grid-template-columns: minmax(0, 1fr);
   }
   .rr-x .rr-inspector {
@@ -2254,62 +3985,180 @@ a.rr-x-row {
    only add dead scroll depth. Desktop button affordance also hidden.
    The facet rail folds into a collapsible "Filters" disclosure. */
 @media (max-width: 860px) {
-  /* Reveal the disclosure toggle; collapse the rail body until tapped. */
-  .rr-x-rail {
-    border: 1px solid var(--border);
-    background: color-mix(in oklab, var(--background) 92%, var(--foreground));
+  /* Loading position (Slice 5, #2): on the desktop layout the route-progress bar
+     is absolutely positioned at the TOP of the `.rr-x` canvas (document top). On a
+     phone the owner scrolls the feed, so a document-top bar is scrolled ABOVE THE
+     FOLD and a filter/search/load-more gives no visible feedback. Pinning it
+     `position: fixed; top: 0` anchors it to the top of the VISIBLE viewport, so the
+     "server is re-rendering" signal is always in view no matter how far down the
+     feed the owner has scrolled (the wireframe's "⟳ loading… (sticky TOP)").
+     `fixed` takes it out of flow → ZERO layout shift when it appears/disappears,
+     and it dims NOTHING — already-rendered records stay fully readable and
+     interactive (Codex red line: loading must not block readable records). */
+  .rr-x-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
   }
+  /* D12 mobile: collapse the 2-column grid to a single column so the rail
+     stacks above the feed. The rail's 230px column at 390px viewport left
+     only ~132px for the main column — completely broken. Single column puts
+     the rail above, feed below, matching the prototype's stacked layout. */
+  .rr-x {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .rr-x.has-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* D12 mobile: the Filters rail loses the heavy grey blob and border.
+     It becomes a transparent container whose only visible chrome is the
+     quiet toggle button and the open body — no background slab. */
+  .rr-x-rail {
+    border: none;
+    background: transparent;
+  }
+  /* D12 mobile: the Filters toggle becomes a small, compact control —
+     matches the Options button appearance (border + radius + muted text).
+     Not a full-width heavy bar; a quiet inline affordance. */
   .rr-x-rail__toggle {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 14px;
+    gap: 5px;
+    padding: 4px 8px;
     cursor: pointer;
     list-style: none;
-    font-family: var(--font-grotesk, inherit);
-    font-size: 13px;
-    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--muted-foreground);
     user-select: none;
     outline: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    white-space: nowrap;
+  }
+  .rr-x-rail__toggle:hover {
+    color: var(--foreground);
   }
   .rr-x-rail__toggle:focus-visible {
-    outline: 2px solid var(--ring);
+    outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
     outline-offset: 2px;
-    border-radius: var(--radius-control);
   }
   .rr-x-rail__toggle::-webkit-details-marker {
     display: none;
   }
+  /* Remove the right-aligned caret from the old full-width bar style */
   .rr-x-rail__toggle::after {
-    content: "▸";
-    margin-left: auto;
-    color: var(--muted-foreground);
-    transition: transform var(--motion-state);
+    content: none;
   }
-  .rr-x-rail[open] > .rr-x-rail__toggle::after {
-    transform: rotate(90deg);
+  .rr-x-rail[open] > .rr-x-rail__toggle {
+    color: var(--foreground);
+    border-color: var(--border-strong);
   }
   .rr-x-rail__toggle-n {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--primary);
-    box-shadow: inset 0 0 0 1px var(--border);
-    border-radius: 2px;
-    padding: 1px 7px;
+    font-variant-numeric: tabular-nums;
   }
+  /* D12 mobile: when the rail is open, its body renders as a card below the toggle row,
+     with a top border for separation. Compact padding — not the desktop sidebar spacing. */
   .rr-x-rail__body {
     flex-direction: column;
     gap: 18px;
-    padding: 4px 14px 14px;
+    padding: 12px 16px 14px;
+    border: 1px solid var(--border);
+    border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+    background: var(--card);
+    margin-top: 4px;
   }
+  /* F4: on mobile the whole rail is already a scrollable <details> disclosure, so
+     the desktop inner-scroll cap on the stream list would nest a second scroll
+     region (a scroll trap). Relax it — the facet list flows naturally inside the
+     disclosure. */
+  .rr-x-facets__scroll {
+    max-height: none;
+    overflow: visible;
+  }
+  .rr-x-facet {
+    min-height: 42px;
+    padding-block: 8px;
+  }
+  /* D12 mobile: the command bar is a 2-row layout.
+     Row 1: the search input spans full width (no min-width constraint).
+     Row 2: sort controls + Options disclosure sit as a compact inline
+     strip — flex-wrap so they fit without overflowing 390px. */
   .rr-x-searchrow {
     flex-direction: column;
+    gap: 8px;
   }
-  .rr-x-jump {
+  /* D12 mobile: the controls sub-row becomes a real flex row so sort + Options
+     sit side-by-side on one line, not stacked (display:contents on desktop
+     makes it invisible to the layout; on mobile it's a real row). */
+  .rr-x-searchrow__controls {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  /* Sort + Options sub-row: keep them on one horizontal strip, not stacked. */
+  .rr-x-sort {
+    flex-shrink: 0;
+  }
+  .rr-x-options {
+    flex-shrink: 0;
+  }
+  .rr-x-datechip {
+    flex-shrink: 0;
+  }
+  /* Mobile: the Date popover becomes a full-width sheet anchored to the command bar,
+     so the From/To inputs and presets have room at 390px (matches the mobile filter
+     sheet grammar — a card that spans the column, not a clipped 280px float). */
+  .rr-x-datechip__popover {
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+  }
+  .rr-x-datechip__preset {
+    /* Comfortable touch targets in the sheet. */
+    min-height: 40px;
+  }
+  /* F6 (mobile orphaned "Search" button): in the desktop row the commit button is
+     `align-self: center` (vertically centered beside the input). In the stacked
+     mobile column that resolves to a horizontally-CENTERED, detached button. Pin it
+     to `stretch` so it spans the full column width directly under the full-width
+     input — a coherent search affordance, not a floating orphan. */
+  .rr-x-searchcommit {
+    align-self: stretch;
+  }
+  /* Mobile: the unified query input goes full-width (no desktop min-width) and the
+     chips/typeahead survive (Gmail mobile parity). The typeahead is already clamped
+     to left:0/right:0 of the input, so it stays within the viewport. */
+  .rr-x-queryinput {
+    min-width: 0;
+    width: 100%;
+  }
+  .rr-x-goto {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .rr-x-goto__label {
+    white-space: normal;
+  }
+  .rr-x-copyview {
     margin-left: 0;
   }
-  /* Mobile push nav: show the Link affordance, hide the button affordance.
+  /* Mobile push nav: show the Link affordance, hide the desktop peek+Open
+     affordances. On phones a row tap IS open (the full route), so the desktop
+     peek button and the separate "Open" escalation are both irrelevant.
      Double-class specificity beats the unconditional .rr-x-row base rule. */
+  .rr-x-row-wrap--desktop {
+    display: none;
+  }
   .rr-x-row.rr-x-row--desktop {
     display: none;
   }
@@ -2320,10 +4169,34 @@ a.rr-x-row {
   .rr-x .rr-inspector {
     display: none;
   }
+
+  /* §7 Mobile chip strip: when active filters are present, .rr-x-active becomes
+     a horizontal-scroll strip so chips are always visible before the first data
+     row. Max 3 fixed chrome rows before first data row on 390px:
+     Row 1: heading/topbar  Row 2: search input  Row 3: chip strip (conditional)
+     The strip must NOT wrap (no line breaks — it is a single-axis scroll region).
+     scrollbar-width:none / -webkit-scrollbar hides the system scrollbar (prototype §gap-fix #1). */
+  .rr-x-active {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding: 6px 0;
+    gap: 6px;
+    /* Ensure strip is visible and doesn't collapse when empty — handled by
+       the parent not rendering it when chips.length === 0 */
+  }
+  .rr-x-active::-webkit-scrollbar {
+    display: none;
+  }
+  /* On mobile the clearall link follows the chip row inline */
+  .rr-x-clearall {
+    flex-shrink: 0;
+  }
 }
 
-/* Desktop (>860px): show the button affordance, hide the Link affordance.
-   Double-class specificity beats the unconditional .rr-x-row base rule. */
+/* Desktop (>860px): show the peek button + Open escalation, hide the mobile
+   tap Link. Double-class specificity beats the unconditional .rr-x-row base. */
 @media (min-width: 861px) {
   .rr-x-row.rr-x-row--mobile {
     display: none;

@@ -20,6 +20,7 @@
 import type {
   DatasetSummary,
   DeploymentDiagnostics,
+  ExploreTimelinePage,
   GrantSummary,
   ListQuery,
   ListResponse,
@@ -37,9 +38,32 @@ import type {
   StreamMetadata,
   StreamRecord,
   StreamSummary,
+  TimeBucketAggregate,
+  TimeBucketGranularity,
 } from "./rs-client.ts";
 
 export interface DashboardDataSource {
+  /**
+   * Time-bucket COUNT aggregate over one stream — the honest data source for
+   * the over-time chart's bars (design over-time-chart §2). Returns TRUE
+   * per-bucket totals over the filtered, grant-scoped corpus (NOT loaded
+   * entries) via `GET /v1/streams/{stream}/aggregate`
+   * (`metric=count`+`group_by_time`+`granularity`+`time_zone`). A stream whose
+   * manifest does not declare a `group_by_time` time aggregate (or whose field
+   * isn't granted) throws; the chart fan-in treats that as a partial source and
+   * never fabricates a total.
+   */
+  aggregateRecordsByTime(
+    connectorId: string,
+    stream: string,
+    opts: {
+      connectionId?: string | null;
+      connectorInstanceId?: string | null;
+      granularity: TimeBucketGranularity;
+      groupByTime: string;
+      timeZone?: string;
+    }
+  ): Promise<TimeBucketAggregate>;
   getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview>;
   // ── Overview / deployment / approvals ──────────────────────────────────
   getDatasetSummary(): Promise<DatasetSummary>;
@@ -64,6 +88,40 @@ export interface DashboardDataSource {
   listConnectorManifests(): Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
   listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>>;
+  // ── Explore merged timeline (Phase 3) ─────────────────────────────────
+  listExploreTimeline(opts?: {
+    connectionIds?: readonly string[];
+    cursor?: string | null;
+    limit?: number;
+    /**
+     * REWIND: re-render page 1 pinned to `cursor`'s ORIGINAL snapshot so an
+     * after-snapshot backfill can never displace an original page-1 row. Only
+     * meaningful with `cursor` set. Used by the "Load more" accumulator for page 1.
+     */
+    rewindToFirstPage?: boolean;
+    streams?: readonly string[];
+    /**
+     * EXCLUDE scope ("is not" facet / `-con:`/`-stream:`). Applied SERVER-SIDE at
+     * partition enumeration so excluded partitions are absent from the feed, the
+     * Upcoming projection, the counts, and the cursor — counts stay exact (no
+     * client-side shrinking). Re-passed on every page like the include scope.
+     */
+    excludeConnectionIds?: readonly string[];
+    excludeStreams?: readonly string[];
+    /**
+     * Page the Upcoming (future) projection to exhaustion. When set, the request
+     * returns ONLY the next page of future records (empty feed `data`) plus a
+     * further `upcoming_next_cursor`. Carries the pinned snapshot + per-partition
+     * positions, so it ignores `cursor`/`rewindToFirstPage`/scope (all implicit in
+     * the upcoming cursor). count==reachability for "188 upcoming, all reachable".
+     */
+    upcomingCursor?: string | null;
+    /**
+     * Page-1 head size for the bounded Upcoming (future) set, independent of the
+     * feed `limit` so the common-case future set is revealed on first expand.
+     */
+    upcomingLimit?: number;
+  }): Promise<ExploreTimelinePage>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
   listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
   listPendingApprovals(): Promise<ListResponse<PendingApproval>>;
@@ -76,6 +134,7 @@ export interface DashboardDataSource {
     opts?: {
       connectorInstanceId?: string | null;
       cursor?: string;
+      count?: "estimated" | "exact" | "none";
       limit?: number;
       order?: "asc" | "desc";
       window?: "exact" | "none";
@@ -92,7 +151,7 @@ export interface DashboardDataSource {
   searchRecordsHybrid(query: string, opts?: { streams?: string[]; limit?: number }): Promise<SearchResultPage>;
   searchRecordsLexical(
     query: string,
-    opts?: { streams?: string[]; limit?: number; cursor?: string }
+    opts?: { streams?: string[]; limit?: number; cursor?: string; order?: "relevance" | "recent" }
   ): Promise<SearchResultPage>;
   searchRecordsSemantic(
     query: string,

@@ -5,8 +5,14 @@
  * them without loading React or Next.js. The TSX file re-exports everything
  * from here; call-sites do not need to change their import paths.
  */
+
+import type { BucketSeries } from "../../explore/over-time-chart.ts";
+import type { SetDescriptor } from "../../explore/set-descriptor.ts";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
+
+export type { SetDescriptor } from "../../explore/set-descriptor.ts";
+
 import type { Routes } from "./routes.ts";
 
 /** Active feed lens. URL state (q + since/until) is the source of truth. */
@@ -42,16 +48,32 @@ export interface ExplorerFeedEntry {
   /**
    * Kind-specific structured preview pulled from the record body, present only
    * for lenses that hold the body (recency / time-range). Drives the type-aware
-   * card layout; absent for search hits, which fall back to the `summary` line.
+   * card layout; absent for search hits, which carry only the matched `snippet`.
    * Presentation metadata only — see `record-preview.ts`.
    */
   preview?: RecordPreview;
   recordId: string;
   /** Present when the entry came from a search hit, drives the badge. */
   retrievalMode?: "lexical" | "semantic" | "hybrid";
+  /**
+   * The matched-text excerpt for a SEARCH HIT (lexical/semantic), already
+   * plain-text-extracted from the server snippet. Present ONLY on retrieval rows
+   * that have no record body — the row renders it as a clearly-LABELLED match
+   * excerpt (never as a faked title), so a search result is scannable by its
+   * matched text. Timeline rows (which carry a body-backed `preview`) leave this
+   * absent. This deliberately REPLACES the old `summary` field: the row content
+   * for body rows comes from declared-role `preview` slots, never a field-name
+   * -guessing timeline summary.
+   */
+  snippet?: string;
+  /**
+   * The matched snippet parsed into ordered segments, where `marked` runs are the
+   * server's match-highlight terms — rendered BOLD as real React elements (never via
+   * dangerouslySetInnerHTML). Present alongside `snippet` on retrieval rows; the row
+   * renders these for the bold-match excerpt, falling back to plain `snippet` if absent.
+   */
+  snippetSegments?: readonly { marked: boolean; text: string }[];
   stream: string;
-  /** One-line summary of the record. */
-  summary: string;
 }
 
 export interface ExplorerPeekData {
@@ -69,12 +91,26 @@ export interface ExplorerPeekData {
   /** Full GET URL the dashboard issued to read this record. */
   readUrl: string;
   recordId: string;
+  /**
+   * The semantic/authored timestamp for this record (from `consent_time_field` or
+   * `cursor_field`). `null` when the stream declares no semantic field or when the
+   * record body could not be read. Always shown alongside `emittedAt`, never as a
+   * replacement — both are honest.
+   */
+  semanticTimestamp: { label: string; value: string } | null;
   stream: string;
 }
 
 export interface ExplorerFieldCapability {
   granted: boolean;
   name: string;
+  /**
+   * Declared presentation ROLE (field_capabilities[].role) — which card slot the
+   * field fills (primary-title / secondary / actor / event-time / amount).
+   * Distinct from `type`; never inferred.
+   */
+  role?: string;
+  /** Declared presentation TYPE (field_capabilities[].type) — gates formatting. */
   type?: string;
 }
 
@@ -96,19 +132,92 @@ export interface ExplorerPeekField {
 export interface ExplorerActivitySummary {
   source: "exact_window" | "bounded_sample";
   text: string;
+  /** Exact total only when the backend returned a whole-window aggregate. */
+  total?: number;
 }
 
 export interface ExplorerWarning {
   /** Stable code for tests + future structured `meta.warnings` mapping. */
-  code: "partial_fan_in" | "partial_fan_in_error" | "hybrid_unavailable" | "peek_unreachable" | "search_meta_warning";
+  code:
+    | "partial_fan_in"
+    | "partial_fan_in_error"
+    // search-fallback coverage warning. The rendered code-label is humanized
+    // ("search coverage reduced") — owner-facing copy carries no engine vocabulary.
+    | "search_coverage_reduced"
+    | "peek_unreachable"
+    | "search_meta_warning"
+    | "search_page_limited"
+    | "search_cursor_unavailable";
   message: string;
+}
+
+/**
+ * Per-source browse door for search results: "See all '<query>' records in <stream>".
+ * Present when search results are attributable to a single connection+stream so the
+ * owner can escape to the full paginated list. Only populated when the single-entity
+ * case is detected (all hits from the same connector/stream).
+ */
+export interface ExplorerStreamDoor {
+  connectionId: string;
+  connectorId: string;
+  /** Human-readable label for the source (e.g. "Chase - transactions"). */
+  displayName: string;
+  stream: string;
+}
+
+/**
+ * Escape ramp for a bounded/truncated stream group in the fan-out feed.
+ * Rendered as "Amazon - Orders - 1,183 records - See all" linking to the
+ * stream's fully-paginated per-stream page. `total` is null when the exact
+ * count could not be determined; in that case "See all" is shown without a
+ * number rather than a wrong one.
+ */
+export interface ExplorerStreamSeeAllLink {
+  connectionId: string;
+  connectorId: string;
+  /** Human-readable connection label (e.g. "Amazon"). */
+  displayName: string;
+  stream: string;
+  /** Exact total record count for this stream, or null if not available. */
+  total: number | null;
 }
 
 export interface RecordsExplorerData {
   /** Honest caption for activity/corpus summaries. Never synthesized as full-corpus from a bounded sample. */
   activitySummary: ExplorerActivitySummary | null;
+  /**
+   * Over-time chart volume band: TRUE per-bucket totals over the filtered,
+   * grant-scoped corpus (server `group_by_time` aggregate, NOT loaded entries).
+   * Null when the chart is suppressed (relevance_bounded set) or unavailable.
+   * The brush overlay is derived in the canvas from `since`/`until`, never from
+   * this — the band is a read/write skin on the ONE canonical Date object.
+   */
+  bucketSeries: BucketSeries | null;
   /** Always present, sorted by display name. */
   connections: ExplorerConnectionFacet[];
+  /**
+   * The accumulating cursor TRAIL backing the recent merged-timeline lens
+   * (`cursors=c1,c2,…` in the URL). Each element is a `next_cursor` already
+   * fetched and concatenated into `feed`. "Load more" APPENDS `nextCursor` to
+   * this trail (so prior pages stay visible); any feed-defining change resets it
+   * to empty. Empty in search / time-range lenses (those use `searchNextCursor`).
+   */
+  cursorTrail: readonly string[];
+  /**
+   * SET-DESCRIPTOR: typed discriminated union declaring the completeness and ordering of the
+   * current result set. The canvas switches on descriptor.kind to decide what it may claim.
+   * Structurally prevents a "newest first" or "complete" label on a relevance_bounded set.
+   * Engine-level truth; presentation copy is a separate layer that consumes it.
+   */
+  descriptor: SetDescriptor;
+  /**
+   * Connection ids currently EXCLUDED (the facet "is not" toggle / `-con:`
+   * operator). Part of the ONE canonical query state, carried in the `xconnection`
+   * URL param. The recent-lens feed drops these client-side over the loaded window.
+   */
+  excludeConnectionIds: string[];
+  /** Stream names currently EXCLUDED (facet "is not" / `-stream:`). `xstream` URL param. */
+  excludeStreams: string[];
   feed: ExplorerFeedEntry[];
   /** Whether feed came from a search call (true) or the recency/time-range fan-out (false). */
   fromSearch: boolean;
@@ -116,11 +225,46 @@ export interface RecordsExplorerData {
   hybridUsed: boolean;
   /** Active feed lens — derived from `query` and `since`/`until` together. */
   lens: ExplorerLens;
+  /**
+   * Count of records ingested after `snapshotAnchor` that are not in the current feed page.
+   * When > 0, the canvas shows an "N new" pill that on click drops the cursor so the feed
+   * refreshes to the live head (new anchor). Set to null when no anchor is active (first
+   * load without a cursor) or in search mode.
+   *
+   * INTEGRATION POINT: when /v1/explore/records ships this comes from the endpoint's
+   * `new_since_anchor` field. Today the assembler approximates it from per-stream emitted_at.
+   */
+  newSinceAnchor: number | null;
+  /**
+   * Opaque cursor for the NEXT page of the merged timeline, or null when all records in
+   * the current lens have been returned. In search mode always null (use searchNextCursor).
+   *
+   * INTEGRATION POINT: when /v1/explore/records ships this is that endpoint's `next_cursor`.
+   * Today the assembler encodes per-stream fan-out positions. See encodeFanOutCursor /
+   * decodeFanOutCursor in explore-data-assembler.ts.
+   */
+  nextCursor: string | null;
   peek: ExplorerPeekData | null;
   query: string;
-  /** Connection ids currently selected. */
+  /**
+   * Whether there are more search results available via cursor (lexical mode only).
+   * False for hybrid (no sound relevance cursor). When true, the UI renders a Load-more.
+   */
+  searchHasMore: boolean;
+  /**
+   * Opaque cursor for the next page of lexical search results. Null when not in search
+   * mode, when hybrid was used (no cursor), or when there are no more results. Passed
+   * back as `cursor` in the URL to advance the lexical result set.
+   */
+  searchNextCursor: string | null;
+  /**
+   * Active sort mode for search results: "relevance" (default, global top-N ranked)
+   * or "recent" (chronological, exhaustively pageable via keyset cursor for single-stream).
+   */
+  searchSort: "relevance" | "recent";
+  /** Connection ids currently selected (INCLUDE). */
   selectedConnectionIds: string[];
-  /** Stream names currently selected. */
+  /** Stream names currently selected (INCLUDE). */
   selectedStreams: string[];
   /**
    * Field names declared exact-filterable (`field_capabilities`, granted scalar
@@ -132,10 +276,57 @@ export interface RecordsExplorerData {
   serverFilterableFields: string[];
   /** ISO date (yyyy-mm-dd) for the `since` filter, or empty when unset. */
   since: string;
+  /**
+   * Per-source browse door: "See all in <source - stream>". Present when all visible
+   * search hits share a single connection+stream (the single-entity case). Allows the
+   * owner to escape to the full paginated stream list regardless of retrieval mode.
+   * Null when results span multiple sources or there are no results.
+   */
+  /**
+   * ISO timestamp anchoring this feed's point-in-time snapshot. Records ingested after
+   * this time are counted in `newSinceAnchor`. On first load (no cursor) the assembler
+   * sets this to the current time; on subsequent pages it is forwarded unchanged. Null in
+   * search mode.
+   */
+  snapshotAnchor: string | null;
+  streamDoor: ExplorerStreamDoor | null;
+  /**
+   * Escape ramps for streams whose view is bounded or truncated in the fan-out feed.
+   * Each entry carries the stream identity and (when available) the exact total record
+   * count so the owner can navigate to the fully-paginated per-stream page. Present
+   * only for non-search lenses (recent, time_range). Empty for search results.
+   */
+  streamSeeAllLinks: ExplorerStreamSeeAllLink[];
   /** True when the feed was truncated to the explorer's fan-out cap. */
   truncated: boolean;
   /** ISO date (yyyy-mm-dd) for the `until` filter, or empty when unset. */
   until: string;
+  /**
+   * Server's separate Upcoming (future-dated) projection — records whose semantic
+   * time is after the server's pinned past/future boundary, FORWARD-chronological
+   * (soonest first). Rendered as the collapsed "Upcoming" section at the top of the
+   * recent timeline. Empty for search/time-range lenses. The SERVER owns the split;
+   * the canvas renders these and never re-derives the boundary client-side.
+   */
+  upcoming: ExplorerFeedEntry[];
+  /** True when more future records exist beyond the loaded `upcoming` head. */
+  upcomingHasMore: boolean;
+  /**
+   * Opaque cursor for the NEXT page of Upcoming (future) records, walking the
+   * future projection to exhaustion (count==reachability: every one of the N
+   * upcoming records is reachable, not just a capped head). Null when the future
+   * set is fully loaded into `upcoming`.
+   */
+  upcomingNextCursor: string | null;
+  /** True server-side count of ALL future records, for the "N upcoming" pill. */
+  upcomingTotal: number;
+  /**
+   * Upcoming (future) accumulating cursor trail (`ucursors=u1,u2,…` in the URL).
+   * Each element is an `upcoming_next_cursor` already fetched and concatenated into
+   * `upcoming`. "Load more upcoming" APPENDS to this trail (count==reachability:
+   * walk all N future records); any feed-defining change resets it to empty.
+   */
+  upcomingTrail: readonly string[];
   /**
    * Honest surfacing of partial fan-in failures, capability downgrades, and
    * (when the canonical read contract carries them) `meta.warnings` from the
@@ -467,23 +658,24 @@ export function feedCountLabel(count: number, fromSearch: boolean, truncated: bo
   return `${count.toLocaleString()}${suffix} ${noun}`;
 }
 
-export function feedDescription(lens: ExplorerLens, hybridUsed: boolean): string {
+export function feedDescription(lens: ExplorerLens): string {
   if (lens === "time_range") {
-    return "Time-anchored across every stream that declares a consent-time field, sorted by the owner's data time. Streams without a declared time field are excluded.";
+    // Honesty caveat preserved (sources without a time field are excluded from this
+    // range view) but stated in owner terms — no "consent-time field" / "data time".
+    return "Records from your sources in this date range, newest first. Sources without a time field aren't shown here.";
   }
   if (lens === "search_with_ignored_time_window") {
-    if (hybridUsed) {
-      return "Hybrid retrieval (lexical + semantic). The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
-    }
-    return "Lexical retrieval. The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
+    // The time-window-not-applied caveat is owner-actionable (clear the search), so it
+    // survives; the engine mode (hybrid/lexical) carried no owner meaning and is dropped.
+    return "Best matches for your search across your sources. The date range isn't applied to search — clear the search to browse by date.";
   }
   if (lens === "search") {
-    if (hybridUsed) {
-      return "Hybrid retrieval (lexical + semantic), deduplicated by record key. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
-    }
-    return "Lexical retrieval. Results match record text under the owner token. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
+    // Relevance-ranked, bounded set — copy says "best matches", never "newest first"
+    // or "complete". The public-search-no-connection-identity limitation is a mechanism
+    // detail, not owner-actionable, so it lives in code/docs, not the result surface.
+    return "Best matches for your search across your sources, ranked by relevance.";
   }
-  return "Recent across every visible connection. Submit a query, or pick a date window, to narrow further.";
+  return "Recent activity across your sources, newest first. Search, or pick a date range, to narrow.";
 }
 
 export function emptyFeedMessage(lens: ExplorerLens): string {

@@ -13,8 +13,8 @@
  *   is:folded         record is a folded/aggregate row   → CLIENT-SIDE post-filter
  *   <field>:<value>   declared exact-filterable field    → server `filter[field]=`
  *                     undeclared field                   → CLIENT-SIDE post-filter
- *   before:<DATE>     emitted strictly before DATE       → server `until=`
- *   after:<DATE>      emitted strictly after DATE        → server `since=`
+ *   before:<DATE>     a date endpoint                    → canonical `until` (the Date chip)
+ *   after:<DATE>      a date endpoint                    → canonical `since` (the Date chip)
  *   <bare word>       free text match                    → server `match=` (q)
  *
  * ── API MAPPING (honest by design) ────────────────────────────────
@@ -57,8 +57,14 @@ export interface ParsedQuery {
   after: string | null;
   /** `before:DATE` — maps to server `until`. */
   before: string | null;
-  /** `con:<name>` connection name/id fragment. */
+  /** `con:<name>` connection name/id fragment (INCLUDE). */
   con: string | null;
+  /**
+   * `-con:<name>` excluded connection name/id fragment (EXCLUDE — Gmail/Stripe
+   * leading `-` negation). "Everything except X" is expressed either by this
+   * operator or by the facet "is not" toggle; both compile to the same query.
+   */
+  conNot: string | null;
   /** `<field>:<value>` fuzzy matches (client-side). */
   fields: ParsedFieldMatch[];
   /** `is:folded`. */
@@ -69,23 +75,97 @@ export interface ParsedQuery {
   hasLink: boolean;
   /** `role:<value>`. */
   role: string | null;
-  /** `stream:<name>`. */
+  /** `stream:<name>` (INCLUDE). */
   stream: string | null;
+  /** `-stream:<name>` excluded stream name (EXCLUDE — Gmail/Stripe `-` negation). */
+  streamNot: string | null;
   /** Bare words → free text match (server `q`). */
   text: string[];
   /** Every token in input order, for the chip bar. */
   tokens: ParsedToken[];
 }
 
-const KV_RE = /^([a-z_]+):(.+)$/i;
+// A token may carry a leading `-` negation prefix (Gmail/Stripe `-from:x`); the
+// outer group captures it so `parseQuery` can route `-con:`/`-stream:` to the
+// EXCLUDE slots while leaving the `raw` token intact for chip removal.
+const KV_RE = /^(-?)([a-z_]+):(.+)$/i;
 const WHITESPACE_RE = /\s+/;
+
+/**
+ * Apply one parsed `k:v` (or `-k:v`) token to the accumulator. A leading `-`
+ * negates con/stream into the EXCLUDE slots (Gmail/Stripe); other operators have
+ * no defined negation, so they fall through to their un-negated handler and stay
+ * visible (never silently dropped). Extracted from `parseQuery` to keep its
+ * cognitive complexity bounded.
+ */
+function applyKvToken(out: ParsedQuery, tok: string, negated: boolean, key: string, value: string): void {
+  const lower = value.toLowerCase();
+  if (negated && key === "con") {
+    out.conNot = lower;
+    out.tokens.push({ raw: tok, label: `not in ${value}` });
+    return;
+  }
+  if (negated && key === "stream") {
+    out.streamNot = lower;
+    out.tokens.push({ raw: tok, label: `not stream: ${value}` });
+    return;
+  }
+  switch (key) {
+    case "con":
+      out.con = lower;
+      out.tokens.push({ raw: tok, label: `in ${value}` });
+      break;
+    case "stream":
+      out.stream = lower;
+      out.tokens.push({ raw: tok, label: `stream: ${value}` });
+      break;
+    case "role":
+      out.role = lower;
+      out.tokens.push({ raw: tok, label: `role: ${value}` });
+      break;
+    case "has":
+      if (lower === "image") {
+        out.hasImage = true;
+        out.tokens.push({ raw: tok, label: "has image" });
+      } else if (lower === "link") {
+        out.hasLink = true;
+        out.tokens.push({ raw: tok, label: "has link" });
+      } else {
+        out.fields.push({ key, value: lower });
+        out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+      }
+      break;
+    case "is":
+      if (lower === "folded") {
+        out.folded = true;
+        out.tokens.push({ raw: tok, label: "folded" });
+      } else {
+        out.fields.push({ key, value: lower });
+        out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+      }
+      break;
+    case "before":
+      out.before = value;
+      out.tokens.push({ raw: tok, label: `before ${value}` });
+      break;
+    case "after":
+      out.after = value;
+      out.tokens.push({ raw: tok, label: `after ${value}` });
+      break;
+    default:
+      out.fields.push({ key, value: lower });
+      out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+  }
+}
 
 /** Parse a raw query string into structured tokens. Pure; never throws. */
 export function parseQuery(input: string): ParsedQuery {
   const out: ParsedQuery = {
     text: [],
     con: null,
+    conNot: null,
     stream: null,
+    streamNot: null,
     role: null,
     hasImage: false,
     hasLink: false,
@@ -102,55 +182,7 @@ export function parseQuery(input: string): ParsedQuery {
       out.tokens.push({ raw: tok, label: tok });
       continue;
     }
-    const key = (m[1] ?? "").toLowerCase();
-    const value = m[2] ?? "";
-    const lower = value.toLowerCase();
-    switch (key) {
-      case "con":
-        out.con = lower;
-        out.tokens.push({ raw: tok, label: `in ${value}` });
-        break;
-      case "stream":
-        out.stream = lower;
-        out.tokens.push({ raw: tok, label: `stream: ${value}` });
-        break;
-      case "role":
-        out.role = lower;
-        out.tokens.push({ raw: tok, label: `role: ${value}` });
-        break;
-      case "has":
-        if (lower === "image") {
-          out.hasImage = true;
-          out.tokens.push({ raw: tok, label: "has image" });
-        } else if (lower === "link") {
-          out.hasLink = true;
-          out.tokens.push({ raw: tok, label: "has link" });
-        } else {
-          out.fields.push({ key, value: lower });
-          out.tokens.push({ raw: tok, label: `${key}: ${value}` });
-        }
-        break;
-      case "is":
-        if (lower === "folded") {
-          out.folded = true;
-          out.tokens.push({ raw: tok, label: "folded" });
-        } else {
-          out.fields.push({ key, value: lower });
-          out.tokens.push({ raw: tok, label: `${key}: ${value}` });
-        }
-        break;
-      case "before":
-        out.before = value;
-        out.tokens.push({ raw: tok, label: `before ${value}` });
-        break;
-      case "after":
-        out.after = value;
-        out.tokens.push({ raw: tok, label: `after ${value}` });
-        break;
-      default:
-        out.fields.push({ key, value: lower });
-        out.tokens.push({ raw: tok, label: `${key}: ${value}` });
-    }
+    applyKvToken(out, tok, m[1] === "-", (m[2] ?? "").toLowerCase(), m[3] ?? "");
   }
   return out;
 }
@@ -162,6 +194,145 @@ export function removeToken(query: string, raw: string): string {
     .filter((x) => x !== raw)
     .join(" ")
     .trim();
+}
+
+/** The operator keys that the dedicated Date chip owns (rendered ONCE, by it). */
+const DATE_OPERATOR_KEYS = new Set(["before", "after"]);
+
+/**
+ * Whether a raw token is a date operator (`before:…` / `after:…`) — the canonical
+ * window owns these, so they must NEVER render as a separate `rr-x-chip` beside the
+ * Date chip. The single source of truth for the chip strip's date-token exclusion
+ * (date-controls cell, canonical-date-object guarantee): the in-app commit path lifts
+ * these into `since`/`until` before navigating, and on the URL/SSR/reload path the
+ * mount-time normalizer lifts them too — but this predicate is the belt-and-suspenders
+ * that keeps a date operator out of the chip strip on EVERY path, even the single
+ * render between a URL-direct load and the normalize redirect settling. Pure; the
+ * `-before:`/`-after:` forms have no defined negation but are still date-owned, so a
+ * leading `-` is tolerated.
+ */
+export function isDateOperatorToken(raw: string): boolean {
+  const m = raw.match(KV_RE);
+  if (!m) {
+    return false;
+  }
+  return DATE_OPERATOR_KEYS.has((m[2] ?? "").toLowerCase());
+}
+
+/**
+ * The tokens the active-filter chip strip should render: every parsed token EXCEPT
+ * the date operators the Date chip owns. So a URL-direct `?q=after:2026-01-01`, a
+ * shared link, or a reload never produces a SECOND date representation (a token chip
+ * lying about the window beside an "Any time" Date chip — the Part-0 double-render
+ * defect, THE-LENS Gate 1). Pure + exported so the exclusion is one tested place and
+ * `buildFilterChips` stays the consumer, not the definition.
+ */
+export function chipTokens(tokens: readonly ParsedToken[]): ParsedToken[] {
+  return tokens.filter((t) => !isDateOperatorToken(t.raw));
+}
+
+/** Tokens whose key the canvas LIFTS out of the free-text query into a facet param. */
+const FACET_LIFT_KEYS = new Set(["con", "stream"]);
+
+export interface QueryFacetLift {
+  /** Connection name/id fragments to ADD to the exclude facet (`-con:`). */
+  excludeConnections: string[];
+  /** Stream names to ADD to the exclude facet (`-stream:`). */
+  excludeStreams: string[];
+  /** Connection name/id fragments to ADD to the include facet (`con:`). */
+  includeConnections: string[];
+  /** Stream names to ADD to the include facet (`stream:`). */
+  includeStreams: string[];
+  /** The query with the lifted con/stream tokens removed (free text + other operators). */
+  rest: string;
+}
+
+/**
+ * Lift `con:`/`-con:`/`stream:`/`-stream:` tokens OUT of the free-text query and into
+ * facet include/exclude lists, returning the remaining query. This is what makes the
+ * TYPED operator equivalent to the CHIP: committing `-con:ynab` produces the same
+ * canonical state (the `xconnection` facet param) as clicking the "is not" toggle,
+ * instead of leaving `-con:ynab` as a literal `q` search string. The recent-lens feed
+ * scopes by the facet params, so the operator must become a facet param to take effect.
+ *
+ * Pure; never throws. Other operators (`has:image`, `role:`, `before:`, free text)
+ * are left untouched in `rest`.
+ */
+export function liftFacetTokens(query: string): QueryFacetLift {
+  const lift: QueryFacetLift = {
+    includeConnections: [],
+    excludeConnections: [],
+    includeStreams: [],
+    excludeStreams: [],
+    rest: "",
+  };
+  const kept: string[] = [];
+  for (const tok of query.trim().split(WHITESPACE_RE).filter(Boolean)) {
+    const m = tok.match(KV_RE);
+    const key = m ? (m[2] ?? "").toLowerCase() : "";
+    if (!(m && FACET_LIFT_KEYS.has(key))) {
+      kept.push(tok);
+      continue;
+    }
+    const negated = m[1] === "-";
+    const value = (m[3] ?? "").trim();
+    if (!value) {
+      kept.push(tok);
+      continue;
+    }
+    if (key === "con") {
+      (negated ? lift.excludeConnections : lift.includeConnections).push(value);
+    } else {
+      (negated ? lift.excludeStreams : lift.includeStreams).push(value);
+    }
+  }
+  lift.rest = kept.join(" ").trim();
+  return lift;
+}
+
+export interface QueryDateLift {
+  /** `after:<DATE>` value to fold into the canonical `since`, or null. */
+  after: string | null;
+  /** `before:<DATE>` value to fold into the canonical `until`, or null. */
+  before: string | null;
+  /** The query with the lifted before:/after: tokens removed. */
+  rest: string;
+}
+
+/**
+ * Lift `after:<DATE>` / `before:<DATE>` tokens OUT of the free-text query and into
+ * the canonical date window (`since`/`until`). This makes a TYPED date operator
+ * IMMEDIATELY become the single Date chip — never a second token chip beside it
+ * (the canonical-date-object guarantee, date-controls cell). It mirrors
+ * `liftFacetTokens`: `con:`/`stream:` become facet params, `after:`/`before:`
+ * become the date window, so every entry path normalizes into ONE representation.
+ *
+ * Last-write-wins on conflict: if the same operator appears twice, the LAST value
+ * survives (typing `after:X` over an active window REPLACES `since`, never stacks).
+ * Other operators / free text are left untouched in `rest`. Pure; never throws.
+ */
+export function liftDateTokens(query: string): QueryDateLift {
+  const lift: QueryDateLift = { after: null, before: null, rest: "" };
+  const kept: string[] = [];
+  for (const tok of query.trim().split(WHITESPACE_RE).filter(Boolean)) {
+    const m = tok.match(KV_RE);
+    const negated = m ? m[1] === "-" : false;
+    const key = m ? (m[2] ?? "").toLowerCase() : "";
+    const value = m ? (m[3] ?? "").trim() : "";
+    // before:/after: have no defined negation; a `-before:`/`-after:` is left as-is.
+    if (m && !negated && (key === "after" || key === "before") && value) {
+      // Last-write-wins: a later token overwrites an earlier one (no stacking).
+      if (key === "after") {
+        lift.after = value;
+      } else {
+        lift.before = value;
+      }
+      continue;
+    }
+    kept.push(tok);
+  }
+  lift.rest = kept.join(" ").trim();
+  return lift;
 }
 
 /**
@@ -183,6 +354,14 @@ export function hasClientSideTokens(
 }
 
 export interface CompiledQueryInput {
+  /**
+   * Connection ids EXCLUDED via the facet "is not" toggle (Linear) — rendered as
+   * `connection!=` so the compiled line shows exclusion is a real server-scope
+   * param, equivalent to the `-con:` operator. Defaults to empty.
+   */
+  excludedConnectionIds?: readonly string[];
+  /** Stream names EXCLUDED via the facet "is not" toggle. Defaults to empty. */
+  excludedStreams?: readonly string[];
   /** Per-page record cap the fan-out applies. */
   limit: number;
   /** "newest" | "oldest" — display order. */
@@ -227,7 +406,42 @@ function splitFieldFilters(
 }
 
 /**
- * Build the machine-parity "the same call any client makes" line.
+ * Render the include (`param=`) + exclude (`param!=`) scope params for one axis
+ * (connection or stream). Facet selections and operator tokens compose into the
+ * SAME params (chip == operator). For the connection axis the include token is a
+ * fallback only when no facet id is selected (the facet wins); the stream axis
+ * unions the token with the facet streams — both preserved from the original
+ * inline logic. Extracted to keep `buildCompiledQuery` within its complexity budget.
+ */
+function renderScopeParams(args: {
+  include: readonly string[];
+  exclude: readonly string[];
+  tokenInclude: string | null;
+  tokenExclude: string | null;
+  param: "connection" | "stream";
+}): string[] {
+  const out: string[] = [];
+  const includeSet = new Set<string>(args.include);
+  // connection: token is a fallback only when no facet id is selected (facet wins).
+  // stream: the token unions with the selected facet streams.
+  if (args.tokenInclude && (args.param === "stream" || args.include.length === 0)) {
+    includeSet.add(args.tokenInclude);
+  }
+  for (const v of includeSet) {
+    out.push(`${args.param}=${v}`);
+  }
+  const excludeSet = new Set<string>(args.exclude);
+  if (args.tokenExclude) {
+    excludeSet.add(args.tokenExclude);
+  }
+  for (const v of excludeSet) {
+    out.push(`${args.param}!=${v}`);
+  }
+  return out;
+}
+
+/**
+ * Build the inspectable read-request line for the current Explore view.
  *
  * Server-honored params are rendered plainly; client-only tokens are rendered
  * after a `# client-side:` marker so the line never overstates what the server
@@ -236,24 +450,24 @@ function splitFieldFilters(
 export function buildCompiledQuery(input: CompiledQueryInput): string {
   const { parsed, selectedConnectionIds, selectedStreams, since, until, order, limit } = input;
   const serverFilterableFields = input.serverFilterableFields ?? new Set<string>();
-  const server: string[] = [];
-
-  // con: token OR facet-selected connection ids → connection= (repeatable).
-  for (const id of selectedConnectionIds) {
-    server.push(`connection=${id}`);
-  }
-  if (parsed.con && selectedConnectionIds.length === 0) {
-    server.push(`connection=${parsed.con}`);
-  }
-
-  // stream: token OR facet-selected streams → stream= (repeatable).
-  const streams = new Set<string>(selectedStreams);
-  if (parsed.stream) {
-    streams.add(parsed.stream);
-  }
-  for (const s of streams) {
-    server.push(`stream=${s}`);
-  }
+  const server: string[] = [
+    // Connection/stream include + exclude scope (the chip toggle and the operator
+    // render identically; exclusion is a first-class `!=` scope param).
+    ...renderScopeParams({
+      include: selectedConnectionIds,
+      exclude: input.excludedConnectionIds ?? [],
+      tokenInclude: parsed.con,
+      tokenExclude: parsed.conNot,
+      param: "connection",
+    }),
+    ...renderScopeParams({
+      include: selectedStreams,
+      exclude: input.excludedStreams ?? [],
+      tokenInclude: parsed.stream,
+      tokenExclude: parsed.streamNot,
+      param: "stream",
+    }),
+  ];
 
   // Date window: facet range (since/until) and before:/after: tokens both map
   // to the server's since/until. Explicit tokens win the rendered value.

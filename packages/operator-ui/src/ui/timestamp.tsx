@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { cn } from "./utils.ts";
 
 export type TimestampMode = "auto" | "relative" | "absolute";
-export type TimestampPrecision = "datetime" | "date";
+export type TimestampPrecision = "datetime" | "date" | "time";
 export type TimestampValueKind = "auto" | "calendar-date" | "instant";
 
 export interface TimestampProps {
@@ -31,6 +31,15 @@ const localDateTimeFmt = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
   day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+// Time-of-day only (e.g. "10:42 AM"). Used by `precision="time"` for rows that
+// already sit under a day-group header — the header carries the date, so the row
+// shows only WHEN in the day (the Slack / iMessage / Outlook pattern). The full
+// date+time stays in the hover title.
+const localTimeFmt = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",
 });
@@ -151,6 +160,12 @@ function formatInstantAbsolute(d: Date, precision: TimestampPrecision, mounted: 
   if (precision === "date") {
     return mounted ? localDateFmt.format(d) : utcDateFmt.format(d);
   }
+  if (precision === "time") {
+    // Time-of-day only, post-mount (needs the viewer's local zone). Before mount
+    // we have no zone, so fall back to the UTC date+time for a stable SSR string;
+    // it swaps to local time-of-day on hydration.
+    return mounted ? localTimeFmt.format(d) : utcDateTimeFmt.format(d);
+  }
   return mounted ? localDateTimeFmt.format(d) : utcDateTimeFmt.format(d);
 }
 
@@ -233,6 +248,21 @@ export function Timestamp({
   }
 
   if (parsed.kind === "calendar-date") {
+    // A calendar date has NO time-of-day. Under a day-group header (precision
+    // "time"), printing the date again would just duplicate the header, so show a
+    // quiet em-dash — the record is honestly date-only — with the full date in the
+    // hover title. Elsewhere (date/datetime precision) render the date as before.
+    if (precision === "time") {
+      return (
+        <time
+          className={cn("text-muted-foreground tabular-nums", className)}
+          dateTime={parsed.dateTime}
+          title={formatCalendarDate(parsed.date)}
+        >
+          —
+        </time>
+      );
+    }
     return (
       <time className={cn("tabular-nums", className)} dateTime={parsed.dateTime} title={parsed.raw}>
         {formatCalendarDate(parsed.date)}

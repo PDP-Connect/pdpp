@@ -59,6 +59,68 @@ export interface ListResponse<T> {
   object: "list";
 }
 
+/**
+ * One record in the Phase 3 merged cross-source timeline response.
+ * Mirrors `ExploreTimelineRecord` from rs-explore-timeline/index.ts.
+ *
+ * Carries BOTH identity fields:
+ *   - `connector_id`: connector TYPE (e.g. "amazon") — use for display labels and
+ *     manifest/registry lookup.
+ *   - `connector_instance_id`: connection INSTANCE (e.g. "cin_...") — use for
+ *     per-connection API reads and connection-detail URLs.
+ *
+ * Never render raw `connector_instance_id` as a display name; resolve the
+ * human label via `connector_id` against the connector registry.
+ */
+export interface ExploreTimelineRecord {
+  /** Connector TYPE id (e.g. "amazon"). Use for display labels and manifest lookup. */
+  connector_id: string;
+  /** Connection INSTANCE id (e.g. "cin_..."). Use for per-connection API reads. */
+  connector_instance_id: string;
+  data: unknown;
+  emitted_at: string;
+  object: "timeline_record";
+  record_key: string;
+  /**
+   * The authoritative SEMANTIC time the server ORDERED this record by
+   * (COALESCE(NULLIF(semantic_time,''), emitted_at)). Use directly as the display
+   * timestamp so display == sort by construction; do NOT re-derive from manifest
+   * metadata. Optional only for forward/back compat with an older server that omits
+   * it (the client falls back to its own derivation in that case).
+   */
+  semantic_time?: string;
+  stream: string;
+}
+
+/**
+ * Response envelope for GET /_ref/explore/records.
+ * Mirrors `ExploreTimelineOutput` from rs-explore-timeline/index.ts.
+ */
+export interface ExploreTimelinePage {
+  data: ExploreTimelineRecord[];
+  has_more: boolean;
+  new_since_snapshot: number;
+  next_cursor: string | null;
+  object: "list";
+  snapshot_at: string;
+  /**
+   * Future-dated records (semantic time > the server's pinned past/future
+   * boundary), FORWARD-chronological (soonest first), capped — for the separate
+   * "Upcoming" section. Excluded from `data`. Absent on older servers.
+   */
+  upcoming?: ExploreTimelineRecord[];
+  /** True when more future records exist after `upcoming`. Absent on older servers. */
+  upcoming_has_more?: boolean;
+  /**
+   * Opaque cursor for the NEXT page of Upcoming (future) records, walking the
+   * future projection to exhaustion (count==reachability). Null/absent when the
+   * future set is fully returned by this page. Independent of `next_cursor`.
+   */
+  upcoming_next_cursor?: string | null;
+  /** True server-side count of ALL future records, for the "N upcoming" pill. */
+  upcoming_total?: number;
+}
+
 export interface FailureInfo {
   event_type: string;
   reason: string | null;
