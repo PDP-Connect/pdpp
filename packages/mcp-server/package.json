@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:read-surface": "node --test test/hostile-client-read-evidence.test.js test/server.integration.test.js",
     "verify": "pnpm test && node bin/pdpp-mcp-server.js --help",
     "pack:dry-run": "pnpm pack --dry-run"
   },

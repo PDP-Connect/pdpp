@@ -71,6 +71,26 @@ function hostileSearchFixture() {
         });
       }
 
+      if (url.searchParams.get('q') === 'record-uri-only') {
+        return jsonResponse({
+          hits: [
+            {
+              record_uri: 'pdpp://record/cin_slack%2Fmessages%3Am1',
+              connector_key: 'slack',
+              display_name: 'Vana Slack',
+              evidence_excerpts: [
+                {
+                  field_path: 'text',
+                  preview_text: 'Hyperlane Bridge + Validator stayed as fallback support.',
+                  preview_status: 'truncated',
+                  complete: false,
+                },
+              ],
+            },
+          ],
+        });
+      }
+
       return jsonResponse({
         hits: [
           {
@@ -450,6 +470,48 @@ function realEnvelopeSearchFixture() {
   };
   return { calls, fetch };
 }
+
+test('search-visible record_uri is the callable handle for evidence continuations', async () => {
+  const { fetch, calls } = hostileSearchFixture();
+  const { client, server } = await connectClient(fetch);
+
+  const search = await client.callTool({ name: 'search', arguments: { q: 'record-uri-only' } });
+  const visible = textContent(search);
+
+  assert.equal(search.isError, undefined);
+  assert.match(visible, /Evidence excerpts:/);
+  assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.equal(
+    visible.includes('id=pdpp://record/cin_slack%2Fmessages%3Am1'),
+    true,
+    'search-visible record_uri must be the canonical result id',
+  );
+  assert.match(visible, /read=read_record_field/);
+
+  const read = await client.callTool({
+    name: 'read_record_field',
+    arguments: {
+      id: 'pdpp://record/cin_slack%2Fmessages%3Am1',
+      field_path: 'text',
+      q: 'Hyperlane',
+      limit_chars: 400,
+    },
+  });
+
+  await Promise.allSettled([client.close(), server.close()]);
+
+  assert.equal(read.isError, undefined);
+  assert.match(textContent(read), /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.equal(
+    calls.some(
+      (call) =>
+        call.url.includes('/v1/streams/messages/records/m1/field-window') &&
+        call.url.includes('connection_id=cin_slack'),
+    ),
+    true,
+    'search-visible pdpp://record handle must route to bounded field read',
+  );
+});
 
 test('content-only client sees matched text from the real RS evidence_excerpts envelope', async () => {
   const { fetch } = realEnvelopeSearchFixture();

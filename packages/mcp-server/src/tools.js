@@ -1512,11 +1512,12 @@ function buildSearchContentLadder(results) {
         connectionId: result.connection_id,
       });
       if (!record || !Array.isArray(result.match_windows) || result.match_windows.length === 0) return record;
-      const evidenceExcerpts = searchEvidenceExcerpts(result.match_windows, record.id);
+      const recordId = firstString(record.id);
+      const evidenceExcerpts = searchEvidenceExcerpts(result.match_windows, recordId);
       return {
         ...record,
         ...(evidenceExcerpts.length > 0 ? { evidence_excerpts: evidenceExcerpts } : {}),
-        field_windows: mergeSearchMatchWindows(record.field_windows, result.match_windows, record.id),
+        field_windows: mergeSearchMatchWindows(record.field_windows, result.match_windows, recordId),
       };
     })
     .filter(Boolean)
@@ -1581,6 +1582,7 @@ function searchMatchWindowRead(window, recordId, fieldPath) {
     };
   }
   const args = searchMatchWindowReadArgs(read.args, recordId, fieldPath);
+  if (!firstString(args.id, args.record_uri)) return null;
   return {
     tool: read.tool ?? 'read_record_field',
     args,
@@ -2598,7 +2600,7 @@ function compactSearchEnvelopeDataObject(data, { resultCount } = {}) {
 }
 
 function resultIdForHit(hit, index) {
-  const directId = stringValue(hit?.result_id ?? hit?.resultId);
+  const directId = stringValue(hit?.result_id ?? hit?.resultId ?? hit?.record_uri ?? hit?.recordUri);
   if (directId) return directId;
 
   const stream = streamForHit(hit);
