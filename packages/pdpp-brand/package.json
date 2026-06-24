@@ -9,6 +9,7 @@
     "./docs.css": "./docs.css",
     "./ink-carbon.css": "./ink-carbon.css",
     "./chrome": "./chrome.ts",
+    "./launch-colors": "./launch-colors.ts",
     "./record-format": "./record-format.ts"
   },
   "dependencies": {

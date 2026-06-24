@@ -177,10 +177,12 @@ without pasting large payloads into a chat transcript.
    advertises the current `schema` tool (with `detail` and `stream` inputs).
 2. **Confirm the tool surface.** Ask the agent to list its PDPP tools, or inspect
    the connector's tool list. Confirm the exact tools are `schema`,
-   `query_records`, `aggregate`, `search`, and `fetch`; confirm `schema`
-   exposes `detail` (`compact|full`), `stream`, and `connection_id`. If the list
-   differs, the gateway or client registration is stale — return to step 1 after
-   updating the reference service.
+   `query_records`, `aggregate`, `search`, `fetch`, and `read_record_field`;
+   confirm `schema` exposes `detail` (`compact|full`), `stream`, and
+   `connection_id`. `read_record_field` is the model-callable bounded-read path
+   when a search preview is not enough; generic resource reads are optional. If
+   the list differs, the gateway or client registration is stale — return to
+   step 1 after updating the reference service.
 3. **Call the compact default and record its size.** Have the agent call `schema`
    with no arguments and write the raw structured result to a file rather than
    echoing it. For a direct owner-side check against the same RS endpoint the tool
@@ -238,7 +240,10 @@ around it by weakening the compact default.
   that advertises `refresh_token` in authorization-server metadata.
 - `No streaming target registered for this run`: that belongs to connector
   browser streaming, not hosted MCP. Hosted MCP reads already-collected records.
-- `401` from `/mcp`: reconnect the MCP client or re-run OAuth approval.
+- `401` from `/mcp`: fetch the advertised resource metadata, reconnect the MCP
+  client, and redo OAuth or device authorization for `<origin>/mcp`. If the
+  client cached an old registration, delete and re-add the connector. Do not use
+  an owner bearer.
 - `403` from `/mcp`: the bearer is valid but not a grant-scoped PDPP client
   bearer for this MCP resource. Trusted owner-agent bearers are REST
   credentials and are rejected by `/mcp` on purpose.

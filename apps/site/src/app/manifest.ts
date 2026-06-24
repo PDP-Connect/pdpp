@@ -1,3 +1,4 @@
+import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
 import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
@@ -9,8 +10,11 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
-    background_color: "#f8f6f0",
-    theme_color: "#f8f6f0",
+    // Honest LIGHT first-paint color from LAUNCH_COLORS (the `:root --background`
+    // token). Was a drifting #f8f6f0 that didn't match the computed token
+    // (#fcfcfa); browsers override the splash to dark on a dark OS via CSS.
+    background_color: LAUNCH_COLORS.light,
+    theme_color: LAUNCH_COLORS.light,
     // Only the App Router-generated /icon.svg (from src/app/icon.svg) is a real
     // asset on the public site. The previous PNG entries pointed at
     // public/*.png files that do not exist and are excluded by the root

@@ -475,6 +475,7 @@ export interface SearchLexicalResultItem {
   authored_at?: string;
   matched_fields: string[];
   snippet?: { field: string; text: string };
+  evidence_excerpts?: SearchLexicalEvidenceExcerpt[];
   score?: { kind: "bm25"; value: number; order: "lower_is_better" };
 }
 
@@ -492,6 +493,31 @@ export interface SearchLexicalWarning {
   param?: string;
   message?: string;
   detail?: Record<string, unknown>;
+}
+
+export interface SearchLexicalEvidenceExcerptRead {
+  object: "field_window_read";
+  method: "GET";
+  route: string;
+  stream: string;
+  record_id: string;
+  field: string;
+  connection_id?: string;
+}
+
+export interface SearchLexicalEvidenceExcerpt {
+  object: "evidence_excerpt";
+  field_path: string;
+  preview_text: string;
+  truncated: boolean;
+  provenance: "lexical_match";
+  /**
+   * Bounded read continuation for the matched field. A REST/CLI client can
+   * follow this to read the full field window without exporting the record;
+   * the MCP adapter maps it to a `read_record_field` tool call. This keeps a
+   * visible search excerpt from being a dead end on any surface.
+   */
+  read?: SearchLexicalEvidenceExcerptRead;
 }
 
 export interface SearchLexicalEnvelopeMeta {
@@ -851,6 +877,7 @@ function buildResultItem(
   }
   if (hit.snippet) {
     item.snippet = hit.snippet;
+    item.evidence_excerpts = buildEvidenceExcerpts(hit);
   }
   if (emitScore && typeof hit.score === "number" && Number.isFinite(hit.score)) {
     item.score = {
@@ -860,6 +887,30 @@ function buildResultItem(
     };
   }
   return item;
+}
+
+function buildEvidenceExcerpts(hit: SearchLexicalSnapshotResult): SearchLexicalEvidenceExcerpt[] {
+  if (!hit.snippet) return [];
+  const field = hit.snippet.field;
+  const read: SearchLexicalEvidenceExcerptRead = {
+    object: "field_window_read",
+    method: "GET",
+    route: `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}/field-window`,
+    stream: hit.stream,
+    record_id: hit.recordKey,
+    field,
+    ...(hit.connectorInstanceId ? { connection_id: hit.connectorInstanceId } : {}),
+  };
+  return [
+    {
+      object: "evidence_excerpt",
+      field_path: field,
+      preview_text: hit.snippet.text,
+      truncated: true,
+      provenance: "lexical_match",
+      read,
+    },
+  ];
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────

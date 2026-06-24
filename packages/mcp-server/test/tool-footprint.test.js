@@ -9,6 +9,7 @@
  * - connection_id recovery paragraph is not duplicated verbatim across tool schemas
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -115,6 +116,32 @@ test('instructions keep resource reads optional for ordinary evidence', () => {
   );
 });
 
+test('setup docs enumerate the normal MCP read surface without event-management overclaim', () => {
+  const hostedSetup = readFileSync(new URL('../../../docs/operator/hosted-mcp-setup.md', import.meta.url), 'utf8');
+  const selfhostQuickstart = readFileSync(
+    new URL('../../../docs/operator/selfhost-quickstart.md', import.meta.url),
+    'utf8'
+  );
+
+  for (const toolName of PDPP_MCP_TOOL_NAMES) {
+    assert.match(hostedSetup, new RegExp(`\\\`${toolName}\\\``), `hosted setup must mention ${toolName}`);
+  }
+  assert.match(
+    hostedSetup,
+    /read_record_field` is the model-callable bounded-read path/,
+    'hosted setup must teach the bounded-read continuation path'
+  );
+  assert.doesNotMatch(
+    selfhostQuickstart,
+    /supports\s+PDPP read tools and event-subscription management/i,
+    'normal /mcp docs must not claim support for event-subscription management as part of the read surface'
+  );
+  assert.match(
+    selfhostQuickstart,
+    /event-subscription management stays in\s+the operator console and REST\/control-plane docs/i
+  );
+});
+
 test('tools/list exposes exact profile-free normal read surface', async () => {
   const { client, server } = await connectClient();
   try {
@@ -158,6 +185,22 @@ test('hosted tools/list exposes read-only annotations for every normal tool', as
     assert.equal(tool.annotations?.destructiveHint, false, `${tool.name} destructiveHint`);
     assert.equal(tool.annotations?.idempotentHint, true, `${tool.name} idempotentHint`);
     assert.equal(tool.annotations?.openWorldHint, false, `${tool.name} openWorldHint`);
+  }
+});
+
+test('record handle tool schemas teach pdpp record uri continuation', async () => {
+  const { client, server } = await connectClient();
+  try {
+    const result = await client.listTools();
+    const fetchTool = result.tools.find((tool) => tool.name === 'fetch');
+    const readFieldTool = result.tools.find((tool) => tool.name === 'read_record_field');
+
+    assert.match(fetchTool?.inputSchema?.properties?.id?.description ?? '', /pdpp:\/\/record/);
+    assert.match(readFieldTool?.description ?? '', /pdpp:\/\/record/);
+    assert.match(readFieldTool?.inputSchema?.properties?.id?.description ?? '', /pdpp:\/\/record/);
+  } finally {
+    await client.close();
+    server.close();
   }
 });
 

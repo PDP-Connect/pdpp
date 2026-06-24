@@ -1,10 +1,12 @@
+import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
 import type { MetadataRoute } from "next";
 
-// The owner console is a dark-first installable app. Without this manifest the
-// PWA used the public site's cream background, flashing a WHITE splash before
-// the dark app painted. background_color/theme_color match the dark
-// `--background` token (oklch(0.16 0.005 260) ≈ #0c0d0f) so the splash is dark
-// from the first frame. Manifests cannot carry oklch(), hence the sRGB hex.
+// background_color/theme_color use the HONEST LIGHT first-paint color (the
+// `:root --background` token). The console defaults to the system theme, so
+// hardcoding dark here gives a light-OS user a wrong dark splash. Browsers
+// override the splash to dark on a dark OS via the CSS @media rule, so light is
+// the correct pre-CSS placeholder. Sourced from LAUNCH_COLORS (single source of
+// truth) — manifests cannot carry oklch() or CSS vars, hence the imported hex.
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "PDPP Owner Console",
@@ -13,8 +15,8 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
-    background_color: "#0c0d0f",
-    theme_color: "#0c0d0f",
+    background_color: LAUNCH_COLORS.light,
+    theme_color: LAUNCH_COLORS.light,
     icons: [
       {
         src: "/brand/pdpp-favicon.svg",

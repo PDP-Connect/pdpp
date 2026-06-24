@@ -216,6 +216,41 @@ test('client-mode allows streams[] in grant', async () => {
 
 // ─── Owner-mode soft streams[] filter ──────────────────────────────────
 
+test('lexical search emits first-class bounded evidence excerpts', async () => {
+  const deps = makeDeps();
+  const out = await executeSearchLexical({ actor: clientActor, query: { q: 'foo' } }, deps);
+  const first = out.envelope.data[0];
+
+  assert.equal(first.evidence_excerpts?.[0]?.object, 'evidence_excerpt');
+  assert.equal(first.evidence_excerpts?.[0]?.field_path, 'employer');
+  assert.equal(first.evidence_excerpts?.[0]?.preview_text, '…snippet…');
+  assert.equal(first.evidence_excerpts?.[0]?.truncated, true);
+  assert.equal(first.evidence_excerpts?.[0]?.provenance, 'lexical_match');
+});
+
+test('REST search evidence excerpt carries a bounded field-window read continuation', async () => {
+  const deps = makeDeps();
+  const out = await executeSearchLexical({ actor: clientActor, query: { q: 'foo' } }, deps);
+  const excerpt = out.envelope.data[0]?.evidence_excerpts?.[0];
+
+  // SLVP parity: a REST/CLI client must be able to follow a search excerpt to
+  // the full bounded field window without exporting the record — the descriptor
+  // is not a dead end. This mirrors the MCP read_record_field continuation.
+  const read = excerpt?.read;
+  assert.ok(read, 'evidence excerpt must include a read continuation');
+  assert.equal(read.object, 'field_window_read');
+  assert.equal(read.method, 'GET');
+  assert.equal(read.field, excerpt.field_path);
+  assert.match(read.route, /^\/v1\/streams\/[^/]+\/records\/[^/]+\/field-window$/);
+  assert.equal(typeof read.stream, 'string');
+  assert.equal(typeof read.record_id, 'string');
+  // The route is self-consistent with the structured stream/record_id.
+  assert.equal(
+    read.route,
+    `/v1/streams/${encodeURIComponent(read.stream)}/records/${encodeURIComponent(read.record_id)}/field-window`,
+  );
+});
+
 test('owner-mode treats unknown streams[] as a soft filter (no error)', async () => {
   const deps = makeDeps();
   const out = await executeSearchLexical(

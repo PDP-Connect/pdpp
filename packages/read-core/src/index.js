@@ -7,6 +7,8 @@ const DEFAULT_RECORD_PREVIEW_TRUNCATED_MARKER =
 const DEFAULT_FIELD_WINDOW_LIMIT_CHARS = 2048;
 const DEFAULT_FIELD_WINDOW_LIMIT = 8;
 const DEFAULT_BINARY_FIELD_LIMIT = 8;
+const DEFAULT_JSON_FIELD_LIMIT = 8;
+const DEFAULT_JSON_PREVIEW_CHAR_LIMIT = 512;
 
 const OMIT_FIELD_KEYS = new Set([
   'id',
@@ -138,18 +140,24 @@ export function buildRecordContentLadder(record, options = {}) {
   const binaryFields = recordContentBinaryFields(record, {
     binaryLimit: options.binaryLimit ?? DEFAULT_BINARY_FIELD_LIMIT,
   });
+  const jsonFields = recordContentJsonFields(record, identity, {
+    jsonLimit: options.jsonLimit ?? DEFAULT_JSON_FIELD_LIMIT,
+    jsonPreviewChars: options.jsonPreviewChars ?? DEFAULT_JSON_PREVIEW_CHAR_LIMIT,
+  });
 
   return {
     id: identity.id,
     connection_id: identity.connectionId,
     stream: identity.stream,
     record_id: identity.recordId,
+    handle_semantics: 'live_lookup',
     record_uri: encodeResourceUri('record', {
       connection_id: identity.connectionId,
       stream: identity.stream,
       record_id: identity.recordId,
     }),
     field_windows: fieldWindows,
+    ...(jsonFields.length > 0 ? { json_fields: jsonFields } : {}),
     ...(binaryFields.length > 0 ? { binary_fields: binaryFields } : {}),
   };
 }
@@ -214,6 +222,7 @@ export function binaryFieldMetadata(fieldPath, value) {
       field_path: fieldPath,
       binary_field: true,
       text_like: false,
+      handle_semantics: 'live_lookup',
       preview_status: 'binary-only',
       ...blob,
     };
@@ -224,6 +233,7 @@ export function binaryFieldMetadata(fieldPath, value) {
       field_path: fieldPath,
       binary_field: true,
       text_like: false,
+      handle_semantics: 'live_lookup',
       preview_status: 'binary-only',
       encoding: 'base64',
       size_chars: value.length,
@@ -275,6 +285,7 @@ function recordContentFields(record, identity, options) {
     .map(([fieldPath, value]) => ({
       field_path: fieldPath,
       text_like: true,
+      handle_semantics: 'live_lookup',
       preview_status: value.length > options.windowLimitChars ? 'truncated' : 'complete',
       size_chars: value.length,
       read: {
@@ -303,6 +314,39 @@ function recordContentBinaryFields(record, options) {
     .map(([fieldPath, value]) => binaryFieldMetadata(fieldPath, value))
     .filter(Boolean)
     .slice(0, options.binaryLimit);
+}
+
+function recordContentJsonFields(record, identity, options) {
+  const payload = objectValue(record?.data) || objectValue(record?.record) || objectValue(record);
+  return Object.entries(payload)
+    .filter(([fieldPath, value]) => isJsonEvidenceField(fieldPath, value))
+    .slice(0, options.jsonLimit)
+    .map(([fieldPath, value]) => {
+      const rendered = stableInlineJson(value);
+      return {
+        field_path: fieldPath,
+        json_field: true,
+        text_like: false,
+        handle_semantics: 'live_lookup',
+        preview_status: rendered.length > options.jsonPreviewChars ? 'truncated' : 'complete',
+        size_chars: rendered.length,
+        preview_text: truncateText(rendered, options.jsonPreviewChars),
+        read: {
+          tool: 'fetch',
+          args: {
+            id: identity.id,
+            fields: [fieldPath],
+          },
+        },
+      };
+    });
+}
+
+function isJsonEvidenceField(fieldPath, value) {
+  if (typeof fieldPath !== 'string' || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return false;
+  if (!value || typeof value !== 'object') return false;
+  if (blobRefMetadata(value)) return false;
+  return true;
 }
 
 function sanitizePayloadObject(payload) {

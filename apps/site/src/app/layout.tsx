@@ -1,3 +1,4 @@
+import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
@@ -16,9 +17,7 @@ export const metadata: Metadata = {
   // rounded-plate icon.svg (whose cream plate reads as white padding
   // at favicon scale). /brand/pdpp-favicon.svg is the padding-free mark.
   icons: {
-    icon: [
-      { url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" },
-    ],
+    icon: [{ url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" }],
   },
   openGraph: {
     title: "PDPP — Personal Data Portability Protocol",
@@ -36,6 +35,13 @@ export const metadata: Metadata = {
 export const viewport = {
   width: "device-width",
   initialScale: 1,
+  // Theme-following chrome color, sourced from LAUNCH_COLORS (the single source
+  // of truth derived from the `--background` tokens). The browser picks the
+  // entry matching the OS scheme, so the chrome never flashes the wrong color.
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: LAUNCH_COLORS.dark },
+    { media: "(prefers-color-scheme: light)", color: LAUNCH_COLORS.light },
+  ],
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
@@ -55,6 +61,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <html className={htmlClassName} data-theme={choice} lang="en">
+      <head>
+        {/* Anti-FOUC first-paint guard. This blocking inline <style> sets the
+            html background to the right color BEFORE the external brand CSS
+            loads, for every theme path (explicit dark/light, and system via
+            prefers-color-scheme). Mirrors base.css resolution so the
+            token-driven value takes over seamlessly once CSS loads. */}
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static, app-authored CSS from launch-colors.ts (no user input) — the only way to emit a raw blocking <style> into <head>. */}
+        <style dangerouslySetInnerHTML={{ __html: launchFoucGuardCss() }} />
+      </head>
       <body>
         <ThemeProvider>
           <RootProvider theme={{ enabled: false }}>

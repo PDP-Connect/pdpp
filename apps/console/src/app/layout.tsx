@@ -1,3 +1,4 @@
+import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { Schibsted_Grotesk } from "next/font/google";
@@ -32,6 +33,16 @@ export const metadata: Metadata = {
       { url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" },
     ],
   },
+  // iOS home-screen launch. statusBarStyle "default" lets iOS pick the bar
+  // treatment per system appearance (light bar on light, dark bar on dark)
+  // instead of forcing one — so the launch reads correctly under both themes,
+  // matching the theme-following first-paint guard below. The apple-icon.tsx
+  // file convention supplies the touch icon itself.
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "PDPP",
+  },
   openGraph: {
     title: "PDPP — Personal Data Portability Protocol",
     description:
@@ -48,13 +59,13 @@ export const metadata: Metadata = {
 export const viewport = {
   width: "device-width",
   initialScale: 1,
-  // The console is a dark-first app. Without an explicit themeColor the PWA
-  // splash/chrome falls back to white, flashing a white screen before the
-  // dark app paints. Match the dark `--background` token (oklch(0.16 0.005 260)
-  // ≈ #0c0d0f); light scheme stays the warm paper.
+  // Theme-following chrome color: the browser/PWA picks the entry matching the
+  // OS scheme, so the splash/chrome never flashes the wrong color before the
+  // app paints. Both colors are sourced from LAUNCH_COLORS (the single source
+  // of truth derived from the `--background` tokens) — no drifting hex here.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#0c0d0f" },
-    { media: "(prefers-color-scheme: light)", color: "#f8f6f0" },
+    { media: "(prefers-color-scheme: dark)", color: LAUNCH_COLORS.dark },
+    { media: "(prefers-color-scheme: light)", color: LAUNCH_COLORS.light },
   ],
 };
 
@@ -81,6 +92,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       data-theme={choice}
       lang="en"
     >
+      <head>
+        {/* Anti-FOUC first-paint guard. This blocking inline <style> sets the
+            html background to the right color BEFORE the external brand CSS
+            loads, for every theme path (explicit dark/light, and system via
+            prefers-color-scheme). The SSR-emitted data-theme above makes the
+            cookie-known theme correct immediately; the @media rule handles the
+            "system" case the server can't know. Mirrors base.css resolution so
+            the token-driven value takes over seamlessly once CSS loads. */}
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static, app-authored CSS from launch-colors.ts (no user input) — the only way to emit a raw blocking <style> into <head>. */}
+        <style dangerouslySetInnerHTML={{ __html: launchFoucGuardCss() }} />
+      </head>
       <body>
         <ThemeProvider>
           <DensityProvider initialDensity={density}>

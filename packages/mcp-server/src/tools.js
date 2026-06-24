@@ -645,10 +645,10 @@ export function buildTools({ rs, providerUrl }) {
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          id: z
-            .string()
-            .min(1)
-            .describe('Search result id: `connection_id/stream:record_id` (self-contained) or legacy `stream:record_id`.'),
+        id: z
+          .string()
+          .min(1)
+          .describe('ID: `connection_id/stream:record_id`, `stream:record_id`, or `pdpp://record/...` URI.'),
           expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
           expand_limit: z
             .record(z.string(), z.number().int().positive())
@@ -684,11 +684,15 @@ export function buildTools({ rs, providerUrl }) {
     {
       name: 'read_record_field',
       title: 'Read PDPP record field window',
-      description: 'Read bounded field text. Page by offset, cursor, or q. Read-only.',
+      description: 'Read bounded field text by record id or `pdpp://record/...` URI; page by offset, cursor, or q.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          id: z.string().min(1).optional(),
+        id: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('ID: `connection_id/stream:record_id`, `stream:record_id`, or `pdpp://record/...` URI.'),
           connection_id: z.string().min(1).optional(),
           stream: z.string().min(1).optional(),
           record_id: z.string().min(1).optional(),
@@ -932,7 +936,14 @@ function resourceErrorContents(uri, response, providerUrl) {
 }
 
 function resolveRecordResourceRef(uri, variables) {
-  const payload = decodeResourceHandle(resolveResourceHandle(uri, variables, 'record'), 'record');
+  const handle = resolveResourceHandle(uri, variables, 'record');
+  let payload;
+  try {
+    payload = decodeResourceHandle(handle, 'record');
+  } catch (error) {
+    const ref = parseRecordResultId(decodeURIComponent(handle));
+    return { connectionId: ref.connectionId, stream: ref.stream, recordId: ref.recordId };
+  }
   return {
     connectionId: requireSafeName(payload.connection_id, 'connection_id'),
     stream: requireSafeName(payload.stream, 'stream'),
@@ -1390,6 +1401,7 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
   const resource = {
     uri: resourceUri,
     mime_type: 'text/plain',
+    handle_semantics: 'live_lookup',
   };
   const header = [
     `record=${record.id}`,
@@ -1402,18 +1414,44 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
   ]
     .filter(Boolean)
     .join(' ');
+  const continuationArgs = (offsetChars) => {
+    const args = {
+      id: record.id,
+      field_path: fieldInfo.path,
+      offset_chars: offsetChars,
+    };
+    const limitChars = numberValue(window.limit_chars);
+    if (limitChars !== null) args.limit_chars = limitChars;
+    return args;
+  };
+  const nextOffsetChars = numberValue(window.next_offset_chars);
+  const previousOffsetChars = numberValue(window.previous_offset_chars);
+  const continuationLines =
+    window.complete === true
+      ? []
+      : [
+          nextOffsetChars !== null ? `next_offset_chars=${nextOffsetChars}` : null,
+          nextOffsetChars !== null
+            ? `next read_record_field args=${JSON.stringify(continuationArgs(nextOffsetChars))}`
+            : null,
+          previousOffsetChars !== null ? `previous_offset_chars=${previousOffsetChars}` : null,
+          previousOffsetChars !== null
+            ? `previous read_record_field args=${JSON.stringify(continuationArgs(previousOffsetChars))}`
+            : null,
+        ].filter(Boolean);
   const text = typeof window.text === 'string' ? window.text : '';
   return {
     content: [
       {
         type: 'text',
-        text: `${header}\n${text}`,
+        text: [header, ...continuationLines, text].join('\n'),
       },
     ],
     structuredContent: {
       record,
       field: fieldInfo,
       window,
+      resource,
       provider_url: providerUrl,
       request_id: response.requestId ?? null,
     },
@@ -1532,7 +1570,16 @@ function searchEvidencePreviewText(window) {
 
 function searchMatchWindowRead(window, recordId, fieldPath) {
   const read = objectValue(window?.read);
-  if (!read) return null;
+  // RS `evidence_excerpts` carry no `read` hint of their own. Synthesize a
+  // bounded `read_record_field` continuation from the hit id + matched field so
+  // a visible search excerpt is never a dead end for content-only clients.
+  if (!read) {
+    if (!recordId || !fieldPath) return null;
+    return {
+      tool: 'read_record_field',
+      args: searchMatchWindowReadArgs({}, recordId, fieldPath),
+    };
+  }
   const args = searchMatchWindowReadArgs(read.args, recordId, fieldPath);
   return {
     tool: read.tool ?? 'read_record_field',
@@ -2424,8 +2471,14 @@ function normalizeSearchMatchWindows(hit, options = {}) {
     hit?.match_windows,
     hit?.field_windows,
     hit?.matches,
+    // The RS lexical search envelope surfaces proven matched text as
+    // `evidence_excerpts` ({ field_path, preview_text, truncated }). Treat it as
+    // a first-class match-window source so visible search content includes the
+    // bounded excerpt without depending on host-side structuredContent reads.
+    hit?.evidence_excerpts,
     hit?.data?.match_windows,
     hit?.data?.field_windows,
+    hit?.data?.evidence_excerpts,
   ].find((value) => Array.isArray(value));
   if (!Array.isArray(candidates)) return [];
   return candidates
@@ -2444,17 +2497,22 @@ function normalizeSearchMatchWindowReadHints(matchWindows, recordId) {
 function normalizeSearchMatchWindow(window, options = {}) {
   const value = objectValue(window);
   if (!value) return null;
-  const text = firstString(value.text, value.preview, value.snippet, value.window?.text);
+  // `preview_text` is the RS `evidence_excerpt` text field; `text`/`preview`/
+  // `snippet` cover match-window and legacy hit shapes.
+  const text = firstString(value.text, value.preview_text, value.preview, value.snippet, value.window?.text);
   const fieldPath = firstString(value.field_path, value.fieldPath, value.path, value.field?.path);
   if (!text || !fieldPath) return null;
   const read = objectValue(value.read);
   const normalizedText = centeredSearchText(text, options.q, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
   const previewText = centeredSearchText(text, options.q, SEARCH_TEXT_SNIPPET_CHAR_LIMIT);
+  // An evidence_excerpt that is `truncated: true` is an incomplete window; a
+  // match window declares completeness explicitly via `complete: true`.
+  const complete = value.complete === true || value.truncated === false;
   return {
     field_path: fieldPath,
     text: normalizedText,
     preview_text: previewText,
-    complete: value.complete === true,
+    complete,
     ...(firstString(value.next_cursor, value.window?.next_cursor) ? { next_cursor: firstString(value.next_cursor, value.window?.next_cursor) } : {}),
     ...(read ? { read } : {}),
   };
@@ -2585,7 +2643,25 @@ function parseRecordResultId(id) {
     throw new Error('id is required');
   }
   if (id.startsWith('pdpp://record/')) {
-    return parseRecordResultId(decodeURIComponent(id.slice('pdpp://record/'.length)));
+    const handle = decodeURIComponent(id.slice('pdpp://record/'.length));
+    // The canonical record_uri the model sees in content ladders and resource
+    // templates is `pdpp://record/{base64url-JSON}`. Accept that first so a
+    // visible handle is never a dead fetch/read_record_field id; fall back to
+    // the human-readable `connection_id/stream:record_id` form for legacy/test
+    // URIs that embed the self-contained grammar directly.
+    try {
+      const payload = decodeResourceHandle(handle, 'record');
+      return {
+        connectionId: requireSafeName(payload.connection_id, 'connection_id'),
+        stream: requireSafeName(payload.stream, 'stream'),
+        recordId: requireSafeName(payload.record_id, 'record_id'),
+      };
+    } catch (error) {
+      if (error instanceof InvalidResourceUriError) {
+        return parseRecordResultId(handle);
+      }
+      throw error;
+    }
   }
   const connectionSeparator = id.indexOf('/');
   if (connectionSeparator === -1) {
@@ -2921,4 +2997,6 @@ export const __internal = {
   resolveSchemaDetail,
   assertExpandCapabilities,
   UnadvertisedExpandError,
+  parseRecordResultId,
+  encodeResourceUri,
 };

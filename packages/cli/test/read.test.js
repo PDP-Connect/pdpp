@@ -167,6 +167,72 @@ test('read fetch forwards projection fields through cached grant', async () => {
   }
 });
 
+test('read field-window forwards bounded field reads through cached grant', async () => {
+  const cacheRoot = await makeCredentialCache('field-window-token');
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input);
+    calls.push({ url, init });
+
+    assert.equal(url.pathname, '/v1/streams/messages/records/messages%3Am1/field-window');
+    assert.equal(url.searchParams.get('connection_id'), 'cin_slack');
+    assert.equal(url.searchParams.get('field'), 'text');
+    assert.equal(url.searchParams.get('q'), 'Hyperlane');
+    assert.equal(url.searchParams.get('offset_chars'), '0');
+    assert.equal(url.searchParams.get('limit_chars'), '512');
+    assert.equal(url.searchParams.get('before_chars'), '100');
+    assert.equal(url.searchParams.get('after_chars'), '200');
+    assert.equal(init.headers.Authorization, 'Bearer field-window-token');
+
+    return jsonResponse(200, {
+      object: 'field_window',
+      data: {
+        text: 'bounded Hyperlane evidence',
+        window: { complete: false, next_offset_chars: 512 },
+      },
+    });
+  };
+
+  const captured = captureIo();
+  try {
+    const code = await runCli(
+      [
+        'read',
+        'field-window',
+        PROVIDER,
+        'messages',
+        'messages:m1',
+        '--field',
+        'text',
+        '--q',
+        'Hyperlane',
+        '--offset-chars',
+        '0',
+        '--limit-chars',
+        '512',
+        '--before-chars',
+        '100',
+        '--after-chars',
+        '200',
+        '--connection-id',
+        'cin_slack',
+        '--cache-root',
+        cacheRoot,
+      ],
+      captured.io
+    );
+    assert.equal(code, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(captured.stdout()).data.text, 'bounded Hyperlane evidence');
+    assert.doesNotMatch(captured.stdout(), /field-window-token/);
+    assert.equal(captured.stderr(), '');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
+});
+
 test('read search routes modes and stream scopes through cached grant', async () => {
   const cacheRoot = await makeCredentialCache('search-token');
   const calls = [];
@@ -207,6 +273,61 @@ test('read search routes modes and stream scopes through cached grant', async ()
     assert.equal(code, 0);
     assert.equal(calls.length, 1);
     assert.deepEqual(JSON.parse(captured.stdout()).data, [{ id: 'messages:m1' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test('read search preserves bounded evidence descriptors and read continuation in JSON', async () => {
+  const cacheRoot = await makeCredentialCache('evidence-token');
+  const originalFetch = globalThis.fetch;
+  const hit = {
+    id: 'cin_slack/messages:m1',
+    stream: 'messages',
+    record_key: 'm1',
+    connection_id: 'cin_slack',
+    snippet: { field: 'text', text: '…Hyperlane…' },
+    evidence_excerpts: [
+      {
+        object: 'evidence_excerpt',
+        field_path: 'text',
+        preview_text: '…using Hyperlane or LayerZero?…',
+        truncated: true,
+        provenance: 'lexical_match',
+        read: {
+          object: 'field_window_read',
+          method: 'GET',
+          route: '/v1/streams/messages/records/m1/field-window',
+          stream: 'messages',
+          record_id: 'm1',
+          field: 'text',
+          connection_id: 'cin_slack',
+        },
+      },
+    ],
+  };
+  globalThis.fetch = async (input) => {
+    assert.equal(new URL(input).pathname, '/v1/search');
+    return jsonResponse(200, { object: 'search_result_list', data: [hit] });
+  };
+
+  try {
+    const captured = captureIo();
+    const code = await runCli(
+      ['read', 'search', PROVIDER, 'Hyperlane', '--cache-root', cacheRoot],
+      captured.io,
+    );
+
+    assert.equal(code, 0);
+    // The CLI must NOT strip the evidence descriptor — a CLI user inspecting a
+    // search result gets the bounded preview AND the read continuation needed
+    // to follow it, matching MCP/REST parity.
+    const excerpt = JSON.parse(captured.stdout()).data[0].evidence_excerpts[0];
+    assert.equal(excerpt.preview_text, '…using Hyperlane or LayerZero?…');
+    assert.equal(excerpt.truncated, true);
+    assert.equal(excerpt.read.route, '/v1/streams/messages/records/m1/field-window');
+    assert.equal(excerpt.read.field, 'text');
   } finally {
     globalThis.fetch = originalFetch;
     await rm(cacheRoot, { recursive: true, force: true });

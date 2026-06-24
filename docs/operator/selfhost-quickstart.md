@@ -310,7 +310,8 @@ Your MCP server URL is `<PDPP_REFERENCE_ORIGIN>/mcp`. For Lane B that is
 `https://<podid>-3002.proxy.runpod.net/mcp`.
 
 The hosted MCP surface uses the scoped grant selected during consent. It supports
-PDPP read tools and event-subscription management; it does not expose owner-mode
+the normal grant-scoped read tools only; event-subscription management stays in
+the operator console and REST/control-plane docs. It does not expose owner-mode
 administration. Revoking the grant from `/dashboard/deployment/tokens`
 invalidates both the access and refresh tokens.
 

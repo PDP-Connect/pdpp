@@ -3,7 +3,7 @@ import { parseArgs, requirePositional } from '../ref/args.js';
 import { PdppHttpError, PdppUsageError } from '../ref/errors.js';
 import { resolveFormat, writeData, writeEnvelopeWarnings } from '../ref/output.js';
 
-const COMMANDS = new Set(['schema', 'streams', 'query-records', 'fetch', 'search', 'aggregate']);
+const COMMANDS = new Set(['schema', 'streams', 'query-records', 'fetch', 'field-window', 'search', 'aggregate']);
 
 export function readHelp(binName = 'pdpp') {
   return `Grant-scoped reads (uses pdpp connect/token cache, never owner credentials):
@@ -11,6 +11,7 @@ export function readHelp(binName = 'pdpp') {
   ${binName} read streams <provider-url> [--connection-id <cin>] [--cache-root <dir>] [--format json|table]
   ${binName} read query-records <provider-url> <stream> [--connection-id <cin>] [--limit <n>] [--cursor <cursor>] [--fields a,b] [--sort <spec>] [--count none|estimated|exact] [--filter-json <json>] [--format json|jsonl|table]
   ${binName} read fetch <provider-url> <stream> <record-id> [--connection-id <cin>] [--fields a,b] [--format json|table]
+  ${binName} read field-window <provider-url> <stream> <record-id> --field <path> [--connection-id <cin>] [--q <text>] [--offset-chars <n>] [--limit-chars <n>] [--before-chars <n>] [--after-chars <n>] [--format json|table]
   ${binName} read search <provider-url> <query> [--connection-id <cin>] [--streams a,b] [--mode lexical|semantic|hybrid] [--limit <n>] [--format json|jsonl|table]
   ${binName} read aggregate <provider-url> <stream> --metric <metric> [--field <field>] [--connection-id <cin>] [--group-by <field> | --group-by-time <field> --granularity <unit>] [--limit <n>] [--format json|table]`;
 }
@@ -101,6 +102,30 @@ export function buildReadRequest(command, positionals, flags, providerUrl) {
         origin,
         `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`,
         query,
+      ),
+    };
+  }
+
+  if (command === 'field-window') {
+    const stream = requirePositional(positionals, 0, 'stream');
+    const recordId = requirePositional(positionals, 1, 'record-id');
+    if (!flags.field) throw new PdppUsageError('Missing required flag: --field');
+    const query = pickQuery(flags, [
+      'connection-id',
+      'field',
+      'cursor',
+      'offset-chars',
+      'limit-chars',
+      'q',
+      'before-chars',
+      'after-chars',
+    ]);
+    return {
+      method: 'GET',
+      url: buildUrl(
+        origin,
+        `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}/field-window`,
+        query
       ),
     };
   }

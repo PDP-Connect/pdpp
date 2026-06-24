@@ -104,6 +104,7 @@ test('binary fields are metadata-only when record carries server blob affordance
     field_path: 'attachment',
     binary_field: true,
     text_like: false,
+    handle_semantics: 'live_lookup',
     preview_status: 'binary-only',
     blob_id: 'blob_1',
     mime_type: 'image/png',
@@ -148,6 +149,32 @@ test('large text gets a bounded continuation while binary stays metadata-only', 
   assert.equal(ladder.binary_fields.length, 1);
   assert.equal(ladder.binary_fields[0].field_path, 'opaque_payload');
   assert.equal(ladder.binary_fields[0].preview_status, 'binary-only');
+});
+
+test('JSON object fields get bounded previews and fetch projection continuation', () => {
+  const ladder = buildRecordContentLadder(
+    {
+      id: 'cin_a/files:f3',
+      data: {
+        profile: { name: 'Ada', tags: Array.from({ length: 80 }, (_, i) => `tag-${i}`) },
+      },
+    },
+    { jsonPreviewChars: 120 },
+  );
+
+  assert.equal(ladder.json_fields.length, 1);
+  assert.equal(ladder.json_fields[0].field_path, 'profile');
+  assert.equal(ladder.json_fields[0].json_field, true);
+  assert.equal(ladder.json_fields[0].text_like, false);
+  assert.equal(ladder.json_fields[0].preview_status, 'truncated');
+  assert.ok(ladder.json_fields[0].preview_text.length <= 120);
+  assert.deepEqual(ladder.json_fields[0].read, {
+    tool: 'fetch',
+    args: {
+      id: 'cin_a/files:f3',
+      fields: ['profile'],
+    },
+  });
 });
 
 test('record set ladder is generic and does not infer connector semantics', () => {

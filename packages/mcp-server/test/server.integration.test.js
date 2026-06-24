@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createPdppMcpServer, handleStreamableHttpRequest } from '../src/server.js';
+import { __internal } from '../src/tools.js';
 
 /**
  * Build a fetch implementation that emulates the PDPP RS for one scoped token. The same
@@ -21,6 +22,10 @@ function makeFakeRs() {
     next_changes_since: 'changes_orders_next',
     meta: { count: { kind: 'exact', value: 42 } },
   };
+  // Mirrors the real RS lexical-search envelope: a hit carries `snippet` plus
+  // first-class `evidence_excerpts` (field_path + preview_text), and NO
+  // `match_windows`. The MCP adapter must surface the excerpt text in visible
+  // content from this shape alone.
   const SEARCH = {
     has_more: true,
     next_cursor: 'search_cursor_page_2',
@@ -30,28 +35,21 @@ function makeFakeRs() {
         id: 'o2',
         title: 'Order o2',
         url: 'https://merchant.test/o2',
-            connection_id: 'conn_orders',
-            display_name: 'Merchant orders',
-            snippet: { text: 'Pasta order for $99.' },
-            match_windows: [
-              {
-                field_path: 'text',
-                text: 'Pasta order for $99.',
-                complete: true,
-                read: {
-                  tool: 'read_record_field',
-                  args: {
-                    id: 'conn_orders/orders:o2',
-                    field_path: 'text',
-                    offset_chars: 0,
-                    limit_chars: 256,
-                  },
-                },
-              },
-            ],
-            score: 0.7,
+        connection_id: 'conn_orders',
+        display_name: 'Merchant orders',
+        snippet: { field: 'text', text: 'Pasta order for $99.' },
+        evidence_excerpts: [
+          {
+            object: 'evidence_excerpt',
+            field_path: 'text',
+            preview_text: 'Pasta order for $99.',
+            truncated: false,
+            provenance: 'lexical_match',
           },
         ],
+        score: 0.7,
+      },
+    ],
   };
   const ORDER_O2 = {
     id: 'o2',
@@ -107,6 +105,7 @@ function makeFakeRs() {
           fetch_url: 'pdpp://blob/blob-1',
         },
         image_data: LARGE_IMAGE_BASE64,
+        image_metadata: { width: 640, height: 480, labels: ['cat', 'indoor'] },
       },
     ],
   };
@@ -586,6 +585,10 @@ test('query_records keeps binary fields metadata-only in text previews and conte
   assert.equal(ladderRecord.binary_fields[1].field_path, 'image_data');
   assert.equal(ladderRecord.binary_fields[1].encoding, 'base64');
   assert.equal(ladderRecord.field_windows.some((field) => field.field_path === 'image_data'), false);
+  assert.equal(ladderRecord.json_fields.length, 1);
+  assert.equal(ladderRecord.json_fields[0].field_path, 'image_metadata');
+  assert.equal(ladderRecord.json_fields[0].read.tool, 'fetch');
+  assert.deepEqual(ladderRecord.json_fields[0].read.args.fields, ['image_metadata']);
   await server.close();
 });
 
@@ -688,6 +691,10 @@ test('search tool forwards q and returns hits', async () => {
       connection_id: 'conn_orders',
       display_name: 'Merchant orders',
       snippet: 'Pasta order for $99.',
+      // The adapter SYNTHESIZES these from the server's raw `evidence_excerpts`
+      // (which carry no read hint of their own): a bounded match window plus a
+      // model-callable read_record_field continuation built from the hit id +
+      // matched field. This is the seam that makes search excerpts visible.
       match_windows: [
         {
           field_path: 'text',
@@ -699,8 +706,6 @@ test('search tool forwards q and returns hits', async () => {
             args: {
               id: 'conn_orders/orders:o2',
               field_path: 'text',
-              offset_chars: 0,
-              limit_chars: 256,
             },
           },
         },
@@ -715,8 +720,6 @@ test('search tool forwards q and returns hits', async () => {
             args: {
               id: 'conn_orders/orders:o2',
               field_path: 'text',
-              offset_chars: 0,
-              limit_chars: 256,
             },
           },
         },
@@ -745,6 +748,12 @@ test('search tool forwards q and returns hits', async () => {
   assert.doesNotMatch(result.content[0].text, /connection_id=/);
   assert.match(result.content[0].text, /Pasta order/);
   assert.match(result.content[0].text, /structuredContent/);
+  // B1 regression guard: the matched evidence excerpt is VISIBLE in prose
+  // content (not only in structuredContent), built from the server's
+  // `evidence_excerpts` shape, and carries a model-callable read continuation.
+  assert.match(result.content[0].text, /Evidence excerpts:/);
+  assert.match(result.content[0].text, /field_path=text snippet="Pasta order for \$99\."/);
+  assert.match(result.content[0].text, /read=read_record_field/);
 
   await client.close();
   await server.close();
@@ -917,6 +926,11 @@ test('read_record_field reads bounded windows and advertises adjacent cursors', 
   assert.equal(result.structuredContent.window.text, 'Pasta order ');
   assert.equal(result.structuredContent.window.next_cursor, '12');
 
+  const fieldWindowResource = await client.readResource({ uri: result.structuredContent.resource.uri });
+  assert.equal(fieldWindowResource.contents.length, 1);
+  assert.equal(fieldWindowResource.contents[0].mimeType, 'text/plain');
+  assert.match(fieldWindowResource.contents[0].text, /Pasta order /);
+
   const routeCall = calls.find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
   assert.ok(routeCall, 'read_record_field must call the RS field-window route');
   const routeUrl = new URL(routeCall.url);
@@ -1019,6 +1033,87 @@ test('read_record_field preserves RS out-of-grant errors', async () => {
   await server.close();
 });
 
+test('record resource uri is readable through resources/read for capable clients', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const before = calls.length;
+  const resource = await client.readResource({ uri: 'pdpp://record/conn_orders%2Forders%3Ao2' });
+
+  assert.equal(resource.contents.length, 1);
+  assert.equal(resource.contents[0].mimeType, 'application/json');
+  assert.match(resource.contents[0].text, /Pasta order/);
+
+  const resourceCall = calls.slice(before).find((call) => call.url.includes('/v1/streams/orders/records/o2'));
+  assert.ok(resourceCall, 'record resource read must call record detail route');
+  const resourceUrl = new URL(resourceCall.url);
+  assert.equal(resourceUrl.searchParams.get('connection_id'), 'conn_orders');
+
+  await server.close();
+});
+
+test('canonical base64url pdpp://record URI is accepted by read_record_field, fetch, and resources/read', async () => {
+  // The record_uri the model actually sees in content ladders and resource
+  // templates is `pdpp://record/{base64url-JSON}` — NOT the human-readable
+  // self-contained form. This is the exact handle a ChatGPT-style client copies
+  // out of search results, so all three model-callable continuations must take
+  // it directly. (Live blocker B2.)
+  const recordUri = __internal.encodeResourceUri('record', {
+    connection_id: 'conn_orders',
+    stream: 'orders',
+    record_id: 'o2',
+  });
+  assert.match(recordUri, /^pdpp:\/\/record\/[A-Za-z0-9_-]+$/);
+  // Proves it is opaque base64url, not the colon/slash grammar.
+  assert.doesNotMatch(recordUri, /[:/]o2$/);
+
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  // read_record_field takes the canonical URI as `id`.
+  const fieldResult = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: recordUri, field_path: 'text' },
+  });
+  assert.equal(fieldResult.isError ?? false, false);
+  assert.match(fieldResult.content[0].text, /Pasta order/);
+  const fieldCall = calls.find((call) =>
+    call.url.includes('/v1/streams/orders/records/o2/field-window'),
+  );
+  assert.ok(fieldCall, 'read_record_field must resolve the base64url URI to the field-window route');
+  assert.equal(new URL(fieldCall.url).searchParams.get('connection_id'), 'conn_orders');
+
+  // fetch takes the canonical URI as `id`.
+  const fetchResult = await client.callTool({
+    name: 'fetch',
+    arguments: { id: recordUri },
+  });
+  assert.equal(fetchResult.isError ?? false, false);
+  assert.match(fetchResult.content[0].text, /Pasta order/);
+
+  // resources/read takes the canonical URI directly.
+  const resource = await client.readResource({ uri: recordUri });
+  assert.equal(resource.contents.length, 1);
+  assert.match(resource.contents[0].text, /Pasta order/);
+
+  await server.close();
+});
+
+test('parseRecordResultId accepts canonical base64url, plain self-contained URI, and bare id', () => {
+  const canonical = __internal.encodeResourceUri('record', {
+    connection_id: 'conn_orders',
+    stream: 'orders',
+    record_id: 'o2',
+  });
+  const expected = { connectionId: 'conn_orders', stream: 'orders', recordId: 'o2' };
+  assert.deepEqual(__internal.parseRecordResultId(canonical), expected);
+  assert.deepEqual(
+    __internal.parseRecordResultId('pdpp://record/conn_orders%2Forders%3Ao2'),
+    expected,
+  );
+  assert.deepEqual(__internal.parseRecordResultId('conn_orders/orders:o2'), expected);
+});
+
 test('read_record_field structured resource is readable through resources/read without content resource_link', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
@@ -1032,8 +1127,7 @@ test('read_record_field structured resource is readable through resources/read w
     false,
     'ordinary small field reads must not trigger resource/file materialization'
   );
-  assert.equal(result.structuredContent.resource, undefined);
-  assert.doesNotMatch(JSON.stringify(result.structuredContent), /pdpp:\/\/field-window\//);
+  assert.match(result.structuredContent.resource.uri, /^pdpp:\/\/field-window\//);
   const uri = result._meta.resource.uri;
   assert.match(uri, /^pdpp:\/\/field-window\//);
 
