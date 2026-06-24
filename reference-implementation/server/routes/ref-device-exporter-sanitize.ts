@@ -13,12 +13,18 @@
 import { redactStderrTail } from "../../runtime/stderr-redact.js";
 
 const SENSITIVE_DIAGNOSTIC_KEY_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b/i;
+const LOCAL_SECRET_PATH_FRAGMENT_RE =
+  /(^|[\s"'=(:])(?:[^\s"'=(:),]+\/)*\.(?:codex|claude|ssh|aws|gcloud|config)(?:\/[^\s"',)]+)*/gi;
+
+function redactLocalSecretPathFragments(value: string): string {
+  return value.replace(LOCAL_SECRET_PATH_FRAGMENT_RE, "$1[REDACTED_PATH]");
+}
 
 export function sanitizeLocalCollectorGapDetails(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim()) {
     return null;
   }
-  const redacted = redactStderrTail(value).text.replace(/\s+/g, " ").trim();
+  const redacted = redactLocalSecretPathFragments(redactStderrTail(value).text).replace(/\s+/g, " ").trim();
   if (!redacted) {
     return null;
   }
@@ -65,5 +71,6 @@ function sanitizeDeviceExporterDiagnosticText(value: string): string {
     return `${prefix}[REDACTED_PATH]`;
   });
   redacted = redacted.replace(/\b[A-Za-z]:\\Users\\[^\s"',)]+/g, "[REDACTED_PATH]");
+  redacted = redactLocalSecretPathFragments(redacted);
   return redacted.replace(/\s+/g, " ").trim();
 }

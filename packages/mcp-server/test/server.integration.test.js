@@ -30,12 +30,28 @@ function makeFakeRs() {
         id: 'o2',
         title: 'Order o2',
         url: 'https://merchant.test/o2',
-        connection_id: 'conn_orders',
-        display_name: 'Merchant orders',
-        snippet: { text: 'Pasta order for $99.' },
-        score: 0.7,
-      },
-    ],
+            connection_id: 'conn_orders',
+            display_name: 'Merchant orders',
+            snippet: { text: 'Pasta order for $99.' },
+            match_windows: [
+              {
+                field_path: 'text',
+                text: 'Pasta order for $99.',
+                complete: true,
+                read: {
+                  tool: 'read_record_field',
+                  args: {
+                    id: 'conn_orders/orders:o2',
+                    field_path: 'text',
+                    offset_chars: 0,
+                    limit_chars: 256,
+                  },
+                },
+              },
+            ],
+            score: 0.7,
+          },
+        ],
   };
   const ORDER_O2 = {
     id: 'o2',
@@ -77,6 +93,23 @@ function makeFakeRs() {
   };
   const STREAM_META = { name: 'orders', record_count: 2 };
   const BLOB = Buffer.from([10, 20, 30, 40, 50]);
+  const LARGE_IMAGE_BASE64 = 'QUJD'.repeat(96);
+  const MEDIA = {
+    records: [
+      {
+        id: 'img1',
+        filename: 'cat.png',
+        image_blob: {
+          blob_id: 'blob-1',
+          mime_type: 'image/png',
+          size_bytes: BLOB.length,
+          digest: 'sha256:blob-1',
+          fetch_url: 'pdpp://blob/blob-1',
+        },
+        image_data: LARGE_IMAGE_BASE64,
+      },
+    ],
+  };
 
   const calls = [];
 
@@ -119,8 +152,54 @@ function makeFakeRs() {
       const fields = url.searchParams.getAll('fields');
       return jsonResponse({ ...ORDERS, _echo: { limit, fields } });
     }
+    if (url.pathname === '/v1/streams/media/records') {
+      return jsonResponse(MEDIA);
+    }
     if (url.pathname === '/v1/streams/orders/records/o2') {
       return jsonResponse(ORDER_O2);
+    }
+    if (url.pathname === '/v1/streams/orders/records/o2/field-window') {
+      if (url.searchParams.get('field') === 'forbidden') {
+        return new Response(
+          JSON.stringify({
+            error: {
+              type: 'authorization',
+              code: 'field_not_granted',
+              message: "field 'forbidden' not within granted projection",
+            },
+          }),
+          { status: 403, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      const source = ORDER_O2.text;
+      const q = url.searchParams.get('q');
+      const before = Number.parseInt(url.searchParams.get('before_chars') ?? '0', 10);
+      const after = Number.parseInt(url.searchParams.get('after_chars') ?? '0', 10);
+      const matchStart = q ? source.indexOf(q) : -1;
+      const offset = q ? Math.max(0, matchStart - before) : Number.parseInt(url.searchParams.get('offset_chars') ?? '0', 10);
+      const limit = Number.parseInt(url.searchParams.get('limit_chars') ?? '16', 10);
+      const qEnd = q ? matchStart + q.length + after : null;
+      const end = Math.min(source.length, qEnd ?? offset + limit);
+      return jsonResponse({
+        object: 'field_window',
+        stream: 'orders',
+        record_id: 'o2',
+        field: { path: url.searchParams.get('field') ?? 'text', type: 'string' },
+        window: {
+          text: source.slice(offset, end),
+          start_chars: offset,
+          end_chars: end,
+          limit_chars: limit,
+          total_chars: source.length,
+          complete: end >= source.length,
+          has_more: end < source.length,
+          match_start_chars: q ? matchStart : null,
+          match_end_chars: q ? matchStart + q.length : null,
+          next_offset_chars: end < source.length ? end : null,
+          previous_offset_chars: offset > 0 ? Math.max(0, offset - limit) : null,
+        },
+        url: url.pathname,
+      });
     }
     if (url.pathname === '/v1/streams/conversations/records/c1') {
       return jsonResponse(CONVERSATION_C1);
@@ -346,6 +425,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
     'aggregate',
     'fetch',
     'query_records',
+    'read_record_field',
     'schema',
     'search',
   ]);
@@ -356,6 +436,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
     'query_records',
     'search',
     'fetch',
+    'read_record_field',
   ]);
   for (const tool of tools.tools) {
     assert.ok(READ_ONLY.has(tool.name), `${tool.name} must be part of the read-only normal surface`);
@@ -467,6 +548,14 @@ test('query_records forwards supported query params', async () => {
   assert.match(result.content[0].text, /count=exact:42/);
   assert.match(result.content[0].text, /record\[0\] \{"id":"o1","amount":12\}/);
   assert.match(result.content[0].text, /record\[1\] \{"id":"o2","amount":99\}/);
+  const scoped = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders', connection_id: 'conn_orders', limit: 2 },
+  });
+  assert.equal(scoped.structuredContent.content_ladder.kind, 'record_set');
+  assert.equal(scoped.structuredContent.content_ladder.records[0].id, 'conn_orders/orders:o1');
+  assert.match(scoped.structuredContent.content_ladder.records[0].record_uri, /^pdpp:\/\/record\//);
+
   const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records'));
   const callUrl = new URL(call.url);
   assert.equal(callUrl.searchParams.get('limit'), '25');
@@ -474,6 +563,29 @@ test('query_records forwards supported query params', async () => {
   assert.equal(callUrl.searchParams.get('cursor'), null);
 
   await client.close();
+  await server.close();
+});
+
+test('query_records keeps binary fields metadata-only in text previews and content_ladder', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'media', connection_id: 'conn_media', limit: 1 },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /binary_field/);
+  assert.match(result.content[0].text, /binary-only/);
+  assert.doesNotMatch(result.content[0].text, /QUJDQUJDQUJDQUJD/);
+  const ladderRecord = result.structuredContent.content_ladder.records[0];
+  assert.equal(ladderRecord.id, 'conn_media/media:img1');
+  assert.equal(ladderRecord.binary_fields.length, 2);
+  assert.equal(ladderRecord.binary_fields[0].field_path, 'image_blob');
+  assert.equal(ladderRecord.binary_fields[0].mime_type, 'image/png');
+  assert.equal(ladderRecord.binary_fields[1].field_path, 'image_data');
+  assert.equal(ladderRecord.binary_fields[1].encoding, 'base64');
+  assert.equal(ladderRecord.field_windows.some((field) => field.field_path === 'image_data'), false);
   await server.close();
 });
 
@@ -576,8 +688,53 @@ test('search tool forwards q and returns hits', async () => {
       connection_id: 'conn_orders',
       display_name: 'Merchant orders',
       snippet: 'Pasta order for $99.',
+      match_windows: [
+        {
+          field_path: 'text',
+          text: 'Pasta order for $99.',
+          preview_text: 'Pasta order for $99.',
+          complete: true,
+          read: {
+            tool: 'read_record_field',
+            args: {
+              id: 'conn_orders/orders:o2',
+              field_path: 'text',
+              offset_chars: 0,
+              limit_chars: 256,
+            },
+          },
+        },
+      ],
+      evidence_excerpts: [
+        {
+          field_path: 'text',
+          preview_text: 'Pasta order for $99.',
+          preview_status: 'complete',
+          read: {
+            tool: 'read_record_field',
+            args: {
+              id: 'conn_orders/orders:o2',
+              field_path: 'text',
+              offset_chars: 0,
+              limit_chars: 256,
+            },
+          },
+        },
+      ],
     },
   ]);
+  assert.equal(result.structuredContent.content_ladder.kind, 'search_results');
+  assert.equal(result.structuredContent.content_ladder.records[0].id, 'conn_orders/orders:o2');
+  assert.match(result.structuredContent.content_ladder.records[0].record_uri, /^pdpp:\/\/record\//);
+  assert.equal(
+    result.structuredContent.content_ladder.records[0].field_windows.some((field) => field.resource_uri),
+    false
+  );
+  assert.doesNotMatch(JSON.stringify(result.structuredContent.results), /pdpp:\/\/field-window\//);
+  assert.doesNotMatch(JSON.stringify(result.structuredContent.content_ladder), /pdpp:\/\/field-window\//);
+  assert.match(result.structuredContent.results[0].evidence_excerpts[0].preview_text, /Pasta order /);
+  assert.match(result.structuredContent.content_ladder.records[0].evidence_excerpts[0].preview_text, /Pasta order /);
+  assert.match(result.structuredContent.content_ladder.records[0].field_windows[0].preview_text, /Pasta order /);
   // Prose content is a concise, agent-visible preview, not a JSON dump.
   assert.match(result.content[0].text, /search: 1 hit/i);
   assert.match(result.content[0].text, /has_more=true/);
@@ -643,7 +800,15 @@ test('fetch tool returns ChatGPT-compatible document shape', async () => {
   assert.deepEqual(result.structuredContent.metadata.amount, 99);
   assert.equal(result.structuredContent.data, undefined);
   const mirrored = JSON.parse(result.content[0].text);
-  assert.deepEqual(mirrored, result.structuredContent);
+  const { content_ladder: contentLadder, ...structuredDocument } = result.structuredContent;
+  assert.deepEqual(mirrored, structuredDocument);
+  assert.equal(
+    result.content.some((part) => part.type === 'resource_link'),
+    false,
+    'ordinary fetch results must not trigger resource/file materialization'
+  );
+  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
+  assert.equal(contentLadder.id, 'conn_orders/orders:o2');
   assert.equal(mirrored.metadata.connection_id, 'conn_orders');
   assert.equal(mirrored.metadata.display_name, 'Merchant orders');
   assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
@@ -672,7 +837,10 @@ test('fetch content text mirrors document JSON for hosts that hide structured ou
 
   // This is the model-visible path for clients that hide structuredContent.
   const text = JSON.parse(result.content[0].text);
-  assert.deepEqual(text, result.structuredContent);
+  const { content_ladder: contentLadder, ...structuredDocument } = result.structuredContent;
+  assert.deepEqual(text, structuredDocument);
+  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
+  assert.equal(contentLadder.id, 'conn_chatgpt/conversations:c1');
   assert.equal(text.metadata.connection_id, 'conn_chatgpt');
   assert.equal(text.metadata.connector_key, 'chatgpt');
   assert.equal(text.metadata.display_name, 'ChatGPT - everyone@appears.blue');
@@ -730,6 +898,168 @@ test('search to fetch journey is executable from model-visible text alone', asyn
   assert.equal(new URL(recordCall.url).searchParams.get('connection_id'), 'conn_orders');
 
   await client.close();
+  await server.close();
+});
+
+test('read_record_field reads bounded windows and advertises adjacent cursors', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'text', limit_chars: 12 },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /record=conn_orders\/orders:o2/);
+  assert.match(result.content[0].text, /next_cursor=12/);
+  assert.equal(result.structuredContent.record.id, 'conn_orders/orders:o2');
+  assert.equal(result.structuredContent.field.path, 'text');
+  assert.equal(result.structuredContent.window.text, 'Pasta order ');
+  assert.equal(result.structuredContent.window.next_cursor, '12');
+
+  const routeCall = calls.find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
+  assert.ok(routeCall, 'read_record_field must call the RS field-window route');
+  const routeUrl = new URL(routeCall.url);
+  assert.equal(routeUrl.searchParams.get('connection_id'), 'conn_orders');
+  assert.equal(routeUrl.searchParams.get('field'), 'text');
+  assert.equal(routeUrl.searchParams.get('limit_chars'), '12');
+
+  const next = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'text', cursor: result.structuredContent.window.next_cursor, limit_chars: 12 },
+  });
+  assert.equal(next.structuredContent.window.start_chars, 12);
+  assert.equal(next.structuredContent.window.previous_cursor, '0');
+  await server.close();
+});
+
+test('read_record_field forwards q context selectors', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: {
+      id: 'conn_orders/orders:o2',
+      field_path: 'text',
+      q: 'order',
+      before_chars: 6,
+      after_chars: 4,
+      limit_chars: 32,
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.window.match_start_chars, 6);
+  assert.equal(result.structuredContent.window.text, 'Pasta order for');
+
+  const routeCall = calls.find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
+  const routeUrl = new URL(routeCall.url);
+  assert.equal(routeUrl.searchParams.get('q'), 'order');
+  assert.equal(routeUrl.searchParams.get('before_chars'), '6');
+  assert.equal(routeUrl.searchParams.get('after_chars'), '4');
+  await server.close();
+});
+
+test('read_record_field rejects mixed identity before calling RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const before = calls.length;
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', connection_id: 'conn_orders', field_path: 'text' },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /exclusive/);
+  assert.equal(calls.length, before, 'invalid identity should not reach the RS');
+  await server.close();
+});
+
+test('read_record_field rejects q plus offset before calling RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const before = calls.length;
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'text', q: 'order', offset_chars: 1 },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /exclusive/);
+  assert.equal(calls.length, before, 'invalid selector should not reach the RS');
+  await server.close();
+});
+
+test('read_record_field rejects stale or malformed cursors before calling RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const before = calls.length;
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'text', cursor: 'expired_cursor' },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /cursor/);
+  assert.equal(calls.length, before, 'bad cursor should not reach the RS');
+  await server.close();
+});
+
+test('read_record_field preserves RS out-of-grant errors', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'forbidden' },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error.code, 'field_not_granted');
+  assert.equal(result.structuredContent.http_status, 403);
+  await server.close();
+});
+
+test('read_record_field structured resource is readable through resources/read without content resource_link', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const result = await client.callTool({
+    name: 'read_record_field',
+    arguments: { id: 'conn_orders/orders:o2', field_path: 'text', limit_chars: 12 },
+  });
+
+  assert.equal(
+    result.content.some((item) => item.type === 'resource_link'),
+    false,
+    'ordinary small field reads must not trigger resource/file materialization'
+  );
+  assert.equal(result.structuredContent.resource, undefined);
+  assert.doesNotMatch(JSON.stringify(result.structuredContent), /pdpp:\/\/field-window\//);
+  const uri = result._meta.resource.uri;
+  assert.match(uri, /^pdpp:\/\/field-window\//);
+
+  const before = calls.length;
+  const resource = await client.readResource({ uri });
+  assert.equal(resource.contents.length, 1);
+  assert.equal(resource.contents[0].mimeType, 'text/plain');
+  assert.match(resource.contents[0].text, /record=conn_orders\/orders:o2/);
+  assert.match(resource.contents[0].text, /Pasta order /);
+
+  const resourceCall = calls.slice(before).find((call) => call.url.includes('/v1/streams/orders/records/o2/field-window'));
+  assert.ok(resourceCall, 'resources/read must call the RS field-window route');
+  const resourceUrl = new URL(resourceCall.url);
+  assert.equal(resourceUrl.searchParams.get('connection_id'), 'conn_orders');
+  assert.equal(resourceUrl.searchParams.get('field'), 'text');
+  await server.close();
+});
+
+test('field-window resource rejects malformed handles', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  await assert.rejects(
+    client.readResource({ uri: 'pdpp://field-window/not-base64url-json' }),
+    /malformed|Resource handle/
+  );
   await server.close();
 });
 
@@ -802,6 +1132,8 @@ test('resource template returns stream metadata', async () => {
 
   const templates = await client.listResourceTemplates();
   assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === 'pdpp://stream/{name}'));
+  assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === 'pdpp://record/{handle}'));
+  assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === 'pdpp://field-window/{handle}'));
 
   const result = await client.readResource({ uri: 'pdpp://stream/orders' });
   assert.equal(result.contents.length, 1);
@@ -891,7 +1223,7 @@ test('Streamable HTTP helper handles initialize and tools/list statelessly', asy
   assert.equal(tools.headers.get('x-pdpp-mcp-profile'), null);
   const listed = await tools.json();
   const names = listed.result.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ['aggregate', 'fetch', 'query_records', 'schema', 'search']);
+  assert.deepEqual(names, ['aggregate', 'fetch', 'query_records', 'read_record_field', 'schema', 'search']);
   assert.ok(listed.result.tools.some((tool) => tool.name === 'fetch'));
   assert.ok(listed.result.tools.some((tool) => tool.name === 'search'));
 });

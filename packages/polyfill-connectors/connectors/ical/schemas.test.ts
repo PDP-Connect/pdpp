@@ -24,7 +24,7 @@ const EVENT_RECORD = {
   all_day: false,
   organizer_email: "front-desk@dental.example",
   attendees: [
-    { email: "the owner@example.com", name: "the owner", role: "REQ-PARTICIPANT" },
+    { email: "owner@example.com", name: "the owner", role: "REQ-PARTICIPANT" },
     { email: "assistant@dental.example", name: null, role: null },
   ],
   status: "CONFIRMED",
@@ -77,7 +77,10 @@ test("events schema rejects a non-datetime start (raw VEVENT value leaked throug
 });
 
 test("events schema rejects an attendee object missing its email", () => {
-  assert.equal(eventsSchema.safeParse({ ...EVENT_RECORD, attendees: [{ name: "the owner", role: null }] }).success, false);
+  assert.equal(
+    eventsSchema.safeParse({ ...EVENT_RECORD, attendees: [{ name: "the owner", role: null }] }).success,
+    false
+  );
 });
 
 test("validateRecord routes events and passes unknown streams through", () => {

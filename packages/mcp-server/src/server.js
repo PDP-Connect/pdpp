@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 
 import {
-  buildStreamResourceTemplate,
+  buildResourceTemplates,
   buildTools,
   PDPP_MCP_TOOL_NAMES,
 } from './tools.js';
@@ -19,6 +19,7 @@ export const DEFAULT_SERVER_VERSION = '0.0.0';
 export const PDPP_MCP_INSTRUCTIONS =
   'PDPP tools are grant-scoped. Start with `schema`, then call `schema(stream)` after choosing a stream; add `connection_id` when a stream name appears under multiple sources or before full schema. Use `connection_id` from schema results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or lexical `search` for exact terms. ' +
   'The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. Search result ids are self-contained `fetch` handles; pass them to `fetch` unchanged. ' +
+  'When a preview is not enough, follow `structuredContent.content_ladder`: call `read_record_field` with the supplied arguments, or read the returned `pdpp://record/...` and `pdpp://field-window/...` resource URIs if the host exposes MCP resources. ' +
   '`content[]` is the reliable model-visible guide and includes next cursors/bookmarks when present; `structuredContent` is a host-dependent machine envelope, not the only place to find next-step handles.';
 
 /**
@@ -74,19 +75,20 @@ export function createPdppMcpServer({
     );
   }
 
-  const streamTemplate = buildStreamResourceTemplate({ rs, providerUrl });
-  server.registerResource(
-    streamTemplate.name,
-    new ResourceTemplate(streamTemplate.uriTemplate, { list: undefined }),
-    {
-      title: streamTemplate.title,
-      description: streamTemplate.description,
-      mimeType: streamTemplate.mimeType,
-    },
-    async (uri, variables) => {
-      return await streamTemplate.read(uri.href ?? String(uri), variables);
-    }
-  );
+  for (const template of buildResourceTemplates({ rs, providerUrl })) {
+    server.registerResource(
+      template.name,
+      new ResourceTemplate(template.uriTemplate, { list: undefined }),
+      {
+        title: template.title,
+        description: template.description,
+        mimeType: template.mimeType,
+      },
+      async (uri, variables) => {
+        return await template.read(uri.href ?? String(uri), variables);
+      }
+    );
+  }
 
   return { server, rs };
 }

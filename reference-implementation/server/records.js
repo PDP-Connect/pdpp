@@ -52,12 +52,23 @@ import {
   passesTimeRange,
 } from './record-filters.js';
 import {
+  assertFieldPath,
+  assertFieldVisibleToGrant,
+  assertReadableStringField,
+  buildWindowEnvelope,
+  classifyFieldType,
+  fieldWindowError,
+  normalizeWindowSelector,
+  sqliteFieldJsonPath,
+} from './record-field-window.js';
+import {
   postgresDeleteAllRecords,
   postgresDeleteRecord,
   postgresGetDatasetBlobBytes,
   postgresGetDatasetRecordChangesBytes,
   postgresGetDatasetRecordsAggregate,
   postgresGetDatasetRecordTimeBounds,
+  postgresGetRecordFieldWindow,
   postgresGetRecord,
   postgresIngestRecord,
   postgresListAllStreams,
@@ -2798,6 +2809,114 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
   return responseRow.responseRecord;
 }
 
+export async function getRecordFieldWindow(
+  storageTarget,
+  stream,
+  recordId,
+  fieldPath,
+  grant,
+  manifest = null,
+  requestParams = {},
+) {
+  if (isPostgresStorageBackend()) {
+    return postgresGetRecordFieldWindow(
+      storageTarget,
+      stream,
+      recordId,
+      fieldPath,
+      grant,
+      manifest,
+      requestParams,
+    );
+  }
+
+  assertFieldPath(fieldPath);
+  const selector = normalizeWindowSelector(requestParams);
+
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+
+  const streamGrant = grant.streams.find(s => s.name === stream);
+  if (!streamGrant) {
+    throw fieldWindowError('grant_stream_not_allowed', `Stream '${stream}' not in grant`, 403);
+  }
+
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
+
+  const mStream = manifest?.streams?.find(s => s.name === stream);
+  const consentTimeField = mStream?.consent_time_field;
+  const requiredFields = mStream?.schema?.required || [];
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFields);
+
+  assertFieldVisibleToGrant(fieldPath, effective.fields);
+
+  const fieldPathExpr = sqliteFieldJsonPath(fieldPath);
+  const consentPathExpr = consentTimeField ? sqliteFieldJsonPath(consentTimeField) : null;
+
+  const row = getOne(referenceQueries.recordsGetFieldWindow, [
+    fieldPathExpr,
+    fieldPathExpr,
+    consentPathExpr,
+    connectorInstanceId,
+    stream,
+    recordId,
+    selector.mode === 'query' ? selector.query : null,
+    selector.mode === 'query' ? selector.query : null,
+    selector.mode === 'query' ? selector.query : null,
+    selector.mode === 'query' ? selector.query : null,
+    selector.mode === 'query' ? selector.before : 0,
+    selector.mode === 'query' ? null : selector.offset + 1,
+    selector.limit,
+  ]);
+
+  if (!row) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
+
+  if (effective.resources && !effective.resources.includes(row.record_key)) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
+  if (effective.timeRange && consentTimeField) {
+    const consentData = { [consentTimeField]: row.consent_time_value };
+    if (!passesTimeRange(consentData, effective.timeRange, consentTimeField)) {
+      throw fieldWindowError('not_found', 'Record not found', 404);
+    }
+  }
+
+  const fieldClass = classifyFieldType(row.field_type);
+  assertReadableStringField(fieldPath, fieldClass);
+  const matchStart = selector.mode === 'query' ? Number(row.match_pos) - 1 : null;
+  if (selector.mode === 'query' && (!Number.isFinite(matchStart) || matchStart < 0)) {
+    throw fieldWindowError('query_not_found', `q was not found in field '${fieldPath}'`, 404);
+  }
+  const windowOffset = selector.mode === 'query'
+    ? Math.max(0, matchStart - selector.before)
+    : selector.offset;
+
+  const window = buildWindowEnvelope({
+    text: row.window_text ?? '',
+    totalChars: Number(row.total_chars ?? 0),
+    offset: windowOffset,
+    limit: selector.limit,
+    matchStartChars: selector.mode === 'query' ? matchStart : null,
+    matchEndChars: selector.mode === 'query' ? matchStart + selector.query.length : null,
+  });
+
+  const warnings = [...requestWarnings];
+  if (selector.limitClamped) {
+    warnings.push({ code: 'limit_clamped', message: `limit_chars clamped to ${selector.limit}` });
+  }
+
+  return {
+    record_key: row.record_key,
+    field_path: fieldPath,
+    field_type: fieldClass,
+    window,
+    warnings,
+  };
+}
+
 /**
  * Delete a record (owner-authenticated).
  *
@@ -3684,6 +3803,86 @@ export async function getRecordAcrossBindings(bindings, stream, recordId, grant,
   if (matches.length === 1) {
     return applyExtraWarnings(matches[0].record);
   }
+  const candidates = matches
+    .map(({ binding }) => projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    }))
+    .filter(Boolean);
+  throw new AmbiguousConnectionError(
+    `Record '${recordId}' is present under more than one connection. Retry with \`connection_id\`.`,
+    candidates,
+  );
+}
+
+export async function getRecordFieldWindowAcrossBindings(
+  bindings,
+  stream,
+  recordId,
+  fieldPath,
+  grant,
+  manifest,
+  requestParams = {},
+  opts = {},
+) {
+  ensureBindingsOrThrow(bindings, {
+    connectorId: bindings?.[0]?.connectorId,
+    missingMessage: 'No active connection is available under this grant.',
+  });
+
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+  function applyExtraWarnings(result) {
+    if (!result || !extraWarnings.length) return result;
+    const existing = Array.isArray(result.warnings) ? result.warnings : [];
+    result.warnings = [...existing, ...extraWarnings];
+    return result;
+  }
+
+  if (bindings.length === 1) {
+    const single = await getRecordFieldWindow(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      recordId,
+      fieldPath,
+      grant,
+      manifest,
+      requestParams,
+    );
+    return applyExtraWarnings(single);
+  }
+
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  const matches = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    try {
+      const result = await getRecordFieldWindow(
+        target,
+        stream,
+        recordId,
+        fieldPath,
+        grant,
+        manifest,
+        perBindingParams,
+      );
+      matches.push({ binding, result });
+    } catch (err) {
+      if (err?.code === 'not_found') continue;
+      throw err;
+    }
+  }
+
+  if (matches.length === 0) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
+  if (matches.length === 1) {
+    return applyExtraWarnings(matches[0].result);
+  }
+
   const candidates = matches
     .map(({ binding }) => projectBindingForWire({
       connectorInstanceId: binding.connectorInstanceId,

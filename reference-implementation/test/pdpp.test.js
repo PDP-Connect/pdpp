@@ -710,6 +710,7 @@ test('PDPP reference implementation integration', async (t) => {
         'aggregate',
         'fetch',
         'query_records',
+        'read_record_field',
         'schema',
         'search',
       ]);

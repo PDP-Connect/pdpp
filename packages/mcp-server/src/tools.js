@@ -1,3 +1,7 @@
+import {
+  buildRecordContentLadder as buildSharedRecordContentLadder,
+  summarizeRecordEvidence,
+} from '@pdpp/read-evidence';
 import { z } from 'zod';
 
 const READ_ONLY_ANNOTATIONS = {
@@ -13,6 +17,7 @@ export const PDPP_MCP_TOOL_NAMES = Object.freeze([
   'aggregate',
   'search',
   'fetch',
+  'read_record_field',
 ]);
 
 function selectNormalTools(tools) {
@@ -213,6 +218,14 @@ class ConflictingConnectionIdError extends Error {
   }
 }
 
+class InvalidReadRecordFieldSelectorError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'InvalidReadRecordFieldSelectorError';
+    this.code = 'invalid_field_window_selector';
+  }
+}
+
 // Translate a typed filter object into `[bracketKey, value]` query entries the
 // RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
 function filterObjectToBracketEntries(filter) {
@@ -315,6 +328,7 @@ const READ_OUTPUT_SCHEMA_SHAPE = {
     .describe(
       'Canonical RS response body. Follows the public read envelope advertised by `GET /v1/schema` plus operation-specific extensions; source metadata uses canonical `connector_key` and concrete `connection_id` values when present.',
     ),
+  content_ladder: z.unknown().optional(),
   provider_url: z.string().describe('RS base URL the MCP server was configured with.'),
   request_id: z.string().nullable().describe('RS x-request-id when present.'),
 };
@@ -340,6 +354,43 @@ const FETCH_OUTPUT_SCHEMA_SHAPE = {
   text: z.string(),
   url: z.string(),
   metadata: z.record(z.string(), z.unknown()),
+  content_ladder: z.unknown().optional(),
+};
+
+const READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE = {
+  record: z
+    .object({
+      id: z.string(),
+      connection_id: z.string().nullable(),
+      stream: z.string(),
+      record_id: z.string(),
+    })
+    .passthrough(),
+  field: z
+    .object({
+      path: z.string(),
+      type: z.string().optional(),
+      text_like: z.boolean(),
+    })
+    .passthrough(),
+  window: z
+    .object({
+      text: z.string(),
+      start_chars: z.number().int().min(0),
+      end_chars: z.number().int().min(0),
+      limit_chars: z.number().int().min(1),
+      complete: z.boolean(),
+    })
+    .passthrough(),
+  resource: z
+    .object({
+      uri: z.string(),
+      mime_type: z.string(),
+    })
+    .passthrough()
+    .optional(),
+  provider_url: z.string(),
+  request_id: z.string().nullable(),
 };
 
 const DISCOVERY_STREAM_SUMMARY_LIMIT = 50;
@@ -486,9 +537,11 @@ export function buildTools({ rs, providerUrl }) {
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, {
           query,
         });
-        return toToolResult(response, providerUrl, `records from stream "${stream}"`, {
-          previewRecords: true,
-        });
+      return toToolResult(response, providerUrl, `records from stream "${stream}"`, {
+        previewRecords: true,
+        contentLadderStream: stream,
+        contentLadderConnectionId: args?.connection_id,
+      });
       },
     },
     {
@@ -581,7 +634,7 @@ export function buildTools({ rs, providerUrl }) {
           args.filter,
         );
         const response = await rs.getJson(path, { query });
-        return toSearchToolResult(response, providerUrl, { limit: args?.limit });
+          return toSearchToolResult(response, providerUrl, { limit: args?.limit, q: args?.q });
       },
     },
     {
@@ -628,6 +681,51 @@ export function buildTools({ rs, providerUrl }) {
         return toFetchToolResult(response, providerUrl, args.id);
       },
     },
+    {
+      name: 'read_record_field',
+      title: 'Read PDPP record field window',
+      description: 'Read bounded field text. Page by offset, cursor, or q. Read-only.',
+      annotations: READ_ONLY_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          id: z.string().min(1).optional(),
+          connection_id: z.string().min(1).optional(),
+          stream: z.string().min(1).optional(),
+          record_id: z.string().min(1).optional(),
+          field_path: z.string().min(1),
+          cursor: z
+            .string()
+            .min(1)
+            .optional(),
+          offset_chars: z.number().int().min(0).optional(),
+          limit_chars: z
+            .number()
+            .int()
+            .min(1)
+            .max(16384)
+            .optional(),
+          q: z.string().min(1).optional(),
+          before_chars: z.number().int().min(0).max(8192).optional(),
+          after_chars: z.number().int().min(0).max(8192).optional(),
+        })
+        .strict(),
+      outputSchema: z.object(READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const ref = resolveReadRecordFieldRef(args);
+        const fieldPath = requireSafeName(args?.field_path, 'field_path');
+        const query = readRecordFieldQuery(args, ref.connectionId, fieldPath);
+        const response = await rs.getJson(
+          `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}/field-window`,
+          { query }
+        );
+        return toReadRecordFieldToolResult(response, providerUrl, {
+          connectionId: ref.connectionId,
+          stream: ref.stream,
+          recordId: ref.recordId,
+          fieldPath,
+        });
+      },
+    },
   ];
 
   return selectNormalTools(tools);
@@ -637,6 +735,151 @@ function searchPathForMode(mode) {
   if (mode === 'semantic') return '/v1/search/semantic';
   if (mode === 'hybrid') return '/v1/search/hybrid';
   return '/v1/search';
+}
+
+function resolveReadRecordFieldRef(args) {
+  const hasId = typeof args?.id === 'string' && args.id.length > 0;
+  const hasExplicit = args?.connection_id !== undefined || args?.stream !== undefined || args?.record_id !== undefined;
+  if (hasId && hasExplicit) {
+    throw new InvalidReadRecordFieldSelectorError(
+      '`id` is exclusive with explicit `connection_id`, `stream`, and `record_id`; pass one record identity form'
+    );
+  }
+  if (hasId) {
+    const ref = parseRecordResultId(args.id);
+    if (!ref.connectionId) {
+      throw new InvalidReadRecordFieldSelectorError(
+        '`id` for read_record_field must include connection_id (`connection_id/stream:record_id`) or use explicit connection_id + stream + record_id'
+      );
+    }
+    return ref;
+  }
+  if (!args?.connection_id || !args?.stream || !args?.record_id) {
+    throw new InvalidReadRecordFieldSelectorError(
+      'read_record_field requires either `id` + `field_path` or `connection_id` + `stream` + `record_id` + `field_path`'
+    );
+  }
+  return {
+    connectionId: requireSafeName(args.connection_id, 'connection_id'),
+    stream: requireSafeName(args.stream, 'stream'),
+    recordId: requireSafeName(args.record_id, 'record_id'),
+  };
+}
+
+function readRecordFieldQuery(args, connectionId, fieldPath) {
+  if (args?.cursor !== undefined && args?.offset_chars !== undefined) {
+    throw new InvalidReadRecordFieldSelectorError('`cursor` is exclusive with `offset_chars`');
+  }
+  if (args?.q !== undefined && (args?.cursor !== undefined || args?.offset_chars !== undefined)) {
+    throw new InvalidReadRecordFieldSelectorError('`q` is exclusive with `cursor` and `offset_chars`');
+  }
+  if ((args?.before_chars !== undefined || args?.after_chars !== undefined) && args?.q === undefined) {
+    throw new InvalidReadRecordFieldSelectorError('`before_chars` and `after_chars` require `q`');
+  }
+  const query = {
+    connection_id: connectionId,
+    field: fieldPath,
+  };
+  if (args?.cursor !== undefined) {
+    query.offset_chars = parseFieldWindowCursor(args.cursor);
+  } else if (args?.offset_chars !== undefined) {
+    query.offset_chars = args.offset_chars;
+  }
+  if (args?.limit_chars !== undefined) {
+    query.limit_chars = args.limit_chars;
+  }
+  if (args?.q !== undefined) {
+    query.q = args.q;
+  }
+  if (args?.before_chars !== undefined) {
+    query.before_chars = args.before_chars;
+  }
+  if (args?.after_chars !== undefined) {
+    query.after_chars = args.after_chars;
+  }
+  return query;
+}
+
+function parseFieldWindowCursor(cursor) {
+  if (typeof cursor !== 'string' || !/^\d+$/.test(cursor)) {
+    throw new InvalidReadRecordFieldSelectorError('field-window cursor must be a non-negative integer offset returned by read_record_field');
+  }
+  return Number.parseInt(cursor, 10);
+}
+
+export function buildResourceTemplates({ rs, providerUrl }) {
+  return [
+    buildStreamResourceTemplate({ rs, providerUrl }),
+    buildRecordResourceTemplate({ rs, providerUrl }),
+    buildRecordFieldResourceTemplate({ rs, providerUrl }),
+  ];
+}
+
+function buildRecordResourceTemplate({ rs, providerUrl }) {
+  return {
+    uriTemplate: 'pdpp://record/{handle}',
+    name: 'pdpp-record',
+    title: 'PDPP record',
+    description: 'Returns one grant-scoped PDPP record through the resource server. Read-only.',
+    mimeType: 'application/json',
+    read: async (uri, variables) => {
+      const ref = resolveRecordResourceRef(uri, variables);
+      const query = {};
+      if (ref.connectionId) query.connection_id = ref.connectionId;
+      const response = await rs.getJson(
+        `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`,
+        { query }
+      );
+      if (response.ok) {
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify(response.body, null, 2),
+            },
+          ],
+        };
+      }
+      return resourceErrorContents(uri, response, providerUrl);
+    },
+  };
+}
+
+function buildRecordFieldResourceTemplate({ rs, providerUrl }) {
+  return {
+    uriTemplate: 'pdpp://field-window/{handle}',
+    name: 'pdpp-field-window',
+    title: 'PDPP record field window',
+    description: 'Returns one bounded text window from an authorized PDPP record field. Read-only.',
+    mimeType: 'text/plain',
+    read: async (uri, variables) => {
+      const ref = resolveFieldWindowResourceRef(uri, variables);
+      const query = readRecordFieldQuery(ref, ref.connectionId, ref.field_path);
+      const response = await rs.getJson(
+        `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}/field-window`,
+        { query }
+      );
+      if (!response.ok) {
+        return resourceErrorContents(uri, response, providerUrl);
+      }
+      const result = toReadRecordFieldToolResult(response, providerUrl, {
+        connectionId: ref.connectionId,
+        stream: ref.stream,
+        recordId: ref.recordId,
+        fieldPath: ref.field_path,
+      });
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: 'text/plain',
+            text: result.content[0]?.text ?? '',
+          },
+        ],
+      };
+    },
+  };
 }
 
 export function buildStreamResourceTemplate({ rs, providerUrl }) {
@@ -675,6 +918,57 @@ export function buildStreamResourceTemplate({ rs, providerUrl }) {
   };
 }
 
+function resourceErrorContents(uri, response, providerUrl) {
+  const error = response.error ?? { type: 'rs_error', code: 'unknown', message: 'Unknown RS error' };
+  return {
+    contents: [
+      {
+        uri,
+        mimeType: 'application/json',
+        text: JSON.stringify({ error, provider_url: providerUrl, http_status: response.status }, null, 2),
+      },
+    ],
+  };
+}
+
+function resolveRecordResourceRef(uri, variables) {
+  const payload = decodeResourceHandle(resolveResourceHandle(uri, variables, 'record'), 'record');
+  return {
+    connectionId: requireSafeName(payload.connection_id, 'connection_id'),
+    stream: requireSafeName(payload.stream, 'stream'),
+    recordId: requireSafeName(payload.record_id, 'record_id'),
+  };
+}
+
+function resolveFieldWindowResourceRef(uri, variables) {
+  const payload = decodeResourceHandle(resolveResourceHandle(uri, variables, 'field-window'), 'field-window');
+  const ref = {
+    connectionId: requireSafeName(payload.connection_id, 'connection_id'),
+    stream: requireSafeName(payload.stream, 'stream'),
+    recordId: requireSafeName(payload.record_id, 'record_id'),
+    field_path: requireSafeName(payload.field_path, 'field_path'),
+  };
+  if (payload.cursor !== undefined) ref.cursor = String(payload.cursor);
+  if (payload.offset_chars !== undefined) ref.offset_chars = payload.offset_chars;
+  if (payload.limit_chars !== undefined) ref.limit_chars = payload.limit_chars;
+  if (payload.q !== undefined) ref.q = String(payload.q);
+  if (payload.before_chars !== undefined) ref.before_chars = payload.before_chars;
+  if (payload.after_chars !== undefined) ref.after_chars = payload.after_chars;
+  return ref;
+}
+
+function resolveResourceHandle(uri, variables, kind) {
+  const rawFromVariables = variables?.handle;
+  if (typeof rawFromVariables === 'string' && rawFromVariables.length > 0) {
+    return decodeIfEncoded(rawFromVariables);
+  }
+  const match = new RegExp(`^pdpp://${kind}/([^/]+)$`).exec(uri);
+  if (!match) {
+    throw new InvalidResourceUriError(`Resource URI ${uri} does not match pdpp://${kind}/{handle}.`);
+  }
+  return decodeURIComponent(match[1]);
+}
+
 function resolveStreamName(uri, variables) {
   const rawFromVariables = variables?.name;
   if (typeof rawFromVariables === 'string' && rawFromVariables.length > 0) {
@@ -693,6 +987,30 @@ function decodeIfEncoded(value) {
   } catch {
     return value;
   }
+}
+
+function encodeResourceUri(kind, payload) {
+  return `pdpp://${kind}/${encodeResourceHandle({ v: 1, kind, ...payload })}`;
+}
+
+function encodeResourceHandle(payload) {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function decodeResourceHandle(handle, expectedKind) {
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(handle, 'base64url').toString('utf8'));
+  } catch {
+    throw new InvalidResourceUriError(`Resource handle for ${expectedKind} is malformed.`);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new InvalidResourceUriError(`Resource handle for ${expectedKind} is malformed.`);
+  }
+  if (payload.v !== 1 || payload.kind !== expectedKind) {
+    throw new InvalidResourceUriError(`Resource handle for ${expectedKind} has the wrong kind or version.`);
+  }
+  return payload;
 }
 
 export class InvalidResourceUriError extends Error {
@@ -744,6 +1062,7 @@ function pickQuery(args, supportedKeys) {
 function toToolResult(response, providerUrl, label = 'response', options = {}) {
   if (response.ok) {
     const body = response.body;
+    const contentLadder = buildResponseContentLadder(body, options);
     return {
       content: [
         {
@@ -751,7 +1070,12 @@ function toToolResult(response, providerUrl, label = 'response', options = {}) {
           text: summarizeBody(body, label, options),
         },
       ],
-      structuredContent: { data: body, provider_url: providerUrl, request_id: response.requestId },
+      structuredContent: {
+        data: body,
+        ...(contentLadder ? { content_ladder: contentLadder } : {}),
+        provider_url: providerUrl,
+        request_id: response.requestId,
+      },
     };
   }
   return errorToolResult(response, providerUrl);
@@ -1001,13 +1325,14 @@ function toSearchToolResult(response, providerUrl, options = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const allResults = normalizeSearchResults(response.body);
+  const allResults = normalizeSearchResults(response.body, { q: options.q });
   const limit = requestedSearchLimit(options.limit);
   const results = allResults.slice(0, limit);
   const summaryBody = allResults.length > results.length
     ? { ...response.body, has_more: true }
     : response.body;
   const data = compactSearchEnvelope(summaryBody, { resultCount: results.length });
+  const contentLadder = buildSearchContentLadder(results);
   return {
     content: [
       {
@@ -1018,10 +1343,258 @@ function toSearchToolResult(response, providerUrl, options = {}) {
     structuredContent: {
       data,
       results,
+      ...(contentLadder ? { content_ladder: contentLadder } : {}),
       provider_url: providerUrl,
       request_id: response.requestId,
     },
   };
+}
+
+function toReadRecordFieldToolResult(response, providerUrl, identity) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  const body = objectValue(response.body) || {};
+  const field = objectValue(body.field) || {};
+  const rawWindow = objectValue(body.window) || {};
+  const stream = firstString(body.stream, identity.stream);
+  const recordId = firstString(body.record_id, identity.recordId);
+  const connectionId = firstString(body.connection_id, body.connector_instance_id, identity.connectionId) || null;
+  const record = {
+    id: connectionId ? `${connectionId}/${stream}:${recordId}` : `${stream}:${recordId}`,
+    connection_id: connectionId,
+    stream,
+    record_id: recordId,
+  };
+  const window = {
+    ...rawWindow,
+    next_cursor: rawWindow.next_offset_chars === null || rawWindow.next_offset_chars === undefined ? null : String(rawWindow.next_offset_chars),
+    previous_cursor:
+      rawWindow.previous_offset_chars === null || rawWindow.previous_offset_chars === undefined
+        ? null
+        : String(rawWindow.previous_offset_chars),
+  };
+  const fieldInfo = {
+    path: firstString(field.path, identity.fieldPath),
+    type: firstString(field.type, rawWindow.type),
+    text_like: true,
+  };
+  const resourceUri = encodeResourceUri('field-window', {
+    connection_id: connectionId,
+    stream,
+    record_id: recordId,
+    field_path: fieldInfo.path,
+    offset_chars: window.start_chars,
+    limit_chars: window.limit_chars,
+  });
+  const resource = {
+    uri: resourceUri,
+    mime_type: 'text/plain',
+  };
+  const header = [
+    `record=${record.id}`,
+    `field=${fieldInfo.path}`,
+    `chars=${formatScalar(window.start_chars)}..${formatScalar(window.end_chars)}`,
+    `total_chars=${formatScalar(window.total_chars)}`,
+    `complete=${window.complete === true ? 'true' : 'false'}`,
+    window.next_cursor ? `next_cursor=${window.next_cursor}` : null,
+    window.previous_cursor ? `previous_cursor=${window.previous_cursor}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const text = typeof window.text === 'string' ? window.text : '';
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `${header}\n${text}`,
+      },
+    ],
+    structuredContent: {
+      record,
+      field: fieldInfo,
+      window,
+      provider_url: providerUrl,
+      request_id: response.requestId ?? null,
+    },
+    _meta: {
+      resource,
+    },
+  };
+}
+
+const CONTENT_LADDER_RECORD_LIMIT = 5;
+const CONTENT_LADDER_FIELD_LIMIT = 5;
+const CONTENT_LADDER_WINDOW_LIMIT_CHARS = 4096;
+const CONTENT_LADDER_BINARY_FIELD_LIMIT = 5;
+const BINARY_INLINE_STRING_CHAR_LIMIT = 256;
+const CONTENT_LADDER_OMIT_FIELD_KEYS = new Set([
+  'id',
+  'record_id',
+  'recordId',
+  'record_key',
+  'recordKey',
+  'stream',
+  'stream_name',
+  'streamName',
+  'connection_id',
+  'connector_instance_id',
+  'connector_key',
+  'connector_id',
+  'display_name',
+  'emitted_at',
+  'updated_at',
+  'created_at',
+]);
+
+function buildResponseContentLadder(body, options = {}) {
+  const records = extractRecordRows(body)
+    .map((record) =>
+      buildRecordContentLadder(record, {
+        stream: options.contentLadderStream,
+        connectionId: options.contentLadderConnectionId,
+      })
+    )
+    .filter(Boolean)
+    .slice(0, CONTENT_LADDER_RECORD_LIMIT);
+  if (records.length === 0) return null;
+  return {
+    kind: 'record_set',
+    read_tool: 'read_record_field',
+    records,
+  };
+}
+
+function buildSearchContentLadder(results) {
+  const records = results
+    .map((result) => {
+      const record = buildRecordContentLadder(result, {
+        stream: result.stream,
+        recordId: result.record_key,
+        connectionId: result.connection_id,
+      });
+      if (!record || !Array.isArray(result.match_windows) || result.match_windows.length === 0) return record;
+      const evidenceExcerpts = searchEvidenceExcerpts(result.match_windows, record.id);
+      return {
+        ...record,
+        ...(evidenceExcerpts.length > 0 ? { evidence_excerpts: evidenceExcerpts } : {}),
+        field_windows: mergeSearchMatchWindows(record.field_windows, result.match_windows, record.id),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, CONTENT_LADDER_RECORD_LIMIT);
+  if (records.length === 0) return null;
+  return {
+    kind: 'search_results',
+    read_tool: 'read_record_field',
+    records,
+  };
+}
+
+function mergeSearchMatchWindows(existing, matchWindows, recordId) {
+  const rendered = matchWindows.map((window) => {
+    const previewText = searchEvidencePreviewText(window);
+    const read = searchMatchWindowRead(window, recordId, window.field_path);
+    return {
+      field_path: window.field_path,
+      text_like: true,
+      ...(previewText ? { preview_text: previewText } : {}),
+      preview_status: window.complete === true ? 'complete' : 'truncated',
+      size_chars: typeof window.text === 'string' ? window.text.length : undefined,
+      ...(read ? { read } : {}),
+    };
+  });
+  const seen = new Set(rendered.map((window) => window.field_path));
+  return [...rendered, ...(Array.isArray(existing) ? existing.filter((window) => !seen.has(window.field_path)) : [])];
+}
+
+function searchEvidenceExcerpts(matchWindows, recordId) {
+  if (!Array.isArray(matchWindows)) return [];
+  return matchWindows
+    .map((window) => {
+      const previewText = searchEvidencePreviewText(window);
+      if (!previewText) return null;
+      const read = searchMatchWindowRead(window, recordId, window.field_path);
+      return {
+        field_path: window.field_path,
+        preview_text: previewText,
+        preview_status: window.complete === true ? 'complete' : 'truncated',
+        ...(read ? { read } : {}),
+      };
+    })
+    .filter(Boolean);
+}
+
+function searchEvidencePreviewText(window) {
+  if (typeof window?.preview_text === 'string') return window.preview_text;
+  return typeof window?.text === 'string' ? truncateText(window.text, SEARCH_TEXT_SNIPPET_CHAR_LIMIT) : null;
+}
+
+function searchMatchWindowRead(window, recordId, fieldPath) {
+  const read = objectValue(window?.read);
+  if (!read) return null;
+  const args = searchMatchWindowReadArgs(read.args, recordId, fieldPath);
+  return {
+    tool: read.tool ?? 'read_record_field',
+    args,
+  };
+}
+
+function searchMatchWindowReadArgs(args, recordId, fieldPath) {
+  const rawArgs = objectValue(args);
+  if (firstString(rawArgs.id, rawArgs.record_uri)) return rawArgs;
+  const connectionId = firstString(rawArgs.connection_id, rawArgs.connector_instance_id);
+  const stream = firstString(rawArgs.stream);
+  const rawRecordId = firstString(rawArgs.record_id, rawArgs.recordId, rawArgs.record_key, rawArgs.recordKey);
+  const id = connectionId && stream && rawRecordId ? selfContainedResultId(`${stream}:${rawRecordId}`, connectionId) : recordId;
+  return {
+    id,
+    field_path: firstString(rawArgs.field_path, rawArgs.fieldPath, rawArgs.path) ?? fieldPath,
+    ...definedObject({
+      q: rawArgs.q,
+      cursor: rawArgs.cursor,
+      offset_chars: rawArgs.offset_chars,
+      limit_chars: rawArgs.limit_chars,
+      before_chars: rawArgs.before_chars,
+      after_chars: rawArgs.after_chars,
+    }),
+  };
+}
+
+function definedObject(values) {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && value !== null && value !== ''));
+}
+
+function hideModelVisibleFieldWindowResources(record) {
+  if (!record || !Array.isArray(record.field_windows)) return record;
+  return {
+    ...record,
+    field_windows: record.field_windows.map(({ resource_uri: _resourceUri, resourceUri: _resourceUriCamel, ...field }) => field),
+  };
+}
+
+function buildFetchContentLadder(recordBody, document) {
+  const record = buildRecordContentLadder(recordBody, {
+    id: document.id,
+    connectionId: document.metadata?.connection_id,
+  });
+  if (!record) return null;
+  return {
+    kind: 'record',
+    read_tool: 'read_record_field',
+    ...record,
+  };
+}
+
+function buildRecordContentLadder(record, fallback = {}) {
+  const ladder = buildSharedRecordContentLadder(record, {
+    fallback,
+    encodeResourceUri,
+    fieldLimit: CONTENT_LADDER_FIELD_LIMIT,
+    binaryLimit: CONTENT_LADDER_BINARY_FIELD_LIMIT,
+    windowLimitChars: CONTENT_LADDER_WINDOW_LIMIT_CHARS,
+  });
+  return hideModelVisibleFieldWindowResources(ladder);
 }
 
 function toFetchToolResult(response, providerUrl, requestedId) {
@@ -1029,6 +1602,7 @@ function toFetchToolResult(response, providerUrl, requestedId) {
     return errorToolResult(response, providerUrl);
   }
   const document = normalizeFetchedDocument(response.body, requestedId, providerUrl);
+  const contentLadder = buildFetchContentLadder(response.body, document);
   const text = JSON.stringify(document);
   return {
     content: [
@@ -1037,7 +1611,10 @@ function toFetchToolResult(response, providerUrl, requestedId) {
         text,
       },
     ],
-    structuredContent: document,
+    structuredContent: {
+      ...document,
+      ...(contentLadder ? { content_ladder: contentLadder } : {}),
+    },
   };
 }
 
@@ -1121,7 +1698,7 @@ function summarizeBody(body, label, options = {}) {
     return summarizeStreamsDiscovery(body, label);
   }
   if (options.previewRecords) {
-    return summarizeRecordEnvelope(body, label);
+    return summarizeRecordEvidence(body, label);
   }
   if (Array.isArray(body)) {
     return `${label}: ${body.length} item(s). See structuredContent.data for the canonical envelope.`;
@@ -1172,7 +1749,7 @@ function summarizeRecordEnvelope(body, label) {
       truncated = true;
       break;
     }
-    const rendered = `${prefix}${truncateText(stableInlineJson(record), budget)}`;
+    const rendered = `${prefix}${truncateText(stableInlineJson(sanitizeRecordForPreview(record)), budget)}`;
     lines.push(rendered);
     used += rendered.length + 1;
   }
@@ -1642,6 +2219,22 @@ function stableInlineJson(value) {
   }
 }
 
+function sanitizeRecordForPreview(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  const out = {};
+  for (const [key, value] of Object.entries(record)) {
+    const blob = blobRefMetadata(value);
+    if (blob) {
+      out[key] = { object: 'binary_field', preview_status: 'binary-only', ...blob };
+    } else if (isLargeBase64Field(key, value)) {
+      out[key] = { object: 'binary_field', preview_status: 'binary-only', encoding: 'base64', size_chars: value.length };
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function truncateText(value, limit) {
   const safeLimit = Math.max(0, limit);
   if (value.length <= safeLimit) return value;
@@ -1650,7 +2243,7 @@ function truncateText(value, limit) {
 }
 
 const SEARCH_TEXT_PREVIEW_LIMIT = 3;
-const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 140;
+const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 96;
 const SEARCH_RESULT_SNIPPET_CHAR_LIMIT = 320;
 // A truncated id is a dead fetch handle, so the preview id bound must
 // comfortably exceed realistic `{connection_id}/{stream}:{record_id}` handles;
@@ -1665,11 +2258,47 @@ function summarizeSearch(body, results) {
   const sourceMixText = formatSearchSourceMix(body);
   const recallText = formatSearchRecallWarning(body);
   const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
-  const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
+  const matchPreviews = results
+    .slice(0, SEARCH_TEXT_PREVIEW_LIMIT)
+    .flatMap((result, index) => formatSearchMatchWindowLines(result, index));
+  const matchPreviewText =
+    matchPreviews.length > 0 ? `\nEvidence excerpts:\n${matchPreviews.join('\n')}` : '';
+  const previewText = previews.length > 0 ? `\nTop results:\n${previews.join('\n')}` : '';
   const fetchHint = previews.length > 0
     ? '\nFetch a hit with `fetch` using the shown id as-is; ids are self-contained. Pass connection_id only when shown separately.'
     : '';
-  return `search: ${results.length} hit(s).${hasMore}${cursorText}${firstFetchText}${sourceMixText}${recallText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+  return `search: ${results.length} hit(s).${hasMore}${cursorText}${firstFetchText}${sourceMixText}${recallText}${matchPreviewText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+}
+
+function formatSearchMatchWindowLines(result, index) {
+  const windows = Array.isArray(result.match_windows) ? result.match_windows : [];
+  return windows
+    .slice(0, 2)
+    .filter((window) => typeof window.text === 'string' && window.text.length > 0)
+    .map((window) => {
+      const fieldPath = firstString(window.field_path, window.field?.path);
+      const read = objectValue(window.read);
+      const readArgs = objectValue(read?.args);
+      const complete = window.complete === true ? 'complete=true' : 'complete=false';
+      const cursor = firstString(window.next_cursor) ? ` next_cursor=${formatInlineValue(window.next_cursor)}` : '';
+      const offset = Number.isInteger(readArgs?.offset_chars) ? ` offset_chars=${readArgs.offset_chars}` : '';
+      const limit = Number.isInteger(readArgs?.limit_chars) ? ` limit_chars=${readArgs.limit_chars}` : '';
+      const readHint = read?.tool || readArgs ? ` read=${formatInlineValue(read.tool ?? 'read_record_field')}${offset}${limit}` : '';
+      const visibleId = firstString(readArgs?.id, result.id);
+      const previewText =
+        typeof window.preview_text === 'string' ? window.preview_text : truncateText(window.text, SEARCH_TEXT_SNIPPET_CHAR_LIMIT);
+      return `${index + 1}. result=${index + 1} field_path=${formatFieldName(fieldPath ?? 'unknown')} snippet=${formatScalar(
+        previewText
+      )} id=${formatInlineValue(truncateText(visibleId ?? '', SEARCH_TEXT_ID_CHAR_LIMIT))} ${complete}${cursor}${readHint}`;
+    });
+}
+
+function formatSearchReadArgs(args) {
+  if (!args) return '';
+  return Object.entries(args)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${formatFieldName(key)}=${formatInlineValue(truncateText(String(value), 120))}`)
+    .join(',');
 }
 
 // Mirror — never reinterpret — the RS recall disclosure. The warning is driven
@@ -1757,7 +2386,7 @@ function envelopeCount(body) {
   return null;
 }
 
-function normalizeSearchResults(body) {
+function normalizeSearchResults(body, options = {}) {
   const candidates = searchCandidatesFromBody(body);
   return candidates.map((hit, index) => {
     const source = objectValue(hit?.source) || {};
@@ -1771,6 +2400,8 @@ function normalizeSearchResults(body) {
     const displayName = firstString(hit?.display_name, source.display_name);
     const connectorKey = firstString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id);
     const snippet = snippetForSearchHit(hit);
+    const matchWindows = normalizeSearchMatchWindowReadHints(normalizeSearchMatchWindows(hit, { q: options.q }), id);
+    const evidenceExcerpts = searchEvidenceExcerpts(matchWindows, id);
     const normalized = {
       id,
       title: titleForSearchHit(hit, id, { stream, recordKey, connectionId, displayName, connectorKey }),
@@ -1782,8 +2413,67 @@ function normalizeSearchResults(body) {
     if (displayName) normalized.display_name = displayName;
     if (connectorKey) normalized.connector_key = connectorKey;
     if (snippet) normalized.snippet = truncateText(snippet, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
+    if (matchWindows.length > 0) normalized.match_windows = matchWindows;
+    if (evidenceExcerpts.length > 0) normalized.evidence_excerpts = evidenceExcerpts;
     return normalized;
   });
+}
+
+function normalizeSearchMatchWindows(hit, options = {}) {
+  const candidates = [
+    hit?.match_windows,
+    hit?.field_windows,
+    hit?.matches,
+    hit?.data?.match_windows,
+    hit?.data?.field_windows,
+  ].find((value) => Array.isArray(value));
+  if (!Array.isArray(candidates)) return [];
+  return candidates
+    .map((window) => normalizeSearchMatchWindow(window, options))
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function normalizeSearchMatchWindowReadHints(matchWindows, recordId) {
+  return matchWindows.map((window) => {
+    const read = searchMatchWindowRead(window, recordId, window.field_path);
+    return read ? { ...window, read } : window;
+  });
+}
+
+function normalizeSearchMatchWindow(window, options = {}) {
+  const value = objectValue(window);
+  if (!value) return null;
+  const text = firstString(value.text, value.preview, value.snippet, value.window?.text);
+  const fieldPath = firstString(value.field_path, value.fieldPath, value.path, value.field?.path);
+  if (!text || !fieldPath) return null;
+  const read = objectValue(value.read);
+  const normalizedText = centeredSearchText(text, options.q, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
+  const previewText = centeredSearchText(text, options.q, SEARCH_TEXT_SNIPPET_CHAR_LIMIT);
+  return {
+    field_path: fieldPath,
+    text: normalizedText,
+    preview_text: previewText,
+    complete: value.complete === true,
+    ...(firstString(value.next_cursor, value.window?.next_cursor) ? { next_cursor: firstString(value.next_cursor, value.window?.next_cursor) } : {}),
+    ...(read ? { read } : {}),
+  };
+}
+
+function centeredSearchText(text, query, limit) {
+  if (typeof text !== 'string' || text.length <= limit) return text;
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (!q) return truncateText(text, limit);
+  const index = text.toLowerCase().indexOf(q.toLowerCase());
+  if (index < 0) return truncateText(text, limit);
+
+  const available = Math.max(q.length, limit - 6);
+  let start = Math.max(0, index - Math.floor((available - q.length) / 2));
+  let end = Math.min(text.length, start + available);
+  start = Math.max(0, end - available);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < text.length ? '...' : '';
+  return `${prefix}${text.slice(start, end)}${suffix}`;
 }
 
 function searchCandidatesFromBody(body) {

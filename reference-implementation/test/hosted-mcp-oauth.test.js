@@ -526,7 +526,7 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(tools.status, 200);
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
-    assert.deepEqual(toolNames, ['aggregate', 'fetch', 'query_records', 'schema', 'search']);
+  assert.deepEqual(toolNames, ['aggregate', 'fetch', 'query_records', 'read_record_field', 'schema', 'search']);
     assert.equal(toolNames.includes('list_streams'), false);
     assert.equal(toolNames.includes('fetch_blob'), false);
     assert.equal(toolNames.some((name) => name.includes('event_subscription')), false);
@@ -828,8 +828,8 @@ test('grant-scoped MCP device authorization issues a client token usable at /mcp
     assert.equal(tools.status, 200);
     assert.deepEqual(
       tools.body.result.tools.map((tool) => tool.name).sort(),
-      ['aggregate', 'fetch', 'query_records', 'schema', 'search'],
-    );
+    ['aggregate', 'fetch', 'query_records', 'read_record_field', 'schema', 'search'],
+  );
   } finally {
     await closeServer(server);
   }

@@ -65,8 +65,13 @@ The adapter writes only MCP protocol messages to stdout. Diagnostics go to stder
 | `aggregate` | `GET /v1/streams/{stream}/aggregate` |
 | `search` | `GET /v1/search` |
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
+| `read_record_field` | `GET /v1/streams/{stream}/records/{record_id}/field-window` |
 
-Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
+Resource templates:
+
+- `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
+- `pdpp://record/{handle}` → one grant-scoped record read.
+- `pdpp://field-window/{handle}` → one grant-scoped bounded field window.
 
 `search` preserves the RS envelope in `structuredContent.data` and also returns
 ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, `url`,
@@ -90,6 +95,26 @@ every text-like field (`text`, `content`, `body`, `summary`), the document
 `text` contains compact JSON for the projected record rather than the full
 document body; source handles such as stream, `connection_id`, and
 `connector_key` remain in `metadata`.
+
+### Content ladder for large fields
+
+The adapter exposes long-field navigation in layers:
+
+1. `search`, `query_records`, and `fetch` keep compact model-visible text.
+2. `structuredContent.content_ladder` carries record resource URIs and `read_record_field` arguments when the adapter can derive a concrete `connection_id`, stream, record id, and top-level text field path.
+3. `read_record_field` reads a bounded text window by `offset_chars`, returned `cursor`, or first-match `q` plus optional `before_chars` / `after_chars`.
+4. Resource-aware clients can follow `resource_link` blocks through `resources/read`; the same scoped PDPP client token is still required. Handles are continuation state, not bearer authorization.
+
+The MCP SDK version used here is `@modelcontextprotocol/sdk` 1.29.0. The implementation uses `resource_link` content blocks and `resources/read` resource templates from that SDK. The package tests cover three client behavior classes: content-only clients, structured-content-aware clients, and resource-aware clients. Live hosted-client behavior is not claimed here unless separately smoke-tested.
+
+Compatibility notes:
+
+| Client class | Supported path |
+| --- | --- |
+| Content-only clients, including hosts that hide `structuredContent` | Read compact `content[]` summaries, then call `fetch` or `read_record_field` with visible ids/cursors. |
+| Structured-content-aware clients, including common agent harnesses | Use `structuredContent.results`, `structuredContent.data`, and `content_ladder` without parsing prose. |
+| Resource-aware clients, including MCP clients that expose `resources/read` | Follow `resource_link` URIs such as `pdpp://field-window/{handle}`. |
+| Clients whose renderer hides resources or wrapper metadata | Use the normal tools; no data is available only through an opaque resource marker. |
 
 The `schema` tool includes concise parseable text with stream
 names, `connection_id`, `connector_key`, display labels, and schema field-capability

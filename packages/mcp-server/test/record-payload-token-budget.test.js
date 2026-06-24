@@ -294,7 +294,9 @@ test('fetch returns a declared text field verbatim (no truncation of real docume
   assert.equal(result.structuredContent.title, 'A real message');
   assert.equal(result.structuredContent.data, undefined);
   const mirrored = JSON.parse(result.content[0].text);
-  assert.deepEqual(mirrored, result.structuredContent);
+  const { content_ladder: contentLadder, ...structuredDocument } = result.structuredContent;
+  assert.deepEqual(mirrored, structuredDocument);
+  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
   assert.equal(mirrored.text.length, 50_000);
   assert.equal(mirrored.id, 'mail:withtext');
 
@@ -321,6 +323,11 @@ test('fetch(fields) projects before rendering the document and preserves source 
   assert.ok(
     byteLength(result.structuredContent) < 2_500,
     `projected fetch must not carry the full document body (got ${byteLength(result.structuredContent)} bytes)`,
+  );
+  assert.equal(
+    result.content.some((part) => part.type === 'resource_link'),
+    false,
+    'projected fetch must stay inline and avoid file/resource materialization'
   );
 
   await client.close();

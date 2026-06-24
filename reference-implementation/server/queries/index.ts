@@ -297,6 +297,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsDeleteListDistinctStreamsByConnector: SmallEnumerationQuery;
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
+  readonly recordsGetFieldWindow: ReadOneQuery;
   readonly recordsGetRetainedByConnectorInstance: ReadOneQuery;
   // Records — ingest path: read/write of records, record_changes, version_counter.
   readonly recordsIngestAllocateNextVersion: MutationReturningOneQuery;
@@ -711,7 +712,8 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsIngestInsertRecordChangeUpsert",
     "recordsIngestPruneRecordChanges",
     // Records — point reads.
-    "recordsGetLiveRecordByKey",
+  "recordsGetLiveRecordByKey",
+  "recordsGetFieldWindow",
     // Records — change-log snapshot/page.
     "recordsSnapshotsGetSnapshotAtVersion",
     "recordsSnapshotsGetMinRecordChangeVersion",

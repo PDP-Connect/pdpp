@@ -296,6 +296,16 @@ export interface MountRsReadContext {
     params: Record<string, unknown>,
     options: { extraWarnings: ResolverWarning[] }
   ): Promise<unknown>;
+  getRecordFieldWindowAcrossBindings(
+    bindings: ReadRequestBinding[],
+    stream: string,
+    recordId: string,
+    fieldPath: string,
+    grant: GrantLike | null,
+    manifest: ManifestLike,
+    params: Record<string, unknown>,
+    options: { extraWarnings: ResolverWarning[] }
+  ): Promise<unknown>;
   getSemanticBackend(): { available(): boolean } | null;
   getVisibleStreamFreshness(args: {
     tokenInfo: TokenInfo;
@@ -450,6 +460,62 @@ function buildAggregateQueryEventData(requestParams: Record<string, unknown>): R
     granularity: stringOrNull(requestParams.granularity),
     limit: requestParams.limit ? Number(requestParams.limit) : null,
   };
+}
+
+// Integer query-param shape used by the field-window selector coercion. Hoisted
+// to module scope so the route handler does not recompile it per request.
+const INTEGER_PARAM_RE = /^-?\d+$/;
+
+// Thrown by `coerceWindowSelectorParams` when a present numeric selector is not
+// an integer. Carries the substrate's `invalid_window` code so the route maps
+// it to the same HTTP 400 a malformed in-process call would produce.
+class InvalidWindowParamError extends Error {
+  code = "invalid_window";
+  param: string;
+  constructor(param: string) {
+    super(`${param} must be an integer`);
+    this.name = "InvalidWindowParamError";
+    this.param = param;
+  }
+}
+
+// Coerce the field-window numeric selectors (`offset_chars`, `limit_chars`) from
+// HTTP query strings to integers in place. Absent/empty values are dropped so
+// the substrate applies its defaults; a present non-integer is a typed
+// `invalid_window` error. Keeping this at module scope (rather than inline in
+// the handler) hoists the regex and keeps the handler's complexity bounded.
+function coerceWindowSelectorParams(requestParams: Record<string, unknown>): void {
+  for (const key of ["offset_chars", "limit_chars", "before_chars", "after_chars"]) {
+    const raw = requestParams[key];
+    if (raw === undefined || raw === null || raw === "") {
+      delete requestParams[key];
+      continue;
+    }
+    const text = String(raw).trim();
+    if (!INTEGER_PARAM_RE.test(text)) {
+      throw new InvalidWindowParamError(key);
+    }
+    requestParams[key] = Number.parseInt(text, 10);
+  }
+}
+
+async function rejectInvalidWindowParams(
+  ctx: MountRsReadContext,
+  res: RouteResponse,
+  req: RouteRequest,
+  queryContext: QueryContext,
+  requestParams: Record<string, unknown>
+): Promise<boolean> {
+  try {
+    coerceWindowSelectorParams(requestParams);
+    return false;
+  } catch (err) {
+    if (err instanceof InvalidWindowParamError) {
+      await ctx.rejectQuery(res, req, queryContext, err);
+      return true;
+    }
+    throw err;
+  }
 }
 
 // Owner/client source + manifest + storage-binding resolution shared by the
@@ -1962,6 +2028,174 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
   );
 }
 
+// GET /v1/streams/:stream/records/:id/field-window
+//
+// Bounded field-window read — the HTTP surface of the MCP content-ladder
+// substrate (`getRecordFieldWindow`). Returns a grant-enforced character window
+// of one top-level string field WITHOUT hydrating the whole field into a
+// response: the resource server is the authority that clamps the window and
+// enforces stream/field/resource/time/connection scope before any field bytes
+// are read.
+//
+// This route deliberately mirrors `mountRsRecordDetail`'s auth, scope
+// resolution, binding resolution, spine emission, and error-> HTTP mapping. It
+// adds only the field-window selector (`field`, `offset_chars`, `limit_chars`)
+// and a window-shaped envelope. It does NOT recompute visibility — every
+// authorization decision lives inside the injected
+// `getRecordFieldWindowAcrossBindings` capability.
+//
+// Spec: openspec/changes/add-mcp-content-ladder/specs/mcp-adapter/spec.md
+//       (#"MCP bounded field reads SHALL be served by a grant-enforced
+//        resource-server path")
+export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext): void {
+  app.get(
+    "/v1/streams/:stream/records/:id/field-window",
+    // No `contract` op-id yet: the field-window operation is not in
+    // `@pdpp/reference-contract`, and registering an unknown op-id throws at
+    // startup (see transport.registerRoute). Adding the contract operation +
+    // its request/response JSON Schema is a follow-up tracked in the MCP
+    // content-ladder change; this route does its own selector validation and
+    // returns through the shared canonical envelope until then.
+    ctx.requireToken,
+    async (req: RouteRequest, res: RouteResponse) => {
+      let queryContext: QueryContext | null = null;
+      try {
+        const { tokenInfo } = req;
+        const queryId = ctx.ensureRequestId(res);
+        const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
+        ctx.setReferenceTraceId(res, traceId);
+
+        const streamName = req.params.stream as string;
+        const requestedRecordId = decodeURIComponent(req.params.id as string);
+        const rawField = req.query.field;
+        const fieldPath = typeof rawField === "string" ? rawField : "";
+
+        queryContext = {
+          tokenInfo,
+          queryId,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          sourceDescriptor:
+            tokenInfo.pdpp_token_kind === "owner"
+              ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
+              : ctx.buildClientSourceDescriptor(tokenInfo),
+          streamId: streamName,
+          queryData: {
+            query_shape: "field_window",
+            requested_record_id: requestedRecordId,
+            field_path: fieldPath || null,
+            has_changes_since: false,
+            limit: null,
+          },
+        };
+
+        // `field` is required and selector-shaped before we resolve any scope,
+        // so a malformed request fails fast with the same typed-error vocabulary
+        // the substrate uses (`invalid_field_path` -> 400).
+        if (!fieldPath) {
+          const err = new Error("field is required and must be a non-empty string") as Error & {
+            code?: string;
+            param?: string;
+          };
+          err.code = "invalid_field_path";
+          err.param = "field";
+          await ctx.emitQueryReceived(queryContext, req);
+          return await ctx.rejectQuery(res, req, queryContext, err);
+        }
+
+        const { storageBinding, manifest, sourceDescriptor } = await resolveReadScope(
+          ctx,
+          req,
+          tokenInfo,
+          queryContext
+        );
+
+        await ctx.emitQueryReceived(queryContext, req);
+
+        // Grant resolution mirrors the records-list / record-detail owner-vs-
+        // client split. An owner self-export carries no client grant in
+        // `tokenInfo.grant`; the route uses the permissive owner read grant
+        // (`buildOwnerReadGrant`) — a stream entry with no `fields` projection,
+        // so every field is visible to the owner. A client token's scoped grant
+        // (with its stream/field/resource/time projection) is the authority and
+        // is passed through unchanged; `getRecordFieldWindow` fails closed on
+        // any field outside it.
+        const grant =
+          tokenInfo.pdpp_token_kind === "owner"
+            ? ctx.buildOwnerReadGrant(streamName)
+            : tokenInfo.grant || { streams: [] };
+
+        const requestParams: Record<string, unknown> = { ...((req.query as Record<string, unknown>) || {}) };
+        if (await rejectInvalidWindowParams(ctx, res, req, queryContext, requestParams)) {
+          return;
+        }
+
+        const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
+          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+          storageBinding,
+          grant,
+          requestParams,
+          streamName,
+          nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+        });
+
+        const windowResult = (await ctx.getRecordFieldWindowAcrossBindings(
+          bindings,
+          streamName,
+          requestedRecordId,
+          fieldPath,
+          grant,
+          manifest,
+          requestParams,
+          { extraWarnings: resolverWarnings || [] }
+        )) as {
+          record_key: string;
+          field_path: string;
+          field_type: string;
+          window: Record<string, unknown>;
+          warnings?: unknown[];
+        };
+
+        await emitDisclosureServed(ctx, {
+          req,
+          tokenInfo,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          queryId,
+          streamId: streamName,
+          data: {
+            source: sourceDescriptor,
+            query_shape: "field_window",
+            field_path: windowResult.field_path,
+          },
+        });
+
+        const responseBody: Record<string, unknown> = {
+          object: "field_window",
+          stream: streamName,
+          record_id: requestedRecordId,
+          field: { path: windowResult.field_path, type: windowResult.field_type },
+          window: windowResult.window,
+          url: req.path,
+        };
+        mergeResolverWarningsIntoBody(responseBody, windowResult.warnings);
+
+        return res.json(ctx.finalizeCanonicalEnvelope(responseBody, req));
+      } catch (err) {
+        if (queryContext) {
+          await ctx.emitQueryReceived(queryContext, req);
+          return await ctx.rejectQuery(res, req, queryContext, err);
+        }
+        return ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
 // Shared owner-mode search wiring. The three search routes pass an identical
 // set of owner/client resolver closures into their respective `run*Search`
 // helper; this keeps the duplication to one place exactly as the inline
@@ -2582,6 +2816,7 @@ export function mountRsReadQueries(app: AppLike, ctx: MountRsReadContext): void 
   mountRsStreamAggregate(app, ctx);
   mountRsRecordsList(app, ctx);
   mountRsRecordDetail(app, ctx);
+  mountRsRecordFieldWindow(app, ctx);
   mountRsSearchLexical(app, ctx);
   mountRsSearchSemantic(app, ctx);
   mountRsSearchHybrid(app, ctx);

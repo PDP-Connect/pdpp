@@ -162,7 +162,7 @@ test('hosted MCP does not expose event-subscription management tools', async () 
     });
     assert.equal(tools.status, 200);
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
-    assert.deepEqual(toolNames, ['aggregate', 'fetch', 'query_records', 'schema', 'search']);
+    assert.deepEqual(toolNames, ['aggregate', 'fetch', 'query_records', 'read_record_field', 'schema', 'search']);
     assert.equal(toolNames.some((name) => name.includes('event_subscription')), false);
     assert.equal(toolNames.includes('send_test_event'), false);
 

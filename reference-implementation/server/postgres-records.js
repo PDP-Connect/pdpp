@@ -39,6 +39,15 @@ import {
   passesRequestFilters,
   passesTimeRange,
 } from './record-filters.js';
+import {
+  assertFieldPath,
+  assertFieldVisibleToGrant,
+  assertReadableStringField,
+  buildWindowEnvelope,
+  classifyFieldType,
+  fieldWindowError,
+  normalizeWindowSelector,
+} from './record-field-window.js';
 
 /**
  * Resolve `(connection_id, display_name)` identity for a postgres-backed
@@ -1487,6 +1496,136 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   }
   attachRequestWarningsToResponse(response, requestWarnings);
   return response;
+}
+
+export async function postgresGetRecordFieldWindow(
+  storageTarget,
+  stream,
+  recordId,
+  fieldPath,
+  grant,
+  manifest = null,
+  requestParams = {},
+) {
+  assertFieldPath(fieldPath);
+  const selector = normalizeWindowSelector(requestParams);
+
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  const streamGrant = getStreamGrant(grant, stream);
+  const manifestStream = getManifestStream(manifest, stream);
+  const effective = buildEffectiveFilter(streamGrant, requiredFieldsFor(manifestStream));
+
+  assertFieldVisibleToGrant(fieldPath, effective.fields);
+
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
+
+  const consentTimeField = manifestStream?.consent_time_field || null;
+  const query = selector.mode === 'query' ? selector.query : null;
+  const result = await postgresQuery(
+    `WITH selected AS (
+       SELECT
+         record_key,
+         jsonb_typeof(record_json -> $4::text) AS field_type,
+         record_json ->> $4::text AS field_text,
+         CASE WHEN $6::text IS NULL THEN NULL ELSE record_json ->> $6::text END AS consent_time_value
+       FROM records
+       WHERE connector_instance_id = $1
+         AND stream = $2
+         AND record_key = $3
+         AND deleted = FALSE
+       LIMIT 1
+     ), positioned AS (
+       SELECT
+         record_key,
+         field_type,
+         field_text,
+         CASE WHEN field_type = 'string' THEN char_length(field_text) ELSE NULL END AS total_chars,
+         CASE WHEN $5::text IS NOT NULL AND field_type = 'string'
+           THEN strpos(lower(field_text), lower($5::text))
+           ELSE NULL
+         END AS match_pos,
+         consent_time_value
+       FROM selected
+     )
+     SELECT
+       record_key,
+       field_type,
+       total_chars,
+       CASE WHEN field_type = 'string' AND ($5::text IS NULL OR match_pos > 0)
+         THEN substring(
+           field_text
+           FROM CASE
+             WHEN $5::text IS NOT NULL THEN greatest(1, match_pos - $7::integer)
+             ELSE $8::integer
+           END
+           FOR $9::integer
+         )
+         ELSE NULL
+       END AS window_text,
+       match_pos,
+       consent_time_value
+     FROM positioned`,
+    [
+      connectorInstanceId,
+      stream,
+      recordId,
+      fieldPath,
+      query,
+      consentTimeField,
+      selector.mode === 'query' ? selector.before : 0,
+      selector.mode === 'query' ? 1 : selector.offset + 1,
+      selector.limit,
+    ],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
+
+  if (effective.resources && !effective.resources.includes(row.record_key)) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
+  if (effective.timeRange && consentTimeField) {
+    const consentData = { [consentTimeField]: row.consent_time_value };
+    if (!passesTimeRange(consentData, effective.timeRange, consentTimeField)) {
+      throw fieldWindowError('not_found', 'Record not found', 404);
+    }
+  }
+
+  const fieldClass = classifyFieldType(row.field_type);
+  assertReadableStringField(fieldPath, fieldClass);
+  const matchStart = selector.mode === 'query' ? Number(row.match_pos) - 1 : null;
+  if (selector.mode === 'query' && (!Number.isFinite(matchStart) || matchStart < 0)) {
+    throw fieldWindowError('query_not_found', `q was not found in field '${fieldPath}'`, 404);
+  }
+  const windowOffset = selector.mode === 'query'
+    ? Math.max(0, matchStart - selector.before)
+    : selector.offset;
+
+  const window = buildWindowEnvelope({
+    text: row.window_text ?? '',
+    totalChars: Number(row.total_chars ?? 0),
+    offset: windowOffset,
+    limit: selector.limit,
+    matchStartChars: selector.mode === 'query' ? matchStart : null,
+    matchEndChars: selector.mode === 'query' ? matchStart + selector.query.length : null,
+  });
+
+  const warnings = [...requestWarnings];
+  if (selector.limitClamped) {
+    warnings.push({ code: 'limit_clamped', message: `limit_chars clamped to ${selector.limit}` });
+  }
+
+  return {
+    record_key: row.record_key,
+    field_path: fieldPath,
+    field_type: fieldClass,
+    window,
+    warnings,
+  };
 }
 
 export async function postgresListAllStreams(storageTarget) {

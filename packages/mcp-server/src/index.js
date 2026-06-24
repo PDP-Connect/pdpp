@@ -138,4 +138,4 @@ export {
   PDPP_MCP_TOOL_NAMES,
 } from './server.js';
 export { RsClient } from './rs-client.js';
-export { buildTools, buildStreamResourceTemplate, InvalidResourceUriError } from './tools.js';
+export { buildTools, buildResourceTemplates, buildStreamResourceTemplate, InvalidResourceUriError } from './tools.js';

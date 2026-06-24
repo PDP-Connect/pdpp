@@ -117,6 +117,27 @@ const RetrievalScoreSchema = {
   required: ["kind", "value", "order"],
 };
 
+const SearchMatchWindowSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    field_path: NonEmptyStringSchema,
+    text: { type: "string" },
+    complete: { type: "boolean" },
+    read: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        tool: NonEmptyStringSchema,
+        args: { type: "object", additionalProperties: true },
+      },
+      required: ["tool", "args"],
+    },
+    resource_uri: UriSchema,
+  },
+  required: ["field_path", "text", "complete"],
+};
+
 const StreamNamePathSchema = {
   type: "object",
   additionalProperties: false,
@@ -808,12 +829,7 @@ const DynamicClientRegistrationResponseSchema = {
     policy_uri: UriSchema,
     tos_uri: UriSchema,
   },
-  required: [
-    "client_id",
-    "client_id_issued_at",
-    "token_endpoint_auth_method",
-    "client_name",
-  ],
+  required: ["client_id", "client_id_issued_at", "token_endpoint_auth_method", "client_name"],
 };
 
 const GrantInitiationRequestSchema = {
@@ -1197,6 +1213,16 @@ const StreamMetadataResponseSchema = {
               // declared". This is a presentation/dispatch hint only; it is
               // never client-writable or grantable.
               type: { type: "string", minLength: 1 },
+              // Optional declared presentation ROLE (which CARD SLOT this field
+              // fills), sourced from the manifest JSON Schema extension
+              // (`schema.properties[field].x_pdpp_role`). Distinct from `type`
+              // (which gates formatting): a `text` field is the title ONLY when its
+              // role is declared `primary-title`. Additive, optional, presentation-
+              // only — it SHALL NOT influence filter, search, aggregation, grant,
+              // projection, identity, cursor, ingestion, or retrieval. Absence =
+              // "no declared role" → the consumer renders the honest generic
+              // fallback, never a field-name guess.
+              role: { type: "string", minLength: 1 },
               schema: { type: "object", additionalProperties: true },
               granted: { type: "boolean" },
               exact_filter: CapabilityFlagSchema,
@@ -2101,16 +2127,20 @@ export const publicManifests = [
                     minItems: 1,
                     items: NonEmptyStringSchema,
                   },
-                  snippet: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      field: NonEmptyStringSchema,
-                      text: { type: "string" },
+                    snippet: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        field: NonEmptyStringSchema,
+                        text: { type: "string" },
+                      },
+                      required: ["field", "text"],
                     },
-                    required: ["field", "text"],
+                    match_windows: {
+                      type: "array",
+                      items: SearchMatchWindowSchema,
+                    },
                   },
-                },
                 required: ["object", "stream", "record_key", "connector_id", "emitted_at", "matched_fields"],
               },
             },
