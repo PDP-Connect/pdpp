@@ -4946,6 +4946,10 @@
                                             "type": "string",
                                             "minLength": 1
                                           },
+                                          "role": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
                                           "schema": {
                                             "type": "object",
                                             "additionalProperties": true
@@ -6343,6 +6347,10 @@
                             "additionalProperties": false,
                             "properties": {
                               "type": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "role": {
                                 "type": "string",
                                 "minLength": 1
                               },
@@ -9282,6 +9290,52 @@
                               "field",
                               "text"
                             ]
+                          },
+                          "match_windows": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "properties": {
+                                "field_path": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "text": {
+                                  "type": "string"
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "read": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "tool": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "args": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    }
+                                  },
+                                  "required": [
+                                    "tool",
+                                    "args"
+                                  ]
+                                },
+                                "resource_uri": {
+                                  "type": "string",
+                                  "format": "uri"
+                                }
+                              },
+                              "required": [
+                                "field_path",
+                                "text",
+                                "complete"
+                              ]
+                            }
                           }
                         },
                         "required": [
@@ -37739,6 +37793,299 @@
           },
           "409": {
             "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/explore/records": {
+      "get": {
+        "operationId": "refExploreRecords",
+        "tags": [
+          "explore",
+          "reference"
+        ],
+        "summary": "Owner Explore surface: cross-source merged timeline with a single composite keyset cursor. Returns time-ordered records (<= a pinned now boundary) spanning all (connection, stream) partitions with point-in-time snapshot stability, a new_since_snapshot count for the N-new pill, and a SEPARATE upcoming (future-dated) projection with a true upcoming_total count.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rewind",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "object": {
+                      "const": "list"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "properties": {
+                          "object": {
+                            "const": "timeline_record"
+                          },
+                          "connector_id": {
+                            "type": "string"
+                          },
+                          "connector_instance_id": {
+                            "type": "string"
+                          },
+                          "stream": {
+                            "type": "string"
+                          },
+                          "record_key": {
+                            "type": "string"
+                          },
+                          "emitted_at": {
+                            "type": "string"
+                          },
+                          "semantic_time": {
+                            "type": "string"
+                          },
+                          "data": {
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "connector_id",
+                          "connector_instance_id",
+                          "stream",
+                          "record_key",
+                          "emitted_at",
+                          "semantic_time"
+                        ]
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "snapshot_at": {
+                      "type": "string"
+                    },
+                    "new_since_snapshot": {
+                      "type": "integer"
+                    },
+                    "upcoming": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "properties": {
+                          "object": {
+                            "const": "timeline_record"
+                          },
+                          "connector_id": {
+                            "type": "string"
+                          },
+                          "connector_instance_id": {
+                            "type": "string"
+                          },
+                          "stream": {
+                            "type": "string"
+                          },
+                          "record_key": {
+                            "type": "string"
+                          },
+                          "emitted_at": {
+                            "type": "string"
+                          },
+                          "semantic_time": {
+                            "type": "string"
+                          },
+                          "data": {
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "connector_id",
+                          "connector_instance_id",
+                          "stream",
+                          "record_key",
+                          "emitted_at",
+                          "semantic_time"
+                        ]
+                      }
+                    },
+                    "upcoming_total": {
+                      "type": "integer"
+                    },
+                    "upcoming_next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "upcoming_has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more",
+                    "next_cursor",
+                    "snapshot_at",
+                    "new_since_snapshot",
+                    "upcoming",
+                    "upcoming_total",
+                    "upcoming_next_cursor",
+                    "upcoming_has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor or request parameters",
             "content": {
               "application/json": {
                 "schema": {

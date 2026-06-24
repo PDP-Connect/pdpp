@@ -72,6 +72,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/event-subscriptions` | `refListEventSubscriptions` | Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes. |
 | **GET** | `/_ref/event-subscriptions/{subscription_id}` | `refGetEventSubscription` | Operator oversight: get a single subscription with delivery attempt history. |
 | **POST** | `/_ref/event-subscriptions/{subscription_id}/disable` | `refDisableEventSubscription` | Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned. |
+| **GET** | `/_ref/explore/records` | `refExploreRecords` | Owner Explore surface: cross-source merged timeline with a single composite keyset cursor. Returns time-ordered records (<= a pinned now boundary) spanning all (connection, stream) partitions with point-in-time snapshot stability, a new_since_snapshot count for the N-new pill, and a SEPARATE upcoming (future-dated) projection with a true upcoming_total count. |
 
 ## refSearch
 
@@ -1296,3 +1297,22 @@ Operator safety valve: forcibly disable a subscription. Accepts an optional `rea
 - `200` — Subscription after disabling.
 - `400` — Invalid request
 - `404` — Subscription not found
+
+## refExploreRecords
+
+`GET /_ref/explore/records`
+
+Owner Explore surface: cross-source merged timeline with a single composite keyset cursor. Returns time-ordered records (<= a pinned now boundary) spanning all (connection, stream) partitions with point-in-time snapshot stability, a new_since_snapshot count for the N-new pill, and a SEPARATE upcoming (future-dated) projection with a true upcoming_total count.
+
+### Query parameters
+
+- `limit` — integer · min: 1 · max: 500
+- `cursor` — string
+- `rewind` — enum `1 | true`
+- `connection_id` — string
+- `stream` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid cursor or request parameters

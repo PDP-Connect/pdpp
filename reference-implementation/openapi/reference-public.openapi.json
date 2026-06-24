@@ -4934,6 +4934,10 @@
                                             "type": "string",
                                             "minLength": 1
                                           },
+                                          "role": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
                                           "schema": {
                                             "type": "object",
                                             "additionalProperties": true
@@ -6331,6 +6335,10 @@
                             "additionalProperties": false,
                             "properties": {
                               "type": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "role": {
                                 "type": "string",
                                 "minLength": 1
                               },
@@ -9270,6 +9278,52 @@
                               "field",
                               "text"
                             ]
+                          },
+                          "match_windows": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "properties": {
+                                "field_path": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "text": {
+                                  "type": "string"
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "read": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "tool": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "args": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    }
+                                  },
+                                  "required": [
+                                    "tool",
+                                    "args"
+                                  ]
+                                },
+                                "resource_uri": {
+                                  "type": "string",
+                                  "format": "uri"
+                                }
+                              },
+                              "required": [
+                                "field_path",
+                                "text",
+                                "complete"
+                              ]
+                            }
                           }
                         },
                         "required": [
