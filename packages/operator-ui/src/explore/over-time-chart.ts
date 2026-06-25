@@ -46,7 +46,7 @@ export const BUCKET_TIME_ZONE = "UTC";
 const MS_PER_DAY = 86_400_000;
 
 /** Granularity ladder units. Mirrors the server's SUPPORTED_AGGREGATE_GRANULARITIES. */
-export type BucketGranularity = "hour" | "day" | "week" | "month";
+export type BucketGranularity = "hour" | "day" | "week" | "month" | "quarter" | "year";
 
 /** One bar in the volume band. `count` is the TRUE total for the bucket. */
 export interface Bucket {
@@ -164,6 +164,13 @@ export function bucketKeyForMs(ms: number, granularity: BucketGranularity): stri
     }
     case "month":
       return `${y}-${pad2(mo + 1)}-01`;
+    case "quarter": {
+      // First month of the quarter the instant falls in (Jan/Apr/Jul/Oct).
+      const quarterStartMonth = Math.floor(mo / 3) * 3; // 0,3,6,9
+      return `${y}-${pad2(quarterStartMonth + 1)}-01`;
+    }
+    case "year":
+      return `${y}-01-01`;
     default: {
       const _exhaustive: never = granularity;
       return _exhaustive;
@@ -188,6 +195,11 @@ export function bucketBounds(key: string, granularity: BucketGranularity): { sta
       return { startMs, endMs: startMs + 7 * MS_PER_DAY };
     case "month":
       return { startMs, endMs: Date.UTC(y, mo + 1, 1) };
+    case "quarter":
+      // Advance 3 months (DST-free in UTC; Date.UTC normalizes month overflow).
+      return { startMs, endMs: Date.UTC(y, mo + 3, 1) };
+    case "year":
+      return { startMs, endMs: Date.UTC(y + 1, mo, 1) };
     default:
       return { startMs, endMs: startMs + MS_PER_DAY };
   }
@@ -406,6 +418,8 @@ const GRANULARITY_LABEL: Record<BucketGranularity, string> = {
   day: "by day",
   week: "by week",
   month: "by month",
+  quarter: "by quarter",
+  year: "by year",
 };
 
 /**
@@ -447,6 +461,11 @@ const TOOLTIP_HOUR_FMT = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   timeZone: BUCKET_TIME_ZONE,
 });
+/** Just the 4-digit calendar year (e.g. "2019") for a year bucket. */
+const TOOLTIP_YEAR_FMT = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  timeZone: BUCKET_TIME_ZONE,
+});
 
 /** Human label for a bucket, by granularity. Used in tooltip + per-bar aria-label. */
 export function bucketLabel(bucket: Bucket, granularity: BucketGranularity): string {
@@ -458,6 +477,14 @@ export function bucketLabel(bucket: Bucket, granularity: BucketGranularity): str
       return TOOLTIP_MONTH_FMT.format(at);
     case "week":
       return `Week of ${TOOLTIP_DAY_FMT.format(at)}`;
+    case "quarter": {
+      // "Q1 2019" — quarter derived from the UTC month (0-based) of the bucket start.
+      const quarter = Math.floor(at.getUTCMonth() / 3) + 1; // 1..4
+      return `Q${quarter} ${at.getUTCFullYear()}`;
+    }
+    case "year":
+      // "2019" — never the old "January 2019" mislabel from TOOLTIP_MONTH_FMT.
+      return TOOLTIP_YEAR_FMT.format(at);
     default:
       return TOOLTIP_DAY_FMT.format(at);
   }

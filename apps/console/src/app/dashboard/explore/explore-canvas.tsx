@@ -49,6 +49,7 @@ import {
   explorerPeekParam,
   type RecordsExplorerData,
 } from "@pdpp/operator-ui/components/views/records-explorer-view";
+import type { BucketSeries } from "@pdpp/operator-ui/explore/over-time-chart";
 import {
   descriptorHasMore,
   descriptorIsTimeOrdered,
@@ -71,6 +72,7 @@ import {
   useTransition,
 } from "react";
 import { RecordInspector } from "../components/record-inspector.tsx";
+import { loadExploreBuckets } from "./actions.ts";
 import {
   activeRangeKey,
   buildCompleteStreamHref,
@@ -348,6 +350,31 @@ interface ExploreCanvasProps {
    * no record is open or no readable metadata was available.
    */
   peekRelationships?: PeekRelationships | null;
+}
+
+/**
+ * Calm placeholder shown in the over-time chart's slot while the DEFERRED bucket
+ * band loads post-mount. Decorative (aria-hidden) — the feed below is already
+ * rendered and interactive, so there is nothing to announce; it only reserves the
+ * chart's height so the feed never jumps when the real band arrives (no layout
+ * shift). Mirrors `.rr-x-chart` box model (head row + band) and reuses the EXISTING
+ * load-more skeleton tokens (`rr-x-skel-bar` + the brand `fade-in`/shimmer
+ * keyframes, already reduced-motion-gated in components.css) — no hardcoded styles,
+ * no new keyframe. Only shown when `data.bucketRequest` is non-null (so search /
+ * relevance_bounded / no-targets render nothing at all, same as the real chart).
+ */
+function ChartSkeleton() {
+  return (
+    <div aria-hidden className="rr-x-chart rr-x-chart-skeleton">
+      <div className="rr-x-chart__head">
+        <span className="rr-x-skel-bar rr-x-skel-bar--title" />
+        <span className="rr-x-skel-bar rr-x-skel-bar--attr" />
+      </div>
+      <div className="rr-x-chart-skeleton__band">
+        <span className="rr-x-skel-bar rr-x-chart-skeleton__bar" />
+      </div>
+    </div>
+  );
 }
 
 // buildRecordDetailHref now lives in ./explore-control-state.ts (pure + unit-tested)
@@ -2944,6 +2971,70 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const [isPending, startTransition] = useTransition();
   const [pendingKind, setPendingKind] = useState<PendingKind>(null);
 
+  // ── Deferred over-time chart band (the ~7s-Explore fix) ──
+  // The bucket aggregate (`/_ref/explore/records/buckets`) counts the full corpus
+  // by month — a 3.6s scan that BLOCKED first paint when the server component
+  // awaited it. The assembler now returns `data.bucketRequest` (the computed scope,
+  // or null when suppressed: search / relevance_bounded / no targets) WITHOUT
+  // awaiting the call, and we load the band here post-mount (Linear/Vercel "list
+  // instant, chart fills in"). A SEPARATE transition keeps this off the navigation
+  // `isPending` path so fetching the chart never dims/blocks the feed.
+  // The latest request lives in a ref so the effect can read it without taking the
+  // (per-render fresh) object as a dependency — the effect keys on the SERIALIZED
+  // scope below, so it re-fetches only when the structural scope/window changes.
+  const bucketRequestRef = useRef(data.bucketRequest);
+  bucketRequestRef.current = data.bucketRequest;
+  // Stable identity for the request scope: a new SSR render hands a fresh object
+  // each time, so we key on the serialized scope, not object identity. Null when
+  // suppressed (search / relevance_bounded / no targets) — drives the effect.
+  const bucketRequestKey = data.bucketRequest ? JSON.stringify(data.bucketRequest) : null;
+  // The loaded band is STAMPED with the scope-key it was loaded for, so the render
+  // can prove a series belongs to the CURRENT scope (never paint a prior scope's
+  // bars across a same-route nav, even for the one paint before the effect runs).
+  // `series: null` with a matching key = an honest "loaded, no chart" (a read
+  // fault, or a genuinely empty distribution) — NOT a pending state, so the
+  // skeleton never spins forever. SSR seed: `data.bucketSeries` is always null
+  // now (the assembler defers the load), so the band always starts pending.
+  const [loadedBand, setLoadedBand] = useState<{ key: string; series: BucketSeries | null } | null>(null);
+  const [, startChartTransition] = useTransition();
+  useEffect(() => {
+    // A soft same-route push preserves this component's state across the SSR
+    // re-render. The render gates on `loadedBand.key === bucketRequestKey`, so a
+    // scope change shows the skeleton immediately (the stale band no longer
+    // matches) without a flash — but we still clear here so a mid-flight load for
+    // the OLD scope can't land and stamp itself stale.
+    if (bucketRequestKey === null) {
+      // Suppressed (search / relevance_bounded / no targets): no chart, no request.
+      setLoadedBand(null);
+      return;
+    }
+    const request = bucketRequestRef.current;
+    if (!request) {
+      setLoadedBand(null);
+      return;
+    }
+    let cancelled = false;
+    startChartTransition(() => {
+      loadExploreBuckets(request)
+        // A read fault degrades to a "loaded, no chart" band (series null, current
+        // key) — the skeleton resolves to nothing rather than spinning forever.
+        .catch(() => null)
+        .then((series) => {
+          if (!cancelled) {
+            setLoadedBand({ key: bucketRequestKey, series });
+          }
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bucketRequestKey]);
+  // The band to render: only when it was loaded for the CURRENT scope-key. A stale
+  // band (prior scope) or a not-yet-loaded scope ⇒ no chart this paint.
+  const bucketSeries = loadedBand && loadedBand.key === bucketRequestKey ? loadedBand.series : null;
+  // Pending = a request is live (non-null key) and no band for THIS key has landed.
+  const bucketBandPending = bucketRequestKey !== null && !(loadedBand && loadedBand.key === bucketRequestKey);
+
   // Records section base path for mobile push-navigation row Links.
   // e.g. "/dashboard/explore" → "/dashboard/records".
   const recordsBasePath = `${explorePath.replace(EXPLORE_SUFFIX_RE, "")}/records`;
@@ -3734,16 +3825,28 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             an honest exhaustive time-distribution (suppressed over a
             relevance_bounded search). Bars are TRUE per-bucket totals from the
             server aggregate; the brush writes the same widened setRange the Date
-            controls use, and the shaded overlay derives purely from since/until. */}
-        {data.bucketSeries ? (
+            controls use, and the shaded overlay derives purely from since/until.
+
+            The band is now loaded post-mount (deferred off first paint — the 3.6s
+            aggregate no longer blocks the feed). While it loads we hold a calm
+            height-matched skeleton so the feed never jumps; when `bucketRequest`
+            is null (search / relevance_bounded / no targets) we render nothing,
+            exactly the prior suppression contract. */}
+        {bucketSeries ? (
           <OverTimeChart
             descriptorKind={data.descriptor.kind}
             onSelectRange={setRange}
-            series={data.bucketSeries}
+            series={bucketSeries}
             since={data.since}
             until={data.until}
           />
         ) : null}
+        {/* While the deferred band loads, hold a height-matched skeleton — but ONLY
+            while genuinely PENDING (a live request for the current scope whose band
+            has not landed). A loaded-but-empty/failed band resolves to null (NOT a
+            forever-spinning skeleton), and search / relevance_bounded / no-targets ⇒
+            null bucketRequest ⇒ no request ⇒ render nothing (prior suppression). */}
+        {bucketBandPending ? <ChartSkeleton /> : null}
 
         <FeedBody
           chips={chips}

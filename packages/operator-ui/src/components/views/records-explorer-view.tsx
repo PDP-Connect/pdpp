@@ -25,6 +25,7 @@ import { Callout, FilterSummary, PageHeader, Section, SplitLayout } from "../pri
 import type { Routes } from "./routes.ts";
 
 export type {
+  ExploreBucketRequest,
   ExplorerActivityCell,
   ExplorerActivitySummary,
   ExplorerBlobAffordance,

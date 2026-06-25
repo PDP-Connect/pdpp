@@ -3617,6 +3617,41 @@ a.rr-x-row {
   }
 }
 
+/* Over-time chart DEFERRED-load skeleton. The bucket band is now fetched
+   post-mount (off first paint — the 3.6s aggregate no longer blocks the feed), so
+   while it loads we hold a calm placeholder in the SAME slot. It reuses the
+   `.rr-x-chart` wrapper (head + 6px gap) and the EXISTING load-more skeleton bar
+   token (`.rr-x-skel-bar`: flat muted bar base, with the shimmer + fade-in living
+   ONLY inside the `@media (prefers-reduced-motion: no-preference)` block above —
+   so reduced-motion users get a present, static mark with zero movement, and NO
+   new keyframe is introduced). Placed AFTER the load-more skeleton block on
+   purpose so the existing reduced-motion invariant's `indexOf(".rr-x-skel-bar {")`
+   still resolves to that base rule.
+
+   Height is matched to the real chart EXACTLY — the head bars sit on the
+   caption/total baseline (the `--title`/`--attr` modifiers already height them)
+   and the band fills 48px (36px mobile, mirroring `.rr-x-chart__band`) — so when
+   the real bars arrive the feed below never jumps (zero layout shift). */
+.rr-x-chart-skeleton__band {
+  display: flex;
+  align-items: flex-end;
+  height: 48px;
+  /* Match the chart band's faint baseline so the skeleton reads as the same axis. */
+  border-bottom: 1px solid var(--border);
+}
+.rr-x-chart-skeleton__bar {
+  /* Fill the band height; `.rr-x-skel-bar` supplies the muted fill + the
+     reduced-motion-gated shimmer (no animation declared here). */
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-control);
+}
+@media (max-width: 860px) {
+  .rr-x-chart-skeleton__band {
+    height: 36px;
+  }
+}
+
 /* ─── Group-expansion + load-more continuity motion (Slice 5, #7) ─────────────
    Three model-state reveals share ONE `rr-x-reveal` keyframe — a short opacity +
    small translateY settle:

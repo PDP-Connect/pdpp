@@ -299,6 +299,10 @@ test("chartCaption NEVER says 'Matching records' (bars are not query-scoped) and
   const filtered = chartCaption("filtered_exact", "month");
   assert.equal(filtered, "Records over time · by month");
   assert.ok(!filtered.toLowerCase().includes("matching"), "filtered_exact caption never claims 'matching'");
+  // Quarter/year are honest units now (the full-corpus view returns yearly buckets):
+  // the caption must say "by quarter" / "by year", never the old "by month" mislabel.
+  assert.equal(chartCaption("complete_chronological", "quarter"), "Records over time · by quarter");
+  assert.equal(chartCaption("complete_chronological", "year"), "Records over time · by year");
   // Negative control across every kind + a representative unit: no caption ever
   // contains "matching" or "most recent".
   for (const kind of ["complete_chronological", "keyword_pageable", "filtered_exact", "relevance_bounded"] as const) {
@@ -314,4 +318,17 @@ const WEEK_LABEL_RE = /Week of/;
 test("bucketLabel renders a human prose label per granularity", () => {
   assert.match(bucketLabel(dayBucket("2026-05-03"), "day"), DAY_LABEL_RE);
   assert.match(bucketLabel(dayBucket("2026-04-27"), "week"), WEEK_LABEL_RE);
+});
+
+test("bucketLabel: a year bucket reads the 4-digit year (not the old 'January 2019' mislabel)", () => {
+  // The full-corpus yearly bars MUST read "2019"/"2020", not "January 2019".
+  assert.equal(bucketLabel(dayBucket("2019-01-01"), "year"), "2019");
+  assert.equal(bucketLabel(dayBucket("2020-01-01"), "year"), "2020");
+});
+
+test("bucketLabel: a quarter bucket reads 'Q<n> <year>' derived from the bucket month", () => {
+  assert.equal(bucketLabel(dayBucket("2019-01-01"), "quarter"), "Q1 2019");
+  assert.equal(bucketLabel(dayBucket("2019-04-01"), "quarter"), "Q2 2019");
+  assert.equal(bucketLabel(dayBucket("2019-07-01"), "quarter"), "Q3 2019");
+  assert.equal(bucketLabel(dayBucket("2019-10-01"), "quarter"), "Q4 2019");
 });

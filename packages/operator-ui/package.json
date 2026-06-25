@@ -40,6 +40,7 @@
     "./components/views/deployment-diagnostics-view": "./src/components/views/deployment-diagnostics-view.tsx",
     "./explore/explore-data-assembler": "./src/explore/explore-data-assembler.ts",
     "./explore/over-time-chart": "./src/explore/over-time-chart.ts",
+    "./explore/over-time-chart-bucket-mapping": "./src/explore/over-time-chart-bucket-mapping.ts",
     "./explore/peek-read-url": "./src/explore/peek-read-url.ts",
     "./explore/search-hit-attribution": "./src/explore/search-hit-attribution.ts",
     "./explore/set-descriptor": "./src/explore/set-descriptor.ts",

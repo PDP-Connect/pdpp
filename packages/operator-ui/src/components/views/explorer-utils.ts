@@ -182,15 +182,65 @@ export interface ExplorerStreamSeeAllLink {
   total: number | null;
 }
 
+/**
+ * The COMPUTED inputs the over-time chart's bucket aggregate needs — derived in
+ * `assembleExplorerData` from the SAME `chartIsVisible` + `chartTargets` gate the
+ * inline chart load used. The server-component page no longer awaits the 3.6s
+ * bucket call on the critical path; instead it hands these inputs to the client,
+ * which loads the chart post-mount (Linear/Vercel "list instant, chart fills in").
+ *
+ * Null when the chart is SUPPRESSED — a free-text search (`fromSearch`), a
+ * `relevance_bounded` set, or no in-scope (connection, stream) targets — so the
+ * client never even asks when there is no honest time-distribution to draw.
+ * `connections`/`streams` are the IDENTICAL structural scope the feed shows, so
+ * the deferred bars reconcile with the list (chart scope == feed scope). The
+ * resulting `total` stays the server's exact reachable `extent.count`
+ * (count == reachability); deferring only changes WHEN it loads, never the number.
+ */
+export interface ExploreBucketRequest {
+  connections: string[];
+  /** The active set-descriptor kind — carried so the client/action can re-assert the visibility gate. */
+  descriptorKind: SetDescriptor["kind"];
+  /**
+   * Connections the feed EXCLUDES (`-con:` / facet "is not"). Carried so the
+   * deferred bucket aggregate excludes them too — otherwise the chart would count
+   * a connection the feed hid, breaking chart-scope == feed-scope (and the bars
+   * would overstate the reachable distribution). Empty in the common case.
+   */
+  excludeConnections: string[];
+  excludeStreams: string[];
+  /** Always false here (search suppresses the request entirely) — kept explicit for the gate. */
+  fromSearch: boolean;
+  since: string;
+  streams: string[];
+  until: string;
+}
+
 export interface RecordsExplorerData {
   /** Honest caption for activity/corpus summaries. Never synthesized as full-corpus from a bounded sample. */
   activitySummary: ExplorerActivitySummary | null;
+  /**
+   * COMPUTED chart inputs for the DEFERRED (post-mount, client-side) over-time
+   * bucket load, or null when the chart is suppressed (search / relevance_bounded /
+   * no targets). See `ExploreBucketRequest`. The bucket aggregate counts the full
+   * corpus by month (a 3.6s scan that cannot be indexed away at all-scope), so the
+   * server component no longer awaits it on first paint — the feed renders
+   * immediately and the canvas fetches the band via the `loadExploreBuckets`
+   * action when this is non-null. Null bucketRequest ⇒ no chart, no skeleton, no
+   * request — exactly the prior search-suppression contract.
+   */
+  bucketRequest: ExploreBucketRequest | null;
   /**
    * Over-time chart volume band: TRUE per-bucket totals over the filtered,
    * grant-scoped corpus (server `group_by_time` aggregate, NOT loaded entries).
    * Null when the chart is suppressed (relevance_bounded set) or unavailable.
    * The brush overlay is derived in the canvas from `since`/`until`, never from
    * this — the band is a read/write skin on the ONE canonical Date object.
+   *
+   * On the live critical path this is now ALWAYS null from `assembleExplorerData`
+   * (the chart is loaded client-side post-mount via `bucketRequest`); the field
+   * stays on the type so the canvas can hold the loaded series in state and so a
+   * test/sandbox can still supply a server-rendered series if it wants one.
    */
   bucketSeries: BucketSeries | null;
   /** Always present, sorted by display name. */

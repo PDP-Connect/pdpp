@@ -12,6 +12,7 @@
 import {
   buildBlobAffordance,
   buildPeekFields,
+  type ExploreBucketRequest,
   type ExplorerConnectionFacet,
   type ExplorerFeedEntry,
   type ExplorerFieldCapability,
@@ -42,13 +43,7 @@ import {
   type SearchTimestampMetadata,
   searchTimestampMetadataKey,
 } from "../lib/search-record-timestamps.ts";
-import {
-  BUCKET_TIME_ZONE,
-  type Bucket,
-  type BucketGranularity,
-  type BucketSeries,
-  chartIsVisible,
-} from "./over-time-chart.ts";
+import { chartIsVisible } from "./over-time-chart.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 import type { SetDescriptor } from "./set-descriptor.ts";
@@ -2657,14 +2652,21 @@ function chartTargets(
 }
 
 /**
- * Build the over-time chart's volume band for the active filtered set. Returns
- * null when the chart should not render (a relevance_bounded set — no honest
- * exhaustive time-distribution — or no targets at all). The granularity is
- * derived from the active `(since, until)` window span; with no date filter it
- * defaults to `day` (the honest resting-view choice on the §4.5 ladder; the
- * exact day-vs-week tuning for very large extents is bounded residual §12).
+ * Compute the over-time chart's bucket-request INPUTS for the active filtered set,
+ * WITHOUT awaiting the 3.6s server bucket call. Returns null when the chart should
+ * not render (a free-text search, a `relevance_bounded` set — no honest exhaustive
+ * time-distribution — or no in-scope targets at all). The actual bucket aggregate
+ * is loaded client-side post-mount via the `loadExploreBuckets` server action so
+ * the feed paints immediately (Linear/Vercel "list instant, chart fills in").
+ *
+ * The (connection, stream) scope is derived from the SAME `chartTargets` over
+ * `filteredSummaries` the old inline load used, so the deferred bars reconcile
+ * with the feed's structural scope (chart scope == feed scope), and the gate is
+ * the SAME `chartIsVisible` — search-suppression is byte-for-byte preserved, just
+ * moved off the await path. The resulting `total` (loaded later) stays the
+ * server's exact reachable `extent.count` (count == reachability).
  */
-async function loadBucketSeries(args: {
+function computeBucketRequest(args: {
   descriptor: SetDescriptor;
   /**
    * True when the feed is a free-text SEARCH result. The chart is suppressed in
@@ -2675,103 +2677,51 @@ async function loadBucketSeries(args: {
   fromSearch: boolean;
   filteredSummaries: readonly RefConnectorSummary[];
   filterStreams: ReadonlySet<string>;
+  excludeConnections: ReadonlySet<string>;
   excludeStreams: ReadonlySet<string>;
   since: string;
   until: string;
-  dataSource: DashboardDataSource;
-}): Promise<BucketSeries | null> {
+}): ExploreBucketRequest | null {
   // Visibility gating: suppress over a set with no honest exhaustive
   // time-distribution (relevance_bounded) AND over any free-text search lens
   // (the aggregate cannot scope to the query). design §4.1 / §5.
   if (!chartIsVisible(args.descriptor.kind, args.fromSearch)) {
     return null;
   }
-  const { targets, partial: targetsPartial } = chartTargets(
-    args.filteredSummaries,
-    args.filterStreams,
-    args.excludeStreams
-  );
+  const { targets } = chartTargets(args.filteredSummaries, args.filterStreams, args.excludeStreams);
   if (targets.length === 0) {
     return null;
   }
 
-  // Scope the ONE bucket call to the SAME structural (connection, stream) targets
-  // the fan-out queried — so the bars reconcile with the feed's structural scope.
-  // Deriving from `targets` reproduces the prior per-target scope exactly (an
-  // excluded stream never became a target; a connection-filtered feed yields only
-  // its connections), with NO all-corpus leak.
+  // Scope the deferred bucket call to the SAME structural (connection, stream)
+  // targets the fan-out queried — so the bars reconcile with the feed's structural
+  // scope. Deriving from `targets` reproduces the prior per-target scope exactly
+  // (an excluded stream never became a target; a connection-filtered feed yields
+  // only its connections), with NO all-corpus leak.
   const connections = uniqueStrings(
     targets.map((t) => t.connectionId).filter((id): id is string => typeof id === "string" && id.length > 0)
   );
   const streams = uniqueStrings(targets.map((t) => t.stream));
 
-  // ONE index-backed call. The server snaps `granularity: "auto"` to a calm calendar ladder and
-  // returns DENSE zero-filled buckets + an EXACT reachable `extent.count`.
-  const response = await args.dataSource.listExploreRecordBuckets({
+  return {
     connections,
     streams,
-    since: args.since || undefined,
-    until: args.until || undefined,
-    granularity: "auto",
-    timeZone: BUCKET_TIME_ZONE,
-  });
-
-  // Map the dense response → the chart's `Bucket` shape. `start`/`end` are the
-  // server's ISO bucket bounds (UTC); `key` is the day-prefix slice for day/week/
-  // month (IDENTICAL to the feed's `displayAt.slice(0, 10)` dayKey) or the full
-  // ISO for sub-day buckets, so a bar can never land in a different feed day-header.
-  const buckets: Bucket[] = response.buckets.map((b): Bucket => {
-    const startMs = Date.parse(b.start);
-    const endMs = Date.parse(b.end);
-    return {
-      count: b.count,
-      endMs,
-      key: bucketKeyFromIso(b.start, response.granularity),
-      startMs,
-    };
-  });
-
-  return {
-    buckets,
-    granularity: toBucketGranularity(response.granularity),
-    // `extent.count` is the EXACT reachable total over the scoped set — never a
-    // fabricated/summed-bar total.
-    partial: targetsPartial,
-    total: response.extent.count,
+    // EXCLUDED connections: `chartTargets` iterates `filteredSummaries` (the
+    // INCLUDE-filtered set) and does NOT drop the `-con:` exclusions, so an
+    // excluded connection's streams DO land in `connections` above. Carry the
+    // exclusion so the deferred aggregate drops them server-side — otherwise the
+    // chart would count a connection the feed hid (chart scope != feed scope, bars
+    // overstating the reachable distribution). The feed already excludes them.
+    excludeConnections: [...args.excludeConnections],
+    // Excluded streams are already absent from `targets`; carry the set so the
+    // action re-asserts the same exclusion server-side (defense in depth — the
+    // include scope already narrows it, but passing it keeps the request honest).
+    excludeStreams: [...args.excludeStreams],
+    since: args.since,
+    until: args.until,
+    descriptorKind: args.descriptor.kind,
+    fromSearch: args.fromSearch,
   };
-}
-
-/**
- * Snap the server's bucket granularity (which can be `minute`/`quarter`/`year`)
- * down to the chart's `BucketGranularity` ladder (`hour`/`day`/`week`/`month`).
- * Sub-day → `hour`; supra-month → `month`. Only the chart's span/label math reads
- * this; the true bar bounds come from the server's `start`/`end` instants.
- */
-function toBucketGranularity(granularity: string): BucketGranularity {
-  switch (granularity) {
-    case "hour":
-    case "day":
-    case "week":
-    case "month":
-      return granularity;
-    case "minute":
-      return "hour";
-    default:
-      return "month";
-  }
-}
-
-/**
- * The chart bucket `key` for a server bucket start instant. For day/week/month the
- * key is the ISO date prefix (`YYYY-MM-DD`) — IDENTICAL to the live feed's
- * `displayAt.slice(0, 10)` dayKey, so a bar can never land in a different feed
- * day-header. Sub-day (hour/minute) keeps the full ISO instant.
- */
-function bucketKeyFromIso(start: string, granularity: string): string {
-  if (granularity === "hour" || granularity === "minute") {
-    return start;
-  }
-  return start.slice(0, 10);
 }
 
 /**
@@ -2884,20 +2834,22 @@ export async function assembleExplorerData(
   ]);
   const { feed: feedResult, lens } = feedDispatch;
 
-  // Over-time chart volume band: TRUE per-bucket totals over the filtered corpus
-  // (server aggregate fan-in), gated by the set-descriptor kind. Suppressed over
-  // relevance_bounded. A read fault here never breaks the feed — the chart is an
-  // enhancement layered on the canonical Date object, so it degrades to null.
-  const bucketSeries = await loadBucketSeries({
+  // Over-time chart bucket INPUTS — computed synchronously (the same `chartIsVisible`
+  // + `chartTargets` gate the inline load used), but the 3.6s bucket aggregate is NO
+  // LONGER awaited here. Suppressed (→ null) over search / relevance_bounded / no
+  // targets, exactly as before. The canvas loads the band post-mount via the
+  // `loadExploreBuckets` action so the feed paints immediately; the deferred bars
+  // stay scoped to the SAME (connection, stream) targets the feed shows.
+  const bucketRequest = computeBucketRequest({
     descriptor: feedResult.descriptor,
     fromSearch: feedResult.fromSearch,
     filteredSummaries,
     filterStreams: filterStreamSet,
+    excludeConnections: excludeConnectionSet,
     excludeStreams: excludeStreamSet,
     since,
     until,
-    dataSource,
-  }).catch(() => null);
+  });
 
   const warnings: ExplorerWarning[] = [...feedResult.warnings];
   if (peek?.error) {
@@ -2948,9 +2900,14 @@ export async function assembleExplorerData(
     activitySummary: activitySummaryForFeed(feedResult),
     query,
     connections,
-    // Over-time chart volume band (null when suppressed/unavailable). The brush
-    // overlay is derived in the canvas from URL since/until, not from this.
-    bucketSeries,
+    // DEFERRED over-time chart inputs (null when suppressed: search /
+    // relevance_bounded / no targets). The canvas loads the band post-mount from
+    // these, off the first-paint critical path.
+    bucketRequest,
+    // The chart band is now loaded client-side post-mount (see `bucketRequest`),
+    // so the assembler never blocks first paint on the 3.6s aggregate. Always null
+    // here; the canvas holds the loaded series in its own state.
+    bucketSeries: null,
     // SET-DESCRIPTOR: propagate the engine-level truth about completeness and ordering.
     // The canvas switches on this to decide what it may claim about the set.
     descriptor: feedResult.descriptor,

@@ -3,30 +3,33 @@
  *
  * The chart's bars come from the index-backed bucket endpoint
  * (`listExploreRecordBuckets` → `GET /_ref/explore/records/buckets`), ONE call
- * that structurally CANNOT receive a free-text query. The endpoint IS scoped to
- * the SAME structural (connection, stream) targets the feed shows. The caption
- * used to say "Matching records over time," producing two lies:
+ * that structurally CANNOT receive a free-text query. That call is now DEFERRED:
+ * `assembleExplorerData` no longer awaits the 3.6s aggregate on the server
+ * critical path — it returns the COMPUTED `bucketRequest` (the scope the deferred
+ * client-side `loadExploreBuckets` action will use) and the canvas loads the band
+ * post-mount. So these tests assert the assembler:
+ *
+ *  - NEVER calls `listExploreRecordBuckets` inline (the whole perf win), and
+ *  - returns a `bucketRequest` carrying the SAME structural (connection, stream)
+ *    scope the feed shows — so the deferred bars reconcile with the feed. The
+ *    suppression contract is unchanged, just moved off the await path:
  *
  *  1. SEARCH: a search result-set (keyword_pageable) is not an honest
- *     time-distribution — the endpoint counts the FULL corpus while the feed shows
- *     only the matches. FIX: suppress the chart entirely when `fromSearch`.
- *  2. The bucket call IS scoped to the SAME structural (connection, stream) targets
- *     the feed shows — these tests prove the assembler SENDS that scope (one call,
- *     not N) so the bars reconcile with the feed's structural scope.
+ *     time-distribution. FIX: `bucketRequest` is null when `fromSearch` ⇒ no
+ *     request, no chart.
+ *  2. The bucket scope IS the SAME structural (connection, stream) targets the
+ *     feed shows — these tests prove the assembler COMPUTES that scope onto
+ *     `bucketRequest` (so the deferred call reconciles with the feed).
  *
- * These tests exercise the assembler end-to-end (no mock of the chart) and
- * capture the exact bucket-endpoint scope + the resulting `bucketSeries`.
+ * The companion `loadExploreBuckets` action maps the response → `BucketSeries`
+ * using the shared mapping; the mapping itself is unit-tested in
+ * over-time-chart-bucket-mapping.test.ts.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
 import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
-import type {
-  ConnectorManifest,
-  ExploreRecordBucketsResponse,
-  SearchResultHit,
-  SearchResultPage,
-} from "../lib/rs-client.ts";
+import type { ConnectorManifest, SearchResultHit, SearchResultPage } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
 // ── Fixtures: two connections, each with a stream that DECLARES a time field ──
@@ -89,44 +92,27 @@ function browsePage(): ExploreTimelinePage {
   } as ExploreTimelinePage;
 }
 
-/** One bucket-endpoint call the chart made: the structural scope it carried. */
-interface BucketCall {
-  connections: readonly string[];
-  excludeStreams: readonly string[] | undefined;
-  since: string | null | undefined;
-  streams: readonly string[];
-  until: string | null | undefined;
-}
-
 const notStubbed = () => Promise.reject(new Error("not stubbed"));
 
-function bucketsResponse(): ExploreRecordBucketsResponse {
-  return {
-    object: "explore_record_buckets",
-    granularity: "day",
-    time_zone: "UTC",
-    extent: { start: "2026-06-05T00:00:00.000Z", end: "2026-06-05T00:00:00.000Z", count: 2 },
-    buckets: [{ start: "2026-06-05T00:00:00.000Z", end: "2026-06-06T00:00:00.000Z", count: 2 }],
-  };
-}
-
+/**
+ * A data source whose `listExploreRecordBuckets` FAILS the test if ever called.
+ * The whole point of the decouple is that `assembleExplorerData` never awaits the
+ * aggregate inline — it computes a `bucketRequest` instead. (The deferred call is
+ * exercised by the `loadExploreBuckets` action, not the assembler.)
+ */
 function chartDs(opts?: {
-  bucketCalls?: BucketCall[];
+  inlineBucketCallCount?: { value: number };
   manifests?: ConnectorManifest[];
   searchHits?: SearchResultHit[];
 }): DashboardDataSource {
   return {
     kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
-    listExploreRecordBuckets: (o) => {
-      opts?.bucketCalls?.push({
-        connections: o.connections ?? [],
-        streams: o.streams ?? [],
-        excludeStreams: o.excludeStreams,
-        since: o.since,
-        until: o.until,
-      });
-      return Promise.resolve(bucketsResponse());
+    listExploreRecordBuckets: () => {
+      if (opts?.inlineBucketCallCount) {
+        opts.inlineBucketCallCount.value += 1;
+      }
+      return Promise.reject(new Error("assembleExplorerData must NOT call listExploreRecordBuckets inline"));
     },
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
@@ -160,73 +146,79 @@ function chartDs(opts?: {
   } as DashboardDataSource;
 }
 
-// ── (b) Non-search browse feed: chart renders + aggregate carries STRUCTURAL scope ──
+// ── The decouple: the assembler NEVER awaits the bucket aggregate inline ──────
 
-test("BROWSE feed: the chart renders and ONE bucket call carries the in-scope (connection, stream) targets", async () => {
-  const bucketCalls: BucketCall[] = [];
-  const result = await assembleExplorerData({}, chartDs({ bucketCalls }), "https://rs.test");
+test("DECOUPLE: assembleExplorerData never calls listExploreRecordBuckets inline (it returns a bucketRequest instead)", async () => {
+  const inlineBucketCallCount = { value: 0 };
+  const result = await assembleExplorerData({}, chartDs({ inlineBucketCallCount }), "https://rs.test");
 
-  assert.equal(result.fromSearch, false, "this is the browse lens, not search");
-  assert.ok(result.bucketSeries, "the chart renders over a non-search exhaustive feed");
-  // ONE index-backed call (not N per-target), scoped to the SAME structural
-  // (connection, stream) targets the feed shows.
-  assert.equal(bucketCalls.length, 1, "the chart makes exactly ONE bucket call (not a per-target fan-out)");
-  const call = bucketCalls[0];
-  assert.ok(call, "the single bucket call was captured");
-  assert.deepEqual(
-    [...call.connections].sort(),
-    ["cin_chase", "cin_ynab"],
-    "bucket call is scoped to the feed's connection targets (structural filter passed)"
+  assert.equal(
+    inlineBucketCallCount.value,
+    0,
+    "the 3.6s bucket aggregate must NOT be on the first-paint critical path — the chart is loaded post-mount"
   );
-  assert.deepEqual([...call.streams].sort(), ["transactions"], "bucket call carries the in-scope streams");
-  // The EXACT reachable total comes from extent.count, not summed bars.
-  assert.equal(result.bucketSeries?.total, 2, "total is the exact reachable extent.count");
+  // The chart is not pre-rendered server-side anymore; the band loads client-side.
+  assert.equal(result.bucketSeries, null, "bucketSeries is null from the assembler (the canvas fills it post-mount)");
+  assert.ok(result.bucketRequest, "a non-search browse feed yields a deferred bucketRequest");
 });
 
-test("BROWSE feed: chart renders on default complete_chronological browse even when manifests are unavailable", async () => {
-  const bucketCalls: BucketCall[] = [];
-  const result = await assembleExplorerData({}, chartDs({ bucketCalls, manifests: [] }), "https://rs.test");
+// ── (b) Non-search browse feed: bucketRequest carries the STRUCTURAL scope ──
+
+test("BROWSE feed: bucketRequest carries the in-scope (connection, stream) targets the feed shows", async () => {
+  const result = await assembleExplorerData({}, chartDs(), "https://rs.test");
+
+  assert.equal(result.fromSearch, false, "this is the browse lens, not search");
+  const request = result.bucketRequest;
+  assert.ok(request, "the chart request is computed over a non-search exhaustive feed");
+  // Scoped to the SAME structural (connection, stream) targets the feed shows.
+  assert.deepEqual(
+    [...request.connections].sort(),
+    ["cin_chase", "cin_ynab"],
+    "bucketRequest is scoped to the feed's connection targets (structural filter passed)"
+  );
+  assert.deepEqual([...request.streams].sort(), ["transactions"], "bucketRequest carries the in-scope streams");
+  assert.equal(request.fromSearch, false, "the request records the browse lens");
+  assert.equal(request.descriptorKind, result.descriptor.kind, "the request carries the set-descriptor kind");
+});
+
+test("BROWSE feed: bucketRequest is computed on default complete_chronological browse even when manifests are unavailable", async () => {
+  const result = await assembleExplorerData({}, chartDs({ manifests: [] }), "https://rs.test");
 
   assert.equal(result.fromSearch, false);
   assert.equal(result.descriptor.kind, "complete_chronological");
-  assert.ok(result.bucketSeries, "default browse still renders the chart without client manifest metadata");
-  assert.equal(bucketCalls.length, 1, "missing manifests must not suppress the server bucket call");
-  const call = bucketCalls[0];
-  assert.ok(call, "the single bucket call was captured");
-  assert.deepEqual([...call.connections].sort(), ["cin_chase", "cin_ynab"]);
-  assert.deepEqual([...call.streams].sort(), ["transactions"]);
-  assert.equal(result.bucketSeries?.total, 2, "total still comes from the exact reachable extent.count");
+  const request = result.bucketRequest;
+  assert.ok(request, "default browse still computes the chart request without client manifest metadata");
+  assert.deepEqual([...request.connections].sort(), ["cin_chase", "cin_ynab"]);
+  assert.deepEqual([...request.streams].sort(), ["transactions"]);
 });
 
-test("CONNECTION-FILTERED feed: the bucket scope NARROWS to the selected connection (matches the feed)", async () => {
-  // Selecting only cin_ynab must scope the bars to ynab too — the chart's bars
+test("CONNECTION-FILTERED feed: the bucketRequest scope NARROWS to the selected connection (matches the feed)", async () => {
+  // Selecting only cin_ynab must scope the request to ynab too — the chart's bars
   // reconcile with the feed's structural scope (no all-corpus leak).
-  const bucketCalls: BucketCall[] = [];
-  const result = await assembleExplorerData({ connection: "cin_ynab" }, chartDs({ bucketCalls }), "https://rs.test");
+  const result = await assembleExplorerData({ connection: "cin_ynab" }, chartDs(), "https://rs.test");
 
-  assert.ok(result.bucketSeries, "chart still renders on a structurally-filtered feed");
-  assert.equal(bucketCalls.length, 1, "still ONE bucket call when structurally filtered");
-  const call = bucketCalls[0];
-  assert.ok(call, "the single bucket call was captured");
+  const request = result.bucketRequest;
+  assert.ok(request, "request still computed on a structurally-filtered feed");
   assert.deepEqual(
-    [...call.connections].sort(),
+    [...request.connections].sort(),
     ["cin_ynab"],
     "bucket scope NARROWS to the selected connection — never the all-corpus union"
   );
 });
 
-test("DATE-FILTERED feed: chart renders and caption stays 'Records over time' (never 'Matching')", async () => {
+test("DATE-FILTERED feed: bucketRequest is computed and carries the window (kind stays non-relevance_bounded)", async () => {
   // A date window (since/until) only picks granularity; it does NOT scope the
-  // aggregate. So the bars are the broader structural distribution you brush — and
-  // the caption must NOT claim they are the matching/filtered total.
+  // aggregate. So the request is the broader structural distribution you brush —
+  // and the descriptor must NOT be relevance_bounded.
   const result = await assembleExplorerData({ since: "2026-06-01", until: "2026-06-10" }, chartDs(), "https://rs.test");
-  assert.ok(result.bucketSeries, "chart renders on a date-filtered (filtered_exact) feed");
-  // The caption (a pure function in over-time-chart.ts) never claims "matching".
-  // Asserting the kind reached filtered_exact proves we're on the date-filter path.
+  const request = result.bucketRequest;
+  assert.ok(request, "request computed on a date-filtered (filtered_exact) feed");
+  assert.equal(request.since, "2026-06-01", "the request carries the since window");
+  assert.equal(request.until, "2026-06-10", "the request carries the until window");
   assert.notEqual(result.descriptor.kind, "relevance_bounded");
 });
 
-// ── (a) SEARCH suppresses the chart — and never calls the aggregate ──────────
+// ── (a) SEARCH suppresses the chart — bucketRequest null, no inline call ──────
 
 const SEARCH_HITS: SearchResultHit[] = [
   {
@@ -240,26 +232,25 @@ const SEARCH_HITS: SearchResultHit[] = [
   },
 ];
 
-test("SEARCH feed: the chart is SUPPRESSED (bucketSeries null) — the bucket call cannot scope to the query", async () => {
-  const bucketCalls: BucketCall[] = [];
+test("SEARCH feed: the chart is SUPPRESSED (bucketRequest null) — no request can scope to the query", async () => {
+  const inlineBucketCallCount = { value: 0 };
   const result = await assembleExplorerData(
     { q: "invoice" },
-    chartDs({ bucketCalls, searchHits: SEARCH_HITS }),
+    chartDs({ inlineBucketCallCount, searchHits: SEARCH_HITS }),
     "https://rs.test"
   );
 
   assert.equal(result.fromSearch, true, "this exercises the SEARCH lens");
-  assert.equal(result.bucketSeries, null, "chart suppressed during search (no honest time-distribution)");
-  assert.equal(bucketCalls.length, 0, "the bucket call is NEVER fired during search (cannot be query-scoped)");
+  assert.equal(result.bucketRequest, null, "chart suppressed during search (no honest time-distribution)");
+  assert.equal(result.bucketSeries, null, "no series either");
+  assert.equal(inlineBucketCallCount.value, 0, "the bucket aggregate is never fired during search");
 });
 
-test("NEGATIVE CONTROL: the SAME data source WITHOUT a query renders the chart and fires the bucket call", async () => {
+test("NEGATIVE CONTROL: the SAME data source WITHOUT a query computes the bucketRequest", async () => {
   // Proves the suppression is caused by the SEARCH lens, not by a broken fixture:
-  // dropping `q` (same ds shape) flips bucketSeries non-null and fires the bucket call.
-  const bucketCalls: BucketCall[] = [];
-  const result = await assembleExplorerData({}, chartDs({ bucketCalls, searchHits: SEARCH_HITS }), "https://rs.test");
+  // dropping `q` (same ds shape) flips bucketRequest from null to a real request.
+  const result = await assembleExplorerData({}, chartDs({ searchHits: SEARCH_HITS }), "https://rs.test");
 
   assert.equal(result.fromSearch, false);
-  assert.ok(result.bucketSeries, "without a query the chart renders");
-  assert.ok(bucketCalls.length > 0, "without a query the bucket call fires");
+  assert.ok(result.bucketRequest, "without a query the chart request is computed");
 });
