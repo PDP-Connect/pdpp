@@ -278,6 +278,18 @@ function buildEventPreview(data: RecordData, roles?: DeclaredFieldRoles): Record
   if (!(title || eventTime)) {
     return null;
   }
+  // A declared-but-EMPTY primary-title (e.g. a codex/messages record whose
+  // `content` is blank but which has an event-time, so it stayed kind=event) must
+  // render the honest "(no content)" placeholder — NOT fall through title-less to
+  // the row's identity-key fallback (the bare-UUID rows). Mirror the message path's
+  // emptyDeclaredContentPreview placeholder. (event-time on `messages` is a broad
+  // convention across 7 connectors, so the empty-content case is handled HERE, not
+  // by re-authoring every manifest.)
+  if (!title && roles && fieldForRole(roles, "primary-title")) {
+    const titleField = fieldForRole(roles, "primary-title");
+    const placeholder = titleField ? `(no ${humanizeFieldLabel(titleField).toLowerCase()})` : undefined;
+    return { body, eventTime, kind: "event", title: placeholder };
+  }
   return { body, eventTime, kind: "event", title };
 }
 

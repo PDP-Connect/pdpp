@@ -75,7 +75,7 @@
   gap: 2px;
 }
 .rr-side__group {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -131,7 +131,7 @@
   gap: 3px;
 }
 .rr-side__host {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   color: var(--muted-foreground);
   overflow: hidden;
@@ -139,7 +139,7 @@
   white-space: nowrap;
 }
 .rr-side__motto {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   color: var(--primary);
   letter-spacing: 0.06em;
@@ -173,7 +173,7 @@
   white-space: nowrap;
 }
 .rr-head__crumb {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--muted-foreground);
   white-space: nowrap;

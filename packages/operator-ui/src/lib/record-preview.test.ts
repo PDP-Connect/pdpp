@@ -85,6 +85,22 @@ test("builds a role-backed event preview with a UTC time label", () => {
   );
 });
 
+test("an event-kind record with a declared-but-EMPTY primary-title renders a placeholder, not the id", () => {
+  // A codex/messages-shaped record: content (primary-title) is blank, but the
+  // event-time role keeps it kind=event. It must show "(no content)" — not fall
+  // through title-less to the row's identity-key (bare-UUID) fallback.
+  const preview = buildRecordPreview(
+    "event",
+    { id: "019dfeb4-...:208455", content: "", timestamp: "2026-06-25T17:00:00Z" },
+    null,
+    { content: "primary-title", timestamp: "event-time", role: "actor" }
+  );
+
+  assert.equal(preview?.kind, "event");
+  assert.equal(preview?.title, "(no content)");
+  assert.equal(preview?.eventTime, "5:00 PM");
+});
+
 test("builds a role-backed titled preview", () => {
   const preview = buildRecordPreview("titled", { title: "On Protocols", body: "Long form", author: "Ada" }, null, {
     title: "primary-title",

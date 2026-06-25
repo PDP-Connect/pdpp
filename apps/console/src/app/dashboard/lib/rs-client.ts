@@ -155,7 +155,43 @@ export interface ConnectorManifest {
   streams?: Array<{ name: string; [k: string]: unknown }>;
 }
 
-const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests");
+// Connector manifests ship in the repo at packages/polyfill-connectors/manifests.
+// The directory's location RELATIVE TO process.cwd() differs by runtime: the Next
+// standalone server runs with cwd=/app (monorepo root), while `next dev` / tests run
+// from apps/console — so a single `../../` assumption silently resolves to the wrong
+// place in one of them. (In the standalone image, `join(cwd,"..","..",…)` escaped
+// /app to filesystem root → ENOENT → readdir threw → ZERO manifest roles loaded →
+// every role-backed feed title fell back to the record's identity key (the bare-UUID
+// rows). Found live 2026-06-25.) Probe both layouts and use the first that resolves;
+// the lookup is memoized so the stat cost is paid once.
+const MANIFESTS_DIR_CANDIDATES = [
+  // standalone image / cwd = monorepo root
+  join(process.cwd(), "packages", "polyfill-connectors", "manifests"),
+  // cwd = apps/console (next dev, unit tests)
+  join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests"),
+];
+
+let resolvedManifestsDir: string | null | undefined;
+
+/** First candidate manifests dir that exists, or null if none (caller degrades). */
+async function manifestsDir(): Promise<string | null> {
+  if (resolvedManifestsDir !== undefined) {
+    return resolvedManifestsDir;
+  }
+  for (const candidate of MANIFESTS_DIR_CANDIDATES) {
+    try {
+      const entries = await readdir(candidate);
+      if (entries.length > 0) {
+        resolvedManifestsDir = candidate;
+        return candidate;
+      }
+    } catch {
+      // not this layout — try the next candidate
+    }
+  }
+  resolvedManifestsDir = null;
+  return null;
+}
 const FRACTIONAL_SECONDS_RE = /\.\d+Z$/;
 
 async function authedFetch(path: string, params?: Record<string, string | number | undefined | null>) {
@@ -685,14 +721,26 @@ export async function searchRecordsHybrid(
 }
 
 export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
-  const files = await readdir(MANIFESTS_DIR);
+  const dir = await manifestsDir();
+  if (!dir) {
+    // No manifest directory resolved under any known layout. Degrade to an empty
+    // set (the feed renders the honest GENERIC card for every stream) rather than
+    // throwing the whole dashboard page — but this is a deploy/path misconfig, not
+    // a normal state, so make it loud in the server logs.
+    console.error(
+      "[rs-client] connector manifests directory not found under any candidate layout; declared presentation roles will be UNAVAILABLE (feed titles fall back to identity keys). Candidates:",
+      MANIFESTS_DIR_CANDIDATES
+    );
+    return [];
+  }
+  const files = await readdir(dir);
   const manifests: ConnectorManifest[] = [];
   for (const file of files) {
     if (!file.endsWith(".json")) {
       continue;
     }
     try {
-      const raw = await readFile(join(MANIFESTS_DIR, file), "utf8");
+      const raw = await readFile(join(dir, file), "utf8");
       const m = JSON.parse(raw) as ConnectorManifest;
       if (m.connector_id) {
         manifests.push(m);

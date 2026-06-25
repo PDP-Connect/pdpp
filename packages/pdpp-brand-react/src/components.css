@@ -64,7 +64,7 @@
 
 /* The carbon caption that accompanies a retained object. */
 .pdpp-copyline {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.6rem;
   font-weight: 500;
   letter-spacing: 0.1em;
@@ -83,12 +83,12 @@
 }
 .pdpp-scope:last-child { border-bottom: 0; }
 .pdpp-scope__name {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.8125rem;
   font-weight: 500;
 }
 .pdpp-scope__terms {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.66rem;
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -126,7 +126,7 @@
   border-bottom: 1px solid var(--border-strong);
 }
 .pdpp-table__h {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.1em;
@@ -213,7 +213,7 @@
    The background and border are derived from currentColor so the color
    set by the variant modifier drives the entire badge automatically. */
 .pdpp-endorse {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.06em;
@@ -234,7 +234,7 @@
 
 /* ─── Tag — taxonomy label, neutral, no color spent ─────────────── */
 .pdpp-tag {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 400;
   white-space: nowrap;
@@ -536,7 +536,7 @@
 /* Mono eyebrow title — protocol voice for the modal heading. */
 .pdpp-dialog__title {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -694,7 +694,7 @@
   font-variant-numeric: tabular-nums;
 }
 .pdpp-eyebrow {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.67rem;
   font-weight: 500;
   letter-spacing: 0.12em;
@@ -923,7 +923,7 @@
   display: block;
   margin-bottom: 5px;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -982,7 +982,7 @@
 .rr-sync-group__dot.is-fail { background: var(--warning); }
 .rr-sync-group__name { font-size: 0.9rem; font-weight: 700; }
 .rr-sync-group__status {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.61rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1042,7 +1042,7 @@
 .rr-sync-row { cursor: pointer; transition: background var(--motion-state); }
 .rr-sync-row:hover { background: var(--muted); }
 .rr-sync-row__stream {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.8125rem;
   font-weight: 500;
   white-space: nowrap;
@@ -1122,7 +1122,7 @@
   position: relative;
 }
 .rr-stand-hero__kicker {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.7rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1244,7 +1244,7 @@
   overflow-wrap: anywhere;
 }
 .rr-bearer__client {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.64rem;
   color: var(--muted-foreground);
   min-width: 0;
@@ -1580,7 +1580,7 @@
   margin-bottom: 14px;
 }
 .rr-x-views__label {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1717,7 +1717,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1824,7 +1824,7 @@
   text-overflow: ellipsis;
 }
 .rr-x-source-group__n {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1929,7 +1929,7 @@
 /* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
    active so an exclusion reads as a distinct, intentional negative scope. */
 .rr-x-facet-not {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   line-height: 1;
   color: var(--muted-foreground);
@@ -1956,7 +1956,7 @@
 
 /* ─── Inline marks (image / derived title) ─── */
 .rr-x-mark {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.6rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1969,7 +1969,7 @@
 
 /* ─── Lens / link controls ─── */
 .rr-lens {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
@@ -1988,7 +1988,7 @@
   background: var(--primary-tint);
 }
 .rr-link {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--primary);
   background: none;
@@ -2043,7 +2043,7 @@
   flex-shrink: 0;
 }
 .rr-x-sort__label {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2266,7 +2266,7 @@
   color: var(--foreground);
 }
 .rr-x-browse-all-escape {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--muted-foreground);
   text-decoration: underline;
@@ -2288,7 +2288,7 @@
   padding-top: 2px;
 }
 .rr-x-goto__label {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2357,7 +2357,7 @@
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--primary);
   background: var(--primary-tint);
@@ -2426,7 +2426,7 @@
   color: var(--foreground);
 }
 .rr-x-typeahead__op {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -2666,7 +2666,7 @@
   background: color-mix(in oklab, var(--primary) 15%, var(--background));
 }
 .rr-x-clearall {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--muted-foreground);
   background: none;
@@ -2692,7 +2692,7 @@
   gap: 4px;
   cursor: pointer;
   list-style: none;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
@@ -2756,7 +2756,7 @@
   line-height: 1.45;
 }
 .rr-x-stream-all {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--foreground);
   text-decoration: underline;
@@ -2768,7 +2768,7 @@
 
 /* ─── Count + lens-description line ─── */
 .rr-x-pulse__note {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--muted-foreground);
 }
@@ -3746,7 +3746,7 @@ a.rr-x-row {
   align-items: flex-start;
 }
 .rr-x-empty__eyebrow {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -3921,7 +3921,7 @@ a.rr-x-row {
 }
 .rr-ex-lens__label {
   font-size: 9px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted-foreground);
