@@ -233,6 +233,7 @@ export interface RunNowOptions {
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
+  resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
   runId?: string;
   scenarioId?: string;
@@ -3756,6 +3757,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
     activeRunWatchdogTimers.set(runId, watchdogTimer);
   }
 
+  function normalizeRunNowResources(
+    resources: Readonly<Record<string, readonly string[]>> | undefined
+  ): Array<{ name: string; resources: string[] }> | null {
+    if (!resources) {
+      return null;
+    }
+    const streams = Object.entries(resources)
+      .map(([name, values]) => ({
+        name,
+        resources: [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))],
+      }))
+      .filter(
+        (stream) =>
+          stream.name.length > 0 &&
+          stream.name !== "__proto__" &&
+          stream.name !== "constructor" &&
+          stream.name !== "prototype" &&
+          stream.resources.length > 0
+      );
+    return streams.length > 0 ? streams : null;
+  }
+
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const key = runtimeKey(connectorId, connectorInstanceId);
@@ -3811,6 +3834,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       })) as { state?: unknown } | null
     );
     const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken());
+    const scopedResources = normalizeRunNowResources(options.resources);
 
     // Manual owner gestures clear any pending human-attention flag so the
     // scheduler can resume after the owner resolves the issue. Webhook
@@ -3889,6 +3913,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           ownerToken,
           manifest,
           state,
+          ...(scopedResources ? { scope: { streams: scopedResources } } : {}),
           collectionMode,
           rsUrl: currentRsUrl(options.rsUrl),
           runId,

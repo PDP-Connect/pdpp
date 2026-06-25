@@ -182,3 +182,28 @@ test("two connections of the same connector derive mode from their own state", a
   assert.equal(byInstance.get("cin_b").collectionMode, "full_refresh");
   assert.equal(byInstance.get("cin_b").state, null);
 });
+
+test("runNow forwards stream resources as runtime scope", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow("slack", {
+    connectorInstanceId: "cin_slack",
+    manifest: {
+      connector_id: "slack",
+      name: "Slack",
+      version: "1.0.0",
+      streams: [{ name: "messages" }],
+    },
+    ownerToken: "owner-token",
+    resources: { messages: ["C07JYF0U8BY"] },
+    runId: "run_slack_backfill",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].scope, {
+    streams: [{ name: "messages", resources: ["C07JYF0U8BY"] }],
+  });
+});

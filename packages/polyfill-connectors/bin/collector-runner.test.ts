@@ -74,6 +74,33 @@ test("CLI --backfill-streams reaches the connector as START.streamsToBackfill", 
   assert.equal(start.type, "START");
 });
 
+test("CLI --resources reaches the connector as START scope resources", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "slack",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+    "--streams",
+    "messages,reactions",
+    "--resources",
+    "messages:C07JYF0U8BY|C016X99931T",
+  ]);
+  const spec = buildConnectorSpec(options);
+  const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill, null, spec.resources);
+
+  assert.deepEqual(start.scope.streams, [
+    { name: "messages", resources: ["C07JYF0U8BY", "C016X99931T"] },
+    { name: "reactions" },
+  ]);
+});
+
 test("CLI local-agent defaults request safe inventory and coverage streams", () => {
   const claude = buildConnectorSpec(
     parseArgs([

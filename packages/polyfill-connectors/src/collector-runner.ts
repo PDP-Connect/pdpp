@@ -419,6 +419,8 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly connector_id: string;
   /** Optional extra env passed to the connector child process. */
   readonly env?: NodeJS.ProcessEnv;
+  /** Optional stream resources for scoped connector runs. */
+  readonly resources?: Readonly<Record<string, readonly string[]>>;
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
   /** Optional explicit stream backfills requested from the connector. */
@@ -1241,7 +1243,8 @@ async function streamConnectorIntoOutbox(
       buildCollectorStartMessage(
         input.config.connector.streams,
         input.config.connector.streamsToBackfill,
-        input.priorState
+        input.priorState,
+        input.config.connector.resources
       )
     )}\n`
   );
@@ -1551,10 +1554,16 @@ async function safeHeartbeat(
 export function buildCollectorStartMessage(
   streams: readonly string[],
   streamsToBackfill: readonly string[] = [],
-  priorState?: Readonly<Record<string, unknown>> | null
+  priorState?: Readonly<Record<string, unknown>> | null,
+  resources: Readonly<Record<string, readonly string[]>> = {}
 ): StartMessage {
   const start: StartMessage = {
-    scope: { streams: streams.map((name): StreamScope => ({ name })) },
+    scope: {
+      streams: streams.map((name): StreamScope => {
+        const streamResources = resources[name]?.filter((value) => typeof value === "string" && value.length > 0);
+        return streamResources && streamResources.length > 0 ? { name, resources: streamResources } : { name };
+      }),
+    },
     type: "START",
   };
   if (streamsToBackfill.length > 0) {

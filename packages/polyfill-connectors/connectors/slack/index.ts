@@ -49,6 +49,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -120,6 +121,151 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
   } catch {
     return [];
   }
+}
+
+const SOURCE_PARTITION_MISSING_REASON = "source_partition_missing";
+const MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC = 100;
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof k === "string" && k && typeof v === "string" && v) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.filter((v): v is string => typeof v === "string" && v.length > 0))].sort();
+}
+
+function readPriorObservedChannelIds(messagesState: MessagesState | undefined): string[] {
+  return [
+    ...new Set([
+      ...normalizeStringArray(messagesState?.observed_channel_ids),
+      ...Object.keys(normalizeStringRecord(messagesState?.channel_last_ts)),
+    ]),
+  ].sort();
+}
+
+function currentArchiveChannelIds(db: DatabaseSync): string[] {
+  const channels = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT ID AS id
+    FROM CHANNEL
+    WHERE ID IS NOT NULL AND ID != ''
+  `
+  ).map((r) => r.id);
+  const messageChannels = safeAll<{ id: string }>(
+    db,
+    `
+    SELECT DISTINCT CHANNEL_ID AS id
+    FROM MESSAGE
+    WHERE CHANNEL_ID IS NOT NULL AND CHANNEL_ID != ''
+  `
+  ).map((r) => r.id);
+  return [...new Set([...channels, ...messageChannels])].sort();
+}
+
+function missingPreviouslyObservedChannelIds(
+  priorObservedChannelIds: readonly string[],
+  currentChannelIds: readonly string[]
+): string[] {
+  const current = new Set(currentChannelIds);
+  return priorObservedChannelIds.filter((id) => !current.has(id)).sort();
+}
+
+async function emitMissingChannelDiagnostic(
+  emit: CollectContext["emit"],
+  missingChannelIds: readonly string[]
+): Promise<void> {
+  if (missingChannelIds.length === 0) {
+    return;
+  }
+  const visibleIds = missingChannelIds.slice(0, MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC);
+  await emit({
+    type: "SKIP_RESULT",
+    stream: "messages",
+    reason: SOURCE_PARTITION_MISSING_REASON,
+    message:
+      missingChannelIds.length === 1
+        ? `Slack archive is missing previously observed channel ${visibleIds[0]}; message coverage is partial.`
+        : `Slack archive is missing ${String(missingChannelIds.length)} previously observed channels; message coverage is partial.`,
+    diagnostics: {
+      missing_channel_ids: visibleIds,
+      missing_count: missingChannelIds.length,
+      truncated: visibleIds.length < missingChannelIds.length,
+    },
+    recovery_hint: {
+      action: "repair_slack_archive_or_refresh_credentials",
+      retryable: true,
+    },
+  });
+}
+
+function selectCommittedChannelLastTs(
+  priorChannelLastTs: Record<string, string>,
+  runChannelMaxTs: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = { ...priorChannelLastTs };
+  for (const [channelId, ts] of Object.entries(runChannelMaxTs)) {
+    if (!out[channelId] || ts > out[channelId]) {
+      out[channelId] = ts;
+    }
+  }
+  return out;
+}
+
+function buildShapeCheckSkip(
+  stream: string,
+  data: RecordData
+): Extract<EmittedMessage, { type: "SKIP_RESULT" }> | null {
+  const validation = validateRecord(stream, data);
+  if (validation.ok) {
+    return null;
+  }
+  return {
+    type: "SKIP_RESULT",
+    stream,
+    reason: "shape_check_failed",
+    message: `${String(data.id)}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`,
+    diagnostics: { id: data.id, issues: validation.issues, record: data },
+  };
+}
+
+async function emitMessageRecordScopedByChannel(deps: {
+  channelIds: ReadonlySet<string>;
+  emit: CollectContext["emit"];
+  emittedAt: string;
+  record: RecordData;
+}): Promise<void> {
+  if (
+    deps.record.id == null ||
+    typeof deps.record.channel_id !== "string" ||
+    !deps.channelIds.has(deps.record.channel_id)
+  ) {
+    return;
+  }
+  const skip = buildShapeCheckSkip("messages", deps.record);
+  if (skip) {
+    await deps.emit(skip);
+    return;
+  }
+  await deps.emit({
+    type: "RECORD",
+    stream: "messages",
+    key: deps.record.id,
+    data: deps.record,
+    emitted_at: deps.emittedAt,
+  });
 }
 
 // Default timeout accommodates long-lived workspaces (10+ years) where a
@@ -291,6 +437,20 @@ function resolveArchivePaths(workspace: string): ArchivePaths {
   return { dumpDir, archivePath, sqlitePath };
 }
 
+function resolveScopedArchivePaths(base: ArchivePaths, positionalChannels: readonly string[]): ArchivePaths {
+  if (positionalChannels.length === 0) {
+    return base;
+  }
+  const normalized = [...new Set(positionalChannels)].sort();
+  const digest = createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 12);
+  const archivePath = join(base.dumpDir, "archive-scoped", digest);
+  return {
+    dumpDir: base.dumpDir,
+    archivePath,
+    sqlitePath: join(archivePath, "slackdump.sqlite"),
+  };
+}
+
 /**
  * Incremental via slackdump resume, full via archive.
  * Resume path: (a) explicit state.archive_dir from a prior successful run,
@@ -301,7 +461,8 @@ function resolveArchivePaths(workspace: string): ArchivePaths {
  */
 function pickResumeTarget(
   state: CollectContext["state"],
-  archivePath: string
+  archivePath: string,
+  { allowStateArchive = true }: { allowStateArchive?: boolean } = {}
 ): { resumeTarget: string | null; priorArchive: string | undefined } {
   // STATE is stream-keyed per Collection Profile: state is returned as
   // { <stream>: <cursor>, ... }. We write `archive_dir` into the messages
@@ -310,7 +471,7 @@ function pickResumeTarget(
   const legacyArchiveDir = (state as Record<string, unknown>).archive_dir as string | undefined;
   const priorArchive = messagesState?.archive_dir || legacyArchiveDir; // fallback for pre-fix state
   const discoveredArchive = existsSync(archivePath) ? archivePath : null;
-  const resumeTarget = priorArchive && existsSync(priorArchive) ? priorArchive : discoveredArchive;
+  const resumeTarget = allowStateArchive && priorArchive && existsSync(priorArchive) ? priorArchive : discoveredArchive;
   return { resumeTarget, priorArchive };
 }
 
@@ -411,7 +572,28 @@ export interface MessagesPassDeps {
 }
 
 export interface MessagesPassResult {
+  channelMaxTs: Record<string, string>;
   maxMessageTs: string | null;
+}
+
+function selectMaxSlackTs(current: string | null, candidate: string | null): string | null {
+  if (!candidate) {
+    return current;
+  }
+  if (!current || candidate > current) {
+    return candidate;
+  }
+  return current;
+}
+
+function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: string, ts: string | null): void {
+  if (!ts) {
+    return;
+  }
+  const current = channelMaxTs[channelId];
+  if (!current || ts > current) {
+    channelMaxTs[channelId] = ts;
+  }
 }
 
 /**
@@ -460,6 +642,7 @@ export async function emitMessagesPass(
   const wantReactions = deps.requested.has("reactions");
   const wantMsgAttachments = deps.requested.has("message_attachments");
 
+  const channelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
   for (const r of rows) {
     const parsed = parseMessageRow(r, nowIso());
@@ -467,9 +650,8 @@ export async function emitMessagesPass(
     // Track the max ts seen in this run for the post-loop STATE emit.
     // Slack ts is a fixed-shape "seconds.micros" string; string compare
     // matches numeric order because both halves are zero-padded by Slack.
-    if (ts && (maxMessageTs === null || ts > maxMessageTs)) {
-      maxMessageTs = ts;
-    }
+    maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
+    recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
       await deps.emitRecord("messages", buildMessageRecord(parsed));
     }
@@ -484,7 +666,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { maxMessageTs };
+  return { channelMaxTs, maxMessageTs };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -771,29 +953,70 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
  * (S_USER, FILE, CHANNEL, WORKSPACE) keep `.all()` via `safeAll`: their
  * cardinality is members/files/channels, not message volume.
  */
-function* iterateMessageRows(db: DatabaseSync, priorTs: string | null): Iterable<MessageRow> {
-  const tsParam = priorTs ? [priorTs] : [];
-  const tsClause = priorTs ? "WHERE m.TS > ?" : "";
+interface MessageCursorThresholds {
+  channelLastTs: Record<string, string>;
+  legacyLastTs: string | null;
+}
+
+function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
+  const channelThresholds = Object.entries(thresholds.channelLastTs)
+    .filter(([channelId, ts]) => channelId.length > 0 && ts.length > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const params: string[] = [];
+  const thresholdCte =
+    channelThresholds.length > 0
+      ? `,
+    thresholds(channel_id, last_ts) AS (
+      VALUES ${channelThresholds
+        .map(([channelId, ts]) => {
+          params.push(channelId, ts);
+          return "(?, ?)";
+        })
+        .join(", ")}
+    )`
+      : "";
+  const thresholdJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
+  let whereClause = "";
+  if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
+    whereClause = "WHERE m.TS > COALESCE(t.last_ts, ?)";
+    params.push(thresholds.legacyLastTs);
+  } else if (channelThresholds.length > 0) {
+    whereClause = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
+  } else if (thresholds.legacyLastTs) {
+    whereClause = "WHERE m.TS > ?";
+    params.push(thresholds.legacyLastTs);
+  }
+
+  return {
+    params,
+    sql: `
+    WITH latest AS (
+      SELECT CHANNEL_ID, TS, MAX(CHUNK_ID) AS mx
+      FROM MESSAGE
+      GROUP BY CHANNEL_ID, TS
+    )${thresholdCte}
+    SELECT m.CHANNEL_ID, m.TS, m.THREAD_TS, m.IS_PARENT, m.TXT, m.NUM_FILES, m.DATA
+    FROM MESSAGE m
+    JOIN latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
+    ${thresholdJoin}
+    ${whereClause}
+  `,
+  };
+}
+
+function* iterateMessageRows(db: DatabaseSync, thresholds: MessageCursorThresholds): Iterable<MessageRow> {
+  const { sql, params } = buildMessageRowsQuery(thresholds);
   // Slackdump can store the same (CHANNEL_ID, TS) message across multiple
   // CHUNK_IDs (e.g. from channel enumeration + subsequent thread fetch).
   // Pick the latest chunk's row per (CHANNEL_ID, TS) to avoid duplicate
   // RECORDs on the wire.
-  const stmt = db.prepare(`
-    SELECT m.CHANNEL_ID, m.TS, m.THREAD_TS, m.IS_PARENT, m.TXT, m.NUM_FILES, m.DATA
-    FROM MESSAGE m
-    JOIN (
-      SELECT CHANNEL_ID, TS, MAX(CHUNK_ID) AS mx
-      FROM MESSAGE
-      GROUP BY CHANNEL_ID, TS
-    ) latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
-    ${tsClause}
-  `);
+  const stmt = db.prepare(sql);
   // node:sqlite stmt.iterate(...) yields Record<string, SQLOutputValue> one
   // row at a time. Our typed shape is a subset (we SELECT named columns);
   // rebuild each row explicitly to narrow SQLOutputValue into our column
   // shape. Cheap: 7 fields per row, and the runtime has already produced
   // the row.
-  for (const raw of stmt.iterate(...tsParam)) {
+  for (const raw of stmt.iterate(...params)) {
     yield {
       CHANNEL_ID: raw.CHANNEL_ID as string,
       TS: raw.TS as string,
@@ -819,13 +1042,23 @@ function* iterateMessageRows(db: DatabaseSync, priorTs: string | null): Iterable
  * `emitMessagesPass` from this file so integration.test.ts can drive
  * it without opening sqlite.
  */
-function runMessagesUnifiedPass(deps: StreamDeps, priorTs: string | null): Promise<{ maxMessageTs: string | null }> {
+function runMessagesUnifiedPass(deps: StreamDeps, thresholds: MessageCursorThresholds): Promise<MessagesPassResult> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
   // at a time, so the unbounded MESSAGE table never lands in heap at once.
-  const rows = iterateMessageRows(deps.db, priorTs);
-  return emitMessagesPass(deps, rows, priorTs);
+  const rows = iterateMessageRows(deps.db, thresholds);
+  return emitMessagesPass(deps, rows, thresholds.legacyLastTs);
+}
+
+function messageProgressLabel(channelCursorCount: number, priorTs: string | null): string {
+  if (channelCursorCount > 0) {
+    return `Slack: emitting messages from ${String(channelCursorCount)} channel cursor(s)`;
+  }
+  if (priorTs) {
+    return `Slack: emitting messages newer than ${priorTs}`;
+  }
+  return "Slack: emitting all messages (full pass)";
 }
 
 async function runFilesStream(deps: StreamDeps): Promise<void> {
@@ -934,9 +1167,11 @@ function emitUnavailableStreams(requested: CollectContext["requested"], emit: Co
 
 interface StateEmitDeps {
   archivePath: string;
+  channelLastTs: Record<string, string>;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
   fingerprintCursors: Map<string, FingerprintCursor>;
+  observedChannelIds: readonly string[];
   requested: CollectContext["requested"];
 }
 
@@ -964,6 +1199,8 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
     stream: "messages",
     cursor: {
       last_ts: deps.committedMaxTs,
+      channel_last_ts: deps.channelLastTs,
+      observed_channel_ids: [...deps.observedChannelIds].sort(),
       archive_dir: deps.archivePath,
       fetched_at: nowIso(),
     },
@@ -1066,7 +1303,11 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
  * Run every requested record stream against the open sqlite DB in emit
  * order. Returns the max message TS for the post-loop STATE checkpoint.
  */
-async function runRequestedStreams(deps: StreamDeps, state: CollectContext["state"]): Promise<string | null> {
+async function runRequestedStreams(
+  deps: StreamDeps,
+  state: CollectContext["state"],
+  options: { allowLegacyMessageCursorFallback?: boolean } = {}
+): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
     await runWorkspaceStream(deps);
@@ -1084,16 +1325,13 @@ async function runRequestedStreams(deps: StreamDeps, state: CollectContext["stat
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let maxMessageTs: string | null = null;
+  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
-    const priorTs = messagesState?.last_ts || null;
-    deps.progress(
-      priorTs ? `Slack: emitting messages newer than ${priorTs}` : "Slack: emitting all messages (full pass)",
-      { stream: "messages" }
-    );
-    const result = await runMessagesUnifiedPass(deps, priorTs);
-    maxMessageTs = result.maxMessageTs;
+    const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
+    const channelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
+    deps.progress(messageProgressLabel(Object.keys(channelLastTs).length, priorTs), { stream: "messages" });
+    result = await runMessagesUnifiedPass(deps, { channelLastTs, legacyLastTs: priorTs });
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
@@ -1103,7 +1341,7 @@ async function runRequestedStreams(deps: StreamDeps, state: CollectContext["stat
     deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
   }
-  return maxMessageTs;
+  return result;
 }
 
 // ─── Entry ─────────────────────────────────────────────────────────────
@@ -1133,21 +1371,27 @@ if (isMainModule(import.meta.url)) {
         resFilters.set(n, resourceSet(r));
       }
 
+      const childEnv = buildChildEnv(token, cookie);
+      const msgResFilter = resFilters.get("messages");
+      const positionalChannels: string[] = [...(msgResFilter ? [...msgResFilter] : []), ...opts.CHANNEL_ALLOWLIST];
+      const messageFamilyRequested =
+        requested.has("messages") || requested.has("reactions") || requested.has("message_attachments");
+      const isUnscopedMessageBoundary = positionalChannels.length === 0;
       const messagesScope = requested.get("messages");
-      const { archivePath, dumpDir, sqlitePath } = resolveArchivePaths(workspace);
+      const baseArchivePaths = resolveArchivePaths(workspace);
+      const { dumpDir } = baseArchivePaths;
+      const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
       await mkdir(dumpDir, { recursive: true });
 
-      const { resumeTarget, priorArchive } = pickResumeTarget(state, archivePath);
+      const { resumeTarget, priorArchive } = pickResumeTarget(state, archivePath, {
+        allowStateArchive: isUnscopedMessageBoundary,
+      });
       const useResume = Boolean(resumeTarget);
 
       // Map time_range from messages stream scope into -time-from / -time-to.
       const { timeFrom, timeTo } = extractMessageTimeRange(
         messagesScope?.time_range as { from?: string | null; to?: string | null } | undefined
       );
-
-      const childEnv = buildChildEnv(token, cookie);
-      const msgResFilter = resFilters.get("messages");
-      const positionalChannels: string[] = [...(msgResFilter ? [...msgResFilter] : []), ...opts.CHANNEL_ALLOWLIST];
 
       await ensureArchiveOnDisk({
         archivePath,
@@ -1187,13 +1431,35 @@ if (isMainModule(import.meta.url)) {
         // EmittedMessage union, so this is a contravariant widening at the call
         // boundary, not a coercion of message shape.
         emit: (msg) => emit(msg),
-        emitRecord: ctx.emitRecord,
+        emitRecord: (stream, data) =>
+          stream === "messages" && msgResFilter
+            ? emitMessageRecordScopedByChannel({
+                channelIds: msgResFilter,
+                emit,
+                emittedAt: ctx.emittedAt,
+                record: data,
+              })
+            : ctx.emitRecord(stream, data),
         emittedAt: ctx.emittedAt,
         fingerprintCursors,
         progress,
         requested,
       };
-      const maxMessageTs = await runRequestedStreams(deps, state);
+      const messagesState = state.messages as MessagesState | undefined;
+      const priorChannelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
+      const priorObservedChannelIds = readPriorObservedChannelIds(messagesState);
+      const currentChannelIds = currentArchiveChannelIds(db);
+      const missingChannelIds =
+        messageFamilyRequested && isUnscopedMessageBoundary
+          ? missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds)
+          : [];
+      if (missingChannelIds.length > 0) {
+        await emitMissingChannelDiagnostic(emit, missingChannelIds);
+      }
+
+      const messageResult = await runRequestedStreams(deps, state, {
+        allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
+      });
 
       emitUnavailableStreams(requested, emit);
 
@@ -1207,14 +1473,21 @@ if (isMainModule(import.meta.url)) {
         }
       }
 
-      const messagesState = state.messages as MessagesState | undefined;
       const priorMaxTs = messagesState?.last_ts || null;
-      const committedMaxTs = selectCommittedMaxTs(priorMaxTs, maxMessageTs);
+      const committedMaxTs = selectCommittedMaxTs(priorMaxTs, messageResult.maxMessageTs);
+      const committedChannelLastTs = selectCommittedChannelLastTs(priorChannelLastTs, messageResult.channelMaxTs);
+      const observedChannelIds =
+        messageFamilyRequested && isUnscopedMessageBoundary
+          ? [...new Set([...currentChannelIds, ...missingChannelIds])].sort()
+          : priorObservedChannelIds;
+      const stateArchivePath = isUnscopedMessageBoundary ? archivePath : (messagesState?.archive_dir ?? archivePath);
       emitStateCheckpoints({
-        archivePath,
+        archivePath: stateArchivePath,
+        channelLastTs: committedChannelLastTs,
         committedMaxTs,
         emit,
         fingerprintCursors,
+        observedChannelIds,
         requested,
       });
     },

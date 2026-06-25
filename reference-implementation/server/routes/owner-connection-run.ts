@@ -165,7 +165,14 @@ export interface MountOwnerConnectionRunContext {
   // `force: true` bypasses the provider-pressure cooldown gate. Callers MUST
   // NOT pass force for the ordinary `Sync now` path; it is reserved for an
   // explicitly-named "force run despite pressure" action.
-  runNow(connectorId: string, options: { connectorInstanceId?: string | null; force?: boolean }): Promise<unknown>;
+  runNow(
+    connectorId: string,
+    options: {
+      connectorInstanceId?: string | null;
+      force?: boolean;
+      resources?: Readonly<Record<string, readonly string[]>>;
+    }
+  ): Promise<unknown>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
@@ -332,6 +339,55 @@ function readRunId(started: unknown): string | null {
   return typeof id === "string" ? id : null;
 }
 
+function isSafeResourceStreamName(stream: string): boolean {
+  return stream.length > 0 && stream !== "__proto__" && stream !== "constructor" && stream !== "prototype";
+}
+
+function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
+  const body = req.body;
+  if (!(body && typeof body === "object" && !Array.isArray(body))) {
+    return undefined;
+  }
+  const raw = (body as { resources?: unknown }).resources;
+  if (raw == null) {
+    return undefined;
+  }
+  if (!(typeof raw === "object" && !Array.isArray(raw))) {
+    const err = new Error("run resources must be an object keyed by stream") as Error & { code: string };
+    err.code = "invalid_request";
+    throw err;
+  }
+  const resources: Record<string, string[]> = {};
+  for (const [stream, values] of Object.entries(raw)) {
+    if (
+      typeof stream !== "string" ||
+      !isSafeResourceStreamName(stream) ||
+      !Array.isArray(values) ||
+      values.some((value) => typeof value !== "string")
+    ) {
+      const err = new Error("run resources must map stream names to string arrays") as Error & { code: string };
+      err.code = "invalid_request";
+      throw err;
+    }
+    const stringValues = values as string[];
+    const cleaned = [...new Set(stringValues.filter((value) => value.length > 0))];
+    if (cleaned.length === 0) {
+      const err = new Error("run resources must include at least one resource id per stream") as Error & {
+        code: string;
+      };
+      err.code = "invalid_request";
+      throw err;
+    }
+    resources[stream] = cleaned;
+  }
+  if (Object.keys(resources).length === 0) {
+    const err = new Error("run resources must include at least one stream") as Error & { code: string };
+    err.code = "invalid_request";
+    throw err;
+  }
+  return resources;
+}
+
 // Shared handler body for both routes. `selector` chooses connector-only vs
 // connection-scoped addressing; the namespace-resolution and ambiguity path is
 // identical to the schedule routes. On success the controller's run handle is
@@ -380,9 +436,11 @@ function buildRunHandler(
       // `force` must be explicitly `true` in the request body; any other value
       // (absent, null, false, non-boolean) is treated as an ordinary safe run.
       const force = (req.body as Record<string, unknown> | null | undefined)?.force === true;
+      const resources = readRunResources(req);
       const started = await ctx.runNow(namespace.connectorId, {
         connectorInstanceId: namespace.connectorInstanceId,
         force,
+        ...(resources ? { resources } : {}),
       });
       ctx.invalidateConnectorSummariesCache?.();
       // Scoped, awaited dirty marking for the maintained read model: starting a

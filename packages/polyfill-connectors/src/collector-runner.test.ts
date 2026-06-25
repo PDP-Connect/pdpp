@@ -40,6 +40,16 @@ test("buildCollectorStartMessage can request explicit stream backfills", () => {
   });
 });
 
+test("buildCollectorStartMessage can scope a stream to explicit resources", () => {
+  const start = buildCollectorStartMessage(["messages", "users"], [], null, {
+    messages: ["C07JYF0U8BY"],
+  });
+  assert.deepEqual(start, {
+    scope: { streams: [{ name: "messages", resources: ["C07JYF0U8BY"] }, { name: "users" }] },
+    type: "START",
+  });
+});
+
 test("buildCollectorStartMessage populates START.state only when prior state is non-empty", () => {
   const empty = buildCollectorStartMessage(["messages"], [], {});
   assert.equal("state" in empty, false);

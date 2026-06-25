@@ -185,7 +185,14 @@ export interface MountRefConnectorsContext {
   ): Promise<ConnectorNamespace>;
   resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown>;
   resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
-  runNow(connectorId: string, options: { connectorInstanceId?: string | null; force?: boolean }): Promise<unknown>;
+  runNow(
+    connectorId: string,
+    options: {
+      connectorInstanceId?: string | null;
+      force?: boolean;
+      resources?: Readonly<Record<string, readonly string[]>>;
+    }
+  ): Promise<unknown>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
   setScheduleEnabled(
     connectorId: string,
@@ -598,6 +605,55 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
+function isSafeResourceStreamName(stream: string): boolean {
+  return stream.length > 0 && stream !== "__proto__" && stream !== "constructor" && stream !== "prototype";
+}
+
+function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
+  const body = req.body;
+  if (!(body && typeof body === "object" && !Array.isArray(body))) {
+    return undefined;
+  }
+  const raw = (body as { resources?: unknown }).resources;
+  if (raw == null) {
+    return undefined;
+  }
+  if (!(typeof raw === "object" && !Array.isArray(raw))) {
+    const err = new Error("run resources must be an object keyed by stream") as Error & { code: string };
+    err.code = "invalid_request";
+    throw err;
+  }
+  const resources: Record<string, string[]> = {};
+  for (const [stream, values] of Object.entries(raw)) {
+    if (
+      typeof stream !== "string" ||
+      !isSafeResourceStreamName(stream) ||
+      !Array.isArray(values) ||
+      values.some((value) => typeof value !== "string")
+    ) {
+      const err = new Error("run resources must map stream names to string arrays") as Error & { code: string };
+      err.code = "invalid_request";
+      throw err;
+    }
+    const stringValues = values as string[];
+    const cleaned = [...new Set(stringValues.filter((value) => value.length > 0))];
+    if (cleaned.length === 0) {
+      const err = new Error("run resources must include at least one resource id per stream") as Error & {
+        code: string;
+      };
+      err.code = "invalid_request";
+      throw err;
+    }
+    resources[stream] = cleaned;
+  }
+  if (Object.keys(resources).length === 0) {
+    const err = new Error("run resources must include at least one stream") as Error & { code: string };
+    err.code = "invalid_request";
+    throw err;
+  }
+  return resources;
+}
+
 export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.post(
     "/_ref/connectors/:connectorId/run",
@@ -607,9 +663,11 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
+        const resources = readRunResources(req);
         const started = await ctx.runNow(namespace.connectorId, {
           connectorInstanceId: namespace.connectorInstanceId,
           force: readExplicitRunForce(req),
+          ...(resources ? { resources } : {}),
         });
         ctx.invalidateConnectorSummariesCache?.();
         // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
@@ -637,9 +695,11 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
           allowStatuses: ["active", "draft"],
         });
+        const resources = readRunResources(req);
         const started = await ctx.runNow(namespace.connectorId, {
           connectorInstanceId: namespace.connectorInstanceId,
           force: readExplicitRunForce(req),
+          ...(resources ? { resources } : {}),
         });
         ctx.invalidateConnectorSummariesCache?.();
         // Scoped, awaited dirty marking: starting a run is a run-lifecycle event

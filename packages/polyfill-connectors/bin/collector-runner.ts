@@ -16,6 +16,7 @@
  *   run     --base-url <url> --connector <id>
  *           --device-id <id> --device-token <token>
  *           --connection-id <id> [--streams a,b,c]
+ *           [--resources messages:C123|C456]
  *           [--backfill-streams attachments]
  *           [--command <cmd>] [--args <argv...>] [--run-id <id>]
  *     Run the connector under the collector runtime. Gates the
@@ -84,6 +85,7 @@ export interface CliOptions {
   deviceToken?: string;
   entrypointCommand?: string;
   queuePath: string;
+  resources?: Record<string, string[]>;
   /**
    * Optional stable run id propagated to the connector subprocess as
    * PDPP_RUN_ID. Required for streaming-companion target registration;
@@ -212,6 +214,7 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     connector_id: options.connector,
     streams,
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
+    ...(options.resources ? { resources: options.resources } : {}),
     command,
     args,
     runtime_requirements: { bindings: defaults?.bindings ?? {} },
@@ -289,6 +292,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--run-id": (next) => {
       options.runId = next;
     },
+    "--resources": (next) => {
+      options.resources = parseResources(next);
+    },
     "--connection-id": (next) => {
       options.sourceInstanceId = next;
     },
@@ -317,6 +323,27 @@ function parseCsv(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function parseResources(value: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const part of parseCsv(value)) {
+    const separator = part.indexOf(":");
+    if (separator <= 0 || separator === part.length - 1) {
+      throw new Error(`invalid --resources entry: ${part}`);
+    }
+    const stream = part.slice(0, separator);
+    const resources = part
+      .slice(separator + 1)
+      .split("|")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (resources.length === 0) {
+      throw new Error(`invalid --resources entry: ${part}`);
+    }
+    out[stream] = [...new Set([...(out[stream] ?? []), ...resources])];
+  }
+  return out;
 }
 
 export function scopedDefaultQueuePath(queuePath: string, defaultQueuePath: string, connectionId: string): string {

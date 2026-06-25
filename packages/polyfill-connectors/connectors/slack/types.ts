@@ -170,7 +170,9 @@ export interface SlackdumpRunResult {
 
 export interface MessagesState {
   archive_dir?: string;
+  channel_last_ts?: Record<string, string>;
   last_ts?: string | null;
+  observed_channel_ids?: string[];
 }
 
 export interface ChannelCanvasMeta {

@@ -30,7 +30,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -74,15 +74,18 @@ async function fetchJson(url, opts = {}) {
 // handle and the run drains without lingering on teardown.
 function buildImmediateConnectorFixture(tmpDir) {
   const path = join(tmpDir, 'connector.mjs');
+  const startPath = join(tmpDir, 'start.json');
   writeFileSync(
     path,
     `
+import { writeFileSync } from 'node:fs';
 import { createInterface } from 'readline';
 const rl = createInterface({ input: process.stdin, terminal: false });
 rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === 'START') {
+    writeFileSync(${JSON.stringify(startPath)}, JSON.stringify(msg));
     process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
     rl.close();
     process.exit(0);
@@ -91,24 +94,24 @@ rl.on('line', (line) => {
 `,
     'utf8',
   );
-  return path;
+  return { path, startPath };
 }
 
 async function withServer(fn) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-owner-run-'));
-  const connectorPath = buildImmediateConnectorFixture(tmpDir);
+  const connectorFixture = buildImmediateConnectorFixture(tmpDir);
   const server = await startServer({
     quiet: true,
     asPort: 0,
     rsPort: 0,
     dbPath: ':memory:',
     ownerAuthPassword: '',
-    connectorPathResolver: () => connectorPath,
+    connectorPathResolver: () => connectorFixture.path,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
-    await fn({ asUrl, rsUrl });
+    await fn({ asUrl, rsUrl, startPath: connectorFixture.startPath });
   } finally {
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });
@@ -203,11 +206,23 @@ async function seedInstance({
   });
 }
 
-async function postRun(rsUrl, ownerToken, path) {
+async function postRun(rsUrl, ownerToken, path, body = null) {
   return fetchJson(`${rsUrl}${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
+}
+
+async function readStartEnvelope(startPath) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (existsSync(startPath)) {
+      return JSON.parse(readFileSync(startPath, 'utf8'));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`START envelope was not written: ${startPath}`);
 }
 
 function findRunAuditEvent(resp) {
@@ -280,6 +295,31 @@ test('owner-agent connector-only run auto-selects the single active connection',
     // The auto-selected connection's concrete id is recorded for audit.
     assert.equal(audit.data?.connection_id, 'cin_spotify_only');
     assert.equal(audit.data?.operation, 'run_now');
+  });
+});
+
+test('owner-agent connection run forwards scoped resources into connector START', async () => {
+  await withServer(async ({ asUrl, rsUrl, startPath }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_personal',
+      connectorId: connectorKey,
+      displayName: 'Spotify',
+      sourceBindingKey: 'spotify-account',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const run = await postRun(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_personal/run',
+      { resources: { saved_tracks: ['track_1', 'track_1', ''] } },
+    );
+    assert.equal(run.status, 202);
+
+    const start = await readStartEnvelope(startPath);
+    assert.deepEqual(start.scope.streams, [{ name: 'saved_tracks', resources: ['track_1'] }]);
   });
 });
 
