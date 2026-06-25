@@ -92,9 +92,9 @@ function browsePage(): ExploreTimelinePage {
 /** One bucket-endpoint call the chart made: the structural scope it carried. */
 interface BucketCall {
   connections: readonly string[];
-  streams: readonly string[];
   excludeStreams: readonly string[] | undefined;
   since: string | null | undefined;
+  streams: readonly string[];
   until: string | null | undefined;
 }
 
@@ -110,7 +110,11 @@ function bucketsResponse(): ExploreRecordBucketsResponse {
   };
 }
 
-function chartDs(opts?: { bucketCalls?: BucketCall[]; searchHits?: SearchResultHit[] }): DashboardDataSource {
+function chartDs(opts?: {
+  bucketCalls?: BucketCall[];
+  manifests?: ConnectorManifest[];
+  searchHits?: SearchResultHit[];
+}): DashboardDataSource {
   return {
     kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
@@ -131,10 +135,8 @@ function chartDs(opts?: { bucketCalls?: BucketCall[]; searchHits?: SearchResultH
         makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions"] }),
         makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
       ]),
-    listConnectorManifests: async () => [
-      timeManifest("ynab", ["transactions"]),
-      timeManifest("chase", ["transactions"]),
-    ],
+    listConnectorManifests: async () =>
+      opts?.manifests ?? [timeManifest("ynab", ["transactions"]), timeManifest("chase", ["transactions"])],
     searchRecordsLexical: () =>
       Promise.resolve({ data: opts?.searchHits ?? [], has_more: false, object: "list" } as SearchResultPage),
     searchRecordsHybrid: notStubbed,
@@ -179,6 +181,21 @@ test("BROWSE feed: the chart renders and ONE bucket call carries the in-scope (c
   assert.deepEqual([...call.streams].sort(), ["transactions"], "bucket call carries the in-scope streams");
   // The EXACT reachable total comes from extent.count, not summed bars.
   assert.equal(result.bucketSeries?.total, 2, "total is the exact reachable extent.count");
+});
+
+test("BROWSE feed: chart renders on default complete_chronological browse even when manifests are unavailable", async () => {
+  const bucketCalls: BucketCall[] = [];
+  const result = await assembleExplorerData({}, chartDs({ bucketCalls, manifests: [] }), "https://rs.test");
+
+  assert.equal(result.fromSearch, false);
+  assert.equal(result.descriptor.kind, "complete_chronological");
+  assert.ok(result.bucketSeries, "default browse still renders the chart without client manifest metadata");
+  assert.equal(bucketCalls.length, 1, "missing manifests must not suppress the server bucket call");
+  const call = bucketCalls[0];
+  assert.ok(call, "the single bucket call was captured");
+  assert.deepEqual([...call.connections].sort(), ["cin_chase", "cin_ynab"]);
+  assert.deepEqual([...call.streams].sort(), ["transactions"]);
+  assert.equal(result.bucketSeries?.total, 2, "total still comes from the exact reachable extent.count");
 });
 
 test("CONNECTION-FILTERED feed: the bucket scope NARROWS to the selected connection (matches the feed)", async () => {

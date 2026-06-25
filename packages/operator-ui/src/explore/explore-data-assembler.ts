@@ -43,8 +43,8 @@ import {
   searchTimestampMetadataKey,
 } from "../lib/search-record-timestamps.ts";
 import {
-  type Bucket,
   BUCKET_TIME_ZONE,
+  type Bucket,
   type BucketGranularity,
   type BucketSeries,
   chartIsVisible,
@@ -1775,7 +1775,8 @@ async function loadSearchFeed(
       // to know coverage was reduced. The raw error is debug evidence — log server-side.
       warnings.push({
         code: "search_coverage_reduced",
-        message: "Some search coverage was unavailable, so these results may be narrower than usual. Try again shortly.",
+        message:
+          "Some search coverage was unavailable, so these results may be narrower than usual. Try again shortly.",
       });
     }
   }
@@ -1863,9 +1864,7 @@ async function loadSearchFeed(
         } catch (err) {
           // Owner-facing copy carries no raw error detail. The stream name is
           // useful and stays; the raw error is debug evidence logged server-side.
-          console.warn(
-            `[explore] most-recent ordering failed for ${streamDoor.displayName}: ${describeError(err)}`
-          );
+          console.warn(`[explore] most-recent ordering failed for ${streamDoor.displayName}: ${describeError(err)}`);
           warnings.push({
             code: "search_cursor_unavailable",
             message: `Couldn't switch ${streamDoor.displayName} to most-recent ordering, so it's showing the default order instead.`,
@@ -2600,62 +2599,41 @@ export interface ExplorerSearchParams {
 // buckets`) returns DENSE zero-filled calendar buckets plus an EXACT reachable
 // `extent.count`, scoped to the SAME in-scope (connection, stream) targets the
 // feed shows. This replaces the prior per-(connection, stream)
-// `aggregateRecordsByTime` fan-out (up to CHART_FAN_IN_TARGET_CAP calls) with one
-// call on the critical path. A target whose manifest declares no time aggregate
-// (no `consent_time_field`), or a capped fan-in, still marks the series PARTIAL
-// ("Some counts unavailable") — its counts are never fabricated. Bucketing is
+// `aggregateRecordsByTime` fan-out with one call on the critical path. Bucketing is
 // UTC to MATCH the feed's day-grouping (design §4.3).
 
 interface ChartTarget {
   connectionId: string | null;
   connectorId: string;
   connectorInstanceId: string | null;
-  groupByTime: string;
   stream: string;
 }
 
-// Bound the per-stream aggregate fan-in so an unfiltered default view across a
-// very wide corpus keeps first paint cheap. Beyond this the series is honestly
-// flagged `partial` ("Some counts unavailable") rather than firing an unbounded
-// number of aggregate reads — count==reachability is preserved (the bars never
-// overstate), and narrowing the scope re-counts exactly. (The design's §2 names
-// the assembler as the home for a future merged/bounded aggregate endpoint.)
-const CHART_FAN_IN_TARGET_CAP = 48;
+// The over-time chart now uses one server-side bucket endpoint. Do not cap the
+// client target list here: truncating targets would make `extent.count` smaller
+// than the reachable default browse corpus.
 
 /**
- * Resolve ONE (summary, stream) into a chart target, or null when it is out of
- * scope (filtered/excluded) or has no declared time field. `missingTimeField`
- * distinguishes "in scope but undeclared" (drives the partial flag) from "out of
- * scope" (a no-op).
+ * Resolve ONE (summary, stream) into the structural scope for the server bucket
+ * endpoint, or null when it is out of scope (filtered/excluded).
  */
 function resolveChartTarget(
   summary: RefConnectorSummary,
   streamName: string,
   filterStreams: ReadonlySet<string>,
-  excludeStreams: ReadonlySet<string>,
-  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>
-): { target: ChartTarget | null; missingTimeField: boolean } {
+  excludeStreams: ReadonlySet<string>
+): ChartTarget | null {
   if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
-    return { target: null, missingTimeField: false };
+    return null;
   }
   if (excludeStreams.size > 0 && excludeStreams.has(streamName)) {
-    return { target: null, missingTimeField: false };
-  }
-  const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
-  const groupByTime = metadata?.consent_time_field ?? metadata?.cursor_field ?? null;
-  if (!(typeof groupByTime === "string" && groupByTime.length > 0)) {
-    // In scope but no declared time field → no honest distribution; partial.
-    return { target: null, missingTimeField: true };
+    return null;
   }
   return {
-    target: {
-      connectorId: summary.connector_id,
-      connectorInstanceId: summary.connector_instance_id ?? summary.connection_id ?? null,
-      connectionId: summary.connection_id ?? null,
-      groupByTime,
-      stream: streamName,
-    },
-    missingTimeField: false,
+    connectorId: summary.connector_id,
+    connectorInstanceId: summary.connector_instance_id ?? summary.connection_id ?? null,
+    connectionId: summary.connection_id ?? null,
+    stream: streamName,
   };
 }
 
@@ -2663,35 +2641,19 @@ function resolveChartTarget(
 function chartTargets(
   filteredSummaries: readonly RefConnectorSummary[],
   filterStreams: ReadonlySet<string>,
-  excludeStreams: ReadonlySet<string>,
-  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>
+  excludeStreams: ReadonlySet<string>
 ): { targets: ChartTarget[]; partial: boolean } {
   const targets: ChartTarget[] = [];
-  let partial = false;
   for (const summary of filteredSummaries) {
     for (const streamName of summary.streams ?? []) {
-      const { target, missingTimeField } = resolveChartTarget(
-        summary,
-        streamName,
-        filterStreams,
-        excludeStreams,
-        timestampMetadata
-      );
-      if (missingTimeField) {
-        partial = true;
-      }
+      const target = resolveChartTarget(summary, streamName, filterStreams, excludeStreams);
       if (!target) {
         continue;
-      }
-      if (targets.length >= CHART_FAN_IN_TARGET_CAP) {
-        // Over the fan-in budget: stop adding targets and mark the series partial
-        // (never silently undercount as if complete).
-        return { targets, partial: true };
       }
       targets.push(target);
     }
   }
-  return { targets, partial };
+  return { targets, partial: false };
 }
 
 /**
@@ -2714,7 +2676,6 @@ async function loadBucketSeries(args: {
   filteredSummaries: readonly RefConnectorSummary[];
   filterStreams: ReadonlySet<string>;
   excludeStreams: ReadonlySet<string>;
-  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
   since: string;
   until: string;
   dataSource: DashboardDataSource;
@@ -2728,8 +2689,7 @@ async function loadBucketSeries(args: {
   const { targets, partial: targetsPartial } = chartTargets(
     args.filteredSummaries,
     args.filterStreams,
-    args.excludeStreams,
-    args.timestampMetadata
+    args.excludeStreams
   );
   if (targets.length === 0) {
     return null;
@@ -2745,8 +2705,7 @@ async function loadBucketSeries(args: {
   );
   const streams = uniqueStrings(targets.map((t) => t.stream));
 
-  // ONE index-backed call (was up to CHART_FAN_IN_TARGET_CAP `aggregateRecordsByTime`
-  // calls). The server snaps `granularity: "auto"` to a calm calendar ladder and
+  // ONE index-backed call. The server snaps `granularity: "auto"` to a calm calendar ladder and
   // returns DENSE zero-filled buckets + an EXACT reachable `extent.count`.
   const response = await args.dataSource.listExploreRecordBuckets({
     connections,
@@ -2776,9 +2735,7 @@ async function loadBucketSeries(args: {
     buckets,
     granularity: toBucketGranularity(response.granularity),
     // `extent.count` is the EXACT reachable total over the scoped set — never a
-    // fabricated/summed-bar total. The series stays `partial` only when the prior
-    // honesty signal said so (a stream with no declared time field, or a capped
-    // fan-in): "Some counts unavailable", never a silent complete-total claim.
+    // fabricated/summed-bar total.
     partial: targetsPartial,
     total: response.extent.count,
   };
@@ -2876,8 +2833,7 @@ export async function assembleExplorerData(
   // Feed direction for the empty-query recent lens: "oldest" is only active when
   // the server explicitly supports true ascending keyset paging. Before that
   // foundation exists, a manual `order=oldest` URL no-ops to newest-first.
-  const feedDirection: "asc" | "desc" =
-    supportsTimelineDirection && params.order === "oldest" ? "asc" : "desc";
+  const feedDirection: "asc" | "desc" = supportsTimelineDirection && params.order === "oldest" ? "asc" : "desc";
   // Opaque cursor: the SINGLE-page cursor for search pagination (lexical / single
   // -stream Most-recent). The recent merged-timeline lens instead accumulates via
   // the `cursors` TRAIL below. Both are cleared when query/sort/filters/range change.
@@ -2938,7 +2894,6 @@ export async function assembleExplorerData(
     filteredSummaries,
     filterStreams: filterStreamSet,
     excludeStreams: excludeStreamSet,
-    timestampMetadata,
     since,
     until,
     dataSource,
@@ -2949,9 +2904,7 @@ export async function assembleExplorerData(
     // Owner-facing copy carries no internal path (connectorId/stream/recordId)
     // and no raw error detail. Those are debug evidence logged server-side; the
     // owner only needs to know this record couldn't be opened right now.
-    console.warn(
-      `[explore] peek read failed for ${peek.connectorId}/${peek.stream}/${peek.recordId}: ${peek.error}`
-    );
+    console.warn(`[explore] peek read failed for ${peek.connectorId}/${peek.stream}/${peek.recordId}: ${peek.error}`);
     warnings.push({
       code: "peek_unreachable",
       message: `Couldn't open this record from ${peekSourceLabel(peek.connectionDisplayName)} right now. Try again shortly.`,

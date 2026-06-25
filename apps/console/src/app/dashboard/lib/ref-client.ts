@@ -997,7 +997,14 @@ class RefRequestError extends Error {
   }
 }
 
-async function refFetch(path: string, params?: Record<string, string | number | undefined>, init: RequestInit = {}) {
+// Exported so AS-routed `/_ref/*` clients in sibling modules (e.g. the explore
+// bucket aggregate in rs-client.ts) reach the AUTHORIZATION server, not the RS.
+// The `/_ref/explore/*` routes are mounted on the AS under the owner session.
+export async function refFetch(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+  init: RequestInit = {}
+) {
   // DAL gate: verify owner session before any AS read. The proxy already
   // redirects unauthenticated browser navigations; this catches programmatic
   // / proxy-bypass paths (CVE-2025-29927 class) before any data leaves the AS.

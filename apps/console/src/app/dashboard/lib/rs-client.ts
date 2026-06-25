@@ -20,6 +20,7 @@ import {
   ResourceServerHttpError,
 } from "./owner-token.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
+import { refFetch } from "./ref-client.ts";
 import type {
   RefAcquisitionCoverageSummary,
   RefCollectionReportEntry,
@@ -393,7 +394,12 @@ export async function listExploreRecordBuckets(opts: {
 }): Promise<ExploreRecordBucketsResponse> {
   const joinList = (values: readonly string[] | undefined): string | undefined =>
     values && values.length > 0 ? values.join(",") : undefined;
-  const body = (await authedFetch("/_ref/explore/records/buckets", {
+  // `/_ref/explore/records/buckets` is an AS owner-session route (mounted next to
+  // the merged-timeline `/_ref/explore/records`), NOT an RS `/v1/*` route — so it
+  // MUST go through refFetch (AS base + owner-session cookie). Using the RS
+  // authedFetch here 404s (the route does not exist on the resource server),
+  // which silently suppressed the over-time chart on the default browse.
+  const body = (await refFetch("/_ref/explore/records/buckets", {
     connections: joinList(opts.connections),
     streams: joinList(opts.streams),
     xconnections: joinList(opts.excludeConnections),
