@@ -311,6 +311,45 @@ function buildTitledPreview(data: RecordData, roles?: DeclaredFieldRoles): Recor
  * the table and nothing is promoted to a title — two same-type fields stay in
  * the table because there is no honest way to say which is the title.
  */
+/**
+ * A declared stream (has x_pdpp_role) whose declared content fields (title AND
+ * body) are BOTH empty for this record — e.g. a gmail/messages row whose
+ * `subject`/`snippet` were not collected. It renders a minimal honest placeholder
+ * from the declared title field's NAME (e.g. "(no subject)") plus any declared
+ * actor — it must NEVER fall through to dumping the record's UNDECLARED operational
+ * metadata (labels, is_seen, is_draft, flags) as a key/value wall, which reads as a
+ * dev console. (SLVP honesty: declared-but-empty ≠ "show me everything else".)
+ */
+function emptyDeclaredContentPreview(data: RecordData, roles: DeclaredFieldRoles): RecordPreview | null {
+  const author = roleValue(data, roles, "actor", 32);
+  const titleField = fieldForRole(roles, "primary-title");
+  const placeholder = titleField ? `(no ${humanizeFieldLabel(titleField).toLowerCase()})` : undefined;
+  if (!(placeholder || author)) {
+    return null;
+  }
+  return { author, kind: "generic", title: placeholder };
+}
+
+/**
+ * The honest-generic key/value table: the record's humanized fields, EXCLUDING
+ * the role-promoted title/body (`promoted`) and pure identifier fields (id/*_id/
+ * uuid — record keys, not human content). Capped at `GENERIC_CARD_FIELD_CAP`.
+ */
+function humanizedGenericFields(data: RecordData, promoted: ReadonlySet<string>): GenericField[] {
+  const fields: GenericField[] = [];
+  for (const [name, raw] of Object.entries(data)) {
+    if (promoted.has(name) || fields.length >= GENERIC_CARD_FIELD_CAP || IDENTIFIER_FIELD_RE.test(name)) {
+      continue;
+    }
+    const value = genericValue(raw);
+    if (value === undefined) {
+      continue;
+    }
+    fields.push({ label: humanizeFieldLabel(name), name, value });
+  }
+  return fields;
+}
+
 function buildGenericPreview(data: RecordData, roles?: DeclaredFieldRoles): RecordPreview | null {
   // Declared roles only — NEVER the field-name heuristic. An undeclared generic
   // record must not borrow the typed builders' name lists, or it would guess a
@@ -328,22 +367,13 @@ function buildGenericPreview(data: RecordData, roles?: DeclaredFieldRoles): Reco
       promoted.add(bodyField);
     }
   }
-  const fields: GenericField[] = [];
-  for (const [name, raw] of Object.entries(data)) {
-    if (promoted.has(name) || fields.length >= GENERIC_CARD_FIELD_CAP) {
-      continue;
-    }
-    // Omit pure identifier fields (id / *_id / uuid): they are record keys, not content,
-    // and must never lead a row (the honest-generic card shows fields a human reads).
-    if (IDENTIFIER_FIELD_RE.test(name)) {
-      continue;
-    }
-    const value = genericValue(raw);
-    if (value === undefined) {
-      continue;
-    }
-    fields.push({ label: humanizeFieldLabel(name), name, value });
+  // EMPTY-DECLARED-CONTENT GUARD (extracted): a declared stream whose title AND
+  // body are empty for THIS record renders a minimal honest placeholder, never the
+  // undeclared operational-field dump. See `emptyDeclaredContentPreview`.
+  if (roles !== undefined && hasDeclaredRoles(roles) && !(title || body)) {
+    return emptyDeclaredContentPreview(data, roles);
   }
+  const fields = humanizedGenericFields(data, promoted);
   if (!(title || body || fields.length > 0)) {
     return null;
   }

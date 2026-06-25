@@ -42,9 +42,49 @@ interface DragState {
   start: number;
 }
 
+/**
+ * DOMAIN AUTO-FIT: fit the time axis to where the data actually lives. Trims
+ * leading/trailing buckets only up to a tiny CUMULATIVE-COUNT threshold (≤0.5% of
+ * `total` per edge), so a single degenerate-timestamp outlier (e.g. one record
+ * whose null/epoch-0 time defaulted to 1970-01-01) collapses, while a genuine
+ * long-tail distribution (early buckets holding a meaningful share) is preserved.
+ * DISPLAY-ONLY: the caller's `total` stays the exact reachable count —
+ * count==reachability is never touched and no record's count is altered; trimmed
+ * records remain reachable via the feed and the unbrushed resting view.
+ * Datadog/Grafana fit the axis to the populated range the same way.
+ */
+function fitBucketDomain(buckets: readonly Bucket[], total: number): readonly Bucket[] {
+  const n = buckets.length;
+  if (n === 0 || total <= 0) {
+    return buckets;
+  }
+  const edgeBudget = Math.max(1, Math.floor(total * 0.005));
+  const advance = (from: number, step: 1 | -1, bound: number): number => {
+    let i = from;
+    let shed = 0;
+    while (i !== bound) {
+      const count = buckets[i]?.count ?? 0;
+      if (count > edgeBudget || shed + count > edgeBudget) {
+        break;
+      }
+      shed += count;
+      i += step;
+    }
+    return i;
+  };
+  const lo = advance(0, 1, n - 1);
+  const hi = advance(n - 1, -1, lo);
+  return lo === 0 && hi === n - 1 ? buckets : buckets.slice(lo, hi + 1);
+}
+
 export function OverTimeChart({ series, since, until, descriptorKind, onSelectRange }: OverTimeChartProps) {
-  const { buckets, granularity, total, partial } = series;
+  const { buckets: rawBuckets, granularity, total, partial } = series;
   const brushable = chartIsBrushable(descriptorKind);
+
+  // DOMAIN AUTO-FIT (see `fitBucketDomain`): trim leading/trailing buckets that
+  // hold a negligible share so a single degenerate-timestamp outlier can't stretch
+  // the axis. DISPLAY-ONLY — `total` (the exact reachable count) is never touched.
+  const buckets = useMemo(() => fitBucketDomain(rawBuckets, total), [rawBuckets, total]);
 
   // The shaded selection is a PURE function of the URL since/until — set the
   // params directly (Date popover / before:/after:) and the overlay matches with

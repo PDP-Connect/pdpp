@@ -552,8 +552,7 @@
             "type": "string"
           },
           "user_id": {
-            "type": "string",
-            "x_pdpp_role": "actor"
+            "type": "string"
           },
           "fetched_at": {
             "type": "string",
@@ -858,8 +857,7 @@
             "type": [
               "string",
               "null"
-            ],
-            "x_pdpp_role": "actor"
+            ]
           },
           "bot_id": {
             "type": [
@@ -1306,8 +1304,7 @@
             "type": "string"
           },
           "user_id": {
-            "type": "string",
-            "x_pdpp_role": "actor"
+            "type": "string"
           },
           "emoji": {
             "type": "string",
@@ -1774,8 +1771,7 @@
             "type": [
               "string",
               "null"
-            ],
-            "x_pdpp_role": "actor"
+            ]
           },
           "starred_at": {
             "type": [
@@ -1973,8 +1969,7 @@
             "type": [
               "string",
               "null"
-            ],
-            "x_pdpp_role": "actor"
+            ]
           },
           "user_id": {
             "type": [

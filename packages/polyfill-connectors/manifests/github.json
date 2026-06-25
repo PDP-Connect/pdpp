@@ -682,14 +682,14 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "user_id": {
             "type": [
               "string",
               "null"
-            ],
-            "x_pdpp_role": "actor"
+            ]
           },
           "assignees": {
             "type": "array",
@@ -896,14 +896,14 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "user_id": {
             "type": [
               "string",
               "null"
-            ],
-            "x_pdpp_role": "actor"
+            ]
           },
           "assignees": {
             "type": "array",

@@ -48,18 +48,22 @@ test("builds a role-backed money preview and formats declared currency cents", (
 });
 
 test("an explicit declared milliunits type divides by 1000", () => {
-  const preview = buildRecordPreview("money", { amount: -12_450 }, { amount: "currency_milliunits" }, { amount: "amount" });
+  const preview = buildRecordPreview(
+    "money",
+    { amount: -12_450 },
+    { amount: "currency_milliunits" },
+    { amount: "amount" }
+  );
 
   assert.equal(preview?.amount, "-$12.45");
 });
 
 test("builds a role-backed message preview", () => {
-  const preview = buildRecordPreview(
-    "message",
-    { sender: "Ada", subject: "Thread", content: "Hello" },
-    null,
-    { sender: "actor", subject: "primary-title", content: "secondary" }
-  );
+  const preview = buildRecordPreview("message", { sender: "Ada", subject: "Thread", content: "Hello" }, null, {
+    sender: "actor",
+    subject: "primary-title",
+    content: "secondary",
+  });
 
   assert.deepEqual(
     { author: preview?.author, body: preview?.body, kind: preview?.kind, title: preview?.title },
@@ -82,12 +86,11 @@ test("builds a role-backed event preview with a UTC time label", () => {
 });
 
 test("builds a role-backed titled preview", () => {
-  const preview = buildRecordPreview(
-    "titled",
-    { title: "On Protocols", body: "Long form", author: "Ada" },
-    null,
-    { title: "primary-title", body: "secondary", author: "actor" }
-  );
+  const preview = buildRecordPreview("titled", { title: "On Protocols", body: "Long form", author: "Ada" }, null, {
+    title: "primary-title",
+    body: "secondary",
+    author: "actor",
+  });
 
   assert.deepEqual(
     { author: preview?.author, body: preview?.body, kind: preview?.kind, title: preview?.title },
@@ -106,7 +109,34 @@ test("generic preview uses declared title and body roles only", () => {
   assert.equal(preview?.kind, "generic");
   assert.equal(preview?.title, "Opaque record");
   assert.equal(preview?.body, "Declared summary");
-  assert.deepEqual(preview?.fields?.map(({ name, value }) => [name, value]), [["amount_cents", "1245"]]);
+  assert.deepEqual(
+    preview?.fields?.map(({ name, value }) => [name, value]),
+    [["amount_cents", "1245"]]
+  );
+});
+
+test("declared stream with null content renders a placeholder, NOT an operational field dump", () => {
+  // A gmail/messages-shaped record whose declared content (subject/snippet) was
+  // not collected: subject=null, but operational fields (labels/is_seen/is_draft)
+  // are present. It MUST NOT dump those as a key/value wall.
+  const preview = buildRecordPreview(
+    "message",
+    {
+      id: "rec_1",
+      subject: null,
+      snippet: null,
+      from_name: null,
+      labels: ["\\Inbox"],
+      is_seen: false,
+      is_draft: false,
+    },
+    null,
+    { subject: "primary-title", snippet: "secondary", from_name: "actor" }
+  );
+  assert.equal(preview?.kind, "generic");
+  assert.equal(preview?.title, "(no subject)");
+  // NEVER surfaces the undeclared operational fields as a key/value table.
+  assert.equal(preview?.fields, undefined);
 });
 
 test("kinds without role-backed card slots render as generic previews", () => {
