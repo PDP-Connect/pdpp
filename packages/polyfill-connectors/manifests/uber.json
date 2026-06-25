@@ -72,7 +72,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "completed_at": {
             "type": [

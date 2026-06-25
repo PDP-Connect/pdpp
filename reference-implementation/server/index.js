@@ -2153,8 +2153,16 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
         && schema.x_pdpp_type.trim().length > 0
           ? schema.x_pdpp_type.trim()
           : fieldDeclarations.get(field) || null;
+      const declaredRole =
+        schema
+        && typeof schema === 'object'
+        && typeof schema.x_pdpp_role === 'string'
+        && schema.x_pdpp_role.trim().length > 0
+          ? schema.x_pdpp_role.trim()
+          : null;
       return [field, {
         ...(declaredType ? { type: declaredType } : {}),
+        ...(declaredRole ? { role: declaredRole } : {}),
         schema,
         granted,
         exact_filter: buildFieldCapabilityFlag({

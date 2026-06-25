@@ -52,7 +52,8 @@
           },
           "order_date": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "order_total": {
             "type": [
@@ -76,13 +77,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "recipient_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "shipping_address_summary": {
             "type": [
@@ -215,7 +218,8 @@
           },
           "order_date": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "asin": {
             "type": [
@@ -224,7 +228,8 @@
             ]
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "url": {
             "type": [
@@ -251,7 +256,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "item_image_url": {
             "type": [

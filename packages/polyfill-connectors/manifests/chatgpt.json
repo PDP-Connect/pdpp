@@ -55,7 +55,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "create_time": {
             "type": [
@@ -189,13 +190,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "content": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "content_type": {
             "type": [
@@ -291,7 +294,7 @@
       "description": "Saved memories ChatGPT has about the user.",
       "display": {
         "label": "ChatGPT memories",
-        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff \u2014 API does not emit tombstones."
+        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff — API does not emit tombstones."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -301,14 +304,16 @@
             "type": "string"
           },
           "content": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "created_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -388,7 +393,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "display_description": {
             "type": [
@@ -416,7 +422,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -510,7 +517,7 @@
       "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
       "display": {
         "label": "Your custom instructions",
-        "detail": "The two free-text fields from Settings \u2192 Personalization \u2192 Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton \u2014 only one set per user."
+        "detail": "The two free-text fields from Settings → Personalization → Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton — only one set per user."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -542,7 +549,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -616,14 +624,16 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "created_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "anonymous": {
             "type": [

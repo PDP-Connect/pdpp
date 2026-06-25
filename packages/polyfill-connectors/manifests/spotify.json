@@ -49,7 +49,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "owner_id": {
             "type": [
@@ -61,7 +62,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "public": {
             "type": [
@@ -91,7 +93,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           }
         },
         "required": [
@@ -113,6 +116,9 @@
             "name",
             "owner_name",
             "description"
+          ],
+          "semantic_fields": [
+            "description"
           ]
         }
       }
@@ -132,7 +138,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "artist_names": {
             "type": "array"
@@ -160,7 +167,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "isrc": {
             "type": [
@@ -214,7 +222,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "genres": {
             "type": "array"
@@ -275,10 +284,12 @@
             "type": "string"
           },
           "track_name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "artist_names": {
-            "type": "array"
+            "type": "array",
+            "x_pdpp_role": "actor"
           },
           "album_name": {
             "type": [
@@ -288,7 +299,8 @@
           },
           "played_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "context_type": {
             "type": [

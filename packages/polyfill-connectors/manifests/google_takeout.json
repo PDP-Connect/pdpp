@@ -47,7 +47,8 @@
           },
           "timestamp": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "latitude": {
             "type": [
@@ -118,7 +119,8 @@
           },
           "watched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "video_url": {
             "type": [
@@ -130,13 +132,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "channel_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "channel_url": {
             "type": [
@@ -177,13 +181,15 @@
           },
           "timestamp": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "query": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "product": {
             "type": [

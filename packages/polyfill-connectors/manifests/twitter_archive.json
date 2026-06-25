@@ -46,11 +46,13 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "created_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "favorite_count": {
             "type": [
@@ -109,7 +111,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        }
+      }
     },
     {
       "name": "direct_messages",
@@ -145,13 +157,15 @@
           },
           "created_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "text": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           }
         },
         "required": [
@@ -168,7 +182,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        }
+      }
     }
   ]
 }

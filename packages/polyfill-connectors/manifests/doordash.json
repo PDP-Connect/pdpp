@@ -53,7 +53,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "restaurant_name": {
             "type": [
@@ -113,7 +114,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "item_count": {
             "type": [
@@ -155,7 +157,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "quantity": {
             "type": "integer"
@@ -191,7 +194,14 @@
           "foreign_key": "order_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      }
     }
   ]
 }

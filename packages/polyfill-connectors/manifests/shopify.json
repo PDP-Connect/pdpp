@@ -53,13 +53,15 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "merchant_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "status": {
             "type": [

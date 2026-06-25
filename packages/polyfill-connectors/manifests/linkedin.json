@@ -52,19 +52,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "headline": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "summary": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "location": {
             "type": [
@@ -108,7 +111,21 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "full_name",
+            "headline",
+            "summary",
+            "location"
+          ],
+          "semantic_fields": [
+            "headline",
+            "summary"
+          ]
+        }
+      }
     },
     {
       "name": "experience",
@@ -128,13 +145,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "company": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "employment_type": {
             "type": [
@@ -147,7 +166,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "end_date": {
             "type": [
@@ -166,7 +186,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           }
         },
         "required": [
@@ -182,7 +203,21 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "company",
+            "location",
+            "description"
+          ],
+          "semantic_fields": [
+            "title",
+            "description"
+          ]
+        }
+      }
     },
     {
       "name": "education",
@@ -221,7 +256,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "end_date": {
             "type": [
@@ -259,7 +295,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "endorsement_count": {
             "type": [
@@ -280,7 +317,14 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      }
     }
   ]
 }

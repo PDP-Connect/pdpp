@@ -55,7 +55,9 @@
     },
     "auth": {
       "kind": "env",
-      "required": ["NOTION_API_TOKEN"]
+      "required": [
+        "NOTION_API_TOKEN"
+      ]
     }
   },
   "streams": [
@@ -95,7 +97,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "url": {
             "type": [
@@ -114,7 +117,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "last_edited_time": {
             "type": [
@@ -149,7 +153,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        }
+      }
     },
     {
       "name": "databases",
@@ -169,7 +183,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "parent_type": {
             "type": [
@@ -200,7 +215,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "last_edited_time": {
             "type": [
@@ -226,7 +242,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        }
+      }
     }
   ]
 }

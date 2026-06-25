@@ -31,7 +31,9 @@
     },
     "auth": {
       "kind": "env",
-      "required": ["STRAVA_ACCESS_TOKEN"]
+      "required": [
+        "STRAVA_ACCESS_TOKEN"
+      ]
     }
   },
   "streams": [
@@ -53,7 +55,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "type": {
             "type": [
@@ -69,7 +72,8 @@
           },
           "start_date": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "start_date_local": {
             "type": [
@@ -176,7 +180,14 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      }
     }
   ]
 }

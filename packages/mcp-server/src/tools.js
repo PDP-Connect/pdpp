@@ -2112,6 +2112,7 @@ function formatFieldCapabilityFlags(capabilities) {
   const schema = objectValue(capabilities.schema);
   const type = firstString(capabilities.type, schemaType(schema));
   if (type) flags.push(`t=${formatInlineValue(type)}`);
+  if (typeof capabilities.role === 'string' && capabilities.role.length > 0) flags.push(`role=${formatInlineValue(capabilities.role)}`);
   if (capabilities.granted === false) {
     flags.push('g=false');
   }

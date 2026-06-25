@@ -74,7 +74,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "last_event_at": {
             "type": [
@@ -182,7 +183,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "type": {
             "type": [
@@ -194,14 +196,16 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "timestamp": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "is_sidechain": {
             "type": [
@@ -332,7 +336,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -409,13 +414,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "source": {
             "type": [
@@ -433,7 +440,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "frontmatter": {
             "type": [
@@ -508,13 +516,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "path": {
             "type": [
@@ -598,13 +608,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "path": {
             "type": [
@@ -680,7 +692,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -698,7 +711,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -741,7 +755,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -759,7 +774,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -811,7 +827,8 @@
             "type": "string"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           }
         },
         "required": [
@@ -844,7 +861,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -862,7 +880,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -905,7 +924,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -923,7 +943,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -966,7 +987,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -984,7 +1006,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -1027,7 +1050,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -1045,7 +1069,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"

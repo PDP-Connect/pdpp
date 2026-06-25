@@ -49,6 +49,7 @@ interface FieldCapability {
   readonly type?: unknown;
   readonly granted?: unknown;
   readonly schema?: unknown;
+  readonly role?: unknown;
   readonly exact_filter?: unknown;
   readonly range_filter?: unknown;
   readonly lexical_search?: unknown;
@@ -189,6 +190,7 @@ export function formatFieldCapabilityFlags(capabilities: unknown): string {
   const flags: string[] = [];
   const type = firstString(typeof cap.type === "string" ? cap.type : undefined, schemaTypeOf(cap.schema));
   if (type) flags.push(`t=${inlineValue(type)}`);
+  if (typeof cap.role === "string" && cap.role.length > 0) flags.push(`role=${inlineValue(cap.role)}`);
   if (cap.granted === false) {
     flags.push("g=false");
   }

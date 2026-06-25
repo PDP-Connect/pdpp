@@ -49,19 +49,22 @@
             "type": "string"
           },
           "username": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "actor"
           },
           "full_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "bio": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "follower_count": {
             "type": [
@@ -100,7 +103,19 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "username",
+            "full_name",
+            "bio"
+          ],
+          "semantic_fields": [
+            "bio"
+          ]
+        }
+      }
     },
     {
       "name": "posts",
@@ -120,7 +135,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "media_type": {
             "type": [
@@ -167,7 +183,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "caption"
+          ],
+          "semantic_fields": [
+            "caption"
+          ]
+        }
+      }
     }
   ]
 }

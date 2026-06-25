@@ -55,7 +55,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "type": {
             "type": [
@@ -120,7 +121,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -185,10 +187,10 @@
     },
     {
       "name": "transactions",
-      "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) \u2014 Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
+      "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) — Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
       "display": {
         "label": "Your Chase transactions",
-        "detail": "Date, signed amount in cents, cleaned payee name, original memo, Chase-assigned transaction type (DEBIT/CREDIT/CHECK/XFER/PAYMENT/FEE/etc.), check number, and FITID (Chase's stable transaction identifier). Pending transactions are not included \u2014 QFX delivers posted transactions only."
+        "detail": "Date, signed amount in cents, cleaned payee name, original memo, Chase-assigned transaction type (DEBIT/CREDIT/CHECK/XFER/PAYMENT/FEE/etc.), check number, and FITID (Chase's stable transaction identifier). Pending transactions are not included — QFX delivers posted transactions only."
       },
       "semantics": "append_only",
       "schema": {
@@ -205,7 +207,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "fitid": {
             "type": "string",
@@ -215,7 +218,8 @@
             "type": "string",
             "format": "date",
             "x_pdpp_type": "timestamp",
-            "description": "Posted date. QFX DTPOSTED."
+            "description": "Posted date. QFX DTPOSTED.",
+            "x_pdpp_role": "event-time"
           },
           "amount": {
             "type": "integer",
@@ -239,14 +243,16 @@
               "null"
             ],
             "x_pdpp_type": "text",
-            "description": "Payee or merchant name. QFX NAME."
+            "description": "Payee or merchant name. QFX NAME.",
+            "x_pdpp_role": "primary-title"
           },
           "memo": {
             "type": [
               "string",
               "null"
             ],
-            "description": "QFX MEMO. Often contains merchant city for CC transactions, or the raw bank descriptor for checking."
+            "description": "QFX MEMO. Often contains merchant city for CC transactions, or the raw bank descriptor for checking.",
+            "x_pdpp_role": "secondary"
           },
           "check_number": {
             "type": [
@@ -387,7 +393,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "status": {
             "type": "string",
@@ -414,13 +421,15 @@
             "description": "Always 'USD' for Chase retail account UI rows in this connector."
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "memo": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "ui_transaction_id": {
             "type": [
@@ -435,7 +444,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -480,6 +490,10 @@
             "memo",
             "status",
             "source"
+          ],
+          "semantic_fields": [
+            "description",
+            "memo"
           ]
         },
         "range_filters": {
@@ -512,7 +526,7 @@
     },
     {
       "name": "statements",
-      "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and \u2014 when the PDF is hydrated on-device \u2014 a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
+      "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
       "display": {
         "label": "Your Chase statements",
         "detail": "PDF monthly statements across all Chase accounts. Metadata is always captured (title, delivery date, account reference); PDF bytes are downloaded and stored locally with a content hash when blob hydration runs. The same hash reappears across runs so downloads are idempotent."
@@ -534,7 +548,8 @@
           },
           "title": {
             "type": "string",
-            "description": "Row title from the Statements & Documents table, e.g. `Sapphire Preferred (...9241)`."
+            "description": "Row title from the Statements & Documents table, e.g. `Sapphire Preferred (...9241)`.",
+            "x_pdpp_role": "primary-title"
           },
           "date_delivered": {
             "type": [
@@ -568,7 +583,7 @@
               "string",
               "null"
             ],
-            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint \u2014 Chase re-encrypts the PDF per download, so it churns on no-op re-fetches)."
+            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — Chase re-encrypts the PDF per download, so it churns on no-op re-fetches)."
           },
           "pdf_text_sha256": {
             "type": [
@@ -586,7 +601,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -617,6 +633,9 @@
           "lexical_fields": [
             "title",
             "account_reference"
+          ],
+          "semantic_fields": [
+            "title"
           ]
         },
         "range_filters": {
@@ -656,7 +675,7 @@
           "as_of": {
             "type": "string",
             "format": "date-time",
-            "description": "QFX DTASOF \u2014 when Chase measured the balance."
+            "description": "QFX DTASOF — when Chase measured the balance."
           },
           "ledger_balance_cents": {
             "type": [
@@ -674,7 +693,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [

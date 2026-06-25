@@ -55,7 +55,9 @@
     },
     "auth": {
       "kind": "env",
-      "required": ["OURA_PERSONAL_ACCESS_TOKEN"]
+      "required": [
+        "OURA_PERSONAL_ACCESS_TOKEN"
+      ]
     }
   },
   "streams": [
@@ -75,7 +77,8 @@
           },
           "day": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "bedtime_start": {
             "type": [
@@ -153,7 +156,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "amount"
           }
         },
         "required": [
@@ -188,13 +192,15 @@
           },
           "day": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "score": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "amount"
           },
           "temperature_deviation": {
             "type": [
@@ -244,13 +250,15 @@
           },
           "day": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "score": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "amount"
           },
           "active_calories": {
             "type": [

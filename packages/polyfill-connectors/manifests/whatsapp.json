@@ -94,7 +94,8 @@
             "type": "string"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "participants": {
             "type": "array"
@@ -107,14 +108,16 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "last_message_date": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -131,7 +134,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        }
+      }
     },
     {
       "name": "messages",
@@ -154,20 +167,23 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "content": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "has_attachment": {
             "type": "boolean"
           },
           "sent_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -193,7 +209,18 @@
           "foreign_key": "chat_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "author",
+            "content"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        }
+      }
     },
     {
       "name": "attachments",
@@ -219,7 +246,8 @@
             ]
           },
           "filename": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "content_type": {
             "type": "string"

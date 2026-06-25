@@ -44,20 +44,20 @@
           "identity": true,
           "autocomplete": "off",
           "placeholder": "myteam (from myteam.slack.com)",
-          "help_text": "Enter just the subdomain \u2014 e.g. 'myteam' from myteam.slack.com.",
+          "help_text": "Enter just the subdomain — e.g. 'myteam' from myteam.slack.com.",
           "env": [
             "SLACK_WORKSPACE"
           ]
         },
         {
           "name": "slack_token",
-          "label": "Slack session token (xoxc-\u2026)",
+          "label": "Slack session token (xoxc-…)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
           "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
-          "help_text": "Copy the xoxc-\u2026 token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
           "env": [
             "SLACK_TOKEN"
           ]
@@ -116,7 +116,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "domain": {
             "type": [
@@ -174,7 +175,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -225,7 +227,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "name_normalized": {
             "type": [
@@ -322,13 +325,15 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "topic": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "topic_creator": {
             "type": [
@@ -364,7 +369,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "shared_team_ids": {
             "type": [
@@ -466,7 +472,8 @@
             "type": "string"
           },
           "channel_id": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "observed_on": {
             "type": "string",
@@ -529,7 +536,7 @@
     },
     {
       "name": "channel_memberships",
-      "description": "Channel \u2194 user edges where slackdump could enumerate members.",
+      "description": "Channel ↔ user edges where slackdump could enumerate members.",
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
@@ -545,11 +552,13 @@
             "type": "string"
           },
           "user_id": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "actor"
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -611,7 +620,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "real_name_normalized": {
             "type": [
@@ -623,7 +633,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "display_name_normalized": {
             "type": [
@@ -659,7 +670,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "status_text": {
             "type": [
@@ -813,9 +825,14 @@
             "name",
             "real_name",
             "display_name",
+            "first_name",
+            "last_name",
+            "email",
             "title",
-            "status_text",
-            "email"
+            "status_text"
+          ],
+          "semantic_fields": [
+            "title"
           ]
         }
       }
@@ -841,7 +858,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "bot_id": {
             "type": [
@@ -866,7 +884,8 @@
           },
           "sent_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "thread_ts": {
             "type": [
@@ -923,7 +942,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "edited_ts": {
             "type": [
@@ -1153,7 +1173,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "service_name": {
             "type": [
@@ -1171,7 +1192,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "title_link": {
             "type": [
@@ -1183,7 +1205,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "from_url": {
             "type": [
@@ -1283,10 +1306,12 @@
             "type": "string"
           },
           "user_id": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "actor"
           },
           "emoji": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           }
         },
         "required": [
@@ -1338,13 +1363,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "title": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "mimetype": {
             "type": [
@@ -1381,7 +1408,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "uploader_id": {
             "type": [
@@ -1463,6 +1491,9 @@
             "name",
             "title",
             "pretty_type"
+          ],
+          "semantic_fields": [
+            "title"
           ]
         },
         "range_filters": {
@@ -1526,13 +1557,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "author_id": {
             "type": [
@@ -1562,7 +1595,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "mimetype": {
             "type": [
@@ -1593,7 +1627,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated": {
             "type": [
@@ -1739,14 +1774,16 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "starred_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -1817,13 +1854,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "is_external": {
             "type": [
@@ -1866,7 +1905,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated": {
             "type": [
@@ -1933,7 +1973,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "user_id": {
             "type": [
@@ -1945,7 +1986,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "recurring": {
             "type": [
@@ -1957,7 +1999,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "scheduled_at": {
             "type": [
@@ -2077,7 +2120,8 @@
           },
           "fetched_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [

@@ -1,5 +1,10 @@
 # Polyfill connector registry
 
+When adding or changing a connector manifest, follow the repo-level
+[connector authoring guide](../../docs/connector-authoring-guide.md). The guide
+is enforced by manifest-honesty tests for search affordances and presentation
+roles; do not land readable owner-visible fields without the matching semantics.
+
 31 connectors, organized by auth/operational class.
 
 ## What the status columns mean

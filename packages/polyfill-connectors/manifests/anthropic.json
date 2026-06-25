@@ -52,7 +52,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "create_time": {
             "type": [
@@ -100,7 +101,17 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        }
+      }
     },
     {
       "name": "messages",
@@ -123,13 +134,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "content": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "model": {
             "type": [
@@ -142,7 +155,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -167,7 +181,17 @@
           "foreign_key": "conversation_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "content"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        }
+      }
     },
     {
       "name": "projects",
@@ -184,13 +208,15 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "create_time": {
             "type": [
@@ -221,7 +247,18 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        }
+      }
     }
   ]
 }

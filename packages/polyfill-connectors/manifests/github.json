@@ -77,7 +77,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "email": {
             "type": [
@@ -95,7 +96,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "location": {
             "type": [
@@ -120,7 +122,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -218,7 +221,8 @@
             "type": "string"
           },
           "user_id": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "actor"
           },
           "observed_on": {
             "type": "string",
@@ -322,7 +326,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "full_name": {
             "type": "string"
@@ -337,7 +342,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "private": {
             "type": "boolean"
@@ -419,7 +425,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -540,13 +547,15 @@
             "type": "string"
           },
           "full_name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "language": {
             "type": [
@@ -571,7 +580,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -646,13 +656,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "body": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "state": {
             "type": [
@@ -676,7 +688,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "assignees": {
             "type": "array",
@@ -731,7 +744,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -834,7 +848,7 @@
     },
     {
       "name": "pull_requests",
-      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included \u2014 that requires a follow-up reviewer: query.",
+      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included — that requires a follow-up reviewer: query.",
       "display": {
         "label": "Your pull requests",
         "detail": "PRs you authored, including merge timestamp and committer, additions/deletions, changed files count, base and head refs, requested reviewers, and review-comment counts."
@@ -856,13 +870,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "body": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "state": {
             "type": [
@@ -886,7 +902,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "assignees": {
             "type": "array",
@@ -941,7 +958,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [
@@ -1151,7 +1169,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "public": {
             "type": "boolean"
@@ -1214,7 +1233,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "updated_at": {
             "type": [

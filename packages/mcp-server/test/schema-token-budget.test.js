@@ -78,6 +78,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
             `field_${f}`,
             {
               type: 'string',
+              role: f === 0 ? 'primary-title' : undefined,
               granted: true,
               // The verbose per-field JSON Schema blob — the size driver the
               // compact projection drops. A real RS attaches the full declared
@@ -413,6 +414,7 @@ test('per-stream schema is usable and compact (the discovery middle step)', asyn
   assert.equal(result.structuredContent.data.stream_count, 1);
   // Still usable: capability flags survive on the scoped stream.
   assert.match(connectors[0].streams[0].field_capabilities.field_0, /t=string/);
+  assert.match(connectors[0].streams[0].field_capabilities.field_0, /role=primary-title/);
 
   await client.close();
   await server.close();
@@ -430,7 +432,7 @@ test('stream-scoped schema text includes field detail across connectors sharing 
 
   assert.match(text, /stream name="messages" connector_key="connector-0".*fields=/s);
   assert.match(text, /stream name="messages" connector_key="connector-1".*fields=/s);
-  assert.match(text, /field_0\[t=string,eq,lex,sem,a=count_distinct\]/);
+  assert.match(text, /field_0\[t=string,role=primary-title,eq,lex,sem,a=count_distinct\]/);
   assert.match(text, /aggregations=count_distinct=field_0\|field_1\|field_2\|field_3/);
 
   await client.close();

@@ -735,9 +735,10 @@ test('view=compact keeps a divergent per-stream connection subset (pinned grant)
 test('compact field flags use aliases and keep only non-default grant state', async () => {
   const { formatFieldCapabilityFlags } = await import('../operations/rs-schema-get/compact-view.ts');
   assert.equal(
-    formatFieldCapabilityFlags({
-      type: 'string',
-      granted: true,
+      formatFieldCapabilityFlags({
+        type: 'string',
+        role: 'primary-title',
+        granted: true,
       exact_filter: { declared: true, usable: true },
       range_filter: { declared: true, usable: true, operators: ['gte', 'lt'] },
       lexical_search: { declared: true, usable: true },
@@ -747,7 +748,7 @@ test('compact field flags use aliases and keep only non-default grant state', as
         sum: { declared: true, usable: false, reason: 'not_numeric' },
       },
     }),
-    't=string,eq,r=gte|lt,lex,sem,a=count',
+      't=string,role=primary-title,eq,r=gte|lt,lex,sem,a=count',
   );
   assert.equal(
     formatFieldCapabilityFlags({

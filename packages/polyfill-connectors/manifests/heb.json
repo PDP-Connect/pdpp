@@ -53,7 +53,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "store": {
             "type": [
@@ -119,7 +120,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "upc": {
             "type": [
@@ -173,7 +175,14 @@
           "foreign_key": "order_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      }
     }
   ]
 }

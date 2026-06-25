@@ -94,14 +94,16 @@
               "string",
               "null"
             ],
-            "x_pdpp_type": "text"
+            "x_pdpp_type": "text",
+            "x_pdpp_role": "primary-title"
           },
           "from_name": {
             "type": [
               "string",
               "null"
             ],
-            "x_pdpp_type": "person"
+            "x_pdpp_type": "person",
+            "x_pdpp_role": "actor"
           },
           "from_email": {
             "type": [
@@ -127,11 +129,13 @@
               "null"
             ],
             "format": "date-time",
-            "x_pdpp_type": "timestamp"
+            "x_pdpp_type": "timestamp",
+            "x_pdpp_role": "event-time"
           },
           "received_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "message_id": {
             "type": [
@@ -177,7 +181,8 @@
               "string",
               "null"
             ],
-            "x_pdpp_type": "text"
+            "x_pdpp_type": "text",
+            "x_pdpp_role": "secondary"
           }
         },
         "required": [
@@ -360,7 +365,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "participant_emails": {
             "type": "array"
@@ -380,7 +386,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "labels": {
             "type": "array"
@@ -471,7 +478,8 @@
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "canonical_name": {
             "type": "string"
@@ -519,7 +527,7 @@
       "description": "Full text and/or HTML body of each message, keyed 1:1 with messages. Kept in a separate stream so body content (sensitive, large) is independently grantable from headers/metadata.",
       "display": {
         "label": "The text of your emails",
-        "detail": "This is the stream that carries the actual written content of each email \u2014 the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
+        "detail": "This is the stream that carries the actual written content of each email — the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
       },
       "semantics": "append_only",
       "schema": {
@@ -535,7 +543,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "body_html": {
             "type": [
@@ -645,7 +654,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "content_type": {
             "type": [

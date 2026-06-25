@@ -52,13 +52,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "location": {
             "type": [
@@ -119,7 +121,20 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "summary",
+            "description",
+            "location"
+          ],
+          "semantic_fields": [
+            "summary",
+            "description"
+          ]
+        }
+      }
     }
   ]
 }

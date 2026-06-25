@@ -92,7 +92,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "last_event_at": {
             "type": [
@@ -117,7 +118,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "archived": {
             "type": [
@@ -248,7 +250,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "actor"
           },
           "type": {
             "type": [
@@ -260,14 +263,16 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "timestamp": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -347,7 +352,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "arguments": {
             "type": [
@@ -366,7 +372,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -422,7 +429,7 @@
     },
     {
       "name": "rules",
-      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules \u2014 the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
+      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
       "display": {
         "label": "Your Codex approval rules",
         "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."
@@ -438,7 +445,8 @@
             "type": "string"
           },
           "rule_text": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "rule_index": {
             "type": "integer"
@@ -453,7 +461,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           }
         },
         "required": [
@@ -508,13 +517,15 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "content": {
             "type": [
@@ -587,19 +598,22 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "description": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "content": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "path": {
             "type": [
@@ -635,6 +649,10 @@
             "description",
             "content",
             "path"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
           ]
         },
         "range_filters": {
@@ -661,7 +679,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -679,7 +698,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -722,7 +742,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -740,7 +761,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -792,7 +814,8 @@
             "type": "string"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           }
         },
         "required": [
@@ -825,7 +848,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -843,7 +867,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -886,7 +911,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -904,7 +930,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -947,7 +974,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -965,7 +993,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"
@@ -1008,7 +1037,8 @@
             "type": "string"
           },
           "relative_path": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "path_hash": {
             "type": "string"
@@ -1026,7 +1056,8 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "event-time"
           },
           "classification": {
             "type": "string"

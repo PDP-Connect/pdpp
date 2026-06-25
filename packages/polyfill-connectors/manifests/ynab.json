@@ -71,7 +71,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "last_modified_on": {
             "type": [
@@ -225,7 +226,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "type": {
             "type": "string"
@@ -265,7 +267,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "debt_interest_rates": {
             "type": [
@@ -396,10 +399,12 @@
           },
           "observed_on": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "balance": {
-            "type": "integer"
+            "type": "integer",
+            "x_pdpp_role": "amount"
           },
           "cleared_balance": {
             "type": "integer"
@@ -493,7 +498,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "hidden": {
             "type": "boolean"
@@ -502,7 +508,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
@@ -561,7 +568,8 @@
             ]
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "hidden": {
             "type": "boolean"
@@ -579,7 +587,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "goal_type": {
             "type": [
@@ -781,7 +790,8 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "transfer_account_id": {
             "type": [
@@ -833,7 +843,8 @@
             "type": "string"
           },
           "payee_id": {
-            "type": "string"
+            "type": "string",
+            "x_pdpp_role": "primary-title"
           },
           "latitude": {
             "type": "string"
@@ -892,7 +903,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "account_type": {
             "type": [
@@ -902,7 +914,8 @@
           },
           "date": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "x_pdpp_role": "event-time"
           },
           "amount": {
             "type": "integer"
@@ -935,7 +948,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "cleared": {
             "type": "string"
@@ -1226,7 +1240,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "primary-title"
           },
           "payee_id": {
             "type": [
@@ -1256,7 +1271,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "transfer_account_id": {
             "type": [
@@ -1397,7 +1413,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
@@ -1476,7 +1493,7 @@
     },
     {
       "name": "month_categories",
-      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix \u2014 historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
+      "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
       "display": {
         "label": "Monthly category history",
         "detail": "For each (budget, month, category): how much was assigned (budgeted), how much was spent (activity), leftover balance, and goal progress (type, target, percent complete, underfunding) as it stood in that month. Useful for budget trend analysis and answering 'what did I budget for groceries last March?'."
@@ -1585,7 +1602,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
