@@ -296,7 +296,9 @@ test('fetch returns a declared text field verbatim (no truncation of real docume
   const mirrored = JSON.parse(result.content[0].text);
   const { content_ladder: contentLadder, ...structuredDocument } = result.structuredContent;
   assert.deepEqual(mirrored, structuredDocument);
-  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
+  assert.equal(contentLadder.record_uri, undefined);
+  assert.equal(contentLadder.id, 'conn_1/mail:withtext');
+  assert.doesNotMatch(JSON.stringify(contentLadder), /pdpp:\/\/record\//);
   assert.equal(mirrored.text.length, 50_000);
   assert.equal(mirrored.id, 'mail:withtext');
 

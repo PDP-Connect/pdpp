@@ -553,7 +553,8 @@ test('query_records forwards supported query params', async () => {
   });
   assert.equal(scoped.structuredContent.content_ladder.kind, 'record_set');
   assert.equal(scoped.structuredContent.content_ladder.records[0].id, 'conn_orders/orders:o1');
-  assert.match(scoped.structuredContent.content_ladder.records[0].record_uri, /^pdpp:\/\/record\//);
+  assert.equal(scoped.structuredContent.content_ladder.records[0].record_uri, undefined);
+  assert.doesNotMatch(JSON.stringify(scoped.structuredContent.content_ladder), /pdpp:\/\/record\//);
 
   const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records'));
   const callUrl = new URL(call.url);
@@ -728,11 +729,13 @@ test('search tool forwards q and returns hits', async () => {
   ]);
   assert.equal(result.structuredContent.content_ladder.kind, 'search_results');
   assert.equal(result.structuredContent.content_ladder.records[0].id, 'conn_orders/orders:o2');
-  assert.match(result.structuredContent.content_ladder.records[0].record_uri, /^pdpp:\/\/record\//);
+  assert.equal(result.structuredContent.content_ladder.records[0].record_uri, undefined);
   assert.equal(
     result.structuredContent.content_ladder.records[0].field_windows.some((field) => field.resource_uri),
     false
   );
+  assert.doesNotMatch(JSON.stringify(result.structuredContent.results), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(result.structuredContent.content_ladder), /pdpp:\/\/record\//);
   assert.doesNotMatch(JSON.stringify(result.structuredContent.results), /pdpp:\/\/field-window\//);
   assert.doesNotMatch(JSON.stringify(result.structuredContent.content_ladder), /pdpp:\/\/field-window\//);
   assert.match(result.structuredContent.results[0].evidence_excerpts[0].preview_text, /Pasta order /);
@@ -816,8 +819,9 @@ test('fetch tool returns ChatGPT-compatible document shape', async () => {
     false,
     'ordinary fetch results must not trigger resource/file materialization'
   );
-  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
+  assert.equal(contentLadder.record_uri, undefined);
   assert.equal(contentLadder.id, 'conn_orders/orders:o2');
+  assert.doesNotMatch(JSON.stringify(contentLadder), /pdpp:\/\/record\//);
   assert.equal(mirrored.metadata.connection_id, 'conn_orders');
   assert.equal(mirrored.metadata.display_name, 'Merchant orders');
   assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
@@ -848,8 +852,9 @@ test('fetch content text mirrors document JSON for hosts that hide structured ou
   const text = JSON.parse(result.content[0].text);
   const { content_ladder: contentLadder, ...structuredDocument } = result.structuredContent;
   assert.deepEqual(text, structuredDocument);
-  assert.match(contentLadder.record_uri, /^pdpp:\/\/record\//);
+  assert.equal(contentLadder.record_uri, undefined);
   assert.equal(contentLadder.id, 'conn_chatgpt/conversations:c1');
+  assert.doesNotMatch(JSON.stringify(contentLadder), /pdpp:\/\/record\//);
   assert.equal(text.metadata.connection_id, 'conn_chatgpt');
   assert.equal(text.metadata.connector_key, 'chatgpt');
   assert.equal(text.metadata.display_name, 'ChatGPT - everyone@appears.blue');

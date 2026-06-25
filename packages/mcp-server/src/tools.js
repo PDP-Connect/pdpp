@@ -1336,7 +1336,7 @@ function toSearchToolResult(response, providerUrl, options = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const allResults = normalizeSearchResults(response.body, { q: options.q });
+  const allResults = normalizeSearchResults(response.body, { q: options.q, providerUrl });
   const limit = requestedSearchLimit(options.limit);
   const results = allResults.slice(0, limit);
   const summaryBody = allResults.length > results.length
@@ -1597,11 +1597,13 @@ function definedObject(values) {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && value !== null && value !== ''));
 }
 
-function hideModelVisibleFieldWindowResources(record) {
-  if (!record || !Array.isArray(record.field_windows)) return record;
+function hideModelVisibleResourceUris(record) {
+  if (!record) return record;
+  const { record_uri: _recordUri, recordUri: _recordUriCamel, ...rest } = record;
+  if (!Array.isArray(rest.field_windows)) return rest;
   return {
-    ...record,
-    field_windows: record.field_windows.map(({ resource_uri: _resourceUri, resourceUri: _resourceUriCamel, ...field }) => field),
+    ...rest,
+    field_windows: rest.field_windows.map(({ resource_uri: _resourceUri, resourceUri: _resourceUriCamel, ...field }) => field),
   };
 }
 
@@ -1626,7 +1628,7 @@ function buildRecordContentLadder(record, fallback = {}) {
     binaryLimit: CONTENT_LADDER_BINARY_FIELD_LIMIT,
     windowLimitChars: CONTENT_LADDER_WINDOW_LIMIT_CHARS,
   });
-  return hideModelVisibleFieldWindowResources(ladder);
+  return hideModelVisibleResourceUris(ladder);
 }
 
 function toFetchToolResult(response, providerUrl, requestedId) {
@@ -2423,13 +2425,19 @@ function normalizeSearchResults(body, options = {}) {
   const candidates = searchCandidatesFromBody(body);
   return candidates.map((hit, index) => {
     const source = objectValue(hit?.source) || {};
-    const stream = streamForHit(hit);
-    const recordKey = recordKeyForHit(hit);
-    const connectionId = firstString(hit?.connection_id, hit?.connector_instance_id, source.connection_id);
+    const recordUriRef = recordUriRefForHit(hit);
+    const stream = firstString(streamForHit(hit), recordUriRef?.stream);
+    const recordKey = firstString(recordKeyForHit(hit), recordUriRef?.recordId);
+    const connectionId = firstString(
+      hit?.connection_id,
+      hit?.connector_instance_id,
+      source.connection_id,
+      recordUriRef?.connectionId,
+    );
     // The id is the single opaque handle a model carries into `fetch`; encode
     // the hit's connection so multi-source grants resolve without a second
     // model-carried `connection_id` field.
-    const id = selfContainedResultId(resultIdForHit(hit, index), connectionId);
+    const id = selfContainedResultId(resultIdForHit(hit, index, { stream, recordKey }), connectionId);
     const displayName = firstString(hit?.display_name, source.display_name);
     const connectorKey = firstString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id);
     const snippet = snippetForSearchHit(hit);
@@ -2438,7 +2446,7 @@ function normalizeSearchResults(body, options = {}) {
     const normalized = {
       id,
       title: titleForSearchHit(hit, id, { stream, recordKey, connectionId, displayName, connectorKey }),
-      url: urlForRecord(hit, id),
+      url: urlForRecord(hit, id, options.providerUrl),
     };
     if (stream) normalized.stream = stream;
     if (recordKey) normalized.record_key = recordKey;
@@ -2583,18 +2591,45 @@ function compactSearchEnvelopeDataObject(data, { resultCount } = {}) {
   return out;
 }
 
-function resultIdForHit(hit, index) {
-  const directId = stringValue(hit?.result_id ?? hit?.resultId ?? hit?.record_uri ?? hit?.recordUri);
+function resultIdForHit(hit, index, fallback = {}) {
+  const directId = stringValue(hit?.result_id ?? hit?.resultId);
+  const directRef = parseRecordResultIdOrNull(directId);
+  if (directRef) return selfContainedRecordId(directRef);
   if (directId) return directId;
 
-  const stream = streamForHit(hit);
-  const recordId = stringValue(hit?.id ?? hit?.record_id ?? hit?.recordId ?? hit?.record_key ?? hit?.recordKey);
+  // REST search envelopes may include a canonical `pdpp://record/...`
+  // resource URI. Keep that accepted as input, but do not make it the
+  // ordinary model-visible result id: some ChatGPT hosts do not route generic
+  // resource reads for templates. A visible id must be directly usable by
+  // `fetch` and `read_record_field`, so normalize parseable record URIs into
+  // the self-contained tool id grammar.
+  const recordUriRef = recordUriRefForHit(hit);
+  if (recordUriRef) return selfContainedRecordId(recordUriRef);
+
+  const stream = fallback.stream ?? streamForHit(hit);
+  const recordId =
+    fallback.recordKey ??
+    stringValue(hit?.id ?? hit?.record_id ?? hit?.recordId ?? hit?.record_key ?? hit?.recordKey);
   if (stream && recordId) {
     return `${stream}:${recordId}`;
   }
 
-  const fallback = stringValue(hit?.id ?? hit?.url);
-  return fallback || `result:${index + 1}`;
+  const fallbackId = stringValue(hit?.id ?? hit?.url);
+  return fallbackId || `result:${index + 1}`;
+}
+
+function recordUriRefForHit(hit) {
+  for (const value of [hit?.record_uri, hit?.recordUri, hit?.id]) {
+    const raw = stringValue(value);
+    if (!raw || !raw.startsWith('pdpp://record/')) continue;
+    const parsed = parseRecordResultIdOrNull(raw);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function selfContainedRecordId(ref) {
+  return ref.connectionId ? `${ref.connectionId}/${ref.stream}:${ref.recordId}` : `${ref.stream}:${ref.recordId}`;
 }
 
 function streamForHit(hit) {

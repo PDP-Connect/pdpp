@@ -70,11 +70,14 @@ A separate bounded-read tool is justified because it removes a class of
 false-success workflows where search proves a match exists but the model cannot
 inspect the matching text without a full fetch or file artifact.
 
-`record_uri` values are operational record handles. They SHALL be accepted by
-model-callable read tools such as `fetch` and `read_record_field`; they are not
-promised to be generic MCP resources readable through every host's
-`resources/read` implementation. A URI-shaped value is a dead end only when no
-model-callable continuation can consume it.
+`record_uri` values are compatibility/resource handles, not the preferred
+ordinary model-visible handle. Model-callable read tools such as `fetch` and
+`read_record_field` SHALL continue accepting `pdpp://record/...` inputs, but
+ordinary search results and content ladders SHALL prefer the self-contained tool
+id form (`connection_id/stream:record_id`) and explicit read arguments. This
+keeps ChatGPT-style hosts from seeing a URI that their generic resource reader
+may not route, while preserving resource-aware clients and backwards-compatible
+tool inputs.
 
 ## Alternatives
 

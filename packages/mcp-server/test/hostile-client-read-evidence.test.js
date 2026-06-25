@@ -320,7 +320,7 @@ test('metadata-only search hit does not invent a body match', async () => {
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /slack-metadata/);
+  assert.match(visible, /cin_slack\/messages:m-meta/);
   assert.doesNotMatch(visible, /field_path=text/);
   assert.doesNotMatch(visible, /message body/i);
   assert.match(visible, /fetch/);
@@ -524,7 +524,7 @@ test('REST evidence_excerpts read descriptors synthesize callable read args', as
   assert.match(visible, /id=cin_slack\/messages:m1/);
 });
 
-test('search-visible record_uri is the callable handle for evidence continuations', async () => {
+test('search-visible record_uri is normalized to a self-contained callable tool id', async () => {
   const { fetch, calls } = hostileSearchFixture();
   const { client, server } = await connectClient(fetch);
 
@@ -535,16 +535,25 @@ test('search-visible record_uri is the callable handle for evidence continuation
   assert.match(visible, /Evidence excerpts:/);
   assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
   assert.equal(
-    visible.includes('id=pdpp://record/cin_slack%2Fmessages%3Am1'),
+    visible.includes('id=cin_slack/messages:m1'),
     true,
-    'search-visible record_uri must be the canonical result id',
+    'search-visible handle must be directly usable by tools',
   );
+  assert.doesNotMatch(
+    visible,
+    /pdpp:\/\/record\//,
+    'ordinary search text must not expose a raw resource URI as the primary handle',
+  );
+  assert.equal(search.structuredContent.results[0].id, 'cin_slack/messages:m1');
+  assert.equal(search.structuredContent.results[0].url, 'https://provider.test/v1/streams/messages/records/m1?connection_id=cin_slack');
+  assert.doesNotMatch(JSON.stringify(search.structuredContent.results), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(search.structuredContent.content_ladder), /pdpp:\/\/record\//);
   assert.match(visible, /read=read_record_field/);
 
   const read = await client.callTool({
     name: 'read_record_field',
     arguments: {
-      id: 'pdpp://record/cin_slack%2Fmessages%3Am1',
+      id: 'cin_slack/messages:m1',
       field_path: 'text',
       q: 'Hyperlane',
       limit_chars: 400,
@@ -562,7 +571,7 @@ test('search-visible record_uri is the callable handle for evidence continuation
         call.url.includes('connection_id=cin_slack'),
     ),
     true,
-    'search-visible pdpp://record handle must route to bounded field read',
+    'search-visible self-contained handle must route to bounded field read',
   );
 });
 
@@ -579,8 +588,9 @@ test('content-only client sees matched text from the real RS evidence_excerpts e
   assert.match(visible, /Evidence excerpts:/);
   assert.match(visible, /Hyperlane or LayerZero/);
   assert.match(visible, /read=read_record_field/);
-  // The visible excerpt carries the self-contained fetch id derived from the hit.
-  assert.match(visible, /id=cin_slack\/messages:slack-msg-1/);
+  // The visible excerpt carries the self-contained fetch id derived from the
+  // source record key, not a wrapper-only search hit id.
+  assert.match(visible, /id=cin_slack\/messages:m1/);
 });
 
 test('resource-less client reaches bounded evidence through tool args alone', async () => {

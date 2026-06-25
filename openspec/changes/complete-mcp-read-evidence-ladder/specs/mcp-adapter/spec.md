@@ -75,7 +75,7 @@ MCP adapter SHALL keep ordinary small evidence inline and SHALL NOT emit `conten
 - **WHEN** the model calls `fetch` with a field projection that produces a small document
 - **THEN** the response SHALL include the projected document inline in `content[]`
 - **AND** the response SHALL NOT include a `content[]` `resource_link`
-- **AND** the response SHALL preserve any record resource URI in `structuredContent`
+- **AND** ordinary model-visible `structuredContent` SHALL use self-contained record ids and SHALL NOT expose raw `pdpp://record/...` resource URIs when a self-contained id can be formed
 
 ### Requirement: MCP Search Evidence Appears Before Wrappers
 
@@ -88,9 +88,13 @@ MCP adapter SHALL render proven search match-window evidence before generic sear
 - **AND** the excerpt SHALL include matched field path, bounded snippet, self-contained result id, and model-callable read tool hint
 - **AND** the excerpt SHALL NOT rely on a `pdpp://field-window/...` URI as the only visible continuation
 
-#### Scenario: Visible record URI is a bounded-read handle
-- **WHEN** a search result exposes a `record_uri` value in visible text or structured content
-- **AND** the model calls the MCP field-read tool with that `record_uri` as the record identity
+#### Scenario: REST record URI is normalized before ordinary model display
+- **WHEN** the resource server returns a parseable `record_uri` for a search hit
+- **THEN** ordinary model-visible search results and content ladders SHALL expose the equivalent self-contained result id
+- **AND** ordinary model-visible search results and content ladders SHALL NOT expose the raw `pdpp://record/...` URI
+- **AND** the visible continuation SHALL include model-callable `read_record_field` args using the self-contained id
+
+#### Scenario: Raw record URI remains accepted as a compatibility input
+- **WHEN** the model or a resource-aware host passes a `pdpp://record/...` URI to `fetch`, `read_record_field`, or MCP `resources/read`
 - **THEN** the MCP adapter SHALL resolve the URI to the same grant-scoped record as the self-contained result id
 - **AND** the bounded field read SHALL return inline text when the requested field window is ordinary small text
-- **AND** failure of a generic MCP `resources/read` call for that URI SHALL NOT by itself make the visible item a dead end
