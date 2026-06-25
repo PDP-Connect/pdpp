@@ -80,6 +80,34 @@ function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
 }
 
+function readStreamResourceField(manifestStream) {
+  const selection = manifestStream?.selection;
+  const field = selection && typeof selection === 'object' && !Array.isArray(selection)
+    ? selection.resource_field
+    : null;
+  return typeof field === 'string' && field.length > 0 ? field : null;
+}
+
+function recordMatchesScopeResource(resources, key, data, manifestStream) {
+  if (!(Array.isArray(resources) && resources.length)) {
+    return true;
+  }
+  const allowed = new Set(resources.map(String));
+  if (allowed.has(encodeScopeResourceKey(key))) {
+    return true;
+  }
+  const resourceField = readStreamResourceField(manifestStream);
+  if (!resourceField || !(data && typeof data === 'object' && !Array.isArray(data))) {
+    return false;
+  }
+  const value = data[resourceField];
+  if (value == null) {
+    return false;
+  }
+  const resourceKey = Array.isArray(value) ? JSON.stringify(value.map(String)) : String(value);
+  return allowed.has(resourceKey);
+}
+
 function buildRunSourceDescriptor(connectorId) {
   return { kind: 'connector', id: connectorId };
 }
@@ -2862,8 +2890,7 @@ export async function runConnector(opts) {
           }
 
           const manifestStream = manifestByStream.get(stream) || null;
-          const resourceKey = encodeScopeResourceKey(key);
-          if (Array.isArray(streamScope.resources) && streamScope.resources.length && !streamScope.resources.includes(resourceKey)) {
+          if (!recordMatchesScopeResource(streamScope.resources, key, data, manifestStream)) {
             throw new Error(`Connector emitted RECORD outside declared resources for stream: ${stream}`);
           }
 

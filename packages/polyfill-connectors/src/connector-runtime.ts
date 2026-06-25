@@ -105,6 +105,10 @@ export type {
 
 type Credentials = Record<string, string>;
 
+interface EmitRecordOptions {
+  skipResourceFilter?: boolean;
+}
+
 interface BaseCollectContext {
   assist: (req: AssistanceRequest) => Promise<string>;
   capture: CaptureSession | null;
@@ -116,7 +120,7 @@ interface BaseCollectContext {
   credentials: Credentials;
   detailGaps: readonly DetailGapStartEntry[];
   emit: (msg: EmittedMessage) => Promise<void>;
-  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  emitRecord: (stream: string, data: RecordData, options?: EmitRecordOptions) => Promise<void>;
   emittedAt: string;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   /**
@@ -796,12 +800,12 @@ function makeEmitRecord(deps: {
     resFilters.set(streamName, resourceSet(scope));
   }
 
-  const emitRecord = (stream: string, data: RecordData): Promise<void> => {
+  const emitRecord = (stream: string, data: RecordData, options: EmitRecordOptions = {}): Promise<void> => {
     if (data.id == null) {
       return Promise.resolve();
     }
     const rs = resFilters.get(stream);
-    if (rs && !rs.has(String(data.id))) {
+    if (!options.skipResourceFilter && rs && !rs.has(String(data.id))) {
       return Promise.resolve();
     }
 

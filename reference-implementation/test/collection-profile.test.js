@@ -1939,6 +1939,63 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('runtime accepts RECORD messages within manifest-declared resource field', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const manifest = {
+      ...MINIMAL_MANIFEST,
+      connector_id: 'test-resource-field',
+      streams: [
+        {
+          name: 'items',
+          semantics: 'append_only',
+          schema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              partition_id: { type: 'string' },
+              value: { type: 'string' },
+            },
+            required: ['id', 'partition_id'],
+          },
+          primary_key: ['id'],
+          selection: { resources: true, resource_field: 'partition_id' },
+        },
+      ],
+    };
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'RECORD',
+        stream: 'items',
+        key: 'item_2',
+        data: { id: 'item_2', partition_id: 'partition_1', value: 'ok' },
+        emitted_at: new Date().toISOString(),
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items', resources: ['partition_1'] }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+      assert.equal(result.records_emitted, 1);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('runtime rejects RECORD messages with fields outside START.scope', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;

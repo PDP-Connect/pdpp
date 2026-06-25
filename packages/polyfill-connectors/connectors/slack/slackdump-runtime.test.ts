@@ -200,6 +200,93 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
   }
 });
 
+test("slack connector counts channel-scoped message RECORDs in DONE.records_emitted", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-counter-"));
+  try {
+    const workspace = "scoped-counter-test";
+    const archiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C02SCOPED"])
+    );
+    await mkdir(archiveDir, { recursive: true });
+    const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
+    try {
+      db.exec(`
+        CREATE TABLE MESSAGE (
+          CHANNEL_ID TEXT NOT NULL,
+          TS TEXT NOT NULL,
+          THREAD_TS TEXT,
+          IS_PARENT INTEGER,
+          TXT TEXT,
+          NUM_FILES INTEGER,
+          DATA BLOB,
+          CHUNK_ID INTEGER NOT NULL
+        );
+      `);
+      const insert = db.prepare(`
+        INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run(
+        "C02SCOPED",
+        "1714032849.123456",
+        null,
+        null,
+        "included",
+        null,
+        new TextEncoder().encode(JSON.stringify({ text: "included", user: "U0123456789" })),
+        1
+      );
+      insert.run(
+        "C02OTHER",
+        "1714032850.123456",
+        null,
+        null,
+        "excluded",
+        null,
+        new TextEncoder().encode(JSON.stringify({ text: "excluded", user: "U0123456789" })),
+        1
+      );
+    } finally {
+      db.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages", resources: ["C02SCOPED"] }] },
+      },
+    });
+
+    const records = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
+    );
+    const done = result.messages.findLast(
+      (message): message is Extract<EmittedMessage, { type: "DONE" }> => message.type === "DONE"
+    );
+
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.data.channel_id, "C02SCOPED");
+    assert.equal(done?.status, "succeeded");
+    assert.equal(done?.records_emitted, records.length);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("slack connector emits a bounded source-partition diagnostic when a prior channel is missing", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-missing-channel-"));
   try {

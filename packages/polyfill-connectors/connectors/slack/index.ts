@@ -224,27 +224,9 @@ function selectCommittedChannelLastTs(
   return out;
 }
 
-function buildShapeCheckSkip(
-  stream: string,
-  data: RecordData
-): Extract<EmittedMessage, { type: "SKIP_RESULT" }> | null {
-  const validation = validateRecord(stream, data);
-  if (validation.ok) {
-    return null;
-  }
-  return {
-    type: "SKIP_RESULT",
-    stream,
-    reason: "shape_check_failed",
-    message: `${String(data.id)}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`,
-    diagnostics: { id: data.id, issues: validation.issues, record: data },
-  };
-}
-
 async function emitMessageRecordScopedByChannel(deps: {
   channelIds: ReadonlySet<string>;
-  emit: CollectContext["emit"];
-  emittedAt: string;
+  emitRecord: CollectContext["emitRecord"];
   record: RecordData;
 }): Promise<void> {
   if (
@@ -254,18 +236,7 @@ async function emitMessageRecordScopedByChannel(deps: {
   ) {
     return;
   }
-  const skip = buildShapeCheckSkip("messages", deps.record);
-  if (skip) {
-    await deps.emit(skip);
-    return;
-  }
-  await deps.emit({
-    type: "RECORD",
-    stream: "messages",
-    key: deps.record.id,
-    data: deps.record,
-    emitted_at: deps.emittedAt,
-  });
+  await deps.emitRecord("messages", deps.record, { skipResourceFilter: true });
 }
 
 // Default timeout accommodates long-lived workspaces (10+ years) where a
@@ -1435,8 +1406,7 @@ if (isMainModule(import.meta.url)) {
           stream === "messages" && msgResFilter
             ? emitMessageRecordScopedByChannel({
                 channelIds: msgResFilter,
-                emit,
-                emittedAt: ctx.emittedAt,
+                emitRecord: ctx.emitRecord,
                 record: data,
               })
             : ctx.emitRecord(stream, data),

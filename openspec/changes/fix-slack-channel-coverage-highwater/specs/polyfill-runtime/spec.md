@@ -47,6 +47,14 @@ When an owner-triggered connector run supplies per-stream resource identifiers, 
 - **AND** the runtime SHALL include those resources in the connector `START.scope`
 - **AND** the connector SHALL collect only records within that resource boundary for streams that implement resource filtering
 
+#### Scenario: Resource boundary is a manifest-declared record field
+
+- **WHEN** a stream declares `selection.resource_field`
+- **AND** an owner-triggered run supplies resources for that stream
+- **AND** the connector emits a record whose key is not one of those resources but whose declared resource field is one of those resources
+- **THEN** the runtime SHALL accept the record as inside the declared resource boundary
+- **AND** the runtime SHALL continue rejecting records that match neither the key nor the declared resource field
+
 #### Scenario: Invalid or empty resource shape
 
 - **WHEN** an owner-triggered run request supplies resources that are not an object keyed by stream with non-empty string-array values

@@ -1026,7 +1026,8 @@
       "consent_time_field": "sent_at",
       "selection": {
         "fields": true,
-        "resources": true
+        "resources": true,
+        "resource_field": "channel_id"
       },
       "incremental": true,
       "relationships": [
