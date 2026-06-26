@@ -934,10 +934,10 @@ async function runInBrowser(args: {
       establishSession(
         { ensureSession, probeSession },
         {
-          assist,
+          assist: watchdog.wrapAssist(assist),
           capture: baseCtx.capture,
           checkpoint: watchdog.checkpoint,
-          completeAssistance,
+          completeAssistance: watchdog.wrapCompleteAssistance(completeAssistance),
           context: ctx,
           page: page as Page,
           name,
@@ -1493,6 +1493,12 @@ export interface SessionEstablishWatchdog {
   checkpoint: SessionCheckpointFn;
   /** Run the establishment work under the watchdog; rejects with TerminalError on trip. */
   run: (work: () => Promise<void>) => Promise<void>;
+  /** Wrap nonblocking assistance so external owner waits pause the watchdog. */
+  wrapAssist: (assist: BaseCollectContext["assist"]) => BaseCollectContext["assist"];
+  /** Re-arm the watchdog when a nonblocking assistance wait is resolved/escalated. */
+  wrapCompleteAssistance: (
+    completeAssistance: BaseCollectContext["completeAssistance"]
+  ) => BaseCollectContext["completeAssistance"];
   /** Wrap a sendInteraction so the watchdog is paused while an interaction is open. */
   wrapSendInteraction: (send: BaseCollectContext["sendInteraction"]) => BaseCollectContext["sendInteraction"];
 }
@@ -1532,6 +1538,7 @@ export function makeSessionEstablishWatchdog(args: {
 
   let lastProgressAt = now();
   let lastLabel: string | null = null;
+  const openAssistance = new Map<string, number>();
   let openInteractions = 0;
   let tripped = false;
 
@@ -1555,6 +1562,51 @@ export function makeSessionEstablishWatchdog(args: {
       process.stderr.write(`[session-watchdog] checkpoint capture failed for ${label}: ${message}\n`);
     }
   };
+
+  const assistancePausesWatchdog = (req: AssistanceRequest): boolean =>
+    req.progress_posture === "running" && req.response_contract === "none";
+
+  const pruneExpiredAssistance = (): void => {
+    const current = now();
+    let pruned = false;
+    for (const [id, expiresAt] of openAssistance) {
+      if (expiresAt > current) {
+        continue;
+      }
+      openAssistance.delete(id);
+      pruned = true;
+    }
+    if (pruned) {
+      // Give post-timeout fallback logic a fresh watchdog window.
+      markProgress(null);
+    }
+  };
+
+  const wrapAssist: SessionEstablishWatchdog["wrapAssist"] = (assist) => async (req) => {
+    markProgress(null);
+    const assistanceRequestId = await assist(req);
+    if (assistancePausesWatchdog(req)) {
+      const timeoutMs =
+        typeof req.timeout_seconds === "number" && Number.isFinite(req.timeout_seconds) && req.timeout_seconds > 0
+          ? req.timeout_seconds * 1000
+          : deadlineMs;
+      openAssistance.set(assistanceRequestId, now() + timeoutMs + deadlineMs);
+      markProgress(null);
+    }
+    return assistanceRequestId;
+  };
+
+  const wrapCompleteAssistance: SessionEstablishWatchdog["wrapCompleteAssistance"] =
+    (completeAssistance) =>
+    async (assistanceRequestId, status, extra = {}) => {
+      try {
+        await completeAssistance(assistanceRequestId, status, extra);
+      } finally {
+        if (openAssistance.delete(assistanceRequestId)) {
+          markProgress(null);
+        }
+      }
+    };
 
   const wrapSendInteraction: SessionEstablishWatchdog["wrapSendInteraction"] = (send) => async (req) => {
     // An open interaction means the run is legitimately waiting on the owner;
@@ -1582,7 +1634,8 @@ export function makeSessionEstablishWatchdog(args: {
     const TRIP = Symbol("session-establish-trip");
     const tripPromise = new Promise<typeof TRIP>((resolve) => {
       const onTick = (): void => {
-        if (tripped || openInteractions > 0) {
+        pruneExpiredAssistance();
+        if (tripped || openInteractions > 0 || openAssistance.size > 0) {
           return;
         }
         const sinceMs = now() - lastProgressAt;
@@ -1625,7 +1678,7 @@ export function makeSessionEstablishWatchdog(args: {
     }
   };
 
-  return { checkpoint, wrapSendInteraction, run };
+  return { checkpoint, wrapAssist, wrapCompleteAssistance, wrapSendInteraction, run };
 }
 
 interface SessionEstablishArgs {

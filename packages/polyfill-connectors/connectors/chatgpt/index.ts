@@ -3903,10 +3903,11 @@ if (isMainModule(import.meta.url)) {
     name: "chatgpt",
     validateRecord,
     browser: { profileName: "chatgpt" },
-    async ensureSession({ assist, capture, completeAssistance, context, page, progress, sendInteraction }) {
+    async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
       await ensureChatGptSession({
         assist,
         capture,
+        checkpoint,
         completeAssistance,
         context,
         page,

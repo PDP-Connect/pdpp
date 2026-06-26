@@ -19,6 +19,8 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 
 import {
+  type AssistanceCompletionStatus,
+  type AssistanceRequest,
   captureBrowserPage,
   type InteractionRequest,
   type InteractionResponse,
@@ -51,6 +53,15 @@ function makeStubPage(): Page {
 // Poll on a short real interval so ticks happen promptly; advance the logical
 // clock and let the event loop turn so a tick can observe it.
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
+
+const nonblockingAssistance = (): AssistanceRequest => ({
+  message: "Approve this request in the source app.",
+  owner_action: "act_elsewhere",
+  progress_posture: "running",
+  response_contract: "none",
+  sensitivity: "non_secret",
+  timeout_seconds: 1800,
+});
 
 test("watchdog trips when establishment never checkpoints and never returns", async () => {
   const clock = makeClock();
@@ -186,6 +197,73 @@ test("watchdog is paused while an interaction is open (long owner wait is not ki
 
   await watchdog.run(work);
   assert.equal(tripped, false, "open interaction must pause the watchdog");
+});
+
+test("watchdog is paused while nonblocking running assistance is open", async () => {
+  const clock = makeClock();
+  let tripped = false;
+  const watchdog = makeSessionEstablishWatchdog({
+    capture: null,
+    name: "chatgpt",
+    page: makeStubPage(),
+    deadlineMs: 100,
+    pollIntervalMs: 2,
+    now: clock.now,
+    onTrip: () => {
+      tripped = true;
+    },
+  });
+
+  const assist = (_req: AssistanceRequest): Promise<string> => {
+    clock.advance(500);
+    return Promise.resolve("assist_1");
+  };
+  const completeAssistance = async (_assistanceRequestId: string, _status: AssistanceCompletionStatus): Promise<void> =>
+    undefined;
+  const wrappedAssist = watchdog.wrapAssist(assist);
+  const wrappedCompleteAssistance = watchdog.wrapCompleteAssistance(completeAssistance);
+
+  const work = async (): Promise<void> => {
+    await watchdog.checkpoint("before-assistance");
+    const assistanceRequestId = await wrappedAssist(nonblockingAssistance());
+    clock.advance(500);
+    await tick();
+    await wrappedCompleteAssistance(assistanceRequestId, "escalated");
+  };
+
+  await watchdog.run(work);
+  assert.equal(tripped, false, "open nonblocking assistance must pause the watchdog");
+});
+
+test("watchdog re-arms after nonblocking assistance completes", async () => {
+  const clock = makeClock();
+  const watchdog = makeSessionEstablishWatchdog({
+    capture: null,
+    name: "chatgpt",
+    page: makeStubPage(),
+    deadlineMs: 100,
+    pollIntervalMs: 2,
+    now: clock.now,
+  });
+
+  let assistanceClosed = false;
+  const wrappedAssist = watchdog.wrapAssist(async (): Promise<string> => "assist_1");
+  const wrappedCompleteAssistance = watchdog.wrapCompleteAssistance(async (): Promise<void> => undefined);
+
+  const work = async (): Promise<void> => {
+    const assistanceRequestId = await wrappedAssist(nonblockingAssistance());
+    await wrappedCompleteAssistance(assistanceRequestId, "escalated");
+    assistanceClosed = true;
+    await new Promise<void>(() => {
+      /* never resolves */
+    });
+  };
+
+  const rejection = assert.rejects(watchdog.run(work), /chatgpt_session_establish_timeout/);
+  await tick();
+  assert.equal(assistanceClosed, true, "assistance should have completed");
+  clock.advance(150);
+  await rejection;
 });
 
 test("watchdog re-arms after an interaction resolves and trips if progress then stalls", async () => {
