@@ -269,6 +269,7 @@ function buildMessagePreview(data: RecordData, roles?: DeclaredFieldRoles): Reco
 }
 
 function buildEventPreview(data: RecordData, roles?: DeclaredFieldRoles): RecordPreview | null {
+  const titleField = roles ? fieldForRole(roles, "primary-title") : undefined;
   const title = roleValue(data, roles, "primary-title", 80);
   // Event time only from the declared `event-time` field — never guessed from
   // `start`/`end`/etc.
@@ -285,9 +286,8 @@ function buildEventPreview(data: RecordData, roles?: DeclaredFieldRoles): Record
   // emptyDeclaredContentPreview placeholder. (event-time on `messages` is a broad
   // convention across 7 connectors, so the empty-content case is handled HERE, not
   // by re-authoring every manifest.)
-  if (!title && roles && fieldForRole(roles, "primary-title")) {
-    const titleField = fieldForRole(roles, "primary-title");
-    const placeholder = titleField ? `(no ${humanizeFieldLabel(titleField).toLowerCase()})` : undefined;
+  if (!title && titleField) {
+    const placeholder = `(no ${humanizeFieldLabel(titleField).toLowerCase()})`;
     return { body, eventTime, kind: "event", title: placeholder };
   }
   return { body, eventTime, kind: "event", title };

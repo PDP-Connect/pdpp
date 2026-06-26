@@ -572,6 +572,16 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
   };
 }
 
+/** Maps a SyncProjection to the FailureCard shape used in the view-model. */
+function toFailureCard(projection: SyncProjection): FailureCard {
+  return {
+    name: projection.connector.display_name,
+    connectionId: projection.connector.connection_id,
+    connectorId: projection.connector.connector_id,
+    summary: projection.summary as FailureSummary,
+  };
+}
+
 /**
  * Build the entire Syncs view-model from the three real contracts.
  *
@@ -624,33 +634,25 @@ export function buildSyncsViewModel(input: {
     });
   }
 
+  // --- dedup / sort ---
   const { duplicateGroups, visible } = collapseDuplicateFallbackProjections(projections);
   const ordered = [...visible].sort(compareProjection);
+
+  // --- shape output ---
   // All groups and all streams are shown — no truncation. The full catalogue
   // tops out at ~134 stream rows across 33 connectors, well under any
   // virtualization threshold.
   const groups = ordered.map((projection) => projection.group);
+  // visible subset (display)
   const failureCards = ordered
     .filter((projection) => projection.summary !== null)
-    .map(
-      (projection): FailureCard => ({
-        name: projection.connector.display_name,
-        connectionId: projection.connector.connection_id,
-        connectorId: projection.connector.connector_id,
-        summary: projection.summary as FailureSummary,
-      })
-    );
+    .map(toFailureCard);
   const allGroups = projections.map((projection) => projection.group);
+  // full population (counts)
   const allFailureCards = projections
     .filter((projection) => projection.summary !== null)
-    .map(
-      (projection): FailureCard => ({
-        name: projection.connector.display_name,
-        connectionId: projection.connector.connection_id,
-        connectorId: projection.connector.connector_id,
-        summary: projection.summary as FailureSummary,
-      })
-    );
+    .map(toFailureCard);
+  // --- compute totals + return ---
   const totalStreamCount = allGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
   // The band must count the failure cards that are actually RENDERED below it
   // (`failureCards`), not the full population (`allFailureCards`). Advisories on

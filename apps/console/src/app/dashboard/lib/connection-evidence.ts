@@ -1033,7 +1033,7 @@ export function deriveConnectionStatusDisplay(input: {
 }): ConnectionStatusDisplay {
   const { hasDurableProgress, health, localDeviceProgress } = input;
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
-  const dominant = dominantConditionTitle(health);
+  const dominant = formatDominantCondition(health)?.title ?? null;
   switch (health.state) {
     case "healthy":
       if (!hasDurableProgress) {
@@ -1286,11 +1286,6 @@ function idleDisplay(input: {
     title: "No durable progress yet for this connection. Trigger a sync to populate it.",
     tone: "neutral",
   };
-}
-
-function dominantConditionTitle(snapshot: RefConnectionHealthSnapshot): string | null {
-  const summary = formatDominantCondition(snapshot);
-  return summary?.title ?? null;
 }
 
 /**

@@ -21,6 +21,18 @@ const CURRENT_SCHEMA_VERSION = 2;
  */
 const LEGACY_COVERAGE_SCAN_BUDGET = 5000;
 
+/**
+ * Max bound parameters to put in a single `... IN (?, ?, …)` statement.
+ *
+ * SQLite caps host parameters per prepared statement (commonly 32,766 in
+ * recent builds; `node:sqlite` rejects ≥ 32,767 with "too many SQL
+ * variables"). A bulk prune/requeue over the live 169k-row outbox would blow
+ * past that as one statement. 500 is far below every build's ceiling, keeps
+ * each statement small, and still drains a 169k-row backlog in ~340 chunks
+ * inside one transaction.
+ */
+const SQLITE_IN_CLAUSE_CHUNK = 500;
+
 export type LocalDeviceOutboxKind = "record_batch" | "checkpoint" | "gap" | "blob_upload";
 export type LocalDeviceOutboxStatus = "ready" | "leased" | "succeeded" | "dead_letter";
 
@@ -974,6 +986,9 @@ export class LocalDeviceOutbox {
     // The index reported no hit. Account for any legacy record_batch rows the
     // index does not yet cover before concluding `false`, but never scan more
     // than the bounded budget of payloads.
+    // Fetch budget + 1: the extra row is a sentinel so a returned length STRICTLY
+    // greater than the budget means "at least one row beyond what we'd scan" →
+    // over budget (return null/unknown below) rather than a false negative.
     const unindexed = this.#unindexedRecordBatchIds(input.sourceInstanceId, LEGACY_COVERAGE_SCAN_BUDGET + 1);
     if (unindexed.length === 0) {
       return false;
@@ -1401,18 +1416,6 @@ function normalizeLimit(value: number | undefined): number | null {
 function sqlStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
-
-/**
- * Max bound parameters to put in a single `... IN (?, ?, …)` statement.
- *
- * SQLite caps host parameters per prepared statement (commonly 32,766 in
- * recent builds; `node:sqlite` rejects ≥ 32,767 with "too many SQL
- * variables"). A bulk prune/requeue over the live 169k-row outbox would blow
- * past that as one statement. 500 is far below every build's ceiling, keeps
- * each statement small, and still drains a 169k-row backlog in ~340 chunks
- * inside one transaction.
- */
-const SQLITE_IN_CLAUSE_CHUNK = 500;
 
 /** Split an array into consecutive chunks of at most `size` elements. */
 function chunkArray<T>(items: readonly T[], size: number): T[][] {
