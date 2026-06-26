@@ -31,7 +31,7 @@ interface RunConnectorNowOptions {
 
 const ALREADY_ACTIVE_RE = /already.*active/i;
 const RUN_ALREADY_ACTIVE_RE = /run_already_active/i;
-const RUN_ID_MATCH_RE = /run[_:]?([A-Za-z0-9]+)/;
+const RUN_ID_MATCH_RE = /\brun[_:][A-Za-z0-9]+/;
 
 /** Server action: start a connector run. Designed to never throw — the UI
  *  uses the discriminated-union return to render a toast/badge.
@@ -82,7 +82,7 @@ export async function runConnectorNowAction(
       return {
         ok: false,
         reason: "already_running",
-        run_id: match?.[1],
+        run_id: match?.[0],
         message: "Sync already in progress.",
       };
     }

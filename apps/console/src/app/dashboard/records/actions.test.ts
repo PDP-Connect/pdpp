@@ -36,6 +36,7 @@ const BEFORE_SERVER_DEPLOYMENT_HINT = /deployment is running/;
 const BEFORE_SERVER_RETURN = /phase: "before_server"[\s\S]{0,160}reached_server: false/;
 const AFTER_SERVER_RETURN = /phase: "after_server"[\s\S]{0,160}reached_server: true/;
 const ALREADY_RUNNING_PRESERVED = /reason:\s*"already_running"/;
+const ALREADY_RUNNING_RETURNS_FULL_RUN_ID = /run_id: match\?\.\[0\]/;
 const FORCE_OPTION_SIGNATURE = /options: RunConnectorNowOptions = \{\}/;
 const FORCE_OPTION_BODY = /const runOptions = \{ force: options\.force === true \}/;
 const RUN_CONNECTION_WITH_OPTIONS = /runConnectionNow\(connectionId, runOptions\)/;
@@ -67,6 +68,12 @@ test("a server-side rejection is marked after_server/reached_server so the UI kn
 test("the already_running 409 branch is preserved alongside the phase-aware error branch", async () => {
   const src = await readFile(ACTIONS_FILE, "utf8");
   assert.match(src, ALREADY_RUNNING_PRESERVED);
+});
+
+test("the already_running 409 branch preserves the full run id for linking", async () => {
+  const src = await readFile(ACTIONS_FILE, "utf8");
+  assert.ok(src.includes("const RUN_ID_MATCH_RE = /\\brun[_:][A-Za-z0-9]+/;"));
+  assert.match(src, ALREADY_RUNNING_RETURNS_FULL_RUN_ID);
 });
 
 test("run-now action forwards explicit force override to the operator client", async () => {

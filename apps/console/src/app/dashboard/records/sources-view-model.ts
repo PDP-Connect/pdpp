@@ -389,7 +389,7 @@ function formatPrimaryVerdictAction(verdict: RefRenderedVerdict | null | undefin
 }
 
 function ownerActionCueFromVerdictAction(action: SourcePrimaryVerdictAction | null): SourceOwnerActionCue | null {
-  if (!action?.ownerRunnable || action.channel === "attention") {
+  if (!action?.ownerRunnable) {
     return null;
   }
   return { label: action.cta };

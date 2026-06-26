@@ -255,7 +255,7 @@ test("toSourceInstanceView surfaces owner-runnable advisory action cues for sour
   assert.equal(view.primaryVerdictAction?.channel, "advisory");
 });
 
-test("toSourceInstanceView keeps urgent attention out of advisory row cues", () => {
+test("toSourceInstanceView surfaces owner-runnable attention action cues for source rows", () => {
   const view = toSourceInstanceView(
     summary({
       rendered_verdict: renderedVerdict({
@@ -277,7 +277,9 @@ test("toSourceInstanceView keeps urgent attention out of advisory row cues", () 
   );
 
   assert.equal(view.nextAction?.label, "Reconnect");
-  assert.equal(view.ownerActionCue, null);
+  assert.deepEqual(view.ownerActionCue, { label: "Reconnect" });
+  assert.equal(view.primaryVerdictAction?.ownerRunnable, true);
+  assert.equal(view.primaryVerdictAction?.channel, "attention");
 });
 
 test("toSourceInstanceView does not fall back to raw health state or next_action when rendered_verdict is absent", () => {

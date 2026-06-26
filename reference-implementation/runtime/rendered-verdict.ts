@@ -420,6 +420,13 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
   }
 }
 
+function terminalAwareTone(tone: VerdictTone, snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): VerdictTone {
+  if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition)) {
+    return "amber";
+  }
+  return tone;
+}
+
 function attentionTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
   switch (snapshot.axes.attention) {
     case "none":
@@ -545,18 +552,30 @@ function streamDisposition(
 const URGENCY_RANK: Record<ActionUrgency, number> = { now: 0, overdue: 1, soon: 2, verifying: 3 };
 
 /**
- * The credential-rejected condition: the projection emits a `CredentialsValid`
- * condition with `status: "false"` and reason `credential_rejected` when a stored
- * credential was rejected. This is the owner-sole-resolution signal that drives a
- * `reauth` action.
+ * Credential failures are owner-sole-resolution, whether the source rejected an
+ * existing credential or the reference lacks the credential needed to run.
  */
-function hasRejectedCredential(snapshot: ConnectionHealthSnapshot): boolean {
+function hasCredentialFailure(snapshot: ConnectionHealthSnapshot): boolean {
   return snapshot.conditions.some(
-    (condition) =>
-      condition.type === "CredentialsValid" &&
-      condition.status === "false" &&
-      condition.reason === "credential_rejected"
+    (condition) => condition.type === "CredentialsValid" && condition.status === "false" && condition.current
   );
+}
+
+function latestCollectionSucceeded(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) => condition.type === "CollectionSucceeded" && condition.status === "true" && condition.current
+  );
+}
+
+function softensTerminalCoverageToDegraded(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): boolean {
+  return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
+}
+
+function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): string {
+  if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
+    return "Coverage gap needs review";
+  }
+  return "Connector code needs a fix";
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -725,22 +744,23 @@ function buildRequiredActions(
   const terminal = disposition === "terminal";
   const actions: RequiredAction[] = [];
 
-  // Terminal coverage on a stream with no recovery path: maintainer-status code_fix.
-  // Renders as a status line, never a dead owner button, never raises attention.
-  if (terminal) {
+  // Terminal coverage on a stream with no owner recovery path: maintainer-status
+  // code_fix. Credential failures add an owner action below, so do not make
+  // "code fix" the primary story for a source the owner can repair by reconnecting.
+  if (terminal && !hasCredentialFailure(snapshot)) {
     actions.push({
       kind: "code_fix",
       audience: "maintainer",
       urgency: "soon",
       affects: terminalStreamIds(streams),
-      cta: "Connector code needs a fix",
+      cta: terminalCoverageCta(snapshot, disposition),
       terminal: true,
       satisfied_when: { kind: "none" },
     });
   }
 
-  // Rejected credential — owner is the sole resolution. Owner-satisfiable reauth.
-  if (hasRejectedCredential(snapshot)) {
+  // Failed credential — owner is the sole resolution. Owner-satisfiable reauth.
+  if (hasCredentialFailure(snapshot)) {
     actions.push({
       kind: "reauth",
       audience: "owner",
@@ -753,7 +773,7 @@ function buildRequiredActions(
   }
 
   // Open structured attention (OTP / manual action / re-consent) — owner-satisfiable.
-  if (hasOpenAttention(snapshot) && !hasRejectedCredential(snapshot)) {
+  if (hasOpenAttention(snapshot) && !hasCredentialFailure(snapshot)) {
     actions.push({
       kind: "add_info",
       audience: "owner",
@@ -1059,7 +1079,13 @@ function buildForwardStatement(
 
   if (disposition === "terminal") {
     // A terminal disposition must never imply recovery.
+    if (primary?.kind === "reauth") {
+      return "Reconnect this account before further collection.";
+    }
     if (primary?.kind === "code_fix") {
+      if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
+        return "Latest collection completed with known coverage gaps.";
+      }
       return "This connector needs a code fix before it can collect again.";
     }
     return "This data can't be recovered by a future run.";
@@ -1127,7 +1153,13 @@ function manualHeadline(retained: number | null, refreshedAt: string | null): st
 
 function terminalProgressHeadline(retained: number | null, actions: readonly RequiredAction[]): string {
   const held = retained === null ? "Retained-record count is unavailable" : `Holding ${retained.toLocaleString()} records`;
+  if (actions.some((action) => action.kind === "reauth")) {
+    return `${held}; reconnect this account before further collection.`;
+  }
   if (actions.some((action) => action.kind === "code_fix")) {
+    if (actions.some((action) => action.kind === "code_fix" && action.cta !== "Connector code needs a fix")) {
+      return `${held}; source coverage has known gaps.`;
+    }
     return `${held}; connector code needs a fix before new collection.`;
   }
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
@@ -1510,11 +1542,13 @@ export function synthesizeRenderedVerdict(
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh);
+  const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition);
+  const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
     { axis: "state", tone: baseStateTone(snapshot.state) },
     { axis: "freshness", tone: freshnessHealthTone(snapshot) },
-    { axis: "coverage", tone: worstStreamCoverageTone(streams) },
-    { axis: "disposition", tone: dispositionTone(disposition) },
+    { axis: "coverage", tone: coverageHealthTone },
+    { axis: "disposition", tone: dispositionHealthTone },
     { axis: "attention", tone: attentionTone(snapshot) },
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];

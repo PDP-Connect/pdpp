@@ -84,7 +84,10 @@ interface SourcesViewProps {
   runtimeAdvisory?: SourcesRuntimeAdvisory | null;
 }
 
-type ToastState = { kind: "none" } | { kind: "ok"; message: string } | { kind: "error"; message: string };
+type ToastState =
+  | { kind: "none" }
+  | { kind: "ok"; message: string; runHref?: string; runId?: string }
+  | { kind: "error"; message: string };
 
 const ADD_SOURCE_HREF = "/dashboard/records/add";
 
@@ -170,6 +173,7 @@ export function SourcesView({
             <InstancePassport
               instance={selected}
               interactive={interactive}
+              key={selected.id}
               reactivateAction={reactivateAction}
               revokeAction={revokeAction}
             />
@@ -491,12 +495,22 @@ function PassportActions({
       );
       if (res.ok) {
         const action = manualUploadHref ? "Reprocessing all uploaded exports" : "Sync";
-        setToast({ kind: "ok", message: res.run_id ? `${action} started (${res.run_id}).` : `${action} started.` });
+        setToast({
+          kind: "ok",
+          message: `${action} started.`,
+          runHref: res.run_id ? `/dashboard/runs/${encodeURIComponent(res.run_id)}` : undefined,
+          runId: res.run_id || undefined,
+        });
         router.refresh();
         return;
       }
       if (res.reason === "already_running") {
-        setToast({ kind: "ok", message: res.message });
+        setToast({
+          kind: "ok",
+          message: res.message,
+          runHref: res.run_id ? `/dashboard/runs/${encodeURIComponent(res.run_id)}` : undefined,
+          runId: res.run_id,
+        });
         router.refresh();
         return;
       }
@@ -579,6 +593,12 @@ function PassportActions({
           role="status"
         >
           {toast.message}
+          {toast.kind === "ok" && toast.runHref && toast.runId ? (
+            <>
+              {" "}
+              <Link href={toast.runHref}>Open run {toast.runId} →</Link>
+            </>
+          ) : null}
         </div>
       )}
     </div>
@@ -622,6 +642,36 @@ function CollectionRunAction({
             ? "This source is not owner-repairable from the dashboard."
             : "This source is waiting on reference-side work."
         }
+      >
+        {primaryVerdictAction.cta}
+      </span>
+    );
+  }
+  if (
+    primaryVerdictAction !== null &&
+    primaryVerdictAction.ownerRunnable &&
+    (primaryVerdictAction.kind === "refresh_now" || primaryVerdictAction.kind === "retry_gap")
+  ) {
+    return (
+      <IcButton
+        aria-label={`${primaryVerdictAction.cta} for ${instance.displayName}`}
+        disabled={syncDisabled}
+        onClick={onSync}
+        size="sm"
+        type="button"
+      >
+        {isPending ? "Starting…" : primaryVerdictAction.cta}
+      </IcButton>
+    );
+  }
+  if (primaryVerdictAction !== null && primaryVerdictAction.ownerRunnable) {
+    return (
+      <span
+        className="rr-s-cta__hint"
+        data-action-audience={primaryVerdictAction.audience}
+        data-action-kind={primaryVerdictAction.kind}
+        data-testid="sources-owner-verdict-action"
+        title="Open source details to complete this owner action."
       >
         {primaryVerdictAction.cta}
       </span>

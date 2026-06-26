@@ -41,6 +41,26 @@ function credentialRejectedCondition() {
   });
 }
 
+function credentialRequiredCondition() {
+  return condition({
+    type: 'CredentialsValid',
+    id: 'CredentialsValid:credentials_required',
+    reason: 'credentials_required',
+    status: 'false',
+    severity: 'blocked',
+  });
+}
+
+function collectionSucceededCondition() {
+  return condition({
+    type: 'CollectionSucceeded',
+    id: 'CollectionSucceeded:collection_succeeded',
+    reason: 'collection_succeeded',
+    status: 'true',
+    severity: 'info',
+  });
+}
+
 function localExporterStalledCondition(reason, message = 'Local exporter work is stalled.') {
   return condition({
     type: 'LocalExporterAvailable',
@@ -382,6 +402,26 @@ test('channel: attention always carries an owner-satisfiable action (S1)', () =>
   );
   assert.equal(v.channel, 'attention');
   assert.ok(v.required_actions.some((a) => a.audience === 'owner' && a.satisfied_when.kind !== 'none'));
+});
+
+test('channel: missing credentials are owner-repairable reauth, not maintainer code_fix', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'open', coverage: 'terminal_gap' },
+      forward_disposition: 'terminal',
+      conditions: [credentialRequiredCondition()],
+    }),
+    [stream({ coverage: 'terminal_gap' })],
+    null,
+    true
+  );
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.required_actions[0]?.kind, 'reauth');
+  assert.equal(v.required_actions[0]?.cta, 'Reconnect this account');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'code_fix'));
+  assert.equal(v.forward_statement, 'Reconnect this account before further collection.');
+  assert.ok(!JSON.stringify(v).includes('restore missing coverage'));
 });
 
 test('channel: stalled outbox state-read block asks for re-run, not dead-letter retry', () => {
@@ -1046,6 +1086,32 @@ test('golden: synthetic terminal code_fix — maintainer status, no dead owner b
   assert.ok(!/we|we're|nothing for you/i.test(`${codeFix.cta} ${v.forward_statement}`));
   // No owner-audience action (no dead owner button).
   assert.ok(!v.required_actions.some((a) => a.audience === 'owner'));
+});
+
+test('golden: succeeded terminal coverage reads as degraded coverage review, not total collection failure', () => {
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { coverage: 'terminal_gap', freshness: 'fresh' },
+    forward_disposition: 'terminal',
+    conditions: [collectionSucceededCondition()],
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ stream_id: 'messages', coverage: 'terminal_gap' })],
+    null,
+    true,
+    { mode: 'scheduled', retained_records: 369931 }
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(action?.kind, 'code_fix');
+  assert.equal(action?.audience, 'maintainer');
+  assert.equal(action?.cta, 'Coverage gap needs review');
+  assert.equal(v.forward_statement, 'Latest collection completed with known coverage gaps.');
+  assert.equal(v.progress.headline, 'Holding 369,931 records; source coverage has known gaps.');
+  assert.ok(!JSON.stringify(v).includes('Connector code needs a fix'));
 });
 
 test('golden: synthetic runtime fault — channel capped at calm, pill stays honest', () => {
