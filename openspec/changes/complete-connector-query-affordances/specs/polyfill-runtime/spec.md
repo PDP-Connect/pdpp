@@ -65,4 +65,3 @@ The reference build SHALL include manifest-honesty checks that detect supported 
 - **WHEN** the reference returns schema or compact schema metadata for a stream
 - **THEN** the response SHALL expose the manifest-declared search, range, and aggregation affordances in field capabilities
 - **AND** clients SHALL NOT need to inspect raw manifest JSON to discover the supported query behavior.
-

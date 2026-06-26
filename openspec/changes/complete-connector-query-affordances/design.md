@@ -37,4 +37,3 @@ The audit should produce a machine-readable allowlist for fields that appear use
 - Some streams are inherently ambiguous: metrics, inventory, stats, and local-file metadata can be useful for filtering but poor as presentation events. The allowlist must record those decisions instead of forcing fake card roles.
 - Adding declarations may require deployed instances to rebuild indexes or refresh field-capability projections.
 - The connector authoring guide still needs prior-art research beyond this repo audit before it becomes a durable contributor guide.
-

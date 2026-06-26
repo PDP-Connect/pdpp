@@ -22,4 +22,3 @@ Modified:
 - Affected code: first-party connector manifests, manifest schema validation/honesty checks, connector authoring docs.
 - Validation: manifest-honesty tests, reference schema/compact schema checks where affordances project into field capabilities, MCP/client schema tests as needed, OpenSpec strict validation.
 - Risk: adding search, range, or aggregation declarations can require index rebuilds or expose new query paths over already-granted fields. The tranche must prefer schema-compatible declarations and explicit non-support over invalid or guessed affordances.
-

@@ -34,4 +34,3 @@ The implementation should be driven by manifest-honesty tests plus an allowlist 
 ## Follow-Up
 
 OpenSpec change: `complete-connector-query-affordances`.
-
