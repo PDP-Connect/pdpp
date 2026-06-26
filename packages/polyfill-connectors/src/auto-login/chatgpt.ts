@@ -27,6 +27,14 @@ import { detectCloudflareChallenge } from "../platform-probes.ts";
 interface EnsureChatGptSessionArgs {
   assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
+  /**
+   * Session-establishment progress hook. The runtime resets the
+   * no-progress watchdog deadline on each call. The push-approval poll calls
+   * it on every iteration so a long (but progressing) wait on an external app
+   * approval is not failed closed by the watchdog. Optional so call sites that
+   * do not wire it (older callers, tests) still work — when absent the poll
+   * simply does not advance the watchdog, matching pre-change behavior.
+   */
   checkpoint?: SessionCheckpointFn;
   completeAssistance?: (
     assistanceRequestId: string,
@@ -55,17 +63,50 @@ export const CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE =
 export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE;
 export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
   "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
-const PUSH_APPROVAL_POLL_ATTEMPTS = 36;
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
+/**
+ * Default push-approval observation budget. Raised from the original 180s
+ * (36 × 5s) to 900s so realistic human app-approval latency auto-resumes via
+ * the non-blocking poll instead of falling through to the blocking owner-click
+ * fallback. Override with `PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS`.
+ *
+ * The poll checkpoints on every iteration (see `handlePushApproval`), so the
+ * session-establishment watchdog is not tripped by a long-but-progressing wait
+ * even though this budget exceeds the watchdog's default 120s no-progress
+ * deadline.
+ */
+const PUSH_APPROVAL_DEFAULT_TIMEOUT_MS = 900_000;
+const PUSH_APPROVAL_TIMEOUT_ENV = "PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS";
 
-export function chatGptPushApprovalAssistance(): AssistanceRequest {
+/**
+ * Resolve the push-approval observation budget in ms. Honors a positive-integer
+ * `PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS`; otherwise the raised default.
+ */
+export function resolveChatGptPushApprovalTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[PUSH_APPROVAL_TIMEOUT_ENV]?.trim();
+  if (!raw) {
+    return PUSH_APPROVAL_DEFAULT_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!(Number.isFinite(parsed) && parsed > 0)) {
+    return PUSH_APPROVAL_DEFAULT_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+/** Number of poll iterations for the resolved budget (at least one). */
+function pushApprovalPollAttempts(env: NodeJS.ProcessEnv = process.env): number {
+  return Math.max(1, Math.ceil(resolveChatGptPushApprovalTimeoutMs(env) / PUSH_APPROVAL_POLL_INTERVAL_MS));
+}
+
+export function chatGptPushApprovalAssistance(env: NodeJS.ProcessEnv = process.env): AssistanceRequest {
   return {
     message: CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
     progress_posture: "running",
     owner_action: "act_elsewhere",
     response_contract: "none",
     sensitivity: "non_secret",
-    timeout_seconds: Math.ceil((PUSH_APPROVAL_POLL_ATTEMPTS * PUSH_APPROVAL_POLL_INTERVAL_MS) / 1000),
+    timeout_seconds: Math.ceil(resolveChatGptPushApprovalTimeoutMs(env) / 1000),
   };
 }
 
@@ -300,11 +341,17 @@ async function continueWithPasswordIfPresent(page: Page): Promise<void> {
   }
 }
 
-async function handlePushApproval({
+/**
+ * Drive the ChatGPT app push-approval flow. Exported for focused tests of the
+ * non-blocking observation poll (watchdog checkpointing, auto-resume without an
+ * interaction, and escalation ordering); production reaches it via
+ * `submitPasswordAndHandleSecondFactor`.
+ */
+export async function handlePushApproval({
   assist,
   capture,
-  completeAssistance,
   checkpoint,
+  completeAssistance,
   page,
   progress,
   sendInteraction,
@@ -324,7 +371,18 @@ async function handlePushApproval({
     await progress?.(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE);
   }
   await checkpoint?.("chatgpt-push-approval-requested");
-  for (let attempt = 0; attempt < PUSH_APPROVAL_POLL_ATTEMPTS; attempt++) {
+  // Non-blocking observation window: poll session readiness across the (now
+  // owner-configurable) budget. The owner approves the sign-in in the ChatGPT
+  // app out of band; the moment the session goes active we resolve the
+  // assistance and continue — no INTERACTION, no owner click. `checkpoint` is
+  // called on every iteration so the session-establishment watchdog sees
+  // forward progress and does not fail the run closed even though this budget
+  // exceeds its default 120s no-progress deadline (the run IS progressing — it
+  // is actively probing readiness). A genuinely wedged page that hangs the
+  // probe stops advancing the checkpoint, so the watchdog still catches it.
+  const attempts = pushApprovalPollAttempts();
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await checkpoint?.("push-approval-poll");
     await page.waitForTimeout(PUSH_APPROVAL_POLL_INTERVAL_MS);
     // `assist()` is a nonblocking attention signal, not an open
     // `sendInteraction()` promise, so the runtime watchdog does not pause
@@ -395,8 +453,8 @@ async function handleOtpIfPresent({
 async function submitPasswordAndHandleSecondFactor({
   assist,
   capture,
-  completeAssistance,
   checkpoint,
+  completeAssistance,
   page,
   password,
   progress,
@@ -470,11 +528,62 @@ async function fallbackForPostSubmitLogin({
   return await isChatGptSessionActive(page);
 }
 
+/**
+ * Drive the password form, second-factor (push approval / OTP), and the
+ * post-submit confirmation / manual fallback once the login UI is present and
+ * the email step has been completed. Returns `true` when the session is active;
+ * throws `chatgpt_login_post_submit_failed` only when every path has been
+ * exhausted without an active session. Extracted from `ensureChatGptSession`
+ * to keep that entrypoint's branching legible.
+ */
+async function driveLoginFormAndConfirm({
+  assist,
+  capture,
+  checkpoint,
+  completeAssistance,
+  page,
+  password,
+  progress,
+  sendInteraction,
+}: Pick<
+  EnsureChatGptSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+> & {
+  readonly password: string;
+}): Promise<boolean> {
+  await continueWithPasswordIfPresent(page);
+
+  if (
+    await submitPasswordAndHandleSecondFactor({
+      ...(assist ? { assist } : {}),
+      ...(capture ? { capture } : {}),
+      ...(checkpoint ? { checkpoint } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
+      page,
+      password,
+      ...(progress ? { progress } : {}),
+      sendInteraction,
+    })
+  ) {
+    return true;
+  }
+
+  if (await waitForSubmittedLogin(page)) {
+    return true;
+  }
+
+  if (await fallbackForPostSubmitLogin({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+    return true;
+  }
+
+  throw new Error("chatgpt_login_post_submit_failed");
+}
+
 export async function ensureChatGptSession({
   assist,
   capture,
-  completeAssistance,
   checkpoint,
+  completeAssistance,
   context: _context,
   page,
   progress,
@@ -499,30 +608,15 @@ export async function ensureChatGptSession({
   if (await findAndFillEmail({ ...(capture ? { capture } : {}), email, page, sendInteraction })) {
     return true;
   }
-  await continueWithPasswordIfPresent(page);
 
-  if (
-    await submitPasswordAndHandleSecondFactor({
-      ...(assist ? { assist } : {}),
-      ...(capture ? { capture } : {}),
-      ...(completeAssistance ? { completeAssistance } : {}),
-      ...checkpointOption(checkpoint),
-      page,
-      password,
-      ...(progress ? { progress } : {}),
-      sendInteraction,
-    })
-  ) {
-    return true;
-  }
-
-  if (await waitForSubmittedLogin(page)) {
-    return true;
-  }
-
-  if (await fallbackForPostSubmitLogin({ ...(capture ? { capture } : {}), page, sendInteraction })) {
-    return true;
-  }
-
-  throw new Error("chatgpt_login_post_submit_failed");
+  return await driveLoginFormAndConfirm({
+    ...(assist ? { assist } : {}),
+    ...(capture ? { capture } : {}),
+    ...checkpointOption(checkpoint),
+    ...(completeAssistance ? { completeAssistance } : {}),
+    page,
+    password,
+    ...(progress ? { progress } : {}),
+    sendInteraction,
+  });
 }

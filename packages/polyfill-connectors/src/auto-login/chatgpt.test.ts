@@ -9,6 +9,7 @@ import {
   ensureChatGptSession,
   interactionResponseCode,
   isLikelyChatGptPushApprovalText,
+  resolveChatGptPushApprovalTimeoutMs,
 } from "./chatgpt.ts";
 
 function response(extra: Partial<InteractionResponse>): InteractionResponse {
@@ -55,13 +56,15 @@ test("ChatGPT push approval copy separates external approval from browser contro
 });
 
 test("chatGptPushApprovalAssistance emits nonblocking external approval shape", () => {
-  assert.deepEqual(chatGptPushApprovalAssistance(), {
+  // The observation budget is raised so realistic late approvals auto-resume via
+  // the non-blocking poll; the assistance timeout is derived from that budget.
+  assert.deepEqual(chatGptPushApprovalAssistance({}), {
     message: CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
     progress_posture: "running",
     owner_action: "act_elsewhere",
     response_contract: "none",
     sensitivity: "non_secret",
-    timeout_seconds: 180,
+    timeout_seconds: 900,
   });
 });
 
@@ -168,4 +171,19 @@ test("ChatGPT push approval checkpoints while polling so the session watchdog se
       process.env.CHATGPT_PASSWORD = originalPassword;
     }
   }
+});
+
+test("resolveChatGptPushApprovalTimeoutMs honors a positive env override and falls back otherwise", () => {
+  assert.equal(resolveChatGptPushApprovalTimeoutMs({}), 900_000);
+  assert.equal(resolveChatGptPushApprovalTimeoutMs({ PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "60000" }), 60_000);
+  // Non-positive / non-numeric values fall back to the default.
+  assert.equal(resolveChatGptPushApprovalTimeoutMs({ PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "0" }), 900_000);
+  assert.equal(resolveChatGptPushApprovalTimeoutMs({ PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "nope" }), 900_000);
+});
+
+test("chatGptPushApprovalAssistance derives timeout_seconds from the configured budget", () => {
+  // 5-minute override -> 300s assistance timeout. NodeJS.ProcessEnv accepts the
+  // partial env object in the test.
+  const assistance = chatGptPushApprovalAssistance({ PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "300000" });
+  assert.equal(assistance.timeout_seconds, 300);
 });
