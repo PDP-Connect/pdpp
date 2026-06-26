@@ -1879,10 +1879,12 @@ function FeedRow({
       <span className="rr-x-row__body">
         {/* Line 1 = CONTENT identity, rendered through the ONE shared RecordIdentity
             cell so the feed, the stream table, the mobile card, and the detail H1
-            cannot render the same record's primary line two ways (THE-LENS Gate 3).
-            The feed owns its own glyph slot (above) and its rich meta block (below),
-            so the cell suppresses its glyph/secondary/key here — it supplies ONLY
-            the honest primary line + the surface-supplied image mark. */}
+            cannot render the same record's identity two ways (THE-LENS Gate 3).
+            The feed owns its own glyph slot (above), so the cell suppresses its glyph
+            and key (showGlyph/showKey=false). The cell OWNS the [primary][secondary]
+            pair (record-components design §row-anatomy); the meta block below adds only
+            the role badge + search "Match" excerpt + source/stream/time — it must NOT
+            re-render rowSecondary() (that double-rendered the secondary line). */}
         <RecordIdentity
           hasImage={entryHasImage(entry)}
           preview={entry.preview ?? null}
@@ -1891,17 +1893,20 @@ function FeedRow({
           showKey={false}
           variant="feed"
         />
-        {/* Line 2 = secondary context: an honest snippet (when distinct) PLUS the
-            lightweight source/stream/time metadata, MUTED and alongside content —
-            never replacing it (W1, prior art: Primer block description, Sentry). */}
+        {/* Line 2 = secondary context: the role badge (when present) + the search
+            "Match" excerpt + the source/stream/time metadata, MUTED alongside content.
+            The honest SECONDARY snippet itself is NOT re-rendered here — the shared
+            RecordIdentity cell above already owns `[primary][secondary]` (record-
+            components design §row-anatomy: [glyph][primary][secondary][key]). Rendering
+            rowSecondary() a second time in this meta block was the cause of the
+            duplicated secondary line (e.g. an Amazon cancelled order showing
+            "This order has been cancelled" twice); the cell is the single owner. */}
         <span className="rr-x-row__meta">
-          {snippet && snippet !== primaryLine && (
+          {role && (
             <span className="rr-x-row__snippet">
-              {role && <span className="rr-x-role">{role}</span>}
-              {/* F3 (mobile 390 clip): the snippet is a FLEX row [role badge, text],
-                  so ellipsis on the CONTAINER is inert — the text is its own
-                  min-width:0 flex child to truncate instead of hard-clipping. */}
-              <span className="rr-x-row__snippet-text">{snippet}</span>
+              {/* The author/role badge is canvas-specific context the identity cell
+                  does not surface; it rides in the meta block, not the title line. */}
+              <span className="rr-x-role">{role}</span>
             </span>
           )}
           {/* SEARCH HIT match excerpt (F1): a clearly-labelled "Match" line carrying the

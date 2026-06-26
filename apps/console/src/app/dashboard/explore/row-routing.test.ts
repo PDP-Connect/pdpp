@@ -10,6 +10,9 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 const MOBILE_ROW_LINK_RE = /className=\{`\$\{rowCls\} rr-x-row--mobile`\}[\s\S]{0,40}href=\{detailHref\}/;
 const DESKTOP_ROW_PEEK_BUTTON_RE = /className=\{`\$\{rowCls\} rr-x-row--desktop`\}[\s\S]{0,160}onClick=\{onSelect\}/;
 const DESKTOP_OPEN_LINK_RE = /className="rr-x-row-open"[\s\S]{0,40}href=\{detailHref\}/;
+// The forbidden meta re-render of the secondary (= rowSecondary, which the shared
+// RecordIdentity cell already shows). Its presence = the double-rendered secondary bug.
+const META_SECONDARY_SNIPPET_RE = /rr-x-row__snippet-text">\{snippet\}/;
 
 // The view renders <Link href={routes.record(entry.connectionId ?? entry.connectorId, …)}>.
 // `resolveConnectionForRecordsRoute` accepts either a connection_id (preferred)
@@ -89,4 +92,26 @@ test("LIVE FeedRow: desktop row body peeks; a separate Open routes to the full r
     DESKTOP_OPEN_LINK_RE,
     "a SEPARATE desktop 'Open' Link must route to the full record-detail href — distinct from the peek (#12)"
   );
+});
+
+// Regression: the secondary line must render EXACTLY ONCE per feed row. The shared
+// RecordIdentity cell owns [primary][secondary] (record-components design §row-anatomy);
+// the row's meta block must NOT re-render rowSecondary() as a snippet, or the secondary
+// double-renders (the live bug: an Amazon cancelled order showed "This order has been
+// cancelled" twice — once in rr-x-identity__secondary, once in rr-x-row__snippet-text).
+test("LIVE FeedRow: the meta block does NOT re-render the secondary snippet (cell owns it; no double render)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(path.join(here, "explore-canvas.tsx"), "utf8");
+  // The forbidden re-render: the meta snippet text bound to `snippet` (= rowSecondary)
+  // which the RecordIdentity cell already shows.
+  assert.doesNotMatch(
+    src,
+    META_SECONDARY_SNIPPET_RE,
+    "the meta block must NOT render {snippet} (rowSecondary) — the RecordIdentity cell already renders the secondary; re-rendering it here double-renders the line"
+  );
+  // The search-hit Match EXCERPT (a DISTINCT labelled excerpt, search rows only) stays.
+  assert.ok(src.includes("matchExcerpt"), "the search-hit Match excerpt path must remain");
 });
