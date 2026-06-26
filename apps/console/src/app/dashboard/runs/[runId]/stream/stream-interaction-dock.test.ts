@@ -4,10 +4,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const source = readFileSync(fileURLToPath(new URL("./stream-viewer.tsx", import.meta.url)), "utf8");
-const manualCompletionLabelPattern = /Mark browser step complete/;
+const manualCompletionLabelPattern = /Continue collection/;
 const hideInstructionsPattern = /Hide instructions/;
-const showInstructionsPattern = /Show step instructions/;
+const showInstructionsPattern = /Show continue controls/;
 const oldCompletionLabelPattern = /I'm done/;
+const oldBrowserStepLabelPattern = /Mark browser step complete/;
+const manualResumeCopyPattern = /it does not resume the run/;
 const collapsedStatePattern = /const \[collapsed, setCollapsed\] = useState\(false\)/;
 const hideClickPattern = /onClick=\{\(\) => setCollapsed\(true\)\}/;
 const showClickPattern = /onClick=\{\(\) => setCollapsed\(false\)\}/;
@@ -49,7 +51,9 @@ test("manual browser step controls distinguish hiding from completion", () => {
   assert.match(source, manualCompletionLabelPattern);
   assert.match(source, hideInstructionsPattern);
   assert.match(source, showInstructionsPattern);
+  assert.match(source, manualResumeCopyPattern);
   assert.doesNotMatch(source, oldCompletionLabelPattern);
+  assert.doesNotMatch(source, oldBrowserStepLabelPattern);
 });
 
 test("hiding browser step instructions does not submit the interaction", () => {

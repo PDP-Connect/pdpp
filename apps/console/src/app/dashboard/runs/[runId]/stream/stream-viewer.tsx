@@ -5030,7 +5030,7 @@ function StreamInteractionDock({
     submitInteraction();
   }
 
-  let submitLabel = "Mark browser step complete";
+  let submitLabel = "Continue collection";
   if (interactionKind === "otp") {
     submitLabel = "Submit code";
   }
@@ -5049,7 +5049,7 @@ function StreamInteractionDock({
           type="button"
           variant="ghost"
         >
-          Show step instructions
+          Show continue controls
         </IcButton>
       </div>
     );
@@ -5089,8 +5089,8 @@ function StreamInteractionDock({
         ) : null}
         {interactionKind === "manual_action" ? (
           <p className="pdpp-caption text-muted-foreground">
-            Hide this panel if it covers the browser. Only mark the step complete after the browser page accepts the
-            action.
+            When the browser page is logged in or the requested action is complete, press Continue collection. Hiding
+            this panel only moves it out of the way; it does not resume the run.
           </p>
         ) : null}
         {error ? (
