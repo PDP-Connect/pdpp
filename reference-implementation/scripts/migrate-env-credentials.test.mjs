@@ -41,6 +41,8 @@ const REDDIT_USERNAME = 'dondochaka';
 const REDDIT_PASSWORD = 'synthetic-password';
 const REDDIT_CLIENT_ID = 'synthetic-client-id';
 const REDDIT_CLIENT_SECRET = 'synthetic-client-secret';
+const CHATGPT_USERNAME = 'owner@example.com';
+const CHATGPT_PASSWORD = 'synthetic-chatgpt-password';
 
 function seedConnectorInstance({ connectorInstanceId, connectorId, status = 'active', sourceBindingJson = '{}' }) {
   const db = getDb();
@@ -239,11 +241,41 @@ test(
 );
 
 test(
-  'slack and reddit migrations seal multi-field credential bundles and verify the run seam',
+  'chatgpt, slack, and reddit migrations seal multi-field credential bundles and verify the run seam',
   withDb(async () => {
     const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_chatgpt_test', connectorId: 'chatgpt' });
     seedConnectorInstance({ connectorInstanceId: 'cin_slack_test', connectorId: 'slack' });
     seedConnectorInstance({ connectorInstanceId: 'cin_reddit_test', connectorId: 'reddit' });
+
+    const chatgpt = await migrateEnvCredential({
+      connectorKey: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt_test',
+      env: {
+        CHATGPT_USERNAME,
+        CHATGPT_PASSWORD,
+      },
+      credentialStore,
+      connectorInstanceStore,
+      injection,
+      log: () => {},
+    });
+    assert.equal(chatgpt.metadata.credentialKind, 'username_password');
+    assert.equal(chatgpt.verified, true);
+    assert.equal(chatgpt.envVarName, 'CHATGPT_PASSWORD, CHATGPT_USERNAME');
+    const chatgptFragment = await resolveStaticSecretRunEnv({
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt_test',
+      ownerSubjectId: 'owner_local',
+      sourceBinding: null,
+      credentialStore,
+      isStaticSecretConnector: injection.isStaticSecretConnector,
+      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+    });
+    assert.deepEqual(chatgptFragment, {
+      CHATGPT_PASSWORD,
+      CHATGPT_USERNAME,
+    });
 
     const slack = await migrateEnvCredential({
       connectorKey: 'slack',

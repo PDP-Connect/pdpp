@@ -13,7 +13,7 @@
  * These tests pin the fixed contract:
  *   1. With NO usable credential env vars (absent or empty-string), a store
  *      row satisfies a scheduled run for every static-secret registry
- *      connector (github / gmail / ynab / slack) — the child receives the
+ *      connector (chatgpt / github / gmail / ynab / slack) — the child receives the
  *      store-recovered values, and empty-string process env NEVER shadows
  *      them.
  *   2. A connection with a store row never raises `credentials_required` on
@@ -210,6 +210,20 @@ function withEmptyStringEnv(names) {
  * the test fails if the registry mapping drifts.
  */
 const STORE_FIXTURES = {
+  chatgpt: {
+    recovered: {
+      credentialKind: 'username_password',
+      secret: JSON.stringify({
+        password: 'stored-chatgpt-password',
+        username: 'owner@example.com',
+      }),
+    },
+    sourceBinding: null,
+    expectedEnv: {
+      CHATGPT_PASSWORD: 'stored-chatgpt-password',
+      CHATGPT_USERNAME: 'owner@example.com',
+    },
+  },
   github: {
     recovered: { credentialKind: 'personal_access_token', secret: 'stored-github-pat' },
     sourceBinding: null,

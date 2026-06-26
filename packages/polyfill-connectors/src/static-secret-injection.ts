@@ -85,12 +85,20 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  *   - oura/index.ts auth.required: OURA_PERSONAL_ACCESS_TOKEN
  *   - notion/index.ts auth.required: NOTION_API_TOKEN
  *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
+ *   - chatgpt/auto-login/chatgpt.ts: CHATGPT_USERNAME / CHATGPT_PASSWORD
  *
  * A connector absent from this registry is NOT a static-secret connector for
  * the purposes of injection; callers must not invent env var names for it.
  */
 export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSecretConnectorDescriptor>> =
   Object.freeze({
+    chatgpt: freezeStaticSecretDescriptor({
+      credentialKind: "username_password",
+      secretFieldEnvVars: {
+        password: ["CHATGPT_PASSWORD"],
+        username: ["CHATGPT_USERNAME"],
+      },
+    }),
     gmail: freezeStaticSecretDescriptor({
       credentialKind: "app_password",
       secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],

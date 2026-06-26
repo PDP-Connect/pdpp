@@ -20,6 +20,7 @@ import {
 // ---------------------------------------------------------------------------
 
 test("static-secret registry knows static-secret connectors and rejects non-static-secret connectors", () => {
+  assert.equal(isStaticSecretConnector("chatgpt"), true);
   assert.equal(isStaticSecretConnector("gmail"), true);
   assert.equal(isStaticSecretConnector("github"), true);
   assert.equal(isStaticSecretConnector("ynab"), true);
@@ -27,6 +28,20 @@ test("static-secret registry knows static-secret connectors and rejects non-stat
   assert.equal(isStaticSecretConnector("reddit"), true);
   assert.equal(isStaticSecretConnector("amazon"), false);
   assert.equal(isStaticSecretConnector("claude-code"), false);
+});
+
+test("chatgpt injection maps a sealed username/password credential bundle", () => {
+  const env = buildConnectionScopedSecretEnv("chatgpt", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "synthetic-password",
+      username: "owner@example.com",
+    }),
+  });
+  assert.deepEqual(env, {
+    CHATGPT_PASSWORD: "synthetic-password",
+    CHATGPT_USERNAME: "owner@example.com",
+  });
 });
 
 test("gmail injection sets both app-password aliases to the recovered secret", () => {
@@ -185,10 +200,16 @@ test("registry is frozen so the env var ground truth cannot be mutated at runtim
   const github = STATIC_SECRET_CONNECTOR_REGISTRY.github;
   const slack = STATIC_SECRET_CONNECTOR_REGISTRY.slack;
   const reddit = STATIC_SECRET_CONNECTOR_REGISTRY.reddit;
+  const chatgpt = STATIC_SECRET_CONNECTOR_REGISTRY.chatgpt;
+  assert.ok(chatgpt);
   assert.ok(gmail);
   assert.ok(github);
   assert.ok(slack);
   assert.ok(reddit);
+  assert.ok(Object.isFrozen(chatgpt));
+  assert.ok(Object.isFrozen(chatgpt.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(chatgpt.secretFieldEnvVars?.password));
+  assert.ok(Object.isFrozen(chatgpt.secretFieldEnvVars?.username));
   assert.ok(Object.isFrozen(gmail));
   assert.ok(Object.isFrozen(gmail.secretEnvVars));
   assert.ok(Object.isFrozen(github));

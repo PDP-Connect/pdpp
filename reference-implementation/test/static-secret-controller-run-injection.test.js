@@ -38,6 +38,14 @@ const GMAIL_MANIFEST = {
   runtime_requirements: { bindings: { network: { required: true } } },
   streams: [],
 };
+const CHATGPT_CONNECTOR = "chatgpt";
+const CHATGPT_MANIFEST = {
+  connector_id: CHATGPT_CONNECTOR,
+  name: "ChatGPT",
+  version: "1.0.0",
+  runtime_requirements: { bindings: { browser: { required: true } } },
+  streams: [],
+};
 const NON_SECRET_CONNECTOR = "amazon";
 const NON_SECRET_MANIFEST = {
   connector_id: NON_SECRET_CONNECTOR,
@@ -156,6 +164,41 @@ test("a captured credential is injected into the connector run scoped to one con
   assert.deepEqual(calls[0].staticSecretEnv, {
     GOOGLE_APP_PASSWORD_PDPP: "personal one here",
     GMAIL_APP_PASSWORD: "personal one here",
+  });
+});
+
+test("a captured ChatGPT username/password credential is injected into the connector run", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({
+    connectorInstanceId: "cin_chatgpt",
+    ownerSubjectId: "owner_1",
+    connectorId: CHATGPT_CONNECTOR,
+  });
+  await captureStore().capture({
+    connectorInstanceId: "cin_chatgpt",
+    ownerSubjectId: "owner_1",
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "chatgpt password here",
+      username: "owner@example.com",
+    }),
+    now: "2026-06-01T12:00:00.000Z",
+  });
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow(CHATGPT_CONNECTOR, {
+    connectorInstanceId: "cin_chatgpt",
+    manifest: CHATGPT_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_chatgpt",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].staticSecretEnv, {
+    CHATGPT_PASSWORD: "chatgpt password here",
+    CHATGPT_USERNAME: "owner@example.com",
   });
 });
 

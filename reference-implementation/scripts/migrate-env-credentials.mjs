@@ -10,7 +10,7 @@
  *
  * Usage:
  *   node scripts/migrate-env-credentials.mjs \
- *     --connector <gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]
+ *     --connector <chatgpt|gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]
  *
  * Backend selection mirrors the server: `PDPP_DATABASE_URL`/`PDPP_STORAGE_BACKEND`
  * selects Postgres; otherwise `PDPP_DB_PATH` selects SQLite. The encryption key
@@ -53,10 +53,18 @@ import { resolveStaticSecretRunEnv } from '../server/stores/static-secret-run-cr
  *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
  *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
  *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
+ *   - chatgpt/auto-login/chatgpt.ts: CHATGPT_USERNAME / CHATGPT_PASSWORD
  * This table is cross-validated at run time against the real
  * `STATIC_SECRET_CONNECTOR_REGISTRY` so it cannot silently drift.
  */
 export const ENV_CREDENTIAL_SOURCES = Object.freeze({
+  chatgpt: Object.freeze({
+    credentialKind: 'username_password',
+    secretFieldEnvVars: Object.freeze({
+      password: Object.freeze(['CHATGPT_PASSWORD']),
+      username: Object.freeze(['CHATGPT_USERNAME']),
+    }),
+  }),
   gmail: Object.freeze({
     credentialKind: 'app_password',
     secretEnvVars: Object.freeze(['GOOGLE_APP_PASSWORD_PDPP', 'GMAIL_APP_PASSWORD']),
