@@ -835,14 +835,20 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
 
 /** ALARM — the summary projection is stale. */
 function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): StandingHero {
+  const projectionState = summary?.projection?.state;
+  const isFailed = projectionState === "failed";
   return {
     tone: "alarm",
-    kicker: "Overview may be out of date",
-    line: { text: "Your overview ", emphasis: "hasn't refreshed", tail: " recently." },
-    sub:
-      summary?.projection?.last_error ??
-      "The summary projection is stale. The numbers below may lag until it rebuilds.",
-    cta: { label: "Open deployment", href: hrefs.deployment },
+    kicker: isFailed ? "Totals update delayed" : "Totals updating",
+    line: {
+      text: "Records ",
+      emphasis: "are still available",
+      tail: ".",
+    },
+    sub: isFailed
+      ? "Dashboard totals are using the last completed update."
+      : "Dashboard totals may use the last completed update for a few minutes.",
+    cta: { label: "View status", href: hrefs.deployment },
   };
 }
 

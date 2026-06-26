@@ -12,6 +12,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { startServer } from '../server/index.js';
+import {
+  __resetRetainedSizeAutoReconcileThrottleForTest,
+  __setRetainedSizeAutoReconcileNowForTest,
+  mountRefDatasetSummary,
+} from '../server/routes/ref-dataset.ts';
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -40,6 +45,168 @@ test('GET /_ref/dataset/summary returns dataset_summary envelope', async () => {
     assert.equal(body.object, 'dataset_summary');
     assert.equal(typeof body.record_count, 'number');
   });
+});
+
+function captureDatasetSummaryHandler(ctx) {
+  let captured = null;
+  mountRefDatasetSummary(
+    {
+      get(_path, ...args) {
+        captured = args.at(-1);
+        return this;
+      },
+    },
+    ctx,
+  );
+  assert.equal(typeof captured, 'function');
+  return captured;
+}
+
+function retainedSizeRouteContext(overrides = {}) {
+  const freshGlobal = {
+    blob_bytes: 0,
+    computed_at: '2026-06-25T12:01:00.000Z',
+    current_record_json_bytes: 11,
+    dirty: false,
+    metadata: {
+      state: 'fresh',
+      stale_since: null,
+      rebuild_status: 'idle',
+      last_error: null,
+      source_high_watermark: 'reconcile:2026-06-25T12:01:00.000Z',
+    },
+    record_count: 1,
+    record_history_json_bytes: 13,
+  };
+  const staleGlobal = {
+    ...freshGlobal,
+    computed_at: '2026-06-25T12:00:00.000Z',
+    dirty: true,
+    metadata: {
+      state: 'stale',
+      stale_since: '2026-06-25T12:00:00.000Z',
+      rebuild_status: 'idle',
+      last_error: 'bulk write on unknown connection',
+      source_high_watermark: 'delta:2026-06-25T12:00:00.000Z',
+    },
+  };
+  const state = {
+    global: staleGlobal,
+    reconcileCalls: 0,
+  };
+  return {
+    state,
+    ctx: {
+      requireOwnerSession: (_req, _res, next) => next?.(),
+      handleError(_res, err) {
+        throw err;
+      },
+      createRequestAbortSignal: () => ({ signal: new AbortController().signal, cleanup() {} }),
+      isPostgresStorageBackend: () => true,
+      getDatasetRecordsAggregate: async () => ({
+        connector_count: 1,
+        earliest_ingested_at: null,
+        latest_ingested_at: null,
+        record_count: 1,
+        record_json_bytes: 11,
+        stream_count: 1,
+      }),
+      getDatasetRecordChangesBytes: async () => 13,
+      getDatasetBlobBytes: async () => 0,
+      getDatasetRecordTimeBounds: async () => ({ earliest: null, latest: null }),
+      listDatasetTopConnectorCandidates: async () => [],
+      listDatasetSummaryStreamProjectionSeeds: async () => [],
+      getDatasetSummaryStreamRecordTimeBounds: async () => ({ earliest: null, latest: null }),
+      getDatasetSummaryProjection: () => {
+        throw new Error('SQLite dataset summary projection should not be used in retained-size mode');
+      },
+      listStreamProjections: async () => [],
+      rebuildDatasetSummaryProjection: async () => {
+        throw new Error('not used');
+      },
+      reconcileDirtyDatasetSummaryRecordTimeBounds: async () => ({ reconciled: 0, deferred: 0, residual: 0 }),
+      getRetainedSizeGlobal: async () => state.global,
+      listRetainedSizeConnections: async () => [
+        {
+          connector_id: 'test.connector',
+          connector_instance_id: 'cin_test',
+          record_count: 1,
+        },
+      ],
+      listRetainedSizeStreams: async () => [
+        {
+          computed_at: state.global.computed_at,
+          connector_id: 'test.connector',
+          current_record_json_bytes: 11,
+          dirty: false,
+          record_count: 1,
+          stream: 'messages',
+        },
+      ],
+      listRetainedSizeTop: async () => [],
+      rebuildRetainedSize: async () => {
+        throw new Error('read path must not rebuild retained-size projection');
+      },
+      reconcileDirtyRetainedSize: async () => {
+        state.reconcileCalls += 1;
+        state.global = freshGlobal;
+        return { streams: 0, connections: 0 };
+      },
+      buildRecordVersionStatsEnvelope: async () => ({}),
+      createRequestConnectorInstanceStore: () => ({}),
+      ...overrides,
+    },
+  };
+}
+
+test('GET /_ref/dataset/summary auto-reconciles stale retained-size projection metadata', async () => {
+  __resetRetainedSizeAutoReconcileThrottleForTest();
+  const { ctx, state } = retainedSizeRouteContext();
+  const handler = captureDatasetSummaryHandler(ctx);
+  let body = null;
+
+  await handler({}, { json(value) { body = value; } });
+
+  assert.equal(state.reconcileCalls, 1);
+  assert.equal(body.object, 'dataset_summary');
+  assert.equal(body.projection.state, 'fresh');
+  assert.equal(body.projection.last_error, null);
+  assert.equal(body.total_retained_bytes, 24);
+});
+
+test('GET /_ref/dataset/summary leaves retained-size projection stale when auto-reconcile fails', async () => {
+  __resetRetainedSizeAutoReconcileThrottleForTest();
+  const { ctx, state } = retainedSizeRouteContext();
+  ctx.reconcileDirtyRetainedSize = async () => {
+    state.reconcileCalls += 1;
+    throw new Error('simulated reconcile failure');
+  };
+  const handler = captureDatasetSummaryHandler(ctx);
+  let body = null;
+
+  await handler({}, { json(value) { body = value; } });
+
+  assert.equal(state.reconcileCalls, 1);
+  assert.equal(body.object, 'dataset_summary');
+  assert.equal(body.projection.state, 'stale');
+  assert.equal(body.projection.last_error, 'bulk write on unknown connection');
+});
+
+test('GET /_ref/dataset/summary throttles repeated retained-size auto-reconcile failures', async () => {
+  __resetRetainedSizeAutoReconcileThrottleForTest();
+  __setRetainedSizeAutoReconcileNowForTest(() => 1_000);
+  const { ctx, state } = retainedSizeRouteContext();
+  ctx.reconcileDirtyRetainedSize = async () => {
+    state.reconcileCalls += 1;
+    throw new Error('simulated reconcile failure');
+  };
+  const handler = captureDatasetSummaryHandler(ctx);
+
+  await handler({}, { json() {} });
+  await handler({}, { json() {} });
+
+  assert.equal(state.reconcileCalls, 1);
+  __resetRetainedSizeAutoReconcileThrottleForTest();
 });
 
 test('GET /_ref/dataset/summary/streams returns dataset_summary_streams envelope', async () => {

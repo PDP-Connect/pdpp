@@ -555,9 +555,41 @@ test("attention routeId targets the EXACT connection instance, not the connector
 
 test("hero ALARMs on a stale projection even with no failures", () => {
   const stale = baseInputs();
-  stale.summary = { ...stale.summary, projection: { state: "stale" } } as StandingInputs["summary"];
+  stale.summary = {
+    ...stale.summary,
+    projection: {
+      state: "stale",
+      last_error: "bulk write on unknown connection",
+    },
+  } as StandingInputs["summary"];
   const hero = computeHero(stale);
   assert.equal(hero.tone, "alarm");
+  assert.equal(hero.kicker, "Totals updating");
+  assert.equal(hero.line.emphasis, "are still available");
+  assert.match(hero.sub ?? "", /last completed update/);
+  assert.equal(hero.cta?.label, "View status");
+  assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
+  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection/i);
+});
+
+test("hero uses owner-safe copy for failed projection details", () => {
+  const failed = baseInputs();
+  failed.summary = {
+    ...failed.summary,
+    projection: {
+      state: "failed",
+      last_error: "SQL failed: bulk write on unknown connection",
+    },
+  } as StandingInputs["summary"];
+  const hero = computeHero(failed);
+  assert.equal(hero.tone, "alarm");
+  assert.equal(hero.kicker, "Totals update delayed");
+  assert.equal(hero.line.emphasis, "are still available");
+  assert.match(hero.sub ?? "", /last completed update/);
+  assert.equal(hero.cta?.label, "View status");
+  assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
+  assert.doesNotMatch(hero.sub ?? "", /SQL failed/);
+  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection|SQL failed/i);
 });
 
 test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from partial data", () => {

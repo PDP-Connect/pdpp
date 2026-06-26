@@ -18,6 +18,7 @@ import {
   listRetainedSizeStreams,
   listRetainedSizeTop,
   markRetainedSizeDirty,
+  markRetainedSizeConnectionDirty,
   rebuildRetainedSize,
   reconcileDirtyRetainedSize,
 } from '../server/retained-size-read-model.js';
@@ -135,6 +136,42 @@ test('retained-size record deltas update exact rows and mark top-N rows stale', 
       limit: 1,
     });
     assert.equal(freshTop[0].dirty, false);
+  }));
+
+test('retained-size reconcile repairs global-only dirty metadata when row grains are clean', () =>
+  withTempDb(async () => {
+    await ingestRecord(storage, {
+      stream: 'messages',
+      key: 'one',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'one', body: 'hello' },
+    });
+    await rebuildRetainedSize();
+
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
+
+    const dirtyGlobal = await getRetainedSizeGlobal();
+    assert.equal(dirtyGlobal.dirty, true);
+    assert.equal(dirtyGlobal.metadata.state, 'stale');
+    assert.equal(dirtyGlobal.metadata.last_error, 'bulk write on unknown connection');
+
+    const [cleanConnection] = await listRetainedSizeConnections({
+      connectorInstanceId: storage.connector_instance_id,
+    });
+    const [cleanStream] = await listRetainedSizeStreams({
+      connectorInstanceId: storage.connector_instance_id,
+      stream: 'messages',
+    });
+    assert.equal(cleanConnection.dirty, false);
+    assert.equal(cleanStream.dirty, false);
+
+    const result = await reconcileDirtyRetainedSize();
+    assert.deepEqual(result, { streams: 0, connections: 0 });
+
+    const freshGlobal = await getRetainedSizeGlobal();
+    assert.equal(freshGlobal.dirty, false);
+    assert.equal(freshGlobal.metadata.state, 'fresh');
+    assert.equal(freshGlobal.metadata.last_error, null);
   }));
 
 test('retained-size rebuild attributes blob bytes through blob bindings', () =>

@@ -96,6 +96,20 @@ interface DatasetRecordsAggregate {
   readonly stream_count: number;
 }
 
+const RETAINED_SIZE_AUTO_RECONCILE_FAILURE_COOLDOWN_MS = 30_000;
+
+let retainedSizeAutoReconcileRetryAfterMs = 0;
+let retainedSizeAutoReconcileNow = () => Date.now();
+
+export function __resetRetainedSizeAutoReconcileThrottleForTest(): void {
+  retainedSizeAutoReconcileRetryAfterMs = 0;
+  retainedSizeAutoReconcileNow = () => Date.now();
+}
+
+export function __setRetainedSizeAutoReconcileNowForTest(now: () => number): void {
+  retainedSizeAutoReconcileNow = now;
+}
+
 export interface MountRefDatasetContext {
   // record-version-stats.js
   buildRecordVersionStatsEnvelope(
@@ -257,6 +271,42 @@ async function buildRetainedSizeProjection(ctx: MountRefDatasetContext): Promise
   };
 }
 
+function retainedProjectionNeedsReconcile(projection: RefDatasetSummaryProjection): boolean {
+  const state = projection.metadata.state;
+  return state === "stale" || state === "failed";
+}
+
+function retainedAutoReconcileInCooldown(): boolean {
+  return retainedSizeAutoReconcileNow() < retainedSizeAutoReconcileRetryAfterMs;
+}
+
+function noteRetainedAutoReconcileFailure(): void {
+  retainedSizeAutoReconcileRetryAfterMs =
+    retainedSizeAutoReconcileNow() + RETAINED_SIZE_AUTO_RECONCILE_FAILURE_COOLDOWN_MS;
+}
+
+function noteRetainedAutoReconcileSuccess(): void {
+  retainedSizeAutoReconcileRetryAfterMs = 0;
+}
+
+async function buildAutoReconciledRetainedSizeProjection(
+  ctx: MountRefDatasetContext
+): Promise<RefDatasetSummaryProjection> {
+  const before = await buildRetainedSizeProjection(ctx);
+  if (!retainedProjectionNeedsReconcile(before) || retainedAutoReconcileInCooldown()) {
+    return before;
+  }
+
+  try {
+    await ctx.reconcileDirtyRetainedSize();
+    noteRetainedAutoReconcileSuccess();
+    return await buildRetainedSizeProjection(ctx);
+  } catch {
+    noteRetainedAutoReconcileFailure();
+    return before;
+  }
+}
+
 export function mountRefDatasetSummary(app: AppLike, ctx: MountRefDatasetContext): void {
   app.get(
     "/_ref/dataset/summary",
@@ -278,7 +328,7 @@ export function mountRefDatasetSummary(app: AppLike, ctx: MountRefDatasetContext
         const summary = await executeRefDatasetSummary(
           buildDatasetSummaryDeps(ctx, aggregate, {
             projection: ctx.isPostgresStorageBackend()
-              ? () => buildRetainedSizeProjection(ctx)
+              ? () => buildAutoReconciledRetainedSizeProjection(ctx)
               : () => ctx.getDatasetSummaryProjection(),
           })
         );
