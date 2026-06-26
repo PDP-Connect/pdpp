@@ -19,6 +19,7 @@ import type {
   AssistanceRequest,
   InteractionRequest,
   InteractionResponse,
+  SessionCheckpointFn,
 } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
@@ -26,6 +27,7 @@ import { detectCloudflareChallenge } from "../platform-probes.ts";
 interface EnsureChatGptSessionArgs {
   assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
+  checkpoint?: SessionCheckpointFn;
   completeAssistance?: (
     assistanceRequestId: string,
     status: AssistanceCompletionStatus,
@@ -69,6 +71,10 @@ export function chatGptPushApprovalAssistance(): AssistanceRequest {
 
 export function interactionResponseCode(resp: InteractionResponse): string | null {
   return resp.data?.code ?? resp.value ?? null;
+}
+
+function checkpointOption(checkpoint: SessionCheckpointFn | undefined): { checkpoint?: SessionCheckpointFn } {
+  return checkpoint ? { checkpoint } : {};
 }
 
 async function checkSession(page: Page): Promise<boolean> {
@@ -298,12 +304,13 @@ async function handlePushApproval({
   assist,
   capture,
   completeAssistance,
+  checkpoint,
   page,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
-  "assist" | "capture" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 >): Promise<boolean> {
   if (!(await isLikelyChatGptPushApprovalPage(page))) {
     return false;
@@ -316,8 +323,16 @@ async function handlePushApproval({
   } else {
     await progress?.(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE);
   }
+  await checkpoint?.("chatgpt-push-approval-requested");
   for (let attempt = 0; attempt < PUSH_APPROVAL_POLL_ATTEMPTS; attempt++) {
     await page.waitForTimeout(PUSH_APPROVAL_POLL_INTERVAL_MS);
+    // `assist()` is a nonblocking attention signal, not an open
+    // `sendInteraction()` promise, so the runtime watchdog does not pause
+    // automatically. Checkpoint sparingly while polling so a legitimate app
+    // approval wait is progress, but fixture capture stays bounded.
+    if ((attempt + 1) % 12 === 0) {
+      await checkpoint?.(`chatgpt-push-approval-waiting-${String(attempt + 1)}`);
+    }
     if (await isChatGptSessionActive(page)) {
       if (assistanceRequestId && completeAssistance) {
         await completeAssistance(assistanceRequestId, "resolved", {
@@ -381,13 +396,14 @@ async function submitPasswordAndHandleSecondFactor({
   assist,
   capture,
   completeAssistance,
+  checkpoint,
   page,
   password,
   progress,
   sendInteraction,
 }: Pick<
   EnsureChatGptSessionArgs,
-  "assist" | "capture" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 > & {
   readonly password: string;
 }): Promise<boolean> {
@@ -410,6 +426,7 @@ async function submitPasswordAndHandleSecondFactor({
       ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
       ...(completeAssistance ? { completeAssistance } : {}),
+      ...checkpointOption(checkpoint),
       page,
       ...(progress ? { progress } : {}),
       sendInteraction,
@@ -457,6 +474,7 @@ export async function ensureChatGptSession({
   assist,
   capture,
   completeAssistance,
+  checkpoint,
   context: _context,
   page,
   progress,
@@ -488,6 +506,7 @@ export async function ensureChatGptSession({
       ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
       ...(completeAssistance ? { completeAssistance } : {}),
+      ...checkpointOption(checkpoint),
       page,
       password,
       ...(progress ? { progress } : {}),
