@@ -176,7 +176,7 @@ test(
         sensitivity: 'secret',
         auto_detect: false,
         action_target: 'dashboard',
-        expires_at: '2026-05-19T12:30:00.000Z',
+        expires_at: '2099-05-19T12:30:00.000Z',
         now: '2026-05-19T11:50:00.000Z',
       }),
       connectorId: 'codex',
@@ -212,7 +212,7 @@ test(
     // Secret-sensitive rows suppress action_target so the dashboard never
     // links to a secret-prompt surface from the operator payload.
     assert.equal(snapshot.next_action?.action_target, null);
-    assert.equal(snapshot.next_action?.expires_at, '2026-05-19T12:30:00.000Z');
+    assert.equal(snapshot.next_action?.expires_at, '2099-05-19T12:30:00.000Z');
   }),
 );
 

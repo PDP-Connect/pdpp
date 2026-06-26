@@ -122,7 +122,7 @@ function clampLimit(limit) {
 
 function buildSqliteOpenPredicate(lifecycles) {
   const placeholders = lifecycles.map(() => '?').join(', ');
-  return `lifecycle IN (${placeholders})`;
+  return `lifecycle IN (${placeholders}) AND (expires_at IS NULL OR expires_at > ?)`;
 }
 
 const VALID_NOTIFICATION_STATES = new Set(['acknowledged', 'failed', 'pending', 'sent', 'suppressed']);
@@ -202,7 +202,7 @@ export function createSqliteConnectorAttentionStore() {
               AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
             ORDER BY updated_at DESC
             LIMIT ?`,
-          [id, instance, ...OPEN_LIFECYCLES, bounded],
+          [id, instance, ...OPEN_LIFECYCLES, nowIso(), bounded],
         ),
       ];
       return rows.map(rowToRecord);
@@ -329,9 +329,10 @@ export function createPostgresConnectorAttentionStore() {
           WHERE connector_id = $1
             AND connector_instance_id = $2
             AND lifecycle = ANY($3::text[])
+            AND (expires_at IS NULL OR expires_at > $4)
           ORDER BY updated_at DESC
-          LIMIT $4`,
-        [id, instance, OPEN_LIFECYCLES, bounded],
+          LIMIT $5`,
+        [id, instance, OPEN_LIFECYCLES, nowIso(), bounded],
       );
       return result.rows.map(rowToRecord);
     },

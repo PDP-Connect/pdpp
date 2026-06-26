@@ -147,6 +147,52 @@ test('attention store transitionAttention enforces lifecycle and hides resolved 
   );
 }));
 
+test('attention store suppresses expired open rows from the open list', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  await store.upsertAttention({
+    record: createAttention({
+      id: 'att_expired_manual_action',
+      dedupe_key: 'chatgpt:cin_chatgpt_a:interaction:manual_action:conversations',
+      connection_id: 'chatgpt',
+      run_id: 'run_old_failed',
+      reason_code: 'manual_action_required',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      action_target: 'remote_surface',
+      expires_at: '2026-05-19T12:00:00.000Z',
+      now: '2026-05-19T11:50:00.000Z',
+    }),
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+  await store.upsertAttention({
+    record: createAttention({
+      id: 'att_future_manual_action',
+      dedupe_key: 'chatgpt:cin_chatgpt_a:interaction:manual_action:conversations:fresh',
+      connection_id: 'chatgpt',
+      run_id: 'run_current_failed',
+      reason_code: 'manual_action_required',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      action_target: 'remote_surface',
+      expires_at: '2099-05-19T12:00:00.000Z',
+      now: '2026-05-19T11:55:00.000Z',
+    }),
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+
+  const open = await store.listOpenAttentionForConnection({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+  assert.deepEqual(open.map((row) => row.id), ['att_future_manual_action']);
+}));
+
 test('attention store scopes reads by connector_instance_id', withTempDb(async () => {
   // Two separate enrolled instances of the same connector. One has an
   // open OTP; the other must NOT see it bleed into its open list. The
@@ -494,6 +540,55 @@ test(
     assert.equal(snapshot.state, 'needs_attention');
     assert.equal(snapshot.next_action?.source, 'structured');
     assert.equal(snapshot.next_action?.attention_id, 'att_live');
+  }),
+);
+
+test(
+  'expired stale manual action does not override a later successful run projection',
+  withTempDb(async () => {
+    const store = getDefaultConnectorAttentionStore();
+    await store.upsertAttention({
+      record: createAttention({
+        id: 'att_old_chatgpt_manual_action',
+        dedupe_key: 'chatgpt:cin_chatgpt_a:interaction:manual_action:conversations',
+        connection_id: 'chatgpt',
+        run_id: 'run_old_failed',
+        reason_code: 'manual_action_required',
+        progress_posture: 'blocked',
+        owner_action: 'operate_attachment',
+        response_contract: 'response_required',
+        sensitivity: 'non_secret',
+        action_target: 'remote_surface',
+        expires_at: '2026-05-19T12:00:00.000Z',
+        now: '2026-05-19T11:50:00.000Z',
+      }),
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt_a',
+    });
+
+    const projection = await getConnectorAttentionProjection('chatgpt', {
+      connectorInstanceId: 'cin_chatgpt_a',
+    });
+    assert.equal(projection.unreliable, false);
+    assert.deepEqual(projection.records, []);
+
+    const success = succeededRun({
+      run_id: 'run_later_ok',
+      started_at: '2026-05-19T12:10:00.000Z',
+      first_at: '2026-05-19T12:10:00.000Z',
+      last_at: '2026-05-19T12:11:00.000Z',
+      finished_at: '2026-05-19T12:11:00.000Z',
+    });
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      attentionRecords: projection.records,
+      freshness: { status: 'current', captured_at: '2026-05-19T12:11:00.000Z' },
+      lastRun: success,
+      lastSuccessfulRun: success,
+      nowIso: '2026-05-19T12:11:00.000Z',
+      schedule: null,
+    });
+    assert.equal(snapshot.state, 'healthy');
+    assert.equal(snapshot.next_action, null);
   }),
 );
 
