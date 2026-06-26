@@ -293,6 +293,15 @@ function InstanceListItem({
           panel, while the list shows only the owner label, retained facts, and
           health. */}
       <span className="rr-s-item__line">{instance.accountLine}</span>
+      {instance.ownerActionCue ? (
+        <span
+          className="rr-s-item__cue"
+          data-testid="sources-owner-action-cue"
+          title="Open the source detail to review this suggested action."
+        >
+          Review: {instance.ownerActionCue.label}
+        </span>
+      ) : null}
       <span className="rr-s-item__flag">
         {/* The dot is a decorative reinforcement of the status; the textual
             label is announced via the sr-only span so color is never the sole

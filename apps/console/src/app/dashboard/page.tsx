@@ -19,6 +19,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { RecordroomShellWithPalette } from "@/app/dashboard/components/recordroom-shell-with-palette.tsx";
 import { StandingOverview } from "./components/views/standing-overview.tsx";
 import {
+  advisoryOwnerActionsFromConnectors,
   attentionConnectionsFromConnectors,
   buildStandingData,
   sourceIssueConnectionsFromConnectors,
@@ -44,6 +45,7 @@ const SCHEME_RE = /^https?:\/\//;
 const HREFS: StandingHrefs = {
   grants: dashboardRoutes.section.grants,
   runs: dashboardRoutes.section.runs,
+  sources: dashboardRoutes.section.records,
   traces: dashboardRoutes.section.traces,
   deployment: dashboardRoutes.section.deployment,
   deploymentTokens: dashboardRoutes.section.deploymentTokens,
@@ -116,6 +118,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     overviewLoadIssues,
     pendingApprovals: pendingRes.value.data,
     bearerClients: clientsRes.value.data,
+    advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectorsRes.value.data),
     attentionConnections: attentionConnectionsFromConnectors(connectorsRes.value.data),
     sourceIssues: sourceIssueConnectionsFromConnectors(connectorsRes.value.data),
   };

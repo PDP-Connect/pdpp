@@ -165,6 +165,7 @@ export interface AttentionRowView {
 }
 
 export interface StandingData {
+  advisoryOwnerActions: AttentionRowView[];
   attention: AttentionRowView[];
   bearers: BearerView[];
   hero: StandingHero;
@@ -177,6 +178,11 @@ export interface StandingData {
 // ─── Inputs ────────────────────────────────────────────────────────────
 
 export interface StandingInputs {
+  /**
+   * Connections with non-urgent owner-runnable required actions. These ask the
+   * owner to review a source without promoting the verdict to urgent attention.
+   */
+  advisoryOwnerActions: AdvisoryOwnerActionConnection[];
   /**
    * Connections the owner genuinely needs to act on, derived from the rendered
    * verdict attention channel (the SAME source `/runs` uses). This — not failed
@@ -218,6 +224,8 @@ export interface StandingHrefs {
   run: (id: string) => string;
   /** The syncs/runs list — the triage destination when several connections need the owner. */
   runs: string;
+  /** Source list — the review destination for non-urgent source advisory actions. */
+  sources: string;
   trace: (id: string) => string;
   traces: string;
 }
@@ -262,6 +270,13 @@ export interface SourceIssueConnection {
   /** Source-state label derived from the server-owned verdict pill. */
   status: "can't collect" | "is degraded";
   /** Owner-facing "what's wrong" line, from the verdict's forward statement. */
+  what: string;
+}
+
+export interface AdvisoryOwnerActionConnection {
+  actionLabel: string;
+  label: string;
+  routeId: string;
   what: string;
 }
 
@@ -744,6 +759,30 @@ export function sourceIssueConnectionsFromConnectors(connectors: readonly RefCon
   return out;
 }
 
+export function advisoryOwnerActionsFromConnectors(connectors: readonly RefConnectorSummary[]): AdvisoryOwnerActionConnection[] {
+  const out: AdvisoryOwnerActionConnection[] = [];
+  for (const connector of connectors) {
+    if (connector.revoked_at) {
+      continue;
+    }
+    const verdict = connector.rendered_verdict;
+    if (!verdict || verdict.channel === "attention") {
+      continue;
+    }
+    const action = ownerSatisfiableAction(verdict);
+    if (!action) {
+      continue;
+    }
+    out.push({
+      actionLabel: action.cta,
+      label: connectorLabel(connector),
+      routeId: connectionRouteId(connector),
+      what: verdict.forward_statement,
+    });
+  }
+  return out;
+}
+
 // ─── Attention view ("anything wrong") ───────────────────────────────────
 
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
@@ -761,6 +800,18 @@ function toSourceIssues(sourceIssues: SourceIssueConnection[], hrefs: StandingHr
     what: `${issue.label} ${issue.status}`,
     why: issue.what,
     href: hrefs.connection(issue.routeId),
+  }));
+}
+
+function toAdvisoryOwnerActions(
+  advisoryOwnerActions: AdvisoryOwnerActionConnection[],
+  hrefs: StandingHrefs
+): AttentionRowView[] {
+  return advisoryOwnerActions.map((action) => ({
+    id: `advisory-owner-action:${action.routeId}`,
+    what: `${action.label} has an action to review`,
+    why: action.what,
+    href: hrefs.connection(action.routeId),
   }));
 }
 
@@ -867,6 +918,26 @@ function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHref
   };
 }
 
+function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: StandingHrefs): StandingHero {
+  const [only] = actions;
+  if (actions.length === 1 && only) {
+    return {
+      tone: "decide",
+      kicker: "One source is ready for review",
+      line: { text: `${only.label} `, emphasis: "is ready for review", tail: "." },
+      sub: only.what,
+      cta: { label: "Review source", href: hrefs.connection(only.routeId), human: true },
+    };
+  }
+  return {
+    tone: "decide",
+    kicker: `${actions.length} sources are ready for review`,
+    line: { text: "Source updates ", emphasis: "are available", tail: "." },
+    sub: "Review refreshes and retries in Sources. Records remain available.",
+    cta: { label: "Review sources", href: hrefs.sources },
+  };
+}
+
 /** CALM — the reassurance moment. */
 function buildCalmHero(input: StandingInputs): StandingHero {
   const { summary, bearerClients } = input;
@@ -906,6 +977,9 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
+  if (input.advisoryOwnerActions.length > 0) {
+    return buildAdvisoryHero(input.advisoryOwnerActions, input.hrefs);
+  }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
   }
@@ -920,6 +994,7 @@ export function buildStandingData(input: StandingInputs): StandingData {
     bearers: toBearers(input.bearerClients, input.hrefs, input.now),
     relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     lately: toLately(input.traces, input.now),
+    advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
     attention: toAttention(input.attentionConnections, input.hrefs),
     overviewIssues: toOverviewIssues(input.overviewLoadIssues, input.hrefs),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),

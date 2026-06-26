@@ -186,6 +186,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
+    advisoryOwnerActions: [],
     attentionConnections: [],
     overviewLoadIssues: [],
     sourceIssues: [],

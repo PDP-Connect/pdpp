@@ -4,72 +4,44 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-// overview-hero.tsx moved to the shared @pdpp/operator-ui package; resolve it
-// from the repo root. ref-client.ts stays console-local (live runtime).
-const REPO_ROOT = new URL("../../../../../", import.meta.url);
 const PAGE_FILE = `${HERE}page.tsx`;
-const HERO_FILE = fileURLToPath(new URL("packages/operator-ui/src/components/overview-hero.tsx", REPO_ROOT));
-const REF_CLIENT_FILE = `${HERE}lib/ref-client.ts`;
+const OVERVIEW_FILE = `${HERE}components/views/standing-overview.tsx`;
+const MODEL_FILE = `${HERE}components/views/standing-view-model.ts`;
+const TEST_FILE = `${HERE}components/views/standing-view-model.test.ts`;
 
-const DASHBOARD_PAGE_IS_SYNC = /export default function DashboardPage\(\)/;
-const PAGE_HEADER_OUTSIDE_SUSPENSE = /<PageHeader[\s\S]*title="Overview"[\s\S]*\/>/;
-const SUMMARY_SUSPENSE = /<Suspense fallback=\{<OverviewHeroPlaceholder \/>\}>[\s\S]*<DatasetSummarySection \/>/;
-const ATTENTION_SUSPENSE = /<Suspense fallback=\{<AttentionOverviewPlaceholder \/>\}>[\s\S]*<AttentionSection \/>/;
-const RECENT_ACTIVITY_SUSPENSE =
-  /<Suspense fallback=\{<RecentActivityPlaceholder \/>\}>[\s\S]*<RecentActivitySection \/>/;
-const WEB_PUSH_SUSPENSE = /<Suspense fallback=\{null\}>[\s\S]*<WebPushSettingsSection \/>/;
-const OLD_BLOCKING_OVERVIEW_LOAD = /await Promise\.all\(\[\s*loadOverview\(\)/;
-const SUMMARY_PLACEHOLDER_COPY = /Summarizing retained records/;
-const SUMMARY_ERROR_COPY = /Could not load retained-record summary/;
-const REBUILDING_ZERO_GUARD =
-  /summary\.record_count === 0 && projection && !projection\.computed_at && status !== "fresh"/;
-const REBUILDING_ZERO_PLACEHOLDER = /return <OverviewHeroPlaceholder \/>;/;
-const ZERO_RECORD_FALLBACK_COPY = /0 records|No records yet/;
-const DATASET_SUMMARY_INTERFACE = /export interface DatasetSummary \{/;
-const RECORD_COUNT_FIELD = /record_count: number;/;
-const PROJECTION_FIELD = /projection\?: DatasetSummaryProjectionMetadata;/;
-const PROJECTION_STATES = /state\?: "fresh" \| "refreshing" \| "stale" \| "rebuilding" \| "failed";/;
-const REBUILD_STATUS = /rebuild_status\?: "idle" \| "running" \| "failed";/;
+const STANDING_OVERVIEW_RENDER = /<StandingOverview\b/;
+const ADVISORY_INPUT_DERIVATION = /advisoryOwnerActionsFromConnectors\(connectorsRes\.value\.data\)/;
+const ADVISORY_BUCKET = /advisoryOwnerActions: AdvisoryOwnerActionConnection\[\]/;
+const ADVISORY_HERO_PRECEDENCE =
+  /projectionState === "stale" \|\| projectionState === "failed"[\s\S]*input\.advisoryOwnerActions\.length > 0[\s\S]*buildAdvisoryHero/;
+const ADVISORY_ROWS_RENDERED =
+  /const rows = \[\.\.\.attention, \.\.\.advisoryOwnerActions, \.\.\.sourceIssues, \.\.\.overviewIssues\]/;
+const PROJECTION_COPY_TESTS = /hero uses owner-safe copy for failed projection details/;
+const FORBIDDEN_COPY_INVARIANTS = /projection\|rebuild\|bulk write\|unknown connection\|SQL/i;
 
-test("dashboard streams shell/header before summary and secondary reads resolve", async () => {
+test("dashboard home renders the active Standing Overview path", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
 
-  assert.match(src, DASHBOARD_PAGE_IS_SYNC);
-  assert.match(src, PAGE_HEADER_OUTSIDE_SUSPENSE);
-  assert.match(src, SUMMARY_SUSPENSE);
-  assert.match(src, ATTENTION_SUSPENSE);
-  assert.match(src, RECENT_ACTIVITY_SUSPENSE);
-  assert.match(src, WEB_PUSH_SUSPENSE);
-  assert.equal(OLD_BLOCKING_OVERVIEW_LOAD.test(src), false);
+  assert.match(src, STANDING_OVERVIEW_RENDER);
+  assert.match(src, ADVISORY_INPUT_DERIVATION);
 });
 
-test("summary loading and error states do not masquerade as zero records", async () => {
-  const src = await readFile(HERO_FILE, "utf8");
-  const placeholder = src.slice(
-    src.indexOf("export function OverviewHeroPlaceholder"),
-    src.indexOf("export function OverviewHeroError")
-  );
-  const errorState = src.slice(src.indexOf("export function OverviewHeroError"), src.indexOf("function EmptyHero"));
+test("Standing Overview has an advisory owner-action bucket before calm hero copy", async () => {
+  const src = await readFile(MODEL_FILE, "utf8");
 
-  assert.match(placeholder, SUMMARY_PLACEHOLDER_COPY);
-  assert.doesNotMatch(placeholder, ZERO_RECORD_FALLBACK_COPY);
-  assert.match(errorState, SUMMARY_ERROR_COPY);
-  assert.doesNotMatch(errorState, ZERO_RECORD_FALLBACK_COPY);
+  assert.match(src, ADVISORY_BUCKET);
+  assert.match(src, ADVISORY_HERO_PRECEDENCE);
 });
 
-test("rebuilding projection zeros do not render as a true empty dataset", async () => {
-  const src = await readFile(HERO_FILE, "utf8");
+test("Standing Overview renders advisory owner actions as review rows", async () => {
+  const src = await readFile(OVERVIEW_FILE, "utf8");
 
-  assert.match(src, REBUILDING_ZERO_GUARD);
-  assert.match(src, REBUILDING_ZERO_PLACEHOLDER);
+  assert.match(src, ADVISORY_ROWS_RENDERED);
 });
 
-test("dataset summary type accepts projection metadata while preserving existing fields", async () => {
-  const src = await readFile(REF_CLIENT_FILE, "utf8");
+test("Standing Overview tests pin owner-safe projection copy invariants", async () => {
+  const src = await readFile(TEST_FILE, "utf8");
 
-  assert.match(src, DATASET_SUMMARY_INTERFACE);
-  assert.match(src, RECORD_COUNT_FIELD);
-  assert.match(src, PROJECTION_FIELD);
-  assert.match(src, PROJECTION_STATES);
-  assert.match(src, REBUILD_STATUS);
+  assert.match(src, PROJECTION_COPY_TESTS);
+  assert.match(src, FORBIDDEN_COPY_INVARIANTS);
 });

@@ -135,8 +135,13 @@ export interface SourcePrimaryVerdictAction {
   cta: string;
   kind: RefRequiredAction["kind"];
   ownerRunnable: boolean;
+  channel: RefRenderedVerdict["channel"];
   satisfiedWhenKind: RefRequiredAction["satisfied_when"]["kind"];
   terminal: boolean;
+}
+
+export interface SourceOwnerActionCue {
+  label: string;
 }
 
 /** The fully-projected, serializable view of one source instance. */
@@ -169,6 +174,8 @@ export interface SourceInstanceView {
   needsOwnerLabel: boolean;
   /** Owner CTA derived from rendered_verdict.required_actions, or null. */
   nextAction: FormattedNextAction | null;
+  /** Compact list-row cue for non-urgent owner-runnable advisory actions. */
+  ownerActionCue: SourceOwnerActionCue | null;
   /** Passport KV rows; the title owns identity, so rows only add non-duplicative facts. */
   passportFields: SourcePassportField[];
   /**
@@ -363,18 +370,29 @@ function formatRenderedRequiredAction(verdict: RefRenderedVerdict | null | undef
 }
 
 function formatPrimaryVerdictAction(verdict: RefRenderedVerdict | null | undefined): SourcePrimaryVerdictAction | null {
-  const action = verdict?.required_actions[0] ?? null;
+  if (!verdict) {
+    return null;
+  }
+  const action = verdict.required_actions[0] ?? null;
   if (!action) {
     return null;
   }
   return {
     audience: action.audience,
+    channel: verdict.channel,
     cta: action.cta,
     kind: action.kind,
     ownerRunnable: action.audience === "owner" && action.satisfied_when.kind !== "none",
     satisfiedWhenKind: action.satisfied_when.kind,
     terminal: action.terminal,
   };
+}
+
+function ownerActionCueFromVerdictAction(action: SourcePrimaryVerdictAction | null): SourceOwnerActionCue | null {
+  if (!action?.ownerRunnable || action.channel === "attention") {
+    return null;
+  }
+  return { label: action.cta };
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -595,6 +613,7 @@ export function toSourceInstanceView(
   }
   const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
   const primaryVerdictAction = formatPrimaryVerdictAction(summary.rendered_verdict);
+  const ownerActionCue = ownerActionCueFromVerdictAction(primaryVerdictAction);
   const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
 
   const collectionFactsByStream = new Map(
@@ -663,6 +682,7 @@ export function toSourceInstanceView(
     needsOwnerLabel: hasFallbackLabel,
     status,
     nextAction,
+    ownerActionCue,
     primaryVerdictAction,
     streams,
     totalRecords: summary.total_records,

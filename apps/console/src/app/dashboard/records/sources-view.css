@@ -89,6 +89,20 @@ a.rr-s-item {
   grid-column: 1;
 }
 
+.rr-s-item__cue {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  width: fit-content;
+  margin-top: 2px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-tint);
+  padding: 2px 7px;
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
 /* Health dot — pinned top-right on row 1, aligned with the name, so the
    identity + health pair is the clean primary scan line and the dot is never
    crowded by the kind label. */

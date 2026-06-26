@@ -222,6 +222,62 @@ test("toSourceInstanceView reads owner CTA from rendered_verdict required action
   );
   assert.equal(view.nextAction?.label, "Refresh now");
   assert.equal(view.nextAction?.actionTarget, "connection_detail");
+  assert.equal(view.ownerActionCue?.label, "Refresh now");
+});
+
+test("toSourceInstanceView surfaces owner-runnable advisory action cues for source rows", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_id: "reddit",
+      connector_display_name: "Reddit",
+      display_name: "Reddit",
+      rendered_verdict: renderedVerdict({
+        channel: "advisory",
+        pill: { label: "Healthy", tone: "green" },
+        forward_statement: "Run a refresh when you want the latest saved posts.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    })
+  );
+
+  assert.deepEqual(view.ownerActionCue, { label: "Refresh now" });
+  assert.equal(view.primaryVerdictAction?.ownerRunnable, true);
+  assert.equal(view.primaryVerdictAction?.channel, "advisory");
+});
+
+test("toSourceInstanceView keeps urgent attention out of advisory row cues", () => {
+  const view = toSourceInstanceView(
+    summary({
+      rendered_verdict: renderedVerdict({
+        channel: "attention",
+        pill: { label: "Can't collect", tone: "red" },
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect",
+            kind: "reauth",
+            satisfied_when: { kind: "attention_resolved" },
+            terminal: false,
+            urgency: "now",
+          },
+        ],
+      }),
+    })
+  );
+
+  assert.equal(view.nextAction?.label, "Reconnect");
+  assert.equal(view.ownerActionCue, null);
 });
 
 test("toSourceInstanceView does not fall back to raw health state or next_action when rendered_verdict is absent", () => {
@@ -274,6 +330,7 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
       })
     );
     assert.equal(view.nextAction, null);
+    assert.equal(view.ownerActionCue, null);
     assert.equal(view.primaryVerdictAction?.cta, action.cta);
     assert.equal(view.primaryVerdictAction?.ownerRunnable, false);
     assert.equal(view.primaryVerdictAction?.satisfiedWhenKind, "none");

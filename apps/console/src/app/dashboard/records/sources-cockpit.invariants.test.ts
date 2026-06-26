@@ -38,6 +38,9 @@ const STREAM_RECORDS_RE = /summary\.stream_records/;
 const PRIMARY_VERDICT_ACTION_RE = /primaryVerdictAction=\{instance\.primaryVerdictAction\}/;
 const NON_OWNER_VERDICT_GUARD_RE =
   /primaryVerdictAction !== null && !primaryVerdictAction\.ownerRunnable[\s\S]*data-testid="sources-verdict-status-action"[\s\S]*Sync now/;
+const OWNER_ACTION_CUE_TESTID_RE = /data-testid="sources-owner-action-cue"/;
+const OWNER_ACTION_CUE_ASCII_RE = /Review: \{instance\.ownerActionCue\.label\}/;
+const OWNER_ACTION_CUE_DETAIL_TITLE_RE = /Open the source detail to review this suggested action\./;
 const OLD_CURSOR_HEADER_RE = /<TableHeader>cursor<\/TableHeader>/;
 const OLD_SEARCH_HEADER_RE = /<TableHeader>search<\/TableHeader>/;
 const OLD_CURSOR_FALLBACK_RE = /\{stream\.cursor\s*\?\?\s*"—"\}/;
@@ -84,4 +87,15 @@ test("source passport suppresses generic sync for non-owner verdict actions", as
   const view = await readFile(VIEW_FILE, "utf8");
   assert.match(view, PRIMARY_VERDICT_ACTION_RE);
   assert.match(view, NON_OWNER_VERDICT_GUARD_RE);
+});
+
+test("source list shows advisory owner-action cues as non-mutating review copy", async () => {
+  const view = await readFile(VIEW_FILE, "utf8");
+  assert.match(view, OWNER_ACTION_CUE_TESTID_RE);
+  assert.match(view, OWNER_ACTION_CUE_ASCII_RE);
+  assert.match(view, OWNER_ACTION_CUE_DETAIL_TITLE_RE);
+  const cueBlock = view.slice(view.indexOf('data-testid="sources-owner-action-cue"') - 220);
+  const cueElement = cueBlock.slice(0, cueBlock.indexOf("</span>"));
+  assert.doesNotMatch(cueElement, /<button/);
+  assert.doesNotMatch(cueElement, /onClick|runConnectorNowAction/);
 });

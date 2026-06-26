@@ -9,6 +9,7 @@ import type {
   TraceSummary,
 } from "../../lib/ref-client.ts";
 import {
+  advisoryOwnerActionsFromConnectors,
   attentionConnectionsFromConnectors,
   buildStandingData,
   computeHero,
@@ -25,6 +26,7 @@ import {
 const HREFS: StandingHrefs = {
   grants: "/dashboard/grants",
   runs: "/dashboard/runs",
+  sources: "/dashboard/records",
   traces: "/dashboard/traces",
   deployment: "/dashboard/deployment",
   deploymentTokens: "/dashboard/deployment/tokens",
@@ -67,6 +69,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
+    advisoryOwnerActions: [],
     attentionConnections: [],
     overviewLoadIssues: [],
     sourceIssues: [],
@@ -430,6 +433,114 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
 });
 
+test("advisory owner actions surface non-urgent Amazon retry work without calm all-clear copy", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "amazon",
+      connection_id: "cin_amazon",
+      display_name: "Amazon - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Some order detail is still outstanding. Retry this source to collect the missing detail.",
+        required_actions: [
+          {
+            affects: ["orders"],
+            audience: "owner",
+            cta: "Retry detail gap",
+            kind: "retry_gap",
+            satisfied_when: { kind: "gap_recovered" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  const advisoryOwnerActions = advisoryOwnerActionsFromConnectors(connectors);
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+  assert.equal(advisoryOwnerActions.length, 1);
+  assert.equal(advisoryOwnerActions[0]?.actionLabel, "Retry detail gap");
+
+  const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
+  assert.equal(data.hero.tone, "decide");
+  assert.equal(data.hero.kicker, "One source is ready for review");
+  assert.equal(data.hero.line.emphasis, "is ready for review");
+  assert.equal(data.hero.cta?.label, "Review source");
+  assert.equal(data.hero.cta?.href, HREFS.connection("cin_amazon"));
+  assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, /needs you/i);
+  assert.doesNotMatch(
+    `${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis ?? ""} ${data.hero.line.tail ?? ""}`,
+    /all yours to read/i
+  );
+  assert.equal(data.advisoryOwnerActions.length, 1);
+  assert.equal(data.advisoryOwnerActions[0]?.what, "Amazon - Personal has an action to review");
+});
+
+test("advisory owner actions surface Reddit refresh work in the home summary", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "reddit",
+      connection_id: "cin_reddit",
+      display_name: "Reddit",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Healthy", tone: "green" },
+        forward_statement: "Run a refresh when you want the latest saved posts.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  const advisoryOwnerActions = advisoryOwnerActionsFromConnectors(connectors);
+  const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
+  assert.equal(data.advisoryOwnerActions.length, 1);
+  assert.equal(data.advisoryOwnerActions[0]?.href, HREFS.connection("cin_reddit"));
+  assert.match(data.advisoryOwnerActions[0]?.why ?? "", /latest saved posts/);
+  assert.notEqual(data.hero.tone, "calm");
+});
+
+test("maintainer-only actions are not advisory owner actions", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "maintainer-only",
+      connection_id: "cin_maintainer",
+      display_name: "Maintainer-only source",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "This source needs a connector code fix before it can make progress.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  assert.equal(advisoryOwnerActionsFromConnectors(connectors).length, 0);
+  assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
+  assert.equal(sourceIssueConnectionsFromConnectors(connectors).length, 1);
+});
+
 test("source issues omit healthy advisory refresh hints", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
@@ -457,6 +568,7 @@ test("source issues omit healthy advisory refresh hints", () => {
 
   assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
   assert.equal(sourceIssueConnectionsFromConnectors(connectors).length, 0);
+  assert.equal(advisoryOwnerActionsFromConnectors(connectors).length, 1);
 
   const data = buildStandingData(baseInputs({ sourceIssues: sourceIssueConnectionsFromConnectors(connectors) }));
   assert.equal(data.sourceIssues.length, 0);
@@ -589,7 +701,7 @@ test("hero uses owner-safe copy for failed projection details", () => {
   assert.equal(hero.cta?.label, "View status");
   assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
   assert.doesNotMatch(hero.sub ?? "", /SQL failed/);
-  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection|SQL failed/i);
+  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection|SQL/i);
 });
 
 test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from partial data", () => {
