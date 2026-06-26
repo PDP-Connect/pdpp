@@ -581,57 +581,7 @@ function buildWarnings(
   // browser-backed connectors will fail closed at spawn time.
   warnings.push(...buildRuntimeCapabilityWarnings(input.runtimeCapabilities ?? null));
 
-  // Disk headroom: warn when free space is low enough that a restart or
-  // Docker build is likely to fail with "No space left on device". Checked
-  // for each distinct filesystem entry. Neither threshold triggers automatic
-  // deletion — the operator must act.
-  //
-  // Workload-aware dimension: when free_bytes < largest single relation's
-  // on-disk size, a VACUUM FULL or index rebuild of that table would also
-  // fail. This is an advisory note appended to the existing threshold copy —
-  // not a new standalone threshold — per the heuristics rule (warning-only).
-  // Rationale: VACUUM FULL rewrites the entire table to a new heap file before
-  // dropping the old one; it needs ~1× the table size as scratch space on the
-  // same filesystem. SQLite / absent footprint → silently skip this check.
-  const largestRelation =
-    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint!.top_relations!.length > 0
-      ? input.physicalFootprint!.top_relations![0]
-      : null;
-
-  const diskEntries = normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom);
-  for (const entry of diskEntries) {
-    const freeBytes = entry.free_bytes;
-    if (typeof freeBytes !== "number") {
-      continue; // probe failed for this mount — no warning
-    }
-    const pathLabel = entry.path ?? "the data filesystem";
-    // Workload-aware suffix: appended when free < largest relation size.
-    // Rationale: VACUUM FULL needs ~1× the largest table as scratch space.
-    // Degrade silently when footprint is unavailable (SQLite / absent).
-    const workloadSuffix =
-      largestRelation != null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
-        ? ` Free space is below the size of your largest table (${largestRelation.name}, ${formatBytes(largestRelation.bytes)}) — maintenance operations like VACUUM FULL may fail.`
-        : "";
-    if (freeBytes < DISK_ERROR_BYTES) {
-      warnings.push({
-        code: "low_disk_headroom",
-        message:
-          `Disk headroom on ${pathLabel} is critically low ` +
-          `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
-          `with "No space left on device".${workloadSuffix} ` +
-          "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. " +
-          "Inspect Docker volumes manually before removing any volume data.",
-      });
-    } else if (freeBytes < DISK_WARN_BYTES) {
-      warnings.push({
-        code: "low_disk_headroom",
-        message:
-          `Disk headroom on ${pathLabel} is low ` +
-          `(${formatBytes(freeBytes)} free).${workloadSuffix} Consider running \`docker system prune\` ` +
-          "to reclaim build cache before the next restart.",
-      });
-    }
-  }
+  warnings.push(...buildDiskHeadroomWarnings(input));
 
   // Backend-specific cache/download warnings. Only surfaced when the
   // backend reports these fields — the stub backend does not.
@@ -653,6 +603,62 @@ function buildWarnings(
   }
 
   return warnings;
+}
+
+// Disk headroom: warn when free space is low enough that a restart or
+// Docker build is likely to fail with "No space left on device". Checked
+// for each distinct filesystem entry. Neither threshold triggers automatic
+// deletion — the operator must act.
+//
+// Workload-aware dimension: when free_bytes < largest single relation's
+// on-disk size, a VACUUM FULL or index rebuild of that table would also
+// fail. This is an advisory note appended to the existing threshold copy —
+// not a new standalone threshold — per the heuristics rule (warning-only).
+// Rationale: VACUUM FULL rewrites the entire table to a new heap file before
+// dropping the old one; it needs ~1× the table size as scratch space on the
+// same filesystem. SQLite / absent footprint → silently skip this check.
+function buildDiskHeadroomWarnings(input: DeploymentDiagnosticsInput): readonly DiagnosticsWarning[] {
+  const out: DiagnosticsWarning[] = [];
+  const largestRelation =
+    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint!.top_relations!.length > 0
+      ? input.physicalFootprint!.top_relations![0]
+      : null;
+
+  const diskEntries = normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom);
+  for (const entry of diskEntries) {
+    const freeBytes = entry.free_bytes;
+    if (typeof freeBytes !== "number") {
+      continue; // probe failed for this mount — no warning
+    }
+    const pathLabel = entry.path ?? "the data filesystem";
+    // Workload-aware suffix: appended when free < largest relation size.
+    // Rationale: VACUUM FULL needs ~1× the largest table as scratch space.
+    // Degrade silently when footprint is unavailable (SQLite / absent).
+    const workloadSuffix =
+      largestRelation != null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
+        ? ` Free space is below the size of your largest table (${largestRelation.name}, ${formatBytes(largestRelation.bytes)}) — maintenance operations like VACUUM FULL may fail.`
+        : "";
+    if (freeBytes < DISK_ERROR_BYTES) {
+      out.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${pathLabel} is critically low ` +
+          `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
+          `with "No space left on device".${workloadSuffix} ` +
+          "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. " +
+          "Inspect Docker volumes manually before removing any volume data.",
+      });
+    } else if (freeBytes < DISK_WARN_BYTES) {
+      out.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${pathLabel} is low ` +
+          `(${formatBytes(freeBytes)} free).${workloadSuffix} Consider running \`docker system prune\` ` +
+          "to reclaim build cache before the next restart.",
+      });
+    }
+  }
+  return out;
 }
 
 function buildRuntimeCapabilityWarnings(posture: RuntimeCapabilityPosture | null): readonly DiagnosticsWarning[] {
