@@ -15,36 +15,12 @@ name: reference-implementation
 
 on:
   # PR-only (no push-to-main trigger). This is now a REQUIRED check on the main
-  # ruleset, so it runs before merge on every PR and gates landing. Running it
-  # again on the post-merge push would re-do the work the merging PR already
-  # validated — ~7x the runs for no added safety on this single-author repo.
-  # Combined with the pre-push typecheck hook (lefthook.yml), the common break
-  # (type errors) is caught even earlier. Use workflow_dispatch to re-run on
-  # demand against main if ever needed.
-  pull_request:
-    paths:
-      - ".github/workflows/reference-implementation.yml"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "apps/console/**"
-      - "apps/site/**"
-      - "packages/mcp-server/**"
-      - "packages/read-core/**"
-      - "packages/polyfill-connectors/**"
-      - "packages/reference-contract/**"
-      - "openspec/changes/complete-mcp-slvp-surface/**"
-      - "docs/research/mcp-slvp-*.md"
-      - "reference-implementation/**"
-      - "scripts/check-console-health-surfaces.mjs"
-      - "scripts/check-console-health-surfaces.test.mjs"
-      - "scripts/check-owner-journey-acceptance.mjs"
-      - "scripts/check-owner-journey-acceptance.test.mjs"
-      - "scripts/owner-journey-acceptance/**"
-      - ".releaserc.yaml"
-      - "scripts/check-package-release-policy.mjs"
-      - "scripts/check-package-release-policy.test.mjs"
-      - "packages/*/package.json"
+  # ruleset, so it must emit a terminal status on every PR. The path decision
+  # lives inside the job instead of in `pull_request.paths`; otherwise docs-only
+  # PRs can be blocked by a required context that never appears.
+  pull_request: {}
+  # Supports GitHub merge queue without changing the required check context.
+  merge_group: {}
   workflow_dispatch: {}
 
 concurrency:
@@ -63,35 +39,105 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify reference-impacting changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BASE_SHA}" ]]; then
+            echo "reference_impacting=true" >> "$GITHUB_OUTPUT"
+            echo "workflow_dispatch has no PR base; running full reference suite."
+            exit 0
+          fi
+
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > "$RUNNER_TEMP/reference-changed-files.txt"
+
+          reference_impacting=false
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/reference-implementation.yml|\
+              package.json|\
+              pnpm-lock.yaml|\
+              pnpm-workspace.yaml|\
+              apps/console/*|apps/console/**|\
+              apps/site/*|apps/site/**|\
+              packages/mcp-server/*|packages/mcp-server/**|\
+              packages/read-core/*|packages/read-core/**|\
+              packages/polyfill-connectors/*|packages/polyfill-connectors/**|\
+              packages/reference-contract/*|packages/reference-contract/**|\
+              openspec/changes/complete-mcp-slvp-surface/*|openspec/changes/complete-mcp-slvp-surface/**|\
+              docs/research/mcp-slvp-*.md|\
+              reference-implementation/*|reference-implementation/**|\
+              scripts/check-console-health-surfaces.mjs|\
+              scripts/check-console-health-surfaces.test.mjs|\
+              scripts/check-owner-journey-acceptance.mjs|\
+              scripts/check-owner-journey-acceptance.test.mjs|\
+              scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
+              .releaserc.yaml|\
+              scripts/check-package-release-policy.mjs|\
+              scripts/check-package-release-policy.test.mjs|\
+              packages/*/package.json)
+                reference_impacting=true
+                break
+                ;;
+            esac
+          done < "$RUNNER_TEMP/reference-changed-files.txt"
+
+          echo "reference_impacting=${reference_impacting}" >> "$GITHUB_OUTPUT"
+          if [[ "${reference_impacting}" == "true" ]]; then
+            echo "Reference-impacting changes detected; running full reference suite."
+          else
+            echo "No reference-impacting changes detected; required context will pass without heavy reference tests."
+          fi
 
       - name: Install pnpm
+        if: steps.changes.outputs.reference_impacting == 'true'
         uses: pnpm/action-setup@v6
 
       - name: Install Node.js
+        if: steps.changes.outputs.reference_impacting == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: "pnpm"
 
       - name: Install dependencies
+        if: steps.changes.outputs.reference_impacting == 'true'
         env:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck reference implementation
+        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir reference-implementation run typecheck
 
       - name: Test console view models
+        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir apps/console run test:view-models
 
       - name: Test owner journey acceptance harness
+        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm owner-journey:acceptance:test
 
       - name: Test console health surface gate
+        if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm console:health-surface-gate:test
 
       - name: Test reference implementation
+        if: steps.changes.outputs.reference_impacting == 'true'
         env:
           PDPP_TEST_CONCURRENCY: "2"
         run: pnpm --dir reference-implementation run test
+
+      - name: Report non-reference skip
+        if: steps.changes.outputs.reference_impacting != 'true'
+        run: |
+          echo "No files in the reference required-check scope changed."
+          echo "Emitting successful required context without running the heavy reference suite."
