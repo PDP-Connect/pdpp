@@ -118,6 +118,7 @@ const HASH_SHORT_LEN = 16;
 const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
 const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAccountActivity/iu;
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
+const CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE = /file type/i;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
@@ -128,6 +129,7 @@ export const CHASE_QFX_FILE_TYPE_SELECT_SELECTORS = [
   "#downloadFileTypeOption",
   "#select-downloadFileTypeOption",
 ] as const;
+export const CHASE_QFX_FILE_TYPE_SELECT_SELECTOR = CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", ");
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -205,12 +207,36 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
  * Range on Activity) revert file type back to CSV. Clicking is durable.
  */
 async function selectFileType(page: Page, label: string): Promise<void> {
-  await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
+  await clickFileTypeControl(page);
   const opt = page.getByRole("option", {
     name: new RegExp(`^${label}`, "i"),
   });
   await opt.waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
   await opt.click({ timeout: OPTION_WAIT_MS });
+}
+
+async function clickFileTypeControl(page: Page): Promise<void> {
+  try {
+    await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
+    return;
+  } catch (selectorErr) {
+    try {
+      await page
+        .getByRole("combobox", {
+          name: CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE,
+        })
+        .first()
+        .click({ timeout: CLICK_TIMEOUT_MS });
+      return;
+    } catch (semanticErr) {
+      throw new Error(
+        `file_type_control_unavailable: selector=${CHASE_QFX_FILE_TYPE_SELECT_SELECTOR}: ${truncate(
+          errMessage(selectorErr),
+          ERROR_MESSAGE_SLICE
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+      );
+    }
+  }
 }
 
 function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>): boolean {
@@ -437,7 +463,7 @@ async function downloadQfx(
     waitUntil: "domcontentloaded",
     timeout: NAV_TIMEOUT_MS,
   });
-  await page.locator("#downloadFileTypeOption").waitFor({ state: "attached", timeout: DOM_WAIT_MS });
+  await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR).first().waitFor({ state: "attached", timeout: DOM_WAIT_MS });
   await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-form-loaded`);
 
   // Select activity option FIRST so the Date-Range pickers render before we

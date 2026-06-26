@@ -50,6 +50,7 @@ import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
+  CHASE_QFX_FILE_TYPE_SELECT_SELECTOR,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTORS,
   chaseTimeRangeField,
   type EmitDeps,
@@ -110,6 +111,15 @@ test("QFX dropdown selectors support both observed Chase id families", () => {
   assert.equal(htmlMatchesAnySelector(oldFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
   assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_ACTIVITY_SELECT_SELECTORS), true);
   assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
+});
+
+test("QFX form-loaded wait uses the same file-type selector family as selection", () => {
+  const oldFixture = `<mds-select id="select-downloadFileTypeOption"></mds-select>`;
+  const currentFixture = `<mds-select id="downloadFileTypeOption"></mds-select>`;
+
+  assert.equal(htmlMatchesAnySelector(oldFixture, [CHASE_QFX_FILE_TYPE_SELECT_SELECTOR]), true);
+  assert.equal(htmlMatchesAnySelector(currentFixture, [CHASE_QFX_FILE_TYPE_SELECT_SELECTOR]), true);
+  assert.equal(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", "));
 });
 
 /** Build an EmitDeps that records every emit() and emitRecord() call.
