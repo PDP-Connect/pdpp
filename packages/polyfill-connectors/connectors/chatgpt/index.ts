@@ -34,10 +34,12 @@ import {
   type CollectionRateProgress,
   type DetailCoverageMessage,
   type DetailGapMessage,
+  type NormalizeTerminalError,
   nowIso,
   type ProviderBudgetProgress,
   type RecordData,
   runConnector,
+  type TerminalErrorDetails,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
@@ -84,6 +86,46 @@ import type {
 // runtime's ValidateRecord contract. The JS module's safeParse already
 // returns { ok, data, issues } in the shape the runtime expects.
 const validateRecord = validateRecordRaw as ValidateRecord;
+
+const CHATGPT_TERMINAL_DIAGNOSTIC_MAX = 240;
+const CHATGPT_AUTH_FAILURE_RE =
+  /\b(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
+const CHATGPT_MANUAL_ACTION_RE =
+  /\b(?:login_unexpected_ui|login_post_submit_failed|Cloudflare|challenge|captcha|manual_action|2FA|verification code)\b/iu;
+
+function scrubChatGptTerminalDiagnostic(message: string): string {
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [redacted]")
+    .replace(/access[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]+/giu, "access_token=[redacted]")
+    .replace(/https?:\/\/\S+/giu, "[redacted-url]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CHATGPT_TERMINAL_DIAGNOSTIC_MAX);
+}
+
+export const normalizeChatGptTerminalError: NormalizeTerminalError = ({
+  message,
+  retryable,
+}: TerminalErrorDetails): TerminalErrorDetails => {
+  const diagnostic = scrubChatGptTerminalDiagnostic(message);
+  if (CHATGPT_AUTH_FAILURE_RE.test(message)) {
+    return {
+      message: `chatgpt_preprogress_failure: refresh_credentials: ${diagnostic}`,
+      retryable: false,
+    };
+  }
+  if (CHATGPT_MANUAL_ACTION_RE.test(message)) {
+    return {
+      message: `chatgpt_preprogress_failure: manual_action_required: ${diagnostic}`,
+      retryable: false,
+    };
+  }
+  return {
+    message: `chatgpt_preprogress_failure: runtime_exception: ${diagnostic}`,
+    retryable,
+  };
+};
 
 // ─── Browser auth ───────────────────────────────────────────────────────
 
@@ -3902,6 +3944,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "chatgpt",
     validateRecord,
+    normalizeTerminalError: normalizeChatGptTerminalError,
     browser: { profileName: "chatgpt" },
     async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
       await ensureChatGptSession({

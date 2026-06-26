@@ -2384,6 +2384,23 @@ export async function runConnector(opts) {
     knownGaps.push(gap);
   }
 
+  function recoveryHintFromTerminalConnectorError(connectorError) {
+    const message = typeof connectorError?.message === 'string' ? connectorError.message : '';
+    if (message.includes('chatgpt_preprogress_failure: refresh_credentials:')) {
+      return 'refresh_credentials';
+    }
+    if (message.includes('chatgpt_preprogress_failure: manual_action_required:')) {
+      return 'manual_action_required';
+    }
+    if (connectorError?.retryable === true) {
+      return 'retry_by_runtime';
+    }
+    if (message.includes('chatgpt_preprogress_failure: runtime_exception:')) {
+      return 'retry_on_connector_upgrade';
+    }
+    return null;
+  }
+
   function buildKnownGapsForTerminal(reason = null, connectorError = null) {
     const terminalGaps = [...knownGaps];
     if (finalStatus === 'failed') {
@@ -2391,7 +2408,7 @@ export async function runConnector(opts) {
         kind: 'run_failed',
         reason: reason || 'run_failed',
         message: connectorError?.message || null,
-        recoveryHint: connectorError?.retryable === true ? 'retry_by_runtime' : null,
+        recoveryHint: recoveryHintFromTerminalConnectorError(connectorError),
       }));
     }
     const commitStatus = checkpointCommitStatus();

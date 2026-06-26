@@ -205,12 +205,20 @@ export interface ProbeSessionArgs {
   page: Page;
 }
 
+export interface TerminalErrorDetails {
+  message: string;
+  retryable: boolean;
+}
+
+export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalErrorDetails;
+
 /** Fields shared by browser and non-browser configs. */
 interface BaseRunConnectorConfig {
   auth?: AuthConfig;
   /** Marks a record as a tombstone; runtime strips to { id } + op:'delete'. */
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
+  normalizeTerminalError?: NormalizeTerminalError;
   retryablePattern?: RegExp;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
@@ -514,6 +522,7 @@ export function runConnector(config: RunConnectorConfig): void {
     validateRecord,
     collect,
     browser,
+    normalizeTerminalError = (error: TerminalErrorDetails): TerminalErrorDetails => error,
     retryablePattern = DEFAULT_RETRYABLE_PATTERN,
     timeRangeField = "date",
     isTombstone,
@@ -559,6 +568,7 @@ export function runConnector(config: RunConnectorConfig): void {
     retryable = false,
     records_emitted = observedCounters?.totalEmitted ?? 0
   ): void => {
+    const terminalError = normalizeTerminalError({ message, retryable });
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write
     // fails), the process is dying either way.
@@ -566,7 +576,7 @@ export function runConnector(config: RunConnectorConfig): void {
       type: "DONE",
       status: "failed",
       records_emitted,
-      error: { message, retryable },
+      error: terminalError,
     }).catch((): undefined => undefined);
     flushAndExit(1);
   };

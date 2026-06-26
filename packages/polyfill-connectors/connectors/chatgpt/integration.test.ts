@@ -67,6 +67,7 @@ import {
   classifyChatGptSourcePressure,
   consumeChatGptProviderRetryBudget,
   createChatGptApi,
+  normalizeChatGptTerminalError,
   processConversationDetail,
   readChatGptPersistedPacing,
   resolveChatGptBackendFetchTimeoutMs,
@@ -104,6 +105,48 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
     ),
     true
   );
+});
+
+test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_credentials", () => {
+  assert.deepEqual(
+    normalizeChatGptTerminalError({
+      message: "chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",
+      retryable: true,
+    }),
+    {
+      message:
+        "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",
+      retryable: false,
+    }
+  );
+});
+
+test("normalizeChatGptTerminalError maps visible login or challenge failures to manual action", () => {
+  assert.deepEqual(
+    normalizeChatGptTerminalError({
+      message: "chatgpt_login_post_submit_failed: Cloudflare challenge still visible",
+      retryable: false,
+    }),
+    {
+      message:
+        "chatgpt_preprogress_failure: manual_action_required: chatgpt_login_post_submit_failed: Cloudflare challenge still visible",
+      retryable: false,
+    }
+  );
+});
+
+test("normalizeChatGptTerminalError bounds and redacts parser/runtime diagnostics", () => {
+  const normalized = normalizeChatGptTerminalError({
+    message: `parser error for user@example.com with access_token=secret-token and {"access_token":"json-secret"} at https://chatgpt.com/backend-api/conversation/abc ${"x".repeat(400)}`,
+    retryable: false,
+  });
+  assert.equal(normalized.retryable, false);
+  assert.match(normalized.message, /^chatgpt_preprogress_failure: runtime_exception: /);
+  assert.ok(!normalized.message.includes("user@example.com"));
+  assert.ok(!normalized.message.includes("secret-token"));
+  assert.ok(!normalized.message.includes("json-secret"));
+  assert.ok(!normalized.message.includes("https://chatgpt.com"));
+  assert.ok(normalized.message.length <= "chatgpt_preprogress_failure: runtime_exception: ".length + 240);
 });
 
 test("shouldKeepRetryingChatGptDetail fast-opens on bare 429 but keeps honest waits", () => {
