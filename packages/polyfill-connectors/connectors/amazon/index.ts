@@ -99,6 +99,9 @@ const POLITE_DELAY_MS = 800;
 const RETRY_MIN_TIMEOUT_MS = 1500;
 const RETRY_FACTOR = 2;
 const RETRY_COUNT = 2;
+// Keep optional detail enrichment comfortably below the controller watchdog;
+// recovery-only runs can drain the durable gaps without re-walking the list.
+const MAX_DETAIL_ATTEMPTS_PER_RUN = 200;
 const MAX_TEMPORARY_DETAIL_FAILURES_PER_RUN = 3;
 // Module-scoped regexes (Biome useTopLevelRegex)
 const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
@@ -121,7 +124,7 @@ export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGap
     case "navigation_retry_exhausted":
       return "retry_exhausted";
     case "deferred_budget":
-      return "upstream_pressure";
+      return "retry_exhausted";
     case "parse_missing":
     case "redirected_non_detail":
       return "temporary_unavailable";
@@ -302,6 +305,7 @@ export type CaptureDep = BrowserCollectContext["capture"];
 
 /** Ephemeral per-run flags that cross year boundaries. */
 export interface RunFlags {
+  detailAttempts: number;
   detailCaptured: boolean;
   failedDetailCaptured: boolean;
   temporaryDetailFailures: number;
@@ -392,7 +396,9 @@ export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: strin
  */
 export function buildOrderDetailGap(
   orderId: string,
-  reason: AmazonDetailGapReason = "temporary_unavailable"
+  reason: AmazonDetailGapReason = "temporary_unavailable",
+  failureKind?: DetailFailureKind | undefined,
+  orderDate?: string | undefined
 ): DetailGapMessage {
   return {
     type: "DETAIL_GAP",
@@ -406,11 +412,43 @@ export function buildOrderDetailGap(
     detail_locator: {
       kind: "amazon.order_detail",
       order_id: orderId,
+      ...(orderDate ? { order_date: orderDate } : {}),
     },
+    ...(failureKind
+      ? {
+          detail: { class: failureKind },
+          last_error: { class: failureKind },
+        }
+      : {}),
   };
 }
 
+function readRecoverableAmazonOrderDetailGap(
+  gap: BrowserCollectContext["detailGaps"][number]
+): { gapId: string; orderDate: string; orderId: string; recordKey: string | number } | null {
+  if (gap.stream !== "order_items" || gap.status !== "pending") {
+    return null;
+  }
+  const locator = gap.detail_locator;
+  if (!locator || locator.kind !== "amazon.order_detail") {
+    return null;
+  }
+  const orderId = locator.order_id;
+  const orderDate = locator.order_date;
+  if (typeof orderId !== "string" || typeof orderDate !== "string" || orderId.length === 0 || orderDate.length === 0) {
+    return null;
+  }
+  return { gapId: gap.gap_id, orderDate, orderId, recordKey: gap.record_key ?? orderId };
+}
+
 function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promise<DetailFetchResult> {
+  if (flags.detailAttempts >= MAX_DETAIL_ATTEMPTS_PER_RUN) {
+    return Promise.resolve({
+      failureKind: "deferred_budget",
+      reason: reasonForDetailFailure("deferred_budget"),
+      status: "deferred",
+    });
+  }
   if (flags.temporaryDetailFailures >= MAX_TEMPORARY_DETAIL_FAILURES_PER_RUN) {
     return Promise.resolve({
       failureKind: "deferred_budget",
@@ -418,6 +456,7 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
       status: "deferred",
     });
   }
+  flags.detailAttempts++;
   return fetchOrderDetail(page, orderId);
 }
 
@@ -432,6 +471,79 @@ async function captureFailedDetailOnce(
   }
   await capture.captureDom(page, `order-detail-failed-${result.failureKind}`);
   flags.failedDetailCaptured = true;
+}
+
+export interface AmazonDetailRecoveryDeps {
+  capture: CaptureDep;
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
+  emit: EmitFn;
+  emitRecord: EmitRecordFn;
+  requestDetailGapPage?: BrowserCollectContext["requestDetailGapPage"] | undefined;
+}
+
+async function recoverPendingOrderItemDetailGapPage(
+  page: Page,
+  deps: AmazonDetailRecoveryDeps,
+  flags: RunFlags,
+  gaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Promise<{ recovered: number; reDeferred: number; skipped: number }> {
+  let recovered = 0;
+  let reDeferred = 0;
+  let skipped = 0;
+  for (const gap of gaps) {
+    const locator = readRecoverableAmazonOrderDetailGap(gap);
+    if (!locator) {
+      if (gap.stream === "order_items" && gap.status === "pending") {
+        skipped++;
+      }
+      continue;
+    }
+    const result = await resolveOrderDetail(page, flags, locator.orderId);
+    if (result.status === "hydrated") {
+      for (const item of result.detail.items) {
+        await deps.emitRecord("order_items", buildOrderItemRecord(locator.orderId, locator.orderDate, item));
+      }
+      await deps.emit({
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: locator.gapId,
+        stream: "order_items",
+        record_key: locator.recordKey,
+      });
+      recovered++;
+      continue;
+    }
+    if (result.failureKind === "navigation_retry_exhausted") {
+      flags.temporaryDetailFailures++;
+    }
+    if (result.status === "failed") {
+      await captureFailedDetailOnce(deps.capture, page, flags, result);
+    }
+    await deps.emit(buildOrderDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
+    reDeferred++;
+  }
+  return { recovered, reDeferred, skipped };
+}
+
+export async function recoverPendingOrderItemDetailGaps(
+  page: Page,
+  deps: AmazonDetailRecoveryDeps,
+  flags: RunFlags
+): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  let recovered = 0;
+  let gaps = deps.detailGaps;
+  while (gaps.length > 0) {
+    const result = await recoverPendingOrderItemDetailGapPage(page, deps, flags, gaps);
+    recovered += result.recovered;
+    if (!deps.requestDetailGapPage) {
+      return { recovered, stoppedWithPending: result.reDeferred + result.skipped > 0 };
+    }
+    if (result.recovered === 0 && result.reDeferred + result.skipped > 0) {
+      return { recovered, stoppedWithPending: true };
+    }
+    gaps = await deps.requestDetailGapPage({ streams: ["order_items"] });
+  }
+  return { recovered, stoppedWithPending: false };
 }
 
 /**
@@ -699,12 +811,14 @@ export async function processListOrder(
   }
   let detail: OrderDetail | null = null;
   let detailGapReason: AmazonDetailGapReason = "temporary_unavailable";
+  let detailFailureKind: DetailFailureKind | null = null;
   if (!deps.skipDetail) {
     const result = await resolveOrderDetail(page, flags, listOrder.orderId);
     if (result.status === "hydrated") {
       detail = result.detail;
     } else {
       detailGapReason = result.reason;
+      detailFailureKind = result.failureKind;
       if (result.failureKind === "navigation_retry_exhausted") {
         flags.temporaryDetailFailures++;
       }
@@ -729,7 +843,9 @@ export async function processListOrder(
     // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
     // emit no gap.
     if (outcome === "gap") {
-      await deps.emit(buildOrderDetailGap(listOrder.orderId, detailGapReason));
+      await deps.emit(
+        buildOrderDetailGap(listOrder.orderId, detailGapReason, detailFailureKind ?? undefined, orderDate)
+      );
     }
   }
   await emitOrderAndItems(deps, listOrder, detail, orderDate);
@@ -918,6 +1034,31 @@ if (isMainModule(import.meta.url)) {
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
       const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
+      const wantsItems = requested.has("order_items");
+      const wantsOrders = requested.has("orders");
+      const flags: RunFlags = {
+        detailAttempts: 0,
+        detailCaptured: false,
+        failedDetailCaptured: false,
+        temporaryDetailFailures: 0,
+      };
+
+      if (ctx.recoveryOnly) {
+        if (wantsItems) {
+          await recoverPendingOrderItemDetailGaps(
+            page,
+            {
+              capture,
+              detailGaps: ctx.detailGaps,
+              emit,
+              emitRecord,
+              requestDetailGapPage: ctx.requestDetailGapPage,
+            },
+            flags
+          );
+        }
+        return;
+      }
 
       // STATE is stream-keyed per Collection Profile: `state` is
       // { <stream>: <cursor>, ... }. We write STATE stream='orders'
@@ -961,11 +1102,9 @@ if (isMainModule(import.meta.url)) {
       // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
       // page per year and one order-detail page overall is enough to drive
       // offline parser tests — more just bloats the fixture tree.
-      const flags: RunFlags = { detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
       // Order-item detail coverage is only meaningful when the detail-enriched
       // `order_items` stream is in scope. When it is not requested, the
       // accumulator stays undefined and processListOrder records nothing.
-      const wantsItems = requested.has("order_items");
       const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
@@ -977,7 +1116,7 @@ if (isMainModule(import.meta.url)) {
         progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
         wantsItems,
-        wantsOrders: requested.has("orders"),
+        wantsOrders,
       };
 
       const newYearsState: YearsCursor = { ...yearsState };

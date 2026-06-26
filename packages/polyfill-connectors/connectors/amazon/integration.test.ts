@@ -29,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
+import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -45,6 +46,7 @@ import {
   type RunFlags,
   reasonForDetailFailure,
   recordDetailOutcome,
+  recoverPendingOrderItemDetailGaps,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
@@ -131,7 +133,7 @@ function makeDetailHtml(): string {
     <div data-component="viewPaymentPlanSummaryWidget">Visa ending in 0000</div>
     <div data-component="chargeSummary">Grand Total: $42.99</div>
     <div data-component="purchasedItemsRightGrid">
-      <div data-component="itemTitle">Widget</div>
+      <div data-component="itemTitle"><a href="/dp/B01ABCDEFG">Widget</a></div>
       <div data-component="unitPrice">$39.99 $39.99</div>
     </div>
   </div></body></html>`;
@@ -323,7 +325,7 @@ const NEVER_CALLED_PAGE = new Proxy(
 ) as Page;
 
 function makeRunFlags(): RunFlags {
-  return { detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
+  return { detailAttempts: 0, detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
 }
 
 test("processListOrder: unparseable order date returns false (dropped) and emits no records", async () => {
@@ -584,7 +586,7 @@ test("reasonForDetailFailure: maps precise Amazon detail failures to redacted re
   assert.equal(reasonForDetailFailure("navigation_retry_exhausted"), "retry_exhausted");
   assert.equal(reasonForDetailFailure("redirected_non_detail"), "temporary_unavailable");
   assert.equal(reasonForDetailFailure("parse_missing"), "temporary_unavailable");
-  assert.equal(reasonForDetailFailure("deferred_budget"), "upstream_pressure");
+  assert.equal(reasonForDetailFailure("deferred_budget"), "retry_exhausted");
 });
 
 test("recordDetailOutcome: every recorded order joins required; outcome picks the numerator/skip set", () => {
@@ -703,6 +705,7 @@ test("processListOrder: a null detail (attempted, degraded) records a gap, not a
   assert.equal(gaps[0]?.record_key, "ord-2", "the DETAIL_GAP record_key is the gap order id");
   assert.equal(gaps[0]?.stream, "order_items", "the DETAIL_GAP is on the coverage stream");
   assert.equal(gaps[0]?.reason, "temporary_unavailable", "parse-missing detail stays retryable but precise");
+  assert.equal(gaps[0]?.detail_locator.order_date, "2026-01-05", "future recovery needs the parsed order date");
 });
 
 test("processListOrder: first failed detail captures one failed-detail checkpoint when capture is enabled", async () => {
@@ -761,7 +764,7 @@ test("processListOrder: parse-missing detail failures do not trip source-pressur
   assert.equal(flags.temporaryDetailFailures, 0, "parse-missing details do not count as source-pressure failures");
 });
 
-test("processListOrder: repeated retry-exhausted detail failures defer later details as upstream_pressure gaps", async () => {
+test("processListOrder: repeated retry-exhausted detail failures defer later details as non-pressure gaps", async () => {
   const coverage = newOrderItemsCoverage();
   const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
   const flags = { ...makeRunFlags(), temporaryDetailFailures: 3 };
@@ -772,10 +775,161 @@ test("processListOrder: repeated retry-exhausted detail failures defer later det
   const gaps = findDetailGaps(protocolMessages);
   assert.deepEqual(
     gaps.map((gap) => [gap.record_key, gap.reason]),
-    [["ord-deferred-4", "upstream_pressure"]],
-    "retry-exhausted source pressure defers the next detail without touching the page"
+    [["ord-deferred-4", "retry_exhausted"]],
+    "connector-local detail budget defers the next detail without arming source-pressure cooldown"
   );
+  assert.equal(gaps[0]?.last_error?.class, "deferred_budget");
   assert.equal(flags.temporaryDetailFailures, 3, "deferred gaps do not keep ratcheting the temporary failure count");
+});
+
+test("processListOrder: total detail-attempt budget defers later details without touching the page", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const flags = { ...makeRunFlags(), detailAttempts: 999 };
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, flags, makeListOrder({ orderId: "ord-attempt-budget" }));
+
+  assert.deepEqual(coverage.gap, ["ord-attempt-budget"]);
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.reason, gap.last_error?.class]),
+    [["ord-attempt-budget", "retry_exhausted", "deferred_budget"]],
+    "total detail budget uses a non-source-pressure retryable gap"
+  );
+  assert.equal(flags.detailAttempts, 999, "budget-deferred gaps do not touch the browser or increment attempts");
+});
+
+test("recoverPendingOrderItemDetailGaps: hydrates future Amazon order-item gaps and marks recovered", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps();
+  const flags = makeRunFlags();
+  const orderId = "111-1234567-8901234";
+  const result = await recoverPendingOrderItemDetailGaps(
+    makeDetailPageStub(makeDetailHtml()),
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_date: "2026-01-05",
+            order_id: orderId,
+          },
+          gap_id: "gap_recover_1",
+          record_key: orderId,
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    flags
+  );
+
+  assert.deepEqual(result, { recovered: 1, stoppedWithPending: false });
+  assert.ok(
+    emitted.some((record) => record.stream === "order_items" && record.data.order_id === orderId),
+    "recovered detail emits order_items records"
+  );
+  assert.deepEqual(
+    protocolMessages.find((message) => message.type === "DETAIL_GAP_RECOVERED"),
+    {
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: "gap_recover_1",
+      stream: "order_items",
+      record_key: orderId,
+    }
+  );
+});
+
+test("recoverPendingOrderItemDetailGaps: keeps paging recovered gaps until pending work is empty", async () => {
+  const { deps, protocolMessages } = makeRecordingDeps();
+  const pageRequests: number[] = [];
+  const secondOrderId = "111-1234567-8901235";
+  const pages: BrowserCollectContext["detailGaps"][] = [
+    [
+      {
+        detail_locator: {
+          kind: "amazon.order_detail",
+          order_date: "2026-01-06",
+          order_id: secondOrderId,
+        },
+        gap_id: "gap_recover_2",
+        record_key: secondOrderId,
+        reference_only: true,
+        status: "pending",
+        stream: "order_items",
+      },
+    ],
+    [],
+  ];
+
+  const result = await recoverPendingOrderItemDetailGaps(
+    makeDetailPageStub(makeDetailHtml()),
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_date: "2026-01-05",
+            order_id: "111-1234567-8901234",
+          },
+          gap_id: "gap_recover_1",
+          record_key: "111-1234567-8901234",
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+      requestDetailGapPage: () => {
+        pageRequests.push(pageRequests.length + 1);
+        return Promise.resolve(pages.shift() ?? []);
+      },
+    },
+    makeRunFlags()
+  );
+
+  assert.deepEqual(result, { recovered: 2, stoppedWithPending: false });
+  assert.deepEqual(pageRequests, [1, 2], "recovery keeps requesting pages until pending work is empty");
+  assert.deepEqual(
+    protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").map((message) => message.record_key),
+    ["111-1234567-8901234", secondOrderId]
+  );
+});
+
+test("recoverPendingOrderItemDetailGaps: under-specified legacy gaps are left pending, not corrupted", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps();
+  const result = await recoverPendingOrderItemDetailGaps(
+    NEVER_CALLED_PAGE,
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_id: "legacy-gap-no-date",
+          },
+          gap_id: "gap_legacy",
+          record_key: "legacy-gap-no-date",
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    makeRunFlags()
+  );
+
+  assert.deepEqual(result, { recovered: 0, stoppedWithPending: true });
+  assert.equal(emitted.length, 0, "missing order_date cannot emit valid order_items");
+  assert.equal(protocolMessages.length, 0, "legacy gap remains durable instead of being falsely recovered");
 });
 
 test("processListOrder: skipDetail records an optional_skip, never touching the page", async () => {
