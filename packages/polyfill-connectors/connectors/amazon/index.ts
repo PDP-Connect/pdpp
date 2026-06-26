@@ -99,11 +99,36 @@ const POLITE_DELAY_MS = 800;
 const RETRY_MIN_TIMEOUT_MS = 1500;
 const RETRY_FACTOR = 2;
 const RETRY_COUNT = 2;
+const MAX_TEMPORARY_DETAIL_FAILURES_PER_RUN = 3;
 // Module-scoped regexes (Biome useTopLevelRegex)
 const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
 const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
 const ORDERS_URL_RE = /\/your-orders|\/order-history/;
 const YEAR_VALUE_RE = /year-(\d{4})/;
+const DETAIL_URL_RE = /\/gp\/your-account\/order-details/;
+
+export type AmazonDetailGapReason = "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
+
+type DetailFailureKind = "deferred_budget" | "navigation_retry_exhausted" | "parse_missing" | "redirected_non_detail";
+
+export type DetailFetchResult =
+  | { detail: OrderDetail; status: "hydrated" }
+  | { failureKind: DetailFailureKind; reason: AmazonDetailGapReason; status: "deferred" }
+  | { failureKind: DetailFailureKind; reason: AmazonDetailGapReason; status: "failed" };
+
+export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGapReason {
+  switch (kind) {
+    case "navigation_retry_exhausted":
+      return "retry_exhausted";
+    case "deferred_budget":
+      return "upstream_pressure";
+    case "parse_missing":
+    case "redirected_non_detail":
+      return "temporary_unavailable";
+    default:
+      return "temporary_unavailable";
+  }
+}
 
 // ─── Session probes ──────────────────────────────────────────────────────
 
@@ -194,7 +219,7 @@ async function discoverYears(page: Page): Promise<number[]> {
 // Cancelled orders have [data-component="cancelled"] with "This order has
 // been cancelled" text and NO other structural fields. We detect and
 // emit status_detail only.
-async function fetchOrderDetail(page: Page, orderId: string): Promise<OrderDetail | null> {
+async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetchResult> {
   const url = `https://www.amazon.com/gp/your-account/order-details?orderID=${orderId}`;
 
   // Retry transient navigation failures (network, timeout, 5xx) with
@@ -225,14 +250,37 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<OrderDetai
       }
     );
   } catch {
-    return null;
+    return {
+      failureKind: "navigation_retry_exhausted",
+      reason: reasonForDetailFailure("navigation_retry_exhausted"),
+      status: "failed",
+    };
   }
 
   try {
+    if (!DETAIL_URL_RE.test(page.url())) {
+      return {
+        failureKind: "redirected_non_detail",
+        reason: reasonForDetailFailure("redirected_non_detail"),
+        status: "failed",
+      };
+    }
     const html = await page.content();
-    return parseOrderDetailDom(html);
+    const detail = parseOrderDetailDom(html);
+    if (detail) {
+      return { detail, status: "hydrated" };
+    }
+    return {
+      failureKind: "parse_missing",
+      reason: reasonForDetailFailure("parse_missing"),
+      status: "failed",
+    };
   } catch {
-    return null;
+    return {
+      failureKind: "parse_missing",
+      reason: reasonForDetailFailure("parse_missing"),
+      status: "failed",
+    };
   }
 }
 
@@ -255,6 +303,8 @@ export type CaptureDep = BrowserCollectContext["capture"];
 /** Ephemeral per-run flags that cross year boundaries. */
 export interface RunFlags {
   detailCaptured: boolean;
+  failedDetailCaptured: boolean;
+  temporaryDetailFailures: number;
 }
 
 /**
@@ -336,21 +386,21 @@ export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: strin
  *
  * Reference-only and redacted: the opaque Amazon order id is the only datum that
  * crosses (it is already the `record_key`/`detail_locator.order_id`); no
- * recipient, address, payment, item title, or item text is carried. `reason` is
- * `temporary_unavailable` (retryable): the null-detail paths are mixed — a
- * pRetry-exhausted transient nav/timeout/5xx, an AbortError redirect (e.g.
- * Amazon Fresh `/uff/...`), or a structure-less parse — so `retry_exhausted`
- * would overclaim for the non-exhaustion paths. Retrying next run is the honest,
- * non-destructive default; the list-page items already emitted regardless.
+ * recipient, address, payment, item title, or item text is carried. `reason`
+ * stays redacted but precise enough to distinguish exhausted navigation retries
+ * from parse-missing detail pages and connector-budget deferrals.
  */
-export function buildOrderDetailGap(orderId: string): DetailGapMessage {
+export function buildOrderDetailGap(
+  orderId: string,
+  reason: AmazonDetailGapReason = "temporary_unavailable"
+): DetailGapMessage {
   return {
     type: "DETAIL_GAP",
     stream: "order_items",
     parent_stream: "orders",
     record_key: orderId,
     status: "pending",
-    reason: "temporary_unavailable",
+    reason,
     retryable: true,
     reference_only: true,
     detail_locator: {
@@ -358,6 +408,30 @@ export function buildOrderDetailGap(orderId: string): DetailGapMessage {
       order_id: orderId,
     },
   };
+}
+
+function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promise<DetailFetchResult> {
+  if (flags.temporaryDetailFailures >= MAX_TEMPORARY_DETAIL_FAILURES_PER_RUN) {
+    return Promise.resolve({
+      failureKind: "deferred_budget",
+      reason: reasonForDetailFailure("deferred_budget"),
+      status: "deferred",
+    });
+  }
+  return fetchOrderDetail(page, orderId);
+}
+
+async function captureFailedDetailOnce(
+  capture: CaptureDep,
+  page: Page,
+  flags: RunFlags,
+  result: Extract<DetailFetchResult, { status: "failed" }>
+): Promise<void> {
+  if (!capture || flags.failedDetailCaptured) {
+    return;
+  }
+  await capture.captureDom(page, `order-detail-failed-${result.failureKind}`);
+  flags.failedDetailCaptured = true;
 }
 
 /**
@@ -623,7 +697,22 @@ export async function processListOrder(
     // it via the bounded per-year drop SKIP_RESULT.
     return false;
   }
-  const detail: OrderDetail | null = deps.skipDetail ? null : await fetchOrderDetail(page, listOrder.orderId);
+  let detail: OrderDetail | null = null;
+  let detailGapReason: AmazonDetailGapReason = "temporary_unavailable";
+  if (!deps.skipDetail) {
+    const result = await resolveOrderDetail(page, flags, listOrder.orderId);
+    if (result.status === "hydrated") {
+      detail = result.detail;
+    } else {
+      detailGapReason = result.reason;
+      if (result.failureKind === "navigation_retry_exhausted") {
+        flags.temporaryDetailFailures++;
+      }
+      if (result.status === "failed") {
+        await captureFailedDetailOnce(deps.capture, page, flags, result);
+      }
+    }
+  }
   if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
     await deps.capture.captureDom(page, `order-detail-${listOrder.orderId}`);
     flags.detailCaptured = true;
@@ -640,7 +729,7 @@ export async function processListOrder(
     // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
     // emit no gap.
     if (outcome === "gap") {
-      await deps.emit(buildOrderDetailGap(listOrder.orderId));
+      await deps.emit(buildOrderDetailGap(listOrder.orderId, detailGapReason));
     }
   }
   await emitOrderAndItems(deps, listOrder, detail, orderDate);
@@ -872,7 +961,7 @@ if (isMainModule(import.meta.url)) {
       // Capture fixtures (gated on PDPP_CAPTURE_FIXTURES=1). One orders-list
       // page per year and one order-detail page overall is enough to drive
       // offline parser tests — more just bloats the fixture tree.
-      const flags: RunFlags = { detailCaptured: false };
+      const flags: RunFlags = { detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
       // Order-item detail coverage is only meaningful when the detail-enriched
       // `order_items` stream is in scope. When it is not requested, the
       // accumulator stays undefined and processListOrder records nothing.

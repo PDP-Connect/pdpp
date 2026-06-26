@@ -88,6 +88,13 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   unparseable_order_date: "We skipped some orders because their dates couldn't be read",
   upstream_pressure_deferred: "The service was busy, so we saved what we could and will finish the rest later",
   temporary_unavailable: "We couldn't finish this item yet, so we'll try it again on the next run",
+  // ─── Amazon order-detail diagnostics ─────────────────────────────────────
+  deferred: "We paused this item and will pick it up on the next run",
+  failed: "We couldn't finish this item on this run",
+  navigation_retry_exhausted: "We tried this page several times but it did not finish loading",
+  redirected_non_detail: "Amazon sent us to a different page than the order detail we expected",
+  parse_missing: "The order detail page loaded, but the expected details were not present",
+  deferred_budget: "We saved the current batch and deferred the rest to keep this run bounded",
   export_affordance_missing: "We couldn't find the export controls on this page — the site may have changed",
   export_error: "The export couldn't be downloaded",
   export_no_download: "The export didn't produce a downloadable file",

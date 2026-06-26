@@ -43,6 +43,7 @@ import {
   planIncrementalYears,
   processListOrder,
   type RunFlags,
+  reasonForDetailFailure,
   recordDetailOutcome,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -160,6 +161,9 @@ function makeDetailPageStub(html: string): Page {
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(html);
+        }
+        if (prop === "url") {
+          return (): string => "https://www.amazon.com/gp/your-account/order-details?orderID=fixture";
         }
         throw new Error(`unexpected page.${String(prop)} in detail stub`);
       },
@@ -319,7 +323,7 @@ const NEVER_CALLED_PAGE = new Proxy(
 ) as Page;
 
 function makeRunFlags(): RunFlags {
-  return { detailCaptured: false };
+  return { detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
 }
 
 test("processListOrder: unparseable order date returns false (dropped) and emits no records", async () => {
@@ -576,6 +580,13 @@ test("classifyDetailOutcome: skip → skipped, null detail → gap, parsed detai
   assert.equal(classifyDetailOutcome(false, makeDetail()), "hydrated", "a parsed detail is hydrated");
 });
 
+test("reasonForDetailFailure: maps precise Amazon detail failures to redacted retry reasons", () => {
+  assert.equal(reasonForDetailFailure("navigation_retry_exhausted"), "retry_exhausted");
+  assert.equal(reasonForDetailFailure("redirected_non_detail"), "temporary_unavailable");
+  assert.equal(reasonForDetailFailure("parse_missing"), "temporary_unavailable");
+  assert.equal(reasonForDetailFailure("deferred_budget"), "upstream_pressure");
+});
+
 test("recordDetailOutcome: every recorded order joins required; outcome picks the numerator/skip set", () => {
   const coverage = newOrderItemsCoverage();
   recordDetailOutcome(coverage, "ord-hydrated", "hydrated");
@@ -691,6 +702,80 @@ test("processListOrder: a null detail (attempted, degraded) records a gap, not a
   assert.equal(gaps.length, 1, "exactly one pending DETAIL_GAP per degraded order");
   assert.equal(gaps[0]?.record_key, "ord-2", "the DETAIL_GAP record_key is the gap order id");
   assert.equal(gaps[0]?.stream, "order_items", "the DETAIL_GAP is on the coverage stream");
+  assert.equal(gaps[0]?.reason, "temporary_unavailable", "parse-missing detail stays retryable but precise");
+});
+
+test("processListOrder: first failed detail captures one failed-detail checkpoint when capture is enabled", async () => {
+  const coverage = newOrderItemsCoverage();
+  const labels: string[] = [];
+  const { deps, protocolMessages } = makeRecordingDeps({
+    capture: {
+      baseDir: "/tmp/pdpp-test-capture",
+      captureDom: (_page, label): Promise<void> => {
+        labels.push(label);
+        return Promise.resolve();
+      },
+      captureHttp: (): void => undefined,
+      finalize: (): void => undefined,
+      keepOnSuccess: true,
+      markSucceeded: (): void => undefined,
+      recordRecord: (): void => undefined,
+      runId: "test-run",
+    },
+    orderItemsCoverage: coverage,
+  });
+  const flags = makeRunFlags();
+  const page = makeDetailPageStub(NO_DETAIL_HTML);
+
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-fail-capture-1" }));
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-fail-capture-2" }));
+
+  assert.deepEqual(labels, ["order-detail-failed-parse_missing"], "failed-detail fixture capture is bounded once");
+  assert.equal(flags.failedDetailCaptured, true);
+  assert.equal(findDetailGaps(protocolMessages).length, 2, "capture does not suppress durable gap reporting");
+});
+
+test("processListOrder: parse-missing detail failures do not trip source-pressure deferral", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const flags = makeRunFlags();
+  const page = makeDetailPageStub(NO_DETAIL_HTML);
+
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-parse-1" }));
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-parse-2" }));
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-parse-3" }));
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-parse-4" }));
+
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(coverage.gap, ["ord-parse-1", "ord-parse-2", "ord-parse-3", "ord-parse-4"]);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.reason]),
+    [
+      ["ord-parse-1", "temporary_unavailable"],
+      ["ord-parse-2", "temporary_unavailable"],
+      ["ord-parse-3", "temporary_unavailable"],
+      ["ord-parse-4", "temporary_unavailable"],
+    ],
+    "layout/parser drift stays retryable but does not become source pressure"
+  );
+  assert.equal(flags.temporaryDetailFailures, 0, "parse-missing details do not count as source-pressure failures");
+});
+
+test("processListOrder: repeated retry-exhausted detail failures defer later details as upstream_pressure gaps", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const flags = { ...makeRunFlags(), temporaryDetailFailures: 3 };
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, flags, makeListOrder({ orderId: "ord-deferred-4" }));
+
+  assert.deepEqual(coverage.gap, ["ord-deferred-4"]);
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.reason]),
+    [["ord-deferred-4", "upstream_pressure"]],
+    "retry-exhausted source pressure defers the next detail without touching the page"
+  );
+  assert.equal(flags.temporaryDetailFailures, 3, "deferred gaps do not keep ratcheting the temporary failure count");
 });
 
 test("processListOrder: skipDetail records an optional_skip, never touching the page", async () => {
