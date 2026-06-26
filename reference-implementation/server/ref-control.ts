@@ -3700,7 +3700,7 @@ function countActiveVisibleConnectionsByConnectorId(
 function shouldHydrateRunSummariesForInstance(
   mode: ConnectorRunSummaryInclusion,
   instance: ConnectorInstanceRow,
-  activeVisibleConnectionCount: number
+  _activeVisibleConnectionCount: number
 ): boolean {
   if (mode === true) {
     return true;
@@ -3708,7 +3708,13 @@ function shouldHydrateRunSummariesForInstance(
   if (mode === false) {
     return false;
   }
-  return instance.status === "active" && activeVisibleConnectionCount === 1;
+  // "singleton-active" controls legacy connector-wide fallback, not whether
+  // exact connection-scoped evidence is allowed. `getLatestRunSummaryForConnection`
+  // still refuses connector-wide fallback unless the connector has exactly one
+  // active visible source, but skipping hydration here would also drop exact
+  // `connector_instance_id` / browser-profile matches for multi-account
+  // connectors and render them as indefinitely "checking".
+  return instance.status === "active";
 }
 
 function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {

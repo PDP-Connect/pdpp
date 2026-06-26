@@ -15,7 +15,7 @@
  *      row satisfies a scheduled run for every static-secret registry
  *      connector (chatgpt / github / gmail / ynab / slack) — the child receives the
  *      store-recovered values, and empty-string process env NEVER shadows
- *      them.
+ *      them, including browser-backed username/password connectors.
  *   2. A connection with a store row never raises `credentials_required` on
  *      the scheduled path (and the control case proves the simulation is
  *      honest: without the resolver the same child DOES raise it).
@@ -210,6 +210,34 @@ function withEmptyStringEnv(names) {
  * the test fails if the registry mapping drifts.
  */
 const STORE_FIXTURES = {
+  amazon: {
+    recovered: {
+      credentialKind: 'username_password',
+      secret: JSON.stringify({
+        password: 'stored-amazon-password',
+        username: 'owner@example.com',
+      }),
+    },
+    sourceBinding: null,
+    expectedEnv: {
+      AMAZON_PASSWORD: 'stored-amazon-password',
+      AMAZON_USERNAME: 'owner@example.com',
+    },
+  },
+  chase: {
+    recovered: {
+      credentialKind: 'username_password',
+      secret: JSON.stringify({
+        password: 'stored-chase-password',
+        username: 'owner@example.com',
+      }),
+    },
+    sourceBinding: null,
+    expectedEnv: {
+      CHASE_PASSWORD: 'stored-chase-password',
+      CHASE_USERNAME: 'owner@example.com',
+    },
+  },
   chatgpt: {
     recovered: {
       credentialKind: 'username_password',
@@ -264,6 +292,34 @@ const STORE_FIXTURES = {
       SLACK_WORKSPACE: 'stored-workspace',
       SLACK_TOKEN: 'xoxc-stored-token',
       SLACK_COOKIE: 'xoxd-stored-cookie',
+    },
+  },
+  reddit: {
+    recovered: {
+      credentialKind: 'username_password',
+      secret: JSON.stringify({
+        password: 'stored-reddit-password',
+        username: 'dondochaka',
+      }),
+    },
+    sourceBinding: null,
+    expectedEnv: {
+      REDDIT_PASSWORD: 'stored-reddit-password',
+      REDDIT_USERNAME: 'dondochaka',
+    },
+  },
+  usaa: {
+    recovered: {
+      credentialKind: 'username_password',
+      secret: JSON.stringify({
+        password: 'stored-usaa-password',
+        username: 'owner@example.com',
+      }),
+    },
+    sourceBinding: null,
+    expectedEnv: {
+      USAA_PASSWORD: 'stored-usaa-password',
+      USAA_USERNAME: 'owner@example.com',
     },
   },
 };

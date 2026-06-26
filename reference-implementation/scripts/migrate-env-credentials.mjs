@@ -10,7 +10,7 @@
  *
  * Usage:
  *   node scripts/migrate-env-credentials.mjs \
- *     --connector <chatgpt|gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]
+ *     --connector <amazon|chase|chatgpt|gmail|github|ynab|slack|reddit|usaa> --instance <cin_...> [--dry-run] [--force]
  *
  * Backend selection mirrors the server: `PDPP_DATABASE_URL`/`PDPP_STORAGE_BACKEND`
  * selects Postgres; otherwise `PDPP_DB_PATH` selects SQLite. The encryption key
@@ -52,12 +52,29 @@ import { resolveStaticSecretRunEnv } from '../server/stores/static-secret-run-cr
  *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
  *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
  *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
- *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
+ *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD
  *   - chatgpt/auto-login/chatgpt.ts: CHATGPT_USERNAME / CHATGPT_PASSWORD
+ *   - amazon/auto-login/amazon.ts: AMAZON_USERNAME / AMAZON_PASSWORD
+ *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
+ *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
  * This table is cross-validated at run time against the real
  * `STATIC_SECRET_CONNECTOR_REGISTRY` so it cannot silently drift.
  */
 export const ENV_CREDENTIAL_SOURCES = Object.freeze({
+  amazon: Object.freeze({
+    credentialKind: 'username_password',
+    secretFieldEnvVars: Object.freeze({
+      password: Object.freeze(['AMAZON_PASSWORD']),
+      username: Object.freeze(['AMAZON_USERNAME']),
+    }),
+  }),
+  chase: Object.freeze({
+    credentialKind: 'username_password',
+    secretFieldEnvVars: Object.freeze({
+      password: Object.freeze(['CHASE_PASSWORD']),
+      username: Object.freeze(['CHASE_USERNAME']),
+    }),
+  }),
   chatgpt: Object.freeze({
     credentialKind: 'username_password',
     secretFieldEnvVars: Object.freeze({
@@ -94,12 +111,17 @@ export const ENV_CREDENTIAL_SOURCES = Object.freeze({
     }),
   }),
   reddit: Object.freeze({
-    credentialKind: 'secret_bundle',
+    credentialKind: 'username_password',
     secretFieldEnvVars: Object.freeze({
-      reddit_username: Object.freeze(['REDDIT_USERNAME']),
-      reddit_password: Object.freeze(['REDDIT_PASSWORD']),
-      reddit_client_id: Object.freeze(['REDDIT_CLIENT_ID']),
-      reddit_client_secret: Object.freeze(['REDDIT_CLIENT_SECRET']),
+      password: Object.freeze(['REDDIT_PASSWORD']),
+      username: Object.freeze(['REDDIT_USERNAME']),
+    }),
+  }),
+  usaa: Object.freeze({
+    credentialKind: 'username_password',
+    secretFieldEnvVars: Object.freeze({
+      password: Object.freeze(['USAA_PASSWORD']),
+      username: Object.freeze(['USAA_USERNAME']),
     }),
   }),
 });
@@ -436,7 +458,7 @@ async function main() {
   });
   if (!values.connector || !values.instance) {
     process.stderr.write(
-      'Usage: node scripts/migrate-env-credentials.mjs --connector <gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]\n',
+        'Usage: node scripts/migrate-env-credentials.mjs --connector <amazon|chase|chatgpt|gmail|github|ynab|slack|reddit|usaa> --instance <cin_...> [--dry-run] [--force]\n',
     );
     process.exit(1);
   }

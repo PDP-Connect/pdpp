@@ -27,8 +27,11 @@
 //       derives profileKey from connectorId/connectorInstanceId/manifest).
 //       We verify the connectorInstanceId forwarded = connectorId.
 //
-//   T6. On controller throw, the scheduler records a "failed" RunRecord (not
-//       a crash), preserving the retry/back-off pipeline.
+//   T6. On non-contention controller throw, the scheduler records a "failed"
+//       RunRecord (not a crash), preserving the retry/back-off pipeline.
+//
+//   T7. On controller run/lease contention, the scheduler records a "skipped"
+//       deferred tick, not a connector failure.
 //
 // All tests use the createScheduler seam directly — no live neko surface
 // is needed.
@@ -177,6 +180,54 @@ test('T3: browser_surface_queued status maps to skipped RunRecord (not failure-r
       assert.ok(
         typeof record.error === 'string' && record.error.includes('browser_surface_unavailable'),
         `error should include browser_surface_unavailable, got: ${record.error}`
+      );
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('T3c: run_already_active controller contention maps to skipped RunRecord', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns = [];
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId: 'chatgpt',
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      }],
+      rsUrl: 'http://localhost.invalid',
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      runManagedConnectorViaController: async () => {
+        const err = new Error('Connector already has an active run: run_existing');
+        err.code = 'run_already_active';
+        throw err;
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const [record] = completedRuns;
+      assert.equal(record.status, 'skipped', 'run_already_active must produce a skipped RunRecord');
+      assert.ok(
+        typeof record.error === 'string' && record.error.includes('browser_surface_unavailable'),
+        `error should include browser_surface_unavailable, got: ${record.error}`,
+      );
+      assert.ok(
+        record.error.includes('run_already_active'),
+        `defer reason should preserve run_already_active, got: ${record.error}`,
       );
     } finally {
       scheduler.stop();
@@ -350,7 +401,7 @@ test('T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
       onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
       onRunComplete: (record) => completedRuns.push(record),
       runManagedConnectorViaController: async () => {
-        throw new Error('run_already_active: simulated controller error');
+        throw new Error('provider_pressure_cooldown: simulated controller error');
       },
     });
 

@@ -46,12 +46,20 @@ const CHATGPT_MANIFEST = {
   runtime_requirements: { bindings: { browser: { required: true } } },
   streams: [],
 };
-const NON_SECRET_CONNECTOR = "amazon";
-const NON_SECRET_MANIFEST = {
-  connector_id: NON_SECRET_CONNECTOR,
+const AMAZON_CONNECTOR = "amazon";
+const AMAZON_MANIFEST = {
+  connector_id: AMAZON_CONNECTOR,
   name: "Amazon",
   version: "1.0.0",
   runtime_requirements: { bindings: { browser: { required: true } } },
+  streams: [],
+};
+const NON_SECRET_CONNECTOR = "claude_code";
+const NON_SECRET_MANIFEST = {
+  connector_id: NON_SECRET_CONNECTOR,
+  name: "Claude Code",
+  version: "1.0.0",
+  runtime_requirements: { bindings: { filesystem: { required: true } } },
   streams: [],
 };
 
@@ -199,6 +207,41 @@ test("a captured ChatGPT username/password credential is injected into the conne
   assert.deepEqual(calls[0].staticSecretEnv, {
     CHATGPT_PASSWORD: "chatgpt password here",
     CHATGPT_USERNAME: "owner@example.com",
+  });
+});
+
+test("a captured Amazon username/password credential is injected into the connector run", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({
+    connectorInstanceId: "cin_amazon",
+    ownerSubjectId: "owner_1",
+    connectorId: AMAZON_CONNECTOR,
+  });
+  await captureStore().capture({
+    connectorInstanceId: "cin_amazon",
+    ownerSubjectId: "owner_1",
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "amazon password here",
+      username: "owner@example.com",
+    }),
+    now: "2026-06-01T12:00:00.000Z",
+  });
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow(AMAZON_CONNECTOR, {
+    connectorInstanceId: "cin_amazon",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_amazon",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].staticSecretEnv, {
+    AMAZON_PASSWORD: "amazon password here",
+    AMAZON_USERNAME: "owner@example.com",
   });
 });
 

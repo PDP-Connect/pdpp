@@ -335,11 +335,93 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
     assert.ok(gap, "expected source_partition_missing SKIP_RESULT");
     assert.equal(gap.stream, "messages");
     assert.deepEqual((gap.diagnostics as { missing_channel_ids?: string[] }).missing_channel_ids, ["C_MISSING"]);
-    assert.deepEqual(gap.recovery_hint, { action: "refresh_credentials", retryable: true });
+    assert.deepEqual(gap.recovery_hint, { action: "retry_by_runtime", retryable: true });
     assert.match(gap.message, /coverage is partial/);
 
     const cursor = messagesState(result);
     assert.deepEqual(cursor.observed_channel_ids, ["C_MISSING", "C_PRESENT"]);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("slack connector heals a missing prior channel from an existing scoped archive", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-heal-"));
+  try {
+    const workspace = "scoped-heal-test";
+    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(archiveDir, { recursive: true });
+    await mkdir(scopedDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
+    try {
+      createSlackArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+
+    const scopedDb = new DatabaseSync(join(scopedDir, "slackdump.sqlite"));
+    try {
+      createSlackArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: {
+              C0MISSING: "1714032800.000000",
+              C0PRESENT: "1714032800.000000",
+            },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+      },
+    });
+
+    assert.equal(
+      result.messages.some(
+        (message) => message.type === "SKIP_RESULT" && message.reason === "source_partition_missing"
+      ),
+      false
+    );
+    const records = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> =>
+        message.type === "RECORD" && message.stream === "messages"
+    );
+    assert.deepEqual(records.map((record) => record.data.channel_id).sort(), ["C0MISSING", "C0PRESENT"]);
+    const cursor = messagesState(result);
+    assert.deepEqual(cursor.observed_channel_ids, ["C0MISSING", "C0PRESENT"]);
+    assert.deepEqual(cursor.channel_last_ts, {
+      C0MISSING: "1714032850.123456",
+      C0PRESENT: "1714032849.123456",
+    });
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

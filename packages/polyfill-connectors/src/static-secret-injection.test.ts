@@ -20,14 +20,45 @@ import {
 // ---------------------------------------------------------------------------
 
 test("static-secret registry knows static-secret connectors and rejects non-static-secret connectors", () => {
+  assert.equal(isStaticSecretConnector("amazon"), true);
+  assert.equal(isStaticSecretConnector("chase"), true);
   assert.equal(isStaticSecretConnector("chatgpt"), true);
   assert.equal(isStaticSecretConnector("gmail"), true);
   assert.equal(isStaticSecretConnector("github"), true);
   assert.equal(isStaticSecretConnector("ynab"), true);
   assert.equal(isStaticSecretConnector("slack"), true);
   assert.equal(isStaticSecretConnector("reddit"), true);
-  assert.equal(isStaticSecretConnector("amazon"), false);
+  assert.equal(isStaticSecretConnector("usaa"), true);
   assert.equal(isStaticSecretConnector("claude-code"), false);
+});
+
+test("browser username/password connectors inject their stored credential bundles", () => {
+  const cases = [
+    {
+      connectorId: "amazon",
+      expected: { AMAZON_PASSWORD: "synthetic-password", AMAZON_USERNAME: "owner@example.com" },
+    },
+    {
+      connectorId: "chase",
+      expected: { CHASE_PASSWORD: "synthetic-password", CHASE_USERNAME: "owner@example.com" },
+    },
+    {
+      connectorId: "usaa",
+      expected: { USAA_PASSWORD: "synthetic-password", USAA_USERNAME: "owner@example.com" },
+    },
+  ];
+  for (const { connectorId, expected } of cases) {
+    assert.deepEqual(
+      buildConnectionScopedSecretEnv(connectorId, {
+        credentialKind: "username_password",
+        secret: JSON.stringify({
+          password: "synthetic-password",
+          username: "owner@example.com",
+        }),
+      }),
+      expected
+    );
+  }
 });
 
 test("chatgpt injection maps a sealed username/password credential bundle", () => {
@@ -121,7 +152,21 @@ test("slack injection maps a sealed runtime credential bundle", () => {
   });
 });
 
-test("reddit injection maps a sealed four-field OAuth credential bundle", () => {
+test("reddit injection maps the current username/password credential bundle", () => {
+  const env = buildConnectionScopedSecretEnv("reddit", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "synthetic-password",
+      username: "dondochaka",
+    }),
+  });
+  assert.deepEqual(env, {
+    REDDIT_PASSWORD: "synthetic-password",
+    REDDIT_USERNAME: "dondochaka",
+  });
+});
+
+test("reddit injection still accepts the legacy sealed OAuth credential bundle", () => {
   const env = buildConnectionScopedSecretEnv("reddit", {
     credentialKind: "secret_bundle",
     secret: JSON.stringify({
@@ -132,8 +177,6 @@ test("reddit injection maps a sealed four-field OAuth credential bundle", () => 
     }),
   });
   assert.deepEqual(env, {
-    REDDIT_CLIENT_ID: "synthetic-client-id",
-    REDDIT_CLIENT_SECRET: "synthetic-client-secret",
     REDDIT_PASSWORD: "synthetic-password",
     REDDIT_USERNAME: "dondochaka",
   });
@@ -170,7 +213,7 @@ test("two connections for one connector build two distinct, non-colliding fragme
 
 test("injection refuses unknown connectors instead of inventing env vars", () => {
   assert.throws(
-    () => buildConnectionScopedSecretEnv("amazon", { secret: "x", credentialKind: "app_password" }),
+    () => buildConnectionScopedSecretEnv("claude-code", { secret: "x", credentialKind: "app_password" }),
     (err) => err instanceof StaticSecretInjectionError && err.code === "not_a_static_secret_connector"
   );
 });
@@ -196,16 +239,30 @@ test("injection refuses an empty recovered secret", () => {
 
 test("registry is frozen so the env var ground truth cannot be mutated at runtime", () => {
   assert.ok(Object.isFrozen(STATIC_SECRET_CONNECTOR_REGISTRY));
+  const amazon = STATIC_SECRET_CONNECTOR_REGISTRY.amazon;
+  const chase = STATIC_SECRET_CONNECTOR_REGISTRY.chase;
   const gmail = STATIC_SECRET_CONNECTOR_REGISTRY.gmail;
   const github = STATIC_SECRET_CONNECTOR_REGISTRY.github;
   const slack = STATIC_SECRET_CONNECTOR_REGISTRY.slack;
   const reddit = STATIC_SECRET_CONNECTOR_REGISTRY.reddit;
   const chatgpt = STATIC_SECRET_CONNECTOR_REGISTRY.chatgpt;
+  const usaa = STATIC_SECRET_CONNECTOR_REGISTRY.usaa;
+  assert.ok(amazon);
+  assert.ok(chase);
   assert.ok(chatgpt);
   assert.ok(gmail);
   assert.ok(github);
   assert.ok(slack);
   assert.ok(reddit);
+  assert.ok(usaa);
+  assert.ok(Object.isFrozen(amazon));
+  assert.ok(Object.isFrozen(amazon.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(amazon.secretFieldEnvVars?.password));
+  assert.ok(Object.isFrozen(amazon.secretFieldEnvVars?.username));
+  assert.ok(Object.isFrozen(chase));
+  assert.ok(Object.isFrozen(chase.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(chase.secretFieldEnvVars?.password));
+  assert.ok(Object.isFrozen(chase.secretFieldEnvVars?.username));
   assert.ok(Object.isFrozen(chatgpt));
   assert.ok(Object.isFrozen(chatgpt.secretFieldEnvVars));
   assert.ok(Object.isFrozen(chatgpt.secretFieldEnvVars?.password));
@@ -219,6 +276,13 @@ test("registry is frozen so the env var ground truth cannot be mutated at runtim
   assert.ok(Object.isFrozen(slack.secretFieldEnvVars?.slack_token));
   assert.ok(Object.isFrozen(reddit));
   assert.ok(Object.isFrozen(reddit.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(reddit.acceptedCredentialVariants));
+  assert.ok(Object.isFrozen(reddit.acceptedCredentialVariants?.[0]));
+  assert.ok(Object.isFrozen(reddit.acceptedCredentialVariants?.[0]?.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(usaa));
+  assert.ok(Object.isFrozen(usaa.secretFieldEnvVars));
+  assert.ok(Object.isFrozen(usaa.secretFieldEnvVars?.password));
+  assert.ok(Object.isFrozen(usaa.secretFieldEnvVars?.username));
 });
 
 // ---------------------------------------------------------------------------

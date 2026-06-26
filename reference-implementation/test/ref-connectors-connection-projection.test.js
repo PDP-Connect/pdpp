@@ -351,9 +351,9 @@ test('singleton-active overview hydrates only unambiguous active source run hist
   const ambiguousWork = ambiguous.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
   assert.ok(ambiguousWork);
   assert.equal(
-    ambiguousWork.last_run,
-    null,
-    'duplicate active sources must not borrow connector-wide run history on the overview',
+    ambiguousWork.last_run?.run_id,
+    'run_work_surface_failed',
+    'duplicate active sources keep exact scoped run history without borrowing connector-wide runs',
   );
 }));
 

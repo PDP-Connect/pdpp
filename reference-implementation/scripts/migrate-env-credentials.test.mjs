@@ -37,10 +37,14 @@ const YNAB_SECRET = 'ynab_synthetic_pat_0000';
 const SLACK_WORKSPACE = 'T12345';
 const SLACK_TOKEN = 'xoxc-synthetic-token';
 const SLACK_COOKIE = 'd=synthetic-cookie';
+const AMAZON_USERNAME = 'amazon-owner@example.com';
+const AMAZON_PASSWORD = 'synthetic-amazon-password';
+const CHASE_USERNAME = 'chase-owner';
+const CHASE_PASSWORD = 'synthetic-chase-password';
 const REDDIT_USERNAME = 'dondochaka';
 const REDDIT_PASSWORD = 'synthetic-password';
-const REDDIT_CLIENT_ID = 'synthetic-client-id';
-const REDDIT_CLIENT_SECRET = 'synthetic-client-secret';
+const USAA_USERNAME = 'usaa-owner';
+const USAA_PASSWORD = 'synthetic-usaa-password';
 const CHATGPT_USERNAME = 'owner@example.com';
 const CHATGPT_PASSWORD = 'synthetic-chatgpt-password';
 
@@ -241,41 +245,100 @@ test(
 );
 
 test(
-  'chatgpt, slack, and reddit migrations seal multi-field credential bundles and verify the run seam',
+  'username/password migrations seal multi-field credential bundles and verify the run seam',
   withDb(async () => {
     const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_amazon_test', connectorId: 'amazon' });
+    seedConnectorInstance({ connectorInstanceId: 'cin_chase_test', connectorId: 'chase' });
     seedConnectorInstance({ connectorInstanceId: 'cin_chatgpt_test', connectorId: 'chatgpt' });
-    seedConnectorInstance({ connectorInstanceId: 'cin_slack_test', connectorId: 'slack' });
     seedConnectorInstance({ connectorInstanceId: 'cin_reddit_test', connectorId: 'reddit' });
+    seedConnectorInstance({ connectorInstanceId: 'cin_usaa_test', connectorId: 'usaa' });
 
-    const chatgpt = await migrateEnvCredential({
-      connectorKey: 'chatgpt',
-      connectorInstanceId: 'cin_chatgpt_test',
-      env: {
-        CHATGPT_USERNAME,
-        CHATGPT_PASSWORD,
+    const cases = [
+      {
+        connectorKey: 'amazon',
+        connectorInstanceId: 'cin_amazon_test',
+        env: { AMAZON_USERNAME, AMAZON_PASSWORD },
+        expectedEnvVarName: 'AMAZON_PASSWORD, AMAZON_USERNAME',
+        expectedFragment: {
+          AMAZON_PASSWORD,
+          AMAZON_USERNAME,
+        },
       },
-      credentialStore,
-      connectorInstanceStore,
-      injection,
-      log: () => {},
-    });
-    assert.equal(chatgpt.metadata.credentialKind, 'username_password');
-    assert.equal(chatgpt.verified, true);
-    assert.equal(chatgpt.envVarName, 'CHATGPT_PASSWORD, CHATGPT_USERNAME');
-    const chatgptFragment = await resolveStaticSecretRunEnv({
-      connectorId: 'chatgpt',
-      connectorInstanceId: 'cin_chatgpt_test',
-      ownerSubjectId: 'owner_local',
-      sourceBinding: null,
-      credentialStore,
-      isStaticSecretConnector: injection.isStaticSecretConnector,
-      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
-    });
-    assert.deepEqual(chatgptFragment, {
-      CHATGPT_PASSWORD,
-      CHATGPT_USERNAME,
-    });
+      {
+        connectorKey: 'chase',
+        connectorInstanceId: 'cin_chase_test',
+        env: { CHASE_USERNAME, CHASE_PASSWORD },
+        expectedEnvVarName: 'CHASE_PASSWORD, CHASE_USERNAME',
+        expectedFragment: {
+          CHASE_PASSWORD,
+          CHASE_USERNAME,
+        },
+      },
+      {
+        connectorKey: 'chatgpt',
+        connectorInstanceId: 'cin_chatgpt_test',
+        env: { CHATGPT_USERNAME, CHATGPT_PASSWORD },
+        expectedEnvVarName: 'CHATGPT_PASSWORD, CHATGPT_USERNAME',
+        expectedFragment: {
+          CHATGPT_PASSWORD,
+          CHATGPT_USERNAME,
+        },
+      },
+      {
+        connectorKey: 'reddit',
+        connectorInstanceId: 'cin_reddit_test',
+        env: { REDDIT_USERNAME, REDDIT_PASSWORD },
+        expectedEnvVarName: 'REDDIT_PASSWORD, REDDIT_USERNAME',
+        expectedFragment: {
+          REDDIT_PASSWORD,
+          REDDIT_USERNAME,
+        },
+      },
+      {
+        connectorKey: 'usaa',
+        connectorInstanceId: 'cin_usaa_test',
+        env: { USAA_USERNAME, USAA_PASSWORD },
+        expectedEnvVarName: 'USAA_PASSWORD, USAA_USERNAME',
+        expectedFragment: {
+          USAA_PASSWORD,
+          USAA_USERNAME,
+        },
+      },
+    ];
+
+    for (const { connectorKey, connectorInstanceId, env, expectedEnvVarName, expectedFragment } of cases) {
+      const result = await migrateEnvCredential({
+        connectorKey,
+        connectorInstanceId,
+        env,
+        credentialStore,
+        connectorInstanceStore,
+        injection,
+        log: () => {},
+      });
+      assert.equal(result.metadata.credentialKind, 'username_password');
+      assert.equal(result.verified, true);
+      assert.equal(result.envVarName, expectedEnvVarName);
+      const fragment = await resolveStaticSecretRunEnv({
+        connectorId: connectorKey,
+        connectorInstanceId,
+        ownerSubjectId: 'owner_local',
+        sourceBinding: null,
+        credentialStore,
+        isStaticSecretConnector: injection.isStaticSecretConnector,
+        buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+      });
+      assert.deepEqual(fragment, expectedFragment);
+    }
+  }),
+);
+
+test(
+  'slack migration seals its source-cache credential bundle and verifies the run seam',
+  withDb(async () => {
+    const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_slack_test', connectorId: 'slack' });
 
     const slack = await migrateEnvCredential({
       connectorKey: 'slack',
@@ -306,42 +369,6 @@ test(
       SLACK_WORKSPACE,
       SLACK_TOKEN,
       SLACK_COOKIE,
-    });
-
-    const reddit = await migrateEnvCredential({
-      connectorKey: 'reddit',
-      connectorInstanceId: 'cin_reddit_test',
-      env: {
-        REDDIT_USERNAME,
-        REDDIT_PASSWORD,
-        REDDIT_CLIENT_ID,
-        REDDIT_CLIENT_SECRET,
-      },
-      credentialStore,
-      connectorInstanceStore,
-      injection,
-      log: () => {},
-    });
-    assert.equal(reddit.metadata.credentialKind, 'secret_bundle');
-    assert.equal(reddit.verified, true);
-    assert.equal(
-      reddit.envVarName,
-      'REDDIT_USERNAME, REDDIT_PASSWORD, REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET',
-    );
-    const redditFragment = await resolveStaticSecretRunEnv({
-      connectorId: 'reddit',
-      connectorInstanceId: 'cin_reddit_test',
-      ownerSubjectId: 'owner_local',
-      sourceBinding: null,
-      credentialStore,
-      isStaticSecretConnector: injection.isStaticSecretConnector,
-      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
-    });
-    assert.deepEqual(redditFragment, {
-      REDDIT_USERNAME,
-      REDDIT_PASSWORD,
-      REDDIT_CLIENT_ID,
-      REDDIT_CLIENT_SECRET,
     });
   }),
 );

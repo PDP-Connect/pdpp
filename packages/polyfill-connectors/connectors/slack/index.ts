@@ -50,7 +50,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -205,7 +205,7 @@ async function emitMissingChannelDiagnostic(
       truncated: visibleIds.length < missingChannelIds.length,
     },
     recovery_hint: {
-      action: "refresh_credentials",
+      action: "retry_by_runtime",
       retryable: true,
     },
   });
@@ -420,6 +420,252 @@ function resolveScopedArchivePaths(base: ArchivePaths, positionalChannels: reado
     archivePath,
     sqlitePath: join(archivePath, "slackdump.sqlite"),
   };
+}
+
+interface SelectedScopedArchive {
+  channelIds: readonly string[];
+  paths: ArchivePaths;
+}
+
+function listExistingScopedArchivePaths(base: ArchivePaths): ArchivePaths[] {
+  const scopedRoot = join(base.dumpDir, "archive-scoped");
+  if (!existsSync(scopedRoot)) {
+    return [];
+  }
+  return readdirSync(scopedRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const archivePath = join(scopedRoot, entry.name);
+      return {
+        archivePath,
+        dumpDir: base.dumpDir,
+        sqlitePath: join(archivePath, "slackdump.sqlite"),
+      };
+    })
+    .filter((paths) => existsSync(paths.sqlitePath))
+    .sort((a, b) => a.archivePath.localeCompare(b.archivePath));
+}
+
+function readArchiveChannelIds(sqlitePath: string): string[] {
+  if (!existsSync(sqlitePath)) {
+    return [];
+  }
+  const db = new DatabaseSync(sqlitePath, { readOnly: true });
+  try {
+    return currentArchiveChannelIds(db);
+  } finally {
+    db.close();
+  }
+}
+
+function selectScopedArchivesForChannels(base: ArchivePaths, channelIds: readonly string[]): SelectedScopedArchive[] {
+  const remaining = new Set(channelIds);
+  if (remaining.size === 0) {
+    return [];
+  }
+  const candidates = listExistingScopedArchivePaths(base)
+    .map((paths) => ({
+      channelIds: readArchiveChannelIds(paths.sqlitePath).filter((id) => remaining.has(id)),
+      paths,
+    }))
+    .filter((candidate) => candidate.channelIds.length > 0)
+    .sort(
+      (a, b) => b.channelIds.length - a.channelIds.length || a.paths.archivePath.localeCompare(b.paths.archivePath)
+    );
+
+  const selected: SelectedScopedArchive[] = [];
+  for (const candidate of candidates) {
+    const covers = candidate.channelIds.filter((id) => remaining.has(id));
+    if (covers.length === 0) {
+      continue;
+    }
+    selected.push({ channelIds: covers.sort(), paths: candidate.paths });
+    for (const id of covers) {
+      remaining.delete(id);
+    }
+    if (remaining.size === 0) {
+      break;
+    }
+  }
+  return selected;
+}
+
+function unionStrings(...values: ReadonlyArray<readonly string[]>): string[] {
+  return [...new Set(values.flat())].sort();
+}
+
+function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassResult): MessagesPassResult {
+  return {
+    channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
+    maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
+  };
+}
+
+interface ArchiveRuntimeDeps {
+  childEnv: NodeJS.ProcessEnv;
+  cookie: string;
+  opts: SlackOpts;
+  progress: CollectContext["progress"];
+  timeFrom: string | null;
+  timeTo: string | null;
+  token: string;
+}
+
+interface MessageSourceCacheReconciliation {
+  currentChannelIds: string[];
+  missingChannelIds: string[];
+  scopedArchives: SelectedScopedArchive[];
+}
+
+async function refreshScopedArchive(archive: SelectedScopedArchive, deps: ArchiveRuntimeDeps): Promise<void> {
+  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
+  const useResume = existsSync(archive.paths.archivePath);
+  try {
+    await ensureArchiveOnDisk({
+      archivePath: archive.paths.archivePath,
+      childEnv,
+      cookie,
+      opts,
+      positionalChannels: [...archive.channelIds],
+      priorArchive: undefined,
+      progress,
+      resumeTarget: useResume ? archive.paths.archivePath : null,
+      sqlitePath: archive.paths.sqlitePath,
+      timeFrom,
+      timeTo,
+      token,
+      useResume,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    progress(`Slack: scoped archive refresh failed for ${String(archive.channelIds.length)} channel(s): ${message}`, {
+      stream: "messages",
+    });
+  }
+}
+
+async function repairMissingScopedArchive(
+  baseArchivePaths: ArchivePaths,
+  missingChannelIds: readonly string[],
+  deps: ArchiveRuntimeDeps
+): Promise<SelectedScopedArchive | null> {
+  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
+  const repairPaths = resolveScopedArchivePaths(baseArchivePaths, missingChannelIds);
+  const useResume = existsSync(repairPaths.archivePath);
+  try {
+    await ensureArchiveOnDisk({
+      archivePath: repairPaths.archivePath,
+      childEnv,
+      cookie,
+      opts,
+      positionalChannels: [...missingChannelIds],
+      priorArchive: undefined,
+      progress,
+      resumeTarget: useResume ? repairPaths.archivePath : null,
+      sqlitePath: repairPaths.sqlitePath,
+      timeFrom,
+      timeTo,
+      token,
+      useResume,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    progress(
+      `Slack: scoped archive auto-reconcile failed for ${String(missingChannelIds.length)} channel(s): ${message}`,
+      {
+        stream: "messages",
+      }
+    );
+    return null;
+  }
+
+  const repairedChannelIds = readArchiveChannelIds(repairPaths.sqlitePath).filter((id) =>
+    missingChannelIds.includes(id)
+  );
+  return repairedChannelIds.length > 0 ? { channelIds: repairedChannelIds, paths: repairPaths } : null;
+}
+
+async function reconcileMessageSourceCache(deps: {
+  archiveRuntime: ArchiveRuntimeDeps;
+  baseArchivePaths: ArchivePaths;
+  baseChannelIds: readonly string[];
+  isUnscopedMessageBoundary: boolean;
+  messageFamilyRequested: boolean;
+  priorObservedChannelIds: readonly string[];
+}): Promise<MessageSourceCacheReconciliation> {
+  const {
+    archiveRuntime,
+    baseArchivePaths,
+    baseChannelIds,
+    isUnscopedMessageBoundary,
+    messageFamilyRequested,
+    priorObservedChannelIds,
+  } = deps;
+  if (!(messageFamilyRequested && isUnscopedMessageBoundary)) {
+    return { currentChannelIds: [...baseChannelIds], missingChannelIds: [], scopedArchives: [] };
+  }
+
+  // Source-cache auto-reconciliation: if an unscoped run proves that a
+  // previously observed channel is absent from the main workspace archive,
+  // refresh an isolated scoped archive for the missing partition and include
+  // that archive in this run's message pass. Existing scoped archives count as
+  // part of the source cache, so the normal hourly run can heal cache topology
+  // without asking the owner to reconnect credentials.
+  const baseMissingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, baseChannelIds);
+  const scopedArchives = selectScopedArchivesForChannels(baseArchivePaths, baseMissingChannelIds);
+  for (const archive of scopedArchives) {
+    await refreshScopedArchive(archive, archiveRuntime);
+  }
+
+  let scopedChannelIds = unionStrings(...scopedArchives.map((archive) => archive.channelIds));
+  let currentChannelIds = unionStrings(baseChannelIds, scopedChannelIds);
+  let missingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds);
+
+  if (missingChannelIds.length > 0) {
+    const repaired = await repairMissingScopedArchive(baseArchivePaths, missingChannelIds, archiveRuntime);
+    if (repaired) {
+      scopedArchives.push(repaired);
+      scopedChannelIds = unionStrings(scopedChannelIds, repaired.channelIds);
+      currentChannelIds = unionStrings(baseChannelIds, scopedChannelIds);
+      missingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds);
+    }
+  }
+
+  return { currentChannelIds, missingChannelIds, scopedArchives };
+}
+
+function messageFamilyRequestedOnly(requested: CollectContext["requested"]): CollectContext["requested"] {
+  return new Map(
+    [...requested].filter(([stream]) => ["message_attachments", "messages", "reactions"].includes(stream))
+  ) as CollectContext["requested"];
+}
+
+async function mergeScopedMessageArchivePasses(deps: {
+  messageResult: MessagesPassResult;
+  scopedArchives: readonly SelectedScopedArchive[];
+  state: CollectContext["state"];
+  streamDeps: StreamDeps;
+}): Promise<MessagesPassResult> {
+  let merged = deps.messageResult;
+  const requested = messageFamilyRequestedOnly(deps.streamDeps.requested);
+  for (const archive of deps.scopedArchives) {
+    if (!existsSync(archive.paths.sqlitePath)) {
+      continue;
+    }
+    const scopedDb = new DatabaseSync(archive.paths.sqlitePath, { readOnly: true });
+    try {
+      merged = mergeMessagesPassResults(
+        merged,
+        await runRequestedStreams({ ...deps.streamDeps, db: scopedDb, requested }, deps.state, {
+          allowLegacyMessageCursorFallback: false,
+          ignoreMessageChannelCursors: false,
+        })
+      );
+    } finally {
+      scopedDb.close();
+    }
+  }
+  return merged;
 }
 
 /**
@@ -1420,19 +1666,32 @@ if (isMainModule(import.meta.url)) {
       const messagesState = state.messages as MessagesState | undefined;
       const priorChannelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
       const priorObservedChannelIds = readPriorObservedChannelIds(messagesState);
-      const currentChannelIds = currentArchiveChannelIds(db);
-      const missingChannelIds =
-        messageFamilyRequested && isUnscopedMessageBoundary
-          ? missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds)
-          : [];
-      if (missingChannelIds.length > 0) {
-        await emitMissingChannelDiagnostic(emit, missingChannelIds);
+      const baseChannelIds = currentArchiveChannelIds(db);
+      const reconciledSourceCache = await reconcileMessageSourceCache({
+        archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
+        baseArchivePaths,
+        baseChannelIds,
+        isUnscopedMessageBoundary,
+        messageFamilyRequested,
+        priorObservedChannelIds,
+      });
+
+      if (reconciledSourceCache.missingChannelIds.length > 0) {
+        await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
 
-      const messageResult = await runRequestedStreams(deps, state, {
+      let messageResult = await runRequestedStreams(deps, state, {
         allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
         ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
       });
+      if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {
+        messageResult = await mergeScopedMessageArchivePasses({
+          messageResult,
+          scopedArchives: reconciledSourceCache.scopedArchives,
+          state,
+          streamDeps: deps,
+        });
+      }
 
       emitUnavailableStreams(requested, emit);
 
@@ -1451,7 +1710,9 @@ if (isMainModule(import.meta.url)) {
       const committedChannelLastTs = selectCommittedChannelLastTs(priorChannelLastTs, messageResult.channelMaxTs);
       const observedChannelIds =
         messageFamilyRequested && isUnscopedMessageBoundary
-          ? [...new Set([...currentChannelIds, ...missingChannelIds])].sort()
+          ? [
+              ...new Set([...reconciledSourceCache.currentChannelIds, ...reconciledSourceCache.missingChannelIds]),
+            ].sort()
           : priorObservedChannelIds;
       const stateArchivePath = isUnscopedMessageBoundary ? archivePath : (messagesState?.archive_dir ?? archivePath);
       emitStateCheckpoints({

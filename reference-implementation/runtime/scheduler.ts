@@ -1037,6 +1037,26 @@ function buildBrowserSurfaceUnavailableSkip(
   };
 }
 
+function controllerRunNowDeferReason(err: unknown): string | null {
+  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
+  if (code === "run_already_active") {
+    return "run_already_active";
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const normalized = message.toLowerCase();
+  if (normalized.includes("run_already_active") || normalized.includes("already has an active run")) {
+    return "run_already_active";
+  }
+  if (
+    normalized.includes("idx_pg_browser_surface_leases_one_non_terminal_run") ||
+    normalized.includes("browser_surface_leases") ||
+    normalized.includes("non_terminal_run")
+  ) {
+    return "browser_surface_lease_active";
+  }
+  return null;
+}
+
 function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
@@ -2023,9 +2043,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           rsUrl,
         });
       } catch (err) {
-        // A throw means controller.runNow itself failed (e.g. run_already_active,
-        // not_found, provider_pressure_cooldown). Map to a retryable failure so
-        // the scheduler's retry/back-off machinery handles it normally.
+        // A contention throw means another run/lease is already using this
+        // managed browser profile. That is capacity/serialization pressure, not
+        // connector failure: defer this tick so the next scheduler pass retries
+        // after the active run releases its lease.
+        const deferReason = controllerRunNowDeferReason(err);
+        if (deferReason) {
+          return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
+        }
+        // Other throws mean controller.runNow itself failed (e.g. not_found,
+        // provider_pressure_cooldown). Map to a retryable failure so the
+        // scheduler's retry/back-off machinery handles it normally.
         const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
         return recordAndNotify({
