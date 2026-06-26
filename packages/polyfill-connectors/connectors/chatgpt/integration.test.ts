@@ -240,6 +240,48 @@ test("Part A: one HTTP request that retries N times causes ONE pacing backoff, n
   );
 });
 
+test("createChatGptApi.fetchBatch posts capped conversation batch requests", async () => {
+  const backendCalls: Array<{ body?: unknown; method?: string; path?: string }> = [];
+  const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {
+    evaluate: ((_fn: unknown, arg?: unknown): Promise<unknown> => {
+      if (arg === undefined) {
+        return Promise.resolve({ accessToken: "fake-token", deviceId: "fake-device" });
+      }
+      backendCalls.push(arg as { body?: unknown; method?: string; path?: string });
+      return Promise.resolve({
+        status: 200,
+        json: [
+          { id: "c1", title: "one" },
+          { id: "c2", title: "two" },
+        ],
+      });
+    }) as Page["evaluate"],
+    goto: () => Promise.resolve(null),
+    waitForFunction: () => Promise.reject(new Error("fake page: no client-bootstrap")),
+  };
+
+  const api = createChatGptApi({ capture: null, page: fakePage as Page });
+  assert.ok(api.fetchBatch, "production ChatGPT API exposes fetchBatch");
+  const fetchBatch = api.fetchBatch;
+  const results = await fetchBatch(["c1", "c2"]);
+
+  assert.equal(results.length, 2);
+  assert.deepEqual(backendCalls, [
+    {
+      auth: { accessToken: "fake-token", deviceId: "fake-device" },
+      body: { conversation_ids: ["c1", "c2"] },
+      method: "POST",
+      parseJson: true,
+      path: "/conversations/batch",
+      timeoutMs: resolveChatGptBackendFetchTimeoutMs(),
+    },
+  ]);
+  await assert.rejects(
+    () => fetchBatch(Array.from({ length: 11 }, (_, i) => `c${i}`)),
+    /chatgpt_batch_detail_over_cap/
+  );
+});
+
 test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => {
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "7" }), 7);
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "0" }), 45_000);
@@ -476,8 +518,10 @@ test("summarizeChatGptSideEffectProbe reports update and order side effects", ()
  *  emit() + emitRecord() call so tests can introspect the protocol. */
 function makeHarness({
   requested = ["memories", "custom_instructions", "conversations", "messages"],
+  fetchBatch,
   fetchQueue = [],
 }: {
+  fetchBatch?: (ids: readonly string[]) => Promise<ChatGptFetchResult[]> | ChatGptFetchResult[];
   fetchQueue?: readonly ChatGptFetchResult[];
   requested?: readonly string[];
 } = {}): RecordingHarness {
@@ -493,6 +537,11 @@ function makeHarness({
       cursor += 1;
       return Promise.resolve(next);
     },
+    ...(fetchBatch
+      ? {
+          fetchBatch: (ids: readonly string[]): Promise<ChatGptFetchResult[]> => Promise.resolve(fetchBatch(ids)),
+        }
+      : {}),
   };
   const deps: StreamDeps = {
     api,
@@ -587,6 +636,11 @@ function makeDetailOk(): ChatGptFetchResult {
     current_node: "a1",
   };
   return { status: 200, json };
+}
+
+function makeDetailOkForConversation(id: string): ChatGptFetchResult {
+  const detail = makeDetailOk();
+  return { ...detail, json: { ...(detail.json ?? {}), id } };
 }
 
 async function admitFakeProviderBudget(providerBudget: ProviderBudgetController): Promise<void> {
@@ -993,6 +1047,156 @@ test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lan
     false,
     "lane progress must not expose raw API paths"
   );
+});
+
+test("runMessagesAndConversationsWithDetail: batch detail happy path avoids per-id GET storm", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const batchCalls: string[][] = [];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      throw new Error(`unexpected per-id GET: ${path}`);
+    },
+    fetchBatch: (ids: readonly string[]): Promise<ChatGptFetchResult[]> => {
+      batchCalls.push([...ids]);
+      return Promise.resolve(ids.map((id) => makeDetailOkForConversation(id)));
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(batchCalls, [["convo-1", "convo-2", "convo-3"]]);
+  assert.deepEqual(fetches, [], "batch-hydrated conversations must not also hit /conversation/{id}");
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
+});
+
+test("runMessagesAndConversationsWithDetail: batch omissions fall back only for omitted ids", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const batchCalls: string[][] = [];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      const id = path.replace("/conversation/", "");
+      return Promise.resolve(makeDetailOkForConversation(id));
+    },
+    fetchBatch: (ids: readonly string[]): Promise<ChatGptFetchResult[]> => {
+      batchCalls.push([...ids]);
+      return Promise.resolve(ids.filter((id) => id !== "convo-2").map((id) => makeDetailOkForConversation(id)));
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(batchCalls, [["convo-1", "convo-2", "convo-3"]]);
+  assert.deepEqual(fetches, ["/conversation/convo-2"], "only the omitted id falls back to per-id GET");
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
+});
+
+test("runMessagesAndConversationsWithDetail: 100 conversations use 10 capped batch calls, not 100 GETs", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const batchCalls: string[][] = [];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      throw new Error(`unexpected per-id GET: ${path}`);
+    },
+    fetchBatch: (ids: readonly string[]): Promise<ChatGptFetchResult[]> => {
+      batchCalls.push([...ids]);
+      assert.ok(ids.length <= 10, "provider batch requests must never exceed 10 ids");
+      return Promise.resolve(ids.map((id) => makeDetailOkForConversation(id)));
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+  const convos = Array.from({ length: 100 }, (_, index) => makeConvo({ id: `convo-${index + 1}` }));
+
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+  });
+
+  assert.equal(batchCalls.length, 10, "100 ids should be fetched as 10 provider-capped batches");
+  assert.deepEqual(
+    batchCalls.map((ids) => ids.length),
+    Array.from({ length: 10 }, () => 10)
+  );
+  assert.deepEqual(fetches, [], "fully batch-hydrated run must not issue per-id GETs");
+  assert.equal(coverage.hydratedKeys.length, 100);
+  assert.deepEqual(coverage.gapKeys, []);
+});
+
+test("runMessagesAndConversationsWithDetail: unavailable batch endpoint degrades to existing GET path", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const batchCalls: string[][] = [];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      const id = path.replace("/conversation/", "");
+      return Promise.resolve(makeDetailOkForConversation(id));
+    },
+    fetchBatch: (ids: readonly string[]): Promise<ChatGptFetchResult[]> => {
+      batchCalls.push([...ids]);
+      return Promise.reject(new Error("batch unavailable"));
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(batchCalls, [["convo-1", "convo-2", "convo-3"]]);
+  assert.deepEqual(fetches, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
 });
 
 test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded and redacted", async () => {

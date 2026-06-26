@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * PDPP ChatGPT Connector (v0.1.0)
+ * PDPP ChatGPT Connector (v0.2.0)
+ * Change note: conversation detail hydration prefers ChatGPT's capped batch
+ * endpoint and falls back to the existing per-id detail fetch for omissions or
+ * endpoint unavailability.
  *
  * Uses an isolated patchright profile under `~/.pdpp/profiles/chatgpt/` via
  * `acquireIsolatedBrowser`. Initial credentialing happens through the
@@ -158,6 +161,7 @@ const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
+const CHATGPT_CONVERSATION_BATCH_MAX_IDS = 10;
 // Source-pressure fast-open. The live A/B probe (2026-06-02) showed ChatGPT's
 // private detail endpoint returns BARE 429s — no `Retry-After` — and that the
 // throttle is per-account, recovering over minutes, not per-conversation. A
@@ -1454,6 +1458,37 @@ export function createChatGptApi({
       { method = "GET", body }: { method?: string; body?: unknown } = {}
     ): Promise<ChatGptFetchResult> {
       return fetchWithRetry(path, { method, body, parseJson: true, captureResult: true });
+    },
+    async fetchBatch(ids: readonly string[]): Promise<ChatGptFetchResult[]> {
+      const conversationIds = Array.from(ids);
+      if (conversationIds.length > CHATGPT_CONVERSATION_BATCH_MAX_IDS) {
+        throw new Error(
+          `chatgpt_batch_detail_over_cap: got ${conversationIds.length} ids, max ${CHATGPT_CONVERSATION_BATCH_MAX_IDS}`
+        );
+      }
+      if (conversationIds.length === 0) {
+        return [];
+      }
+      const result = await fetchWithRetry("/conversations/batch", {
+        body: { conversation_ids: conversationIds },
+        captureResult: true,
+        method: "POST",
+        parseJson: true,
+      });
+      const json = result.json as unknown;
+      if (result.status !== 200 || !Array.isArray(json)) {
+        throw new Error(`chatgpt_batch_detail_unavailable: status=${result.status}`);
+      }
+      return json
+        .filter(
+          (item): item is ChatGptFetchResult["json"] =>
+            item !== null && typeof item === "object" && !Array.isArray(item)
+        )
+        .map((item) => ({
+          ...(result.headers ? { headers: result.headers } : {}),
+          json: item,
+          status: result.status,
+        }));
     },
     async fetchStatus(
       path: string,
@@ -2906,6 +2941,8 @@ export async function runMessagesAndConversationsWithDetail(
   let lastEmittedRateIntervalMs: number | null = null;
   const gapKeys = new Set<string>();
   const hydratedKeys = new Set<string>();
+  const batchDetailCache = new Map<string, ChatGptFetchResult>();
+  const batchDetailCacheHits = new Set<string>();
   // Once run-cap or source-pressure deferral trips, all later conversation
   // details are local bookkeeping: emit durable DETAIL_GAP rows for the tail,
   // then abort queued lane work. With the launch-jitter floor deleted (now an ε
@@ -2913,6 +2950,65 @@ export async function runMessagesAndConversationsWithDetail(
   // abort is a micro-optimization (queued tasks reject immediately), no longer
   // the load-bearing mechanism that made tail iteration affordable.
   const tailStopController = new AbortController();
+
+  async function recordConversationDetailProviderSuccess(): Promise<void> {
+    providerBudget?.recordSuccess(deps.recoveryOnly === true ? { suppressAdditiveIncrease: true } : undefined);
+    await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
+    lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
+      deps.emit,
+      providerBudget,
+      lastEmittedRateIntervalMs
+    );
+  }
+
+  function conversationIdsWithinDetailBudget(): string[] {
+    const remainingDetailBudget = Number.isFinite(runBudget.maxFetches)
+      ? Math.max(0, runBudget.maxFetches - runBudget.count)
+      : convosToSync.length;
+    return convosToSync.slice(0, remainingDetailBudget).map((conversation) => conversation.id);
+  }
+
+  function cachedBatchDetailId(detail: ChatGptFetchResult, chunkIdSet: ReadonlySet<string>): string | null {
+    if (detail.status !== 200 || !detail.json || Array.isArray(detail.json)) {
+      return null;
+    }
+    const id = typeof detail.json.id === "string" ? detail.json.id : null;
+    return id && chunkIdSet.has(id) ? id : null;
+  }
+
+  function cacheBatchConversationDetails(details: readonly ChatGptFetchResult[], chunkIds: readonly string[]): void {
+    const chunkIdSet = new Set(chunkIds);
+    for (const detail of details) {
+      const id = cachedBatchDetailId(detail, chunkIdSet);
+      if (id) {
+        batchDetailCache.set(id, detail);
+      }
+    }
+  }
+
+  async function prefetchConversationDetailBatches(): Promise<void> {
+    const fetchBatch = deps.api.fetchBatch;
+    if (!fetchBatch || convosToSync.length === 0 || runBudget.shouldStop()) {
+      return;
+    }
+    const prefetchIds = conversationIdsWithinDetailBudget();
+    for (let start = 0; start < prefetchIds.length; start += CHATGPT_CONVERSATION_BATCH_MAX_IDS) {
+      if (runBudget.shouldStop()) {
+        return;
+      }
+      const chunkIds = prefetchIds.slice(start, start + CHATGPT_CONVERSATION_BATCH_MAX_IDS);
+      let details: ChatGptFetchResult[];
+      try {
+        details = await fetchBatch(chunkIds);
+      } catch {
+        // Batch is an optimization. If the endpoint is unavailable, stop trying
+        // it for this pass and let the existing per-id lane preserve correctness.
+        return;
+      }
+      await recordConversationDetailProviderSuccess();
+      cacheBatchConversationDetails(details, chunkIds);
+    }
+  }
 
   async function emitConversationDetailGapOnce(c: ConversationListItem, gap: DetailGapMessage): Promise<void> {
     if (gapKeys.has(c.id) || hydratedKeys.has(c.id)) {
@@ -3252,6 +3348,12 @@ export async function runMessagesAndConversationsWithDetail(
   }
 
   async function fetchConversationDetailWaitingOutCircuit(c: ConversationListItem): Promise<ChatGptFetchResult> {
+    const batchDetail = batchDetailCache.get(c.id);
+    if (batchDetail) {
+      batchDetailCache.delete(c.id);
+      batchDetailCacheHits.add(c.id);
+      return batchDetail;
+    }
     // Progress-based give-up: the shared consecutiveWaitOutsWithoutSuccess
     // counter (incremented in handleCircuitOpenForWaitOut, reset on each
     // successful fetch) bounds this loop. A dead account gives up after
@@ -3264,6 +3366,8 @@ export async function runMessagesAndConversationsWithDetail(
       }
     }
   }
+
+  await prefetchConversationDetailBatches();
 
   await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
@@ -3316,16 +3420,13 @@ export async function runMessagesAndConversationsWithDetail(
     // §10-D: suppress additive-decrease during the cooldown-exempt recovery
     // lane so the shared pacer interval is not un-learned. Throttles still
     // fire (recovery may decelerate, never accelerate the pacer).
-    providerBudget?.recordSuccess(deps.recoveryOnly === true ? { suppressAdditiveIncrease: true } : undefined);
+    const servedFromBatchCache = batchDetailCacheHits.delete(c.id);
+    if (!servedFromBatchCache) {
+      await recordConversationDetailProviderSuccess();
+    }
     // Reset the progress-based give-up counter: any successful fetch proves the
     // account is alive, so N consecutive no-progress waits restarts from 0.
     consecutiveWaitOutsWithoutSuccess = 0;
-    await emitChatGptProviderBudgetTransitions({ emit: deps.emit, providerBudget });
-    lastEmittedRateIntervalMs = await emitChatGptCollectionRateOnChange(
-      deps.emit,
-      providerBudget,
-      lastEmittedRateIntervalMs
-    );
     hydratedKeys.add(c.id);
     coverage.hydratedKeys.push(c.id);
     // Count this hydration against the bounded-run cap. Done after a successful

@@ -121,6 +121,7 @@ export interface ChatGptFetchResult {
 export interface ChatGptApi {
   auth: () => Promise<ChatGptAuth>;
   fetch: (path: string, opts?: { method?: string; body?: unknown }) => Promise<ChatGptFetchResult>;
+  fetchBatch?: (ids: readonly string[]) => Promise<ChatGptFetchResult[]>;
   fetchStatus?: (
     path: string,
     opts?: { method?: string; body?: unknown }
