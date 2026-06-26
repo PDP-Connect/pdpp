@@ -142,6 +142,20 @@
           "semantic_fields": [
             "title"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "time_added"
+          ]
+        },
+        "range_filters": {
+          "time_added": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     }

@@ -317,6 +317,36 @@ Rules:
 
 ---
 
+## 4b. Query affordances (search, range, aggregation, facets)
+
+A field being *readable* does not make it *queryable*. The reference server never infers query behavior from field names — it acts only on what the manifest declares. So a granted natural-language field that you don't declare as searchable is invisible to search clients; a date you don't declare as range-filterable can't bound a read. Declaring these is the connector author's job, and it's enforced by `query-affordance-manifest-honesty.test.ts`.
+
+There are four independent declaration axes under a stream's `query` block. They do not imply one another:
+
+| Axis | Declaration | What it enables |
+|---|---|---|
+| Lexical search | `query.search.lexical_fields: [field, …]` | keyword/full-text match on a string field |
+| Semantic search | `query.search.semantic_fields: [field, …]` | meaning-based match on title/body/note/memo/caption/description text |
+| Range filter | `query.range_filters: { field: ["gte","gt","lte","lt"] }` | bounded reads over a numeric or date/date-time field |
+| Time buckets | `query.aggregations.group_by_time: [field, …]` | count-over-time calendar charts |
+| Facet/group | `query.aggregations.group_by: [field, …]` | grouped counts over a stable scalar field |
+
+### The rules that keep declarations valid
+
+1. **`group_by_time` is schema-gated to date strings.** Declare it only on a field whose schema is `{ "type": "string", "format": "date" | "date-time" }`. Integer epoch fields (e.g. `mtime_epoch`) are fine for `range_filters` but the aggregate engine *rejects* them for time bucketing — declaring one ships a manifest the server refuses at request time.
+2. **Grouping needs `aggregations.count: true`.** `group_by` and `group_by_time` run as `metric=count`. If the stream had no `aggregations` block, add `count: true` alongside them.
+3. **Facets must be scalar.** `group_by` requires a single-type `boolean`/`integer`/`number`/`string` field. An `enum` is ideal. Don't facet free text or high-cardinality identifiers.
+4. **Declare the *event* axis for charts, not every timestamp.** A record's creation/start time is the count-over-time axis. Secondary state markers (`updated_at`, `closed_at`, `merged_at`, `completed_at`, `last_*`), interval closings (`end_*`), ingest markers (`fetched_at`), and the stream's own `cursor_field` are range-useful but are *not* required to declare `group_by_time`.
+5. **Presentation role ≠ query affordance.** `x_pdpp_role: event-time` controls how a card renders; it does **not** make a field filterable, groupable, or searchable. Don't stamp `event-time` on a message/transaction/metric timestamp just to chart it — declare `group_by_time` instead. Use `event-time` only when the stream is a genuine event card (calendar event start, media capture time).
+
+### Honest non-support
+
+If a field *looks* useful for an affordance but you intentionally don't expose it — privacy-sensitive addresses, snapshot/accounting periods, operational job timing — add a justified entry to `src/query-affordance-allowlist.ts` with a one-line reason. The honesty test fails on a useful-but-undeclared field, and also fails on a stale allowlist entry (one whose affordance is actually declared, or whose field no longer exists). Silence is not an option; declare it or allowlist it.
+
+Prior art and the full rule set: `docs/research/connector-query-affordance-authoring-2026-06-26.md` and `docs/research/connector-authoring-semantics-prior-art-2026-06-24.md`.
+
+---
+
 ## 5. Session-state pattern
 
 - **Probe before login.** A cheap auth check before driving credentials saves rate-limit budget and human patience.

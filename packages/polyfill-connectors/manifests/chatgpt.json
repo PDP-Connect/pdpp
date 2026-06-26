@@ -155,7 +155,8 @@
         "aggregations": {
           "count": true,
           "group_by_time": [
-            "update_time"
+            "update_time",
+            "create_time"
           ]
         }
       }
@@ -364,7 +365,8 @@
         "aggregations": {
           "count": true,
           "group_by_time": [
-            "updated_at"
+            "updated_at",
+            "created_at"
           ]
         }
       }
@@ -507,7 +509,11 @@
         "aggregations": {
           "count": true,
           "group_by_time": [
-            "updated_at"
+            "updated_at",
+            "created_at"
+          ],
+          "group_by": [
+            "category"
           ]
         }
       }

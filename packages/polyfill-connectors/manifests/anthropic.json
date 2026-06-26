@@ -110,6 +110,20 @@
           "semantic_fields": [
             "title"
           ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "create_time"
+          ]
         }
       }
     },
@@ -190,6 +204,20 @@
           "semantic_fields": [
             "content"
           ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "create_time"
+          ]
         }
       }
     },
@@ -256,6 +284,20 @@
           ],
           "semantic_fields": [
             "description"
+          ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "create_time"
           ]
         }
       }

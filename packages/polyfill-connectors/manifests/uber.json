@@ -207,7 +207,39 @@
             "product_type"
           ]
         }
-      ]
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "driver_name",
+            "vehicle_description"
+          ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "requested_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "started_at"
+          ],
+          "group_by": [
+            "status",
+            "product_type"
+          ]
+        }
+      }
     }
   ]
 }

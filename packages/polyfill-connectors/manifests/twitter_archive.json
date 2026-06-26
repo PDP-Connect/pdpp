@@ -120,6 +120,23 @@
           "semantic_fields": [
             "text"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ],
+          "group_by": [
+            "lang"
+          ]
         }
       }
     },
@@ -190,6 +207,20 @@
           ],
           "semantic_fields": [
             "text"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
           ]
         }
       }

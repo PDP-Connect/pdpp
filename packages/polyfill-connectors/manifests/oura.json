@@ -174,7 +174,23 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      }
     },
     {
       "name": "readiness",
@@ -232,7 +248,23 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      }
     },
     {
       "name": "activity",
@@ -305,7 +337,23 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      }
     }
   ]
 }

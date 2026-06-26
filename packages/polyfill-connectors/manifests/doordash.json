@@ -137,7 +137,31 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "restaurant_name"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
+          ],
+          "group_by": [
+            "status"
+          ]
+        }
+      }
     },
     {
       "name": "order_items",

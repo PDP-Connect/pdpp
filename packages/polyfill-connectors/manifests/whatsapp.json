@@ -143,6 +143,20 @@
           "semantic_fields": [
             "title"
           ]
+        },
+        "range_filters": {
+          "first_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "first_message_date"
+          ]
         }
       }
     },
@@ -218,6 +232,20 @@
           ],
           "semantic_fields": [
             "content"
+          ]
+        },
+        "range_filters": {
+          "sent_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "sent_at"
           ]
         }
       }

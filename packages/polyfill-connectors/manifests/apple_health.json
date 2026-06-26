@@ -104,7 +104,32 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ],
+          "group_by": [
+            "type"
+          ]
+        }
+      }
     },
     {
       "name": "workouts",
@@ -178,7 +203,32 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ],
+          "group_by": [
+            "workout_activity_type"
+          ]
+        }
+      }
     }
   ]
 }

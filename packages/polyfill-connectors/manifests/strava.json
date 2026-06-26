@@ -186,6 +186,24 @@
           "lexical_fields": [
             "name"
           ]
+        },
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ],
+          "group_by": [
+            "type",
+            "sport_type"
+          ]
         }
       }
     }

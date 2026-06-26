@@ -151,7 +151,8 @@
         "aggregations": {
           "count": true,
           "group_by_time": [
-            "last_event_at"
+            "last_event_at",
+            "started_at"
           ]
         }
       }

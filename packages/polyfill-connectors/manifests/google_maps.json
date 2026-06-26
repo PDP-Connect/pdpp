@@ -178,7 +178,26 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ],
+          "group_by": [
+            "activity_type"
+          ]
+        }
+      }
     },
     {
       "name": "timeline_segments",
@@ -277,7 +296,32 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_time"
+          ],
+          "group_by": [
+            "segment_kind"
+          ]
+        }
+      }
     }
   ]
 }

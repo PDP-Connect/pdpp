@@ -119,6 +119,20 @@
             "title",
             "description"
           ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
         }
       }
     },

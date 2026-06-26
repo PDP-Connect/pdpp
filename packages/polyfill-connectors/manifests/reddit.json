@@ -188,6 +188,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }
@@ -314,6 +317,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }
@@ -425,6 +431,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }
@@ -560,6 +569,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }
@@ -695,6 +707,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }
@@ -830,6 +845,9 @@
           "count": true,
           "group_by_time": [
             "created_utc"
+          ],
+          "group_by": [
+            "subreddit"
           ]
         }
       }

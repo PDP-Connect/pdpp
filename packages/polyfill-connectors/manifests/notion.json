@@ -162,6 +162,20 @@
           "semantic_fields": [
             "title"
           ]
+        },
+        "range_filters": {
+          "created_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_time"
+          ]
         }
       }
     },
@@ -250,6 +264,20 @@
           ],
           "semantic_fields": [
             "title"
+          ]
+        },
+        "range_filters": {
+          "created_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_time"
           ]
         }
       }

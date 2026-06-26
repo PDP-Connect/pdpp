@@ -101,7 +101,23 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      }
     },
     {
       "name": "youtube_watch_history",
@@ -163,7 +179,29 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "watched_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "watched_at"
+          ]
+        },
+        "search": {
+          "lexical_fields": [
+            "video_title",
+            "channel_name"
+          ]
+        }
+      }
     },
     {
       "name": "search_history",
@@ -212,7 +250,31 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        },
+        "search": {
+          "lexical_fields": [
+            "query"
+          ],
+          "semantic_fields": [
+            "query"
+          ]
+        }
+      }
     }
   ]
 }

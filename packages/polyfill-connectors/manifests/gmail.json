@@ -332,7 +332,8 @@
             "is_draft"
           ],
           "group_by_time": [
-            "received_at"
+            "received_at",
+            "date"
           ]
         },
         "expand": [
@@ -461,7 +462,8 @@
         "aggregations": {
           "count": true,
           "group_by_time": [
-            "last_message_date"
+            "last_message_date",
+            "first_message_date"
           ]
         }
       }

@@ -70,7 +70,8 @@
           },
           "start": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
           },
           "end": {
             "type": [
@@ -132,6 +133,23 @@
           "semantic_fields": [
             "summary",
             "description"
+          ]
+        },
+        "range_filters": {
+          "start": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start"
+          ],
+          "group_by": [
+            "status"
           ]
         }
       }

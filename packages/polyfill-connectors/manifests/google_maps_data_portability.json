@@ -164,7 +164,30 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "export_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "start_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by": [
+            "state",
+            "access_type"
+          ]
+        }
+      }
     }
   ]
 }

@@ -204,6 +204,14 @@
           "group_by_time": [
             "added_at"
           ]
+        },
+        "range_filters": {
+          "added_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
         }
       }
     },
@@ -336,6 +344,14 @@
           "count": true,
           "group_by_time": [
             "played_at"
+          ]
+        },
+        "range_filters": {
+          "played_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }

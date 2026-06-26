@@ -454,6 +454,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
         }
       }
     },
@@ -1519,6 +1525,12 @@
             "lte",
             "lt"
           ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
         }
       }
     },
@@ -1712,6 +1724,12 @@
             "gt",
             "lte",
             "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
           ]
         }
       }
@@ -1940,6 +1958,14 @@
           ],
           "semantic_fields": [
             "description"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
           ]
         }
       }
