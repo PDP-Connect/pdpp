@@ -523,3 +523,70 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
     await rm(homeDir, { recursive: true, force: true });
   }
 });
+
+test("slack connector emits scoped archive rows even when they are older than the channel cursor", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-hole-"));
+  try {
+    const workspace = "scoped-hole-test";
+    const scopedChannelId = "C02HOLE123";
+    const mainArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest([scopedChannelId])
+    );
+    await mkdir(mainArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      createSlackArchiveSchema(scopedDb);
+      insertChannel(scopedDb, scopedChannelId, "scope");
+      insertMessage(scopedDb, scopedChannelId, "1714031000.000000", "historical missing row");
+      insertMessage(scopedDb, scopedChannelId, "1714033500.000000", "new scoped row");
+    } finally {
+      scopedDb.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages", resources: [scopedChannelId] }] },
+        state: {
+          messages: {
+            archive_dir: mainArchiveDir,
+            last_ts: "1714033000.000000",
+            channel_last_ts: { [scopedChannelId]: "1714033000.000000" },
+            observed_channel_ids: [scopedChannelId],
+          },
+        },
+      },
+    });
+
+    const records = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
+    );
+    assert.deepEqual(records.map((record) => record.key).sort(), [
+      `${scopedChannelId}:1714031000.000000`,
+      `${scopedChannelId}:1714033500.000000`,
+    ]);
+    const cursor = messagesState(result);
+    assert.equal(cursor.last_ts, "1714033500.000000");
+    assert.deepEqual(cursor.channel_last_ts, { [scopedChannelId]: "1714033500.000000" });
+    assert.deepEqual(cursor.observed_channel_ids, [scopedChannelId]);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});

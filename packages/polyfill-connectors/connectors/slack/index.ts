@@ -1277,7 +1277,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
 async function runRequestedStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
-  options: { allowLegacyMessageCursorFallback?: boolean } = {}
+  options: { allowLegacyMessageCursorFallback?: boolean; ignoreMessageChannelCursors?: boolean } = {}
 ): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
@@ -1300,7 +1300,9 @@ async function runRequestedStreams(
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
-    const channelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
+    const channelLastTs = options.ignoreMessageChannelCursors
+      ? {}
+      : normalizeStringRecord(messagesState?.channel_last_ts);
     deps.progress(messageProgressLabel(Object.keys(channelLastTs).length, priorTs), { stream: "messages" });
     result = await runMessagesUnifiedPass(deps, { channelLastTs, legacyLastTs: priorTs });
   }
@@ -1429,6 +1431,7 @@ if (isMainModule(import.meta.url)) {
 
       const messageResult = await runRequestedStreams(deps, state, {
         allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
+        ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
       });
 
       emitUnavailableStreams(requested, emit);
