@@ -335,6 +335,7 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
     assert.ok(gap, "expected source_partition_missing SKIP_RESULT");
     assert.equal(gap.stream, "messages");
     assert.deepEqual((gap.diagnostics as { missing_channel_ids?: string[] }).missing_channel_ids, ["C_MISSING"]);
+    assert.deepEqual(gap.recovery_hint, { action: "refresh_credentials", retryable: true });
     assert.match(gap.message, /coverage is partial/);
 
     const cursor = messagesState(result);

@@ -205,7 +205,7 @@ async function emitMissingChannelDiagnostic(
       truncated: visibleIds.length < missingChannelIds.length,
     },
     recovery_hint: {
-      action: "repair_slack_archive_or_refresh_credentials",
+      action: "refresh_credentials",
       retryable: true,
     },
   });

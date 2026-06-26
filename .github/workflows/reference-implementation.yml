@@ -31,6 +31,7 @@ on:
       - "apps/site/**"
       - "packages/mcp-server/**"
       - "packages/read-core/**"
+      - "packages/polyfill-connectors/**"
       - "packages/reference-contract/**"
       - "openspec/changes/complete-mcp-slvp-surface/**"
       - "docs/research/mcp-slvp-*.md"
