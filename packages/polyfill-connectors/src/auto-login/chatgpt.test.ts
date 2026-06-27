@@ -21,6 +21,29 @@ function response(extra: Partial<InteractionResponse>): InteractionResponse {
   };
 }
 
+function extractAuthProbeDiagnostic(message: string): Record<string, unknown> {
+  const prefix = "ChatGPT auth probe diagnostic ";
+  assert.equal(message.startsWith(prefix), true);
+  return JSON.parse(message.slice(prefix.length)) as Record<string, unknown>;
+}
+
+function withEnvUnset(keys: readonly string[], run: () => Promise<void>): Promise<void> {
+  const prior = new Map<string, string | undefined>();
+  for (const key of keys) {
+    prior.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  return run().finally(() => {
+    for (const [key, value] of prior) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+}
+
 test("interactionResponseCode reads orchestrator otp responses", () => {
   assert.equal(interactionResponseCode(response({ data: { code: "123456" } })), "123456");
 });
@@ -171,6 +194,116 @@ test("ChatGPT push approval checkpoints while polling so the session watchdog se
       process.env.CHATGPT_PASSWORD = originalPassword;
     }
   }
+});
+
+test("ChatGPT initial auth probe emits bounded diagnostic before credential login", async () => {
+  await withEnvUnset(["CHATGPT_USERNAME", "CHATGPT_PASSWORD"], async () => {
+    const progressMessages: string[] = [];
+    const privateRoute = "https://chatgpt.com/c/private-conversation-id";
+    let currentUrl = privateRoute;
+    const page = {
+      evaluate: (fn: (...args: never[]) => unknown) => {
+        const source = String(fn);
+        if (source.includes("/api/auth/session")) {
+          return Promise.resolve(null);
+        }
+        if (source.includes("querySelectorAll")) {
+          return Promise.resolve({
+            dom_logged_in: true,
+            has_login_or_signup: false,
+            has_sidebar: true,
+            has_user_menu: false,
+          });
+        }
+        return Promise.resolve(false);
+      },
+      goto: (url: string) => {
+        currentUrl = url;
+        return Promise.resolve(null);
+      },
+      url: () => currentUrl,
+      waitForTimeout: async () => undefined,
+    };
+
+    await assert.rejects(
+      ensureChatGptSession({
+        context: {} as never,
+        page: page as never,
+        progress: (message) => {
+          progressMessages.push(message);
+          return Promise.resolve();
+        },
+        sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+      }),
+      /CHATGPT_USERNAME\/PASSWORD not set/u
+    );
+
+    assert.equal(progressMessages.length, 1);
+    assert.doesNotMatch(progressMessages[0] ?? "", /private-conversation-id/u);
+    const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
+    assert.deepEqual(diagnostic, {
+      object: "chatgpt_auth_probe",
+      stage: "initial",
+      api_session_user: false,
+      dom_logged_in: true,
+      has_login_or_signup: false,
+      has_sidebar: true,
+      has_user_menu: false,
+      route_class: "home",
+      decision: "credential_login_required",
+    });
+  });
+});
+
+test("ChatGPT initial auth probe preserves existing API-session decision", async () => {
+  const progressMessages: string[] = [];
+  let loginOpened = false;
+  const page = {
+    evaluate: (fn: (...args: never[]) => unknown) => {
+      const source = String(fn);
+      if (source.includes("/api/auth/session")) {
+        return Promise.resolve({ user: { id: "owner" } });
+      }
+      if (source.includes("querySelectorAll")) {
+        return Promise.resolve({
+          dom_logged_in: false,
+          has_login_or_signup: true,
+          has_sidebar: false,
+          has_user_menu: false,
+        });
+      }
+      return Promise.resolve(false);
+    },
+    getByRole: () => {
+      loginOpened = true;
+      throw new Error("login path should not be reached");
+    },
+    goto: (url: string) => {
+      if (url.includes("/auth/login")) {
+        loginOpened = true;
+      }
+      return Promise.resolve(null);
+    },
+    url: () => "https://chatgpt.com/",
+    waitForTimeout: async () => undefined,
+  };
+
+  const ok = await ensureChatGptSession({
+    context: {} as never,
+    page: page as never,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+  });
+
+  assert.equal(ok, true);
+  assert.equal(loginOpened, false);
+  assert.equal(progressMessages.length, 1);
+  const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
+  assert.equal(diagnostic.api_session_user, true);
+  assert.equal(diagnostic.decision, "accepted_by_api_session");
 });
 
 test("resolveChatGptPushApprovalTimeoutMs honors a positive env override and falls back otherwise", () => {

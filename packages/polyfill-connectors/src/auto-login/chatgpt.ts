@@ -51,6 +51,23 @@ interface SessionResponse {
   user?: unknown;
 }
 
+type ChatGptRouteClass = "about_blank" | "auth" | "conversation" | "home" | "other" | "unknown" | "unparseable";
+
+interface ChatGptDomSessionProbe {
+  dom_logged_in: boolean;
+  has_login_or_signup: boolean;
+  has_sidebar: boolean;
+  has_user_menu: boolean;
+}
+
+interface ChatGptAuthProbeDiagnostic extends ChatGptDomSessionProbe {
+  api_session_user: boolean;
+  decision: "accepted_by_api_session" | "credential_login_required";
+  object: "chatgpt_auth_probe";
+  route_class: ChatGptRouteClass;
+  stage: "initial";
+}
+
 const APPROVE_SIGN_IN_TEXT = /approve sign-in/i;
 const CHATGPT_DEVICE_TEXT = /chatgpt app|your devices/i;
 const CONTINUE_WITH_PASSWORD_NAME = /^continue with password$/i;
@@ -114,6 +131,10 @@ export function interactionResponseCode(resp: InteractionResponse): string | nul
   return resp.data?.code ?? resp.value ?? null;
 }
 
+function chatGptAuthProbeDiagnosticMessage(diagnostic: ChatGptAuthProbeDiagnostic): string {
+  return `ChatGPT auth probe diagnostic ${JSON.stringify(diagnostic)}`;
+}
+
 function checkpointOption(checkpoint: SessionCheckpointFn | undefined): { checkpoint?: SessionCheckpointFn } {
   return checkpoint ? { checkpoint } : {};
 }
@@ -144,17 +165,14 @@ async function checkSession(page: Page): Promise<boolean> {
   }
 }
 
-async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
+async function checkLoggedInViaDOMDetails(page: Page): Promise<ChatGptDomSessionProbe> {
   try {
-    return await page.evaluate((): boolean => {
+    const result = await page.evaluate((): ChatGptDomSessionProbe => {
       const allButtons = document.querySelectorAll("button, a");
       const hasLoginButton = Array.from(allButtons).some((el): boolean => {
         const text = el.textContent?.toLowerCase() ?? "";
         return text.includes("log in") || text.includes("sign up");
       });
-      if (hasLoginButton) {
-        return false;
-      }
       const hasSidebar =
         !!document.querySelector('nav[aria-label="Chat history"]') ||
         !!document.querySelector('nav a[href^="/c/"]') ||
@@ -162,11 +180,42 @@ async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
       const hasUserMenu =
         !!document.querySelector('[data-testid="profile-button"]') ||
         !!document.querySelector('button[aria-label*="User menu"]');
-      return hasSidebar || hasUserMenu;
+      return {
+        dom_logged_in: !hasLoginButton && (hasSidebar || hasUserMenu),
+        has_login_or_signup: hasLoginButton,
+        has_sidebar: hasSidebar,
+        has_user_menu: hasUserMenu,
+      };
     });
+    if (result && typeof result === "object") {
+      return {
+        dom_logged_in: result.dom_logged_in === true,
+        has_login_or_signup: result.has_login_or_signup === true,
+        has_sidebar: result.has_sidebar === true,
+        has_user_menu: result.has_user_menu === true,
+      };
+    }
+    if (typeof result === "boolean") {
+      return {
+        dom_logged_in: result,
+        has_login_or_signup: false,
+        has_sidebar: result,
+        has_user_menu: false,
+      };
+    }
   } catch {
-    return false;
+    // Fall through to the all-false safe diagnostic below.
   }
+  return {
+    dom_logged_in: false,
+    has_login_or_signup: false,
+    has_sidebar: false,
+    has_user_menu: false,
+  };
+}
+
+async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
+  return (await checkLoggedInViaDOMDetails(page)).dom_logged_in;
 }
 
 export function isLikelyChatGptPushApprovalText(text: string): boolean {
@@ -228,7 +277,45 @@ async function isChatGptSessionActive(page: Page): Promise<boolean> {
   return (await checkSession(page)) || (await checkLoggedInViaDOM(page));
 }
 
-async function navigateAndProbeSession(page: Page): Promise<boolean> {
+function classifyChatGptRoute(page: Page): ChatGptRouteClass {
+  const maybeUrl = (page as { url?: unknown }).url;
+  if (typeof maybeUrl !== "function") {
+    return "unknown";
+  }
+  let rawUrl: string;
+  try {
+    rawUrl = String(maybeUrl.call(page) ?? "");
+  } catch {
+    return "unknown";
+  }
+  if (!rawUrl) {
+    return "unknown";
+  }
+  if (rawUrl === "about:blank") {
+    return "about_blank";
+  }
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return "unparseable";
+  }
+  if (url.hostname !== "chatgpt.com") {
+    return "other";
+  }
+  if (url.pathname === "/" || url.pathname === "") {
+    return "home";
+  }
+  if (url.pathname.startsWith("/auth")) {
+    return "auth";
+  }
+  if (url.pathname.startsWith("/c/")) {
+    return "conversation";
+  }
+  return "other";
+}
+
+async function navigateAndProbeSession(page: Page, progress?: EnsureChatGptSessionArgs["progress"]): Promise<boolean> {
   await page
     .goto("https://chatgpt.com/", {
       waitUntil: "domcontentloaded",
@@ -237,7 +324,19 @@ async function navigateAndProbeSession(page: Page): Promise<boolean> {
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
 
-  return await checkSession(page);
+  const apiSessionUser = await checkSession(page);
+  const domProbe = await checkLoggedInViaDOMDetails(page);
+  await progress?.(
+    chatGptAuthProbeDiagnosticMessage({
+      object: "chatgpt_auth_probe",
+      stage: "initial",
+      api_session_user: apiSessionUser,
+      ...domProbe,
+      route_class: classifyChatGptRoute(page),
+      decision: apiSessionUser ? "accepted_by_api_session" : "credential_login_required",
+    })
+  );
+  return apiSessionUser;
 }
 
 async function openChatGptLogin(page: Page): Promise<void> {
@@ -589,7 +688,7 @@ export async function ensureChatGptSession({
   progress,
   sendInteraction,
 }: EnsureChatGptSessionArgs): Promise<boolean> {
-  if (await navigateAndProbeSession(page)) {
+  if (await navigateAndProbeSession(page, progress)) {
     return true;
   }
 
