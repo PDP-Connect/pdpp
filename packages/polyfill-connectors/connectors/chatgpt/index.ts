@@ -3945,7 +3945,7 @@ if (isMainModule(import.meta.url)) {
     name: "chatgpt",
     validateRecord,
     normalizeTerminalError: normalizeChatGptTerminalError,
-    browser: { profileName: "chatgpt" },
+    browser: { preservePageOnSuccess: true, profileName: "chatgpt" },
     async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
       await ensureChatGptSession({
         assist,

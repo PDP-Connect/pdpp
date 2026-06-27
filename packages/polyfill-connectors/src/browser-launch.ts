@@ -46,6 +46,12 @@ export interface IsolatedBrowser {
 
 export interface AcquireIsolatedBrowserOptions {
   headless?: boolean;
+  /**
+   * Skip remote-CDP page-target cleanup before attach. Use only when the
+   * connector intentionally preserves successful pages because the page itself
+   * carries source auth state.
+   */
+  preserveRemotePagesOnAcquire?: boolean;
   profileName: string;
   /**
    * When set, the launcher does NOT spawn its own Chromium. Instead it
@@ -493,21 +499,37 @@ export async function connectOverCdpWithRetry<TBrowser>({
  * `unhandledRejection` guard. See `runCdpAttemptWithRaceGuard` and
  * `isCdpAttachSessionRaceError`.
  */
-async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
+export function shouldCleanRemoteCdpPageTargets({
+  preserveRemotePagesOnAcquire,
+}: Pick<AcquireIsolatedBrowserOptions, "preserveRemotePagesOnAcquire">): boolean {
+  return !preserveRemotePagesOnAcquire;
+}
+
+async function acquireRemoteCdpBrowser(
+  cdpUrl: string,
+  profileName: string,
+  options: Pick<AcquireIsolatedBrowserOptions, "preserveRemotePagesOnAcquire"> = {}
+): Promise<IsolatedBrowser> {
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
   const attachStartedAt = Date.now();
   const redactedUrl = redactCdpUrl(cdpUrl);
   process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
-  // Remote profiles persist cookies; stale page targets do not need to persist.
-  // Replace pages before attach so Patchright does not auto-attach to a wedged
-  // renderer, while n.eko Chromium still keeps at least one page alive.
-  const cleanup = await closeRemoteCdpPageTargets({ cdpUrl, profileName });
-  process.stderr.write(
-    `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} replacementCreated=${String(
-      cleanup.replacementCreated
-    )} skipped=${String(cleanup.skipped)}\n`
-  );
+  if (shouldCleanRemoteCdpPageTargets(options)) {
+    // Remote profiles usually persist cookies; stale page targets do not need
+    // to persist. Replace pages before attach so Patchright does not auto-attach
+    // to a wedged renderer, while n.eko Chromium still keeps at least one page alive.
+    const cleanup = await closeRemoteCdpPageTargets({ cdpUrl, profileName });
+    process.stderr.write(
+      `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} replacementCreated=${String(
+        cleanup.replacementCreated
+      )} skipped=${String(cleanup.skipped)}\n`
+    );
+  } else {
+    process.stderr.write(
+      `[browser-launch] remote CDP page-target cleanup skipped profile=${profileName} reason=preserve_remote_pages_on_acquire\n`
+    );
+  }
   const browser = await connectOverCdpWithRetry<Browser>({
     connect: () => localChromium.connectOverCDP(cdpUrl),
     // If the floated `setRequestInterception` race rejects AFTER this attempt's
@@ -597,6 +619,7 @@ export async function acquireIsolatedBrowser({
   headless = false,
   streamingEnabled,
   remoteCdpUrl,
+  preserveRemotePagesOnAcquire,
 }: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
   if (!(profileName && PROFILE_NAME_RE.test(profileName))) {
     throw new Error("profileName required, must be [A-Za-z0-9_-]+");
@@ -605,7 +628,11 @@ export async function acquireIsolatedBrowser({
   // browser owns its own profile and lifecycle (e.g. the n.eko container);
   // we just attach as a CDP client.
   if (remoteCdpUrl) {
-    return acquireRemoteCdpBrowser(remoteCdpUrl, profileName);
+    return acquireRemoteCdpBrowser(
+      remoteCdpUrl,
+      profileName,
+      preserveRemotePagesOnAcquire ? { preserveRemotePagesOnAcquire } : {}
+    );
   }
   const isolatedDir = join(homedir(), ".pdpp", "profiles", profileName);
   if (!existsSync(isolatedDir)) {

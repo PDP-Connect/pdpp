@@ -15,6 +15,7 @@ import {
   isCdpAttachSessionRaceError,
   resolvePageTargetWsUrl,
   runCdpAttemptWithRaceGuard,
+  shouldCleanRemoteCdpPageTargets,
   type UnhandledRejectionHost,
 } from "./browser-launch.ts";
 
@@ -389,6 +390,12 @@ test("closeRemoteCdpPageTargets skips when the CDP URL cannot expose an HTTP tar
 
   assert.deepEqual(result, { closed: 0, remaining: 0, replacementCreated: false, skipped: true });
   assert.equal(called, false);
+});
+
+test("shouldCleanRemoteCdpPageTargets skips cleanup only for preserved remote pages", () => {
+  assert.equal(shouldCleanRemoteCdpPageTargets({}), true);
+  assert.equal(shouldCleanRemoteCdpPageTargets({ preserveRemotePagesOnAcquire: false }), true);
+  assert.equal(shouldCleanRemoteCdpPageTargets({ preserveRemotePagesOnAcquire: true }), false);
 });
 
 test("resolvePageTargetWsUrl reads DevToolsActivePort then queries /json with the parsed port", async () => {

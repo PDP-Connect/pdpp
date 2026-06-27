@@ -151,6 +151,12 @@ export interface BrowserCollectContext extends BaseCollectContext {
 
 export interface BrowserConfig {
   headless?: boolean;
+  /**
+   * Reuse and preserve the run page after successful runs. Use only for
+   * sources whose auth state is held in the live page instead of durable
+   * browser storage.
+   */
+  preservePageOnSuccess?: boolean;
   profileName?: string;
 }
 
@@ -249,6 +255,7 @@ export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorCon
 // ─── Primitive helpers (exported for connector convenience) ─────────────
 
 type ClosableBrowserPage = Pick<Page, "close" | "isClosed">;
+type ReusableBrowserPage = Pick<Page, "isClosed" | "url">;
 
 const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
@@ -909,8 +916,9 @@ async function runInBrowser(args: {
   await tracer.start();
   baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
+  let runSucceeded = false;
   try {
-    page = await ctx.newPage();
+    page = await selectBrowserPageForRun(ctx, browser);
     const browserSendInteraction = makeBrowserInteractionKeepalive({
       context: ctx,
       diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
@@ -928,7 +936,7 @@ async function runInBrowser(args: {
         return sendInteraction({ ...decorated, request_id: interactionId });
       },
     });
-    await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
+    await captureBrowserPage(baseCtx.capture, page, "runtime-run-page");
     await closeBrowserContextPagesExcept(ctx, page);
     // Session establishment is the window the watchdog guards. A wedged
     // renderer can hang a connector's ensureSession indefinitely with no
@@ -966,6 +974,7 @@ async function runInBrowser(args: {
     // release/page-close) is treated as benign teardown.
     tracer.markSucceeded();
     baseCtx.capture?.markSucceeded?.();
+    runSucceeded = true;
   } catch (err) {
     if (page) {
       await captureBrowserPage(baseCtx.capture, page, "runtime-error");
@@ -973,7 +982,9 @@ async function runInBrowser(args: {
     throw err;
   } finally {
     await finalizeDiagnostics();
-    await closeBrowserPage(page);
+    if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
+      await closeBrowserPage(page);
+    }
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
     baseCtx.capture?.finalize?.();
@@ -986,6 +997,35 @@ async function runInBrowser(args: {
 // a wedged run cannot itself re-hang the teardown.
 const CAPTURE_DOM_DEADLINE_MS = 10_000;
 const PAGE_CLOSE_DEADLINE_MS = 10_000;
+
+export function isReusableBrowserRunPage(page: ReusableBrowserPage): boolean {
+  if (page.isClosed()) {
+    return false;
+  }
+  const url = page.url();
+  return Boolean(url) && url !== "about:blank" && !url.startsWith("data:");
+}
+
+export async function selectBrowserPageForRun(
+  context: Pick<BrowserContext, "newPage" | "pages">,
+  browser: Pick<BrowserConfig, "preservePageOnSuccess">
+): Promise<Page> {
+  if (browser.preservePageOnSuccess) {
+    for (const page of context.pages()) {
+      if (isReusableBrowserRunPage(page)) {
+        return page;
+      }
+    }
+  }
+  return await context.newPage();
+}
+
+export function shouldCloseBrowserPageAfterRun(
+  browser: Pick<BrowserConfig, "preservePageOnSuccess">,
+  runSucceeded: boolean
+): boolean {
+  return !(browser.preservePageOnSuccess && runSucceeded);
+}
 
 export async function captureBrowserPage(
   capture: CaptureSession | null,
@@ -1470,6 +1510,7 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
     return await acquireBrowserForConnector({
       profileName,
       headless,
+      ...(browser.preservePageOnSuccess ? { preserveRemotePagesOnAcquire: true } : {}),
       ...(streamingEnabled ? { streamingEnabled: true } : {}),
       ...(remoteCdpUrl ? { remoteCdpUrl } : {}),
     });
