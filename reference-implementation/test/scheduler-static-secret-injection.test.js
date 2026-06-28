@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { closeDb } from '../server/db.js';
+import { runConnector } from '../runtime/index.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import {
   buildConnectionScopedSecretEnv,
@@ -342,7 +343,11 @@ test('scheduled runs inject store credentials env-absent for every static-secret
 
     for (const [connectorId, fixture] of Object.entries(STORE_FIXTURES)) {
       const connectorInstanceId = `cin_${connectorId}_test`;
-      const envVarNames = Object.keys(fixture.expectedEnv);
+      const envVarNames = [
+        ...Object.keys(fixture.expectedEnv),
+        'PDPP_RUN_AUTOMATION_MODE',
+        'PDPP_RUN_TRIGGER_KIND',
+      ];
       const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, connectorId, envVarNames);
       const completedRuns = [];
       const interactions = [];
@@ -390,12 +395,51 @@ test('scheduled runs inject store credentials env-absent for every static-secret
       const childEnv = JSON.parse(readFileSync(snapshotPath, 'utf8'));
       assert.deepEqual(
         childEnv,
-        fixture.expectedEnv,
+        {
+          ...fixture.expectedEnv,
+          PDPP_RUN_AUTOMATION_MODE: 'unattended',
+          PDPP_RUN_TRIGGER_KIND: 'scheduled',
+        },
         `${connectorId}: child env must carry the store-recovered values (empty-string process env must not shadow them)`,
       );
     }
   } finally {
     await closeServer(server);
+    closeDb();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('manual run forwards bounded trigger and automation metadata to connector children', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-run-metadata-'));
+  const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, 'manual-run', [
+    'PDPP_RUN_AUTOMATION_MODE',
+    'PDPP_RUN_TRIGGER_KIND',
+  ]);
+
+  try {
+    const result = await runConnector({
+      automationMode: 'assisted',
+      connectorId: 'metadata-test',
+      connectorPath,
+      detailGapStore: {
+        async listPendingGaps() { return []; },
+        async reclaimStrandedInProgressGaps() {},
+        async resetServedInProgressGaps() {},
+        async upsertPendingGap() { return null; },
+      },
+      manifest: BACKGROUND_SAFE_MANIFEST,
+      ownerToken: 'owner-token',
+      rsUrl: 'http://localhost.invalid',
+      triggerKind: 'manual',
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(JSON.parse(readFileSync(snapshotPath, 'utf8')), {
+      PDPP_RUN_AUTOMATION_MODE: 'assisted',
+      PDPP_RUN_TRIGGER_KIND: 'manual',
+    });
+  } finally {
     closeDb();
     rmSync(tmpDir, { recursive: true, force: true });
   }

@@ -890,7 +890,7 @@ test('schedule upsert rejects enabling manual or background-unsafe connector pol
   }
 });
 
-test('schedule upsert permits explicit assisted-after-owner-auth schedules', async () => {
+test('schedule upsert permits assisted-after-owner-auth schedules as unattended session reuse', async () => {
   const manifest = {
     protocol_version: '0.1.0',
     connector_id: 'assisted-after-owner-auth-test',
@@ -916,7 +916,7 @@ test('schedule upsert permits explicit assisted-after-owner-auth schedules', asy
         interaction_posture: 'manual_action_likely',
         background_safe: true,
         assisted_after_owner_auth: true,
-        rationale: 'Owner-authenticated browser state is required before assisted scheduled runs can proceed.',
+        rationale: 'Owner-authenticated browser state is required before scheduled session reuse can proceed.',
       },
     },
   };
@@ -935,7 +935,7 @@ test('schedule upsert permits explicit assisted-after-owner-auth schedules', asy
     const body = await putResp.json();
     assert.equal(body.object, 'schedule');
     assert.equal(body.enabled, true);
-    assert.equal(body.automation_mode, 'assisted');
+    assert.equal(body.automation_mode, 'unattended');
     assert.equal(body.ineligibility_reason, null);
     assert.equal(body.policy_warning ?? null, null);
   } finally {

@@ -29,7 +29,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "ChatGPT requires owner-authenticated browser state, but once that state exists the reference can run bounded scheduled slices and ask for owner help when auth or manual action is needed."
+      "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh reuses an active session only; owner-started manual refresh repairs auth when ChatGPT requires app approval, OTP, or browser action."
     },
     "public_listing": {
       "listed": true,

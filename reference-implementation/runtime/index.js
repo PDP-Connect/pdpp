@@ -1895,6 +1895,10 @@ export async function runConnector(opts) {
   const connectorInstanceEnv = normalizedConnectorInstanceId
     ? { PDPP_CONNECTOR_INSTANCE_ID: normalizedConnectorInstanceId }
     : {};
+  const runAutomationEnv = {
+    ...(triggerKind ? { PDPP_RUN_TRIGGER_KIND: triggerKind } : {}),
+    ...(automationMode ? { PDPP_RUN_AUTOMATION_MODE: automationMode } : {}),
+  };
 
   // Spawn connector process. Connectors may be .ts (source-only) or .js
   // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
@@ -1933,6 +1937,7 @@ export async function runConnector(opts) {
       PDPP_RS_URL: rsUrl,
       ...streamingRegistrationEnv,
       ...browserSurfaceLaunchEnv,
+      ...runAutomationEnv,
       // LAST: a connection's own static secret overrides any process-global one.
       ...staticSecretLaunchEnv,
     },

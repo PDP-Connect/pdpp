@@ -67,7 +67,7 @@ test('run automation policy preserves existing unsafe automatic-schedule reasons
   assert.equal(automaticIneligibilityReason(null), null);
 });
 
-test('assisted-after-owner-auth policy can schedule but remains assisted when manual action may be needed', () => {
+test('assisted-after-owner-auth policy schedules unattended and reserves auth repair for manual runs', () => {
   const policy = {
     assisted_after_owner_auth: true,
     background_safe: true,
@@ -81,9 +81,17 @@ test('assisted-after-owner-auth policy can schedule but remains assisted when ma
     triggerKind: 'scheduled',
   });
   assert.equal(projected.allowed_to_start, true);
-  assert.equal(projected.automation_mode, 'assisted');
-  assert.equal(projected.notification_posture, 'action_required');
+  assert.equal(projected.automation_mode, 'unattended');
+  assert.equal(projected.notification_posture, 'none');
   assert.equal(projected.requires_owner_approval, false);
+
+  const manual = projectRunAutomationPolicy({
+    refreshPolicy: policy,
+    triggerKind: 'manual',
+  });
+  assert.equal(manual.allowed_to_start, true);
+  assert.equal(manual.automation_mode, 'assisted');
+  assert.equal(manual.notification_posture, 'action_required');
 });
 
 test('automation mode copy is owner-facing and non-empty', () => {

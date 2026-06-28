@@ -46,7 +46,13 @@ function policyBlocksAutomatic(refreshPolicy: AutomationRefreshPolicy | null | u
   return null;
 }
 
-function canNotifyDuringRun(refreshPolicy: AutomationRefreshPolicy | null | undefined): boolean {
+function canNotifyDuringRun(
+  refreshPolicy: AutomationRefreshPolicy | null | undefined,
+  options: { isManualTrigger: boolean }
+): boolean {
+  if (!options.isManualTrigger && refreshPolicy?.assisted_after_owner_auth === true) {
+    return false;
+  }
   const posture = refreshPolicy?.interaction_posture;
   return posture === "credentials" || posture === "manual_action_likely" || posture === "otp_likely";
 }
@@ -92,7 +98,9 @@ export function projectRunAutomationPolicy(input: RunAutomationPolicyInput): Run
     };
   }
 
-  const automationMode: RunAutomationMode = canNotifyDuringRun(input.refreshPolicy) ? "assisted" : "unattended";
+  const automationMode: RunAutomationMode = canNotifyDuringRun(input.refreshPolicy, { isManualTrigger })
+    ? "assisted"
+    : "unattended";
   return {
     allowed_to_start: true,
     automation_mode: automationMode,

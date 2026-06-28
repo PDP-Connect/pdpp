@@ -25,6 +25,7 @@ import type { CaptureSession } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
 
 interface EnsureChatGptSessionArgs {
+  allowInteractiveAuthRepair?: boolean;
   assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
   /**
@@ -80,6 +81,8 @@ export const CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE =
 export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE;
 export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
   "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
+export const CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE =
+  "chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.";
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
 /**
  * Default push-approval observation budget. Raised from the original 180s
@@ -137,6 +140,14 @@ function chatGptAuthProbeDiagnosticMessage(diagnostic: ChatGptAuthProbeDiagnosti
 
 function checkpointOption(checkpoint: SessionCheckpointFn | undefined): { checkpoint?: SessionCheckpointFn } {
   return checkpoint ? { checkpoint } : {};
+}
+
+export function chatGptAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = process.env): boolean {
+  const triggerKind = env.PDPP_RUN_TRIGGER_KIND?.trim();
+  if (!triggerKind) {
+    return true;
+  }
+  return triggerKind === "manual";
 }
 
 async function checkSession(page: Page): Promise<boolean> {
@@ -680,6 +691,7 @@ async function driveLoginFormAndConfirm({
 
 export async function ensureChatGptSession({
   assist,
+  allowInteractiveAuthRepair,
   capture,
   checkpoint,
   completeAssistance,
@@ -690,6 +702,12 @@ export async function ensureChatGptSession({
 }: EnsureChatGptSessionArgs): Promise<boolean> {
   if (await navigateAndProbeSession(page, progress)) {
     return true;
+  }
+
+  const interactiveAuthRepairAllowed = allowInteractiveAuthRepair ?? chatGptAllowsInteractiveAuthRepair();
+  if (!interactiveAuthRepairAllowed) {
+    await progress?.("ChatGPT session is not active; automatic refresh will not start interactive auth repair.");
+    throw new Error(CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE);
   }
 
   const email = process.env.CHATGPT_USERNAME;

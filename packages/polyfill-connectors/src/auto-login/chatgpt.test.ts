@@ -5,6 +5,7 @@ import {
   CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
   CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE,
   CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE,
+  chatGptAllowsInteractiveAuthRepair,
   chatGptPushApprovalAssistance,
   ensureChatGptSession,
   interactionResponseCode,
@@ -32,6 +33,27 @@ function withEnvUnset(keys: readonly string[], run: () => Promise<void>): Promis
   for (const key of keys) {
     prior.set(key, process.env[key]);
     delete process.env[key];
+  }
+  return run().finally(() => {
+    for (const [key, value] of prior) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+}
+
+function withEnvValues(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
+  const prior = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    prior.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
   return run().finally(() => {
     for (const [key, value] of prior) {
@@ -304,6 +326,137 @@ test("ChatGPT initial auth probe preserves existing API-session decision", async
   const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
   assert.equal(diagnostic.api_session_user, true);
   assert.equal(diagnostic.decision, "accepted_by_api_session");
+});
+
+test("ChatGPT auth repair policy only allows owner-started manual runs by default", () => {
+  assert.equal(chatGptAllowsInteractiveAuthRepair({}), true);
+  assert.equal(chatGptAllowsInteractiveAuthRepair({ PDPP_RUN_TRIGGER_KIND: "manual" }), true);
+  assert.equal(chatGptAllowsInteractiveAuthRepair({ PDPP_RUN_TRIGGER_KIND: "scheduled" }), false);
+  assert.equal(chatGptAllowsInteractiveAuthRepair({ PDPP_RUN_TRIGGER_KIND: "retry" }), false);
+  assert.equal(chatGptAllowsInteractiveAuthRepair({ PDPP_RUN_TRIGGER_KIND: "webhook" }), false);
+});
+
+test("ChatGPT scheduled auth repair fails before credential login or owner prompts", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: "correct horse battery staple",
+      CHATGPT_USERNAME: "owner@example.test",
+      PDPP_RUN_AUTOMATION_MODE: "unattended",
+      PDPP_RUN_TRIGGER_KIND: "scheduled",
+    },
+    async () => {
+      const progressMessages: string[] = [];
+      const visitedUrls: string[] = [];
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        getByRole: () => {
+          throw new Error("scheduled auth repair must not open or click the login form");
+        },
+        goto: (url: string) => {
+          visitedUrls.push(url);
+          return Promise.resolve(null);
+        },
+        locator: () => {
+          throw new Error("scheduled auth repair must not inspect credential form fields");
+        },
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: async () => {
+            await Promise.resolve();
+            throw new Error("scheduled auth repair must not emit assistance");
+          },
+          context: {} as never,
+          page: page as never,
+          progress: (message) => {
+            progressMessages.push(message);
+            return Promise.resolve();
+          },
+          sendInteraction: async () => {
+            await Promise.resolve();
+            throw new Error("scheduled auth repair must not emit interactions");
+          },
+        }),
+        /chatgpt_session_required/u
+      );
+
+      assert.deepEqual(visitedUrls, ["https://chatgpt.com/"]);
+      assert.equal(progressMessages.length, 2);
+      assert.equal(extractAuthProbeDiagnostic(progressMessages[0] ?? "").decision, "credential_login_required");
+      assert.match(progressMessages[1] ?? "", /automatic refresh will not start interactive auth repair/u);
+    }
+  );
+});
+
+test("ChatGPT manual auth repair keeps the credential-login path enabled", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: undefined,
+      CHATGPT_USERNAME: undefined,
+      PDPP_RUN_AUTOMATION_MODE: "assisted",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        goto: () => Promise.resolve(null),
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      await assert.rejects(
+        ensureChatGptSession({
+          context: {} as never,
+          page: page as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /CHATGPT_USERNAME\/PASSWORD not set/u
+      );
+
+      await assert.rejects(
+        ensureChatGptSession({
+          allowInteractiveAuthRepair: false,
+          context: {} as never,
+          page: page as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /chatgpt_session_required/u
+      );
+    }
+  );
 });
 
 test("resolveChatGptPushApprovalTimeoutMs honors a positive env override and falls back otherwise", () => {
