@@ -62,6 +62,22 @@ not the implementation boundary itself, and never serves live owner state. The
 operator console is the live-instance operator surface, not protocol
 documentation.
 
+### CI mode and merge gate
+
+The main-branch merge gate can run in hosted GitHub Actions mode or local
+signoff mode. Use the repo switch rather than editing GitHub rulesets directly:
+
+```bash
+pnpm ci:mode:status
+pnpm ci:mode:local
+pnpm ci:mode:hosted
+pnpm ci:signoff
+```
+
+Hosted mode is the default. Local mode is for infrastructure outages or
+local-only validation, and requires recorded verification evidence for the
+signed-off commit. See [`docs/ci-mode.md`](docs/ci-mode.md).
+
 ## Quick start
 
 Run the default contributor stack (operator console + reference AS/RS):

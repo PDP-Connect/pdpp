@@ -83,6 +83,13 @@ If the only remaining open task on an otherwise implemented and accepted change 
 - If you change the protocol or a durable contract, update `openspec/specs/<capability>/spec.md` via a proper delta. Drive-by edits to that file are not OK.
 - If you are proposing multiple loosely related things, split them into separate changes rather than fattening one proposal.
 
+## Merge gates and CI mode
+
+Use the repo CI-mode switch instead of editing GitHub rulesets by hand. Check
+`pnpm ci:mode:status`; use `pnpm ci:mode:local` only when hosted CI is
+unavailable for infrastructure reasons and local verification evidence is
+recorded; return with `pnpm ci:mode:hosted`. See `docs/ci-mode.md`.
+
 ## Token-efficient agent work
 
 Use these only when they materially reduce repeated exploration or browser work:
