@@ -6,6 +6,15 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_RULESET_NAME = 'main: require PR + reference-implementation check';
 export const HOSTED_CONTEXT = 'typecheck + full test suite';
 export const LOCAL_CONTEXT = 'signoff/reference-implementation';
+export const MANAGED_WORKFLOW_PATHS = [
+  '.github/workflows/reference-implementation.yml',
+  '.github/workflows/react-doctor.yml',
+  '.github/workflows/docker-images.yml',
+  '.github/workflows/spec-check.yml',
+  '.github/workflows/polyfill-connectors.yml',
+  '.github/workflows/remote-surface.yml',
+  '.github/workflows/semantic-release.yml',
+];
 
 const modeContexts = {
   hosted: [HOSTED_CONTEXT],
@@ -23,8 +32,9 @@ Modes:
   hosted   Require the GitHub Actions check: ${HOSTED_CONTEXT}
   local    Require the local signoff status: ${LOCAL_CONTEXT}
 
-The script updates only the repository ruleset required-status-check contexts.
-It preserves the existing pull-request, deletion, and non-fast-forward rules.`;
+The script updates only the repository ruleset required-status-check contexts
+and the managed GitHub Actions workflow states. It preserves the existing
+pull-request, deletion, and non-fast-forward rules.`;
 }
 
 function run(command, args, options = {}) {
@@ -102,8 +112,43 @@ export function rulesetWithRequiredStatusContexts(ruleset, contexts) {
   };
 }
 
+export function workflowUpdatesForMode(workflows, mode, managedPaths = MANAGED_WORKFLOW_PATHS) {
+  if (mode !== 'hosted' && mode !== 'local') {
+    throw new Error(`unknown mode: ${mode}`);
+  }
+  const workflowsByPath = new Map(workflows.map((workflow) => [workflow.path, workflow]));
+  return managedPaths.map((path) => {
+    const workflow = workflowsByPath.get(path) ?? null;
+    const action = mode === 'hosted' ? 'enable' : 'disable';
+    return {
+      action,
+      missing: workflow === null,
+      needsChange: workflow ? (mode === 'hosted' ? workflow.state !== 'active' : workflow.state === 'active') : false,
+      path,
+      state: workflow?.state ?? 'missing',
+      workflow,
+    };
+  });
+}
+
 function repoApiPath(suffix = '') {
   return `repos/:owner/:repo${suffix}`;
+}
+
+function getManagedWorkflowPaths(mode, workflows) {
+  const configured = process.env.PDPP_CI_MANAGED_WORKFLOWS;
+  let paths;
+  if (configured) {
+    paths = configured
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+  } else if (mode === 'local') {
+    paths = workflows.map((workflow) => workflow.path);
+  } else {
+    paths = MANAGED_WORKFLOW_PATHS;
+  }
+  return [...new Set(paths)];
 }
 
 function loadRuleset() {
@@ -139,6 +184,34 @@ function writeRuleset(ruleset, contexts) {
   );
 }
 
+function loadWorkflows() {
+  const response = ghJson(['api', repoApiPath('/actions/workflows?per_page=100')]);
+  return response?.workflows ?? [];
+}
+
+function applyManagedWorkflowMode(mode) {
+  const workflows = loadWorkflows();
+  const updates = workflowUpdatesForMode(workflows, mode, getManagedWorkflowPaths(mode, workflows));
+  const missing = updates.filter((update) => update.missing);
+  if (missing.length > 0) {
+    throw new Error(`managed workflow not found: ${missing.map((update) => update.path).join(', ')}`);
+  }
+  const changed = updates.filter((update) => update.needsChange);
+  for (const update of changed) {
+    gh([
+      'api',
+      '--method',
+      'PUT',
+      repoApiPath(`/actions/workflows/${update.workflow.id}/${update.action}`),
+    ]);
+  }
+  console.log(`managed workflows: ${mode === 'hosted' ? 'enabled' : 'disabled'} (${changed.length} changed)`);
+  for (const update of updates) {
+    const marker = update.needsChange ? update.action : 'unchanged';
+    console.log(`- ${update.path}: ${update.state} -> ${marker}`);
+  }
+}
+
 function printStatus() {
   const ruleset = loadRuleset();
   const contexts = getRequiredStatusContexts(ruleset);
@@ -149,6 +222,12 @@ function printStatus() {
   for (const context of contexts) {
     console.log(`- ${context}`);
   }
+  console.log('managed workflows:');
+  const workflows = loadWorkflows();
+  const statusMode = mode === 'custom' ? 'hosted' : mode;
+  for (const update of workflowUpdatesForMode(workflows, statusMode, getManagedWorkflowPaths(statusMode, workflows))) {
+    console.log(`- ${update.path}: ${update.state}`);
+  }
 }
 
 function setMode(mode) {
@@ -156,10 +235,16 @@ function setMode(mode) {
   if (!contexts) {
     throw new Error(`unknown mode: ${mode}`);
   }
+  if (mode === 'hosted') {
+    applyManagedWorkflowMode(mode);
+  }
   const before = loadRuleset();
   const previous = getRequiredStatusContexts(before);
   const after = writeRuleset(before, contexts);
   const current = getRequiredStatusContexts(after);
+  if (mode === 'local') {
+    applyManagedWorkflowMode(mode);
+  }
   console.log(`mode: ${mode}`);
   console.log(`ruleset: ${after.name} (#${after.id})`);
   console.log(`previous required status checks: ${previous.join(', ') || '(none)'}`);

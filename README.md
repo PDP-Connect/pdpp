@@ -65,7 +65,8 @@ documentation.
 ### CI mode and merge gate
 
 The main-branch merge gate can run in hosted GitHub Actions mode or local
-signoff mode. Use the repo switch rather than editing GitHub rulesets directly:
+signoff mode. Use the repo switch rather than editing GitHub rulesets or
+workflow states directly:
 
 ```bash
 pnpm ci:mode:status
@@ -75,8 +76,9 @@ pnpm ci:signoff
 ```
 
 Hosted mode is the default. Local mode is for infrastructure outages or
-local-only validation, and requires recorded verification evidence for the
-signed-off commit. See [`docs/ci-mode.md`](docs/ci-mode.md).
+local-only validation; it disables the GitHub Actions workflows and
+requires recorded verification evidence for the signed-off commit. See
+[`docs/ci-mode.md`](docs/ci-mode.md).
 
 ## Quick start
 

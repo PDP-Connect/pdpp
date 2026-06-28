@@ -8,6 +8,7 @@ import {
   HOSTED_CONTEXT,
   LOCAL_CONTEXT,
   rulesetWithRequiredStatusContexts,
+  workflowUpdatesForMode,
 } from './ci-mode.mjs';
 
 function fixtureRuleset() {
@@ -78,4 +79,102 @@ test('rulesetWithRequiredStatusContexts can add a required status rule if absent
 
   assert.deepEqual(getRequiredStatusContexts(next), [LOCAL_CONTEXT]);
   assert.equal(next.rules.length, withoutStatusRule.rules.length + 1);
+});
+
+test('workflowUpdatesForMode disables only active managed workflows in local mode', () => {
+  const updates = workflowUpdatesForMode(
+    [
+      { id: 1, path: '.github/workflows/reference-implementation.yml', state: 'active' },
+      { id: 2, path: '.github/workflows/spec-check.yml', state: 'disabled_manually' },
+      { id: 3, path: '.github/workflows/other.yml', state: 'active' },
+    ],
+    'local',
+    ['.github/workflows/reference-implementation.yml', '.github/workflows/spec-check.yml']
+  );
+
+  assert.deepEqual(
+    updates.map((update) => ({
+      action: update.action,
+      missing: update.missing,
+      needsChange: update.needsChange,
+      path: update.path,
+      state: update.state,
+    })),
+    [
+      {
+        action: 'disable',
+        missing: false,
+        needsChange: true,
+        path: '.github/workflows/reference-implementation.yml',
+        state: 'active',
+      },
+      {
+        action: 'disable',
+        missing: false,
+        needsChange: false,
+        path: '.github/workflows/spec-check.yml',
+        state: 'disabled_manually',
+      },
+    ]
+  );
+});
+
+test('workflowUpdatesForMode enables non-active managed workflows in hosted mode', () => {
+  const updates = workflowUpdatesForMode(
+    [
+      { id: 1, path: '.github/workflows/reference-implementation.yml', state: 'disabled_manually' },
+      { id: 2, path: '.github/workflows/spec-check.yml', state: 'active' },
+    ],
+    'hosted',
+    ['.github/workflows/reference-implementation.yml', '.github/workflows/spec-check.yml']
+  );
+
+  assert.deepEqual(
+    updates.map((update) => ({
+      action: update.action,
+      missing: update.missing,
+      needsChange: update.needsChange,
+      path: update.path,
+      state: update.state,
+    })),
+    [
+      {
+        action: 'enable',
+        missing: false,
+        needsChange: true,
+        path: '.github/workflows/reference-implementation.yml',
+        state: 'disabled_manually',
+      },
+      {
+        action: 'enable',
+        missing: false,
+        needsChange: false,
+        path: '.github/workflows/spec-check.yml',
+        state: 'active',
+      },
+    ]
+  );
+});
+
+test('workflowUpdatesForMode reports missing managed workflows', () => {
+  const updates = workflowUpdatesForMode([], 'local', ['.github/workflows/reference-implementation.yml']);
+
+  assert.deepEqual(
+    updates.map((update) => ({
+      action: update.action,
+      missing: update.missing,
+      needsChange: update.needsChange,
+      path: update.path,
+      state: update.state,
+    })),
+    [
+      {
+        action: 'disable',
+        missing: true,
+        needsChange: false,
+        path: '.github/workflows/reference-implementation.yml',
+        state: 'missing',
+      },
+    ]
+  );
 });

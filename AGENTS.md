@@ -85,10 +85,13 @@ If the only remaining open task on an otherwise implemented and accepted change 
 
 ## Merge gates and CI mode
 
-Use the repo CI-mode switch instead of editing GitHub rulesets by hand. Check
-`pnpm ci:mode:status`; use `pnpm ci:mode:local` only when hosted CI is
-unavailable for infrastructure reasons and local verification evidence is
-recorded; return with `pnpm ci:mode:hosted`. See `docs/ci-mode.md`.
+Use the repo CI-mode switch instead of editing GitHub rulesets or workflow
+states by hand. Check `pnpm ci:mode:status`; use `pnpm ci:mode:local` only
+when hosted CI is unavailable for infrastructure reasons and local verification
+evidence is recorded; return with `pnpm ci:mode:hosted`. The agent owning a PR
+also owns running the local gate, posting `pnpm ci:signoff`, and recording
+evidence. Do not ask the owner to handle CI billing failures or routine
+signoff. See `docs/ci-mode.md`.
 
 ## Token-efficient agent work
 

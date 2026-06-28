@@ -8,11 +8,13 @@ The repository SHALL provide an auditable switch between hosted CI enforcement a
 - **WHEN** hosted CI mode is active
 - **THEN** the main-branch ruleset SHALL require the hosted reference-implementation status context
 - **AND** local signoff status contexts SHALL NOT be required for merge
+- **AND** repo-managed GitHub Actions workflows SHALL be enabled
 
 #### Scenario: Local signoff is the active mode
 - **WHEN** hosted CI is unavailable for infrastructure reasons and local CI mode is active
 - **THEN** the main-branch ruleset SHALL require a distinct local signoff status context
 - **AND** that context SHALL NOT reuse the hosted CI status name
+- **AND** GitHub Actions workflows known to the repository SHALL be disabled
 - **AND** pull-request and non-fast-forward protections SHALL remain in force
 
 #### Scenario: A maintainer signs off locally
