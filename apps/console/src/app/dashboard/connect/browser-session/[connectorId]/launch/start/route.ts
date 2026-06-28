@@ -3,10 +3,7 @@ import { isBrowserBoundConnector } from "../../../../../lib/connection-modality.
 import { requireDashboardAccess } from "../../../../../lib/dashboard-access.ts";
 import { runConnectionNow } from "../../../../../lib/operator-runs.ts";
 import { abandonBrowserEnrollmentShell } from "../../../../../lib/ref-client.ts";
-import {
-  classifyBrowserSessionLaunchResult,
-  type BrowserSessionRunStartResult,
-} from "../launch-result.ts";
+import { type BrowserSessionRunStartResult, classifyBrowserSessionLaunchResult } from "../launch-result.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

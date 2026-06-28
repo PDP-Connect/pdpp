@@ -342,7 +342,11 @@ test("feedDescription time-ordered lenses may say newest first; the exclusion ca
   const timeRange = feedDescription("time_range");
   assert.match(timeRange.toLowerCase(), /newest first/);
   // time_range still tells the owner sources without a time field are excluded.
-  assert.match(timeRange.toLowerCase(), /aren't shown|not shown|excluded/, `time_range exclusion caveat lost: "${timeRange}"`);
+  assert.match(
+    timeRange.toLowerCase(),
+    /aren't shown|not shown|excluded/,
+    `time_range exclusion caveat lost: "${timeRange}"`
+  );
 });
 
 test("feedCountLabel formats counts with locale separators and singular grammar", () => {

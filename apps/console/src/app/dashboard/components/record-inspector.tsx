@@ -153,7 +153,12 @@ export function RecordInspector({ record, relationships, streamRecordsHref }: Re
         {record.error ? (
           <p className="rr-x-warn__msg">{record.error}</p>
         ) : (
-          <RecordBody blobAffordance={blob ?? undefined} data={body} declaredTypes={declaredTypes} stream={record.stream} />
+          <RecordBody
+            blobAffordance={blob ?? undefined}
+            data={body}
+            declaredTypes={declaredTypes}
+            stream={record.stream}
+          />
         )}
 
         {record.bodyJson ? (

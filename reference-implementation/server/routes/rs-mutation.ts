@@ -110,7 +110,10 @@ function singleQueryValue(value: unknown): string | null {
   return null;
 }
 
-function ownerStateDraftAdmission(req: RouteRequest, grantId: string | null): {
+function ownerStateDraftAdmission(
+  req: RouteRequest,
+  grantId: string | null
+): {
   allowStatuses?: readonly ["active", "draft"];
 } {
   if (grantId) {
@@ -1093,7 +1096,11 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
         const { state } = (await executeRsConnectorStateGet({ connectorId, grantId }, {
           resolveRegisteredConnectorManifest: async (id: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId));
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
+              req,
+              id,
+              ownerStateDraftAdmission(req, grantId)
+            );
             return manifest;
           },
           resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
@@ -1107,7 +1114,8 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
           },
           getSyncState: async (id: string, args: unknown) => {
             const namespace =
-              storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
+              storageNamespace ??
+              (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
             return ctx.getSyncState(ctx.storageTargetForConnectorNamespace(namespace), args);
           },
         } as unknown as Parameters<typeof executeRsConnectorStateGet>[1])) as {
@@ -1168,7 +1176,11 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
         const { state } = (await executeRsConnectorStatePut({ connectorId, grantId, stateMap }, {
           resolveRegisteredConnectorManifest: async (id: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId));
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
+              req,
+              id,
+              ownerStateDraftAdmission(req, grantId)
+            );
             return manifest;
           },
           resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
@@ -1182,7 +1194,8 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
           },
           putSyncState: async (id: string, map: unknown, args: unknown) => {
             const namespace =
-              storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
+              storageNamespace ??
+              (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
             return ctx.putSyncState(ctx.storageTargetForConnectorNamespace(namespace), map, args);
           },
         } as unknown as Parameters<typeof executeRsConnectorStatePut>[1])) as {

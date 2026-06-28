@@ -20,7 +20,6 @@ import {
   ResourceServerHttpError,
 } from "./owner-token.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
-import { refFetch } from "./ref-client.ts";
 import type {
   RefAcquisitionCoverageSummary,
   RefCollectionReportEntry,
@@ -28,6 +27,7 @@ import type {
   RefLocalDeviceProgress,
   RefRetainedBytesBreakdown,
 } from "./ref-client.ts";
+import { refFetch } from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {

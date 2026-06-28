@@ -608,7 +608,7 @@ test('controller keeps ntfy and Web Push as independent best-effort notification
 });
 
 test('scheduler interactions carry run context needed for server-side Web Push fanout', async () => {
-  const src = await readFile(new URL('../runtime/scheduler.ts', import.meta.url), 'utf8');
+  const src = await readFile(new URL('../runtime/scheduler/run-executor.ts', import.meta.url), 'utf8');
   assert.match(src, /onStarted: \(run\) =>/);
   assert.match(src, /connector_display_name: connectorDisplayName/);
   assert.match(src, /run_id:\s*runId/);

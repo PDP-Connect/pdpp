@@ -1242,8 +1242,8 @@ export interface AuthorizationServerMetadataInput {
   agentConnectEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
   authorizationEndpoint?: string | null;
-  codeChallengeMethodsSupported?: readonly string[] | null;
   cimdEnabled?: boolean | null;
+  codeChallengeMethodsSupported?: readonly string[] | null;
   deviceAuthorizationEndpoint?: string | null;
   deviceAuthorizationProfilesSupported?: readonly Record<string, unknown>[] | null;
   grantTypesSupported?: readonly string[] | null;
@@ -1268,14 +1268,14 @@ export interface AuthorizationServerPublicClient {
 export interface AuthorizationServerMetadata {
   agent_connect_endpoint?: string;
   authorization_endpoint?: string;
-  code_challenge_methods_supported?: readonly string[];
   client_id_metadata_document_supported?: true;
+  code_challenge_methods_supported?: readonly string[];
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
-  pdpp_device_authorization_profiles_supported?: readonly Record<string, unknown>[];
   issuer: string;
   pdpp_authorization_details_types_supported?: readonly string[];
+  pdpp_device_authorization_profiles_supported?: readonly Record<string, unknown>[];
   pdpp_pre_registered_public_clients?: readonly AuthorizationServerPublicClient[];
   pdpp_provider_connect_capabilities: Record<string, unknown>;
   pdpp_registration_modes_supported?: readonly string[];

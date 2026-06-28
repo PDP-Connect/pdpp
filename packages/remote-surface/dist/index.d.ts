@@ -5,7 +5,7 @@ export type * from "./client/index.ts";
 export type * from "./backends/types.ts";
 export type * from "./backends/neko/index.ts";
 export type * from "./backends/cdp/index.ts";
-export { buildNekoSafeClientDescriptor, NEKO_BACKEND_CAPABILITIES, parseNekoSafeClientDescriptor, } from "./backends/neko/index.ts";
+export { buildNekoSafeClientDescriptor, NEKO_BACKEND_CAPABILITIES, parseNekoSafeClientDescriptor, NekoSurfaceAllocatorClient, NekoSurfaceAllocatorError, createNekoSurfaceAllocatorClient, } from "./backends/neko/index.ts";
 export { buildCdpSafeClientDescriptor, CDP_BACKEND_CAPABILITIES, parseCdpSafeClientDescriptor, } from "./backends/cdp/index.ts";
 export { createDiagnosticsBuffer, redactDiagnosticsEvent, } from "./diagnostics/index.ts";
 export type { RedactDiagnosticsOptions, RemoteSurfaceDiagnosticsBuffer, RemoteSurfaceDiagnosticsEvent, RemoteSurfaceDiagnosticsReadResult, } from "./diagnostics/index.ts";

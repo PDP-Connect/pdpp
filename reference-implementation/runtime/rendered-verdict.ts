@@ -420,7 +420,11 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
   }
 }
 
-function terminalAwareTone(tone: VerdictTone, snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): VerdictTone {
+function terminalAwareTone(
+  tone: VerdictTone,
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition
+): VerdictTone {
   if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition)) {
     return "amber";
   }
@@ -567,7 +571,10 @@ function latestCollectionSucceeded(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
-function softensTerminalCoverageToDegraded(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): boolean {
+function softensTerminalCoverageToDegraded(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition
+): boolean {
   return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
 }
 
@@ -607,8 +614,7 @@ const LOCAL_COLLECTOR_RECOVER_COMMAND =
   "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id>";
 const LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND =
   "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply";
-const LOCAL_COLLECTOR_DOCTOR_COMMAND =
-  "npx -y @pdpp/local-collector doctor --source-instance-id <source-instance-id>";
+const LOCAL_COLLECTOR_DOCTOR_COMMAND = "npx -y @pdpp/local-collector doctor --source-instance-id <source-instance-id>";
 const LOCAL_COLLECTOR_REMEDIATION_TARGET: ActionRemediationTarget = {
   kind: "local_device",
   identity_source: "source_instance_bindings",
@@ -704,7 +710,8 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
         kind: "local_collector_recovery",
         cause,
         label: "Wait for upload retry",
-        summary: "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
+        summary:
+          "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
         commands: [],
       };
@@ -1066,6 +1073,23 @@ function humanizeStreamId(streamId: string): string {
 
 // ─── Forward statement ──────────────────────────────────────────────────────
 
+function terminalForwardStatement(
+  primary: RequiredAction | null,
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition
+): string {
+  if (primary?.kind === "reauth") {
+    return "Reconnect this account before further collection.";
+  }
+  if (primary?.kind === "code_fix") {
+    if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
+      return "Latest collection completed with known coverage gaps.";
+    }
+    return "This connector needs a code fix before it can collect again.";
+  }
+  return "This data can't be recovered by a future run.";
+}
+
 /**
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
@@ -1079,16 +1103,7 @@ function buildForwardStatement(
 
   if (disposition === "terminal") {
     // A terminal disposition must never imply recovery.
-    if (primary?.kind === "reauth") {
-      return "Reconnect this account before further collection.";
-    }
-    if (primary?.kind === "code_fix") {
-      if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
-        return "Latest collection completed with known coverage gaps.";
-      }
-      return "This connector needs a code fix before it can collect again.";
-    }
-    return "This data can't be recovered by a future run.";
+    return terminalForwardStatement(primary, snapshot, disposition);
   }
 
   if (primary && primary.audience === "owner") {
@@ -1152,7 +1167,8 @@ function manualHeadline(retained: number | null, refreshedAt: string | null): st
 }
 
 function terminalProgressHeadline(retained: number | null, actions: readonly RequiredAction[]): string {
-  const held = retained === null ? "Retained-record count is unavailable" : `Holding ${retained.toLocaleString()} records`;
+  const held =
+    retained === null ? "Retained-record count is unavailable" : `Holding ${retained.toLocaleString()} records`;
   if (actions.some((action) => action.kind === "reauth")) {
     return `${held}; reconnect this account before further collection.`;
   }

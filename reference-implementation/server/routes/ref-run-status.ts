@@ -124,7 +124,9 @@ function readString(data: Readonly<Record<string, unknown>> | null, key: string)
 
 function browserSurfaceProjection(event: RunStatusLifecycleEvent | null): Readonly<Record<string, unknown>> | null {
   const value = event?.data?.browser_surface;
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Readonly<Record<string, unknown>>) : null;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : null;
 }
 
 function readBrowserSurfaceStatus(event: RunStatusLifecycleEvent | null): BrowserSurfaceRunStatus | null {
@@ -242,7 +244,8 @@ function buildBrowserSurfaceRunStatusBody(runId: string, event: RunStatusLifecyc
   if (!event.event_type.startsWith("run.browser_surface_")) {
     return null;
   }
-  const fallbackStatus = typeof event.status === "string" && event.status ? (event.status as BrowserSurfaceRunStatus) : null;
+  const fallbackStatus =
+    typeof event.status === "string" && event.status ? (event.status as BrowserSurfaceRunStatus) : null;
   const surfaceStatus = readBrowserSurfaceStatus(event) ?? fallbackStatus;
   if (!surfaceStatus) {
     return null;

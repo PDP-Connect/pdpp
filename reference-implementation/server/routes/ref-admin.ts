@@ -80,15 +80,15 @@ export interface MountRefAdminContext {
   readonly collectRecordsTimelineEntries: (
     input: RefRecordsTimelineCollectInput
   ) => Promise<readonly RefRecordsTimelineEntry[]> | readonly RefRecordsTimelineEntry[];
-  // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
-  readonly getOwnerSubjectId: (req: RouteRequest) => string;
-  readonly handleError: (res: unknown, err: unknown) => void;
   readonly createCimdDocument: (input: CreateRefCimdDocumentInput) => Promise<string>;
   readonly deleteCimdDocument: (
     documentId: string,
     opts: { clientId: string; requestId?: string | null; traceId?: string | null }
   ) => Promise<void>;
   readonly getCimdDocument: (documentId: string) => Promise<RefCimdDocument | null>;
+  // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
+  readonly getOwnerSubjectId: (req: RouteRequest) => string;
+  readonly handleError: (res: unknown, err: unknown) => void;
   readonly listCimdDocuments: () => Promise<readonly RefCimdDocument[]>;
   readonly listOwnerIssuedClients: (subjectId: string) => Promise<readonly RefClientsListClient[]>;
   // Substrate capabilities — injected by host so the adapter never touches
@@ -145,6 +145,19 @@ function readQueryStringList(query: Readonly<Record<string, unknown>>, ...names:
   return out;
 }
 
+function parseQueryPosInt(query: Readonly<Record<string, unknown>>, name: string): number | null {
+  if (query[name] == null) {
+    return null;
+  }
+  const n = Number.parseInt(String(query[name]), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseQueryCursor(query: Readonly<Record<string, unknown>>, name: string): string | null {
+  const v = query[name];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 function isLoopbackRedirect(url: URL): boolean {
   if (url.protocol !== "http:") {
     return false;
@@ -161,18 +174,16 @@ function validateRedirectUri(uri: string): string {
     throw Object.assign(new Error(`Invalid redirect_uri: ${uri}`), { code: "invalid_redirect_uri" });
   }
   if (parsed.protocol !== "https:" && !isLoopbackRedirect(parsed)) {
-    throw Object.assign(
-      new Error("redirect_uris must use https, or http loopback for local MCP clients"),
-      { code: "invalid_redirect_uri" }
-    );
+    throw Object.assign(new Error("redirect_uris must use https, or http loopback for local MCP clients"), {
+      code: "invalid_redirect_uri",
+    });
   }
   return parsed.toString();
 }
 
 function readRedirectUris(body: Record<string, unknown>): readonly string[] {
   const raw = body.redirect_uris ?? body.redirectUris;
-  const values =
-    Array.isArray(raw) ? raw : typeof raw === "string" && raw.trim() ? raw.split(/\s*,\s*/) : [];
+  const values = Array.isArray(raw) ? raw : typeof raw === "string" && raw.trim() ? raw.split(/\s*,\s*/) : [];
   const redirectUris = values
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => validateRedirectUri(value.trim()));
@@ -503,17 +514,11 @@ export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext):
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
-        const rawLimit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
-        const limit = Number.isFinite(rawLimit) && rawLimit != null && rawLimit > 0 ? rawLimit : null;
+        const limit = parseQueryPosInt(req.query, "limit");
         // Page-1 upcoming head size, independent of the feed `limit` (the bounded
         // future set is revealed on first expand, not dripped 32 at a time).
-        const rawUpcomingLimit =
-          req.query.upcoming_limit == null ? null : Number.parseInt(String(req.query.upcoming_limit), 10);
-        const upcomingLimit =
-          Number.isFinite(rawUpcomingLimit) && rawUpcomingLimit != null && rawUpcomingLimit > 0
-            ? rawUpcomingLimit
-            : null;
-        const cursor = typeof req.query.cursor === "string" && req.query.cursor.length > 0 ? req.query.cursor : null;
+        const upcomingLimit = parseQueryPosInt(req.query, "upcoming_limit");
+        const cursor = parseQueryCursor(req.query, "cursor");
         // REWIND: re-render page 1 pinned to the cursor's ORIGINAL snapshot
         // (snapshotSeq), not a fresh one. The console accumulator passes
         // `rewind=1` with the page-1 cursor so an after-snapshot backfill can
@@ -533,10 +538,7 @@ export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext):
         // Separate cursor for paging the Upcoming (future) projection to exhaustion.
         // When present, this request pages ONLY the future set (the main feed is not
         // re-traversed) — count==reachability for "188 upcoming, all reachable".
-        const upcomingCursor =
-          typeof req.query.upcoming_cursor === "string" && req.query.upcoming_cursor.length > 0
-            ? req.query.upcoming_cursor
-            : null;
+        const upcomingCursor = parseQueryCursor(req.query, "upcoming_cursor");
 
         const deps = buildExploreTimelineDeps();
 

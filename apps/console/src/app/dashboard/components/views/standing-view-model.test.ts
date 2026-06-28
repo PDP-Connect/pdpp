@@ -17,10 +17,10 @@ import {
   grantReads,
   joinHuman,
   relDay,
-  sourceIssueConnectionsFromConnectors,
   type StandingHrefs,
   type StandingInputs,
   scopeHuman,
+  sourceIssueConnectionsFromConnectors,
 } from "./standing-view-model.ts";
 
 const HREFS: StandingHrefs = {
@@ -285,7 +285,9 @@ function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
   };
 }
 
-function legacyHealth(state: RefConnectorSummary["connection_health"]["state"]): RefConnectorSummary["connection_health"] {
+function legacyHealth(
+  state: RefConnectorSummary["connection_health"]["state"]
+): RefConnectorSummary["connection_health"] {
   return {
     axes: {
       attention: "none",
@@ -414,8 +416,15 @@ test("source issues show non-owner material verdicts without alarming as owner a
         ],
       }),
     }),
-    connector({ connector_id: "healthy", rendered_verdict: verdict({ channel: "calm", pill: { label: "Healthy", tone: "green" } }) }),
-    connector({ connector_id: "revoked", revoked_at: "2026-06-01T00:00:00Z", rendered_verdict: verdict({ pill: { label: "Can't collect", tone: "red" } }) }),
+    connector({
+      connector_id: "healthy",
+      rendered_verdict: verdict({ channel: "calm", pill: { label: "Healthy", tone: "green" } }),
+    }),
+    connector({
+      connector_id: "revoked",
+      revoked_at: "2026-06-01T00:00:00Z",
+      rendered_verdict: verdict({ pill: { label: "Can't collect", tone: "red" } }),
+    }),
   ];
 
   assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
@@ -681,7 +690,10 @@ test("hero ALARMs on a stale projection even with no failures", () => {
   assert.match(hero.sub ?? "", /last completed update/);
   assert.equal(hero.cta?.label, "View status");
   assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
-  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection/i);
+  assert.doesNotMatch(
+    `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
+    /projection|rebuild|bulk write|unknown connection/i
+  );
 });
 
 test("hero uses owner-safe copy for failed projection details", () => {
@@ -701,7 +713,10 @@ test("hero uses owner-safe copy for failed projection details", () => {
   assert.equal(hero.cta?.label, "View status");
   assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
   assert.doesNotMatch(hero.sub ?? "", /SQL failed/);
-  assert.doesNotMatch(`${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`, /projection|rebuild|bulk write|unknown connection|SQL/i);
+  assert.doesNotMatch(
+    `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
+    /projection|rebuild|bulk write|unknown connection|SQL/i
+  );
 });
 
 test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from partial data", () => {
@@ -985,27 +1000,30 @@ test("lately does not render bare opaque client ids as names", () => {
 });
 
 test("lately summarizes identical recent reads instead of repeating the same row", () => {
-  const repeated = Array.from({ length: 5 }, (_, i): TraceSummary => ({
-    object: "trace_summary",
-    trace_id: `trc_longview_${i}`,
-    status: "succeeded",
-    actor_id: "client",
-    actor_type: "client",
-    client_id: "cli_longview",
-    client: {
+  const repeated = Array.from(
+    { length: 5 },
+    (_, i): TraceSummary => ({
+      object: "trace_summary",
+      trace_id: `trc_longview_${i}`,
+      status: "succeeded",
+      actor_id: "client",
+      actor_type: "client",
       client_id: "cli_longview",
-      client_name: "Longview CLI",
-      registration_mode: "pre_registered_public",
-    },
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
-    event_count: 3,
-    kinds: ["query.received"],
-    failure: null,
-  }));
+      client: {
+        client_id: "cli_longview",
+        client_name: "Longview CLI",
+        registration_mode: "pre_registered_public",
+      },
+      grant_id: null,
+      run_id: null,
+      request_id: null,
+      first_at: "2026-06-13T00:00:00Z",
+      last_at: "2026-06-13T00:00:00Z",
+      event_count: 3,
+      kinds: ["query.received"],
+      failure: null,
+    })
+  );
   const baseRepeated = repeated[0]!;
   const different: TraceSummary = {
     ...baseRepeated,

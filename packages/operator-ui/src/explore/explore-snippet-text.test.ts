@@ -58,7 +58,7 @@ test("snippetSegments decodes entities inside and outside marks, never leaks a t
 });
 
 test("snippetSegments concatenated text equals plainSnippetText", () => {
-  const raw = "the <mark>stream</mark>\":\"<mark>messages</mark> body";
+  const raw = 'the <mark>stream</mark>":"<mark>messages</mark> body';
   assert.equal(
     snippetSegments(raw)
       .map((s) => s.text)

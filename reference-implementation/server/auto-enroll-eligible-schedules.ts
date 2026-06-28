@@ -118,8 +118,7 @@ function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
   const p = policy as Record<string, unknown>;
   const mode = typeof p.recommended_mode === "string" ? p.recommended_mode : null;
   const safe = typeof p.background_safe === "boolean" ? (p.background_safe as boolean) : null;
-  const assisted =
-    typeof p.assisted_after_owner_auth === "boolean" ? (p.assisted_after_owner_auth as boolean) : null;
+  const assisted = typeof p.assisted_after_owner_auth === "boolean" ? (p.assisted_after_owner_auth as boolean) : null;
   const interval =
     typeof p.recommended_interval_seconds === "number" && Number.isFinite(p.recommended_interval_seconds)
       ? (p.recommended_interval_seconds as number)

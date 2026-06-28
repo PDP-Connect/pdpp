@@ -22,9 +22,9 @@ import {
   advisoryOwnerActionsFromConnectors,
   attentionConnectionsFromConnectors,
   buildStandingData,
-  sourceIssueConnectionsFromConnectors,
   type StandingHrefs,
   type StandingInputs,
+  sourceIssueConnectionsFromConnectors,
 } from "./components/views/standing-view-model.ts";
 import { rethrowControlFlow } from "./lib/control-flow.ts";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
@@ -77,32 +77,31 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes] =
-    await Promise.all([
-      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
-      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
-        data: [] as GrantSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
-        data: [] as TraceSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
-        data: [] as PendingApproval[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
-        data: [] as OwnerIssuedClient[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-      safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
-    ]);
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes] = await Promise.all([
+    safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+    safeRead("grants", () => ds.listGrants({ limit: 12 }), {
+      data: [] as GrantSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+      data: [] as TraceSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("pending_approvals", () => ds.listPendingApprovals(), {
+      data: [] as PendingApproval[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("owner_tokens", () => listOwnerIssuedClients(), {
+      data: [] as OwnerIssuedClient[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+    safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+  ]);
   const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes]
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);

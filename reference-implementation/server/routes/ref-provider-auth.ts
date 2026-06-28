@@ -44,9 +44,9 @@ export interface ProviderAuthInitiateResult {
 /** Tokens returned by a successful code exchange. Treated as opaque within this module. */
 export interface ProviderAuthTokens {
   readonly accessToken: string;
+  readonly expiresAt?: string | null;
   readonly refreshToken?: string | null;
   readonly tokenKind: string;
-  readonly expiresAt?: string | null;
 }
 
 /** One account returned by inventory. */
@@ -65,17 +65,6 @@ export interface ProviderAccount {
  */
 export interface ProviderAuthExchanger {
   /**
-   * Build the provider authorization URL and any accompanying state that needs
-   * to survive the round-trip (PKCE, nonce, etc.).
-   * Called during the initiate step. MUST NOT perform network I/O in test doubles.
-   */
-  initiateAuthorization(args: {
-    connectorId: string;
-    redirectUri: string;
-    state: string;
-  }): Promise<ProviderAuthInitiateResult> | ProviderAuthInitiateResult;
-
-  /**
    * Exchange an authorization code for provider tokens.
    * Returns `null` on failure (bad code, expired code, provider error).
    * MUST NOT return tokens to callers — only return a success/failure signal for
@@ -87,6 +76,16 @@ export interface ProviderAuthExchanger {
     redirectUri: string;
     state: string;
   }): Promise<ProviderAuthTokens | null> | ProviderAuthTokens | null;
+  /**
+   * Build the provider authorization URL and any accompanying state that needs
+   * to survive the round-trip (PKCE, nonce, etc.).
+   * Called during the initiate step. MUST NOT perform network I/O in test doubles.
+   */
+  initiateAuthorization(args: {
+    connectorId: string;
+    redirectUri: string;
+    state: string;
+  }): Promise<ProviderAuthInitiateResult> | ProviderAuthInitiateResult;
 
   /**
    * Run an account inventory or connection test using the fresh tokens.
@@ -118,15 +117,15 @@ export interface ProviderAuthExchanger {
 
 export interface PendingAuthEntry {
   readonly connectorId: string;
-  readonly ownerSubjectId: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  readonly ownerSubjectId: string;
 }
 
 export interface PendingAuthStore {
-  put(stateToken: string, entry: PendingAuthEntry): void;
-  get(stateToken: string): PendingAuthEntry | null;
   delete(stateToken: string): void;
+  get(stateToken: string): PendingAuthEntry | null;
+  put(stateToken: string, entry: PendingAuthEntry): void;
 }
 
 /** Default in-process pending-auth store backed by a plain Map. */
@@ -197,10 +196,6 @@ interface ConnectorInstanceStore {
 }
 
 interface ConnectorManifestLike {
-  readonly connector_id?: string | null;
-  readonly connector_key?: string | null;
-  readonly display_name?: string | null;
-  readonly name?: string | null;
   readonly capabilities?: {
     readonly auth?: {
       readonly kind?: string | null;
@@ -209,6 +204,10 @@ interface ConnectorManifestLike {
       readonly deployment_config?: readonly string[] | null;
     } | null;
   } | null;
+  readonly connector_id?: string | null;
+  readonly connector_key?: string | null;
+  readonly display_name?: string | null;
+  readonly name?: string | null;
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
@@ -230,14 +229,14 @@ export interface MountRefProviderAuthContext {
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
   ensureRequestId(res: RouteResponse): string;
   exchanger: ProviderAuthExchanger;
+  // Generates a cryptographically random state token. Prefix is "pas" (provider auth state).
+  generateReferenceSecret(prefix: string, bytes?: number): string;
+  generateSpineId(prefix: string): string;
   getOwnerSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   now?(): string;
   pdppError: PdppErrorFn;
   pendingAuthStore: PendingAuthStore;
-  // Generates a cryptographically random state token. Prefix is "pas" (provider auth state).
-  generateReferenceSecret(prefix: string, bytes?: number): string;
-  generateSpineId(prefix: string): string;
   requireOwnerSession: MiddlewareHandler;
   resolveCallbackBaseUrl(req: unknown): string;
   resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike | null>;
@@ -276,9 +275,7 @@ function providerErrorCode(err: unknown, fallback: string): string {
 
 function providerErrorStatus(err: unknown, fallback: number): number {
   const status = (err as { status?: unknown } | null)?.status;
-  return typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 600
-    ? status
-    : fallback;
+  return typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 600 ? status : fallback;
 }
 
 function providerErrorMessage(err: unknown, fallback: string): string {
@@ -299,6 +296,36 @@ function buildProviderAccountSourceBinding(account: ProviderAccount): Record<str
 
 function buildCallbackRedirectUri(ctx: MountRefProviderAuthContext, req: unknown): string {
   return `${stripTrailingSlash(ctx.resolveCallbackBaseUrl(req))}/_ref/provider-auth/callback`;
+}
+
+async function activateConnectorInstanceForAccount(
+  store: ConnectorInstanceStore,
+  exchanger: ProviderAuthExchanger,
+  args: {
+    ownerSubjectId: string;
+    connectorId: string;
+    account: ProviderAccount;
+    tokens: ProviderAuthTokens;
+    now: string;
+  }
+): Promise<ConnectorInstance> {
+  const { ownerSubjectId, connectorId, account, tokens, now } = args;
+  const sourceBindingKey = account.accountId;
+  const displayName = account.displayLabel ?? account.accountId;
+  const sourceBinding = buildProviderAccountSourceBinding(account);
+  const sharedRecord = {
+    ownerSubjectId,
+    connectorId,
+    displayName,
+    sourceKind: "account",
+    sourceBindingKey,
+    sourceBinding,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const draftInstance = await store.upsert({ ...sharedRecord, status: "draft" });
+  await exchanger.storeTokens({ connectorInstanceId: draftInstance.connectorInstanceId, ownerSubjectId, tokens, now });
+  return store.upsert({ ...sharedRecord, status: "active" });
 }
 
 async function emitInitiateAudit(
@@ -514,262 +541,301 @@ export function mountRefProviderAuthInitiate(app: AppLike, ctx: MountRefProvider
 }
 
 // ---------------------------------------------------------------------------
+// GET /_ref/provider-auth/callback — helpers
+// ---------------------------------------------------------------------------
+
+interface CallbackParams {
+  code: string | null;
+  providerError: string | null;
+  stateToken: string | null;
+}
+
+function parseCallbackQueryParams(req: RouteRequest): CallbackParams {
+  const query = req.query ?? {};
+  return {
+    stateToken: typeof query.state === "string" ? query.state.trim() : null,
+    code: typeof query.code === "string" ? query.code.trim() : null,
+    providerError: typeof query.error === "string" ? query.error.trim() : null,
+  };
+}
+
+async function rejectWithProviderError(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  params: CallbackParams,
+  pending: PendingAuthEntry | null
+): Promise<"rejected"> {
+  if (params.stateToken && pending) {
+    ctx.pendingAuthStore.delete(params.stateToken);
+  }
+  await emitCallbackAudit(ctx, res, {
+    connectorId: pending?.connectorId ?? null,
+    ownerSubjectId: pending?.ownerSubjectId ?? null,
+    error: errWithCode("provider_auth_denied"),
+    outcome: "failed",
+    failureReason: "provider_error",
+  });
+  ctx.pdppError(res, 400, "provider_auth_denied", `Provider returned an error: ${params.providerError}.`);
+  return "rejected";
+}
+
+async function rejectWithStateInvalid(ctx: MountRefProviderAuthContext, res: RouteResponse): Promise<"rejected"> {
+  await emitCallbackAudit(ctx, res, {
+    connectorId: null,
+    ownerSubjectId: null,
+    error: errWithCode("provider_auth_state_invalid"),
+    outcome: "failed",
+    failureReason: "state_invalid_or_missing",
+  });
+  ctx.pdppError(
+    res,
+    400,
+    "provider_auth_state_invalid",
+    "The provider authorization state is missing, invalid, or expired."
+  );
+  return "rejected";
+}
+
+async function rejectWithStateExpired(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  stateToken: string,
+  connectorId: string,
+  ownerSubjectId: string
+): Promise<"rejected"> {
+  ctx.pendingAuthStore.delete(stateToken);
+  await emitCallbackAudit(ctx, res, {
+    connectorId,
+    ownerSubjectId,
+    error: errWithCode("provider_auth_state_expired"),
+    outcome: "failed",
+    failureReason: "state_expired",
+  });
+  ctx.pdppError(
+    res,
+    400,
+    "provider_auth_state_expired",
+    "The provider authorization state has expired. Restart the authorization flow."
+  );
+  return "rejected";
+}
+
+async function rejectWithCodeMissing(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  stateToken: string,
+  connectorId: string,
+  ownerSubjectId: string
+): Promise<"rejected"> {
+  ctx.pendingAuthStore.delete(stateToken);
+  await emitCallbackAudit(ctx, res, {
+    connectorId,
+    ownerSubjectId,
+    error: errWithCode("provider_auth_code_missing"),
+    outcome: "failed",
+    failureReason: "code_missing",
+  });
+  ctx.pdppError(res, 400, "provider_auth_code_missing", "Authorization code is missing from the callback.");
+  return "rejected";
+}
+
+interface ValidatedCallbackState {
+  code: string;
+  connectorId: string;
+  now: string;
+  ownerSubjectId: string;
+  pending: PendingAuthEntry;
+  stateToken: string;
+}
+
+function validateCallbackStateAndCode(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  params: CallbackParams
+): Promise<ValidatedCallbackState | "rejected"> {
+  const { stateToken, code, providerError } = params;
+  const pending = stateToken ? ctx.pendingAuthStore.get(stateToken) : null;
+
+  if (providerError) {
+    return rejectWithProviderError(ctx, res, params, pending);
+  }
+
+  if (!(stateToken && pending)) {
+    return rejectWithStateInvalid(ctx, res);
+  }
+
+  const connectorId = pending.connectorId;
+  const ownerSubjectId = pending.ownerSubjectId;
+  const now = ctx.now ? ctx.now() : new Date().toISOString();
+
+  if (now > pending.expiresAt) {
+    return rejectWithStateExpired(ctx, res, stateToken, connectorId, ownerSubjectId);
+  }
+
+  if (!code) {
+    return rejectWithCodeMissing(ctx, res, stateToken, connectorId, ownerSubjectId);
+  }
+
+  return Promise.resolve({ stateToken, code, pending, connectorId, ownerSubjectId, now });
+}
+
+async function exchangeCodeAndRunInventory(
+  ctx: MountRefProviderAuthContext,
+  res: RouteResponse,
+  validated: ValidatedCallbackState,
+  redirectUri: string
+): Promise<{ tokens: ProviderAuthTokens; accounts: ProviderAccount[] } | "rejected"> {
+  const { stateToken, code, connectorId, ownerSubjectId } = validated;
+
+  const tokens = await ctx.exchanger.exchangeCode({ connectorId, code, redirectUri, state: stateToken });
+
+  if (!tokens) {
+    await emitCallbackAudit(ctx, res, {
+      connectorId,
+      ownerSubjectId,
+      error: errWithCode("provider_auth_code_invalid"),
+      outcome: "failed",
+      failureReason: "code_exchange_failed",
+    });
+    ctx.pdppError(
+      res,
+      400,
+      "provider_auth_code_invalid",
+      "Authorization code exchange failed. The code may be expired or invalid."
+    );
+    return "rejected";
+  }
+
+  let accounts: ProviderAccount[];
+  try {
+    accounts = await ctx.exchanger.runInventoryOrTest({ connectorId, tokens });
+  } catch (inventoryErr) {
+    const errCode = providerErrorCode(inventoryErr, "provider_auth_inventory_failed");
+    await emitCallbackAudit(ctx, res, {
+      connectorId,
+      ownerSubjectId,
+      error: inventoryErr,
+      outcome: "failed",
+      failureReason: "inventory_test_failed",
+    });
+    ctx.pdppError(
+      res,
+      providerErrorStatus(inventoryErr, 502),
+      errCode,
+      providerErrorMessage(
+        inventoryErr,
+        "Account inventory or connection test failed after authorization. No connection was activated."
+      )
+    );
+    return "rejected";
+  }
+
+  if (!accounts || accounts.length === 0) {
+    await emitCallbackAudit(ctx, res, {
+      connectorId,
+      ownerSubjectId,
+      error: errWithCode("provider_auth_no_accounts"),
+      outcome: "failed",
+      failureReason: "no_accounts_returned",
+    });
+    ctx.pdppError(
+      res,
+      422,
+      "provider_auth_no_accounts",
+      "Account inventory returned no accounts. No connection was activated."
+    );
+    return "rejected";
+  }
+
+  return { tokens, accounts };
+}
+
+async function activateAllAccounts(
+  ctx: MountRefProviderAuthContext,
+  validated: ValidatedCallbackState,
+  tokens: ProviderAuthTokens,
+  accounts: ProviderAccount[]
+): Promise<ConnectorInstance[]> {
+  const store = ctx.createRequestConnectorInstanceStore();
+  const activated: ConnectorInstance[] = [];
+  for (const account of accounts) {
+    const instance = await activateConnectorInstanceForAccount(store, ctx.exchanger, {
+      ownerSubjectId: validated.ownerSubjectId,
+      connectorId: validated.connectorId,
+      account,
+      tokens,
+      now: validated.now,
+    });
+    activated.push(instance);
+  }
+  return activated;
+}
+
+// ---------------------------------------------------------------------------
 // GET /_ref/provider-auth/callback
 // ---------------------------------------------------------------------------
 
 export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProviderAuthContext): void {
-  app.get(
-    "/_ref/provider-auth/callback",
-    async (req: RouteRequest, res: RouteResponse) => {
-      const query = req.query ?? {};
-      const rawState = query.state;
-      const rawCode = query.code;
-      const rawError = query.error;
+  app.get("/_ref/provider-auth/callback", async (req: RouteRequest, res: RouteResponse) => {
+    const params = parseCallbackQueryParams(req);
+    let resolvedConnectorId = "";
+    let resolvedOwnerSubjectId = "";
 
-      const stateToken = typeof rawState === "string" ? rawState.trim() : null;
-      const code = typeof rawCode === "string" ? rawCode.trim() : null;
-      const providerError = typeof rawError === "string" ? rawError.trim() : null;
-
-      // The pending entry is looked up before any other work so errors carry the
-      // connector/owner context from the original initiate call.
-      const pending = stateToken ? ctx.pendingAuthStore.get(stateToken) : null;
-
-      // Narrowed-context variables set only after state validation succeeds;
-      // TypeScript cannot narrow them through the guard blocks above, so we
-      // assert after the guards below.
-      let resolvedConnectorId: string = "";
-      let resolvedOwnerSubjectId: string = "";
-
-      try {
-        // Provider declined or returned an error parameter.
-        if (providerError) {
-          if (stateToken && pending) {
-            ctx.pendingAuthStore.delete(stateToken);
-          }
-          await emitCallbackAudit(ctx, res, {
-            connectorId: pending?.connectorId ?? null,
-            ownerSubjectId: pending?.ownerSubjectId ?? null,
-            error: errWithCode("provider_auth_denied"),
-            outcome: "failed",
-            failureReason: "provider_error",
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "provider_auth_denied",
-            `Provider returned an error: ${providerError}.`
-          );
-          return;
-        }
-
-        // Missing or unrecognized state — possible CSRF or expired state.
-        if (!stateToken || !pending) {
-          await emitCallbackAudit(ctx, res, {
-            connectorId: null,
-            ownerSubjectId: null,
-            error: errWithCode("provider_auth_state_invalid"),
-            outcome: "failed",
-            failureReason: "state_invalid_or_missing",
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "provider_auth_state_invalid",
-            "The provider authorization state is missing, invalid, or expired."
-          );
-          return;
-        }
-
-        // From this point forward, stateToken and pending are both non-null.
-        resolvedConnectorId = pending.connectorId;
-        resolvedOwnerSubjectId = pending.ownerSubjectId;
-
-        // Expired state.
-        const now = ctx.now ? ctx.now() : new Date().toISOString();
-        if (now > pending.expiresAt) {
-          ctx.pendingAuthStore.delete(stateToken);
-          await emitCallbackAudit(ctx, res, {
-            connectorId: resolvedConnectorId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            error: errWithCode("provider_auth_state_expired"),
-            outcome: "failed",
-            failureReason: "state_expired",
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "provider_auth_state_expired",
-            "The provider authorization state has expired. Restart the authorization flow."
-          );
-          return;
-        }
-
-        // Missing code.
-        if (!code) {
-          ctx.pendingAuthStore.delete(stateToken);
-          await emitCallbackAudit(ctx, res, {
-            connectorId: resolvedConnectorId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            error: errWithCode("provider_auth_code_missing"),
-            outcome: "failed",
-            failureReason: "code_missing",
-          });
-          ctx.pdppError(res, 400, "provider_auth_code_missing", "Authorization code is missing from the callback.");
-          return;
-        }
-
-        // Consume the state token immediately — replay protection.
-        ctx.pendingAuthStore.delete(stateToken);
-
-        const redirectUri = buildCallbackRedirectUri(ctx, req);
-
-        // Exchange the authorization code for provider tokens.
-        const tokens = await ctx.exchanger.exchangeCode({
-          connectorId: resolvedConnectorId,
-          code,
-          redirectUri,
-          state: stateToken,
-        });
-
-        if (!tokens) {
-          await emitCallbackAudit(ctx, res, {
-            connectorId: resolvedConnectorId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            error: errWithCode("provider_auth_code_invalid"),
-            outcome: "failed",
-            failureReason: "code_exchange_failed",
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "provider_auth_code_invalid",
-            "Authorization code exchange failed. The code may be expired or invalid."
-          );
-          return;
-        }
-
-        // Run account inventory / connection test. Tokens are not persisted yet.
-        let accounts: ProviderAccount[];
-        try {
-          accounts = await ctx.exchanger.runInventoryOrTest({
-            connectorId: resolvedConnectorId,
-            tokens,
-          });
-        } catch (inventoryErr) {
-          const code = providerErrorCode(inventoryErr, "provider_auth_inventory_failed");
-          await emitCallbackAudit(ctx, res, {
-            connectorId: resolvedConnectorId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            error: inventoryErr,
-            outcome: "failed",
-            failureReason: "inventory_test_failed",
-          });
-          ctx.pdppError(
-            res,
-            providerErrorStatus(inventoryErr, 502),
-            code,
-            providerErrorMessage(
-              inventoryErr,
-              "Account inventory or connection test failed after authorization. No connection was activated."
-            )
-          );
-          return;
-        }
-
-        if (!accounts || accounts.length === 0) {
-          await emitCallbackAudit(ctx, res, {
-            connectorId: resolvedConnectorId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            error: errWithCode("provider_auth_no_accounts"),
-            outcome: "failed",
-            failureReason: "no_accounts_returned",
-          });
-          ctx.pdppError(
-            res,
-            422,
-            "provider_auth_no_accounts",
-            "Account inventory returned no accounts. No connection was activated."
-          );
-          return;
-        }
-
-        // For each account returned by inventory, create/activate one distinct
-        // connector instance. The spec requires two accounts → two distinct
-        // connection_ids with separate credentials (no sharing/overwriting).
-        const store = ctx.createRequestConnectorInstanceStore();
-        const activatedInstances: ConnectorInstance[] = [];
-
-        for (const account of accounts) {
-          const sourceBindingKey = account.accountId;
-          const displayName = account.displayLabel ?? account.accountId;
-          const sourceBinding = buildProviderAccountSourceBinding(account);
-          const draftInstance = await store.upsert({
-            ownerSubjectId: resolvedOwnerSubjectId,
-            connectorId: resolvedConnectorId,
-            displayName,
-            status: "draft",
-            sourceKind: "account",
-            sourceBindingKey,
-            sourceBinding,
-            createdAt: now,
-            updatedAt: now,
-          });
-          // Store tokens scoped to this connection only. Plaintext tokens are
-          // never returned to any response surface. The row stays draft until
-          // this succeeds, so a credential-store failure cannot expose a
-          // readable active connection without usable credentials.
-          await ctx.exchanger.storeTokens({
-            connectorInstanceId: draftInstance.connectorInstanceId,
-            ownerSubjectId: resolvedOwnerSubjectId,
-            tokens,
-            now,
-          });
-          const instance = await store.upsert({
-            ownerSubjectId: resolvedOwnerSubjectId,
-            connectorId: resolvedConnectorId,
-            displayName,
-            status: "active",
-            sourceKind: "account",
-            sourceBindingKey,
-            sourceBinding,
-            createdAt: now,
-            updatedAt: now,
-          });
-          activatedInstances.push(instance);
-        }
-
-        await emitCallbackAudit(ctx, res, {
-          connectorId: resolvedConnectorId,
-          connectionId: activatedInstances[0]?.connectorInstanceId ?? null,
-          accountIds: activatedInstances.map((i) => i.connectorInstanceId),
-          outcome: "succeeded",
-          ownerSubjectId: resolvedOwnerSubjectId,
-        });
-
-        res.status(201).json({
-          object: "provider_auth_callback",
-          connector_id: resolvedConnectorId,
-          connections: activatedInstances.map((inst) => ({
-            connection_id: inst.connectorInstanceId,
-            connector_instance_id: inst.connectorInstanceId,
-            connector_id: inst.connectorId,
-            status: inst.status,
-          })),
-          next_step: {
-            kind: "run_connection",
-            reason: "Provider authorization completed and account inventory succeeded. The connection is now active.",
-          },
-        });
-      } catch (err) {
-        await emitCallbackAudit(ctx, res, {
-          connectorId: resolvedConnectorId || (pending?.connectorId ?? null),
-          ownerSubjectId: resolvedOwnerSubjectId || (pending?.ownerSubjectId ?? null),
-          error: err,
-          outcome: "failed",
-          failureReason: "unexpected_error",
-        });
-        ctx.handleError(res, err);
+    try {
+      const validated = await validateCallbackStateAndCode(ctx, res, params);
+      if (validated === "rejected") {
+        return;
       }
+
+      resolvedConnectorId = validated.connectorId;
+      resolvedOwnerSubjectId = validated.ownerSubjectId;
+
+      // Consume the state token immediately — replay protection.
+      ctx.pendingAuthStore.delete(validated.stateToken);
+
+      const redirectUri = buildCallbackRedirectUri(ctx, req);
+      const exchanged = await exchangeCodeAndRunInventory(ctx, res, validated, redirectUri);
+      if (exchanged === "rejected") {
+        return;
+      }
+
+      const activatedInstances = await activateAllAccounts(ctx, validated, exchanged.tokens, exchanged.accounts);
+
+      await emitCallbackAudit(ctx, res, {
+        connectorId: resolvedConnectorId,
+        connectionId: activatedInstances[0]?.connectorInstanceId ?? null,
+        accountIds: activatedInstances.map((i) => i.connectorInstanceId),
+        outcome: "succeeded",
+        ownerSubjectId: resolvedOwnerSubjectId,
+      });
+
+      res.status(201).json({
+        object: "provider_auth_callback",
+        connector_id: resolvedConnectorId,
+        connections: activatedInstances.map((inst) => ({
+          connection_id: inst.connectorInstanceId,
+          connector_instance_id: inst.connectorInstanceId,
+          connector_id: inst.connectorId,
+          status: inst.status,
+        })),
+        next_step: {
+          kind: "run_connection",
+          reason: "Provider authorization completed and account inventory succeeded. The connection is now active.",
+        },
+      });
+    } catch (err) {
+      await emitCallbackAudit(ctx, res, {
+        connectorId:
+          resolvedConnectorId ||
+          (params.stateToken ? (ctx.pendingAuthStore.get(params.stateToken)?.connectorId ?? null) : null),
+        ownerSubjectId:
+          resolvedOwnerSubjectId ||
+          (params.stateToken ? (ctx.pendingAuthStore.get(params.stateToken)?.ownerSubjectId ?? null) : null),
+        error: err,
+        outcome: "failed",
+        failureReason: "unexpected_error",
+      });
+      ctx.handleError(res, err);
     }
-  );
+  });
 }

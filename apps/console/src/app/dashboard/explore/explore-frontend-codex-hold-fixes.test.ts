@@ -16,8 +16,8 @@ import type { DashboardDataSource } from "@pdpp/operator-ui/lib/data-source";
 import type {
   ExploreTimelinePage,
   ExploreTimelineRecord,
-  RefConnectorSummary,
   ListResponse,
+  RefConnectorSummary,
 } from "@pdpp/operator-ui/lib/ref-client";
 import type { ConnectorManifest, SearchResultHit, SearchResultPage } from "@pdpp/operator-ui/lib/rs-client";
 
@@ -65,10 +65,13 @@ function makeTimelineRecord(over: {
   };
 }
 
-function makeTimelinePage(records: ExploreTimelineRecord[], opts?: {
-  has_more?: boolean;
-  next_cursor?: string | null;
-}): ExploreTimelinePage {
+function makeTimelinePage(
+  records: ExploreTimelineRecord[],
+  opts?: {
+    has_more?: boolean;
+    next_cursor?: string | null;
+  }
+): ExploreTimelinePage {
   return {
     object: "list",
     data: records,
@@ -97,7 +100,10 @@ function makeHit(over: {
   };
 }
 
-function makeLexicalPage(hits: SearchResultHit[], opts?: { has_more?: boolean; next_cursor?: string }): SearchResultPage {
+function makeLexicalPage(
+  hits: SearchResultHit[],
+  opts?: { has_more?: boolean; next_cursor?: string }
+): SearchResultPage {
   return {
     data: hits,
     has_more: opts?.has_more ?? false,
@@ -120,31 +126,75 @@ function makeManifest(connectorId: string, streams: string[] = ["records"]): Con
 function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataSource {
   const stub: DashboardDataSource = {
     kind: "sandbox" as const,
-    aggregateRecordsByTime: async () => { throw new Error("aggregateRecordsByTime not stubbed"); },
-    listExploreRecordBuckets: async () => { throw new Error("listExploreRecordBuckets not stubbed"); },
+    aggregateRecordsByTime: async () => {
+      throw new Error("aggregateRecordsByTime not stubbed");
+    },
+    listExploreRecordBuckets: async () => {
+      throw new Error("listExploreRecordBuckets not stubbed");
+    },
     isHybridRetrievalAdvertised: async () => false,
     isSemanticRetrievalAdvertised: async () => false,
-    listConnectorSummaries: async () => { throw new Error("listConnectorSummaries not stubbed"); },
-    listConnectorManifests: async () => { throw new Error("listConnectorManifests not stubbed"); },
-    searchRecordsLexical: async () => { throw new Error("searchRecordsLexical not stubbed"); },
-    searchRecordsHybrid: async () => { throw new Error("searchRecordsHybrid not stubbed"); },
-    searchRecordsSemantic: async () => { throw new Error("searchRecordsSemantic not stubbed"); },
-    queryRecords: async () => { throw new Error("queryRecords not stubbed"); },
-    getRecord: async () => { throw new Error("getRecord not stubbed"); },
-    getConnectorOverview: async () => { throw new Error("getConnectorOverview not stubbed"); },
-    getStreamMetadata: async () => { throw new Error("getStreamMetadata not stubbed"); },
-    getTraceTimeline: async () => { throw new Error("getTraceTimeline not stubbed"); },
-    listGrants: async () => { throw new Error("listGrants not stubbed"); },
-    listPendingApprovals: async () => { throw new Error("listPendingApprovals not stubbed"); },
-    listRuns: async () => { throw new Error("listRuns not stubbed"); },
-    listStreams: async () => { throw new Error("listStreams not stubbed"); },
-    listTraces: async () => { throw new Error("listTraces not stubbed"); },
-    refSearch: async () => { throw new Error("refSearch not stubbed"); },
+    listConnectorSummaries: async () => {
+      throw new Error("listConnectorSummaries not stubbed");
+    },
+    listConnectorManifests: async () => {
+      throw new Error("listConnectorManifests not stubbed");
+    },
+    searchRecordsLexical: async () => {
+      throw new Error("searchRecordsLexical not stubbed");
+    },
+    searchRecordsHybrid: async () => {
+      throw new Error("searchRecordsHybrid not stubbed");
+    },
+    searchRecordsSemantic: async () => {
+      throw new Error("searchRecordsSemantic not stubbed");
+    },
+    queryRecords: async () => {
+      throw new Error("queryRecords not stubbed");
+    },
+    getRecord: async () => {
+      throw new Error("getRecord not stubbed");
+    },
+    getConnectorOverview: async () => {
+      throw new Error("getConnectorOverview not stubbed");
+    },
+    getStreamMetadata: async () => {
+      throw new Error("getStreamMetadata not stubbed");
+    },
+    getTraceTimeline: async () => {
+      throw new Error("getTraceTimeline not stubbed");
+    },
+    listGrants: async () => {
+      throw new Error("listGrants not stubbed");
+    },
+    listPendingApprovals: async () => {
+      throw new Error("listPendingApprovals not stubbed");
+    },
+    listRuns: async () => {
+      throw new Error("listRuns not stubbed");
+    },
+    listStreams: async () => {
+      throw new Error("listStreams not stubbed");
+    },
+    listTraces: async () => {
+      throw new Error("listTraces not stubbed");
+    },
+    refSearch: async () => {
+      throw new Error("refSearch not stubbed");
+    },
     listExploreTimeline: async () => makeTimelinePage([]),
-    getDatasetSummary: async () => { throw new Error("getDatasetSummary not stubbed"); },
-    getDeploymentDiagnostics: async () => { throw new Error("getDeploymentDiagnostics not stubbed"); },
-    getGrantTimeline: async () => { throw new Error("getGrantTimeline not stubbed"); },
-    getRunTimeline: async () => { throw new Error("getRunTimeline not stubbed"); },
+    getDatasetSummary: async () => {
+      throw new Error("getDatasetSummary not stubbed");
+    },
+    getDeploymentDiagnostics: async () => {
+      throw new Error("getDeploymentDiagnostics not stubbed");
+    },
+    getGrantTimeline: async () => {
+      throw new Error("getGrantTimeline not stubbed");
+    },
+    getRunTimeline: async () => {
+      throw new Error("getRunTimeline not stubbed");
+    },
     ...overrides,
   };
   return stub;
@@ -196,10 +246,7 @@ test("F1 (P1): recent lens filters by selected connection — YNAB records do no
 
   const ds = makeDataSource({
     listConnectorSummaries: async () => summaryListResponse([amazonSummary, ynabSummary]),
-    listConnectorManifests: async () => [
-      makeManifest("amazon", ["orders"]),
-      makeManifest("ynab", ["transactions"]),
-    ],
+    listConnectorManifests: async () => [makeManifest("amazon", ["orders"]), makeManifest("ynab", ["transactions"])],
     listExploreTimeline: async (opts) => {
       assert.deepEqual(
         opts?.connectionIds,
@@ -313,18 +360,27 @@ test("F2 (P0): single-stream Most-recent calls lexical (not queryRecords) — on
 test("F2 (P0): multi-stream Most-recent wires lexical cursor — searchHasMore reflects actual has_more", async () => {
   const summaryA = makeSummary({ connection_id: "cin_ynab_1", connector_id: "ynab", streams: ["transactions"] });
   const summaryB = makeSummary({ connection_id: "cin_amazon_1", connector_id: "amazon", streams: ["orders"] });
-  const hitA = makeHit({ connector_id: "ynab", stream: "transactions", connection_id: "cin_ynab_1", record_key: "ynab-rec" });
-  const hitB = makeHit({ connector_id: "amazon", stream: "orders", connection_id: "cin_amazon_1", record_key: "amz-rec" });
+  const hitA = makeHit({
+    connector_id: "ynab",
+    stream: "transactions",
+    connection_id: "cin_ynab_1",
+    record_key: "ynab-rec",
+  });
+  const hitB = makeHit({
+    connector_id: "amazon",
+    stream: "orders",
+    connection_id: "cin_amazon_1",
+    record_key: "amz-rec",
+  });
 
   const ds = makeDataSource({
     listConnectorSummaries: async () => summaryListResponse([summaryA, summaryB]),
-    listConnectorManifests: async () => [
-      makeManifest("ynab", ["transactions"]),
-      makeManifest("amazon", ["orders"]),
-    ],
+    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"]), makeManifest("amazon", ["orders"])],
     // Lexical returns has_more=true with a cursor to simulate a deep result set.
     searchRecordsLexical: async () => makeLexicalPage([hitA, hitB], { has_more: true, next_cursor: "lex-cursor-99" }),
-    queryRecords: async () => { throw new Error("queryRecords must not be called for multi-stream Most-recent"); },
+    queryRecords: async () => {
+      throw new Error("queryRecords must not be called for multi-stream Most-recent");
+    },
   });
 
   const result = await assembleExplorerData({ q: "payment", search_sort: "recent" }, ds, "https://rs.test");
@@ -382,7 +438,7 @@ test("F3 (P1): timelineRecordToEntry uses connector_instance_id to resolve corre
 
   // Record belongs to the WORK instance.
   const workRecord = makeTimelineRecord({
-    connector_id: "ynab",              // type: "ynab"
+    connector_id: "ynab", // type: "ynab"
     connector_instance_id: "cin_ynab_work", // instance: work
     stream: "transactions",
     record_key: "work-txn-1",

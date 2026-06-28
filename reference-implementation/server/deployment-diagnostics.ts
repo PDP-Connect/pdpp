@@ -147,27 +147,27 @@ export interface PhysicalFootprint {
 //
 // Neither threshold triggers automatic data deletion. The operator must act.
 export interface DiskHeadroom {
-  // Absolute path probed (the filesystem containing the reference data dir).
-  readonly path: string;
   // Bytes available to the process on the filesystem hosting `path`.
   readonly free_bytes: number | null;
-  // Total bytes on the filesystem (f_blocks * f_frsize). Operator context only.
-  readonly total_bytes: number | null;
   // Filesystem identifier from statfs(). Used to deduplicate multi-mount
   // probes that land on the same device. null when statfs() did not expose
   // it (exotic FS, older Node) — falls back to total_bytes heuristic.
   readonly fsid?: number | null;
+  // Absolute path probed (the filesystem containing the reference data dir).
+  readonly path: string;
+  // Total bytes on the filesystem (f_blocks * f_frsize). Operator context only.
+  readonly total_bytes: number | null;
 }
 
 // A single filesystem entry in the disk-headroom report. The shape mirrors
 // DiskHeadroom but omits the internal fsid (not meaningful to consumers).
 export interface DiskHeadroomEntry {
-  readonly path: string;
   readonly free_bytes: number | null;
-  readonly total_bytes: number | null;
   // Human-readable label for multi-mount display (e.g. "data", "postgres").
   // Absent when only one filesystem is reported.
   readonly mount_label?: string;
+  readonly path: string;
+  readonly total_bytes: number | null;
 }
 
 // 2 GiB — enough for a full Docker image layer set plus a small WAL burst.
@@ -187,20 +187,14 @@ export interface DeploymentDiagnosticsInput {
   readonly backfillProgress?: SemanticBackfillProgress | null;
   readonly db: DiagnosticsDb | null;
   readonly dbPath: string;
+  // Disk headroom for the filesystem hosting the reference data directory.
+  // Pre-probed by the runtime adapter. Absent/null = unmeasured.
+  readonly diskHeadroom?: DiskHeadroom | null;
   readonly env: DiagnosticsEnv;
   readonly indexState: SemanticIndexState | null;
   readonly lexicalBackend?: LexicalBackendPosture | null;
   readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
-  // Physical on-disk database footprint. Optional and pre-computed by the
-  // runtime adapter (the pure builder does no I/O). Absent/undefined and an
-  // explicit SQLite/failure `{ physical_bytes: null, top_relations: null }`
-  // both surface as unmeasured.
-  readonly physicalFootprint?: PhysicalFootprint | null;
-  readonly runtimeCapabilities?: RuntimeCapabilityPosture | null;
-  // Disk headroom for the filesystem hosting the reference data directory.
-  // Pre-probed by the runtime adapter. Absent/null = unmeasured.
-  readonly diskHeadroom?: DiskHeadroom | null;
   // Disk headroom for the Postgres data mount. Only relevant when the backend
   // is Postgres and the data volume is a different mount from the data dir.
   // Absent/null = unmeasured or not applicable (SQLite, same FS as data dir).
@@ -208,6 +202,12 @@ export interface DeploymentDiagnosticsInput {
   // diskHeadroom (matched by fsid or, as fallback, total_bytes equality), it
   // is silently suppressed.
   readonly pgDiskHeadroom?: DiskHeadroom | null;
+  // Physical on-disk database footprint. Optional and pre-computed by the
+  // runtime adapter (the pure builder does no I/O). Absent/undefined and an
+  // explicit SQLite/failure `{ physical_bytes: null, top_relations: null }`
+  // both surface as unmeasured.
+  readonly physicalFootprint?: PhysicalFootprint | null;
+  readonly runtimeCapabilities?: RuntimeCapabilityPosture | null;
 }
 
 // Runtime capability posture of the provider/control-plane runtime.
@@ -953,17 +953,12 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
-  readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
-  readonly getLexicalBackendPosture?: () => LexicalBackendPosture | null;
-  // Optional: read-only physical footprint of the database. The adapter calls
-  // it and degrades cleanly to unmeasured on absence or rejection — the page
-  // never fails because the footprint could not be read.
-  readonly getPhysicalFootprint?: () => PhysicalFootprint | Promise<PhysicalFootprint> | null;
-  readonly getRuntimeCapabilityPosture?: () => RuntimeCapabilityPosture | Promise<RuntimeCapabilityPosture> | null;
   // Optional: probe disk headroom on the filesystem hosting the data dir. If
   // absent, disk_headroom is null in the report. Typically set to
   // () => probeDiskHeadroom(dbPath) by the server's route handler.
   readonly getDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
+  readonly getLexicalBackendPosture?: () => LexicalBackendPosture | null;
+  readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
   // Optional: probe the Postgres data volume's filesystem. Only set when the
   // backend is Postgres and the data volume may be a distinct mount from the
   // data dir (e.g. a dedicated Docker volume). If absent or if it turns out to
@@ -972,7 +967,23 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   // mounted. If the path does not exist, probeDiskHeadroom returns
   // { free_bytes: null, total_bytes: null } — never a false green.
   readonly getPgDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
+  // Optional: read-only physical footprint of the database. The adapter calls
+  // it and degrades cleanly to unmeasured on absence or rejection — the page
+  // never fails because the footprint could not be read.
+  readonly getPhysicalFootprint?: () => PhysicalFootprint | Promise<PhysicalFootprint> | null;
+  readonly getRuntimeCapabilityPosture?: () => RuntimeCapabilityPosture | Promise<RuntimeCapabilityPosture> | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
+}
+
+async function resolveOptionalDep<T>(
+  getter: (() => T | Promise<T> | null) | undefined
+): Promise<T | null> {
+  if (!getter) { return null; }
+  try {
+    return await Promise.resolve(getter());
+  } catch {
+    return null;
+  }
 }
 
 export async function collectDeploymentDiagnostics(
@@ -1013,32 +1024,9 @@ export async function collectDeploymentDiagnostics(
   // Physical footprint is best-effort and read-only. A rejected promise (or a
   // missing dep) degrades to unmeasured rather than failing the whole page;
   // the builder collapses null/undefined to `physical_bytes: null`.
-  let physicalFootprint: PhysicalFootprint | null = null;
-  if (deps.getPhysicalFootprint) {
-    try {
-      physicalFootprint = await Promise.resolve(deps.getPhysicalFootprint());
-    } catch {
-      physicalFootprint = null;
-    }
-  }
-
-  let diskHeadroom: DiskHeadroom | null = null;
-  if (deps.getDiskHeadroom) {
-    try {
-      diskHeadroom = await Promise.resolve(deps.getDiskHeadroom());
-    } catch {
-      diskHeadroom = null;
-    }
-  }
-
-  let pgDiskHeadroom: DiskHeadroom | null = null;
-  if (deps.getPgDiskHeadroom) {
-    try {
-      pgDiskHeadroom = await Promise.resolve(deps.getPgDiskHeadroom());
-    } catch {
-      pgDiskHeadroom = null;
-    }
-  }
+  const physicalFootprint = await resolveOptionalDep(deps.getPhysicalFootprint);
+  const diskHeadroom = await resolveOptionalDep(deps.getDiskHeadroom);
+  const pgDiskHeadroom = await resolveOptionalDep(deps.getPgDiskHeadroom);
 
   return buildDeploymentDiagnostics({
     backend,

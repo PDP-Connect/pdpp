@@ -55,8 +55,8 @@ export interface ScheduleUpdate {
 export interface ActiveRunRecord {
   readonly connector_id: string;
   readonly connector_instance_id?: string;
-  readonly run_id: string;
   readonly run_generation: number;
+  readonly run_id: string;
   readonly scenario_id: string;
   readonly started_at: string;
   readonly trace_id: string;

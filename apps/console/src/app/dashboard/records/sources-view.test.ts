@@ -23,9 +23,15 @@ test("SourcesView success toasts link to the concrete run detail", async () => {
 
 test("SourcesView already-running toasts preserve and link the active run id", async () => {
   const src = await readFile(SOURCES_VIEW_FILE, "utf8");
-  const branch = src.slice(src.indexOf('if (res.reason === "already_running")'), src.indexOf('setToast({ kind: "error"'));
+  const branch = src.slice(
+    src.indexOf('if (res.reason === "already_running")'),
+    src.indexOf('setToast({ kind: "error"')
+  );
   assert.match(branch, /message: res\.message/);
-  assert.match(branch, /runHref: res\.run_id \? `\/dashboard\/runs\/\$\{encodeURIComponent\(res\.run_id\)\}` : undefined/);
+  assert.match(
+    branch,
+    /runHref: res\.run_id \? `\/dashboard\/runs\/\$\{encodeURIComponent\(res\.run_id\)\}` : undefined/
+  );
   assert.match(branch, /runId: res\.run_id/);
 });
 

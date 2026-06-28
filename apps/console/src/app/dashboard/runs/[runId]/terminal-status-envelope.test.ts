@@ -23,8 +23,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   type EnvelopeTerminalStatus,
-  isRunHandleActive,
   isRunActive,
+  isRunHandleActive,
   mapEnvelopeTerminalToDisplay,
   mapRunHandleStatusToDisplay,
   resolveDisplayTerminalStatus,

@@ -13,7 +13,7 @@ import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-s
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
-import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
+import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface/profile-key.ts";
 import {
   type CollectionRateSnapshot,
   type ConnectionAttentionEvidence,
@@ -1026,7 +1026,9 @@ async function getRetainedBytesForConnection(connectorInstanceId: string): Promi
   };
 }
 
-function retainedBytesFromConnectionRow(row: RetainedSizeConnectionProjectionRow | undefined): RetainedBytesBreakdown | null {
+function retainedBytesFromConnectionRow(
+  row: RetainedSizeConnectionProjectionRow | undefined
+): RetainedBytesBreakdown | null {
   if (!row) {
     return null;
   }
@@ -1391,8 +1393,10 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
   // owner-facing source list. Same pattern list as isPublicReferenceConnector.
   return instances.filter(
     (instance: ConnectorInstanceRow) =>
-      !NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part)) &&
-      !isRetiredSetupAttempt(instance)
+      !(
+        NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part)) ||
+        isRetiredSetupAttempt(instance)
+      )
   );
 }
 
@@ -1410,25 +1414,28 @@ function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
 
 async function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
   const store = getConnectorInstanceStore() as {
-    listDraftBrowserEnrollmentShells(ownerSubjectId?: string | null):
-      | Promise<readonly EnrollmentShellLike[]>
-      | readonly EnrollmentShellLike[];
+    listDraftBrowserEnrollmentShells(
+      ownerSubjectId?: string | null
+    ): Promise<readonly EnrollmentShellLike[]> | readonly EnrollmentShellLike[];
     updateStatus(
       connectorInstanceId: string,
       args: { status: string; updatedAt: string; revokedAt?: string | null }
     ): Promise<unknown> | unknown;
   };
-  return retireExpiredBrowserEnrollmentShells({
-    async listDraftBrowserEnrollmentShells(ownerSubjectId) {
-      return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
+  return retireExpiredBrowserEnrollmentShells(
+    {
+      async listDraftBrowserEnrollmentShells(ownerSubjectId) {
+        return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
+      },
+      async updateStatus(connectorInstanceId, args) {
+        return await store.updateStatus(connectorInstanceId, args);
+      },
     },
-    async updateStatus(connectorInstanceId, args) {
-      return await store.updateStatus(connectorInstanceId, args);
-    },
-  }, {
-    now,
-    ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
-  });
+    {
+      now,
+      ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
+    }
+  );
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
@@ -2159,7 +2166,11 @@ export function buildCollectionReport(input: {
   // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
   // unreported stream is an honest entry, never silently dropped (dropping reads
   // as "not owed" when it is "unknown").
-  const inScope = new Set<string>([...manifestByStream.keys(), ...factByStream.keys(), ...pendingGapCountByStream.keys()]);
+  const inScope = new Set<string>([
+    ...manifestByStream.keys(),
+    ...factByStream.keys(),
+    ...pendingGapCountByStream.keys(),
+  ]);
   const entries: CollectionReportEntry[] = [];
   for (const stream of inScope) {
     const baseFact: RuntimeCollectionFact = factByStream.get(stream) ?? {
@@ -3544,11 +3555,7 @@ function connectorSummariesCacheWindow(now: number): { freshUntil: number; stale
   };
 }
 
-export type ConnectorSummariesCacheDecision =
-  | "await_refresh"
-  | "compute"
-  | "return_fresh"
-  | "return_stale_refresh";
+export type ConnectorSummariesCacheDecision = "await_refresh" | "compute" | "return_fresh" | "return_stale_refresh";
 
 export function decideConnectorSummariesCacheRead(
   entry: ConnectorSummariesCacheEntry | undefined,
@@ -3569,11 +3576,7 @@ export function decideConnectorSummariesCacheRead(
 function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): boolean {
   // Cache only the all-list path. Hook/concurrency calls are explicit
   // diagnostics that must observe real worker behavior.
-  return (
-    LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS > 0 &&
-    options.concurrency == null &&
-    options.onInFlightChange == null
-  );
+  return LIST_CONNECTOR_SUMMARIES_CACHE_TTL_MS > 0 && options.concurrency == null && options.onInFlightChange == null;
 }
 
 function connectorSummariesCacheStorageKey(): string {
@@ -3658,11 +3661,11 @@ function refreshConnectorSummariesCache(
 // path, so the two cannot drift.
 interface ConnectorSummaryProjectionDeps {
   readonly controller?: ControllerLike | null | undefined;
+  readonly includeRunSummaries: ConnectorRunSummaryInclusion;
   readonly listRunSummariesForConnector: (
     connectorId: string,
     status?: string | null
   ) => Promise<readonly SpineSummary[]>;
-  readonly includeRunSummaries: ConnectorRunSummaryInclusion;
   readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   readonly retainedSizeSnapshot?: RetainedSizeProjectionSnapshot;
   readonly runtimeOk: boolean;
@@ -3680,7 +3683,10 @@ function isActiveVisibleConnectorInstance(
   if (!manifest) {
     return false;
   }
-  return isPublicReferenceConnector({ connector_id: instance.connectorId, manifest: JSON.stringify(manifest) }, manifest);
+  return isPublicReferenceConnector(
+    { connector_id: instance.connectorId, manifest: JSON.stringify(manifest) },
+    manifest
+  );
 }
 
 function countActiveVisibleConnectionsByConnectorId(
@@ -4008,7 +4014,7 @@ async function projectConnectorSummaryForInstance(
           connectorId,
           connectorInstanceId,
           listRunSummariesForConnector,
-      })
+        })
       : Promise.resolve(null),
     hydrateRunSummaries
       ? getLatestRunSummaryForConnection({
@@ -4072,9 +4078,7 @@ async function loadConnectorSummaryProjectionDeps(
 ): Promise<ConnectorSummaryProjectionDeps> {
   const [connectorRows, retainedSizeSnapshot] = await Promise.all([
     listRegisteredConnectorRows(),
-    options.includeRetainedSizeSnapshot
-      ? loadRetainedSizeProjectionSnapshot()
-      : Promise.resolve(undefined),
+    options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
   ]);
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])

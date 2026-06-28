@@ -148,20 +148,17 @@ export interface MountOwnerConnectionDeleteContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  listActiveBindingsForGrant(input: {
+    ownerSubjectId: string;
+    connectorId: string;
+  }): Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the delete cascade commits. The connection no longer
   // exists in canonical state, so a later reconcile drops the now-stale row (the
   // reconcile pass deletes dirty rows whose connection has vanished). Injected
   // (not imported) to match the optional `invalidateConnectorSummariesCache`
   // above; awaited, best-effort, and a no-op until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
-  listActiveBindingsForGrant(input: {
-    ownerSubjectId: string;
-    connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   now?(): string;
   pdppError: PdppErrorFn;
   projectBindingForWire(instance: ActiveBinding): WireConnection | null;

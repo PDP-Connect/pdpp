@@ -146,10 +146,7 @@ async function handleMcpDeviceAuthorization(
   }
 
   try {
-    const result = await ctx.initiateMcpDeviceAuth(
-      { clientId, resource, authorizationDetails },
-      { baseUrl }
-    );
+    const result = await ctx.initiateMcpDeviceAuth({ clientId, resource, authorizationDetails }, { baseUrl });
     const traceContext = result.trace_context ?? null;
     const { trace_context: _ignored, ...publicResult } = result as Record<string, unknown>;
     if (traceContext && typeof traceContext === "object") {

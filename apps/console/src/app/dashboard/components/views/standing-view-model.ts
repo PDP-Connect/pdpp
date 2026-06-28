@@ -12,6 +12,7 @@
  * The design used fictional fixtures; here every field binds to a real shape.
  */
 
+import { deriveFailureSummary } from "../../lib/connection-evidence.ts";
 import type {
   DatasetSummary,
   GrantSummary,
@@ -21,7 +22,6 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
-import { deriveFailureSummary } from "../../lib/connection-evidence.ts";
 
 // ─── Plain-language lexicon: scope/stream → what it means to a person ──
 //
@@ -241,8 +241,6 @@ export interface AttentionConnection {
   actionLabel: string;
   /** Owner-facing connector type, for the human label ("Chase needs you"). */
   connectorKey: string;
-  /** Owner-facing connection/source label, for exact multi-account/device copy. */
-  label: string;
   /**
    * True when the action is a DEVICE-LOCAL recovery — the owner runs commands on
    * the host that holds the data; the dashboard cannot perform it. The CTA then
@@ -251,6 +249,8 @@ export interface AttentionConnection {
    * it (which sends the owner in a circle).
    */
   deviceLocal: boolean;
+  /** Owner-facing connection/source label, for exact multi-account/device copy. */
+  label: string;
   /**
    * The records-route id that resolves to THIS exact connection — the
    * connection identity (`connector_instance_id ?? connection_id`), NOT the
@@ -483,16 +483,14 @@ function toRelationships(
     const clientId = grant.client_id || grant.grant_id;
     const grantClientName = grant.client?.client_name?.trim() || null;
     const knownClientName = grant.client_id ? (knownClientNames.get(grant.client_id) ?? null) : null;
-    const existing =
-      groups.get(clientId) ??
-      {
-        clientId,
-        grantIds: [],
-        lastAt: null,
-        phrases: new Set<string>(),
-        statuses: [],
-        who: clientLabel(grantClientName ?? knownClientName ?? grant.client_id, grant.grant_id),
-      };
+    const existing = groups.get(clientId) ?? {
+      clientId,
+      grantIds: [],
+      lastAt: null,
+      phrases: new Set<string>(),
+      statuses: [],
+      who: clientLabel(grantClientName ?? knownClientName ?? grant.client_id, grant.grant_id),
+    };
     existing.grantIds.push(grant.grant_id);
     existing.lastAt = newerIso(existing.lastAt, grant.last_at);
     for (const phrase of grantReadPhrases(grant)) {
@@ -510,7 +508,10 @@ function toRelationships(
       actionHref: grantCount === 1 ? hrefs.grant(group.grantIds[0] ?? "") : hrefs.grants,
       actionLabel: "review",
       clientId: group.clientId,
-      reads: group.phrases.size > 0 ? `reads only ${joinHuman(Array.from(group.phrases))}` : "reads a scoped slice of your data",
+      reads:
+        group.phrases.size > 0
+          ? `reads only ${joinHuman(Array.from(group.phrases))}`
+          : "reads a scoped slice of your data",
       showClientId: shouldShowSecondaryClientId(group.clientId, group.who),
       status,
       terms: `last active ${relDay(group.lastAt, now)} · ${grantCount} ${grantWord}`,
@@ -700,10 +701,14 @@ function connectionRouteId(connector: RefConnectorSummary): string {
 }
 
 function connectorLabel(connector: RefConnectorSummary): string {
-  return connector.display_name?.trim() || connector.connector_display_name?.trim() || scopeHuman(connector.connector_id);
+  return (
+    connector.display_name?.trim() || connector.connector_display_name?.trim() || scopeHuman(connector.connector_id)
+  );
 }
 
-function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): SourceIssueConnection["status"] | null {
+function sourceIssueStatus(
+  verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>
+): SourceIssueConnection["status"] | null {
   if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
     return "can't collect";
   }
@@ -722,7 +727,9 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
  * should not alarm as "needs you", but it must also not disappear behind an
  * all-clear that claims everything is syncing.
  */
-export function sourceIssueConnectionsFromConnectors(connectors: readonly RefConnectorSummary[]): SourceIssueConnection[] {
+export function sourceIssueConnectionsFromConnectors(
+  connectors: readonly RefConnectorSummary[]
+): SourceIssueConnection[] {
   const out: SourceIssueConnection[] = [];
   for (const connector of connectors) {
     if (connector.revoked_at) {
@@ -759,7 +766,9 @@ export function sourceIssueConnectionsFromConnectors(connectors: readonly RefCon
   return out;
 }
 
-export function advisoryOwnerActionsFromConnectors(connectors: readonly RefConnectorSummary[]): AdvisoryOwnerActionConnection[] {
+export function advisoryOwnerActionsFromConnectors(
+  connectors: readonly RefConnectorSummary[]
+): AdvisoryOwnerActionConnection[] {
   const out: AdvisoryOwnerActionConnection[] = [];
   for (const connector of connectors) {
     if (connector.revoked_at) {

@@ -24,6 +24,12 @@
 import { randomUUID } from "node:crypto";
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../lib/db.ts";
 import type {
+  ExploreRecordBucketGranularity,
+  ExploreRecordBucketQueryInput,
+  ExploreRecordBucketSparseRow,
+  ExploreRecordBucketsDependencies,
+} from "../operations/rs-explore-record-buckets/index.ts";
+import type {
   CountNewSinceSnapshotInput,
   ExploreTimelineDependencies,
   ExploreTimelinePartition,
@@ -35,12 +41,6 @@ import type {
   UpcomingPartitionPosition,
 } from "../operations/rs-explore-timeline/index.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
-import type {
-  ExploreRecordBucketGranularity,
-  ExploreRecordBucketQueryInput,
-  ExploreRecordBucketSparseRow,
-  ExploreRecordBucketsDependencies,
-} from "../operations/rs-explore-record-buckets/index.ts";
 
 // Wall-clock helper. Isolated so the cursor TTL has a single time source.
 function nowMs(): number {
@@ -915,7 +915,9 @@ function sqliteBucketStartExpression(granularityExpr: string, semanticExpr: stri
 }
 
 function sqliteGranularityExpression(input: ExploreRecordBucketQueryInput): string {
-  if (input.granularity !== "auto") return `'${input.granularity}'`;
+  if (input.granularity !== "auto") {
+    return `'${input.granularity}'`;
+  }
   const monthSpan = `((CAST(strftime('%Y', extent_end) AS INTEGER) - CAST(strftime('%Y', extent_start) AS INTEGER)) * 12 + (CAST(strftime('%m', extent_end) AS INTEGER) - CAST(strftime('%m', extent_start) AS INTEGER)) + 1)`;
   return `CASE
     WHEN total = 0 THEN 'day'
@@ -995,7 +997,10 @@ function postgresBucketStartExpression(granularityExpr: string, semanticExpr: st
   END`;
 }
 
-function postgresGranularityExpression(input: ExploreRecordBucketQueryInput, params: (string | number | readonly string[])[]): string {
+function postgresGranularityExpression(
+  input: ExploreRecordBucketQueryInput,
+  params: (string | number | readonly string[])[]
+): string {
   if (input.granularity !== "auto") {
     params.push(input.granularity);
     return `$${params.length}::text`;
@@ -1012,7 +1017,9 @@ function postgresGranularityExpression(input: ExploreRecordBucketQueryInput, par
   END`;
 }
 
-async function postgresFetchExploreBucketRows(input: ExploreRecordBucketQueryInput): Promise<readonly ExploreRecordBucketSparseRow[]> {
+async function postgresFetchExploreBucketRows(
+  input: ExploreRecordBucketQueryInput
+): Promise<readonly ExploreRecordBucketSparseRow[]> {
   const semText = EXPLORE_SEMANTIC_TIME_SQL;
   const semTs = `(${semText})::timestamptz`;
   const whereParts = ["deleted = FALSE", `${semText} IS NOT NULL`];

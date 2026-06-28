@@ -29,7 +29,7 @@ interface DeploymentDiagnosticsViewProps {
 
 function SectionGroupDivider({ label }: { label: string }) {
   return (
-    <div className="mb-5 mt-2 border-border/60 border-t pt-5">
+    <div className="mt-2 mb-5 border-border/60 border-t pt-5">
       <h2 className="pdpp-heading text-foreground">{label}</h2>
     </div>
   );
@@ -81,7 +81,9 @@ export function DeploymentDiagnosticsView({
       <PageHeader actions={actions} breadcrumbs={breadcrumbs} description={description} title={title} />
       <DeploymentSectionNav />
 
-      <div className="scroll-mt-16" id="readiness">{beforeDiagnostics}</div>
+      <div className="scroll-mt-16" id="readiness">
+        {beforeDiagnostics}
+      </div>
       <WarningsSection warnings={report.warnings} />
       <div className="scroll-mt-16" id="retrieval">
         <SectionGroupDivider label="Retrieval" />

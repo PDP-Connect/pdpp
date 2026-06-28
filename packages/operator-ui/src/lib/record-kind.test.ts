@@ -88,10 +88,10 @@ test("declared types: unrecognized declarations fall back to generic", () => {
 });
 
 test("declared types: an empty declaration map falls back to generic", () => {
-  assert.deepEqual(
-    classifyRecordKind("sessions", { started_at: "2026-05-29T00:00:00Z", duration_cents: 12 }, {}),
-    { kind: "generic", label: "record" }
-  );
+  assert.deepEqual(classifyRecordKind("sessions", { started_at: "2026-05-29T00:00:00Z", duration_cents: 12 }, {}), {
+    kind: "generic",
+    label: "record",
+  });
 });
 
 test("labels for current reachable kinds are short eyebrow strings", () => {

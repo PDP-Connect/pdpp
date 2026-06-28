@@ -17,11 +17,11 @@ import { randomBytes } from "node:crypto";
 
 import { credentialValidationMode } from "../../../packages/polyfill-connectors/src/credential-probe.ts";
 import {
+  type ConnectorManifestLike,
   displayNameForConnector,
   expectedStaticSecretCredentialKind,
-  staticSecretCredentialCaptureFromManifest,
-  type ConnectorManifestLike,
   type StaticSecretSetupField,
+  staticSecretCredentialCaptureFromManifest,
 } from "../connection-setup-plan.ts";
 import {
   CREDENTIAL_ENCRYPTION_KEY_ENV,
@@ -163,7 +163,7 @@ function projectField(field: StaticSecretSetupField): Record<string, unknown> {
 function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Record<string, unknown> | null {
   const capture = staticSecretCredentialCaptureFromManifest(manifest);
   const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
-  if (!capture || !credentialKind) {
+  if (!(capture && credentialKind)) {
     return null;
   }
   const displayName = displayNameForConnector(connectorId, manifest);
@@ -224,7 +224,7 @@ function parseSetupFields(
 
 function identityValue(fields: readonly StaticSecretSetupField[], setupFields: Record<string, string>): string | null {
   const field = fields.find((candidate) => candidate.identity && !candidate.secret);
-  return field ? setupFields[field.name] ?? null : null;
+  return field ? (setupFields[field.name] ?? null) : null;
 }
 
 async function emitDraftAudit(
@@ -383,7 +383,9 @@ export function mountRefStaticSecretDraftConnection(
         const now = ctx.now ? ctx.now() : new Date().toISOString();
         const store = ctx.createRequestConnectorInstanceStore();
         const idValue = identityValue(captureSetup.fields, setupFields);
-        const displayName = idValue ? `${displayNameForConnector(connectorId, manifest)} - ${idValue}` : displayNameForConnector(connectorId, manifest);
+        const displayName = idValue
+          ? `${displayNameForConnector(connectorId, manifest)} - ${idValue}`
+          : displayNameForConnector(connectorId, manifest);
         const instance = await store.upsert({
           ownerSubjectId,
           connectorId,

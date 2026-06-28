@@ -26,9 +26,9 @@ import {
   deriveAutoPausedBanner,
   derivePrimaryRowAction,
   deriveStreakDots,
-  summarizeStreakDots,
   type PrimaryRowAction,
   type StreakDot,
+  summarizeStreakDots,
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
 import { isBrowserBoundConnector } from "../../lib/connection-modality.ts";
@@ -155,7 +155,7 @@ function ownerActionAvailabilityByStream(verdict: RefRenderedVerdict | null | un
     return out;
   }
   for (const row of verdict.streams ?? []) {
-    const action = row.action_ref === null ? null : verdict.required_actions[row.action_ref] ?? null;
+    const action = row.action_ref === null ? null : (verdict.required_actions[row.action_ref] ?? null);
     out.set(row.stream_id, isOwnerSatisfiableAction(action));
   }
   return out;

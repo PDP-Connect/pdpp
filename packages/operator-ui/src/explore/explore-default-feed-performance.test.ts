@@ -60,7 +60,6 @@ function manifest(index: number): ConnectorManifest {
   };
 }
 
-
 test("empty-query Explore keeps first-paint endpoint call bounded", async () => {
   // The recent lens is now a single merged-timeline endpoint (listExploreTimeline),
   // not a per-stream fan-out. First-paint must make exactly ONE call to that

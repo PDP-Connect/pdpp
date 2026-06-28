@@ -10,11 +10,11 @@
 // document service at /oauth/client-metadata/:id.
 
 interface RouteRequest {
-  readonly params: Record<string, string>;
-  readonly hostname: string;
-  readonly protocol: string;
-  readonly headers: Record<string, string | string[] | undefined>;
   get(name: string): string | undefined;
+  readonly headers: Record<string, string | string[] | undefined>;
+  readonly hostname: string;
+  readonly params: Record<string, string>;
+  readonly protocol: string;
 }
 
 interface RouteResponse {
@@ -30,6 +30,7 @@ interface AppLike {
 }
 
 export interface MountClientMetadataContext {
+  explicitIssuer: string | null;
   /** Fetch an operator-created CIMD document by its ID, or null if not found. */
   getCimdDocument(id: string): Promise<{
     document_id: string;
@@ -41,20 +42,19 @@ export interface MountClientMetadataContext {
   } | null>;
   /** Resolve the public base URL for this AS (e.g. https://pdpp.vivid.fish). */
   resolvePublicUrl(req: RouteRequest, explicit: unknown): string;
-  explicitIssuer: string | null;
 }
 
 export function mountClientMetadata(app: AppLike, ctx: MountClientMetadataContext): void {
   const handler: RouteHandler = async (req, res): Promise<void> => {
     const documentId = req.params.id;
-    if (!documentId || typeof documentId !== 'string') {
-      res.status(404).json({ error: 'not_found', error_description: 'Unknown client metadata document' });
+    if (!documentId || typeof documentId !== "string") {
+      res.status(404).json({ error: "not_found", error_description: "Unknown client metadata document" });
       return;
     }
 
     const doc = await ctx.getCimdDocument(documentId);
     if (!doc) {
-      res.status(404).json({ error: 'not_found', error_description: 'Unknown client metadata document' });
+      res.status(404).json({ error: "not_found", error_description: "Unknown client metadata document" });
       return;
     }
 
@@ -67,21 +67,17 @@ export function mountClientMetadata(app: AppLike, ctx: MountClientMetadataContex
       client_name: doc.client_name || undefined,
       logo_uri: doc.logo_uri || undefined,
       redirect_uris: doc.redirect_uris,
-      token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code'],
-      response_types: ['code'],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"],
     };
 
     // Strip undefined fields for clean JSON output
-    const clean = Object.fromEntries(
-      Object.entries(document).filter(([, v]) => v !== undefined)
-    );
+    const clean = Object.fromEntries(Object.entries(document).filter(([, v]) => v !== undefined));
 
-    (res as RouteResponse)
-      .setHeader('Content-Type', 'application/json')
-      .setHeader('Cache-Control', 'max-age=3600');
+    (res as RouteResponse).setHeader("Content-Type", "application/json").setHeader("Cache-Control", "max-age=3600");
     res.status(200).json(clean);
   };
 
-  (app as AppLike).get('/oauth/client-metadata/:id', handler as unknown);
+  (app as AppLike).get("/oauth/client-metadata/:id", handler as unknown);
 }

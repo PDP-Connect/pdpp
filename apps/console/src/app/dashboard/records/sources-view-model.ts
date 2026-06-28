@@ -132,10 +132,10 @@ export interface SourcePassportField {
 
 export interface SourcePrimaryVerdictAction {
   audience: RefRequiredAction["audience"];
+  channel: RefRenderedVerdict["channel"];
   cta: string;
   kind: RefRequiredAction["kind"];
   ownerRunnable: boolean;
-  channel: RefRenderedVerdict["channel"];
   satisfiedWhenKind: RefRequiredAction["satisfied_when"]["kind"];
   terminal: boolean;
 }

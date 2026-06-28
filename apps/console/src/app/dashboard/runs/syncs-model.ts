@@ -24,9 +24,15 @@
  */
 
 import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
-import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
 import { indexCollectionReportByStream } from "../lib/collection-report.ts";
-import type { RefCollectionReportEntry, RefConnectorSummary, RefRenderedVerdict, RefSchedule, RunSummary } from "../lib/ref-client.ts";
+import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
+import type {
+  RefCollectionReportEntry,
+  RefConnectorSummary,
+  RefRenderedVerdict,
+  RefSchedule,
+  RunSummary,
+} from "../lib/ref-client.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -60,13 +66,13 @@ export interface SyncRow {
   next: string;
   /** Next-due ISO timestamp when one is scheduled, else null. */
   nextAt: string | null;
+  /** Stream name (the record stream this row tracks). */
+  stream: string;
   /**
    * True when the collection_report entry reports this stream was skipped.
    * False when collection_report is absent (honest default).
    */
   streamSkipped: boolean;
-  /** Stream name (the record stream this row tracks). */
-  stream: string;
 }
 
 /** One connection's group of sync rows. */
@@ -78,6 +84,11 @@ export interface SyncGroup {
   /** Reduced health driving the group dot. */
   health: SyncGroupHealth;
   /**
+   * ISO timestamp of the last run for this connection. Null when no run yet.
+   * Shown once in the group header rather than repeated on every stream row.
+   */
+  lastRunAt: string | null;
+  /**
    * Connection-level last-run delta phrase moved here from per-row. True for
    * all streams in the group (it is derived from event_count, a cross-stream
    * total). Null when there is no terminal run on record.
@@ -88,11 +99,6 @@ export interface SyncGroup {
    * Null when unknown.
    */
   lastRunDuration: string | null;
-  /**
-   * ISO timestamp of the last run for this connection. Null when no run yet.
-   * Shown once in the group header rather than repeated on every stream row.
-   */
-  lastRunAt: string | null;
   /**
    * Connection-level Rhythm sparkline ticks (oldest to newest). Moved to the
    * group header because the ticks represent the connection's run history, not
@@ -152,10 +158,10 @@ export interface DuplicateSyncGroup {
 export interface HealthBand {
   /** True when there are no visible review/action cards — show the all-clear note. */
   allClear: boolean;
-  /** Count of connections that need an owner's hand (genuine reconnect/attention). */
-  needYourHand: number;
   /** Count of visible cards that need review, including advisory/code-fix cards. */
   needsReview: number;
+  /** Count of connections that need an owner's hand (genuine reconnect/attention). */
+  needYourHand: number;
   /** Count of streams whose connection is healthy / on schedule. */
   onSchedule: number;
 }
@@ -200,12 +206,7 @@ function runConnectorKey(run: RunSummary): string | null {
 
 function exactRunConnectionIds(run: RunSummary): Set<string> {
   const ids = new Set<string>();
-  for (const value of [
-    run.connection_id,
-    run.connector_instance_id,
-    run.source?.connection_id,
-    run.source?.id,
-  ]) {
+  for (const value of [run.connection_id, run.connector_instance_id, run.source?.connection_id, run.source?.id]) {
     if (typeof value === "string" && value.length > 0) {
       ids.add(value);
     }
@@ -236,7 +237,10 @@ function runMatchesConnection(run: RunSummary, connector: RefConnectorSummary): 
   return connectorKey === null || connectorKey === connector.connector_id || connectionIds.includes(connectorKey);
 }
 
-function connectorRunToRunSummary(connector: RefConnectorSummary, run: NonNullable<RefConnectorSummary["last_run"]>): RunSummary {
+function connectorRunToRunSummary(
+  connector: RefConnectorSummary,
+  run: NonNullable<RefConnectorSummary["last_run"]>
+): RunSummary {
   return {
     connection_id: connector.connection_id,
     connector_id: connector.connector_id,
@@ -254,10 +258,7 @@ function connectorRunToRunSummary(connector: RefConnectorSummary, run: NonNullab
   };
 }
 
-function connectionRunHistory(input: {
-  connector: RefConnectorSummary;
-  runs: readonly RunSummary[];
-}): RunSummary[] {
+function connectionRunHistory(input: { connector: RefConnectorSummary; runs: readonly RunSummary[] }): RunSummary[] {
   const exactRuns = input.runs.filter((run) => runMatchesConnection(run, input.connector));
   const keyed = new Map<string, RunSummary>();
   for (const run of exactRuns) {
@@ -448,28 +449,26 @@ function buildSyncRows(input: {
   );
 
   const streams = connector.streams.length > 0 ? connector.streams : [connector.connector_id];
-  const rows = streams.map(
-    (stream): SyncRow => {
-      const reportEntry = reportByStream.get(stream) ?? null;
-      return {
-        stream,
-        cadence,
-        next,
-        nextAt,
-        // `failed` is the connection-level last-run outcome, used only as a
-        // fallback for streams that have NO per-stream report. When a stream
-        // has its own collection_report entry, that per-stream truth governs
-        // its display, so the connection-level failure must not override it.
-        failed: lastFailed && reportEntry === null,
-        browseHref: browseStreamHref(connector.connection_id, stream),
-        // Per-stream facts from collection_report. Null when absent (honest
-        // empty state for pre-Tranche-C references).
-        collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
-        coverageCondition: reportEntry !== null ? reportEntry.coverage_condition : null,
-        streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
-      };
-    }
-  );
+  const rows = streams.map((stream): SyncRow => {
+    const reportEntry = reportByStream.get(stream) ?? null;
+    return {
+      stream,
+      cadence,
+      next,
+      nextAt,
+      // `failed` is the connection-level last-run outcome, used only as a
+      // fallback for streams that have NO per-stream report. When a stream
+      // has its own collection_report entry, that per-stream truth governs
+      // its display, so the connection-level failure must not override it.
+      failed: lastFailed && reportEntry === null,
+      browseHref: browseStreamHref(connector.connection_id, stream),
+      // Per-stream facts from collection_report. Null when absent (honest
+      // empty state for pre-Tranche-C references).
+      collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
+      coverageCondition: reportEntry === null ? null : reportEntry.coverage_condition,
+      streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
+    };
+  });
   return { rows, lastFailed, lastRun };
 }
 
@@ -606,11 +605,10 @@ export function buildSyncsViewModel(input: {
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
     const { rows, lastFailed, lastRun } = buildSyncRows({ connector, connectionRuns, failing });
-    const lastAt =
-      lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
+    const lastAt = lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
     const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
     const eventCount = lastRun ? lastRun.event_count : null;
-    const lastRunDelta = lastRun !== null ? describeDelta({ failed: lastFailed, eventCount }) : null;
+    const lastRunDelta = lastRun === null ? null : describeDelta({ failed: lastFailed, eventCount });
     const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
     const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
 
@@ -644,14 +642,10 @@ export function buildSyncsViewModel(input: {
   // virtualization threshold.
   const groups = ordered.map((projection) => projection.group);
   // visible subset (display)
-  const failureCards = ordered
-    .filter((projection) => projection.summary !== null)
-    .map(toFailureCard);
+  const failureCards = ordered.filter((projection) => projection.summary !== null).map(toFailureCard);
   const allGroups = projections.map((projection) => projection.group);
   // full population (counts)
-  const allFailureCards = projections
-    .filter((projection) => projection.summary !== null)
-    .map(toFailureCard);
+  const allFailureCards = projections.filter((projection) => projection.summary !== null).map(toFailureCard);
   // --- compute totals + return ---
   const totalStreamCount = allGroups.reduce((sum, group) => sum + group.totalStreamCount, 0);
   // The band must count the failure cards that are actually RENDERED below it

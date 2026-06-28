@@ -87,7 +87,13 @@ test("a duplicate stream name keeps the first entry", () => {
 test("collectionReportHasOpenGaps distinguishes clean completion from unresolved coverage", () => {
   assert.equal(
     collectionReportHasOpenGaps([
-      entry({ coverage_condition: "complete", considered: 1, collected: 0, covered: 1, forward_disposition: "owner_refresh_due" }),
+      entry({
+        coverage_condition: "complete",
+        considered: 1,
+        collected: 0,
+        covered: 1,
+        forward_disposition: "owner_refresh_due",
+      }),
     ]),
     false
   );
@@ -96,7 +102,9 @@ test("collectionReportHasOpenGaps distinguishes clean completion from unresolved
   assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "unknown" })]), true);
   assert.equal(collectionReportHasOpenGaps([entry({ coverage_condition: "complete", pending_detail_gaps: 1 })]), true);
   assert.equal(
-    collectionReportHasOpenGaps([entry({ coverage_condition: "complete", skipped: { reason: "qfx_download_failed" } })]),
+    collectionReportHasOpenGaps([
+      entry({ coverage_condition: "complete", skipped: { reason: "qfx_download_failed" } }),
+    ]),
     true
   );
 });

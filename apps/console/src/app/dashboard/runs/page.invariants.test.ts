@@ -74,10 +74,7 @@ test("syncs first-paint run feed is bounded to the overview budget", async () =>
   const limitMatch = src.match(SYNCS_OVERVIEW_RUN_LIMIT_RE);
 
   assert.ok(limitMatch, "runs page must name its first-paint run feed limit");
-  assert.ok(
-    Number(limitMatch[1]) <= 25,
-    "syncs overview must not hydrate a deep run history before first paint"
-  );
+  assert.ok(Number(limitMatch[1]) <= 25, "syncs overview must not hydrate a deep run history before first paint");
   assert.match(
     src,
     /listRuns\(\{\s*limit:\s*SYNCS_OVERVIEW_RUN_LIMIT\s*\}\)/,

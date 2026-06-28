@@ -5,7 +5,7 @@
 // route and it never returns the submitted secret. Owner-agent intent may point
 // at the owner-session capture page, but it never carries the credential itself.
 
-import { expectedStaticSecretCredentialKind, type ConnectorManifestLike } from "../connection-setup-plan.ts";
+import { type ConnectorManifestLike, expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
 import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
@@ -427,6 +427,181 @@ function parseCaptureBody(
   };
 }
 
+// Runs the synchronous credential probe when one is configured. Returns the
+// probed identity on success, null-with-side-effects on rejection (audit emitted,
+// error sent, draft retired), or `{ probedIdentity: null }` when the probe is
+// absent or skipped.
+async function runCredentialProbe(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: {
+    connectorInstanceId: string;
+    connectorId: string;
+    connectorKey: string;
+    credentialKind: string | null;
+    ownerSubjectId: string | null;
+    secret: string;
+  }
+): Promise<{ probedIdentity: { detail: string | null; identity: string } | null } | null> {
+  if (typeof ctx.probeStaticSecretCredential !== "function") {
+    return { probedIdentity: null };
+  }
+  const probeContext = await probeContextForInstance(ctx, args.connectorInstanceId);
+  const probeResult = await ctx.probeStaticSecretCredential({
+    connectorKey: args.connectorKey,
+    context: probeContext,
+    secret: args.secret,
+  });
+  if (!probeResult.ok) {
+    const now = ctx.now ? ctx.now() : new Date().toISOString();
+    await retireRejectedStaticSecretDraft(ctx, args.connectorInstanceId, now);
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: args.connectorInstanceId,
+      connectorId: args.connectorId,
+      credentialKind: args.credentialKind,
+      error: errWithCode(probeResult.code),
+      outcome: "failed",
+      ownerSubjectId: args.ownerSubjectId,
+    });
+    ctx.pdppError(res, 400, "static_secret_credential_rejected", probeResult.message);
+    return null;
+  }
+  if (probeResult.skipped === true) {
+    return { probedIdentity: null };
+  }
+  return { probedIdentity: { detail: probeResult.detail ?? null, identity: probeResult.identity } };
+}
+
+// Validates the expected credential kind for a namespace and that encryption is
+// configured. Emits audit + sends the error response on failure and returns
+// false; returns true when all checks pass.
+async function validateCredentialKind(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  credentialKind: string | null,
+  ownerSubjectId: string | null
+): Promise<boolean> {
+  const expectedKind = await expectedCredentialKindForConnector(ctx, namespace.connectorId);
+  if (!expectedKind) {
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: namespace.connectorInstanceId,
+      connectorId: namespace.connectorId,
+      credentialKind,
+      error: errWithCode("static_secret_credential_unsupported"),
+      outcome: "failed",
+      ownerSubjectId,
+    });
+    ctx.pdppError(
+      res,
+      409,
+      "static_secret_credential_unsupported",
+      `Connection '${namespace.connectorInstanceId}' belongs to connector '${namespace.connectorId}', which is not a static-secret connector.`
+    );
+    return false;
+  }
+  if (credentialKind !== expectedKind) {
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: namespace.connectorInstanceId,
+      connectorId: namespace.connectorId,
+      credentialKind,
+      error: errWithCode("credential_kind_mismatch"),
+      outcome: "failed",
+      ownerSubjectId,
+    });
+    ctx.pdppError(
+      res,
+      400,
+      "credential_kind_mismatch",
+      `credential_kind must be '${expectedKind}' for connector '${namespace.connectorId}'.`,
+      "credential_kind"
+    );
+    return false;
+  }
+  // Fail closed before probing when the instance-level credential key
+  // provider is missing: there is no point validating a credential we
+  // cannot store, and this preserves the existing 503
+  // `credential_encryption_key_missing` contract ahead of the probe.
+  if (!isCredentialEncryptionConfigured()) {
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: namespace.connectorInstanceId,
+      connectorId: namespace.connectorId,
+      credentialKind,
+      error: errWithCode("credential_encryption_key_missing"),
+      outcome: "failed",
+      ownerSubjectId,
+    });
+    ctx.pdppError(
+      res,
+      503,
+      "credential_encryption_key_missing",
+      "Credential encryption is required but no instance-level key provider is configured. Configure it before capturing a static-secret credential. No credential was validated or stored."
+    );
+    return false;
+  }
+  return true;
+}
+
+// Stores the validated credential and sends the success response.
+async function storeAndRespond(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: {
+    credentialKind: string | null;
+    namespace: ConnectorNamespace;
+    ownerSubjectId: string | null;
+    probedIdentity: { detail: string | null; identity: string } | null;
+    secret: string;
+  }
+): Promise<void> {
+  const store = ctx.createRequestConnectorInstanceCredentialStore();
+  const previous = await store.getMetadata(args.namespace.connectorInstanceId);
+  const now = ctx.now ? ctx.now() : new Date().toISOString();
+  const metadata = await store.capture({
+    connectorInstanceId: args.namespace.connectorInstanceId,
+    ownerSubjectId: args.ownerSubjectId ?? "",
+    credentialKind: args.credentialKind ?? "",
+    secret: args.secret,
+    now,
+  });
+  const rotated = Boolean(previous);
+  const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata);
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: args.namespace.connectorInstanceId,
+    connectorId: args.namespace.connectorId,
+    credentialKind: args.credentialKind,
+    outcome: "succeeded",
+    ownerSubjectId: args.ownerSubjectId,
+    rotated,
+  });
+  res.status(rotated ? 200 : 201).json({
+    object: "static_secret_credential_capture",
+    connection_id: args.namespace.connectorInstanceId,
+    connector_instance_id: args.namespace.connectorInstanceId,
+    connector_id: args.namespace.connectorId,
+    credential: projectCredentialMetadata(metadata),
+    auto_resume: autoResume,
+    // Non-secret account identity from a synchronous probe ("Connected as
+    // {identity}"). Null when the connector has no probe (first-sync path)
+    // or the probe returned no identity. Never carries the secret.
+    identity: args.probedIdentity
+      ? { account_identity: args.probedIdentity.identity, detail: args.probedIdentity.detail }
+      : null,
+    // Whether the credential was validated synchronously before storing.
+    validation: args.probedIdentity ? "synchronous" : "first_sync",
+    next_step: {
+      kind: "run_connection",
+      method: "POST",
+      url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
+      reason:
+        "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
+    },
+  });
+}
+
 // POST /_ref/connections/:connectorInstanceId/static-secret-credential
 //
 // Owner-session-only credential capture for one existing connection. The
@@ -465,64 +640,10 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           allowStatuses: ["active", "draft"],
           connectorInstanceId,
         });
-        const expectedKind = await expectedCredentialKindForConnector(ctx, namespace.connectorId);
-        if (!expectedKind) {
-          await emitCaptureAudit(ctx, req, res, {
-            connectionId: namespace.connectorInstanceId,
-            connectorId: namespace.connectorId,
-            credentialKind,
-            error: errWithCode("static_secret_credential_unsupported"),
-            outcome: "failed",
-            ownerSubjectId,
-          });
-          ctx.pdppError(
-            res,
-            409,
-            "static_secret_credential_unsupported",
-            `Connection '${namespace.connectorInstanceId}' belongs to connector '${namespace.connectorId}', which is not a static-secret connector.`
-          );
+        const kindOk = await validateCredentialKind(ctx, req, res, namespace, credentialKind, ownerSubjectId);
+        if (!kindOk) {
           return;
         }
-        if (credentialKind !== expectedKind) {
-          await emitCaptureAudit(ctx, req, res, {
-            connectionId: namespace.connectorInstanceId,
-            connectorId: namespace.connectorId,
-            credentialKind,
-            error: errWithCode("credential_kind_mismatch"),
-            outcome: "failed",
-            ownerSubjectId,
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "credential_kind_mismatch",
-            `credential_kind must be '${expectedKind}' for connector '${namespace.connectorId}'.`,
-            "credential_kind"
-          );
-          return;
-        }
-        // Fail closed before probing when the instance-level credential key
-        // provider is missing: there is no point validating a credential we
-        // cannot store, and this preserves the existing 503
-        // `credential_encryption_key_missing` contract ahead of the probe.
-        if (!isCredentialEncryptionConfigured()) {
-          await emitCaptureAudit(ctx, req, res, {
-            connectionId: namespace.connectorInstanceId,
-            connectorId: namespace.connectorId,
-            credentialKind,
-            error: errWithCode("credential_encryption_key_missing"),
-            outcome: "failed",
-            ownerSubjectId,
-          });
-          ctx.pdppError(
-            res,
-            503,
-            "credential_encryption_key_missing",
-            "Credential encryption is required but no instance-level key provider is configured. Configure it before capturing a static-secret credential. No credential was validated or stored."
-          );
-          return;
-        }
-
         // Synchronous validation moment (owner-journey flow design B1). When a
         // probe is injected, validate the credential against the provider BEFORE
         // storing it: a known-bad credential is rejected with a provider-named,
@@ -533,81 +654,23 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
         const probeConnectorKey = ctx.canonicalConnectorKey
           ? (ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId)
           : namespace.connectorId;
-        let probedIdentity: { detail: string | null; identity: string } | null = null;
-        if (typeof ctx.probeStaticSecretCredential === "function") {
-          const probeContext = await probeContextForInstance(ctx, namespace.connectorInstanceId);
-          const probeResult = await ctx.probeStaticSecretCredential({
-            connectorKey: probeConnectorKey,
-            context: probeContext,
-            secret: capture.secret,
-          });
-          if (!probeResult.ok) {
-            // Validation failed: do NOT store the credential or any of its
-            // metadata. If this was a first-time draft setup, retire the draft
-            // so it cannot become an invisible black-hole row. Active
-            // connections are left untouched so failed rotation attempts never
-            // revoke a working connection. Audit the rejection with the typed
-            // code only (no secret, no raw provider error). The owner sees the
-            // provider-named message and keeps their form context.
-            const now = ctx.now ? ctx.now() : new Date().toISOString();
-            await retireRejectedStaticSecretDraft(ctx, namespace.connectorInstanceId, now);
-            await emitCaptureAudit(ctx, req, res, {
-              connectionId: namespace.connectorInstanceId,
-              connectorId: namespace.connectorId,
-              credentialKind,
-              error: errWithCode(probeResult.code),
-              outcome: "failed",
-              ownerSubjectId,
-            });
-            ctx.pdppError(res, 400, "static_secret_credential_rejected", probeResult.message);
-            return;
-          }
-          if (probeResult.skipped !== true) {
-            probedIdentity = { detail: probeResult.detail ?? null, identity: probeResult.identity };
-          }
-        }
-        const store = ctx.createRequestConnectorInstanceCredentialStore();
-        const previous = await store.getMetadata(namespace.connectorInstanceId);
-        const now = ctx.now ? ctx.now() : new Date().toISOString();
-        const metadata = await store.capture({
+        const probeOutcome = await runCredentialProbe(ctx, req, res, {
           connectorInstanceId: namespace.connectorInstanceId,
-          ownerSubjectId,
-          credentialKind,
-          secret: capture.secret,
-          now,
-        });
-        const rotated = Boolean(previous);
-        const autoResume = await autoResumeAfterCredentialCapture(ctx, namespace, metadata);
-        await emitCaptureAudit(ctx, req, res, {
-          connectionId: namespace.connectorInstanceId,
           connectorId: namespace.connectorId,
+          connectorKey: probeConnectorKey,
           credentialKind,
-          outcome: "succeeded",
           ownerSubjectId,
-          rotated,
+          secret: capture.secret,
         });
-        res.status(rotated ? 200 : 201).json({
-          object: "static_secret_credential_capture",
-          connection_id: namespace.connectorInstanceId,
-          connector_instance_id: namespace.connectorInstanceId,
-          connector_id: namespace.connectorId,
-          credential: projectCredentialMetadata(metadata),
-          auto_resume: autoResume,
-          // Non-secret account identity from a synchronous probe ("Connected as
-          // {identity}"). Null when the connector has no probe (first-sync path)
-          // or the probe returned no identity. Never carries the secret.
-          identity: probedIdentity
-            ? { account_identity: probedIdentity.identity, detail: probedIdentity.detail }
-            : null,
-          // Whether the credential was validated synchronously before storing.
-          validation: probedIdentity ? "synchronous" : "first_sync",
-          next_step: {
-            kind: "run_connection",
-            method: "POST",
-            url: `/_ref/connections/${encodeURIComponent(namespace.connectorInstanceId)}/run`,
-            reason:
-              "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
-          },
+        if (probeOutcome === null) {
+          return;
+        }
+        await storeAndRespond(ctx, req, res, {
+          credentialKind,
+          namespace,
+          ownerSubjectId,
+          probedIdentity: probeOutcome.probedIdentity,
+          secret: capture.secret,
         });
       } catch (err) {
         await emitCaptureAudit(ctx, req, res, {

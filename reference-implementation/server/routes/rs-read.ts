@@ -392,7 +392,9 @@ function resolveRequestConnectionId(query: Readonly<Record<string, unknown>>): s
 
 function sourceIdentityValue(...values: unknown[]): string | null {
   for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
   }
   return null;
 }
@@ -405,7 +407,9 @@ function withRecordSourceIdentity(
     requestConnectionId: string | null;
   }
 ): unknown {
-  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return record;
+  }
   const connectorKey = sourceIdentityValue(refs.sourceDescriptor?.id, refs.storageBinding?.connector_id);
   const connectionId = sourceIdentityValue(refs.requestConnectionId, refs.storageBinding?.connector_instance_id);
   return {
@@ -940,6 +944,47 @@ function deriveServedSchemaCounts(
   return { connector_count: connectors.length, stream_count };
 }
 
+// Returns a structured error if `detail=full` constraints are violated, null otherwise.
+function buildFullDetailConstraintError(
+  explicitFullDetail: boolean,
+  streamScope: string | null,
+  connectionScope: string | null,
+  schemaResponse: unknown
+): (Error & { code?: string; param?: string; retry_with?: string; available_connections?: unknown[] }) | null {
+  if (!explicitFullDetail) {
+    return null;
+  }
+  if (!streamScope) {
+    const err = new Error(
+      'schema detail "full" requires `stream`; call /v1/schema?view=compact for global discovery, then /v1/schema?stream=<name>&connection_id=<cin>&detail=full for exhaustive detail.'
+    ) as Error & { code?: string; param?: string };
+    err.code = "invalid_request";
+    err.param = "detail";
+    return err;
+  }
+  if (!connectionScope) {
+    const sources = schemaSourceOptions(schemaResponse as Parameters<typeof schemaSourceOptions>[0], {
+      stream: streamScope,
+    });
+    if (sources.length > 1) {
+      const err = new Error(
+        `schema detail "full" for stream "${streamScope}" matches ${sources.length} sources; retry with connection_id to fetch one source's exhaustive schema.`
+      ) as Error & {
+        code?: string;
+        param?: string;
+        retry_with?: string;
+        available_connections?: unknown[];
+      };
+      err.code = "ambiguous_schema_detail";
+      err.param = "connection_id";
+      err.retry_with = "connection_id";
+      err.available_connections = sources;
+      return err;
+    }
+  }
+  return null;
+}
+
 // GET /v1/schema — one-shot capability/schema discovery for the bearer
 export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
   app.get("/v1/schema", { contract: "getSchema" }, ctx.requireToken, async (req: RouteRequest, res: RouteResponse) => {
@@ -992,34 +1037,15 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
         dependencies as unknown as SchemaGetDependencies
       );
 
-      if (explicitFullDetail && !streamScope) {
-        const err = new Error(
-          "schema detail \"full\" requires `stream`; call /v1/schema?view=compact for global discovery, then /v1/schema?stream=<name>&connection_id=<cin>&detail=full for exhaustive detail."
-        ) as Error & { code?: string; param?: string };
-        err.code = "invalid_request";
-        err.param = "detail";
+      const fullDetailErr = buildFullDetailConstraintError(
+        explicitFullDetail,
+        streamScope,
+        connectionScope,
+        result.response
+      );
+      if (fullDetailErr) {
         await ctx.emitQueryReceived(queryContext, req);
-        return await ctx.rejectQuery(res, req, queryContext, err);
-      }
-
-      if (explicitFullDetail && streamScope && !connectionScope) {
-        const sources = schemaSourceOptions(result.response, { stream: streamScope });
-        if (sources.length > 1) {
-          const err = new Error(
-            `schema detail "full" for stream "${streamScope}" matches ${sources.length} sources; retry with connection_id to fetch one source's exhaustive schema.`
-          ) as Error & {
-            code?: string;
-            param?: string;
-            retry_with?: string;
-            available_connections?: unknown[];
-          };
-          err.code = "ambiguous_schema_detail";
-          err.param = "connection_id";
-          err.retry_with = "connection_id";
-          err.available_connections = sources;
-          await ctx.emitQueryReceived(queryContext, req);
-          return await ctx.rejectQuery(res, req, queryContext, err);
-        }
+        return await ctx.rejectQuery(res, req, queryContext, fullDetailErr);
       }
 
       // Apply the compact projection (and optional stream scope) as a pure,
@@ -1143,7 +1169,7 @@ async function listOwnerStreamsForConnector(
 async function listExplicitPolyfillOwnerStreams(
   ctx: MountRsReadContext,
   req: RouteRequest,
-  ownerResolved: ResolvedManifest,
+  ownerResolved: ResolvedManifest
 ): Promise<Record<string, unknown>[]> {
   const requestParams = (req.query as Record<string, unknown>) || {};
   const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
@@ -1246,7 +1272,7 @@ async function buildStreamsListOwnerPlan(
     },
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
-      listSummaries: async () => {
+      listSummaries: () => {
         if (ownerScope.public_scope === "polyfill" || ownerScope.source?.kind === "connector") {
           return listExplicitPolyfillOwnerStreams(ctx, req, ownerResolved);
         }

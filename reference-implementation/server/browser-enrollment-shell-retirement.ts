@@ -16,8 +16,8 @@ import type { BrowserEnrollmentShellSourceBinding } from "./routes/ref-browser-e
 
 export interface EnrollmentShellLike {
   readonly connectorInstanceId: string;
-  readonly status: string;
   readonly sourceBinding?: Record<string, unknown> | null;
+  readonly status: string;
 }
 
 // Returns the connectorInstanceIds of browser-enrollment shells whose TTL has
@@ -26,18 +26,21 @@ export interface EnrollmentShellLike {
 // malformed `enrollment_expires_at` is treated conservatively as not-yet-
 // expired (the data-ops retirement contract applies only to shells with a
 // declared TTL).
-export function expiredEnrollmentShellIds(
-  shells: readonly EnrollmentShellLike[],
-  now: string
-): readonly string[] {
+export function expiredEnrollmentShellIds(shells: readonly EnrollmentShellLike[], now: string): readonly string[] {
   const nowMs = new Date(now).getTime();
   return shells
     .filter((shell) => {
-      if (shell.status !== "draft" && shell.status !== "active") return false;
+      if (shell.status !== "draft" && shell.status !== "active") {
+        return false;
+      }
       const binding = shell.sourceBinding as Partial<BrowserEnrollmentShellSourceBinding> | null;
-      if (binding?.kind !== "browser_enrollment_shell") return false;
+      if (binding?.kind !== "browser_enrollment_shell") {
+        return false;
+      }
       const expiresAt = binding.enrollment_expires_at;
-      if (typeof expiresAt !== "string") return false;
+      if (typeof expiresAt !== "string") {
+        return false;
+      }
       const expiresMs = new Date(expiresAt).getTime();
       return !Number.isNaN(expiresMs) && expiresMs <= nowMs;
     })

@@ -162,18 +162,15 @@ export interface MountRefConnectorsContext {
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
+  listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
+  listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly one
   // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /
   // rename / revoke / reactivate / delete). Injected (not imported) to match the
   // optional `invalidateConnectorSummariesCache` above; awaited at each call
   // site so ordering is explicit, best-effort, and a no-op until the read model
   // is warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
-  listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
-  listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   now?(): string;
   onScheduleMutation?(): Promise<unknown> | unknown;
   pdppError: PdppErrorFn;
@@ -612,11 +609,11 @@ function isSafeResourceStreamName(stream: string): boolean {
 function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
   const body = req.body;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
-    return undefined;
+    return;
   }
   const raw = (body as { resources?: unknown }).resources;
   if (raw == null) {
-    return undefined;
+    return;
   }
   if (!(typeof raw === "object" && !Array.isArray(raw))) {
     const err = new Error("run resources must be an object keyed by stream") as Error & { code: string };

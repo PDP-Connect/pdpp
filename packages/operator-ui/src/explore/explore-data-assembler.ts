@@ -1261,128 +1261,44 @@ function timeRangeStreamTargets(
   return targets;
 }
 
-async function loadTimeRangeFeed(
-  since: string,
-  until: string,
-  filteredSummaries: RefConnectorSummary[],
-  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
-  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
-  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
-  filterStreams: ReadonlySet<string>,
-  // EXCLUDE scope ("is not" / `-con:`/`-stream:`): skip excluded connections + streams
-  // at the fetch source so the time-range feed honors "everything except X".
-  exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> },
-  dataSource: DashboardDataSource
-): Promise<FeedLoadResult> {
-  // Time-anchored cross-stream feed. Connection-first so row attribution stays exact.
-  const sinceMs = since ? Date.parse(since) : null;
-  const untilMs = until ? Date.parse(until) : null;
-
-  type StreamFetchResult =
-    | {
-        ok: true;
-        connectionId: string;
-        connectorId: string;
-        displayName: string;
-        stream: string;
-        entries: ExplorerFeedEntry[];
-        exactWindow: RecordsWindowMeta | null;
-        hasMore: boolean;
-        warning: ExplorerWarning | null;
-      }
-    | { ok: false; failure: FanInFailure };
-  const fetches: Promise<StreamFetchResult>[] = [];
-
-  for (const summary of filteredSummaries) {
-    // EXCLUDE: skip an excluded connection entirely (by either identity).
-    if (
-      exclude.instanceIds.size > 0 &&
-      (exclude.instanceIds.has(summary.connector_instance_id ?? summary.connection_id) ||
-        exclude.instanceIds.has(summary.connection_id))
-    ) {
-      continue;
+type StreamFetchResult =
+  | {
+      ok: true;
+      connectionId: string;
+      connectorId: string;
+      displayName: string;
+      stream: string;
+      entries: ExplorerFeedEntry[];
+      exactWindow: RecordsWindowMeta | null;
+      hasMore: boolean;
+      warning: ExplorerWarning | null;
     }
-    for (const { consentTimeField, streamName } of timeRangeStreamTargets(summary, timestampMetadata, filterStreams)) {
-      // EXCLUDE: skip an excluded stream.
-      if (exclude.streams.size > 0 && exclude.streams.has(streamName)) {
-        continue;
-      }
-      fetches.push(
-        (async (): Promise<StreamFetchResult> => {
-          const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
-          const [{ metadata, warning }, page] = await Promise.all([
-            loadStreamUiMetadata(
-              dataSource,
-              summary,
-              streamName,
-              declaredFieldTypes.get(metaKey),
-              manifestFieldNames.get(metaKey)
-            ),
-            dataSource.queryRecords(summary.connector_id, streamName, {
-              connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-              limit: TIME_RANGE_RECORDS_PER_STREAM,
-              order: "desc",
-              window: "exact",
-            }),
-          ]);
-          return {
-            ok: true,
-            connectionId: summary.connection_id,
-            connectorId: summary.connector_id,
-            displayName: connectorSummaryDisplayName(summary),
-            stream: streamName,
-            entries: page.data
-              .map((record) =>
-                toTimeRangeEntry({
-                  consentTimeField,
-                  data: recordData(record.data),
-                  declaredFieldTypes: metadata.declaredFieldTypes,
-                  fieldCapabilities: metadata.fieldCapabilities,
-                  emittedAt: record.emitted_at,
-                  recordId: record.id,
-                  sinceMs,
-                  streamName,
-                  summary,
-                  untilMs,
-                })
-              )
-              .filter((entry): entry is ExplorerFeedEntry => entry !== null),
-            exactWindow: exactWindowFromPage(page),
-            hasMore: page.has_more,
-            warning,
-          };
-        })().catch((err): StreamFetchResult => {
-          const { expected, reason } = classifyFanInFailure(err);
-          return {
-            ok: false,
-            failure: {
-              connectionName: connectorSummaryDisplayName(summary),
-              expected,
-              reason,
-              stream: streamName,
-            },
-          };
-        })
-      );
-    }
-  }
+  | { ok: false; failure: FanInFailure };
 
-  const results = await Promise.all(fetches);
+interface StreamInfo {
+  connectionId: string;
+  connectorId: string;
+  displayName: string;
+  hasMore: boolean;
+  stream: string;
+  total: number | null;
+}
+
+interface CollectedStreamResults {
+  entries: ExplorerFeedEntry[];
+  exactWindows: RecordsWindowMeta[];
+  failures: FanInFailure[];
+  okCount: number;
+  streamInfos: StreamInfo[];
+  warnings: ExplorerWarning[];
+}
+
+function collectStreamFetchResults(results: StreamFetchResult[]): CollectedStreamResults {
   const entries: ExplorerFeedEntry[] = [];
   const exactWindows: RecordsWindowMeta[] = [];
   const warnings: ExplorerWarning[] = [];
   const failures: FanInFailure[] = [];
-
-  interface StreamInfo {
-    connectionId: string;
-    connectorId: string;
-    displayName: string;
-    hasMore: boolean;
-    stream: string;
-    total: number | null;
-  }
   const streamInfos: StreamInfo[] = [];
-
   let okCount = 0;
   for (const result of results) {
     if (result.ok) {
@@ -1406,6 +1322,125 @@ async function loadTimeRangeFeed(
       failures.push(result.failure);
     }
   }
+  return { entries, exactWindows, failures, okCount, streamInfos, warnings };
+}
+
+async function fetchOneTimeRangeStream(
+  summary: RefConnectorSummary,
+  streamName: string,
+  consentTimeField: string,
+  sinceMs: number | null,
+  untilMs: number | null,
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
+  dataSource: DashboardDataSource
+): Promise<StreamFetchResult> {
+  try {
+    const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
+    const [{ metadata, warning }, page] = await Promise.all([
+      loadStreamUiMetadata(
+        dataSource,
+        summary,
+        streamName,
+        declaredFieldTypes.get(metaKey),
+        manifestFieldNames.get(metaKey)
+      ),
+      dataSource.queryRecords(summary.connector_id, streamName, {
+        connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+        limit: TIME_RANGE_RECORDS_PER_STREAM,
+        order: "desc",
+        window: "exact",
+      }),
+    ]);
+    return {
+      ok: true,
+      connectionId: summary.connection_id,
+      connectorId: summary.connector_id,
+      displayName: connectorSummaryDisplayName(summary),
+      stream: streamName,
+      entries: page.data
+        .map((record) =>
+          toTimeRangeEntry({
+            consentTimeField,
+            data: recordData(record.data),
+            declaredFieldTypes: metadata.declaredFieldTypes,
+            fieldCapabilities: metadata.fieldCapabilities,
+            emittedAt: record.emitted_at,
+            recordId: record.id,
+            sinceMs,
+            streamName,
+            summary,
+            untilMs,
+          })
+        )
+        .filter((entry): entry is ExplorerFeedEntry => entry !== null),
+      exactWindow: exactWindowFromPage(page),
+      hasMore: page.has_more,
+      warning,
+    };
+  } catch (err) {
+    const { expected, reason } = classifyFanInFailure(err);
+    return {
+      ok: false,
+      failure: {
+        connectionName: connectorSummaryDisplayName(summary),
+        expected,
+        reason,
+        stream: streamName,
+      },
+    };
+  }
+}
+
+async function loadTimeRangeFeed(
+  since: string,
+  until: string,
+  filteredSummaries: RefConnectorSummary[],
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
+  filterStreams: ReadonlySet<string>,
+  // EXCLUDE scope ("is not" / `-con:`/`-stream:`): skip excluded connections + streams
+  // at the fetch source so the time-range feed honors "everything except X".
+  exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> },
+  dataSource: DashboardDataSource
+): Promise<FeedLoadResult> {
+  // Time-anchored cross-stream feed. Connection-first so row attribution stays exact.
+  const sinceMs = since ? Date.parse(since) : null;
+  const untilMs = until ? Date.parse(until) : null;
+  const fetches: Promise<StreamFetchResult>[] = [];
+
+  for (const summary of filteredSummaries) {
+    // EXCLUDE: skip an excluded connection entirely (by either identity).
+    if (
+      exclude.instanceIds.size > 0 &&
+      (exclude.instanceIds.has(summary.connector_instance_id ?? summary.connection_id) ||
+        exclude.instanceIds.has(summary.connection_id))
+    ) {
+      continue;
+    }
+    for (const { consentTimeField, streamName } of timeRangeStreamTargets(summary, timestampMetadata, filterStreams)) {
+      // EXCLUDE: skip an excluded stream.
+      if (exclude.streams.size > 0 && exclude.streams.has(streamName)) {
+        continue;
+      }
+      fetches.push(
+        fetchOneTimeRangeStream(
+          summary,
+          streamName,
+          consentTimeField,
+          sinceMs,
+          untilMs,
+          declaredFieldTypes,
+          manifestFieldNames,
+          dataSource
+        )
+      );
+    }
+  }
+
+  const results = await Promise.all(fetches);
+  const { entries, exactWindows, failures, okCount, streamInfos, warnings } = collectStreamFetchResults(results);
   warnings.push(...summarizeFanInFailures(failures));
   entries.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
   const truncated = entries.length > TIME_RANGE_TOTAL_CAP;
@@ -2724,6 +2759,43 @@ function computeBucketRequest(args: {
   };
 }
 
+// Parse the pagination and cursor state from URL search params.
+// Extracted from assembleExplorerData to keep that function within its complexity budget.
+function parsePageParams(
+  params: ExplorerSearchParams,
+  query: string,
+  supportsTimelineDirection: boolean
+): {
+  searchSort: "relevance" | "recent";
+  feedDirection: "asc" | "desc";
+  searchCursor: string | null;
+  cursorTrail: string[];
+  upcomingTrail: string[];
+  rawAnchor: string | null;
+  isFirstPage: boolean;
+  snapshotAnchorFallback: string | null;
+} {
+  const searchSort: "relevance" | "recent" = params.search_sort === "recent" ? "recent" : "relevance";
+  // "oldest" direction is only active when the server explicitly supports true ascending keyset paging.
+  const feedDirection: "asc" | "desc" = supportsTimelineDirection && params.order === "oldest" ? "asc" : "desc";
+  const searchCursor = typeof params.cursor === "string" && params.cursor.length > 0 ? params.cursor : null;
+  const cursorTrail = parseCursorTrail(params.cursors);
+  const upcomingTrail = parseCursorTrail(params.ucursors);
+  const rawAnchor = typeof params.anchor === "string" && params.anchor.length > 0 ? params.anchor : null;
+  const isFirstPage = !(searchCursor || cursorTrail.length > 0 || rawAnchor);
+  const snapshotAnchorFallback = rawAnchor ?? (query ? null : new Date().toISOString());
+  return {
+    searchSort,
+    feedDirection,
+    searchCursor,
+    cursorTrail,
+    upcomingTrail,
+    rawAnchor,
+    isFirstPage,
+    snapshotAnchorFallback,
+  };
+}
+
 /**
  * Assemble the data the Explorer canvas renders.
  */
@@ -2776,36 +2848,17 @@ export async function assembleExplorerData(
     ? new Set<string>()
     : unionServerFilterableFields(filteredSummaries, filterStreamSet, serverFilterableFields);
 
-  // Search sort mode: "relevance" (default) or "recent" (chronological).
-  // Only meaningful when query is set; ignored for recency/time-range feeds.
-  const searchSort: "relevance" | "recent" = params.search_sort === "recent" ? "recent" : "relevance";
   const supportsTimelineDirection = (await dataSource.supportsExploreTimelineDirection?.()) ?? false;
-  // Feed direction for the empty-query recent lens: "oldest" is only active when
-  // the server explicitly supports true ascending keyset paging. Before that
-  // foundation exists, a manual `order=oldest` URL no-ops to newest-first.
-  const feedDirection: "asc" | "desc" = supportsTimelineDirection && params.order === "oldest" ? "asc" : "desc";
-  // Opaque cursor: the SINGLE-page cursor for search pagination (lexical / single
-  // -stream Most-recent). The recent merged-timeline lens instead accumulates via
-  // the `cursors` TRAIL below. Both are cleared when query/sort/filters/range change.
-  const searchCursor = typeof params.cursor === "string" && params.cursor.length > 0 ? params.cursor : null;
-  // Recent-lens accumulating cursor trail (`cursors=c1,c2,…`): each `next_cursor`
-  // produced so far, in order. Mirrors the per-stream pager's `cursors` param but
-  // CONCATENATES pages instead of replacing. Empty = first page.
-  const cursorTrail = parseCursorTrail(params.cursors);
-  // Upcoming (future) accumulating trail (`ucursors=u1,u2,…`): each
-  // `upcoming_next_cursor` so far, walking the future projection to exhaustion.
-  // Empty = the page-1 upcoming head only. Reset whenever the feed resets.
-  const upcomingTrail = parseCursorTrail(params.ucursors);
-
-  // P3 point-in-time anchor. On first load (no anchor in URL) the real
-  // /_ref/explore/records endpoint supplies `snapshot_at`; we forward it in the
-  // URL on subsequent pages for stability. The fan-out fallback synthesises a
-  // local timestamp. On search feeds, no anchor is maintained.
-  const rawAnchor = typeof params.anchor === "string" && params.anchor.length > 0 ? params.anchor : null;
-  // First load = no search cursor, no recent-lens trail, and no carried anchor.
-  const isFirstPage = !(searchCursor || cursorTrail.length > 0 || rawAnchor);
-  // Placeholder; overridden below once feedResult is available.
-  const snapshotAnchorFallback = rawAnchor ?? (query ? null : new Date().toISOString());
+  const {
+    searchSort,
+    feedDirection,
+    searchCursor,
+    cursorTrail,
+    upcomingTrail,
+    rawAnchor,
+    isFirstPage,
+    snapshotAnchorFallback,
+  } = parsePageParams(params, query, supportsTimelineDirection);
 
   const [feedDispatch, peek] = await Promise.all([
     dispatchFeed({

@@ -33,7 +33,12 @@ export function isRunActive(envelopeTerminal: EnvelopeTerminalStatus | null): bo
  * handle surface instead.
  */
 export function isRunHandleActive(status: RunHandleStatus | null): boolean {
-  return status === "active" || status === "leased" || status === "starting_surface" || status === "waiting_for_browser_surface";
+  return (
+    status === "active" ||
+    status === "leased" ||
+    status === "starting_surface" ||
+    status === "waiting_for_browser_surface"
+  );
 }
 
 /**

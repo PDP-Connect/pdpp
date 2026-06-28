@@ -125,21 +125,18 @@ export interface MountOwnerConnectionRunContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
-  // Marks the maintained connector-summary read-model evidence for exactly this
-  // connection dirty after the run starts. Injected (not imported) to match the
-  // optional `invalidateConnectorSummariesCache` above; awaited at the call site
-  // so ordering is explicit, best-effort, and a no-op until the read model is
-  // warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
   }): Promise<ActiveBinding[]> | ActiveBinding[];
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the run starts. Injected (not imported) to match the
+  // optional `invalidateConnectorSummariesCache` above; awaited at the call site
+  // so ordering is explicit, best-effort, and a no-op until the read model is
+  // warmed.
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   pdppError: PdppErrorFn;
   // Projects one active binding to the wire `{ connection_id, display_name? }`
   // shape used in `available_connections` (placeholder labels suppressed).
@@ -346,11 +343,11 @@ function isSafeResourceStreamName(stream: string): boolean {
 function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
   const body = req.body;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
-    return undefined;
+    return;
   }
   const raw = (body as { resources?: unknown }).resources;
   if (raw == null) {
-    return undefined;
+    return;
   }
   if (!(typeof raw === "object" && !Array.isArray(raw))) {
     const err = new Error("run resources must be an object keyed by stream") as Error & { code: string };

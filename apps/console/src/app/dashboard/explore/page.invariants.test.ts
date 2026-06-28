@@ -213,8 +213,7 @@ const CANVAS_MATCH_EXCERPT_MARK_RE = /<span className="rr-x-mark">Match<\/span>/
 // the `entry.retrievalMode` DATA FIELD stays (it gates the match excerpt + search order).
 // We grep for the specific render expressions, NOT the word "retrieval" (which survives in
 // retained comments/identifiers), so the data-field use cannot trip these guards.
-const CANVAS_ROW_REL_BADGE_RENDER_RE =
-  /<span className="rr-x-row__rel">\{entry\.retrievalMode\}<\/span>/;
+const CANVAS_ROW_REL_BADGE_RENDER_RE = /<span className="rr-x-row__rel">\{entry\.retrievalMode\}<\/span>/;
 const LEGACY_RETRIEVAL_BADGE_COMPONENT_RE = /function RetrievalBadge\(/;
 const LEGACY_RETRIEVAL_BADGE_RENDER_RE = /<RetrievalBadge\b/;
 // The L4 search-fallback warning must carry the honest code/message and no engine word.
@@ -462,17 +461,14 @@ test("honesty-copy: the search-fallback warning uses non-engine copy (L4)", asyn
 // We extract the `message:` line that FOLLOWS each `code: "<code>"` line so the
 // guard targets ONLY the owner-rendered string, never the sibling console.warn
 // debug line (which legitimately interpolates describeError(err) / peek.error).
-const WARNING_CODES_UNDER_GUARD = [
-  "search_meta_warning",
-  "search_cursor_unavailable",
-  "peek_unreachable",
-] as const;
+const WARNING_CODES_UNDER_GUARD = ["search_meta_warning", "search_cursor_unavailable", "peek_unreachable"] as const;
 
 // Implementation/engine nouns that must never reach an owner-facing message.
 const IMPL_NOUN_RE =
   /grant projection|blob affordance|stream metadata unavailable|Most-recent mode failed|Peek read failed|Most-recent mode/i;
 // Raw-error / internal-path interpolation that must never reach a message.
-const RAW_ERROR_INTERP_RE = /\$\{describeError\(|\$\{peek\.error\}|\$\{peek\.connectorId\}|\$\{peek\.stream\}|\$\{peek\.recordId\}/;
+const RAW_ERROR_INTERP_RE =
+  /\$\{describeError\(|\$\{peek\.error\}|\$\{peek\.connectorId\}|\$\{peek\.stream\}|\$\{peek\.recordId\}/;
 // First `message:` string literal following a `code: "..."` line.
 const MESSAGE_LITERAL_RE = /message:\s*(`[^`]*`|"[^"]*"|'[^']*')/;
 // The raw error/path must still be logged server-side (debug evidence preserved).
@@ -515,7 +511,11 @@ test("honesty-copy: the raw error for sibling warnings is preserved as server-si
   const assembler = await readFile(ASSEMBLER_FILE, "utf8");
   // Each fixed warning still logs its raw error/path server-side so debugging
   // does not regress — the detail simply moved out of the rendered message.
-  assert.match(assembler, META_WARNING_LOG_RE, "search_meta_warning must still log describeError(err) via console.warn");
+  assert.match(
+    assembler,
+    META_WARNING_LOG_RE,
+    "search_meta_warning must still log describeError(err) via console.warn"
+  );
   assert.match(
     assembler,
     CURSOR_WARNING_LOG_RE,

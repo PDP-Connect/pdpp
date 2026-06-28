@@ -16,6 +16,9 @@ export {
   buildNekoSafeClientDescriptor,
   NEKO_BACKEND_CAPABILITIES,
   parseNekoSafeClientDescriptor,
+  NekoSurfaceAllocatorClient,
+  NekoSurfaceAllocatorError,
+  createNekoSurfaceAllocatorClient,
 } from "./backends/neko/index.ts";
 export {
   buildCdpSafeClientDescriptor,

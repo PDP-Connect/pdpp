@@ -66,7 +66,9 @@ function grantClientCaption(grant: GrantSummary): string | null {
   if (!clientId) {
     return null;
   }
-  return clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`);
+  return (
+    clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`)
+  );
 }
 
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
@@ -258,7 +260,10 @@ function GrantRow({
           <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
           <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           {clientCaption ? (
-            <span className="pdpp-caption max-w-[20ch] truncate text-muted-foreground" title={grant.client_id ?? undefined}>
+            <span
+              className="pdpp-caption max-w-[20ch] truncate text-muted-foreground"
+              title={grant.client_id ?? undefined}
+            >
               {clientCaption}
             </span>
           ) : null}

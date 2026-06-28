@@ -215,10 +215,7 @@ test("typeahead SEARCH-fallback is absent when fragment is empty", () => {
     hasImageActive: false,
     hasLinkActive: false,
   });
-  assert.ok(
-    !suggestions.some((s) => s.kind === "search"),
-    "no SEARCH fallback when fragment is empty"
-  );
+  assert.ok(!suggestions.some((s) => s.kind === "search"), "no SEARCH fallback when fragment is empty");
 });
 
 test("typeahead SEARCH-fallback carries SEARCH section label when it is the only suggestion", () => {

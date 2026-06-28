@@ -295,9 +295,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsDeleteDeleteVersionCounterByConnector: MutationQuery;
   readonly recordsDeleteDeleteVersionCounterByStream: MutationQuery;
   readonly recordsDeleteListDistinctStreamsByConnector: SmallEnumerationQuery;
+  readonly recordsGetFieldWindow: ReadOneQuery;
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
-  readonly recordsGetFieldWindow: ReadOneQuery;
   readonly recordsGetRetainedByConnectorInstance: ReadOneQuery;
   // Records — ingest path: read/write of records, record_changes, version_counter.
   readonly recordsIngestAllocateNextVersion: MutationReturningOneQuery;
@@ -391,10 +391,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly sourceWebhooksClaimEvent: MutationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
+  readonly spineGetRunLatestCollectionRateEvent: ReadOneQuery;
   // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
   readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
-  readonly spineGetRunLatestCollectionRateEvent: ReadOneQuery;
   // Spine — append and correlation search.
   readonly spineInsertEvent: MutationQuery;
   readonly spineListEventsByGrantId: ReadManyQuery;
@@ -712,8 +712,8 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsIngestInsertRecordChangeUpsert",
     "recordsIngestPruneRecordChanges",
     // Records — point reads.
-  "recordsGetLiveRecordByKey",
-  "recordsGetFieldWindow",
+    "recordsGetLiveRecordByKey",
+    "recordsGetFieldWindow",
     // Records — change-log snapshot/page.
     "recordsSnapshotsGetSnapshotAtVersion",
     "recordsSnapshotsGetMinRecordChangeVersion",

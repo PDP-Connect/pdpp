@@ -148,22 +148,19 @@ export interface MountOwnerConnectionRevokeContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
-  // Marks the maintained connector-summary read-model evidence for exactly this
-  // connection dirty after the revoke mutation commits. Injected (not imported)
-  // to match the route-family decoupling pattern and the optional
-  // `invalidateConnectorSummariesCache` above. Awaited at the call site so
-  // ordering is explicit rather than hidden in a fire-and-forget promise;
-  // best-effort and a no-op until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
   }): Promise<ActiveBinding[]> | ActiveBinding[];
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the revoke mutation commits. Injected (not imported)
+  // to match the route-family decoupling pattern and the optional
+  // `invalidateConnectorSummariesCache` above. Awaited at the call site so
+  // ordering is explicit rather than hidden in a fire-and-forget promise;
+  // best-effort and a no-op until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   // Wall-clock stamp for the `updated_at` / `revoked_at` recorded on the soft
   // flip. Injected so the route stays deterministic under test and so this
   // module does not import a clock. Defaults to `new Date().toISOString()`.

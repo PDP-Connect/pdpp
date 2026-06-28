@@ -17,14 +17,17 @@ const CONTEXT_PROVIDER = /const CommandPaletteContext = createContext<CommandPal
 const CONTEXT_HOOK = /function useCommandPalette\(\): CommandPaletteContextValue/;
 const TRIGGER_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*onClick=\{palette\.open\}/;
 const PALETTE_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*if \(!palette\.isOpen\)/;
-const LAYOUT_PROVIDER_WRAP = /<CommandPaletteProvider>[\s\S]*\{children\}[\s\S]*<CommandPalette basePath="\/dashboard" mode="live" \/>[\s\S]*<\/CommandPaletteProvider>/;
+const LAYOUT_PROVIDER_WRAP =
+  /<CommandPaletteProvider>[\s\S]*\{children\}[\s\S]*<CommandPalette basePath="\/dashboard" mode="live" \/>[\s\S]*<\/CommandPaletteProvider>/;
 const SHELL_BRIDGE_USES_CONTEXT = /const \{ toggle \} = useCommandPalette\(\)/;
 const SHELL_BRIDGE_WIRES_JUMP = /<RecordroomShell build=\{build\} host=\{host\} onJump=\{toggle\}>/;
 const PALETTE_USES_REGISTRY = /import \{[^}]*\blistDashboardCommands\b[^}]*\} from "\.\.\/lib\/actions\.ts"/;
 const NAV_ITEM_RE = (label: string, href: string) =>
   new RegExp(`\\{\\s*label:\\s*["']${label}["'],\\s*href:\\s*["']${href.replaceAll("/", "\\/")}["']\\s*\\}`);
 const NAV_GROUP_RE = (heading: string, labels: string[]) =>
-  new RegExp(`heading:\\s*["']${heading}["'][\\s\\S]*${labels.map((label) => `label:\\s*["']${label}["']`).join("[\\s\\S]*")}`);
+  new RegExp(
+    `heading:\\s*["']${heading}["'][\\s\\S]*${labels.map((label) => `label:\\s*["']${label}["']`).join("[\\s\\S]*")}`
+  );
 
 test("command palette uses React context, not a module-level mutable opener", async () => {
   const src = await readFile(COMMAND_PALETTE_FILE, "utf8");

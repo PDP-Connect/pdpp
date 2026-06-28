@@ -118,11 +118,12 @@ export default async function RunDetailPage({
   // reading (it distinguishes owner-cancelled crashes via the failure
   // reason and succeeded-with-gaps); otherwise fall back to the envelope's
   // raw class mapped to the page's display type.
-  const displayTerminalStatus = resolveDisplayTerminalStatus({
-    coverageGapCount: gapClassification.coverageGaps.length,
-    envelopeTerminal,
-    inPageTerminalStatus,
-  }) ?? mapRunHandleStatusToDisplay(runStatus?.status ?? null);
+  const displayTerminalStatus =
+    resolveDisplayTerminalStatus({
+      coverageGapCount: gapClassification.coverageGaps.length,
+      envelopeTerminal,
+      inPageTerminalStatus,
+    }) ?? mapRunHandleStatusToDisplay(runStatus?.status ?? null);
   const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const failureRows = summarizeFailure(failure, runStatus);

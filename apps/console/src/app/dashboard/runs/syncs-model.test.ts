@@ -124,7 +124,9 @@ function connectorRun(overrides: Partial<NonNullable<RefConnectorSummary["last_r
   } satisfies NonNullable<RefConnectorSummary["last_run"]>;
 }
 
-function collectionEntry(overrides: Partial<RefCollectionReportEntry> & Pick<RefCollectionReportEntry, "stream">): RefCollectionReportEntry {
+function collectionEntry(
+  overrides: Partial<RefCollectionReportEntry> & Pick<RefCollectionReportEntry, "stream">
+): RefCollectionReportEntry {
   return {
     checkpoint: "ok",
     collected: 0,
@@ -429,7 +431,11 @@ test("a broken connector does not rewrite a successful last run into sync failed
   const group = model.groups[0];
   assert.equal(group?.health, "failing", "the group still shows the current connector state");
   assert.equal(group?.lastRunDelta, "+52 records", "last result remains the successful run fact");
-  assert.equal(group?.streams[0]?.failed, false, "row failure style follows the actual last run, not the current verdict");
+  assert.equal(
+    group?.streams[0]?.failed,
+    false,
+    "row failure style follows the actual last run, not the current verdict"
+  );
   assert.equal(group?.streams[0]?.next, "held", "the current verdict still blocks future collection");
   assert.deepEqual(group?.lastRunRhythm, ["ok"], "rhythm agrees with the successful last run");
 });
@@ -889,7 +895,12 @@ test("connection-level last-run facts live on the group, not on each stream row"
         connection_id: "cin_chase",
         connector_id: "chase",
         display_name: "Chase",
-        last_run: connectorRun({ event_count: 99, status: "succeeded", first_at: "2026-06-13T04:00:00Z", last_at: "2026-06-13T04:00:06Z" }),
+        last_run: connectorRun({
+          event_count: 99,
+          status: "succeeded",
+          first_at: "2026-06-13T04:00:00Z",
+          last_at: "2026-06-13T04:00:06Z",
+        }),
         streams: ["transactions", "balances"],
       }),
     ],
@@ -1015,10 +1026,22 @@ test("a stream with a real collected count keeps its per-stream truth when the c
   // its per-stream truth and is NOT marked failed, even though the connection
   // run's status is "failed". Streams without a report entry carry no
   // per-stream collected value (null) and defer to the connection-level flag.
-  assert.equal(byStream.get("messages")?.failed, false, "a stream with its own report is not marked failed by the connection");
+  assert.equal(
+    byStream.get("messages")?.failed,
+    false,
+    "a stream with its own report is not marked failed by the connection"
+  );
   assert.equal(byStream.get("messages")?.collectedThisRun, 500, "its real per-stream collected count is preserved");
-  assert.equal(byStream.get("labels")?.failed, true, "a stream with no report falls back to the connection-level failure");
-  assert.equal(byStream.get("labels")?.collectedThisRun, null, "a stream with no report shows no fabricated per-stream count");
+  assert.equal(
+    byStream.get("labels")?.failed,
+    true,
+    "a stream with no report falls back to the connection-level failure"
+  );
+  assert.equal(
+    byStream.get("labels")?.collectedThisRun,
+    null,
+    "a stream with no report shows no fabricated per-stream count"
+  );
 });
 
 test("the health band counts only the failure cards actually rendered, not advisories on collapsed duplicate groups", () => {

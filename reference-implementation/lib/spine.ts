@@ -205,11 +205,11 @@ export interface SpineClientMetadata {
 export interface SpineSummary {
   actor_id: string;
   actor_type: string;
-  client?: SpineClientMetadata | null;
   browser_surface_lease_id?: string;
   browser_surface_profile_key?: string;
   browser_surface_status?: string;
   browser_surface_wait_reason?: string;
+  client?: SpineClientMetadata | null;
   client_id: string | null;
   connection_id?: string | null;
   connector_id: string | null;
@@ -1384,17 +1384,23 @@ interface RegisteredClientMetadataRow {
 
 function clientMetadataFromOAuthRow(row: RegisteredClientMetadataRow): SpineClientMetadata {
   const metadata = safeJsonParse(row.metadata_json, {}) as Record<string, unknown>;
-  const clientName = typeof metadata.client_name === "string" && metadata.client_name.trim() ? metadata.client_name.trim() : null;
+  const clientName =
+    typeof metadata.client_name === "string" && metadata.client_name.trim() ? metadata.client_name.trim() : null;
   return {
     client_id: row.client_id,
     client_name: clientName,
-    registration_mode: typeof row.registration_mode === "string" && row.registration_mode ? row.registration_mode : null,
+    registration_mode:
+      typeof row.registration_mode === "string" && row.registration_mode ? row.registration_mode : null,
   };
 }
 
 function attachClientMetadata(summaries: readonly SpineSummary[]): void {
   const clientIds = Array.from(
-    new Set(summaries.map((s) => s.client_id).filter((value): value is string => typeof value === "string" && value.length > 0))
+    new Set(
+      summaries
+        .map((s) => s.client_id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+    )
   );
   if (clientIds.length === 0) {
     return;

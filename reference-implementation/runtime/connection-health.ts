@@ -2823,7 +2823,9 @@ function isCompleteTransientDeadLetterSummary(
     return false;
   }
   const summarizedCount = classes.reduce((total, item) => total + Math.max(0, item.count), 0);
-  return summarizedCount >= deadLetterCount && classes.every((item) => isTransientDeadLetterErrorClass(item.error_class));
+  return (
+    summarizedCount >= deadLetterCount && classes.every((item) => isTransientDeadLetterErrorClass(item.error_class))
+  );
 }
 
 function isTransientDeadLetterErrorClass(errorClass: string): boolean {

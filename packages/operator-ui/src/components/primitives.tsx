@@ -332,19 +332,16 @@ export function Callout({
   let descColorClass: string;
 
   if (tone === "info") {
-    containerClass =
-      "rounded-md border px-4 py-3 bg-callout-info-bg border-callout-info-border";
+    containerClass = "rounded-md border px-4 py-3 bg-callout-info-bg border-callout-info-border";
     titleColorClass = "text-callout-info-fg";
     descColorClass = "text-callout-info-fg/80";
   } else if (tone === "warning") {
-    containerClass =
-      "rounded-md border px-4 py-3 bg-callout-warning-bg border-callout-warning-border";
+    containerClass = "rounded-md border px-4 py-3 bg-callout-warning-bg border-callout-warning-border";
     titleColorClass = "text-callout-warning-fg";
     descColorClass = "text-callout-warning-fg/80";
   } else {
     const surfaceAttr = surface === "neutral" ? undefined : surface;
-    const neutralClass =
-      surface === "neutral" ? "border-border/80 bg-muted/30 border rounded-md" : "rounded-md";
+    const neutralClass = surface === "neutral" ? "border-border/80 bg-muted/30 border rounded-md" : "rounded-md";
     containerClass = neutralClass;
     titleColorClass = "text-foreground";
     descColorClass = "text-muted-foreground";
@@ -356,9 +353,7 @@ export function Callout({
             {action ? <div className="pdpp-caption">{action}</div> : null}
           </div>
         ) : null}
-        {description ? (
-          <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p>
-        ) : null}
+        {description ? <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p> : null}
         {children}
       </div>
     );
@@ -372,9 +367,7 @@ export function Callout({
           {action ? <div className="pdpp-caption">{action}</div> : null}
         </div>
       ) : null}
-      {description ? (
-        <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p>
-      ) : null}
+      {description ? <p className={`pdpp-caption mb-2 ${descColorClass}`}>{description}</p> : null}
       {children}
     </div>
   );

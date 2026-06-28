@@ -141,21 +141,18 @@ export interface MountOwnerConnectionScheduleContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
-  // Marks the maintained connector-summary read-model evidence for exactly this
-  // connection dirty after the schedule mutation commits. Injected (not
-  // imported) to match the optional `invalidateConnectorSummariesCache` above;
-  // awaited at the call site so ordering is explicit, best-effort, and a no-op
-  // until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
   }): Promise<ActiveBinding[]> | ActiveBinding[];
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the schedule mutation commits. Injected (not
+  // imported) to match the optional `invalidateConnectorSummariesCache` above;
+  // awaited at the call site so ordering is explicit, best-effort, and a no-op
+  // until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   // Scheduler refresh hook fired after a successful pause/resume so the change
   // takes effect immediately. Same callback the cookie-authed `/_ref` schedule
   // routes use. Optional so a controller-less test harness can omit it.

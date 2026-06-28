@@ -25,7 +25,14 @@ import {
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import type { DuplicateSyncGroup, FailureCard, SyncGroup, SyncRow, SyncRhythmTick, SyncsViewModel } from "./syncs-model.ts";
+import type {
+  DuplicateSyncGroup,
+  FailureCard,
+  SyncGroup,
+  SyncRhythmTick,
+  SyncRow,
+  SyncsViewModel,
+} from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9fr)";
 
@@ -41,11 +48,7 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
     <div className="rr-sync-health">
       <Band>
         <BandCell k="streams on schedule" v={band.onSchedule} />
-        <BandCell
-          className={band.needsReview > 0 ? "is-warn" : undefined}
-          k={reviewLabel}
-          v={reviewValue}
-        />
+        <BandCell className={band.needsReview > 0 ? "is-warn" : undefined} k={reviewLabel} v={reviewValue} />
       </Band>
       <p className="rr-sync-health__note">
         {band.allClear ? `Nothing needs you right now. ${RESET_NOTE}` : `Review the cards below. ${RESET_NOTE}`}
@@ -179,20 +182,18 @@ function coverageSuffix(condition: string | null): string {
 function SyncTableRow({ row }: { row: SyncRow }) {
   const collectedText = formatCollectedThisRun(row);
   const isQuiet = !row.failed && row.collectedThisRun !== null && row.collectedThisRun <= 0 && !row.streamSkipped;
-  const deltaClass = [
-    "rr-sync-row__delta",
-    isQuiet ? "is-quiet" : undefined,
-    row.failed ? "is-failed" : undefined,
-  ]
+  const deltaClass = ["rr-sync-row__delta", isQuiet ? "is-quiet" : undefined, row.failed ? "is-failed" : undefined]
     .filter(Boolean)
     .join(" ");
   return (
     <details className="rr-sync-row-shell">
-      <summary className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}>
+      <summary
+        className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}
+      >
         <TableCell className="rr-sync-row__stream">{row.stream}</TableCell>
         <TableCell className="rr-sync-row__cadence">{row.cadence}</TableCell>
         <TableCell className={deltaClass}>
-          {collectedText !== null ? <span>{collectedText}</span> : <span className="rr-sync-row__empty">—</span>}
+          {collectedText === null ? <span className="rr-sync-row__empty">—</span> : <span>{collectedText}</span>}
           {coverageSuffix(row.coverageCondition) ? (
             <span className="rr-sync-row__coverage">{coverageSuffix(row.coverageCondition)}</span>
           ) : null}
@@ -234,22 +235,18 @@ function SyncGroupLastRun({
   return (
     <div className="rr-sync-group__last-run">
       {rhythm.length > 0 ? <Rhythm ticks={rhythm} /> : null}
-      {delta !== null ? <span className="rr-sync-group__delta">{delta}</span> : null}
-      {duration !== null ? <span className="rr-sync-group__duration">{duration}</span> : null}
-      {lastRunAt !== null ? (
+      {delta === null ? null : <span className="rr-sync-group__delta">{delta}</span>}
+      {duration === null ? null : <span className="rr-sync-group__duration">{duration}</span>}
+      {lastRunAt === null ? null : (
         <span className="rr-sync-group__when">
           <IcTimestamp mode="relative" value={lastRunAt} />
         </span>
-      ) : null}
+      )}
     </div>
   );
 }
 
-function SyncGroupBlock({
-  group,
-}: {
-  group: SyncGroup;
-}) {
+function SyncGroupBlock({ group }: { group: SyncGroup }) {
   const healthy = group.health === "ok";
   // Reserve an accurate placeholder height for content-visibility so off-screen
   // groups do not shift the page when scrolled into view. ~52px per stream row
@@ -330,7 +327,6 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
           <Caption>No connections sync here yet. Connect a source and its streams appear as sync rows.</Caption>
         </div>
       )}
-
     </div>
   );
 }

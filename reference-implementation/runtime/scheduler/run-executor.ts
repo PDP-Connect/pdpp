@@ -1,0 +1,808 @@
+/**
+ * Run-executor for the scheduler.
+ *
+ * Encapsulates executing one connector run attempt through retry/finalization
+ * to a terminal RunRecord. Called by `executeRun` in scheduler.ts after the
+ * pre-run gate cascade clears.
+ *
+ * Owns:
+ *   - launchRun              — top-level launch: static-secret resolution,
+ *                              managed-connector routing, state load, retry loop
+ *   - runWithRetries         — retry loop over runSingleAttempt
+ *   - runSingleAttempt       — one attempt: invoke connector, classify outcome
+ *   - buildAttemptCall       — per-attempt call shape (trigger/automation mode)
+ *   - finalizeSuccessOrFailure — persist + notify a success or non-exhausted failure
+ *   - finalizeExhaustedFailure — persist + notify when retries are exhausted
+ *   - routeScheduledManagedRun — managed-connector scheduled routing via controller
+ *   - scheduledManagedConnectorLacksRoutingSeam — defer guard for missing seam
+ *
+ * Does NOT own: executeRun (the orchestration shell that sequences active-run
+ * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
+ */
+
+import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
+import { runConnector } from "../index.js";
+import {
+  type AutomationRefreshPolicy,
+  projectRunAutomationPolicy,
+  type RunAutomationMode,
+  type RunTriggerKind,
+} from "../run-automation-policy.ts";
+import {
+  shouldRetryRunFailure,
+  type RunConnectorError,
+} from "../scheduler-retry-classifier.ts";
+import type {
+  ConnectorSchedule,
+  GetStateHandler,
+  InteractionHandler,
+  IsManagedConnectorHandler,
+  NeedsHumanHandler,
+  ResolveStaticSecretRunEnv,
+  RunCompleteHandler,
+  RunConnectorResult,
+  RunManagedConnectorViaController,
+  RunRecord,
+  RunSource,
+  SchedulerManifest,
+  SchedulerOptions,
+  SetStateHandler,
+} from "../scheduler.ts";
+
+// ─── Dep types ───────────────────────────────────────────────────────────────
+
+/**
+ * Runtime state cells the run-executor reads and mutates.
+ * Passed by reference so mutations take effect in the shared runtime.
+ */
+export interface RunExecutorRuntimeState {
+  readonly announcedBackoffClass: Map<string, string>;
+  readonly announcedBlockedClass: Map<string, string>;
+  readonly exhaustedGrants: Set<string>;
+  readonly history: RunRecord[];
+  running: boolean;
+}
+
+export interface RunExecutorDeps {
+  getState: GetStateHandler;
+  handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
+  isManagedConnector: IsManagedConnectorHandler;
+  markNeedsHuman: NeedsHumanHandler;
+  onInteraction: InteractionHandler;
+  onRunComplete: RunCompleteHandler;
+  persistLastRunTime: (connectorId: string, connectorInstanceId: string, lastRunTimeMs: number) => void;
+  recordAndNotify: (record: RunRecord) => RunRecord;
+  referenceBaseUrl: string | null;
+  resolveStaticSecretRunEnv: ResolveStaticSecretRunEnv | null;
+  rsUrl: string;
+  runtime: RunExecutorRuntimeState;
+  runManagedConnectorViaController: RunManagedConnectorViaController | null;
+  schedulerStore:
+    | Pick<NonNullable<SchedulerOptions["schedulerStore"]>, "appendRunHistory">
+    | null
+    | undefined;
+  setState: SetStateHandler;
+}
+
+// ─── Public interface ─────────────────────────────────────────────────────────
+
+export interface RunExecutor {
+  launchRun(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
+    options?: { recoveryOnly?: boolean }
+  ): Promise<RunRecord>;
+}
+
+// ─── Local helpers (pure — no runtime dep) ───────────────────────────────────
+
+function buildScheduledRunSource(connectorId: string): RunSource {
+  return { kind: "connector", id: connectorId };
+}
+
+function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
+  const capabilities =
+    manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return null;
+  }
+  const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
+  return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as AutomationRefreshPolicy) : null;
+}
+
+function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
+  return {
+    message: result.message || "unknown",
+    records_emitted: result.records_emitted ?? 0,
+    reported_records_emitted: result.reported_records_emitted ?? null,
+    checkpoint_summary: result.checkpoint_summary || null,
+    run_id: result.run_id || null,
+    trace_id: result.trace_id || null,
+    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+    terminal_reason: result.terminal_reason || null,
+    connector_error: result.connector_error || null,
+    known_gaps: result.known_gaps || null,
+  };
+}
+
+function backoffDelayMs(attempt: number): number {
+  // Exponential backoff capped at 30 s: 1 s, 2 s, 4 s, ...
+  return Math.min(1000 * 2 ** (attempt - 1), 30_000);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function coerceRunError(err: unknown): RunConnectorError {
+  if (err && typeof err === "object") {
+    const candidate = err as RunConnectorError;
+    const message = candidate.message ?? (err instanceof Error ? err.message : "unknown");
+    return { ...candidate, message };
+  }
+  return { message: typeof err === "string" ? err : "unknown" };
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function narrowState(state: unknown): Record<string, unknown> | null {
+  if (state && typeof state === "object" && !Array.isArray(state)) {
+    return state as Record<string, unknown>;
+  }
+  return null;
+}
+
+function displayNameForScheduledConnector(manifest: SchedulerManifest, connectorId: string): string {
+  return typeof manifest?.display_name === "string" && manifest.display_name.trim()
+    ? manifest.display_name.trim()
+    : connectorId;
+}
+
+function withSchedulerInteractionContext(
+  interaction: unknown,
+  {
+    connectorDisplayName,
+    connectorId,
+    connectorInstanceId,
+    runId,
+  }: { connectorDisplayName: string; connectorId: string; connectorInstanceId?: string; runId: string | null }
+): unknown {
+  if (!interaction || typeof interaction !== "object" || Array.isArray(interaction)) {
+    return interaction;
+  }
+  return {
+    ...interaction,
+    connector_id: connectorId,
+    ...(connectorInstanceId ? { connector_instance_id: connectorInstanceId } : {}),
+    connector_display_name: connectorDisplayName,
+    run_id: runId,
+  };
+}
+
+function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
+  const stored: SchedulerRunHistoryRecord = {
+    connectorId: record.connectorId,
+    connectorInstanceId: record.connectorInstanceId ?? null,
+    source: { ...record.source },
+    status: record.status,
+    recordsEmitted: record.recordsEmitted,
+    reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
+    checkpointSummary: record.checkpointSummary,
+    knownGaps: record.knownGaps,
+    connectorError: record.connectorError ? { ...record.connectorError } : null,
+    runId: record.runId ?? null,
+    traceId: record.traceId ?? null,
+    failureReason: record.failureReason ?? null,
+    terminalReason: record.terminalReason ?? null,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    attempt: record.attempt,
+  };
+  if (record.error !== undefined) {
+    return { ...stored, error: record.error };
+  }
+  return stored;
+}
+
+// ─── RunConnectorCall (internal) ──────────────────────────────────────────────
+
+interface RunConnectorCall {
+  automationMode?: RunAutomationMode;
+  collectionMode: "full_refresh" | "incremental";
+  connectorId: string;
+  connectorInstanceId?: string;
+  connectorPath: string;
+  manifest: SchedulerManifest;
+  onInteraction: InteractionHandler;
+  onProgress: () => void;
+  onStarted?: (run: { run_id?: string | null; trace_id?: string | null }) => void;
+  ownerToken: string;
+  persistState: boolean;
+  recoveryOnly?: boolean;
+  referenceBaseUrl?: string | null;
+  rsUrl: string;
+  state: Record<string, unknown> | null;
+  staticSecretEnv?: Record<string, string> | null;
+  triggerKind?: RunTriggerKind;
+}
+
+async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorResult> {
+  // `runConnector` is still JS; its parameter signature is refined through
+  // `runtime/index.d.ts`. The return shape is validated by the callers
+  // (retry classifier + record builders) — they only read documented fields.
+  const raw = await runConnector(call);
+  return raw as RunConnectorResult;
+}
+
+// ─── Record builders ──────────────────────────────────────────────────────────
+
+function buildSuccessOrFailureRecord({
+  connectorId,
+  connectorInstanceId,
+  result,
+  startedAt,
+  attempt,
+}: {
+  attempt: number;
+  connectorId: string;
+  connectorInstanceId?: string;
+  result: RunConnectorResult;
+  startedAt: string;
+}): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: result.status === "succeeded" ? "succeeded" : "failed",
+    recordsEmitted: result.records_emitted || 0,
+    reportedRecordsEmitted: result.reported_records_emitted ?? null,
+    checkpointSummary: result.checkpoint_summary || null,
+    knownGaps: result.known_gaps || [],
+    runId: result.run_id || null,
+    traceId: result.trace_id || null,
+    failureReason: null,
+    terminalReason: result.terminal_reason || null,
+    connectorError: result.connector_error || null,
+    startedAt,
+    completedAt: nowIso(),
+    attempt,
+  };
+}
+
+function buildExhaustedFailureRecord({
+  connectorId,
+  connectorInstanceId,
+  lastError,
+  attempt,
+}: {
+  attempt: number;
+  connectorId: string;
+  connectorInstanceId?: string;
+  lastError: RunConnectorError | null;
+}): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "failed",
+    recordsEmitted: lastError?.records_emitted ?? 0,
+    reportedRecordsEmitted: lastError?.reported_records_emitted ?? null,
+    checkpointSummary: lastError?.checkpoint_summary || null,
+    knownGaps: lastError?.known_gaps || [],
+    runId: lastError?.run_id || null,
+    traceId: lastError?.trace_id || null,
+    failureReason: lastError?.failure_reason || null,
+    terminalReason: lastError?.terminal_reason || null,
+    connectorError: lastError?.connector_error || null,
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: lastError?.message || "unknown",
+    attempt,
+  };
+}
+
+function buildCredentialResolutionFailure(
+  connectorId: string,
+  message: string,
+  connectorInstanceId?: string
+): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "failed",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    failureReason: "static_secret_credential_unavailable",
+    error: `static_secret_credential_unavailable: ${message}`,
+    attempt: 0,
+  };
+}
+
+function buildBackoffClearedEvent(connectorId: string, resumedAt: string, connectorInstanceId?: string): RunRecord {
+  const payload = JSON.stringify({ resumed_at: resumedAt });
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `schedule.back_off.cleared: ${payload}`,
+    attempt: 0,
+  };
+}
+
+function buildBrowserSurfaceUnavailableSkip(
+  connectorId: string,
+  status: string,
+  connectorInstanceId?: string
+): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `browser_surface_unavailable: ${status}`,
+    attempt: 0,
+  };
+}
+
+const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
+  "run_browser_surface_queued",
+  "browser_surface_probe_failed",
+  "browser_surface_lost",
+  "surface_failed",
+]);
+
+function controllerRunNowDeferReason(err: unknown): string | null {
+  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
+  if (code === "run_already_active") {
+    return "run_already_active";
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const normalized = message.toLowerCase();
+  if (normalized.includes("run_already_active") || normalized.includes("already has an active run")) {
+    return "run_already_active";
+  }
+  if (
+    normalized.includes("idx_pg_browser_surface_leases_one_non_terminal_run") ||
+    normalized.includes("browser_surface_leases") ||
+    normalized.includes("non_terminal_run")
+  ) {
+    return "browser_surface_lease_active";
+  }
+  return null;
+}
+
+// ─── Factory ─────────────────────────────────────────────────────────────────
+
+export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
+  const {
+    getState,
+    handleGrantFailureDisable,
+    isManagedConnector,
+    markNeedsHuman,
+    onInteraction,
+    onRunComplete,
+    persistLastRunTime,
+    recordAndNotify,
+    referenceBaseUrl,
+    resolveStaticSecretRunEnv,
+    rsUrl,
+    runtime,
+    runManagedConnectorViaController,
+    schedulerStore,
+    setState,
+  } = deps;
+
+  async function finalizeSuccessOrFailure(
+    schedule: ConnectorSchedule,
+    call: RunConnectorCall,
+    result: RunConnectorResult,
+    startedAt: string,
+    attempt: number
+  ): Promise<RunRecord> {
+    const { connectorId, connectorInstanceId = connectorId, grantAccessMode = "continuous" } = schedule;
+    const record = buildSuccessOrFailureRecord({
+      connectorId,
+      connectorInstanceId,
+      result,
+      startedAt,
+      attempt,
+    });
+
+    // Capture pre-success streak state so we can emit a one-shot
+    // `schedule.back_off.cleared` transition marker iff this success
+    // ended an announced back-off (or blocked) streak. The marker is
+    // emitted AFTER the success record itself so the chronological
+    // order on the timeline is: success → cleared.
+    const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
+    const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
+
+    runtime.history.push(record);
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      });
+    }
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+
+    if (result.status === "succeeded" && grantAccessMode === "single_use") {
+      runtime.exhaustedGrants.add(connectorInstanceId);
+    }
+    if (result.status !== "succeeded") {
+      handleGrantFailureDisable(record.terminalReason, connectorInstanceId);
+    }
+
+    if (result.status === "succeeded" && call.persistState && result.state !== undefined) {
+      await setState(connectorId, result.state, connectorInstanceId);
+    }
+
+    onRunComplete(record);
+
+    // Streak-cleared transition. Resets both announce-once maps so a
+    // future degradation can re-promote (and re-announce). The
+    // `evaluateBackoffDispatch` gate also clears `announcedBackoffClass`
+    // when it next observes no back-off applied, but doing it here
+    // keeps the timeline event ordering tight (success → cleared in
+    // the same tick).
+    if (result.status === "succeeded" && (wasAnnouncedBackoff || wasAnnouncedBlocked)) {
+      runtime.announcedBackoffClass.delete(connectorInstanceId);
+      runtime.announcedBlockedClass.delete(connectorInstanceId);
+      recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
+    }
+
+    return record;
+  }
+
+  // A single attempt's outcome: either "done" (return this record) or
+  // "retry" (loop again) or "give-up" (break and fall through to the
+  // exhausted-failure branch). Factoring the per-attempt classification
+  // out keeps `runWithRetries` a short state machine.
+  type AttemptOutcome =
+    | { kind: "done"; record: RunRecord }
+    | { kind: "give-up"; error: RunConnectorError | null }
+    | { kind: "retry"; error: RunConnectorError };
+
+  async function runSingleAttempt(
+    schedule: ConnectorSchedule,
+    call: RunConnectorCall,
+    attempt: number
+  ): Promise<AttemptOutcome> {
+    const { maxRetries = 2 } = schedule;
+    const startedAt = nowIso();
+
+    try {
+      const result = await invokeRunConnector(call);
+      const candidateError: RunConnectorError = {
+        failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+        terminal_reason: result.terminal_reason || null,
+        connector_error: result.connector_error || null,
+      };
+
+      if (result.status !== "succeeded" && attempt <= maxRetries && shouldRetryRunFailure(candidateError)) {
+        return { kind: "retry", error: describeFailedRunResult(result) };
+      }
+
+      const record = await finalizeSuccessOrFailure(schedule, call, result, startedAt, attempt);
+      return { kind: "done", record };
+    } catch (err) {
+      const error = coerceRunError(err);
+      if (attempt <= maxRetries && shouldRetryRunFailure(error)) {
+        return { kind: "retry", error };
+      }
+      return { kind: "give-up", error };
+    }
+  }
+
+  function buildAttemptCall(schedule: ConnectorSchedule, call: RunConnectorCall, attempt: number): RunConnectorCall {
+    const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
+    const attemptPolicy = projectRunAutomationPolicy({
+      triggerKind: attemptTriggerKind,
+      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+    });
+    return {
+      ...call,
+      triggerKind: attemptPolicy.trigger_kind,
+      automationMode: attemptPolicy.automation_mode,
+    };
+  }
+
+  // Drains the durable failure record for an exhausted-retries run: history,
+  // store append, last-run timestamp, terminal-grant handling, completion
+  // notification. Pulled out so `runWithRetries` only orchestrates the retry
+  // loop and trusts this helper for the failure tail.
+  function finalizeExhaustedFailure(
+    schedule: ConnectorSchedule,
+    lastError: RunConnectorError | null,
+    attempt: number
+  ): RunRecord {
+    const { connectorId, connectorInstanceId = connectorId } = schedule;
+    const failRecord = buildExhaustedFailureRecord({
+      connectorId,
+      connectorInstanceId,
+      lastError,
+      attempt,
+    });
+    runtime.history.push(failRecord);
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+      });
+    }
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+    handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
+    onRunComplete(failRecord);
+    return failRecord;
+  }
+
+  async function runWithRetries(schedule: ConnectorSchedule, call: RunConnectorCall): Promise<RunRecord> {
+    const { maxRetries = 2 } = schedule;
+    let attempt = 0;
+    let lastError: RunConnectorError | null = null;
+
+    while (attempt <= maxRetries) {
+      if (!runtime.running) {
+        break;
+      }
+      attempt++;
+
+      const outcome = await runSingleAttempt(schedule, buildAttemptCall(schedule, call, attempt), attempt);
+      if (outcome.kind === "done") {
+        return outcome.record;
+      }
+      lastError = outcome.error;
+      if (outcome.kind === "give-up") {
+        break;
+      }
+      await sleep(backoffDelayMs(attempt));
+    }
+
+    return finalizeExhaustedFailure(schedule, lastError, attempt);
+  }
+
+  function scheduledManagedConnectorLacksRoutingSeam(
+    isManual: boolean,
+    via: RunManagedConnectorViaController | null | undefined,
+    connectorId: string
+  ): boolean {
+    return !(isManual || via) && isManagedConnector(connectorId);
+  }
+
+  // Routes a scheduled managed-connector run through controller.runNow and
+  // maps every outcome (contention, controller failure, surface unavailable,
+  // terminal success/failure) to a RunRecord. Returns null when runNowResult
+  // is null, signalling that the connector is not managed and launchRun should
+  // fall through to the runWithRetries path.
+  async function routeScheduledManagedRun(
+    via: RunManagedConnectorViaController,
+    connectorId: string,
+    connectorInstanceId: string,
+    ownerToken: string
+  ): Promise<RunRecord | null> {
+    const startedAt = nowIso();
+    let runNowResult: { readonly run_id: string; readonly status: string; readonly trace_id: string } | null;
+    try {
+      runNowResult = await via(connectorId, {
+        connectorInstanceId,
+        ownerToken,
+        priorityClass: "scheduled_refresh",
+        triggerKind: "scheduled",
+        referenceBaseUrl,
+        rsUrl,
+      });
+    } catch (err) {
+      const deferReason = controllerRunNowDeferReason(err);
+      if (deferReason) {
+        return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+      return recordAndNotify({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? null,
+        source: buildScheduledRunSource(connectorId),
+        status: "failed",
+        recordsEmitted: 0,
+        checkpointSummary: null,
+        knownGaps: [],
+        startedAt,
+        completedAt: nowIso(),
+        error: `controller_run_now_failed: ${message}`,
+        attempt: 1,
+      });
+    }
+
+    if (runNowResult === null) {
+      return null;
+    }
+
+    if (runNowResult.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(runNowResult.status)) {
+      return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, runNowResult.status, connectorInstanceId));
+    }
+
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+    const terminalStatus: "succeeded" | "failed" = runNowResult.status === "succeeded" ? "succeeded" : "failed";
+    return recordAndNotify({
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      source: buildScheduledRunSource(connectorId),
+      status: terminalStatus,
+      recordsEmitted: 0,
+      checkpointSummary: null,
+      knownGaps: [],
+      startedAt,
+      completedAt: nowIso(),
+      runId: runNowResult.run_id ?? null,
+      traceId: runNowResult.trace_id ?? null,
+      attempt: 1,
+    });
+  }
+
+  async function launchRun(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
+    options: { recoveryOnly?: boolean } = {}
+  ): Promise<RunRecord> {
+    const recoveryOnly = options.recoveryOnly === true;
+    const {
+      connectorId,
+      connectorInstanceId = connectorId,
+      connectorPath,
+      manifest,
+      ownerToken,
+      grantAccessMode = "continuous",
+    } = schedule;
+    const persistState = grantAccessMode !== "single_use";
+
+    // Resolve connection-scoped static-secret credentials BEFORE launching —
+    // parity with the manual path (`controller.ts::runNow`). The encrypted
+    // per-connection credential store is the source of truth for scheduled
+    // runs too: without this seam, scheduled launches silently depended on
+    // process-global env vars, so a connection whose credential lives only in
+    // the store raised `credentials_required` the moment those env vars went
+    // absent or empty. A resolver throw is fail-closed: the connection HAS a
+    // credential we cannot use (revoked/deleted), so refuse the launch rather
+    // than fall through to a possibly stale process-global secret.
+    let staticSecretEnv: Record<string, string> | null = null;
+    if (resolveStaticSecretRunEnv) {
+      try {
+        staticSecretEnv = await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        return recordAndNotify(buildCredentialResolutionFailure(connectorId, message, connectorInstanceId));
+      }
+    }
+
+    const state = narrowState(await getState(connectorId, connectorInstanceId));
+    const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
+    let currentRunId: string | null = null;
+    const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
+
+    // Wrap onInteraction to detect when an automatic run surfaces a
+    // human-attention interaction. We mark the connector as needs-human so
+    // subsequent automatic ticks skip it rather than repeatedly prompting for
+    // OTP or manual browser action.
+    const wrappedInteraction: InteractionHandler = (interaction) => {
+      if (!isManual) {
+        markNeedsHuman(connectorId, connectorInstanceId);
+      }
+      return onInteraction(
+        withSchedulerInteractionContext(interaction, {
+          connectorDisplayName,
+          connectorId,
+          connectorInstanceId,
+          runId: currentRunId,
+        })
+      );
+    };
+
+    // ── Restart-race guard: managed connector with no routing seam → DEFER ────
+    //
+    // A managed (browser-surface-leased) connector MUST run through
+    // `controller.runNow` so it acquires the warm neko surface (persistent
+    // profile with a valid Cloudflare clearance cookie). If the managed-routing
+    // seam (`runManagedConnectorViaController`) is not wired — e.g. the
+    // controller's `browserSurfaceLeaseManager` was not yet available when
+    // `createScheduler` ran, so the callback was constructed as `null` — a
+    // SCHEDULED run would otherwise fall through to the cold `runConnector`
+    // path below: fresh headless Chromium, empty profile, no clearance cookie →
+    // a bot-detecting provider challenges and fails it, and every such cold
+    // failure deepens the failure back-off (the live wedge's failure streak).
+    //
+    // Treat a missing seam exactly like a surface-capacity shortfall: a
+    // DEFERRED SKIP (skip this tick, retry the next) rather than a cold launch.
+    // The next tick — once the seam is wired — routes warm. Manual runs are
+    // unaffected: the owner explicitly asked to retry now and bypasses this
+    // gate entirely (and the manual path has its own surface acquisition).
+    if (scheduledManagedConnectorLacksRoutingSeam(isManual, runManagedConnectorViaController, connectorId)) {
+      return recordAndNotify(
+        buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
+      );
+    }
+
+    // ── Managed-connector scheduled run: route through controller.runNow ──────
+    //
+    // Manual runs already go through controller.runNow (the owner calls the
+    // /_ref/run-now endpoint, which calls controller.runNow directly). For
+    // SCHEDULED runs the scheduler previously called runConnector directly,
+    // bypassing the managed-neko browser-surface lease. That meant:
+    //   - No warm neko surface was acquired.
+    //   - Chromium launched fresh with an EMPTY profile (no cf_clearance cookie).
+    //   - Cloudflare challenged 100% of scheduled runs.
+    //
+    // Fix: route scheduled runs for managed connectors through controller.runNow,
+    // which calls acquireManagedBrowserSurfaceForRun and hands the connector
+    // the warm, persistent neko surface env. The callback embeds the
+    // isManagedConnector check so non-managed connectors fall through unchanged.
+    //
+    // Lease release: controller.runNow wraps the connector spawn in:
+    //   .finally(() => finalizeRunCleanup({...}))
+    // which calls releaseBrowserSurfaceLeaseAfterRun → releaseBrowserSurfaceLease.
+    // This release fires on EVERY exit path (success, failure, crash) so the
+    // scheduler must NOT add a separate release call — that would double-release.
+    //
+    // controller_active_runs mutual exclusion: validateRunNowPreconditions checks
+    // activeRuns.get(key) and throws run_already_active (ControllerError) when a
+    // run is already in-flight for this connector. The scheduler's own
+    // runtime.activeRuns.has(key) guard in executeRun prevents double-dispatch
+    // from within the scheduler. Both guards stay intact.
+    if (runManagedConnectorViaController && !isManual) {
+      // Null return means connector is not managed — fall through to runWithRetries.
+      const managed = await routeScheduledManagedRun(
+        runManagedConnectorViaController,
+        connectorId,
+        connectorInstanceId,
+        ownerToken
+      );
+      if (managed !== null) {
+        return managed;
+      }
+    }
+
+    return await runWithRetries(schedule, {
+      connectorPath,
+      connectorId,
+      connectorInstanceId,
+      ownerToken,
+      manifest,
+      state,
+      collectionMode,
+      recoveryOnly,
+      persistState,
+      referenceBaseUrl,
+      rsUrl,
+      staticSecretEnv,
+      triggerKind: automationPolicy.trigger_kind,
+      automationMode: automationPolicy.automation_mode,
+      onInteraction: wrappedInteraction,
+      onStarted: (run) => {
+        currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
+      },
+      onProgress: () => {
+        // no-op; progress is driven by the runtime's own logging.
+      },
+    });
+  }
+
+  return { launchRun };
+}

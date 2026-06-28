@@ -227,6 +227,66 @@ function buildConnectionIntentRequireOwner(ctx: MountOwnerConnectionIntentContex
   };
 }
 
+// Validates connector_id and display_name from a raw request body. Returns a
+// parsed result on success, or a descriptor of the validation failure so the
+// caller can emit the audit event and respond consistently without nesting.
+function parseConnectionIntentBody(body: Record<string, unknown>):
+  | { ok: true; connectorId: string; displayName: string | null; displayNameSupplied: boolean }
+  | { ok: false; field: "connector_id" | "display_name"; message: string; displayNameSupplied: boolean } {
+  const rawConnectorId = body.connector_id;
+  if (typeof rawConnectorId !== "string" || !rawConnectorId.trim()) {
+    return { ok: false, field: "connector_id", message: "connector_id must be a non-empty string", displayNameSupplied: false };
+  }
+  const displayNameSupplied = Object.hasOwn(body, "display_name");
+  const displayNameRaw = body.display_name;
+  if (
+    displayNameSupplied &&
+    (typeof displayNameRaw !== "string" || !displayNameRaw.trim() || displayNameRaw.trim().length > 200)
+  ) {
+    return {
+      ok: false,
+      field: "display_name",
+      message: "display_name must be a non-empty string up to 200 characters when provided",
+      displayNameSupplied: true,
+    };
+  }
+  return {
+    ok: true,
+    connectorId: rawConnectorId.trim(),
+    displayName: typeof displayNameRaw === "string" ? displayNameRaw.trim() : null,
+    displayNameSupplied,
+  };
+}
+
+// Mints a single-use enrollment code, persists it, and returns the enrollment
+// payload for the `enroll_local_collector` next-step response. Extracts the
+// time/secret/store operations so the main handler reads linearly.
+async function mintEnrollmentNextStep(
+  ctx: MountOwnerConnectionIntentContext,
+  req: RouteRequest,
+  args: { connectorKey: string; displayName: string | null; ownerSubjectId: string }
+): Promise<{ enrollmentCode: string; enrollEndpoint: string; localBindingId: string; expiresAt: string }> {
+  const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
+  const now = ctx.now ? ctx.now() : new Date().toISOString();
+  const ENROLLMENT_TTL_SECONDS = 15 * 60;
+  const expiresAt = new Date(Date.parse(now) + ENROLLMENT_TTL_SECONDS * 1000).toISOString();
+  // The local binding id defaults to the connector key; the owner's
+  // collector reuses it as the local binding name on enroll.
+  const localBindingId = args.connectorKey;
+  await ctx.deviceExporterStore.createEnrollmentCode({
+    enrollmentCodeId: ctx.generateSpineId("denroll"),
+    codeHash: ctx.hashDeviceSecret(enrollmentCode),
+    ownerSubjectId: args.ownerSubjectId,
+    connectorId: args.connectorKey,
+    localBindingId,
+    displayName: args.displayName,
+    createdAt: now,
+    expiresAt,
+  });
+  const enrollEndpoint = `${stripTrailingSlash(ctx.resolveEnrollBaseUrl(req))}/_ref/device-exporters/enroll`;
+  return { enrollmentCode, enrollEndpoint, localBindingId, expiresAt };
+}
+
 // POST /v1/owner/connections/intents — bearer-authed owner-agent connection
 // initiation. Auth: owner bearer (`pdpp_token_kind: "owner"`). Client and
 // `mcp_package` bearers are rejected with 403; a missing bearer is rejected with
@@ -240,50 +300,21 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const body = (req.body as Record<string, unknown> | null) || {};
-        const rawConnectorId = body.connector_id;
-        if (typeof rawConnectorId !== "string" || !rawConnectorId.trim()) {
-          const err = new Error("connector_id must be a non-empty string") as Error & { code: string; param: string };
+        const parsed = parseConnectionIntentBody(body);
+        if (!parsed.ok) {
+          const err = new Error(parsed.message) as Error & { code: string; param: string };
           err.code = "invalid_request";
-          err.param = "connector_id";
+          err.param = parsed.field;
           await emitConnectionIntentAudit(ctx, req, res, {
+            displayNameSupplied: parsed.displayNameSupplied,
             error: err,
             outcome: "failed",
             ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
           });
-          ctx.pdppError(res, 400, "invalid_request", "connector_id must be a non-empty string", "connector_id");
+          ctx.pdppError(res, 400, "invalid_request", parsed.message, parsed.field);
           return;
         }
-        const connectorId = rawConnectorId.trim();
-        const displayNameRaw = body.display_name;
-        const displayNameSupplied = Object.hasOwn(body, "display_name");
-        if (
-          displayNameSupplied &&
-          (typeof displayNameRaw !== "string" || !displayNameRaw.trim() || displayNameRaw.trim().length > 200)
-        ) {
-          const err = new Error(
-            "display_name must be a non-empty string up to 200 characters when provided"
-          ) as Error & {
-            code: string;
-            param: string;
-          };
-          err.code = "invalid_request";
-          err.param = "display_name";
-          await emitConnectionIntentAudit(ctx, req, res, {
-            displayNameSupplied: true,
-            error: err,
-            outcome: "failed",
-            ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
-          });
-          ctx.pdppError(
-            res,
-            400,
-            "invalid_request",
-            "display_name must be a non-empty string up to 200 characters when provided",
-            "display_name"
-          );
-          return;
-        }
-        const displayName = typeof displayNameRaw === "string" ? displayNameRaw.trim() : null;
+        const { connectorId, displayName, displayNameSupplied } = parsed;
         const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
 
         // Resolve the manifest from the local-collector catalog first (so a
@@ -306,24 +337,11 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           // local collector exchanges this code to materialize the connection and
           // performs any provider/browser step locally. No connection row is
           // written here; the instance materializes on enroll + ingest.
-          const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
-          const now = ctx.now ? ctx.now() : new Date().toISOString();
-          const expiresInSeconds = 15 * 60;
-          const expiresAt = new Date(Date.parse(now) + expiresInSeconds * 1000).toISOString();
-          // The local binding id defaults to the connector key; the owner's
-          // collector reuses it as the local binding name on enroll.
-          const localBindingId = connectorKey;
-          await ctx.deviceExporterStore.createEnrollmentCode({
-            enrollmentCodeId: ctx.generateSpineId("denroll"),
-            codeHash: ctx.hashDeviceSecret(enrollmentCode),
-            ownerSubjectId,
-            connectorId: connectorKey,
-            localBindingId,
-            displayName,
-            createdAt: now,
-            expiresAt,
-          });
-          const enrollEndpoint = `${stripTrailingSlash(ctx.resolveEnrollBaseUrl(req))}/_ref/device-exporters/enroll`;
+          const { enrollmentCode, enrollEndpoint, localBindingId, expiresAt } = await mintEnrollmentNextStep(
+            ctx,
+            req,
+            { connectorKey, displayName, ownerSubjectId }
+          );
           await emitConnectionIntentAudit(ctx, req, res, {
             connectorKey,
             connectorModality: modality,

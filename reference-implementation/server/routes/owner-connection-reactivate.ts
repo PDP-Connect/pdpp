@@ -116,15 +116,6 @@ export interface MountOwnerConnectionReactivateContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   invalidateConnectorSummariesCache?(): void;
-  // Marks the maintained connector-summary read-model evidence for exactly this
-  // connection dirty after the reactivate mutation commits. Injected (not
-  // imported) to match the optional `invalidateConnectorSummariesCache` above;
-  // awaited at the call site so ordering is explicit, best-effort, and a no-op
-  // until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: {
-    connectorInstanceId: string;
-    reason?: string;
-  }): Promise<void> | void;
   listActiveBindingsForGrant(input: {
     ownerSubjectId: string;
     connectorId: string;
@@ -136,6 +127,12 @@ export interface MountOwnerConnectionReactivateContext {
     ownerSubjectId: string;
     connectorId: string;
   }): Promise<ActiveBinding[]> | ActiveBinding[];
+  // Marks the maintained connector-summary read-model evidence for exactly this
+  // connection dirty after the reactivate mutation commits. Injected (not
+  // imported) to match the optional `invalidateConnectorSummariesCache` above;
+  // awaited at the call site so ordering is explicit, best-effort, and a no-op
+  // until the read model is warmed.
+  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
   now?(): string;
   pdppError: PdppErrorFn;
   projectBindingForWire(instance: ActiveBinding): WireConnection | null;

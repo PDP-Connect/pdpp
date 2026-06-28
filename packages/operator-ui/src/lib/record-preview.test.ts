@@ -161,7 +161,15 @@ test("declared stream with null content renders a placeholder, NOT an operationa
   // are present. It MUST NOT dump those as a key/value wall.
   const preview = buildRecordPreview(
     "message",
-    { id: "rec_1", subject: null, snippet: null, from_name: null, labels: ["\\Inbox"], is_seen: false, is_draft: false },
+    {
+      id: "rec_1",
+      subject: null,
+      snippet: null,
+      from_name: null,
+      labels: ["\\Inbox"],
+      is_seen: false,
+      is_draft: false,
+    },
     null,
     { subject: "primary-title", snippet: "secondary", from_name: "actor" }
   );

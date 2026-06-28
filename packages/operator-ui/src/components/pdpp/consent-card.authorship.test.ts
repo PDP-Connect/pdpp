@@ -29,20 +29,26 @@ const src = await readFile(CARD_FILE, "utf8");
 // ─── Hoisted regex constants (biome useTopLevelRegex) ─────────────────────────
 
 const CLIENT_NAME_RE = /border-dashed[\s\S]*?font-semibold text-foreground[\s\S]*?data-authorship="client"/;
-const CLIENT_APP_CHIP_RE = /border border-authorship-client-border border-dashed[\s\S]*?text-authorship-client-fg[\s\S]*?data-authorship="client"/;
+const CLIENT_APP_CHIP_RE =
+  /border border-authorship-client-border border-dashed[\s\S]*?text-authorship-client-fg[\s\S]*?data-authorship="client"/;
 const DASHED_RE = /border-dashed/;
 
 const COMMITMENTS_FN_RE = /function Commitments\(/;
-const COMMITMENTS_CLIENT_RULE_RE = /data-authorship="client"[\s\S]*?border-authorship-client-border border-l border-dashed/;
+const COMMITMENTS_CLIENT_RULE_RE =
+  /data-authorship="client"[\s\S]*?border-authorship-client-border border-l border-dashed/;
 const NOT_ENFORCED_RE = /not enforced by your server/;
 const PURPOSE_CLIENT_RE = /they say they want[\s\S]*?\{purpose\}/;
 
-const REQUIRED_ROW_MANIFEST_RE = /function RequiredStreamRow\([\s\S]*?data-authorship="manifest"[\s\S]*?bg-authorship-manifest-accent/;
-const OPTIONAL_ROW_MANIFEST_RE = /function OptionalStreamRow\([\s\S]*?data-authorship="manifest"[\s\S]*?bg-authorship-manifest-accent/;
+const REQUIRED_ROW_MANIFEST_RE =
+  /function RequiredStreamRow\([\s\S]*?data-authorship="manifest"[\s\S]*?bg-authorship-manifest-accent/;
+const OPTIONAL_ROW_MANIFEST_RE =
+  /function OptionalStreamRow\([\s\S]*?data-authorship="manifest"[\s\S]*?bg-authorship-manifest-accent/;
 const MANIFEST_EYEBROW_RE = /<AuthorshipEyebrow authorship="manifest">your server will share<\/AuthorshipEyebrow>/;
 
-const ACCESS_DURATION_PROTOCOL_RE = /function AccessDuration\([\s\S]*?data-authorship="protocol"[\s\S]*?<AuthorshipEyebrow authorship="protocol">enforced<\/AuthorshipEyebrow>/;
-const TECHNICAL_PROTOCOL_RULE_RE = /function TechnicalDetails\([\s\S]*?border-authorship-protocol-border[\s\S]*?data-authorship="protocol"/;
+const ACCESS_DURATION_PROTOCOL_RE =
+  /function AccessDuration\([\s\S]*?data-authorship="protocol"[\s\S]*?<AuthorshipEyebrow authorship="protocol">enforced<\/AuthorshipEyebrow>/;
+const TECHNICAL_PROTOCOL_RULE_RE =
+  /function TechnicalDetails\([\s\S]*?border-authorship-protocol-border[\s\S]*?data-authorship="protocol"/;
 const VERIFICATION_FN_RE = /function VerificationBadge\([\s\S]*?data-authorship="protocol"/;
 
 const LEGEND_FN_RE = /function AuthorshipLegend\(/;
@@ -55,12 +61,15 @@ const LEGEND_RENDERED_RE = /<AuthorshipLegend \/>/;
 const INLINE_STYLE_RE = /\bstyle=\{/;
 const RAW_OKLCH_RE = /oklch\(/;
 
-const SCOPE_LIST_FN_RE = /function ConnectionScopeList\(\{ connections \}: \{ connections: ConsentCardConnection\[\] \}\)/;
-const SCOPE_LIST_PROTOCOL_RE = /aria-label="Connections covered by this stream"[\s\S]*?data-authorship="protocol"[\s\S]*?connections\.map\(\(connection\)[\s\S]*?\{connection\.displayName\}/;
+const SCOPE_LIST_FN_RE =
+  /function ConnectionScopeList\(\{ connections \}: \{ connections: ConsentCardConnection\[\] \}\)/;
+const SCOPE_LIST_PROTOCOL_RE =
+  /aria-label="Connections covered by this stream"[\s\S]*?data-authorship="protocol"[\s\S]*?connections\.map\(\(connection\)[\s\S]*?\{connection\.displayName\}/;
 const HAS_MULTI_RE = /const hasMultipleConnections = Array\.isArray\(connections\) && connections\.length > 1/;
 const SCOPE_LIST_RENDERED_RE = /\{hasMultipleConnections && <ConnectionScopeList connections=\{connections\} \/>\}/;
 
-const ACCESS_MODE_COPY_RE = /accessMode === "continuous"\s*\?\s*"Ongoing access, active until you revoke it\. Your server enforces this\."\s*:\s*"One-time access\. Your server will not allow further queries\."/;
+const ACCESS_MODE_COPY_RE =
+  /accessMode === "continuous"\s*\?\s*"Ongoing access, active until you revoke it\. Your server enforces this\."\s*:\s*"One-time access\. Your server will not allow further queries\."/;
 
 const TOGGLE_FN_RE = /function OptionalToggle\(/;
 const TOGGLE_ROLE_RE = /role="switch"/;
@@ -144,11 +153,7 @@ test("protocol facts carry protocol authorship + cool-blue tokens", () => {
     src.indexOf("function VerificationBadge("),
     src.indexOf("function RequesterHeader(")
   );
-  assert.doesNotMatch(
-    verificationBadge,
-    DASHED_RE,
-    "the verification verdict is server-authored, never client-dashed"
-  );
+  assert.doesNotMatch(verificationBadge, DASHED_RE, "the verification verdict is server-authored, never client-dashed");
 });
 
 // ─── The authorship coding is rendered, not just commented ────────────────────

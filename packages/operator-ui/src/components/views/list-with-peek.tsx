@@ -276,12 +276,7 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
 
   return (
     <>
-      <PageHeader
-        actions={headerActions}
-        count={countBasis}
-        description={description}
-        title={title}
-      />
+      <PageHeader actions={headerActions} count={countBasis} description={description} title={title} />
       {preHeader}
       {preList ? <Section title={titleCase(active)}>{preList}</Section> : null}
       {!preList && active === "grants" ? null : null}

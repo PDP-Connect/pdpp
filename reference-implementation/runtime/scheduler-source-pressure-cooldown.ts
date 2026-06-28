@@ -177,7 +177,7 @@ export function assertCooldownProfile(profile: { maxCooldownCycles?: number } | 
   ) {
     throw new Error(
       "source-pressure cooldown requires a per-provider profile.maxCooldownCycles (finite positive integer); " +
-        "resolve it via cooldownProfileForConnector — no silent 'never escalate' (spec §10-B, §3 rule 6)",
+        "resolve it via cooldownProfileForConnector — no silent 'never escalate' (spec §10-B, §3 rule 6)"
     );
   }
   return { maxCooldownCycles: profile.maxCooldownCycles };
@@ -200,7 +200,7 @@ export function computeConnectionSourcePressureCooldown(
   pendingGaps: readonly PendingPressureGap[],
   baseIntervalMs: number,
   lastRunAtMs: number,
-  options: ComputeCooldownOptions = {},
+  options: ComputeCooldownOptions = {}
 ): SourcePressureCooldownDecision {
   const { maxCooldownCycles } = assertCooldownProfile(cooldownProfileForConnector(connectorId));
   return computeSourcePressureCooldown(pendingGaps, baseIntervalMs, lastRunAtMs, {
@@ -224,6 +224,12 @@ export interface PendingPressureGap {
    */
   readonly attemptCount?: number | null;
   /**
+   * Last observed provider-pressure timestamp (ISO). Prefer the durable
+   * gap's `last_attempt_at`, falling back to `updated_at` when the connector
+   * deferred before a retry lease existed.
+   */
+  readonly lastPressureAt?: string | null;
+  /**
    * Optional connector/runtime-authored floor for the next attempt (ISO). When
    * present and later than the computed cooldown, it is honoured as the
    * `nextRunAt`. This lets a connector that *does* learn a concrete wait (e.g.
@@ -231,30 +237,11 @@ export interface PendingPressureGap {
    * guessing.
    */
   readonly nextAttemptAfter?: string | null;
-  /**
-   * Last observed provider-pressure timestamp (ISO). Prefer the durable
-   * gap's `last_attempt_at`, falling back to `updated_at` when the connector
-   * deferred before a retry lease existed.
-   */
-  readonly lastPressureAt?: string | null;
   /** Source-pressure reason. Only `SOURCE_PRESSURE_GAP_REASONS` count. */
   readonly reason: string | null;
 }
 
 export interface ComputeCooldownOptions {
-  /**
-   * Explicit force-override: bypass provider-pressure cooldown entirely.
-   * Ordinary manual `Sync now` should NOT set this flag — it is reserved for
-   * an explicit "force run despite pressure" action so the owner's default
-   * button cannot accidentally hammer a hot account.
-   */
-  readonly force?: boolean;
-  /** Max exponent applied to the base interval. */
-  readonly maxCooldownExp?: number;
-  /** Absolute ceiling (ms) on the cooldown delay. */
-  readonly maxCooldownMs?: number;
-  /** Floor multiplier on first observation. */
-  readonly minMultiplier?: number;
   /**
    * §10-B: number of consecutive cooldown cycles (each with ZERO forward
    * progress and ZERO gap recovery) observed so far. When this reaches
@@ -267,12 +254,25 @@ export interface ComputeCooldownOptions {
    */
   readonly consecutiveCooldownCycles?: number;
   /**
+   * Explicit force-override: bypass provider-pressure cooldown entirely.
+   * Ordinary manual `Sync now` should NOT set this flag — it is reserved for
+   * an explicit "force run despite pressure" action so the owner's default
+   * button cannot accidentally hammer a hot account.
+   */
+  readonly force?: boolean;
+  /**
    * §10-B: ceiling on consecutive no-progress cooldown cycles before the
    * connection escalates to `needs_attention`. This is a ProviderProfile field
    * — each provider must declare its own value; there is NO cross-provider
    * default (spec §3 rule 6). When absent (or Infinity), escalation never fires.
    */
   readonly maxCooldownCycles?: number;
+  /** Max exponent applied to the base interval. */
+  readonly maxCooldownExp?: number;
+  /** Absolute ceiling (ms) on the cooldown delay. */
+  readonly maxCooldownMs?: number;
+  /** Floor multiplier on first observation. */
+  readonly minMultiplier?: number;
 }
 
 export interface SourcePressureCooldownDecision {
@@ -341,10 +341,7 @@ export function computeSourcePressureCooldown(
 
   // §10-B: no-progress escalation cycle tracking. Defaults to 0 (no escalation)
   // when absent — backwards-compatible for callers that do not track cycles yet.
-  const consecutiveCooldownCycles = normalizeNonNegativeInteger(
-    options.consecutiveCooldownCycles ?? undefined,
-    0
-  );
+  const consecutiveCooldownCycles = normalizeNonNegativeInteger(options.consecutiveCooldownCycles ?? undefined, 0);
   // NOTE: this is the low-level PURE computation. It tolerates an absent
   // `maxCooldownCycles` (→ Infinity = no escalation) ONLY so unit tests can
   // exercise the cooldown math in isolation. PRODUCTION CALLERS MUST NOT use
@@ -357,7 +354,7 @@ export function computeSourcePressureCooldown(
     Number.isFinite(options.maxCooldownCycles) &&
     options.maxCooldownCycles > 0
       ? Math.floor(options.maxCooldownCycles)
-      : Infinity;
+      : Number.POSITIVE_INFINITY;
 
   const pressureGaps = (pendingGaps ?? []).filter(
     (gap) => gap && typeof gap.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)
@@ -412,12 +409,8 @@ export function computeSourcePressureCooldown(
   // AND zero gap recovery. This catches the dead-but-429ing provider whose
   // cooldownApplied is always true but that never actually advances —
   // the case where "resumes automatically" would be a permanent lie.
-  const escalated =
-    Number.isFinite(maxCooldownCycles) &&
-    consecutiveCooldownCycles >= maxCooldownCycles;
-  const recommendedHealthState: "cooling_off" | "needs_attention" = escalated
-    ? "needs_attention"
-    : "cooling_off";
+  const escalated = Number.isFinite(maxCooldownCycles) && consecutiveCooldownCycles >= maxCooldownCycles;
+  const recommendedHealthState: "cooling_off" | "needs_attention" = escalated ? "needs_attention" : "cooling_off";
 
   return {
     cooldownApplied: true,

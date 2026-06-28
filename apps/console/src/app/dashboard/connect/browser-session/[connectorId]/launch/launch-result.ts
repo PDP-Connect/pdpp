@@ -40,9 +40,7 @@ function messageForNotStartedRun(result: BrowserSessionRunStartResult): string {
   return `The secure browser did not start (${status}). Try again, or open Runs to inspect the latest attempt.`;
 }
 
-export function classifyBrowserSessionLaunchResult(
-  result: BrowserSessionRunStartResult
-): BrowserSessionLaunchResult {
+export function classifyBrowserSessionLaunchResult(result: BrowserSessionRunStartResult): BrowserSessionLaunchResult {
   const runId = result.run_id?.trim() ?? "";
   if (!runId) {
     return {

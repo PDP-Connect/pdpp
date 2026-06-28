@@ -16,7 +16,8 @@ const CARD_FILE = `${HERE}connect-agent-card.tsx`;
 
 const PROVIDER_URL_PROP_RE = /providerUrl\??:\s*string/;
 const MCP_URL_HELPER_RE = /function mcpUrlFor\(providerUrl\??:\s*string\): string/;
-const MCP_URL_SUBSTITUTION_RE = /providerUrl\s*\?\s*`\$\{trimTrailingSlash\(providerUrl\)\}\/mcp`\s*:\s*"<provider-url>\/mcp"/;
+const MCP_URL_SUBSTITUTION_RE =
+  /providerUrl\s*\?\s*`\$\{trimTrailingSlash\(providerUrl\)\}\/mcp`\s*:\s*"<provider-url>\/mcp"/;
 const CONNECT_HREF_PROP_RE = /connectHref\??:\s*string/;
 const OPEN_SETUP_LINK_RE = /href=\{connectHref\}/;
 const OWNER_TOKEN_SETUP_RE = /Authorization: Bearer|bearer-token-env-var|Issue owner token/;

@@ -31,9 +31,9 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  type ConnectorManifestLike,
   displayNameForConnector,
   isBrowserBoundConnector,
-  type ConnectorManifestLike,
 } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
@@ -45,9 +45,9 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract
 export const BROWSER_ENROLLMENT_SHELL_TTL_MS = 2 * 60 * 60 * 1000;
 
 export interface BrowserEnrollmentShellSourceBinding {
-  readonly kind: "browser_enrollment_shell";
   readonly connector_id: string;
   readonly enrollment_expires_at: string;
+  readonly kind: "browser_enrollment_shell";
 }
 
 interface RouteRequest {
@@ -80,8 +80,8 @@ interface ConnectorInstance {
   readonly connectorInstanceId: string;
   readonly displayName?: string | null;
   readonly ownerSubjectId: string;
-  readonly status: string;
   readonly sourceBinding?: Record<string, unknown> | null;
+  readonly status: string;
 }
 
 interface ConnectorInstanceStore {
@@ -118,10 +118,7 @@ export interface MountRefBrowserEnrollmentShellContext {
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
-function buildAuditTrace(
-  ctx: MountRefBrowserEnrollmentShellContext,
-  res: RouteResponse
-): TraceContext {
+function buildAuditTrace(ctx: MountRefBrowserEnrollmentShellContext, res: RouteResponse): TraceContext {
   const trace = ctx.createTraceContext();
   const requestId = ctx.ensureRequestId(res);
   ctx.setReferenceTraceId(res, trace.trace_id);
@@ -161,9 +158,7 @@ async function emitShellAudit(
       connector_id: args.connectorId ?? null,
       operation: args.operation,
       outcome: args.outcome,
-      ...(args.error
-        ? { error: { code: typeof code === "string" ? code : "api_error" } }
-        : {}),
+      ...(args.error ? { error: { code: typeof code === "string" ? code : "api_error" } } : {}),
     },
   });
 }
@@ -182,10 +177,7 @@ async function emitShellAudit(
 // Owner-session-only. Retires a browser-enrollment shell immediately (status →
 // revoked). No-op when already retired (idempotent). Typed 409 when the shell is
 // already active (enrollment completed). Typed 404 when not found or wrong owner.
-export function mountRefBrowserEnrollmentShell(
-  app: AppLike,
-  ctx: MountRefBrowserEnrollmentShellContext
-): void {
+export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowserEnrollmentShellContext): void {
   app.post(
     "/_ref/connectors/:connectorId/browser-enrollment-shell",
     ctx.requireOwnerSession,
