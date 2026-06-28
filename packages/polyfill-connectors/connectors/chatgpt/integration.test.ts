@@ -119,6 +119,18 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
       retryable: false,
     }
   );
+  assert.deepEqual(
+    normalizeChatGptTerminalError({
+      message:
+        "chatgpt_session_failed: chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.",
+      retryable: false,
+    }),
+    {
+      message:
+        "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.",
+      retryable: false,
+    }
+  );
 });
 
 test("normalizeChatGptTerminalError maps visible login or challenge failures to manual action", () => {

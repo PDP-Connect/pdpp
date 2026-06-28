@@ -315,7 +315,15 @@ export type RunManagedConnectorViaController = (
     rsUrl?: string;
     referenceBaseUrl?: string | null;
   }
-) => Promise<{ readonly run_id: string; readonly status: string; readonly trace_id: string } | null>;
+) => Promise<{
+  readonly connector_error?: ConnectorError | null;
+  readonly failure_reason?: string | null;
+  readonly known_gaps?: readonly Record<string, unknown>[] | null;
+  readonly run_id: string;
+  readonly status: string;
+  readonly terminal_reason?: TerminalReason | null;
+  readonly trace_id: string;
+} | null>;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];

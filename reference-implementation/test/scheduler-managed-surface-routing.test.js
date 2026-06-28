@@ -469,6 +469,70 @@ test('T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
   }
 });
 
+test('T7b: auth-required managed scheduled failure marks needs-human and suppresses the next tick', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const connectorInstanceId = 'cin_chatgpt_personal';
+    const needsHuman = new Set();
+    const completedRuns = [];
+    const controllerCalls = [];
+    const authGap = {
+      kind: 'run_failed',
+      reason: 'connector_reported_failed',
+      stream: null,
+      severity: 'actionable',
+      message:
+        'chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: chatgpt_session_required: ChatGPT session is not active.',
+      recovery_hint: { action: 'refresh_credentials', retryable: false },
+    };
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId: 'chatgpt',
+        connectorInstanceId,
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      }],
+      isNeedsHuman: (_connectorId, instanceId) => needsHuman.has(instanceId),
+      markNeedsHuman: (_connectorId, instanceId) => needsHuman.add(instanceId),
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: 'http://localhost.invalid',
+      runManagedConnectorViaController: async () => {
+        controllerCalls.push(Date.now());
+        return {
+          run_id: 'run-auth-required-001',
+          status: 'failed',
+          trace_id: 'trace-auth-required',
+          known_gaps: [authGap],
+          connector_error: { message: String(authGap.message), retryable: false },
+        };
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 2, 5000);
+      scheduler.stop();
+
+      assert.equal(controllerCalls.length, 1, 'auth-required failure should prevent a second managed dispatch');
+      assert.equal(completedRuns[0].status, 'failed');
+      assert.deepEqual(completedRuns[0].knownGaps, [authGap], 'terminal auth gap should be preserved');
+      assert.equal(needsHuman.has(connectorInstanceId), true, 'existing needs-human gate should be marked');
+      assert.equal(completedRuns[1].status, 'skipped');
+      assert.match(completedRuns[1].error || '', /needs_human_attention/u);
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 // ── T8: restart-race — managed connector with NO routing seam DEFERS ─────────
 //
 // The live ChatGPT wedge's failure origin: when the managed-routing seam

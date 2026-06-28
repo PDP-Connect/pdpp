@@ -89,7 +89,7 @@ const validateRecord = validateRecordRaw as ValidateRecord;
 
 const CHATGPT_TERMINAL_DIAGNOSTIC_MAX = 240;
 const CHATGPT_AUTH_FAILURE_RE =
-  /\b(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
+  /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
 const CHATGPT_MANUAL_ACTION_RE =
   /\b(?:login_unexpected_ui|login_post_submit_failed|Cloudflare|challenge|captcha|manual_action|2FA|verification code)\b/iu;
 

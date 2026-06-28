@@ -5503,7 +5503,19 @@ function createReferenceSchedulerManager({
             // No deadlock risk: the run has its own wall-clock budget; a hung run
             // is the run's responsibility, matching the old runConnector await.
             const terminalStatus = await controller.awaitRun(handle.run_id);
-            return { run_id: handle.run_id, trace_id: handle.trace_id, status: terminalStatus };
+            const terminalEvent = await getRunTerminalEvent(handle.run_id);
+            const terminalData = terminalEvent && terminalEvent.data && typeof terminalEvent.data === 'object'
+              ? terminalEvent.data
+              : {};
+            return {
+              run_id: handle.run_id,
+              trace_id: handle.trace_id,
+              status: terminalStatus,
+              connector_error: terminalData.connector_error || null,
+              failure_reason: terminalData.reason || null,
+              known_gaps: Array.isArray(terminalData.known_gaps) ? terminalData.known_gaps : [],
+              terminal_reason: terminalData.terminal_reason || null,
+            };
           }
         : null,
       // Recognize managed (browser-surface-leased) connectors so the scheduler
