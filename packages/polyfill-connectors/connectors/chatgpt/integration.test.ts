@@ -295,6 +295,44 @@ test("Part A: one HTTP request that retries N times causes ONE pacing backoff, n
   );
 });
 
+test("createChatGptApi refreshes auth from the current session endpoint after one 401", async () => {
+  const backendCalls: Array<{ auth?: { accessToken?: string; deviceId?: string }; path?: string }> = [];
+  let authExtractionCalls = 0;
+  const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {
+    evaluate: ((fn: unknown, arg?: unknown): Promise<unknown> => {
+      if (arg === undefined) {
+        authExtractionCalls += 1;
+        assert.match(
+          String(fn),
+          /\/api\/auth\/session/,
+          "auth extraction should ask ChatGPT for the current session before using DOM bootstrap fallback"
+        );
+        return Promise.resolve({
+          accessToken: authExtractionCalls === 1 ? "stale-token" : "fresh-token",
+          deviceId: "fake-device",
+        });
+      }
+      const call = arg as { auth?: { accessToken?: string; deviceId?: string }; path?: string };
+      backendCalls.push(call);
+      return Promise.resolve(
+        call.auth?.accessToken === "stale-token" ? { status: 401, json: null } : { status: 200, json: { ok: true } }
+      );
+    }) as Page["evaluate"],
+    goto: () => Promise.resolve(null),
+    waitForFunction: () => Promise.reject(new Error("fake page: no client-bootstrap")),
+  };
+
+  const api = createChatGptApi({ capture: null, page: fakePage as Page });
+  const result = await api.fetch("/memories?include_memory_entries=true");
+
+  assert.equal(result.status, 200);
+  assert.equal(authExtractionCalls, 2);
+  assert.deepEqual(
+    backendCalls.map((call) => call.auth?.accessToken),
+    ["stale-token", "fresh-token"]
+  );
+});
+
 test("createChatGptApi.fetchBatch posts capped conversation batch requests", async () => {
   const backendCalls: Array<{ body?: unknown; method?: string; path?: string }> = [];
   const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {

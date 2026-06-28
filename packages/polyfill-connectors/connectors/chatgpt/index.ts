@@ -146,37 +146,56 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
     )
     .catch((): undefined => undefined);
 
-  const auth = (await page.evaluate(() => {
-    let accessToken: string | null = null;
-    let deviceId: string | null = null;
-    const el = document.getElementById("client-bootstrap");
-    if (el) {
+  const auth = (await page.evaluate(async () => {
+    const asRecord = (value: unknown): Record<string, unknown> =>
+      value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    const pickAccessToken = (value: unknown): string | null => {
+      const record = asRecord(value);
+      const session = asRecord(record.session);
+      const candidate = [record.accessToken, record.access_token, session.accessToken, session.access_token].find(
+        (item): item is string => typeof item === "string" && item.length > 0
+      );
+      return candidate ?? null;
+    };
+
+    const readSessionEndpointToken = async (): Promise<string | null> => {
+      const res = await fetch("/api/auth/session", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      return res.ok ? pickAccessToken(await res.json()) : null;
+    };
+    const readBootstrapToken = (): string | null => {
+      const el = document.getElementById("client-bootstrap");
+      if (!el) {
+        return null;
+      }
       try {
         const data = JSON.parse(el.textContent || "{}");
-        accessToken = data?.session?.accessToken || null;
+        return pickAccessToken(data);
       } catch {
-        /* ignore */
+        return null;
       }
-    }
-    // Next.js injects a __NEXT_DATA__ script-tag-mirrored global on chatgpt.com.
-    // Not in the DOM lib; narrow via a local structural type that describes
-    // just the path we read. Safer than @ts-expect-error because a typo in
-    // the access path (e.g. `pageProps.sesison`) now fails typecheck.
-    interface NextDataShape {
-      props?: { pageProps?: { session?: { accessToken?: string } } };
-    }
-    const nextDataEl = document.getElementById("__NEXT_DATA__");
-    const nextData: NextDataShape | null = nextDataEl?.textContent
-      ? (JSON.parse(nextDataEl.textContent) as NextDataShape)
-      : null;
-    if (!accessToken && nextData) {
-      accessToken = nextData.props?.pageProps?.session?.accessToken || null;
-    }
-    // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-    const m = (document.cookie || "").match(/oai-did=([^;]+)/);
-    if (m?.[1]) {
-      deviceId = decodeURIComponent(m[1]);
-    }
+    };
+    const readNextDataToken = (): string | null => {
+      const nextDataText = document.getElementById("__NEXT_DATA__")?.textContent;
+      if (!nextDataText) {
+        return null;
+      }
+      const nextData = asRecord(JSON.parse(nextDataText));
+      const props = asRecord(nextData.props);
+      const pageProps = asRecord(props.pageProps);
+      return pickAccessToken(pageProps.session);
+    };
+    const readDeviceId = (): string | null => {
+      // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+      const match = (document.cookie || "").match(/oai-did=([^;]+)/);
+      return match?.[1] ? decodeURIComponent(match[1]) : null;
+    };
+
+    const accessToken =
+      (await readSessionEndpointToken().catch(() => null)) ?? readBootstrapToken() ?? readNextDataToken();
+    const deviceId = readDeviceId();
     return { accessToken, deviceId };
   })) as ChatGptAuth;
 
@@ -1328,12 +1347,9 @@ export function createChatGptApi({
 
   // Re-extract the page's CURRENT bearer token, discarding the cached one. The
   // ChatGPT web `access_token` is a short-lived JWT that the browser rotates
-  // silently; a long run (the recovery backlog can take 10s of minutes under
-  // pacing) outlives the token it cached at run start, so a late fetch sees a
-  // stale token and gets a 401 even though the page already holds a fresh one.
-  // Clearing the cache and re-reading `#client-bootstrap` picks up the live
-  // token. Returns the fresh auth, or throws `chatgpt_auth_missing` if the page
-  // genuinely has no token (the session is actually dead → owner reconnect).
+  // silently; a run can outlive the token it cached at start. Clearing the cache
+  // and re-reading `/api/auth/session` first, then DOM bootstrap fallback,
+  // picks up the live token when the browser session is still valid.
   function reauth(): Promise<ChatGptAuth> {
     authCache = null;
     return auth();
@@ -3945,7 +3961,7 @@ if (isMainModule(import.meta.url)) {
     name: "chatgpt",
     validateRecord,
     normalizeTerminalError: normalizeChatGptTerminalError,
-    browser: { preservePageOnSuccess: true, profileName: "chatgpt" },
+    browser: { preservePageOnFailure: true, preservePageOnSuccess: true, profileName: "chatgpt" },
     async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
       await ensureChatGptSession({
         assist,

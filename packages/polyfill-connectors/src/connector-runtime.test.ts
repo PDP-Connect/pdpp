@@ -177,6 +177,14 @@ test("selectBrowserPageForRun reuses a non-blank page when preserving successful
   assert.equal(newPageCalls(), 0);
 });
 
+test("selectBrowserPageForRun reuses a non-blank page when preserving failed pages", async () => {
+  const existing = makeDiagnosticPage("https://chatgpt.com/");
+  const { context, newPageCalls } = makePageSelectionContext([existing]);
+
+  assert.equal(await selectBrowserPageForRun(context, { preservePageOnFailure: true }), existing);
+  assert.equal(newPageCalls(), 0);
+});
+
 test("selectBrowserPageForRun ignores closed and blank pages", async () => {
   const reusable = makeDiagnosticPage("https://chatgpt.com/");
   const { context, newPageCalls } = makePageSelectionContext([
@@ -197,11 +205,21 @@ test("isReusableBrowserRunPage treats non-blank open pages as reusable", () => {
   assert.equal(isReusableBrowserRunPage(makeDiagnosticPage("https://chatgpt.com/", true)), false);
 });
 
-test("shouldCloseBrowserPageAfterRun preserves only opted-in successful pages", () => {
+test("shouldCloseBrowserPageAfterRun preserves only opted-in run outcomes", () => {
   assert.equal(shouldCloseBrowserPageAfterRun({}, true), true);
   assert.equal(shouldCloseBrowserPageAfterRun({}, false), true);
   assert.equal(shouldCloseBrowserPageAfterRun({ preservePageOnSuccess: true }, false), true);
   assert.equal(shouldCloseBrowserPageAfterRun({ preservePageOnSuccess: true }, true), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({ preservePageOnFailure: true }, true), true);
+  assert.equal(shouldCloseBrowserPageAfterRun({ preservePageOnFailure: true }, false), false);
+  assert.equal(
+    shouldCloseBrowserPageAfterRun({ preservePageOnFailure: true, preservePageOnSuccess: true }, true),
+    false
+  );
+  assert.equal(
+    shouldCloseBrowserPageAfterRun({ preservePageOnFailure: true, preservePageOnSuccess: true }, false),
+    false
+  );
 });
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {

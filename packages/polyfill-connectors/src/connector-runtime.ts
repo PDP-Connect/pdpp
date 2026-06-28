@@ -152,6 +152,11 @@ export interface BrowserCollectContext extends BaseCollectContext {
 export interface BrowserConfig {
   headless?: boolean;
   /**
+   * Preserve the run page after failed runs. Use only for sources where closing
+   * a failed-but-authenticated page would destroy the best repair surface.
+   */
+  preservePageOnFailure?: boolean;
+  /**
    * Reuse and preserve the run page after successful runs. Use only for
    * sources whose auth state is held in the live page instead of durable
    * browser storage.
@@ -1008,9 +1013,9 @@ export function isReusableBrowserRunPage(page: ReusableBrowserPage): boolean {
 
 export async function selectBrowserPageForRun(
   context: Pick<BrowserContext, "newPage" | "pages">,
-  browser: Pick<BrowserConfig, "preservePageOnSuccess">
+  browser: Pick<BrowserConfig, "preservePageOnFailure" | "preservePageOnSuccess">
 ): Promise<Page> {
-  if (browser.preservePageOnSuccess) {
+  if (browser.preservePageOnSuccess || browser.preservePageOnFailure) {
     for (const page of context.pages()) {
       if (isReusableBrowserRunPage(page)) {
         return page;
@@ -1021,10 +1026,16 @@ export async function selectBrowserPageForRun(
 }
 
 export function shouldCloseBrowserPageAfterRun(
-  browser: Pick<BrowserConfig, "preservePageOnSuccess">,
+  browser: Pick<BrowserConfig, "preservePageOnFailure" | "preservePageOnSuccess">,
   runSucceeded: boolean
 ): boolean {
-  return !(browser.preservePageOnSuccess && runSucceeded);
+  if (runSucceeded && browser.preservePageOnSuccess) {
+    return false;
+  }
+  if (!runSucceeded && browser.preservePageOnFailure) {
+    return false;
+  }
+  return true;
 }
 
 export async function captureBrowserPage(
@@ -1510,7 +1521,7 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
     return await acquireBrowserForConnector({
       profileName,
       headless,
-      ...(browser.preservePageOnSuccess ? { preserveRemotePagesOnAcquire: true } : {}),
+      ...(browser.preservePageOnSuccess || browser.preservePageOnFailure ? { preserveRemotePagesOnAcquire: true } : {}),
       ...(streamingEnabled ? { streamingEnabled: true } : {}),
       ...(remoteCdpUrl ? { remoteCdpUrl } : {}),
     });
