@@ -141,6 +141,63 @@ interface ClientWithRedirectUris {
   readonly metadata?: { redirect_uris?: string[] } | null;
 }
 
+const IPV4_OCTET_RE = /^\d{1,3}$/;
+
+function normalizeLoopbackHost(hostname: string): string {
+  return hostname.toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+function isIpv4LoopbackHost(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") {
+    return false;
+  }
+  return parts.every((part) => {
+    if (!IPV4_OCTET_RE.test(part)) {
+      return false;
+    }
+    const n = Number(part);
+    return Number.isInteger(n) && n >= 0 && n <= 255;
+  });
+}
+
+function isHttpLoopbackRedirect(url: URL): boolean {
+  if (url.protocol !== "http:") {
+    return false;
+  }
+  const host = normalizeLoopbackHost(url.hostname);
+  return host === "localhost" || host === "::1" || isIpv4LoopbackHost(host);
+}
+
+function parseRedirectUri(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function loopbackRedirectMatchesExceptPort(registeredUri: string, requestedUri: string): boolean {
+  const registered = parseRedirectUri(registeredUri);
+  const requested = parseRedirectUri(requestedUri);
+  if (!(registered && requested)) {
+    return false;
+  }
+  if (!(isHttpLoopbackRedirect(registered) && isHttpLoopbackRedirect(requested))) {
+    return false;
+  }
+  return (
+    normalizeLoopbackHost(registered.hostname) === normalizeLoopbackHost(requested.hostname) &&
+    registered.pathname === requested.pathname &&
+    registered.search === requested.search &&
+    registered.hash === requested.hash
+  );
+}
+
+function redirectUriMatchesRegisteredUri(registeredUri: string, requestedUri: string): boolean {
+  return registeredUri === requestedUri || loopbackRedirectMatchesExceptPort(registeredUri, requestedUri);
+}
+
 /**
  * Asserts that `redirectUri` is registered in `client.metadata.redirect_uris`.
  * Throws `invalid_request` if not.
@@ -153,7 +210,7 @@ export function requireRegisteredRedirectUri(
     client?.metadata != null && Array.isArray(client.metadata.redirect_uris)
       ? (client.metadata.redirect_uris as string[])
       : [];
-  if (!redirectUris.includes(redirectUri)) {
+  if (!redirectUris.some((registeredUri) => redirectUriMatchesRegisteredUri(registeredUri, redirectUri))) {
     const err: OAuthError = new Error("redirect_uri does not match a registered redirect URI");
     err.code = "invalid_request";
     throw err;

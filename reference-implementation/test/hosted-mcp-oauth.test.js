@@ -137,6 +137,17 @@ async function registerAuthCodeClient(asUrl, opts = {}) {
   return body;
 }
 
+async function createCimdClientDocument(asUrl, input) {
+  const { status, body } = await fetchJson(`${asUrl}/_ref/cimd-client-documents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  assert.equal(status, 201);
+  assert.ok(body.client_id);
+  return body;
+}
+
 function renderedHostedMcpStreamValues(html) {
   return [...html.matchAll(/<input[^>]*name="stream"[^>]*value="([^"]+)"[^>]*data-hosted-mcp-stream-checkbox[^>]*>/g)]
     .map((match) => match[1]);
@@ -1054,6 +1065,110 @@ test('dynamic registration accepts only public authorization-code, refresh-token
     });
     assert.equal(inferredIpv6NativeLoopback.status, 201);
     assert.equal(inferredIpv6NativeLoopback.body.application_type, 'native');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('CIMD native loopback redirect matching ignores only runtime port', async () => {
+  const publicOrigin = 'https://pdpp.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+    ownerAuthPassword: '',
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await createCimdClientDocument(asUrl, {
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+      token_endpoint_auth_method: 'none',
+    });
+
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = pkceChallenge(verifier);
+    const state = 'native-loopback-state';
+    const runtimeRedirectUri = 'http://localhost:3118/callback';
+
+    const mismatchUrl = new URL(`${asUrl}/oauth/authorize`);
+    mismatchUrl.searchParams.set('client_id', client.client_id);
+    mismatchUrl.searchParams.set('redirect_uri', 'http://localhost:3118/not-callback');
+    mismatchUrl.searchParams.set('response_type', 'code');
+    mismatchUrl.searchParams.set('state', state);
+    mismatchUrl.searchParams.set('code_challenge', challenge);
+    mismatchUrl.searchParams.set('code_challenge_method', 'S256');
+    const mismatch = await fetchJson(mismatchUrl);
+    assert.equal(mismatch.status, 400);
+    assert.equal(mismatch.body.error, 'invalid_request');
+    assert.match(mismatch.body.error_description, /redirect_uri does not match/);
+
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', runtimeRedirectUri);
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', state);
+    authorizeUrl.searchParams.set('code_challenge', challenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+    authorizeUrl.searchParams.set('authorization_details', JSON.stringify(hostedMcpAuthorizationDetails(spotify)));
+
+    const authorizeResp = await fetch(authorizeUrl, { redirect: 'manual' });
+    assert.equal(authorizeResp.status, 302);
+    const consentUrl = new URL(authorizeResp.headers.get('location'), publicOrigin);
+    const requestUri = consentUrl.searchParams.get('request_uri');
+    assert.ok(requestUri);
+
+    const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        request_uri: requestUri,
+        subject_id: 'owner_local',
+      }).toString(),
+    });
+    assert.equal(approveResp.status, 302);
+    const callback = new URL(approveResp.headers.get('location'));
+    assert.equal(callback.origin, 'http://localhost:3118');
+    assert.equal(callback.pathname, '/callback');
+    assert.equal(callback.searchParams.get('state'), state);
+    const code = callback.searchParams.get('code');
+    assert.ok(code);
+
+    const wrongRedirect = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'http://localhost/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(wrongRedirect.status, 400);
+    assert.equal(wrongRedirect.body.error, 'invalid_grant');
+    assert.match(wrongRedirect.body.error_description, /redirect_uri mismatch/);
+
+    const token = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: runtimeRedirectUri,
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(token.status, 200);
+    assert.equal(token.body.token_type, 'Bearer');
+    assert.ok(token.body.access_token);
+    assert.ok(token.body.grant_id);
   } finally {
     await closeServer(server);
   }
