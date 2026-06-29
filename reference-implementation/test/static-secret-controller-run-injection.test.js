@@ -21,9 +21,9 @@ import { resolveStaticSecretRunEnv } from "../server/stores/static-secret-run-cr
 // spawn merge-order proof live in
 // packages/polyfill-connectors/src/static-secret-injection.test.ts. Here we wire
 // the REAL resolver the reference server installs (real credential store + real
-// `@pdpp/polyfill-connectors` injection helpers + the `hasActiveCredential`
-// backward-compat gate) into a real controller and assert the env fragment the
-// connector child would be spawned with. The connector itself is stubbed
+// `@pdpp/polyfill-connectors` injection helpers) into a real controller and
+// assert the env fragment the connector child would be spawned with. The
+// connector itself is stubbed
 // (`runConnectorImpl` captures opts) so no provider/network is touched — the
 // live intent→capture→first-ingest leg remains gated (design Decision 6).
 //
@@ -89,9 +89,9 @@ function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorI
 
 // Builds the SAME resolver the reference server installs on the controller (see
 // `buildControllerStaticSecretRunEnvResolver` in server/index.js): real
-// credential store, real injection helpers from the connector package, and the
-// `hasActiveCredential` backward-compat gate. Proving the real resolver — not a
-// stub — is what makes this an end-to-end wiring proof.
+// credential store and real injection helpers from the connector package.
+// Proving the real resolver — not a stub — is what makes this an end-to-end
+// wiring proof.
 function buildRealResolver() {
   return async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
     const { isStaticSecretConnector, buildConnectionScopedSecretEnv } = await import(
@@ -103,9 +103,6 @@ function buildRealResolver() {
     const credentialStore = createSqliteConnectorInstanceCredentialStore({
       env: { PDPP_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY },
     });
-    if ((await credentialStore.getMetadata(connectorInstanceId)) === null) {
-      return null;
-    }
     return await resolveStaticSecretRunEnv({
       connectorId,
       connectorInstanceId,
@@ -330,24 +327,25 @@ test("two mailboxes run with two distinct injected secrets (no process-global co
   );
 });
 
-test("a static-secret connection with no captured credential falls back to the legacy env path", async (t) => {
+test("a static-secret connection with no captured credential fails closed before child spawn", async (t) => {
   freshDb(t);
   seedConnectorInstance({ connectorInstanceId: "cin_personal", ownerSubjectId: "owner_1", connectorId: GMAIL_CONNECTOR });
 
   const calls = [];
   const controller = makeController(calls);
-  await controller.runNow(GMAIL_CONNECTOR, {
-    connectorInstanceId: "cin_personal",
-    manifest: GMAIL_MANIFEST,
-    ownerToken: "owner-token",
-    runId: "run_personal",
-  });
-  await controller.drainActiveRuns(1000);
-
-  assert.equal(calls.length, 1);
-  // No fragment is injected, so `runConnector` uses process.env as before —
-  // existing single-account deployments are not broken by the new wiring.
-  assert.equal(calls[0].staticSecretEnv, null);
+  await assert.rejects(
+    () =>
+      controller.runNow(GMAIL_CONNECTOR, {
+        connectorInstanceId: "cin_personal",
+        manifest: GMAIL_MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_personal",
+      }),
+    (err) => err && err.code === "credential_not_found",
+  );
+  // The configured source must not spawn a child that can fall back to
+  // deployment-wide provider-account env.
+  assert.equal(calls.length, 0);
 });
 
 test("a non-static-secret connector receives no injected secret", async (t) => {

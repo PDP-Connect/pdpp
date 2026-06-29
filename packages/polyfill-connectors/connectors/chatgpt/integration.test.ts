@@ -302,11 +302,17 @@ test("createChatGptApi refreshes auth from the current session endpoint after on
     evaluate: ((fn: unknown, arg?: unknown): Promise<unknown> => {
       if (arg === undefined) {
         authExtractionCalls += 1;
+        assert.equal(
+          typeof fn,
+          "string",
+          "auth extraction must be sent as a literal browser expression so bundlers cannot inject Node helpers"
+        );
         assert.match(
           String(fn),
           /\/api\/auth\/session/,
           "auth extraction should ask ChatGPT for the current session before using DOM bootstrap fallback"
         );
+        assert.doesNotMatch(String(fn), /__name/, "browser expression must not depend on bundler helper symbols");
         return Promise.resolve({
           accessToken: authExtractionCalls === 1 ? "stale-token" : "fresh-token",
           deviceId: "fake-device",

@@ -243,13 +243,11 @@ export type IsManagedConnectorHandler = (connectorId: string) => boolean;
  * Resolves the connection-scoped static-secret env fragment for one scheduled
  * launch. Mirrors the controller's `resolveStaticSecretRunEnv` contract
  * (controller.ts `CreateControllerOptions`): return the env fragment when the
- * connection has an active stored credential, `null` when no stored credential
- * applies (legacy process-env fallback), and THROW (fail closed) when the
- * connection has a credential that is revoked/deleted or unrecoverable — the
- * launch is then refused rather than started against a stale or process-global
- * secret. Without this seam the scheduled path silently depended on
- * process-global env vars even after the owner migrated credentials into the
- * encrypted per-connection store.
+ * connection has an active stored credential, `null` only when the connector is
+ * not handled by the static-secret setup family, and THROW (fail closed) when
+ * the configured connection has no active recoverable credential — the launch
+ * is then refused rather than started against a stale or deployment-wide
+ * provider-account secret.
  */
 export type ResolveStaticSecretRunEnv = (args: {
   connectorId: string;

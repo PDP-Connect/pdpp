@@ -1323,11 +1323,10 @@ async function buildStaticSecretCredentialProber() {
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
 // secret; the run then authenticates with exactly that secret, overriding any
-// process-global one. It returns `null` for non-static-secret connectors and
-// for connections with no captured credential — those fall back to the legacy
-// process-env path, so existing single-account deployments are unaffected. A
-// revoked/deleted credential on a static-secret connection fails closed: the
-// run seam throws and the run is refused (no stale or process-global secret).
+// process-global one. It returns `null` only for non-static-secret connectors.
+// A missing/revoked/deleted credential on a static-secret connection fails
+// closed: the run seam throws and the run is refused before any child can use
+// a stale or deployment-wide provider-account secret.
 function buildControllerStaticSecretRunEnvResolver() {
   return async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
     const { isStaticSecretConnector, buildConnectionScopedSecretEnv } =
@@ -1336,17 +1335,6 @@ function buildControllerStaticSecretRunEnvResolver() {
       return null;
     }
     const credentialStore = createRequestConnectorInstanceCredentialStore();
-    // Backward-compatible gate keyed on credential EXISTENCE, not active status.
-    // When no credential row was ever captured for this connection, fall back to
-    // the legacy process-env path so existing single-account deployments keep
-    // working. When a credential row DOES exist (active, revoked, or deleted)
-    // we defer to the run seam, which injects the secret for an active
-    // credential and FAILS CLOSED for a revoked/deleted one — a deliberately
-    // revoked credential must never silently resurrect onto a process-global
-    // secret (design Decision 7).
-    if ((await credentialStore.getMetadata(connectorInstanceId)) === null) {
-      return null;
-    }
     const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
     return await resolveStaticSecretRunEnv({
       connectorId,

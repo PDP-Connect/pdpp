@@ -1821,8 +1821,9 @@ export async function runConnector(opts) {
     // connection's secret env var(s). It is merged LAST over `process.env` at
     // spawn so a stored credential overrides any process-global secret the
     // operator may still have set — making two mailboxes two distinct runs
-    // rather than a collision on one global. Null/absent means no stored
-    // credential applies to this run (the legacy process-env path is used).
+    // rather than a collision on one global. Configured reference-server
+    // static-secret runs fail closed before spawn when this fragment is absent;
+    // direct standalone connector execution may still rely on process env.
     // See add-static-secret-owner-connect-primitive design Decision 5.
     staticSecretEnv = null,
     triggerKind = null,

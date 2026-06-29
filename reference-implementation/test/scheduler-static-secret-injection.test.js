@@ -19,9 +19,9 @@
  *   2. A connection with a store row never raises `credentials_required` on
  *      the scheduled path (and the control case proves the simulation is
  *      honest: without the resolver the same child DOES raise it).
- *   3. A resolver throw fails closed: the launch is refused, no connector
- *      child is spawned, and the failure is recorded — never a fallback to a
- *      stale or process-global secret.
+ *   3. A missing/revoked source-scoped credential fails closed: the launch is
+ *      refused, no connector child is spawned, and the failure is recorded —
+ *      never a fallback to a stale or process-global secret.
  */
 
 import test from 'node:test';
@@ -515,7 +515,7 @@ test('a store row suppresses credentials_required on the scheduled path (and its
   }
 });
 
-test('scheduled launch fails closed when the credential resolver throws (no child spawned)', async () => {
+test('scheduled launch fails closed when source-scoped credential is missing (no child spawned)', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-sched-fail-closed-'));
   const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, 'github', ['GITHUB_PERSONAL_ACCESS_TOKEN']);
   const completedRuns = [];
@@ -523,7 +523,7 @@ test('scheduled launch fails closed when the credential resolver throws (no chil
   const scheduler = createScheduler({
     connectors: [{
       connectorId: 'github',
-      connectorInstanceId: 'cin_github_revoked',
+      connectorInstanceId: 'cin_github_missing',
       connectorPath,
       manifest: BACKGROUND_SAFE_MANIFEST,
       intervalMs: 60_000,
@@ -537,7 +537,9 @@ test('scheduled launch fails closed when the credential resolver throws (no chil
     }),
     onRunComplete: (record) => completedRuns.push(record),
     resolveStaticSecretRunEnv: async () => {
-      throw new Error("The static-secret credential for connection 'cin_github_revoked' is 'revoked'.");
+      const err = new Error("No static-secret credential is stored for connection 'cin_github_missing'.");
+      err.code = 'credential_not_found';
+      throw err;
     },
   });
 
@@ -550,7 +552,7 @@ test('scheduled launch fails closed when the credential resolver throws (no chil
     assert.equal(record.status, 'failed');
     assert.equal(record.failureReason, 'static_secret_credential_unavailable');
     assert.match(record.error, /static_secret_credential_unavailable/);
-    assert.match(record.error, /revoked/);
+    assert.match(record.error, /credential is stored/);
     // The connector child must never have been spawned.
     assert.throws(() => readFileSync(snapshotPath, 'utf8'), /ENOENT/);
   } finally {

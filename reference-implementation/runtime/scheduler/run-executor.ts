@@ -733,14 +733,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const persistState = grantAccessMode !== "single_use";
 
     // Resolve connection-scoped static-secret credentials BEFORE launching —
-    // parity with the manual path (`controller.ts::runNow`). The encrypted
-    // per-connection credential store is the source of truth for scheduled
-    // runs too: without this seam, scheduled launches silently depended on
-    // process-global env vars, so a connection whose credential lives only in
-    // the store raised `credentials_required` the moment those env vars went
-    // absent or empty. A resolver throw is fail-closed: the connection HAS a
-    // credential we cannot use (revoked/deleted), so refuse the launch rather
-    // than fall through to a possibly stale process-global secret.
+    // parity with the manual path (`controller.ts::runNow`). Configured
+    // static-secret connections must supply a source-scoped credential through
+    // this seam; a resolver throw is fail-closed so the scheduler refuses the
+    // launch rather than falling through to a deployment-wide provider-account
+    // secret.
     let staticSecretEnv: Record<string, string> | null = null;
     if (resolveStaticSecretRunEnv) {
       try {

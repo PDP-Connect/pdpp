@@ -421,13 +421,11 @@ export interface ControllerOptions {
    * Contract:
    *   - Return a non-empty env fragment when the connection has an active
    *     stored credential — the run is then scoped to that secret.
-   *   - Return `null` when the connector is not a static-secret connector, or
-   *     when no stored credential applies — the run falls back to the legacy
-   *     process-env path (backward compatible with existing single-account
-   *     deployments).
-   *   - Throw (fail closed) when a static-secret connection HAS a credential
-   *     that is revoked/deleted or otherwise unrecoverable — the run is then
-   *     refused rather than started with a stale or process-global secret.
+   *   - Return `null` only when the connector is not a static-secret connector
+   *     or another connection-scoped setup family should handle the run.
+   *   - Throw (fail closed) when a configured static-secret connection has no
+   *     active recoverable credential — the run is refused rather than started
+   *     with a stale or deployment-wide provider-account secret.
    *
    * Injected (not imported) so the controller stays decoupled from the
    * credential store and the connector package, matching `runConnectorImpl`.
@@ -462,8 +460,9 @@ export interface ControllerOptions {
 }
 
 /**
- * Resolves the connection-scoped static-secret env fragment for one run, or
- * `null` when none applies. See `CreateControllerOptions.resolveStaticSecretRunEnv`.
+ * Resolves the connection-scoped static-secret env fragment for one run.
+ * Returns `null` only when the connector/setup family is not static-secret.
+ * See `CreateControllerOptions.resolveStaticSecretRunEnv`.
  */
 export type StaticSecretRunEnvResolver = (args: {
   readonly connectorId: string;
@@ -2798,12 +2797,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const startedAt = nowIso();
 
     // Resolve connection-scoped static-secret credentials before acquiring any
-    // managed runtime resources. A resolver throw is fail-closed: the
-    // connection has a credential we cannot use (revoked/deleted), so we refuse
-    // the run before taking a browser lease or falling through to a
-    // process-global secret. A `null` return means no stored credential applies
-    // (non-static-secret connector, or none captured) and the legacy
-    // process-env path is used.
+    // managed runtime resources. A resolver throw is fail-closed: configured
+    // static-secret sources without an active recoverable credential are
+    // refused before taking a browser lease or falling through to a
+    // deployment-wide provider-account secret. A `null` return means this
+    // connector is not handled by the static-secret setup family.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
       ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
       : null;

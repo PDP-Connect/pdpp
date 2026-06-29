@@ -129,6 +129,58 @@ export const normalizeChatGptTerminalError: NormalizeTerminalError = ({
 
 // ─── Browser auth ───────────────────────────────────────────────────────
 
+const CHATGPT_AUTH_EXTRACTION_EXPRESSION = `
+(async () => {
+  const asRecord = (value) => (value && typeof value === "object" ? value : {});
+  const pickAccessToken = (value) => {
+    const record = asRecord(value);
+    const session = asRecord(record.session);
+    const candidate = [record.accessToken, record.access_token, session.accessToken, session.access_token].find(
+      (item) => typeof item === "string" && item.length > 0
+    );
+    return candidate || null;
+  };
+
+  const readSessionEndpointToken = async () => {
+    const res = await fetch("/api/auth/session", {
+      cache: "no-store",
+      credentials: "include",
+    });
+    return res.ok ? pickAccessToken(await res.json()) : null;
+  };
+  const readBootstrapToken = () => {
+    const el = document.getElementById("client-bootstrap");
+    if (!el) {
+      return null;
+    }
+    try {
+      return pickAccessToken(JSON.parse(el.textContent || "{}"));
+    } catch {
+      return null;
+    }
+  };
+  const readNextDataToken = () => {
+    const nextDataText = document.getElementById("__NEXT_DATA__")?.textContent;
+    if (!nextDataText) {
+      return null;
+    }
+    const nextData = asRecord(JSON.parse(nextDataText));
+    const props = asRecord(nextData.props);
+    const pageProps = asRecord(props.pageProps);
+    return pickAccessToken(pageProps.session);
+  };
+  const readDeviceId = () => {
+    const match = (document.cookie || "").match(/oai-did=([^;]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  };
+
+  const accessToken =
+    (await readSessionEndpointToken().catch(() => null)) ?? readBootstrapToken() ?? readNextDataToken();
+  const deviceId = readDeviceId();
+  return { accessToken, deviceId };
+})()
+`;
+
 async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
   await page.goto("https://chatgpt.com/", {
     waitUntil: "domcontentloaded",
@@ -146,58 +198,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
     )
     .catch((): undefined => undefined);
 
-  const auth = (await page.evaluate(async () => {
-    const asRecord = (value: unknown): Record<string, unknown> =>
-      value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-    const pickAccessToken = (value: unknown): string | null => {
-      const record = asRecord(value);
-      const session = asRecord(record.session);
-      const candidate = [record.accessToken, record.access_token, session.accessToken, session.access_token].find(
-        (item): item is string => typeof item === "string" && item.length > 0
-      );
-      return candidate ?? null;
-    };
-
-    const readSessionEndpointToken = async (): Promise<string | null> => {
-      const res = await fetch("/api/auth/session", {
-        cache: "no-store",
-        credentials: "include",
-      });
-      return res.ok ? pickAccessToken(await res.json()) : null;
-    };
-    const readBootstrapToken = (): string | null => {
-      const el = document.getElementById("client-bootstrap");
-      if (!el) {
-        return null;
-      }
-      try {
-        const data = JSON.parse(el.textContent || "{}");
-        return pickAccessToken(data);
-      } catch {
-        return null;
-      }
-    };
-    const readNextDataToken = (): string | null => {
-      const nextDataText = document.getElementById("__NEXT_DATA__")?.textContent;
-      if (!nextDataText) {
-        return null;
-      }
-      const nextData = asRecord(JSON.parse(nextDataText));
-      const props = asRecord(nextData.props);
-      const pageProps = asRecord(props.pageProps);
-      return pickAccessToken(pageProps.session);
-    };
-    const readDeviceId = (): string | null => {
-      // biome-ignore lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-      const match = (document.cookie || "").match(/oai-did=([^;]+)/);
-      return match?.[1] ? decodeURIComponent(match[1]) : null;
-    };
-
-    const accessToken =
-      (await readSessionEndpointToken().catch(() => null)) ?? readBootstrapToken() ?? readNextDataToken();
-    const deviceId = readDeviceId();
-    return { accessToken, deviceId };
-  })) as ChatGptAuth;
+  const auth = (await page.evaluate(CHATGPT_AUTH_EXTRACTION_EXPRESSION)) as ChatGptAuth;
 
   return auth;
 }
