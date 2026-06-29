@@ -5,9 +5,9 @@
  * reference rebuild, when a transient read failed mid `router.refresh()`. These
  * pin the fix so it cannot regress to a full-viewport blank:
  *
- *   1. The records error boundary is a PARTIAL banner, not a full-viewport
- *      takeover, and frames the failure as a read failure that is recovering —
- *      never a terminal blank.
+ *   1. The records error boundary first renders quiet retrying copy, not an
+ *      explicit failure headline, and the eventual failure state is still a
+ *      partial banner rather than a full-viewport takeover.
  *   2. The boundary reads a CLIENT-cached last-known marker (it must not import
  *      a server-only module) and surfaces last-known status + a retry.
  *   3. The boundary auto-retries once so a transient blip self-heals.
@@ -33,11 +33,16 @@ const MARKER_FILE = `${HERE}last-known-read.ts`;
 
 // Regexes hoisted to module scope (project lint: useTopLevelRegex).
 const BANNER_TESTID_RE = /data-testid="records-read-failure-banner"/;
+const PENDING_TESTID_RE = /data-testid="records-read-retry-pending"/;
+const PENDING_COPY_RE = /Refreshing source status/;
+const FAILURE_HEADLINE_RE = /Couldn't refresh your connections/;
+const FAILURE_GATED_AFTER_RETRY_RE = /if\s*\(!autoRetried\)[\s\S]*records-read-retry-pending[\s\S]*return\s*\(/;
 const FULL_VIEWPORT_TAKEOVER_RE = /min-h-\[60vh\]/;
 const READ_FAILURE_FRAMING_RE = /read failure, not a change/;
 const READS_MARKER_HELPER_RE = /readLastRecordsReadAt/;
 const IMPORTS_MARKER_RE = /from "\.\/last-known-read\.ts"/;
-const LAST_KNOWN_COPY_RE = /last-known status/i;
+const LAST_SUCCESSFUL_LOAD_COPY_RE = /Last successful load/;
+const OVERCLAIMED_LAST_KNOWN_COPY_RE = /Showing last-known status/i;
 const SERVER_ONLY_IMPORT_RE = /^import[\s\S]*?from\s+["'][^"']*(owner-token|server-only|data-source|ref-client)/m;
 const RETRY_TESTID_RE = /data-testid="records-read-failure-retry"/;
 const CALLS_RESET_RE = /reset\(\)/;
@@ -48,7 +53,15 @@ const GUARDED_REFRESH_RE = /try\s*\{[\s\S]*router\.refresh\(\)[\s\S]*\}\s*catch/
 const MARKER_GUARDS_WINDOW_RE = /typeof window/;
 const ANY_IMPORT_RE = /^import\s/m;
 
-test("the records error boundary is a partial banner, not a full-viewport blank", async () => {
+test("the records error boundary retries quietly before rendering explicit failure copy", async () => {
+  const src = await readFile(ERROR_FILE, "utf8");
+  assert.match(src, PENDING_TESTID_RE);
+  assert.match(src, PENDING_COPY_RE);
+  assert.match(src, FAILURE_HEADLINE_RE);
+  assert.match(src, FAILURE_GATED_AFTER_RETRY_RE);
+});
+
+test("the records persistent-failure state is a partial banner, not a full-viewport blank", async () => {
   const src = await readFile(ERROR_FILE, "utf8");
   // A banner (section/role=status), not the full-height centered takeover the
   // generic segment-error shell uses.
@@ -63,8 +76,10 @@ test("the boundary surfaces last-known status from a client-cached marker, never
   // Reads the client-side marker…
   assert.match(src, READS_MARKER_HELPER_RE);
   assert.match(src, IMPORTS_MARKER_RE);
-  // …and says it is showing last-known status.
-  assert.match(src, LAST_KNOWN_COPY_RE);
+  // …and reports the last successful load without claiming to render cached
+  // source rows.
+  assert.match(src, LAST_SUCCESSFUL_LOAD_COPY_RE);
+  assert.doesNotMatch(src, OVERCLAIMED_LAST_KNOWN_COPY_RE);
   // Self-contained: no server-only module is *imported* into the boundary.
   // (The doc comment may name `server-only` to explain why it is avoided; we
   // scan import statements, not prose.)

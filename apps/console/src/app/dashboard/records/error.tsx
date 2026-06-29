@@ -17,9 +17,9 @@ import { readLastRecordsReadAt } from "./last-known-read.ts";
  * So this boundary is NOT a full-viewport takeover. It renders a compact,
  * top-anchored banner that:
  *   - frames the failure honestly as a *read* failure, not a data change;
- *   - names *when* the data was last confirmed live (last-known timestamp,
- *     read from the client-side `sessionStorage` marker the poller stamps —
- *     see `last-known-read.ts`), so "showing last-known status" is truthful;
+ *   - names *when* the data was last confirmed live (last-successful-load
+ *     timestamp, read from the client-side `sessionStorage` marker the poller
+ *     stamps — see `last-known-read.ts`), without claiming cached rows exist;
  *   - offers an explicit Retry; and
  *   - quietly auto-retries once after a short delay, so a transient blip
  *     self-heals back to the live list without the owner lifting a finger.
@@ -73,9 +73,24 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
     return () => clearTimeout(id);
   }, [autoRetried, reset]);
 
-  const lastKnownLine = lastKnown
-    ? `Showing last-known status from ${lastKnown}.`
-    : "Showing the last status that loaded.";
+  const lastKnownLine = lastKnown ? `Last successful load: ${lastKnown}.` : "The last successful load time is unknown.";
+
+  if (!autoRetried) {
+    return (
+      <section
+        aria-live="polite"
+        className="mb-6 rounded-md border border-border bg-card px-4 py-3"
+        data-testid="records-read-retry-pending"
+        role="status"
+      >
+        <p className="pdpp-body font-medium text-foreground">Refreshing source status</p>
+        <p className="pdpp-caption mt-1 max-w-prose text-muted-foreground">
+          The Sources view hit a transient read interruption. Retrying automatically before showing an error.{" "}
+          {lastKnownLine}
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section
@@ -87,7 +102,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
       <p className="pdpp-body font-medium text-foreground">Couldn't refresh your connections</p>
       <p className="pdpp-caption mt-1 max-w-prose text-muted-foreground">
         The Sources view hit an error reading from your reference deployment. Your data and connections are unaffected —
-        this is a read failure, not a change. {lastKnownLine} Retrying automatically…
+        this is a read failure, not a change. {lastKnownLine}
       </p>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
