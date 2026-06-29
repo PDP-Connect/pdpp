@@ -44,6 +44,7 @@ import {
   planIncrementalYears,
   processListOrder,
   type RunFlags,
+  readPageContentWithin,
   reasonForDetailFailure,
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
@@ -587,6 +588,14 @@ test("reasonForDetailFailure: maps precise Amazon detail failures to redacted re
   assert.equal(reasonForDetailFailure("redirected_non_detail"), "temporary_unavailable");
   assert.equal(reasonForDetailFailure("parse_missing"), "temporary_unavailable");
   assert.equal(reasonForDetailFailure("deferred_budget"), "retry_exhausted");
+});
+
+test("readPageContentWithin fails bounded when the renderer stops answering", async () => {
+  const page = {
+    content: (): Promise<string> => new Promise(() => undefined),
+  };
+
+  await assert.rejects(() => readPageContentWithin(page, 5), /page_content_timeout after 5ms/);
 });
 
 test("recordDetailOutcome: every recorded order joins required; outcome picks the numerator/skip set", () => {

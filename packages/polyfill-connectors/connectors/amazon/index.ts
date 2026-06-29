@@ -92,6 +92,7 @@ interface EmptyListPageClassification {
 const NAV_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_WAIT_MS = 15_000;
 const DETAIL_WAIT_MS = 15_000;
+const PAGE_CONTENT_TIMEOUT_MS = 10_000;
 const LIST_PAGE_WAIT_MS = 10_000;
 const PAGE_LIMIT = 50;
 const START_INDEX_STEP = 10;
@@ -130,6 +131,27 @@ export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGap
       return "temporary_unavailable";
     default:
       return "temporary_unavailable";
+  }
+}
+
+export async function readPageContentWithin(
+  page: Pick<Page, "content">,
+  timeoutMs = PAGE_CONTENT_TIMEOUT_MS
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      page.content(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`page_content_timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -268,7 +290,7 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
         status: "failed",
       };
     }
-    const html = await page.content();
+    const html = await readPageContentWithin(page);
     const detail = parseOrderDetailDom(html);
     if (detail) {
       return { detail, status: "hydrated" };
@@ -290,7 +312,7 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
 // ─── Per-page order extraction ────────────────────────────────────────────
 async function extractOrdersOnPage(page: Page): Promise<ListPageOrder[]> {
   try {
-    const html = await page.content();
+    const html = await readPageContentWithin(page);
     return parseOrdersListDom(html);
   } catch {
     return [];

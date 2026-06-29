@@ -14,6 +14,7 @@ import {
   getCurrentRunAssistance,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
+import { selectNoAssistanceStreamState } from "./stream-state.ts";
 import { ResolvedSurface, StreamSurface } from "./stream-viewer.tsx";
 
 export const dynamic = "force-dynamic";
@@ -129,7 +130,14 @@ export default async function RunInteractionStreamPage({
     if (currentAssistance && requiresBrowserSurfaceAssistance(currentAssistance)) {
       return <UnavailableStreamSurface connector={connector} runId={runId} />;
     }
-    return <ResolvedSurface connector={connector} />;
+    const noAssistanceState = selectNoAssistanceStreamState(envelope.terminal_status);
+    if (noAssistanceState === "resolved") {
+      return <ResolvedSurface connector={connector} />;
+    }
+    if (noAssistanceState === "ended") {
+      return <RunEndedSurface connector={connector} runId={runId} terminalStatus={envelope.terminal_status} />;
+    }
+    return <RunContinuingSurface connector={connector} runId={runId} />;
   }
 
   return (
@@ -140,6 +148,63 @@ export default async function RunInteractionStreamPage({
       interactionMessage={streamableAssistance.message}
       runId={runId}
     />
+  );
+}
+
+function RunEndedSurface({
+  connector,
+  runId,
+  terminalStatus,
+}: {
+  connector: ConnectorContext | null;
+  runId: string;
+  terminalStatus: TimelineEnvelope["terminal_status"];
+}) {
+  const subject = connector?.displayName ?? "This run";
+  let statusLabel = "failed";
+  if (terminalStatus === "cancelled") {
+    statusLabel = "cancelled";
+  } else if (terminalStatus === "abandoned") {
+    statusLabel = "stopped";
+  }
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-destructive/30 bg-destructive/5 p-6 shadow-2xl shadow-black/10">
+        <p className="pdpp-eyebrow text-muted-foreground">run {statusLabel}</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">{subject} needs a look.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          The browser step is no longer waiting, but the run did not complete successfully. Open the run timeline for
+          the exact failure and next action.
+        </p>
+        <a
+          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
+          href={`/dashboard/runs/${encodeURIComponent(runId)}`}
+        >
+          Open run timeline
+        </a>
+      </section>
+    </main>
+  );
+}
+
+function RunContinuingSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  const subject = connector?.displayName ?? "This run";
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <p className="pdpp-eyebrow text-muted-foreground">run continuing</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">No browser action is waiting.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          {subject} is still being checked. Open the run timeline to follow the latest status.
+        </p>
+        <a
+          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
+          href={`/dashboard/runs/${encodeURIComponent(runId)}`}
+        >
+          Open run timeline
+        </a>
+      </section>
+    </main>
   );
 }
 
