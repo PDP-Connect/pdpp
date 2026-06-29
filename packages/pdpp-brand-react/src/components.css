@@ -876,6 +876,37 @@
 }
 .rr-sync-health .pdpp-band__cell.is-warn .pdpp-band__v { color: var(--warning); }
 
+.rr-sync__fixes {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.rr-sync__fix-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rr-sync__fix-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 7px;
+}
+.rr-sync__fix-section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.rr-sync__fix-section-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* The failure as a card with an action — not a row. */
 .rr-fix {
   display: grid;
@@ -887,10 +918,26 @@
   border: 1px solid var(--warning);
   box-shadow: inset 3px 0 0 var(--warning);
 }
+.rr-fix[data-source-work="review"] {
+  background: var(--muted);
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+.rr-fix[data-source-work="systemIssue"] {
+  background: var(--destructive-tint);
+  border-color: var(--destructive);
+  box-shadow: inset 3px 0 0 var(--destructive);
+}
+.rr-fix[data-source-work="checking"],
+.rr-fix[data-source-work="other"] {
+  background: var(--muted);
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+}
 /* `wait` = cooldown/throttle — lower severity than `reconnect`.
    The card stays informational (no action needed), so chrome steps
    down from full warning amber to a quieter muted tint. */
-.rr-fix[data-cta="wait"] {
+.rr-fix[data-cta="wait"]:not([data-source-work="systemIssue"]) {
   background: var(--muted);
   border-color: var(--border-strong);
   box-shadow: inset 3px 0 0 var(--border-strong);

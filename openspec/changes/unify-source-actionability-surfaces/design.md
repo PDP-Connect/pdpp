@@ -20,5 +20,6 @@ Surfaces still own their layouts. Runs still merges `_ref/runs` with connector s
 - Overview source groups still show owner-required, review, system, and checking rows with scoped counts.
 - Sources list status/action cues derive from the same projection helpers as Overview.
 - Runs ranking and “need your hand” counts derive owner-required semantics from the same projection.
+- Runs action cards are visibly sectioned by the same source-work groups used by Overview and Sources.
 - Connection detail stream owner-action availability and primary action display use the same owner-satisfiable predicate.
 - Tests cover a maintainer-primary `attention` verdict so it cannot be counted as owner-required on any surface.

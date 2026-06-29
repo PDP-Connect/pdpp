@@ -7,6 +7,7 @@
 
 - [x] Wire Sources view-model to the shared status/action helpers.
 - [x] Wire Runs view-model priority/count semantics to the shared work classification.
+- [x] Wire Runs action-card sections to the shared work classification.
 - [x] Wire connection detail stream and primary-action helpers to the shared predicate/action helpers.
 - [x] Leave schedule editing behavior unchanged.
 

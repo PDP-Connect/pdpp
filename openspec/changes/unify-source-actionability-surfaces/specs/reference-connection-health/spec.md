@@ -15,7 +15,8 @@ Owner-console surfaces that classify connection status or owner actionability SH
 
 **WHEN** the owner console renders the same connection in Overview, Sources, Runs, or connection detail
 **THEN** each surface SHALL use the same owner-satisfiable primary-action predicate
-**AND** a maintainer-only or wait-only primary action SHALL NOT be counted as owner-required on any of those surfaces.
+**AND** a maintainer-only or wait-only primary action SHALL NOT be counted as owner-required on any of those surfaces
+**AND** any Runs action card SHALL be visibly grouped by the same owner-required, review, system-issue, or checking work classification used by the source-attention surfaces.
 
 #### Scenario: Surface layout remains local
 

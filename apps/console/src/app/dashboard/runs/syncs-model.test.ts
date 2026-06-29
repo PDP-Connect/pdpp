@@ -547,6 +547,7 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
   assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
   assert.equal(card?.summary.actionLabel, "Refresh now");
   assert.equal(card?.summary.ownerActionRequired, false);
+  assert.equal(card?.work?.group, "review");
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -630,8 +631,79 @@ test("device-local recovery counts as need-your-hand while navigating to recover
   assert.equal(card?.summary.cta, "connection_detail");
   assert.equal(card?.summary.actionLabel, "See recovery steps");
   assert.equal(card?.summary.ownerActionRequired, true);
+  assert.equal(card?.work?.group, "needsOwner");
   assert.equal(model.band.needYourHand, 1);
   assert.equal(model.band.needsReview, 1);
+});
+
+test("failure cards carry shared source-work groups for Runs presentation", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_owner",
+        display_name: "Owner source",
+        rendered_verdict: renderedVerdict({
+          channel: "attention",
+          forward_statement: "Reconnect this account and collection resumes.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [
+            action({
+              cta: "Reconnect this account",
+              kind: "reauth",
+              satisfied_when: { kind: "credential_present_and_unrejected" },
+              urgency: "now",
+            }),
+          ],
+        }),
+      }),
+      connector({
+        connection_id: "cin_review",
+        display_name: "Review source",
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement: "Run a refresh to bring this up to date.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            action({
+              cta: "Refresh now",
+              kind: "refresh_now",
+              satisfied_when: { kind: "confirming_run_succeeded" },
+              urgency: "soon",
+            }),
+          ],
+        }),
+      }),
+      connector({
+        connection_id: "cin_system",
+        display_name: "System source",
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement: "Latest collection completed with known coverage gaps.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              audience: "maintainer",
+              cta: "Coverage gap needs review",
+              kind: "code_fix",
+              satisfied_when: { kind: "none" },
+              terminal: true,
+              urgency: "soon",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  assert.deepEqual(
+    model.failureCards.map((card) => [card.connectionId, card.work?.group]),
+    [
+      ["cin_owner", "needsOwner"],
+      ["cin_review", "review"],
+      ["cin_system", "systemIssue"],
+    ]
+  );
 });
 
 test("syncs ranking only treats attention plus primary owner action as need-your-hand", () => {

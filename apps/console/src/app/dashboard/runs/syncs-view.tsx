@@ -38,12 +38,43 @@ const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9f
 
 const RESET_NOTE = "Nothing already saved is ever lost — a held connection only pauses new arrivals.";
 
+const FAILURE_SECTION_ORDER = ["needsOwner", "review", "systemIssue", "checking", "other"] as const;
+
+type FailureSection = (typeof FAILURE_SECTION_ORDER)[number];
+
+const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string }> = {
+  needsOwner: {
+    label: "Needs you",
+    note: "These sources cannot make progress until you act.",
+  },
+  review: {
+    label: "Worth reviewing",
+    note: "These are owner-runnable refresh or retry actions, not broken sources.",
+  },
+  systemIssue: {
+    label: "System or connector issue",
+    note: "These need a connector or reference fix before coverage is complete.",
+  },
+  checking: {
+    label: "Checking",
+    note: "The reference is still deciding the current source state.",
+  },
+  other: {
+    label: "Other source work",
+    note: "These need review, but did not map to a source-attention group.",
+  },
+};
+
 // ─── Health stat band ─────────────────────────────────────────────────────────
 
 function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
   const reviewValue = band.needYourHand > 0 ? band.needYourHand : band.needsReview;
-  const reviewLabel =
-    band.needYourHand > 0 ? "need your hand" : band.needsReview > 0 ? "need review" : "need attention";
+  let reviewLabel = "need attention";
+  if (band.needYourHand > 0) {
+    reviewLabel = "need your hand";
+  } else if (band.needsReview > 0) {
+    reviewLabel = "need review";
+  }
   return (
     <div className="rr-sync-health">
       <Band>
@@ -72,7 +103,7 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
   const { summary } = card;
   const ownerActionLabel = summary.actionLabel ?? (summary.cta === "reconnect" ? "Reconnect" : "Open source");
   return (
-    <section className="rr-fix" data-cta={summary.cta}>
+    <section className="rr-fix" data-cta={summary.cta} data-source-work={card.work?.group ?? "other"}>
       <div className="rr-fix__body">
         <h3 className="rr-fix__title">
           {card.name} — {summary.triggerLabel}
@@ -109,6 +140,50 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
         {summary.cta === "wait" ? (
           <Caption className="rr-fix__waiting">{summary.actionLabel ?? "No action needed"}</Caption>
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+function failureSectionForCard(card: FailureCard): FailureSection {
+  if (card.work?.group) {
+    return card.work.group;
+  }
+  return card.summary.ownerActionRequired ? "needsOwner" : "other";
+}
+
+function failureCardSections(cards: readonly FailureCard[]): Array<{
+  cards: FailureCard[];
+  section: FailureSection;
+}> {
+  const bySection = new Map<FailureSection, FailureCard[]>();
+  for (const card of cards) {
+    const section = failureSectionForCard(card);
+    const bucket = bySection.get(section);
+    if (bucket) {
+      bucket.push(card);
+    } else {
+      bySection.set(section, [card]);
+    }
+  }
+  return FAILURE_SECTION_ORDER.flatMap((section) => {
+    const sectionCards = bySection.get(section);
+    return sectionCards && sectionCards.length > 0 ? [{ cards: sectionCards, section }] : [];
+  });
+}
+
+function FailureCardSection({ cards, section }: { cards: FailureCard[]; section: FailureSection }) {
+  const copy = FAILURE_SECTION_COPY[section];
+  return (
+    <section className="rr-sync__fix-section" data-source-work={section}>
+      <div className="rr-sync__fix-section-head">
+        <h2 className="rr-sync__fix-section-title">{copy.label}</h2>
+        <Caption>{copy.note}</Caption>
+      </div>
+      <div className="rr-sync__fix-section-cards">
+        {cards.map((card) => (
+          <FailureCardPanel card={card} key={card.connectionId} />
+        ))}
       </div>
     </section>
   );
@@ -302,8 +377,8 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
 
       {model.failureCards.length > 0 ? (
         <div className="rr-sync__fixes">
-          {model.failureCards.map((card) => (
-            <FailureCardPanel card={card} key={card.connectionId} />
+          {failureCardSections(model.failureCards).map(({ cards, section }) => (
+            <FailureCardSection cards={cards} key={section} section={section} />
           ))}
         </div>
       ) : null}

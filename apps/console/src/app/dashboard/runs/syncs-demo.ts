@@ -79,7 +79,7 @@ function demoCard(input: {
   if (!summary) {
     throw new Error(`demo health for ${input.name} did not produce a failure summary`);
   }
-  return { name: input.name, connectionId: input.connectionId, connectorId: input.connectorId, summary };
+  return { name: input.name, connectionId: input.connectionId, connectorId: input.connectorId, summary, work: null };
 }
 
 const FIRST_MERIDIAN = demoCard({

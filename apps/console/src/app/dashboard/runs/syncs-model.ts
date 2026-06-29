@@ -129,6 +129,8 @@ export interface FailureCard {
   name: string;
   /** The honest, pre-derived failure summary (prose + cta + trigger label). */
   summary: FailureSummary;
+  /** Shared source-work classification, if the card maps to source actionability. */
+  work: SourceWorkItem | null;
 }
 
 /**
@@ -592,6 +594,7 @@ function toFailureCard(projection: SyncProjection): FailureCard {
     connectionId: projection.connector.connection_id,
     connectorId: projection.connector.connector_id,
     summary: projection.summary as FailureSummary,
+    work: projection.work,
   };
 }
 
