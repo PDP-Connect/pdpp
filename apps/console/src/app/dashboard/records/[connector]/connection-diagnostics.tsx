@@ -1,7 +1,7 @@
 import { IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
-import { CONNECTION_HEALTH_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
+import { CONNECTION_HEALTH_VOCABULARY, type StatusVocabulary } from "@pdpp/operator-ui/components/status-vocabularies";
 import Link from "next/link";
 import {
   pdppLocalCollectorDoctorCommand,
@@ -27,7 +27,7 @@ import type {
   RefRenderedVerdict,
   RefSchedule,
 } from "../../lib/ref-client.ts";
-import { primaryRequiredAction } from "../../lib/source-actionability.ts";
+import { deriveRenderedSourceStatus, primaryRequiredAction } from "../../lib/source-actionability.ts";
 
 /**
  * Server-rendered diagnostics block for the connector detail page.
@@ -243,21 +243,33 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
   );
 }
 
-const RENDERED_VERDICT_VOCABULARY = {
-  amber: { label: "Degraded", tone: "warning" },
-  green: { label: "Healthy", tone: "success" },
-  grey: { label: "Checking", tone: "neutral" },
-  red: { label: "Can't collect", tone: "danger" },
-} as const;
+type RenderedSourceStatus = ReturnType<typeof deriveRenderedSourceStatus>;
+
+const SOURCE_STATUS_BADGE_TONES = {
+  destructive: "danger",
+  muted: "neutral",
+  success: "success",
+  warning: "warning",
+} satisfies Record<RenderedSourceStatus["tone"], StatusVocabulary[string]["tone"]>;
+
+function renderedSourceStatusVocabulary(status: RenderedSourceStatus): StatusVocabulary {
+  return {
+    [status.kind]: {
+      label: status.label,
+      tone: SOURCE_STATUS_BADGE_TONES[status.tone],
+    },
+  };
+}
 
 function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
   const primaryAction = primaryRequiredAction(verdict);
+  const status = deriveRenderedSourceStatus(verdict, false);
   return (
     <div className="mb-3 flex flex-col gap-2 border-border/70 border-y px-3 py-3" data-testid="rendered-verdict">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
         <span>Verdict:</span>
         <span title={verdict.forward_statement}>
-          <StatusBadge status={verdict.pill.tone} vocabulary={RENDERED_VERDICT_VOCABULARY} />
+          <StatusBadge status={status.kind} vocabulary={renderedSourceStatusVocabulary(status)} />
         </span>
         <span aria-hidden>·</span>
         <span data-testid="rendered-verdict-channel">{verdict.channel}</span>
@@ -395,8 +407,9 @@ function ProjectedStateDiagnostics({
   // synthesized runbook is the badge tooltip. The raw `reason_code` still shows
   // beside it here — the detail page is the place for the underlying evidence.
   const legacyVerdict = synthesizeConnectionVerdict(connectionHealth);
-  const badge = renderedVerdict ? (
-    <StatusBadge status={renderedVerdict.pill.tone} vocabulary={RENDERED_VERDICT_VOCABULARY} />
+  const renderedStatus = renderedVerdict ? deriveRenderedSourceStatus(renderedVerdict, false) : null;
+  const badge = renderedStatus ? (
+    <StatusBadge status={renderedStatus.kind} vocabulary={renderedSourceStatusVocabulary(renderedStatus)} />
   ) : (
     <StatusBadge status={legacyVerdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
   );

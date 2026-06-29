@@ -140,9 +140,13 @@ const DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE =
   /required_actions\.some\(\(action\) => action\.remediation\?\.target\.kind === "local_device"\)/;
 const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
 const RENDERED_VERDICT_USES_SHARED_PRIMARY_ACTION = /const primaryAction = primaryRequiredAction\(verdict\)/;
-const RENDERED_VERDICT_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
+const RENDERED_VERDICT_USES_SHARED_STATUS = /deriveRenderedSourceStatus\(verdict, false\)/;
+const PROJECTED_STATE_USES_SHARED_STATUS = /deriveRenderedSourceStatus\(renderedVerdict, false\)/;
+const RENDERED_VERDICT_LOCAL_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
+const RENDERED_STATUS_BADGE_ADAPTER = /function renderedSourceStatusVocabulary/;
 const PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT = /renderedVerdict: RefRenderedVerdict \| null/;
-const PROJECTED_STATE_PREFERS_RENDERED_VERDICT = /renderedVerdict \?/;
+const PROJECTED_STATE_PREFERS_RENDERED_VERDICT =
+  /renderedVerdict \? deriveRenderedSourceStatus\(renderedVerdict, false\) : null/;
 const SUPPRESSED_EVIDENCE_COMPONENT = /function SuppressedEvidenceDiagnostics/;
 const SUPPRESSED_EVIDENCE_TESTID = /data-testid="diagnostics-suppressed-evidence"/;
 const SUPPRESSED_EVIDENCE_READS_VERDICT_DETAIL = /renderedVerdict\?\.detail\.suppressed/;
@@ -192,13 +196,16 @@ test("connection-diagnostics renders the server-owned rendered verdict summary",
   assert.match(src, RENDERED_VERDICT_PROGRESS_TESTID);
   assert.match(src, RENDERED_VERDICT_PRIMARY_ACTION_TESTID);
   assert.match(src, RENDERED_VERDICT_USES_SHARED_PRIMARY_ACTION);
-  assert.match(src, RENDERED_VERDICT_VOCABULARY);
+  assert.match(src, RENDERED_VERDICT_USES_SHARED_STATUS);
+  assert.match(src, RENDERED_STATUS_BADGE_ADAPTER);
+  assert.doesNotMatch(src, RENDERED_VERDICT_LOCAL_VOCABULARY);
 });
 
 test("projected-state diagnostics prefer rendered verdict for the headline badge when available", async () => {
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT);
   assert.match(src, PROJECTED_STATE_PREFERS_RENDERED_VERDICT);
+  assert.match(src, PROJECTED_STATE_USES_SHARED_STATUS);
 });
 
 test("connection-diagnostics renders suppressed verdict evidence only in the detail panel", async () => {
