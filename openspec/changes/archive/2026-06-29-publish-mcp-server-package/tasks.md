@@ -64,5 +64,7 @@
   `main` to trigger the release pipeline. The initial `0.18.11` release proved
   package bootstrap and trusted publishing, then exposed the workspace-protocol
   manifest bug fixed in task 4.6.
-- [ ] 5.4 **[OWNER]** Verify `npx -y @pdpp/mcp-server@latest --help` resolves and
-  exits 0 after the release pipeline completes.
+- [x] 5.4 **[OWNER]** Verify `npx -y @pdpp/mcp-server@latest --help` resolves and
+  exits 0 after the release pipeline completes. Verified against
+  `@pdpp/mcp-server@0.18.12`, whose published manifest uses
+  registry-resolvable `@pdpp/cli` and `@pdpp/read-core` dependency ranges.
