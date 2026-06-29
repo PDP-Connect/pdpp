@@ -17,6 +17,7 @@ intentionally, not a side effect of a commit type.
 - `@pdpp/cli`
 - `@pdpp/local-collector`
 - `@pdpp/mcp-server`
+- `@pdpp/read-core`
 
 Packages such as `@opendatalabs/remote-surface` (formerly `@pdpp/remote-surface`),
 `@pdpp/polyfill-connectors`, `@pdpp/reference-contract`, and `@pdpp/brand` remain
@@ -78,6 +79,10 @@ Every publishable PDPP package SHALL:
   an explicit `files` allowlist;
 - expose `scripts.verify` for release quality checks;
 - have a package-local `README.md`.
+- use registry-resolvable dependency ranges in publishable manifests. Local
+  workspace development may use root-level package-manager overrides to link
+  sibling workspaces, but published package manifests SHALL NOT contain
+  `workspace:` dependencies.
 
 Private workspace packages SHALL NOT declare `publishConfig`. Every
 `package.json` in this repository is private by default; a package may omit

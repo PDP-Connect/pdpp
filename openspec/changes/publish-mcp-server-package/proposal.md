@@ -46,5 +46,6 @@ install path that the documentation already advertises.
   `@pdpp/local-collector`).
 - No change to the MCP protocol surface, tool list, credential handling, or
   hosted-MCP routing.
-- The `workspace:*` dep on `@pdpp/cli` is replaced with the published semver
-  range by pnpm at publish time (standard pnpm workspace protocol replacement).
+- The published manifest must contain registry-resolvable ranges for
+  `@pdpp/cli` and `@pdpp/read-core`; semantic-release publishes package roots
+  directly and does not rewrite workspace protocol dependencies.

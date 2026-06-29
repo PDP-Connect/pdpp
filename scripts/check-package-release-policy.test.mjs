@@ -16,10 +16,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { findRetiredTagInstallDocReferences, policyErrors } from './check-package-release-policy.mjs';
+import {
+  findPublishableWorkspaceDependencyErrors,
+  findRetiredTagInstallDocReferences,
+  policyErrors,
+} from './check-package-release-policy.mjs';
 import { classifyDistTagPosture, placeholderVersion } from './check-dist-tag-posture.mjs';
 
-const PUBLISHABLE = ['@pdpp/cli', '@pdpp/local-collector'];
+const PUBLISHABLE = ['@pdpp/cli', '@pdpp/local-collector', '@pdpp/mcp-server', '@pdpp/read-core'];
 
 function scanLine(line) {
   return findRetiredTagInstallDocReferences({
@@ -89,6 +93,26 @@ test('dist-tag classifier treats a missing latest with a published beta as a haz
 test('dist-tag classifier skips unpublished packages and unreachable registry', () => {
   assert.equal(classifyDistTagPosture('@pdpp/cli', null).status, 'skip');
   assert.equal(classifyDistTagPosture('@pdpp/cli', {}).status, 'skip');
+});
+
+test('publishable packages cannot carry workspace protocol dependencies', () => {
+  const problems = findPublishableWorkspaceDependencyErrors([
+    {
+      file: 'packages/mcp-server/package.json',
+      manifest: {
+        dependencies: {
+          '@pdpp/cli': 'workspace:*',
+          zod: '^3.25.76',
+        },
+        optionalDependencies: {
+          '@pdpp/read-core': 'workspace:^',
+        },
+      },
+    },
+  ]);
+  assert.equal(problems.length, 2);
+  assert.match(problems[0], /workspace:\*/);
+  assert.match(problems[1], /workspace:\^/);
 });
 
 test('the live repository passes the hermetic package-release policy check', () => {

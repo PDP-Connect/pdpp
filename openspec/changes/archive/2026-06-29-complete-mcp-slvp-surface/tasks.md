@@ -40,13 +40,13 @@
 
 - [x] 5.1 Run read-evidence tests. (11/11)
 - [x] 5.2 Run MCP server tests. (165/165)
-- [ ] 5.3 Run hosted MCP OAuth/reference tests.
+- [x] 5.3 Run hosted MCP OAuth/reference tests. (`docs/research/mcp-slvp-surface-finish-2026-06-24.md` records hosted MCP OAuth/reference 86/86.)
 - [x] 5.4 Run REST/CLI parity tests. (cli read 9/9; rs-search 98/98)
 - [x] 5.5 Run export/large-data tests. (hostile-client large-field/blob/JSON escalation)
 - [x] 5.6 Run `openspec validate complete-mcp-slvp-surface --strict`.
-- [ ] 5.7 Run `openspec validate --all --strict`.
-- [ ] 5.8 Run `git diff --check`.
-- [ ] 5.9 Merge to main only after green gates and review.
+- [x] 5.7 Run `openspec validate --all --strict`.
+- [x] 5.8 Run `git diff --check`.
+- [x] 5.9 Merge to main only after green gates and review. (Implementation is present on `main`; this closeout only archives stale OpenSpec artifacts.)
 - [x] 5.10 Deploy with live-stack mutex and smoke deployed revision. (`v0.15.0-4-g72df54ec1`)
 - [x] 5.11 Run fresh ChatGPT client retest and record result under `docs/research/`.
 

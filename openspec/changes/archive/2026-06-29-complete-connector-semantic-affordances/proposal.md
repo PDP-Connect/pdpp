@@ -23,3 +23,7 @@ Modified:
 - Affected code: reference schema projection, MCP schema compaction, connector manifests, manifest tests, connector authoring docs.
 - Validation: manifest-honesty tests, compact schema formatter tests, OpenSpec strict validation.
 - Risk: broader semantic indexing declarations can trigger index rebuilds for changed streams. This is expected; the declarations describe already-granted owner-visible fields.
+
+## Residual Risks
+
+- The package-level polyfill connector suite still reaches an unrelated iMessage harness failure. Focused manifest-honesty, typecheck, MCP schema, MCP server, reference typecheck, compact formatter, `openspec validate`, and `git diff --check` gates passed for this change.

@@ -17,4 +17,4 @@
 
 - [x] 4.1 Run focused Slack runtime tests.
 - [x] 4.2 Run `openspec validate repair-slack-scoped-historical-holes --strict`.
-- [ ] 4.3 Live-verify scoped archive keys are retained after deploy and repair rerun.
+- [x] 4.3 Live-verify scoped archive keys are retained after deploy and repair rerun. (`docs/research/slack-coverage-live-verification-2026-06-29.md` records `archive_missing_retained=0`.)

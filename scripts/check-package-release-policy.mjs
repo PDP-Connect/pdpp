@@ -135,6 +135,29 @@ function fail(errors, message) {
   errors.push(message);
 }
 
+export function findPublishableWorkspaceDependencyErrors(publishablePackages) {
+  const problems = [];
+  for (const { file, manifest } of publishablePackages) {
+    for (const [section, dependencies] of Object.entries({
+      dependencies: manifest.dependencies,
+      optionalDependencies: manifest.optionalDependencies,
+      peerDependencies: manifest.peerDependencies,
+    })) {
+      if (!dependencies || typeof dependencies !== 'object') {
+        continue;
+      }
+      for (const [name, range] of Object.entries(dependencies)) {
+        if (typeof range === 'string' && range.startsWith('workspace:')) {
+          problems.push(
+            `${file} ${section}.${name} uses ${range}; publishable packages must use registry-resolvable ranges`,
+          );
+        }
+      }
+    }
+  }
+  return problems;
+}
+
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
 const errors = [];
@@ -197,6 +220,10 @@ for (const { file, dir, manifest } of publishablePackages) {
   }
 }
 
+for (const problem of findPublishableWorkspaceDependencyErrors(publishablePackages)) {
+  fail(errors, problem);
+}
+
 const releaseConfig = readFileSync(path.join(repoRoot, '.releaserc.yaml'), 'utf8');
 const releaseWorkflow = readFileSync(path.join(repoRoot, '.github/workflows/semantic-release.yml'), 'utf8');
 const configuredPackageRoots = [...releaseConfig.matchAll(/pkgRoot:\s*"([^"]+)"/g)].map((match) => match[1]).sort();
@@ -237,6 +264,13 @@ for (const scope of packageScopes) {
 }
 
 const publishablePackageNames = publishablePackages.map(({ manifest }) => manifest.name);
+for (const packageName of publishablePackageNames) {
+  const verifyCommand = new RegExp(`pnpm\\s+--filter\\s+${escapeRegExp(packageName)}\\s+run\\s+verify`);
+  if (!verifyCommand.test(releaseWorkflow)) {
+    fail(errors, `.github/workflows/semantic-release.yml quality job must verify ${packageName} before publishing`);
+  }
+}
+
 const installDocFiles = installDocRoots.flatMap((root) => listMarkdownFiles(root));
 const retiredTagInstallDocReferences = findRetiredTagInstallDocReferences({
   packageNames: publishablePackageNames,

@@ -34,6 +34,6 @@
 
 ## 6. ChatGPT Retest
 
-- [ ] 6.1 Deploy after owner review.
-- [ ] 6.2 Ask the owner to delete/re-add the ChatGPT app and retest `schema`, `list_streams`, `query_records`, `search`, and `aggregate`.
-- [ ] 6.3 Record whether ChatGPT sees typed object filters and whether any tool-list or tool-result truncation appears.
+- [x] 6.1 Deploy after owner review.
+- [x] 6.2 Supersede the original delete/re-add ChatGPT app retest with later hosted MCP retests after read-evidence and entrypoint changes.
+- [x] 6.3 Record current status: later ChatGPT retests saw the practical read surface and no tool-list truncation; no standalone footprint blocker remains.

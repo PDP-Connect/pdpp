@@ -112,6 +112,12 @@ jobs:
       - name: Verify local collector package
         run: pnpm --filter @pdpp/local-collector run verify
 
+      - name: Verify MCP server package
+        run: pnpm --filter @pdpp/mcp-server run verify
+
+      - name: Verify read-core package
+        run: pnpm --filter @pdpp/read-core run verify
+
   validate-release-images:
     name: validate release image ${{ matrix.image }}
     needs: resolve-version

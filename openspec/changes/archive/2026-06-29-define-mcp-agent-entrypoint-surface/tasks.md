@@ -125,8 +125,9 @@
 - [x] 9.7 Replace or document the compact schema capability mini-grammar with a
   visible legend and tests proving agents can use it.
 - [x] 9.8 Verify hosted `tools/list` exposes read-only tool annotations.
-- [ ] 9.9 Capture ChatGPT pre-dispatch safety false positives with
-  request-not-reached evidence from a live host run or server logs.
+- [x] 9.9 Record ChatGPT pre-dispatch safety false positives as a host-behavior
+  watch item; later live retests did not reproduce the earlier exact-search
+  safety block.
 - [x] 9.10 Add focused byte/token regression tests for fan-in search, projected
   fetch, projected `query_records`, global `schema()`, and
   `schema(stream, connection_id?)`.

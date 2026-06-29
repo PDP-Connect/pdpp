@@ -65,3 +65,9 @@ contract.
   deployment diagnostics to it.
 - No PDPP Core, Collection Profile, resource-server read contract, grant
   semantics, connector behavior, or owner-token posture change.
+
+## Residual Risks
+
+- ChatGPT pre-dispatch safety false positives remain a host-behavior watch item.
+  Later live retests did not reproduce the earlier exact-search safety block, so
+  this is not a blocker for the shipped entrypoint surface.

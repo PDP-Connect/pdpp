@@ -28,3 +28,7 @@ Official MCP and OpenAI guidance provides a cleaner path: use server `instructio
 - Affected package: `packages/mcp-server`.
 - Affected tests: MCP server/tool schema tests.
 - No REST contract changes, storage changes, grant semantics changes, connector changes, or dependency changes.
+
+## Residual Risks
+
+- The original delete/re-add ChatGPT app retest was superseded by later hosted MCP retests after the read-evidence and entrypoint changes. Those retests proved the practical ChatGPT path for `schema`, `search`, `fetch`, and `read_record_field`; no current evidence shows tool-list truncation.

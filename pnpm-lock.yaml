@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@pdpp/cli': workspace:*
+  '@pdpp/read-core': workspace:*
+
 importers:
 
   .:
@@ -280,7 +284,7 @@ importers:
         specifier: workspace:*
         version: link:../cli
       '@pdpp/read-core':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../read-core
       zod:
         specifier: ^3.25.76

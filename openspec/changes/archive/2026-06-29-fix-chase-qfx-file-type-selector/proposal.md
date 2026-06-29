@@ -24,3 +24,9 @@ Modified:
 - No protocol, database, or owner-dashboard contract changes.
 - Live closure still requires an owner-mediated Chase retry because Chase is
   manual, OTP-likely, and not background-safe.
+
+## Residual Risks
+
+- The code fix is merged, but the live Chase `transactions` detail gap remains
+  pending until an owner/browser-mediated retry runs. Current status is recorded
+  in `docs/research/amazon-chase-live-gap-status-2026-06-29.md`.

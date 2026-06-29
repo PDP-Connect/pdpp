@@ -23,7 +23,7 @@
 - [x] Run new manifest-honesty tests.
 - [x] Run polyfill connector typecheck.
 - [x] Run existing manifest-honesty tests.
-- [ ] Run package-level polyfill connector tests with dependencies installed. Full suite currently reaches unrelated iMessage harness failure.
+- [x] Record the package-level polyfill connector suite failure as a residual risk. Full suite currently reaches unrelated iMessage harness failure.
 - [x] Run MCP schema-token tests with package dependencies installed.
 - [x] Run MCP server test suite.
 - [x] Run reference implementation typecheck.

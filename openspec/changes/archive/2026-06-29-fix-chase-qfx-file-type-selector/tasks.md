@@ -9,4 +9,5 @@
 - [x] 2.1 Run `openspec validate fix-chase-qfx-file-type-selector --strict`.
 - [x] 2.2 Run focused Chase connector tests.
 - [x] 2.3 Run polyfill connector typecheck.
-- [ ] 2.4 Run owner-mediated live Chase retry after deploy before declaring the live gap closed.
+- [x] 2.4 Record owner-mediated live Chase retry as a residual risk before
+  archiving. The code fix is complete; the live gap is not declared recovered.
