@@ -348,6 +348,34 @@ test("a static-secret connection with no captured credential fails closed before
   assert.equal(calls.length, 0);
 });
 
+test("a browser-collector connection with no captured static login credential still launches", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({
+    connectorInstanceId: "cin_chatgpt",
+    ownerSubjectId: "owner_1",
+    connectorId: CHATGPT_CONNECTOR,
+    sourceBinding: {
+      connector_id: CHATGPT_CONNECTOR,
+      enrollment_completed_at: "2026-06-01T12:01:00.000Z",
+      enrollment_expires_at: "2026-06-01T14:00:00.000Z",
+      kind: "browser_collector",
+    },
+  });
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow(CHATGPT_CONNECTOR, {
+    connectorInstanceId: "cin_chatgpt",
+    manifest: CHATGPT_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_chatgpt",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].staticSecretEnv, null);
+});
+
 test("a non-static-secret connector receives no injected secret", async (t) => {
   freshDb(t);
   seedConnectorInstance({

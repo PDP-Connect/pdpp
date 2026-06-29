@@ -733,11 +733,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const persistState = grantAccessMode !== "single_use";
 
     // Resolve connection-scoped static-secret credentials BEFORE launching —
-    // parity with the manual path (`controller.ts::runNow`). Configured
-    // static-secret connections must supply a source-scoped credential through
-    // this seam; a resolver throw is fail-closed so the scheduler refuses the
-    // launch rather than falling through to a deployment-wide provider-account
-    // secret.
+    // parity with the manual path (`controller.ts::runNow`). True static-secret
+    // connections must supply a source-scoped credential through this seam; a
+    // resolver throw is fail-closed so the scheduler refuses the launch rather
+    // than falling through to a deployment-wide provider-account secret.
+    // Browser-session sources may return null when no optional stored login
+    // credential exists; the connector can still reuse/repair the browser
+    // session according to its automation policy.
     let staticSecretEnv: Record<string, string> | null = null;
     if (resolveStaticSecretRunEnv) {
       try {

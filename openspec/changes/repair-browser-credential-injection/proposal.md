@@ -13,6 +13,9 @@ credential repair when the reference needs a runtime mapping fix.
   registry: Amazon, Chase, USAA.
 - Make Reddit's current runtime credential shape `username_password`, while
   accepting the old sealed bundle shape for already-stored rows.
+- Keep static credentials optional for browser-session/browser-collector
+  connections: use a stored login credential when present, but do not block the
+  owner-authenticated secure-browser repair path when no static secret exists.
 - Extend scheduled/manual run tests and env-migration tests so active stored
   credentials prove they reach the connector child env.
 

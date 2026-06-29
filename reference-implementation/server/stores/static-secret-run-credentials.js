@@ -45,8 +45,9 @@ export class StaticSecretRunCredentialError extends Error {
  *   injected from the runner barrel.
  * @param {(connectorId: string, recovered: object) => Record<string,string>}
  *   args.buildConnectionScopedSecretEnv - injected from the runner barrel.
- * @returns {Promise<Record<string,string>>} env fragment carrying only this
- *   connection's secret.
+ * @returns {Promise<Record<string,string> | null>} env fragment carrying only
+ *   this connection's secret, or null when a browser-session connection has no
+ *   optional stored login credential.
  * @throws {StaticSecretRunCredentialError} on a configuration/usage error.
  * @throws {ConnectorInstanceCredentialError} (fail closed) when the credential
  *   is absent or revoked.
@@ -78,11 +79,31 @@ export async function resolveStaticSecretRunEnv({
       'A connector-instance credential store is required to resolve a static-secret run env.',
     );
   }
+  const browserSessionSource =
+    sourceBinding &&
+    typeof sourceBinding === 'object' &&
+    !Array.isArray(sourceBinding) &&
+    (sourceBinding.kind === 'browser_collector' || sourceBinding.kind === 'browser_enrollment_shell');
   // recoverSecret throws ConnectorInstanceCredentialError with code
   // 'credential_not_found' or 'credential_revoked' — the fail-closed path. We
-  // let it propagate so the run is refused rather than started with no/stale
-  // credential.
-  const recovered = await credentialStore.recoverSecret({ connectorInstanceId, ownerSubjectId });
+  // let it propagate for true static-secret sources so the run is refused
+  // rather than started with no/stale credential. Browser-session connections
+  // can optionally use stored login credentials, but their primary credential is
+  // the owner-authenticated browser session; absence of a static secret must not
+  // block the secure browser repair path.
+  let recovered;
+  try {
+    recovered = await credentialStore.recoverSecret({ connectorInstanceId, ownerSubjectId });
+  } catch (err) {
+    if (
+      browserSessionSource &&
+      err instanceof ConnectorInstanceCredentialError &&
+      (err.code === 'credential_not_found' || err.code === 'credential_revoked')
+    ) {
+      return null;
+    }
+    throw err;
+  }
   return buildConnectionScopedSecretEnv(connectorId, recovered, sourceBinding);
 }
 

@@ -12,6 +12,7 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 // run, in packages/polyfill-connectors/src/static-secret-injection.test.ts. This
 // suite proves the store<->seam fail-closed contract.
 const STATIC_SECRET_REGISTRY = {
+  chatgpt: { credentialKind: 'username_password', secretEnvVars: ['CHATGPT_PASSWORD'] },
   gmail: { credentialKind: 'app_password', secretEnvVars: ['GOOGLE_APP_PASSWORD_PDPP', 'GMAIL_APP_PASSWORD'] },
   github: { credentialKind: 'personal_access_token', secretEnvVars: ['GITHUB_PERSONAL_ACCESS_TOKEN', 'GITHUB_TOKEN'] },
 };
@@ -42,7 +43,7 @@ const TEST_KEY = 'test-operator-key-do-not-use-in-prod';
 const APP_PASSWORD = 'abcd efgh ijkl mnop';
 const ROTATED = 'zzzz yyyy xxxx wwww';
 
-function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorId }) {
+function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorId, sourceBinding = {} }) {
   const db = getDb();
   db.prepare(`INSERT OR IGNORE INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)`).run(
     connectorId,
@@ -53,8 +54,17 @@ function seedConnectorInstance({ connectorInstanceId, ownerSubjectId, connectorI
     `INSERT INTO connector_instances(
        connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-     ) VALUES (?, ?, ?, ?, 'active', 'account', ?, '{}', ?, ?, NULL)`,
-  ).run(connectorInstanceId, ownerSubjectId, connectorId, connectorInstanceId, connectorInstanceId, NOW, NOW);
+     ) VALUES (?, ?, ?, ?, 'active', 'account', ?, ?, ?, ?, NULL)`,
+  ).run(
+    connectorInstanceId,
+    ownerSubjectId,
+    connectorId,
+    connectorInstanceId,
+    connectorInstanceId,
+    JSON.stringify(sourceBinding),
+    NOW,
+    NOW,
+  );
 }
 
 function withStore(fn) {
@@ -71,11 +81,12 @@ function withStore(fn) {
   };
 }
 
-function resolveEnv(store, { connectorId, connectorInstanceId, ownerSubjectId }) {
+function resolveEnv(store, { connectorId, connectorInstanceId, ownerSubjectId, sourceBinding }) {
   return resolveStaticSecretRunEnv({
     connectorId,
     connectorInstanceId,
     ownerSubjectId,
+    sourceBinding,
     credentialStore: store,
     isStaticSecretConnector,
     buildConnectionScopedSecretEnv,
@@ -107,6 +118,54 @@ test(
       () => resolveEnv(store, { connectorId: 'gmail', connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1' }),
       (err) => err instanceof ConnectorInstanceCredentialError && err.code === 'credential_not_found',
     );
+  }),
+);
+
+test(
+  'a browser-session source may launch without an optional static login credential',
+  withStore(async (store) => {
+    const sourceBinding = {
+      connector_id: 'chatgpt',
+      enrollment_completed_at: '2026-06-01T12:01:00.000Z',
+      enrollment_expires_at: '2026-06-01T14:00:00.000Z',
+      kind: 'browser_collector',
+    };
+    seedConnectorInstance({ connectorInstanceId: 'cin_chatgpt', ownerSubjectId: 'owner_1', connectorId: 'chatgpt', sourceBinding });
+    const env = await resolveEnv(store, {
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt',
+      ownerSubjectId: 'owner_1',
+      sourceBinding,
+    });
+    assert.equal(env, null);
+  }),
+);
+
+test(
+  'a browser-session source ignores a revoked optional static login credential',
+  withStore(async (store) => {
+    const sourceBinding = {
+      connector_id: 'chatgpt',
+      enrollment_completed_at: '2026-06-01T12:01:00.000Z',
+      enrollment_expires_at: '2026-06-01T14:00:00.000Z',
+      kind: 'browser_collector',
+    };
+    seedConnectorInstance({ connectorInstanceId: 'cin_chatgpt', ownerSubjectId: 'owner_1', connectorId: 'chatgpt', sourceBinding });
+    await store.capture({
+      connectorInstanceId: 'cin_chatgpt',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'username_password',
+      secret: 'not-used-after-revoke',
+      now: NOW,
+    });
+    await store.revoke({ connectorInstanceId: 'cin_chatgpt', now: LATER });
+    const env = await resolveEnv(store, {
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt',
+      ownerSubjectId: 'owner_1',
+      sourceBinding,
+    });
+    assert.equal(env, null);
   }),
 );
 

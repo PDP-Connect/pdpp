@@ -2797,11 +2797,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const startedAt = nowIso();
 
     // Resolve connection-scoped static-secret credentials before acquiring any
-    // managed runtime resources. A resolver throw is fail-closed: configured
-    // static-secret sources without an active recoverable credential are
-    // refused before taking a browser lease or falling through to a
-    // deployment-wide provider-account secret. A `null` return means this
-    // connector is not handled by the static-secret setup family.
+    // managed runtime resources. A resolver throw is fail-closed for true
+    // static-secret sources, refusing the run before it can fall through to a
+    // deployment-wide provider-account secret. A `null` return means either the
+    // connector is not static-secret-backed or this browser-session source has
+    // no optional stored login credential.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
       ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
       : null;
