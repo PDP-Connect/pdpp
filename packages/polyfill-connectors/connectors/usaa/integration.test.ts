@@ -55,6 +55,7 @@ import {
   hydrationSuccess,
   isNoDataExportMessage,
   shouldParseStatementTitle,
+  USAA_RETRYABLE_PATTERN,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -136,6 +137,13 @@ function makeHydrationOk(overrides: Partial<HydrationResultSuccess> = {}): Hydra
 function requestedWith(names: readonly string[]): Map<string, StreamScope> {
   return new Map<string, StreamScope>(names.map((n) => [n, { name: n }]));
 }
+
+test("runtime retry classification includes source-unavailable login failures", () => {
+  assert.match(
+    "source_unavailable: USAA reported its login system is currently unavailable after Next click.",
+    USAA_RETRYABLE_PATTERN
+  );
+});
 
 // ─── Invariant 1: parent-before-child (accounts before statements) ───────
 

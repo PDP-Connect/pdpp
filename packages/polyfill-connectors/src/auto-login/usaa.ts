@@ -22,6 +22,7 @@ const TEXT_CODE_PROMPT = /Text security code/i;
 const OTP_INPUT_SELECTOR = 'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]';
 const OTP_RETRY_TEXT = /retry|invalid|incorrect|expired|try again/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
+const USAA_SOURCE_UNAVAILABLE_TEXT = /unable to complete your request|system is currently unavailable|try again later/i;
 const MAX_OTP_ATTEMPTS = 3;
 
 interface EnsureUsaaSessionArgs {
@@ -46,6 +47,27 @@ function firstLine(message: string): string {
 
 function trimForDiagnostic(value: string, maxLength: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+export function classifyUsaaLoginStepFailure(bodyText: string): "source_unavailable" | "password_field_missing" {
+  return USAA_SOURCE_UNAVAILABLE_TEXT.test(bodyText) ? "source_unavailable" : "password_field_missing";
+}
+
+function passwordStepFailureMessage({
+  body,
+  inputs,
+  url,
+}: {
+  body: string;
+  inputs: InputProbe[];
+  url: string;
+}): string {
+  const classification = classifyUsaaLoginStepFailure(body);
+  const diagnostic = `url=${url} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(body, 300)}`;
+  if (classification === "source_unavailable") {
+    return `source_unavailable: USAA reported its login system is currently unavailable after Next click. ${diagnostic}`;
+  }
+  return `password field never appeared after Next click. ${diagnostic}`;
 }
 
 function isLoggedInCookie(cookie: { name: string; value?: string }): boolean {
@@ -233,9 +255,7 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
         );
       })
       .catch((): InputProbe[] => []);
-    throw new Error(
-      `password field never appeared after Next click. url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${body.slice(0, 300)}`
-    );
+    throw new Error(passwordStepFailureMessage({ body, inputs, url: page.url() }));
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);

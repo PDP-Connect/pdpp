@@ -2242,12 +2242,15 @@ async function maybeRunCreditCardBillingStreams(
 
 // ─── Connector entry point ────────────────────────────────────────────────
 
+export const USAA_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout|source_unavailable/i;
+
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
 // and block the Node event loop on stdin. Only fires when this module
 // IS the process entry point (i.e. `tsx connectors/usaa/index.ts`).
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "usaa",
+    retryablePattern: USAA_RETRYABLE_PATTERN,
     validateRecord,
     // USAA rejects headless Chromium before the login form loads
     // (`net::ERR_HTTP2_PROTOCOL_ERROR`), while headed Chrome loads it.

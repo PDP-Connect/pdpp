@@ -5,6 +5,7 @@ The run-stream companion rendered success copy when a run no longer had a pendin
 ## What Changes
 
 - Make the stream page distinguish completed, failed/cancelled/abandoned, and still-running states when no browser assistance is currently active.
+- Revalidate the still-running no-assistance surface through the run-handle status instead of leaving the page static.
 - Keep success copy only for completed runs.
 - Add a focused test for the terminal-state selector and stream-page wiring.
 

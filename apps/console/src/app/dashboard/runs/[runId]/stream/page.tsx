@@ -4,8 +4,10 @@ import { notFound } from "next/navigation";
 import { ServerUnreachable } from "../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
+  getRunStatus,
   getRunTimeline,
   listConnectorSummaries,
+  type RunStatusEnvelope,
   type SpineEvent,
   type TimelineEnvelope,
 } from "../../../lib/ref-client.ts";
@@ -14,7 +16,8 @@ import {
   getCurrentRunAssistance,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
-import { selectNoAssistanceStreamState } from "./stream-state.ts";
+import { NoAssistanceRunPoller } from "./no-assistance-run-poller.tsx";
+import { resolveNoAssistanceEndedTerminalStatus, selectNoAssistanceStreamState } from "./stream-state.ts";
 import { ResolvedSurface, StreamSurface } from "./stream-viewer.tsx";
 
 export const dynamic = "force-dynamic";
@@ -104,8 +107,9 @@ export default async function RunInteractionStreamPage({
   }
 
   let envelope: TimelineEnvelope | null;
+  let runStatus: RunStatusEnvelope | null;
   try {
-    envelope = await getRunTimeline(runId, { cursor: null });
+    [envelope, runStatus] = await Promise.all([getRunTimeline(runId, { cursor: null }), getRunStatus(runId)]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -130,12 +134,24 @@ export default async function RunInteractionStreamPage({
     if (currentAssistance && requiresBrowserSurfaceAssistance(currentAssistance)) {
       return <UnavailableStreamSurface connector={connector} runId={runId} />;
     }
-    const noAssistanceState = selectNoAssistanceStreamState(envelope.terminal_status);
+    const noAssistanceState = selectNoAssistanceStreamState({
+      runHandleStatus: runStatus?.status ?? null,
+      terminalStatus: envelope.terminal_status,
+    });
     if (noAssistanceState === "resolved") {
       return <ResolvedSurface connector={connector} />;
     }
     if (noAssistanceState === "ended") {
-      return <RunEndedSurface connector={connector} runId={runId} terminalStatus={envelope.terminal_status} />;
+      return (
+        <RunEndedSurface
+          connector={connector}
+          runId={runId}
+          terminalStatus={resolveNoAssistanceEndedTerminalStatus({
+            runHandleStatus: runStatus?.status ?? null,
+            terminalStatus: envelope.terminal_status,
+          })}
+        />
+      );
     }
     return <RunContinuingSurface connector={connector} runId={runId} />;
   }
@@ -192,6 +208,7 @@ function RunContinuingSurface({ connector, runId }: { connector: ConnectorContex
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <NoAssistanceRunPoller />
         <p className="pdpp-eyebrow text-muted-foreground">run continuing</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">No browser action is waiting.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">

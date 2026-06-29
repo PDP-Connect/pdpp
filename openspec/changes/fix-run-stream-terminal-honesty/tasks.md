@@ -3,6 +3,7 @@
 - [x] 1.1 Add a pure selector for no-assistance stream state.
 - [x] 1.2 Render success only for completed runs.
 - [x] 1.3 Render non-success surfaces for failed/cancelled/abandoned and still-running runs.
+- [x] 1.4 Revalidate still-running no-assistance pages against the run handle.
 
 ## 2. Validation
 

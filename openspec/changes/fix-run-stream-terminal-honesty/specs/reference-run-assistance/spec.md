@@ -28,3 +28,4 @@ The reference dashboard SHALL derive assistance copy and controls from the struc
 - **AND** the run has no terminal status
 - **THEN** the dashboard SHALL NOT render success or recovery copy
 - **AND** it SHALL explain that no browser action is waiting at that moment
+- **AND** it SHALL revalidate the run status rather than remaining a static page

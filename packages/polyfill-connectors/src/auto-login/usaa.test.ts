@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
-import { ensureUsaaSession } from "./usaa.ts";
+import { classifyUsaaLoginStepFailure, ensureUsaaSession } from "./usaa.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
 const LOGIN_URL = "https://www.usaa.com/my/logon";
@@ -224,4 +224,14 @@ test("ensureUsaaSession does not convert ordinary DNS navigation errors into man
     );
     assert.equal(interactions.requests.length, 0);
   });
+});
+
+test("classifyUsaaLoginStepFailure distinguishes source downtime from selector drift", () => {
+  assert.equal(
+    classifyUsaaLoginStepFailure(
+      "We are unable to complete your request. Our system is currently unavailable. Please try again later."
+    ),
+    "source_unavailable"
+  );
+  assert.equal(classifyUsaaLoginStepFailure("Member Account Login Username Next"), "password_field_missing");
 });
