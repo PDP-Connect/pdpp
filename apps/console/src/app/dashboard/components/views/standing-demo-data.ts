@@ -17,6 +17,7 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
+import { EMPTY_SOURCE_WORK_GROUPS } from "../../lib/source-actionability.ts";
 import type { StandingHrefs, StandingInputs } from "./standing-view-model.ts";
 
 export type DemoScenario = "calm" | "alarm" | "decide";
@@ -186,6 +187,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
+    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
     advisoryOwnerActions: [],
     attentionConnections: [],
     overviewLoadIssues: [],

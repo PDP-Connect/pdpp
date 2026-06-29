@@ -37,6 +37,7 @@ import {
   type PendingApproval,
   type TraceSummary,
 } from "./lib/ref-client.ts";
+import { sourceWorkFromConnectors } from "./lib/source-actionability.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -106,6 +107,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);
 
+  const connectors = connectorsRes.value.data;
   return {
     now: new Date(),
     hrefs: HREFS,
@@ -117,9 +119,10 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     overviewLoadIssues,
     pendingApprovals: pendingRes.value.data,
     bearerClients: clientsRes.value.data,
-    advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectorsRes.value.data),
-    attentionConnections: attentionConnectionsFromConnectors(connectorsRes.value.data),
-    sourceIssues: sourceIssueConnectionsFromConnectors(connectorsRes.value.data),
+    sourceWork: sourceWorkFromConnectors(connectors),
+    advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectors),
+    attentionConnections: attentionConnectionsFromConnectors(connectors),
+    sourceIssues: sourceIssueConnectionsFromConnectors(connectors),
   };
 }
 

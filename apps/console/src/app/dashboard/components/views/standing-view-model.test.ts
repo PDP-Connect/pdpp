@@ -8,6 +8,7 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
+import { EMPTY_SOURCE_WORK_GROUPS, sourceWorkFromConnectors } from "../../lib/source-actionability.ts";
 import {
   advisoryOwnerActionsFromConnectors,
   attentionConnectionsFromConnectors,
@@ -40,8 +41,28 @@ const NOW = new Date("2026-06-13T12:00:00Z");
 
 const CALM_SUB_RE = /1 client holds 1 active owner token/;
 const BEARER_HOW_RE = /2 active tokens/;
+const BULK_WRITE_UNKNOWN_CONNECTION_RE = /bulk write on unknown connection/;
+const CODE_FIX_RE = /code fix/;
+const DID_NOT_LOAD_RE = /did not load/;
+const EXPIRED_OR_CREDENTIAL_RE = /grant had expired|you never allowed it|state_expired|github_credential/;
+const INCOMPLETE_OR_GAP_RE = /incomplete|gap/;
 const LATELY_READ_RE = /read 412 records/;
+const LATEST_SAVED_POSTS_RE = /latest saved posts/;
+const MAINTAINER_ACTION_RE = /maintainer action/;
+const NO_OWNER_TOKEN_RE = /No owner token can act as you yet/;
+const NOT_ALL_YOURS_RE = /all yours to read/i;
+const NOT_NEEDS_YOU_RE = /needs you/i;
+const OWNER_TOKEN_COUNT_RE = /1 client holds 2 active owner tokens/;
+const PROJECTION_COPY_RE = /projection|rebuild|bulk write|unknown connection/i;
+const PROJECTION_SQL_COPY_RE = /projection|rebuild|bulk write|unknown connection|SQL/i;
+const RAW_ORPHANED_RUN_RE = /orphaned_started_run/;
+const RAW_REASON_CODE_RE = /new_internal_reason_code/;
+const REFRESH_PAGE_RE = /Refresh this page/;
 const SAVED_RECORDS_RE = /saved records/;
+const SQL_FAILED_RE = /SQL failed/;
+const STALE_TOTALS_RE = /last completed update/;
+const TOKEN_OVERCOUNT_RE = /2 tokens can act as you/;
+const WILL_NOT_CLAIM_ALL_CLEAR_RE = /will not claim all-clear from partial data/;
 
 function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
   return {
@@ -69,6 +90,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
+    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
     advisoryOwnerActions: [],
     attentionConnections: [],
     overviewLoadIssues: [],
@@ -439,7 +461,7 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.equal(data.attention.length, 0);
   assert.equal(data.sourceIssues.length, 1);
   assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
-  assert.match(data.sourceIssues[0]?.why ?? "", /code fix/);
+  assert.match(data.sourceIssues[0]?.why ?? "", CODE_FIX_RE);
 });
 
 test("advisory owner actions surface non-urgent Amazon retry work without calm all-clear copy", () => {
@@ -478,10 +500,10 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
   assert.equal(data.hero.line.emphasis, "is ready for review");
   assert.equal(data.hero.cta?.label, "Review source");
   assert.equal(data.hero.cta?.href, HREFS.connection("cin_amazon"));
-  assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, /needs you/i);
+  assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, NOT_NEEDS_YOU_RE);
   assert.doesNotMatch(
     `${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis ?? ""} ${data.hero.line.tail ?? ""}`,
-    /all yours to read/i
+    NOT_ALL_YOURS_RE
   );
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.what, "Amazon - Personal has an action to review");
@@ -516,8 +538,207 @@ test("advisory owner actions surface Reddit refresh work in the home summary", (
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.href, HREFS.connection("cin_reddit"));
-  assert.match(data.advisoryOwnerActions[0]?.why ?? "", /latest saved posts/);
+  assert.match(data.advisoryOwnerActions[0]?.why ?? "", LATEST_SAVED_POSTS_RE);
   assert.notEqual(data.hero.tone, "calm");
+});
+
+test("source actionability groups live-shaped rows with scoped counts", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "chatgpt",
+      connection_id: "cin_chatgpt",
+      display_name: "ChatGPT - personal",
+      rendered_verdict: verdict({
+        channel: "attention",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "Reconnect this account and collection resumes.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect this account",
+            kind: "reauth",
+            satisfied_when: { kind: "credential_present_and_unrejected" },
+            terminal: false,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "usaa",
+      connection_id: "cin_usaa",
+      display_name: "USAA - Personal",
+      rendered_verdict: verdict({
+        channel: "attention",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "Reconnect this account and collection resumes.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect this account",
+            kind: "reauth",
+            satisfied_when: { kind: "credential_present_and_unrejected" },
+            terminal: false,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "claude-code",
+      connection_id: "cin_claude",
+      display_name: "Local Claude Code",
+      rendered_verdict: verdict({}),
+    }),
+    connector({
+      connector_id: "amazon",
+      connection_id: "cin_amazon",
+      display_name: "Amazon - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Run a refresh to bring this up to date.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "chase",
+      connection_id: "cin_chase",
+      display_name: "Chase - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Latest collection completed with known coverage gaps.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Coverage gap needs review",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "github",
+      connection_id: "cin_github",
+      display_name: "GitHub - Personal",
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Checking", tone: "grey" },
+        forward_statement: "Checking coverage before deciding what the next run should do.",
+        required_actions: [],
+      }),
+    }),
+  ];
+
+  const sourceWork = sourceWorkFromConnectors(connectors);
+  const data = buildStandingData(baseInputs({ sourceWork }));
+
+  assert.equal(sourceWork.needsOwner.length, 3);
+  assert.equal(sourceWork.review.length, 1);
+  assert.equal(sourceWork.systemIssues.length, 1);
+  assert.equal(sourceWork.checking.length, 1);
+  assert.equal(data.hero.tone, "alarm");
+  assert.equal(data.hero.kicker, "3 things need you");
+  assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
+  assert.equal(data.sourceWorkSections[0]?.countLabel, "3 sources");
+  assert.equal(data.sourceWorkSections[0]?.rows.length, 3);
+  assert.equal(data.sourceWorkSections[1]?.title, "Worth reviewing");
+  assert.equal(data.sourceWorkSections[1]?.countLabel, "1 source");
+  assert.equal(data.sourceWorkSections[2]?.title, "System or connector issue");
+  assert.equal(data.sourceWorkSections[3]?.title, "Checking");
+});
+
+test("reviewable degraded source appears once rather than as review plus source issue", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "amazon",
+      connection_id: "cin_amazon",
+      display_name: "Amazon - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Retry now to give the recoverable gap another run.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Retry now",
+            kind: "retry_gap",
+            satisfied_when: { kind: "gap_recovered" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  const sourceWork = sourceWorkFromConnectors(connectors);
+  const data = buildStandingData(baseInputs({ sourceWork }));
+  const rows = data.sourceWorkSections.flatMap((section) => section.rows);
+
+  assert.equal(sourceWork.review.length, 1);
+  assert.equal(sourceWork.systemIssues.length, 0);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.what, "Amazon - Personal is ready for review");
+});
+
+test("source actionability follows primary-action parity with push policy", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "mixed",
+      connection_id: "cin_mixed",
+      display_name: "Mixed-action source",
+      rendered_verdict: verdict({
+        channel: "attention",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "Connector code needs a fix before this can collect again.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "now",
+          },
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect this account",
+            kind: "reauth",
+            satisfied_when: { kind: "credential_present_and_unrejected" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  const sourceWork = sourceWorkFromConnectors(connectors);
+  assert.equal(sourceWork.needsOwner.length, 0);
+  assert.equal(sourceWork.review.length, 0);
+  assert.equal(sourceWork.systemIssues.length, 1);
+  assert.equal(sourceWork.systemIssues[0]?.label, "Mixed-action source");
 });
 
 test("maintainer-only actions are not advisory owner actions", () => {
@@ -615,7 +836,7 @@ test("source issues surface attention verdicts that have no owner action, even w
   assert.equal(sourceIssues[0]?.label, "Maintainer-only source");
   assert.equal(sourceIssues[0]?.routeId, "cin_maintainer");
   assert.equal(sourceIssues[0]?.status, "is degraded");
-  assert.match(sourceIssues[0]?.what ?? "", /maintainer action/);
+  assert.match(sourceIssues[0]?.what ?? "", MAINTAINER_ACTION_RE);
 });
 
 test("source issues fall back to legacy degraded health when rendered verdict is absent", () => {
@@ -636,7 +857,7 @@ test("source issues fall back to legacy degraded health when rendered verdict is
   assert.equal(sourceIssues[0]?.label, "USAA - Personal");
   assert.equal(sourceIssues[0]?.routeId, "cin_usaa");
   assert.equal(sourceIssues[0]?.status, "is degraded");
-  assert.match(sourceIssues[0]?.what ?? "", /incomplete|gap/);
+  assert.match(sourceIssues[0]?.what ?? "", INCOMPLETE_OR_GAP_RE);
 
   const data = buildStandingData(baseInputs({ sourceIssues }));
   assert.equal(data.hero.tone, "calm");
@@ -687,12 +908,12 @@ test("hero ALARMs on a stale projection even with no failures", () => {
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals updating");
   assert.equal(hero.line.emphasis, "are still available");
-  assert.match(hero.sub ?? "", /last completed update/);
+  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
+  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
-    /projection|rebuild|bulk write|unknown connection/i
+    PROJECTION_COPY_RE
   );
 });
 
@@ -709,13 +930,13 @@ test("hero uses owner-safe copy for failed projection details", () => {
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals update delayed");
   assert.equal(hero.line.emphasis, "are still available");
-  assert.match(hero.sub ?? "", /last completed update/);
+  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  assert.doesNotMatch(hero.sub ?? "", /bulk write on unknown connection/);
-  assert.doesNotMatch(hero.sub ?? "", /SQL failed/);
+  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
+  assert.doesNotMatch(hero.sub ?? "", SQL_FAILED_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
-    /projection|rebuild|bulk write|unknown connection|SQL/i
+    PROJECTION_SQL_COPY_RE
   );
 });
 
@@ -724,12 +945,12 @@ test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from 
 
   assert.equal(data.hero.tone, "alarm");
   assert.equal(data.hero.kicker, "Overview is incomplete");
-  assert.match(data.hero.line.emphasis ?? "", /did not load/);
-  assert.match(data.hero.sub, /will not claim all-clear from partial data/);
+  assert.match(data.hero.line.emphasis ?? "", DID_NOT_LOAD_RE);
+  assert.match(data.hero.sub, WILL_NOT_CLAIM_ALL_CLEAR_RE);
   assert.equal(data.hero.cta?.href, HREFS.deployment);
   assert.equal(data.overviewIssues.length, 1);
   assert.equal(data.overviewIssues[0]?.what, "Overview could not check everything");
-  assert.match(data.overviewIssues[0]?.why ?? "", /Refresh this page/);
+  assert.match(data.overviewIssues[0]?.why ?? "", REFRESH_PAGE_RE);
 });
 
 test("hero is CALM with reassurance when all is well", () => {
@@ -751,8 +972,8 @@ test("bearer section and hero count only active owner tokens", () => {
 
   assert.equal(data.bearers.length, 1);
   assert.equal(data.bearers[0]?.clientId, "active");
-  assert.match(data.hero.sub, /1 client holds 2 active owner tokens/);
-  assert.doesNotMatch(data.hero.sub, /2 tokens can act as you/);
+  assert.match(data.hero.sub, OWNER_TOKEN_COUNT_RE);
+  assert.doesNotMatch(data.hero.sub, TOKEN_OVERCOUNT_RE);
 });
 
 test("hero says no owner token can act when all issued clients are inactive", () => {
@@ -762,7 +983,7 @@ test("hero says no owner token can act when all issued clients are inactive", ()
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
 
   assert.equal(data.bearers.length, 0);
-  assert.match(data.hero.sub, /No owner token can act as you yet/);
+  assert.match(data.hero.sub, NO_OWNER_TOKEN_RE);
 });
 
 // ─── full builder ─────────────────────────────────────────────────
@@ -867,7 +1088,7 @@ test("lately humanizes live denial reason codes instead of rendering raw diagnos
 
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, it was not tied to an active run.");
-  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", /orphaned_started_run/);
+  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_ORPHANED_RUN_RE);
 });
 
 test("lately does not fall through to unknown snake-case denial reasons", () => {
@@ -895,7 +1116,7 @@ test("lately does not fall through to unknown snake-case denial reasons", () => 
 
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, the server rejected it.");
-  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", /new_internal_reason_code/);
+  assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_REASON_CODE_RE);
 });
 
 test("lately does not overclaim off-surface expired or credential scope failures", () => {
@@ -945,7 +1166,7 @@ test("lately does not overclaim off-surface expired or credential scope failures
 
   assert.ok(rendered.includes("tried to read — turned away, the server rejected it."));
   assert.ok(rendered.includes("tried to read — turned away, the app was not authorized."));
-  assert.doesNotMatch(rendered.join("\n"), /grant had expired|you never allowed it|state_expired|github_credential/);
+  assert.doesNotMatch(rendered.join("\n"), EXPIRED_OR_CREDENTIAL_RE);
 });
 
 test("lately does not bold raw technical client ids when metadata is missing", () => {
@@ -1024,7 +1245,8 @@ test("lately summarizes identical recent reads instead of repeating the same row
       failure: null,
     })
   );
-  const baseRepeated = repeated[0]!;
+  const baseRepeated = repeated[0];
+  assert.ok(baseRepeated);
   const different: TraceSummary = {
     ...baseRepeated,
     trace_id: "trc_controller",

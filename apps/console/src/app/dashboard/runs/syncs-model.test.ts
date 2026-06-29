@@ -591,6 +591,56 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
   assert.equal(model.band.allClear, false);
 });
 
+test("syncs ranking only treats attention plus primary owner action as need-your-hand", () => {
+  const maintainerFirst = connector({
+    connection_id: "cin_maintainer",
+    display_name: "A maintainer-only source",
+    rendered_verdict: renderedVerdict({
+      channel: "attention",
+      forward_statement: "Connector code needs a fix before this can collect again.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [
+        action({
+          audience: "maintainer",
+          cta: "Connector code needs a fix",
+          kind: "code_fix",
+          satisfied_when: { kind: "none" },
+          terminal: true,
+          urgency: "now",
+        }),
+        action({
+          cta: "Reconnect this account",
+          kind: "reauth",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+          urgency: "soon",
+        }),
+      ],
+    }),
+  });
+  const ownerFirst = connector({
+    connection_id: "cin_owner",
+    display_name: "Z owner-required source",
+    rendered_verdict: renderedVerdict({
+      channel: "attention",
+      forward_statement: "Reconnect this account and collection resumes.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [
+        action({
+          cta: "Reconnect this account",
+          kind: "reauth",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+          urgency: "now",
+        }),
+      ],
+    }),
+  });
+
+  const model = buildSyncsViewModel({ connectors: [maintainerFirst, ownerFirst], runs: [] });
+
+  assert.equal(model.band.needYourHand, 1);
+  assert.equal(model.groups[0]?.connectionId, "cin_owner");
+});
+
 test("healthy sources with only benign rendered verdict signals do not get a failure card", () => {
   const model = buildSyncsViewModel({
     connectors: [

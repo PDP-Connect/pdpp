@@ -1409,6 +1409,31 @@
 .rr-attn {
   display: flex;
   flex-direction: column;
+  gap: 14px;
+}
+.rr-attn__section {
+  display: flex;
+  flex-direction: column;
+}
+.rr-attn__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 6px;
+}
+.rr-attn__section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rr-attn__section-count {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
 }
 .rr-attn__row {
   display: grid;
@@ -1419,6 +1444,18 @@
   border-bottom: 1px solid var(--border);
   box-shadow: inset 2px 0 0 var(--warning);
   padding-left: 12px;
+}
+.rr-attn__row.is-owner {
+  box-shadow: inset 3px 0 0 var(--destructive);
+}
+.rr-attn__row.is-review {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.rr-attn__row.is-system {
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+}
+.rr-attn__row.is-muted {
+  box-shadow: inset 3px 0 0 var(--border);
 }
 .rr-attn__row:last-child {
   border-bottom: 0;

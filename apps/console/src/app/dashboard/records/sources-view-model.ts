@@ -42,6 +42,7 @@ import type {
   RefSchedule,
   RefVerdictTone,
 } from "../lib/ref-client.ts";
+import { isOwnerSatisfiableAction } from "../lib/source-actionability.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
@@ -357,7 +358,7 @@ function formatRenderedRequiredAction(verdict: RefRenderedVerdict | null | undef
     return null;
   }
   const action = verdict.required_actions[0] ?? null;
-  if (!action || action.audience !== "owner" || action.satisfied_when.kind === "none") {
+  if (!isOwnerSatisfiableAction(action)) {
     return null;
   }
   return {
@@ -382,7 +383,7 @@ function formatPrimaryVerdictAction(verdict: RefRenderedVerdict | null | undefin
     channel: verdict.channel,
     cta: action.cta,
     kind: action.kind,
-    ownerRunnable: action.audience === "owner" && action.satisfied_when.kind !== "none",
+    ownerRunnable: isOwnerSatisfiableAction(action),
     satisfiedWhenKind: action.satisfied_when.kind,
     terminal: action.terminal,
   };

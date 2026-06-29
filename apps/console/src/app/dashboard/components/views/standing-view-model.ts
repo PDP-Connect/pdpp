@@ -22,6 +22,12 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
+import {
+  primaryOwnerSatisfiableAction,
+  type SourceWorkGroups,
+  type SourceWorkItem,
+  sourceWorkFromConnectors,
+} from "../../lib/source-actionability.ts";
 
 // ─── Plain-language lexicon: scope/stream → what it means to a person ──
 //
@@ -164,6 +170,14 @@ export interface AttentionRowView {
   why: string;
 }
 
+export interface SourceWorkSectionView {
+  countLabel: string;
+  id: SourceWorkItem["group"];
+  rows: AttentionRowView[];
+  title: string;
+  tone: "muted" | "owner" | "review" | "system";
+}
+
 export interface StandingData {
   advisoryOwnerActions: AttentionRowView[];
   attention: AttentionRowView[];
@@ -173,14 +187,15 @@ export interface StandingData {
   overviewIssues: AttentionRowView[];
   relationships: RelationshipView[];
   sourceIssues: AttentionRowView[];
+  sourceWorkSections: SourceWorkSectionView[];
 }
 
 // ─── Inputs ────────────────────────────────────────────────────────────
 
 export interface StandingInputs {
   /**
-   * Connections with non-urgent owner-runnable required actions. These ask the
-   * owner to review a source without promoting the verdict to urgent attention.
+   * Connections with non-urgent owner-runnable required actions. Prefer
+   * `sourceWork.review` for new code.
    */
   advisoryOwnerActions: AdvisoryOwnerActionConnection[];
   /**
@@ -209,6 +224,12 @@ export interface StandingInputs {
    * anything. These must still suppress "everything is syncing" all-clears.
    */
   sourceIssues: SourceIssueConnection[];
+  /**
+   * Mutually-exclusive owner-console source work. This is the actionability
+   * model the Overview renders; legacy arrays remain only for compatibility
+   * with older tests/helpers.
+   */
+  sourceWork: SourceWorkGroups;
   summary: DatasetSummary | null;
   traces: TraceSummary[];
 }
@@ -350,6 +371,12 @@ function isLiveGrant(g: GrantSummary): boolean {
  */
 const PROTOCOL_KIND_PREFIX_RE = /^(grant|trace|run|event)\./;
 const PROTOCOL_KIND_WORDS = new Set(["read", "issued", "approved", "revoked", "denied"]);
+const HEX_TOKEN_RE = /^[a-f0-9]{16,}$/i;
+const LONG_MACHINE_TOKEN_RE = /^(?=.{32,}$)(?=.*\d)[A-Za-z0-9_-]+$/;
+const TECH_ID_PREFIX_RE = /^(cli|grt|trc|run|req|cin|dsrc|dexp|ldt)_[A-Za-z0-9_-]+$/;
+const TRAILING_PERIOD_RE = /\.$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const WWW_PREFIX_RE = /^www\./;
 
 export function grantReads(g: GrantSummary): string {
   const phrases = grantReadPhrases(g);
@@ -385,7 +412,7 @@ function approvalReads(a: PendingApproval): string {
 function hostFromUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    return url.hostname.replace(/^www\./, "") || null;
+    return url.hostname.replace(WWW_PREFIX_RE, "") || null;
   } catch {
     return null;
   }
@@ -550,19 +577,19 @@ function denyReason(reason: string | null): string {
 
 function looksLikeTechnicalId(value: string | null | undefined): boolean {
   const v = value?.trim() ?? "";
-  if (/^(cli|grt|trc|run|req|cin|dsrc|dexp|ldt)_[A-Za-z0-9_-]+$/.test(v)) {
+  if (TECH_ID_PREFIX_RE.test(v)) {
     return true;
   }
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)) {
+  if (UUID_RE.test(v)) {
     return true;
   }
-  if (/^[a-f0-9]{16,}$/i.test(v)) {
+  if (HEX_TOKEN_RE.test(v)) {
     return true;
   }
   // Long space/dot-free tokens are more likely to be machine ids than names.
   // When uncertain, under-claim identity as "Unnamed app" rather than present
   // a raw token as a trusted owner-facing client name.
-  return /^(?=.{32,}$)(?=.*\d)[A-Za-z0-9_-]+$/.test(v);
+  return LONG_MACHINE_TOKEN_RE.test(v);
 }
 
 function traceActorFallback(trace: TraceSummary): string {
@@ -596,7 +623,7 @@ function traceWho(trace: TraceSummary): string {
 }
 
 function repeatedLatelyRest(rest: string, count: number): string {
-  const base = rest.replace(/\.$/, "");
+  const base = rest.replace(TRAILING_PERIOD_RE, "");
   return `${base} ${count === 2 ? "twice" : `${count} times`}.`;
 }
 
@@ -693,7 +720,7 @@ export function attentionConnectionsFromConnectors(connectors: readonly RefConne
 }
 
 function ownerSatisfiableAction(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>) {
-  return verdict.required_actions.find((a) => a.audience === "owner" && a.satisfied_when.kind !== "none") ?? null;
+  return primaryOwnerSatisfiableAction(verdict);
 }
 
 function connectionRouteId(connector: RefConnectorSummary): string {
@@ -706,21 +733,6 @@ function connectorLabel(connector: RefConnectorSummary): string {
   );
 }
 
-function sourceIssueStatus(
-  verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>
-): SourceIssueConnection["status"] | null {
-  if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
-    return "can't collect";
-  }
-  if (verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
-    return "is degraded";
-  }
-  if (verdict.channel === "attention") {
-    return "is degraded";
-  }
-  return null;
-}
-
 /**
  * Non-owner source issues for the dashboard "Anything wrong" panel. These are
  * deliberately NOT owner-action attention rows: a maintainer/code-fix source
@@ -730,66 +742,23 @@ function sourceIssueStatus(
 export function sourceIssueConnectionsFromConnectors(
   connectors: readonly RefConnectorSummary[]
 ): SourceIssueConnection[] {
-  const out: SourceIssueConnection[] = [];
-  for (const connector of connectors) {
-    if (connector.revoked_at) {
-      continue;
-    }
-    const verdict = connector.rendered_verdict;
-    if (!verdict) {
-      const summary = deriveFailureSummary(connector.connection_health, null);
-      if (!summary || summary.ownerActionRequired) {
-        continue;
-      }
-      out.push({
-        label: connectorLabel(connector),
-        routeId: connectionRouteId(connector),
-        status: "is degraded",
-        what: summary.prose,
-      });
-      continue;
-    }
-    if (verdict.channel === "attention" && ownerSatisfiableAction(verdict)) {
-      continue;
-    }
-    const status = sourceIssueStatus(verdict);
-    if (!status) {
-      continue;
-    }
-    out.push({
-      label: connectorLabel(connector),
-      routeId: connectionRouteId(connector),
-      status,
-      what: verdict.forward_statement,
-    });
-  }
-  return out;
+  return sourceWorkFromConnectors(connectors).systemIssues.map((item) => ({
+    label: item.label,
+    routeId: item.routeId,
+    status: item.statusLabel === "can't collect" ? "can't collect" : "is degraded",
+    what: item.what,
+  }));
 }
 
 export function advisoryOwnerActionsFromConnectors(
   connectors: readonly RefConnectorSummary[]
 ): AdvisoryOwnerActionConnection[] {
-  const out: AdvisoryOwnerActionConnection[] = [];
-  for (const connector of connectors) {
-    if (connector.revoked_at) {
-      continue;
-    }
-    const verdict = connector.rendered_verdict;
-    if (!verdict || verdict.channel === "attention") {
-      continue;
-    }
-    const action = ownerSatisfiableAction(verdict);
-    if (!action) {
-      continue;
-    }
-    out.push({
-      actionLabel: action.cta,
-      label: connectorLabel(connector),
-      routeId: connectionRouteId(connector),
-      what: verdict.forward_statement,
-    });
-  }
-  return out;
+  return sourceWorkFromConnectors(connectors).review.map((item) => ({
+    actionLabel: item.actionLabel ?? "Review source",
+    label: item.label,
+    routeId: item.routeId,
+    what: item.what,
+  }));
 }
 
 // ─── Attention view ("anything wrong") ───────────────────────────────────
@@ -840,6 +809,132 @@ function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): 
       href: hrefs.deployment,
     },
   ];
+}
+
+function workItemFromAttention(item: AttentionConnection): SourceWorkItem {
+  return {
+    actionLabel: item.actionLabel,
+    deviceLocal: item.deviceLocal,
+    group: "needsOwner",
+    id: `needsOwner:${item.routeId}`,
+    label: item.label,
+    routeId: item.routeId,
+    statusLabel: "needs you",
+    what: item.what,
+  };
+}
+
+function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem {
+  return {
+    actionLabel: item.actionLabel,
+    deviceLocal: false,
+    group: "review",
+    id: `review:${item.routeId}`,
+    label: item.label,
+    routeId: item.routeId,
+    statusLabel: "is ready for review",
+    what: item.what,
+  };
+}
+
+function workItemFromSourceIssue(item: SourceIssueConnection): SourceWorkItem {
+  return {
+    actionLabel: null,
+    deviceLocal: false,
+    group: "systemIssue",
+    id: `systemIssue:${item.routeId}`,
+    label: item.label,
+    routeId: item.routeId,
+    statusLabel: item.status,
+    what: item.what,
+  };
+}
+
+function sourceWorkHasRows(groups: SourceWorkGroups): boolean {
+  return (
+    groups.needsOwner.length > 0 ||
+    groups.review.length > 0 ||
+    groups.systemIssues.length > 0 ||
+    groups.checking.length > 0
+  );
+}
+
+function activeSourceWork(input: StandingInputs): SourceWorkGroups {
+  if (sourceWorkHasRows(input.sourceWork)) {
+    return input.sourceWork;
+  }
+  return {
+    checking: [],
+    needsOwner: input.attentionConnections.map(workItemFromAttention),
+    review: input.advisoryOwnerActions.map(workItemFromReview),
+    systemIssues: input.sourceIssues.map(workItemFromSourceIssue),
+  };
+}
+
+function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRowView {
+  let what: string;
+  if (item.group === "needsOwner") {
+    what = `${item.label} needs you`;
+  } else if (item.group === "review") {
+    what = `${item.label} is ready for review`;
+  } else {
+    what = `${item.label} ${item.statusLabel}`;
+  }
+  return {
+    id: item.id,
+    what,
+    why: item.what,
+    href: hrefs.connection(item.routeId),
+  };
+}
+
+function pluralSource(count: number): string {
+  return count === 1 ? "1 source" : `${count} sources`;
+}
+
+function toSourceWorkSections(
+  groups: SourceWorkGroups,
+  overviewIssues: AttentionRowView[],
+  hrefs: StandingHrefs
+): SourceWorkSectionView[] {
+  const sections: SourceWorkSectionView[] = [];
+  if (groups.needsOwner.length > 0) {
+    sections.push({
+      id: "needsOwner",
+      title: "Needs you",
+      countLabel: pluralSource(groups.needsOwner.length),
+      tone: "owner",
+      rows: groups.needsOwner.map((item) => sourceWorkRow(item, hrefs)),
+    });
+  }
+  if (groups.review.length > 0) {
+    sections.push({
+      id: "review",
+      title: "Worth reviewing",
+      countLabel: pluralSource(groups.review.length),
+      tone: "review",
+      rows: groups.review.map((item) => sourceWorkRow(item, hrefs)),
+    });
+  }
+  if (groups.systemIssues.length > 0 || overviewIssues.length > 0) {
+    sections.push({
+      id: "systemIssue",
+      title: "System or connector issue",
+      countLabel: pluralSource(groups.systemIssues.length + overviewIssues.length),
+      tone: "system",
+      rows: [...groups.systemIssues.map((item) => sourceWorkRow(item, hrefs)), ...overviewIssues],
+    });
+  }
+  if (groups.checking.length > 0) {
+    sections.push({
+      id: "checking",
+      title: "Checking",
+      countLabel: pluralSource(groups.checking.length),
+      tone: "muted",
+      rows: groups.checking.map((item) => sourceWorkRow(item, hrefs)),
+    });
+  }
+  return sections;
 }
 
 // ─── Hero tone (the one truth, computed from real state) ─────────────────
@@ -976,18 +1071,37 @@ function buildCalmHero(input: StandingInputs): StandingHero {
  * stale), otherwise CALM with the reassurance line.
  */
 export function computeHero(input: StandingInputs): StandingHero {
+  const sourceWork = activeSourceWork(input);
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
   }
-  if (input.attentionConnections.length > 0) {
-    return buildFailureHero(input.attentionConnections, input.hrefs);
+  if (sourceWork.needsOwner.length > 0) {
+    return buildFailureHero(
+      sourceWork.needsOwner.map((item) => ({
+        actionLabel: item.actionLabel ?? "Review source",
+        connectorKey: "",
+        routeId: item.routeId,
+        deviceLocal: item.deviceLocal,
+        label: item.label,
+        what: item.what,
+      })),
+      input.hrefs
+    );
   }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
-  if (input.advisoryOwnerActions.length > 0) {
-    return buildAdvisoryHero(input.advisoryOwnerActions, input.hrefs);
+  if (sourceWork.review.length > 0) {
+    return buildAdvisoryHero(
+      sourceWork.review.map((item) => ({
+        actionLabel: item.actionLabel ?? "Review source",
+        label: item.label,
+        routeId: item.routeId,
+        what: item.what,
+      })),
+      input.hrefs
+    );
   }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
@@ -998,6 +1112,8 @@ export function computeHero(input: StandingInputs): StandingHero {
 // ─── Top-level builder ───────────────────────────────────────────────────
 
 export function buildStandingData(input: StandingInputs): StandingData {
+  const overviewIssues = toOverviewIssues(input.overviewLoadIssues, input.hrefs);
+  const sourceWork = activeSourceWork(input);
   return {
     hero: computeHero(input),
     bearers: toBearers(input.bearerClients, input.hrefs, input.now),
@@ -1005,7 +1121,8 @@ export function buildStandingData(input: StandingInputs): StandingData {
     lately: toLately(input.traces, input.now),
     advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
     attention: toAttention(input.attentionConnections, input.hrefs),
-    overviewIssues: toOverviewIssues(input.overviewLoadIssues, input.hrefs),
+    overviewIssues,
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
+    sourceWorkSections: toSourceWorkSections(sourceWork, overviewIssues, input.hrefs),
   };
 }

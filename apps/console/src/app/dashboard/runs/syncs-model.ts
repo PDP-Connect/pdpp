@@ -33,6 +33,7 @@ import type {
   RefSchedule,
   RunSummary,
 } from "../lib/ref-client.ts";
+import { verdictRequiresOwnerNow } from "../lib/source-actionability.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -490,16 +491,16 @@ function buildHealthBand(input: { groups: SyncGroup[]; failureCards: FailureCard
   };
 }
 
-type SyncProjection = {
+interface SyncProjection {
   connector: RefConnectorSummary;
   failing: boolean;
   group: SyncGroup;
   lastAtMs: number;
   summary: FailureSummary | null;
-};
+}
 
 function groupPriority(projection: SyncProjection): number {
-  if (projection.connector.rendered_verdict?.channel === "attention") {
+  if (verdictRequiresOwnerNow(projection.connector.rendered_verdict ?? null)) {
     return 0;
   }
   if (projection.summary?.ownerActionRequired) {

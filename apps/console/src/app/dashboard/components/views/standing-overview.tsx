@@ -171,29 +171,27 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
   );
 }
 
-function AttentionBlock({
-  advisoryOwnerActions,
-  attention,
-  overviewIssues,
-  sourceIssues,
-}: {
-  advisoryOwnerActions: StandingData["advisoryOwnerActions"];
-  attention: StandingData["attention"];
-  overviewIssues: StandingData["overviewIssues"];
-  sourceIssues: StandingData["sourceIssues"];
-}) {
-  const rows = [...attention, ...advisoryOwnerActions, ...sourceIssues, ...overviewIssues];
+function AttentionBlock({ sections }: { sections: StandingData["sourceWorkSections"] }) {
+  const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
   return (
     <section className="rr-stand-block">
-      <h2 className="rr-stand-block__title">Anything wrong</h2>
-      {rows.length > 0 ? (
-        <div className="rr-attn">
-          {rows.map((a) => (
-            <a className="rr-attn__row" href={a.href} key={a.id}>
-              <span className="rr-attn__what">{a.what}</span>
-              <span className="rr-rel__meta">look →</span>
-              <span className="rr-attn__why">{a.why}</span>
-            </a>
+      <h2 className="rr-stand-block__title">Source attention</h2>
+      {rowCount > 0 ? (
+        <div className="rr-attn" data-row-count={rowCount}>
+          {sections.map((section) => (
+            <div className={["rr-attn__section", `is-${section.tone}`].join(" ")} key={section.id}>
+              <div className="rr-attn__section-head">
+                <h3 className="rr-attn__section-title">{section.title}</h3>
+                <span className="rr-attn__section-count">{section.countLabel}</span>
+              </div>
+              {section.rows.map((a) => (
+                <a className={["rr-attn__row", `is-${section.tone}`].join(" ")} href={a.href} key={a.id}>
+                  <span className="rr-attn__what">{a.what}</span>
+                  <span className="rr-rel__meta">look →</span>
+                  <span className="rr-attn__why">{a.why}</span>
+                </a>
+              ))}
+            </div>
           ))}
         </div>
       ) : (
@@ -230,12 +228,7 @@ export function StandingOverview({ data, grantsHref, tokensHref, tracesHref, not
         <RelationshipsBlock grantsHref={grantsHref} relationships={data.relationships} />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock
-        advisoryOwnerActions={data.advisoryOwnerActions}
-        attention={data.attention}
-        overviewIssues={data.overviewIssues}
-        sourceIssues={data.sourceIssues}
-      />
+      <AttentionBlock sections={data.sourceWorkSections} />
     </div>
   );
 }
