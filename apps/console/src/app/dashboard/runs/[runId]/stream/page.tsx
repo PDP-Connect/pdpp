@@ -47,13 +47,41 @@ function getConnectorIdFromTimeline(events: SpineEvent[]): string | null {
   return null;
 }
 
-async function resolveConnectorContext(connectorId: string | null): Promise<ConnectorContext | null> {
+function getConnectorInstanceIdFromTimeline(events: SpineEvent[]): string | null {
+  for (const ev of events) {
+    const data = ev.data as {
+      connection_id?: unknown;
+      connector_instance_id?: unknown;
+      source?: { connection_id?: unknown } | null;
+    } | null;
+    const candidates = [data?.connector_instance_id, data?.connection_id, data?.source?.connection_id];
+    const match = candidates.find(
+      (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+async function resolveConnectorContext(
+  connectorId: string | null,
+  connectorInstanceId: string | null
+): Promise<ConnectorContext | null> {
   if (!connectorId) {
     return null;
   }
   try {
     const summaries = await listConnectorSummaries();
-    const match = summaries.data.find((c) => c.connector_id === connectorId);
+    const instanceMatch = connectorInstanceId
+      ? summaries.data.find(
+          (c) =>
+            c.connector_id === connectorId &&
+            (c.connector_instance_id === connectorInstanceId || c.connection_id === connectorInstanceId)
+        )
+      : null;
+    const match = instanceMatch ?? summaries.data.find((c) => c.connector_id === connectorId);
     return {
       connectorId,
       displayName: formatConnectorNameForDisplay({
@@ -128,7 +156,8 @@ export default async function RunInteractionStreamPage({
   const streamableAssistance = getCurrentBrowserSurfaceAssistance(envelope.events);
   const currentAssistance = getCurrentRunAssistance(envelope.events);
   const connectorId = getConnectorIdFromTimeline(envelope.events);
-  const connector = await resolveConnectorContext(connectorId);
+  const connectorInstanceId = runStatus?.connector_instance_id ?? getConnectorInstanceIdFromTimeline(envelope.events);
+  const connector = await resolveConnectorContext(connectorId, connectorInstanceId);
 
   if (!streamableAssistance) {
     if (currentAssistance && requiresBrowserSurfaceAssistance(currentAssistance)) {

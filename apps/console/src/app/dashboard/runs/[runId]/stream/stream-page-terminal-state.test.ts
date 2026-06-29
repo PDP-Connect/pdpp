@@ -14,6 +14,12 @@ const ENDED_SURFACE_GATE_RE =
   /noAssistanceState === "ended"[\s\S]{0,360}<RunEndedSurface[\s\S]{0,360}resolveNoAssistanceEndedTerminalStatus/;
 const CONTINUING_SURFACE_RE = /<RunContinuingSurface/;
 const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller \/>/;
+const RUN_STATUS_INSTANCE_CONTEXT_RE =
+  /const connectorInstanceId =\s*runStatus\?\.connector_instance_id \?\? getConnectorInstanceIdFromTimeline\(envelope\.events\);/;
+const INSTANCE_SCOPED_SUMMARY_MATCH_RE =
+  /c\.connector_id === connectorId &&\s*\(c\.connector_instance_id === connectorInstanceId \|\| c\.connection_id === connectorInstanceId\)/;
+const CONNECTOR_TYPE_FALLBACK_RE =
+  /instanceMatch \?\? summaries\.data\.find\(\(c\) => c\.connector_id === connectorId\)/;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -49,4 +55,10 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, ENDED_SURFACE_GATE_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
+});
+
+test("stream page labels multi-account runs by connection instance before connector type", () => {
+  assert.match(pageSource, RUN_STATUS_INSTANCE_CONTEXT_RE);
+  assert.match(pageSource, INSTANCE_SCOPED_SUMMARY_MATCH_RE);
+  assert.match(pageSource, CONNECTOR_TYPE_FALLBACK_RE);
 });
