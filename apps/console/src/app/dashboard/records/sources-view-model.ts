@@ -37,12 +37,15 @@ import type {
   RefConnectorRuntimeStatus,
   RefConnectorSummary,
   RefRecordVersionStatsRow,
-  RefRenderedVerdict,
-  RefRequiredAction,
   RefSchedule,
-  RefVerdictTone,
 } from "../lib/ref-client.ts";
-import { isOwnerSatisfiableAction } from "../lib/source-actionability.ts";
+import {
+  isRevokedConnector,
+  projectSourceActionability,
+  type SourceOwnerActionCue,
+  type SourcePrimaryVerdictAction,
+  type SourceStatusFlag,
+} from "../lib/source-actionability.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
@@ -60,33 +63,6 @@ import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
  *   ○ unknown    — muted ring      (state: unknown, or no health projection)
  *   ⊘ revoked    — struck          (revoked lifecycle, overrides health)
  */
-export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "revoked" | "unknown";
-
-/** The achromatic→token tone for a status (maps to a CSS var class). */
-export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
-
-/** The glyph + tone pairing for a status. Color is carried by a token class. */
-export interface SourceStatusFlag {
-  /** Single-glyph dot for the dense list (color via `tone` token class). */
-  dot: string;
-  /**
-   * Mandatory freshness annotation whenever the freshness axis is not `fresh`.
-   * `null` when the connection is fresh (or carries no freshness evidence),
-   * so a stale/unknown status can never read as a bare "Healthy" without
-   * disclosing that its data is not current. It is folded into `label`, and
-   * exposed separately so a surface can render it as its own chip.
-   */
-  freshnessNote: string | null;
-  kind: SourceStatusKind;
-  /**
-   * Short human label (e.g. "Healthy", "Needs attention"). When a
-   * `freshnessNote` applies, it is appended (e.g. "Healthy · stale") so the
-   * one string the list and passport render is never silent about staleness.
-   */
-  label: string;
-  tone: SourceStatusTone;
-}
-
 /** One row in the passport's stream manifest table. */
 export interface SourceStreamManifestRow {
   /**
@@ -129,20 +105,6 @@ export interface SourcePassportField {
   mono?: boolean;
   /** Already-formatted, non-secret value. Null renders an em dash. */
   value: string | null;
-}
-
-export interface SourcePrimaryVerdictAction {
-  audience: RefRequiredAction["audience"];
-  channel: RefRenderedVerdict["channel"];
-  cta: string;
-  kind: RefRequiredAction["kind"];
-  ownerRunnable: boolean;
-  satisfiedWhenKind: RefRequiredAction["satisfied_when"]["kind"];
-  terminal: boolean;
-}
-
-export interface SourceOwnerActionCue {
-  label: string;
 }
 
 /** The fully-projected, serializable view of one source instance. */
@@ -220,13 +182,6 @@ type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
 const HEALTHY_STATES = new Set(["healthy", "idle"]);
 const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
 const DUPLICATE_SOURCE_GROUP_MIN_UNNAMED = 3;
-
-const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
-  green: { kind: "healthy", dot: "●", tone: "success" },
-  amber: { kind: "degraded", dot: "◐", tone: "warning" },
-  red: { kind: "blocked", dot: "⊘", tone: "destructive" },
-  grey: { kind: "unknown", dot: "○", tone: "muted" },
-};
 
 /**
  * The freshness annotation for a status flag, or `null` when the connection is
@@ -312,88 +267,6 @@ export function deriveSourceStatus(
     label: labelWithFreshness("Unknown", freshnessNote),
     freshnessNote,
   };
-}
-
-function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
-  return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
-}
-
-/**
- * Render current references from the server-owned verdict. This is the owner
- * surface migration seam: list-level status reads `pill` and annotations
- * directly, and only older references fall back to `connection_health`.
- */
-export function deriveRenderedSourceStatus(
-  verdict: RefRenderedVerdict | null | undefined,
-  revoked: boolean
-): SourceStatusFlag {
-  if (revoked) {
-    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
-  }
-  if (!verdict) {
-    return {
-      kind: "unknown",
-      dot: "○",
-      tone: "muted",
-      label: "Verdict unavailable",
-      freshnessNote: null,
-    };
-  }
-  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
-  const freshnessNote = freshnessNoteFromVerdict(verdict);
-  return {
-    ...status,
-    label: labelWithFreshness(verdict.pill.label, freshnessNote),
-    freshnessNote,
-  };
-}
-
-/**
- * Current references carry ordered, typed required actions on the rendered
- * verdict. Only owner-satisfiable actions become a dashboard CTA; maintainer
- * work and wait states are status/detail facts, not dead owner buttons.
- */
-function formatRenderedRequiredAction(verdict: RefRenderedVerdict | null | undefined): FormattedNextAction | null {
-  if (!verdict) {
-    return null;
-  }
-  const action = verdict.required_actions[0] ?? null;
-  if (!isOwnerSatisfiableAction(action)) {
-    return null;
-  }
-  return {
-    actionTarget: "connection_detail",
-    caveat: null,
-    label: action.cta,
-    notificationHint: null,
-    variant: "structured",
-  };
-}
-
-function formatPrimaryVerdictAction(verdict: RefRenderedVerdict | null | undefined): SourcePrimaryVerdictAction | null {
-  if (!verdict) {
-    return null;
-  }
-  const action = verdict.required_actions[0] ?? null;
-  if (!action) {
-    return null;
-  }
-  return {
-    audience: action.audience,
-    channel: verdict.channel,
-    cta: action.cta,
-    kind: action.kind,
-    ownerRunnable: isOwnerSatisfiableAction(action),
-    satisfiedWhenKind: action.satisfied_when.kind,
-    terminal: action.terminal,
-  };
-}
-
-function ownerActionCueFromVerdictAction(action: SourcePrimaryVerdictAction | null): SourceOwnerActionCue | null {
-  if (!action?.ownerRunnable) {
-    return null;
-  }
-  return { label: action.cta };
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -507,11 +380,6 @@ export function manualUploadHrefForSource(
   return `/dashboard/connect/manual-upload/${encodeURIComponent(connectorKey)}?${params.toString()}`;
 }
 
-/** True when the durable lifecycle says this connection is revoked. */
-function isRevoked(summary: RefConnectorSummary): boolean {
-  return summary.status === "revoked" || Boolean(summary.revoked_at);
-}
-
 function streamNamesForSource(
   summary: RefConnectorSummary,
   collectionFactsByStream: ReadonlyMap<string, unknown>,
@@ -579,8 +447,9 @@ export function toSourceInstanceView(
   const connectorId = summary.connector_id;
   const connectionId = summary.connection_id ?? null;
   const connectorInstanceId = summary.connector_instance_id ?? null;
-  const routeId = connectionId ?? connectorInstanceId ?? connectorId;
-  const revoked = isRevoked(summary);
+  const actionability = projectSourceActionability(summary);
+  const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
+  const revoked = isRevokedConnector(summary);
   const isLocalDevicePush = Boolean(summary.local_device_progress);
   const isRunning =
     summary.last_run != null && (summary.last_run.status === "started" || summary.last_run.status === "in_progress");
@@ -612,10 +481,10 @@ export function toSourceInstanceView(
   } else {
     accountLine = formatSourceListFacts(summary);
   }
-  const nextAction = formatRenderedRequiredAction(summary.rendered_verdict);
-  const primaryVerdictAction = formatPrimaryVerdictAction(summary.rendered_verdict);
-  const ownerActionCue = ownerActionCueFromVerdictAction(primaryVerdictAction);
-  const status = deriveRenderedSourceStatus(summary.rendered_verdict, revoked);
+  const nextAction = actionability.nextAction;
+  const primaryVerdictAction = actionability.primaryVerdictAction;
+  const ownerActionCue = actionability.ownerActionCue;
+  const status = actionability.renderedStatus;
 
   const collectionFactsByStream = new Map(
     [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [

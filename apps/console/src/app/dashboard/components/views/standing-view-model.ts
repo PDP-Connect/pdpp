@@ -12,7 +12,6 @@
  * The design used fictional fixtures; here every field binds to a real shape.
  */
 
-import { deriveFailureSummary } from "../../lib/connection-evidence.ts";
 import type {
   DatasetSummary,
   GrantSummary,
@@ -23,7 +22,6 @@ import type {
   TraceSummary,
 } from "../../lib/ref-client.ts";
 import {
-  primaryOwnerSatisfiableAction,
   type SourceWorkGroups,
   type SourceWorkItem,
   sourceWorkFromConnectors,
@@ -285,6 +283,8 @@ export interface AttentionConnection {
 }
 
 export interface SourceIssueConnection {
+  /** Connector type id when known; legacy callers may omit it. */
+  connectorKey?: string;
   /** Owner-facing source name ("Chase", "Gmail - work"). */
   label: string;
   routeId: string;
@@ -296,6 +296,7 @@ export interface SourceIssueConnection {
 
 export interface AdvisoryOwnerActionConnection {
   actionLabel: string;
+  connectorKey?: string;
   label: string;
   routeId: string;
   what: string;
@@ -679,58 +680,14 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
  * the genuinely-attention ones). Revoked connections are excluded.
  */
 export function attentionConnectionsFromConnectors(connectors: readonly RefConnectorSummary[]): AttentionConnection[] {
-  const out: AttentionConnection[] = [];
-  for (const connector of connectors) {
-    if (connector.revoked_at) {
-      continue; // revoked rows stay owner-visible but never alarm.
-    }
-    const verdict = connector.rendered_verdict;
-    if (!verdict) {
-      const summary = deriveFailureSummary(connector.connection_health, null);
-      if (!summary?.ownerActionRequired) {
-        continue;
-      }
-      out.push({
-        connectorKey: connector.connector_id,
-        routeId: connectionRouteId(connector),
-        deviceLocal: false,
-        label: connectorLabel(connector),
-        what: summary.prose,
-        actionLabel: summary.actionLabel ?? "Review source",
-      });
-      continue;
-    }
-    if (verdict.channel !== "attention") {
-      continue;
-    }
-    const action = ownerSatisfiableAction(verdict);
-    if (!action) {
-      continue; // attention with no owner-resolvable action is a synthesis error (S1) — never alarm the owner here.
-    }
-    out.push({
-      connectorKey: connector.connector_id,
-      routeId: connector.connector_instance_id ?? connector.connection_id,
-      deviceLocal: action.remediation?.target.kind === "local_device",
-      label: connectorLabel(connector),
-      what: verdict.forward_statement,
-      actionLabel: action.cta,
-    });
-  }
-  return out;
-}
-
-function ownerSatisfiableAction(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>) {
-  return primaryOwnerSatisfiableAction(verdict);
-}
-
-function connectionRouteId(connector: RefConnectorSummary): string {
-  return connector.connector_instance_id ?? connector.connection_id;
-}
-
-function connectorLabel(connector: RefConnectorSummary): string {
-  return (
-    connector.display_name?.trim() || connector.connector_display_name?.trim() || scopeHuman(connector.connector_id)
-  );
+  return sourceWorkFromConnectors(connectors).needsOwner.map((item) => ({
+    actionLabel: item.actionLabel ?? "Review source",
+    connectorKey: item.connectorKey,
+    deviceLocal: item.deviceLocal,
+    label: item.label,
+    routeId: item.routeId,
+    what: item.what,
+  }));
 }
 
 /**
@@ -743,6 +700,7 @@ export function sourceIssueConnectionsFromConnectors(
   connectors: readonly RefConnectorSummary[]
 ): SourceIssueConnection[] {
   return sourceWorkFromConnectors(connectors).systemIssues.map((item) => ({
+    connectorKey: item.connectorKey,
     label: item.label,
     routeId: item.routeId,
     status: item.statusLabel === "can't collect" ? "can't collect" : "is degraded",
@@ -755,6 +713,7 @@ export function advisoryOwnerActionsFromConnectors(
 ): AdvisoryOwnerActionConnection[] {
   return sourceWorkFromConnectors(connectors).review.map((item) => ({
     actionLabel: item.actionLabel ?? "Review source",
+    connectorKey: item.connectorKey,
     label: item.label,
     routeId: item.routeId,
     what: item.what,
@@ -814,6 +773,7 @@ function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): 
 function workItemFromAttention(item: AttentionConnection): SourceWorkItem {
   return {
     actionLabel: item.actionLabel,
+    connectorKey: item.connectorKey,
     deviceLocal: item.deviceLocal,
     group: "needsOwner",
     id: `needsOwner:${item.routeId}`,
@@ -827,6 +787,7 @@ function workItemFromAttention(item: AttentionConnection): SourceWorkItem {
 function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem {
   return {
     actionLabel: item.actionLabel,
+    connectorKey: item.connectorKey ?? item.routeId,
     deviceLocal: false,
     group: "review",
     id: `review:${item.routeId}`,
@@ -840,6 +801,7 @@ function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem
 function workItemFromSourceIssue(item: SourceIssueConnection): SourceWorkItem {
   return {
     actionLabel: null,
+    connectorKey: item.connectorKey ?? item.routeId,
     deviceLocal: false,
     group: "systemIssue",
     id: `systemIssue:${item.routeId}`,

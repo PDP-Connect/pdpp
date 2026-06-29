@@ -139,7 +139,7 @@ const BACKGROUND_DRAIN_USES_HOST_LABELS = /hostLabels: boundHostLabels\(sourceIn
 const DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE =
   /required_actions\.some\(\(action\) => action\.remediation\?\.target\.kind === "local_device"\)/;
 const RENDERED_VERDICT_PRIMARY_ACTION_TESTID = /data-testid="rendered-verdict-primary-action"/;
-const RENDERED_VERDICT_USES_FIRST_PRIMARY_ACTION = /const primaryAction = verdict\.required_actions\[0\] \?\? null/;
+const RENDERED_VERDICT_USES_SHARED_PRIMARY_ACTION = /const primaryAction = primaryRequiredAction\(verdict\)/;
 const RENDERED_VERDICT_VOCABULARY = /RENDERED_VERDICT_VOCABULARY/;
 const PROJECTED_STATE_ACCEPTS_RENDERED_VERDICT = /renderedVerdict: RefRenderedVerdict \| null/;
 const PROJECTED_STATE_PREFERS_RENDERED_VERDICT = /renderedVerdict \?/;
@@ -191,7 +191,7 @@ test("connection-diagnostics renders the server-owned rendered verdict summary",
   assert.match(src, RENDERED_VERDICT_FORWARD_TESTID);
   assert.match(src, RENDERED_VERDICT_PROGRESS_TESTID);
   assert.match(src, RENDERED_VERDICT_PRIMARY_ACTION_TESTID);
-  assert.match(src, RENDERED_VERDICT_USES_FIRST_PRIMARY_ACTION);
+  assert.match(src, RENDERED_VERDICT_USES_SHARED_PRIMARY_ACTION);
   assert.match(src, RENDERED_VERDICT_VOCABULARY);
 });
 

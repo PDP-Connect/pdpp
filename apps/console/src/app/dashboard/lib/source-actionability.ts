@@ -1,10 +1,40 @@
-import { deriveFailureSummary } from "./connection-evidence.ts";
-import type { RefConnectorSummary, RefRenderedVerdict, RefRequiredAction } from "./ref-client.ts";
+import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
+import type { FormattedNextAction } from "./next-action.ts";
+import type { RefConnectorSummary, RefRenderedVerdict, RefRequiredAction, RefVerdictTone } from "./ref-client.ts";
 
 export type SourceWorkGroupId = "checking" | "needsOwner" | "review" | "systemIssue";
 
+export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "revoked" | "unknown";
+
+export type SourceStatusTone = "destructive" | "muted" | "success" | "warning";
+
+export interface SourceStatusFlag {
+  dot: string;
+  freshnessNote: string | null;
+  kind: SourceStatusKind;
+  label: string;
+  tone: SourceStatusTone;
+}
+
+export interface SourcePrimaryVerdictAction {
+  audience: RefRequiredAction["audience"];
+  channel: RefRenderedVerdict["channel"];
+  cta: string;
+  kind: RefRequiredAction["kind"];
+  ownerRunnable: boolean;
+  satisfiedWhenKind: RefRequiredAction["satisfied_when"]["kind"];
+  terminal: boolean;
+}
+
+export interface SourceOwnerActionCue {
+  label: string;
+}
+
+export type SourceStreamOwnerActionAvailability = Readonly<Record<string, boolean>>;
+
 export interface SourceWorkItem {
   actionLabel: string | null;
+  connectorKey: string;
   deviceLocal: boolean;
   group: SourceWorkGroupId;
   id: string;
@@ -21,6 +51,20 @@ export interface SourceWorkGroups {
   systemIssues: SourceWorkItem[];
 }
 
+export interface SourceActionabilityProjection {
+  failureSummary: FailureSummary | null;
+  label: string;
+  nextAction: FormattedNextAction | null;
+  ownerActionByStream: SourceStreamOwnerActionAvailability;
+  ownerActionCue: SourceOwnerActionCue | null;
+  primaryAction: RefRequiredAction | null;
+  primaryVerdictAction: SourcePrimaryVerdictAction | null;
+  renderedStatus: SourceStatusFlag;
+  revoked: boolean;
+  routeId: string;
+  work: SourceWorkItem | null;
+}
+
 export const EMPTY_SOURCE_WORK_GROUPS: SourceWorkGroups = {
   checking: [],
   needsOwner: [],
@@ -29,6 +73,13 @@ export const EMPTY_SOURCE_WORK_GROUPS: SourceWorkGroups = {
 };
 
 const UNDERSCORE_RE = /_/g;
+
+const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
+  green: { kind: "healthy", dot: "●", tone: "success" },
+  amber: { kind: "degraded", dot: "◐", tone: "warning" },
+  red: { kind: "blocked", dot: "⊘", tone: "destructive" },
+  grey: { kind: "unknown", dot: "○", tone: "muted" },
+};
 
 function readableConnectorId(connectorId: string): string {
   return connectorId.replace(UNDERSCORE_RE, " ").trim() || connectorId;
@@ -46,19 +97,120 @@ function connectorLabel(connector: RefConnectorSummary): string {
   );
 }
 
+export function isRevokedConnector(connector: RefConnectorSummary): boolean {
+  return connector.status === "revoked" || Boolean(connector.revoked_at);
+}
+
 export function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): action is RefRequiredAction {
   return Boolean(action && action.audience === "owner" && action.satisfied_when.kind !== "none");
+}
+
+export function primaryRequiredAction(verdict: RefRenderedVerdict | null | undefined): RefRequiredAction | null {
+  return verdict?.required_actions[0] ?? null;
 }
 
 export function primaryOwnerSatisfiableAction(
   verdict: RefRenderedVerdict | null | undefined
 ): RefRequiredAction | null {
-  const primary = verdict?.required_actions[0] ?? null;
+  const primary = primaryRequiredAction(verdict);
   return isOwnerSatisfiableAction(primary) ? primary : null;
 }
 
 export function verdictRequiresOwnerNow(verdict: RefRenderedVerdict | null | undefined): boolean {
   return verdict?.channel === "attention" && primaryOwnerSatisfiableAction(verdict) !== null;
+}
+
+function freshnessNoteFromVerdict(verdict: RefRenderedVerdict): string | null {
+  return verdict.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? null;
+}
+
+function labelWithFreshness(base: string, note: string | null): string {
+  return note ? `${base} · ${note}` : base;
+}
+
+export function deriveRenderedSourceStatus(
+  verdict: RefRenderedVerdict | null | undefined,
+  revoked: boolean
+): SourceStatusFlag {
+  if (revoked) {
+    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
+  }
+  if (!verdict) {
+    return {
+      kind: "unknown",
+      dot: "○",
+      tone: "muted",
+      label: "Verdict unavailable",
+      freshnessNote: null,
+    };
+  }
+  const status = VERDICT_TONE_STATUS[verdict.pill.tone];
+  const freshnessNote = freshnessNoteFromVerdict(verdict);
+  return {
+    ...status,
+    label: labelWithFreshness(verdict.pill.label, freshnessNote),
+    freshnessNote,
+  };
+}
+
+export function formatRenderedRequiredAction(
+  verdict: RefRenderedVerdict | null | undefined
+): FormattedNextAction | null {
+  const action = primaryRequiredAction(verdict);
+  if (!isOwnerSatisfiableAction(action)) {
+    return null;
+  }
+  return {
+    actionTarget: "connection_detail",
+    caveat: null,
+    label: action.cta,
+    notificationHint: null,
+    variant: "structured",
+  };
+}
+
+export function formatPrimaryVerdictAction(
+  verdict: RefRenderedVerdict | null | undefined
+): SourcePrimaryVerdictAction | null {
+  if (!verdict) {
+    return null;
+  }
+  const action = primaryRequiredAction(verdict);
+  if (!action) {
+    return null;
+  }
+  return {
+    audience: action.audience,
+    channel: verdict.channel,
+    cta: action.cta,
+    kind: action.kind,
+    ownerRunnable: isOwnerSatisfiableAction(action),
+    satisfiedWhenKind: action.satisfied_when.kind,
+    terminal: action.terminal,
+  };
+}
+
+export function ownerActionCueFromVerdictAction(
+  action: SourcePrimaryVerdictAction | null
+): SourceOwnerActionCue | null {
+  if (!action?.ownerRunnable) {
+    return null;
+  }
+  return { label: action.cta };
+}
+
+export function ownerActionAvailabilityByStream(
+  verdict: RefRenderedVerdict | null | undefined
+): SourceStreamOwnerActionAvailability {
+  const out: Record<string, boolean> = {};
+  if (!verdict) {
+    return out;
+  }
+  for (const row of verdict.streams ?? []) {
+    const action = row.action_ref === null ? null : (verdict.required_actions[row.action_ref] ?? null);
+    out[row.stream_id] = isOwnerSatisfiableAction(action);
+  }
+  return out;
 }
 
 function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): string | null {
@@ -91,6 +243,7 @@ function itemFromConnector(
   const routeId = connectionRouteId(connector);
   return {
     actionLabel: input.actionLabel ?? null,
+    connectorKey: connector.connector_id,
     deviceLocal: Boolean(input.deviceLocal),
     group,
     id: `${group}:${routeId}`,
@@ -101,8 +254,8 @@ function itemFromConnector(
   };
 }
 
-function classifySourceWork(connector: RefConnectorSummary): SourceWorkItem | null {
-  if (connector.revoked_at) {
+export function sourceWorkItemFromConnector(connector: RefConnectorSummary): SourceWorkItem | null {
+  if (isRevokedConnector(connector)) {
     return null;
   }
 
@@ -162,6 +315,27 @@ function classifySourceWork(connector: RefConnectorSummary): SourceWorkItem | nu
   return null;
 }
 
+export function projectSourceActionability(connector: RefConnectorSummary): SourceActionabilityProjection {
+  const routeId = connectionRouteId(connector);
+  const label = connectorLabel(connector);
+  const revoked = isRevokedConnector(connector);
+  const primaryAction = primaryRequiredAction(connector.rendered_verdict);
+  const primaryVerdictAction = formatPrimaryVerdictAction(connector.rendered_verdict);
+  return {
+    failureSummary: deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null),
+    label,
+    nextAction: formatRenderedRequiredAction(connector.rendered_verdict),
+    ownerActionByStream: ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),
+    ownerActionCue: ownerActionCueFromVerdictAction(primaryVerdictAction),
+    primaryAction,
+    primaryVerdictAction,
+    renderedStatus: deriveRenderedSourceStatus(connector.rendered_verdict, revoked),
+    revoked,
+    routeId,
+    work: sourceWorkItemFromConnector(connector),
+  };
+}
+
 export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummary[]): SourceWorkGroups {
   const groups: SourceWorkGroups = {
     checking: [],
@@ -172,7 +346,7 @@ export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummar
   const seen = new Set<string>();
 
   for (const connector of connectors) {
-    const item = classifySourceWork(connector);
+    const item = projectSourceActionability(connector).work;
     if (!item || seen.has(item.routeId)) {
       continue;
     }

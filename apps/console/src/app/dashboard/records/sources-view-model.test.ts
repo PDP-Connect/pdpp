@@ -16,12 +16,12 @@ import type {
   RefRenderedVerdict,
   RefSchedule,
 } from "../lib/ref-client.ts";
+import { deriveRenderedSourceStatus } from "../lib/source-actionability.ts";
 import {
   buildDuplicateSourceReview,
   buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
   collapseDuplicateFallbackSources,
-  deriveRenderedSourceStatus,
   deriveSourceStatus,
   exploreHrefFor,
   formatSchedule,

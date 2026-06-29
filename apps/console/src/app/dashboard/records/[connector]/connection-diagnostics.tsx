@@ -27,6 +27,7 @@ import type {
   RefRenderedVerdict,
   RefSchedule,
 } from "../../lib/ref-client.ts";
+import { primaryRequiredAction } from "../../lib/source-actionability.ts";
 
 /**
  * Server-rendered diagnostics block for the connector detail page.
@@ -250,7 +251,7 @@ const RENDERED_VERDICT_VOCABULARY = {
 } as const;
 
 function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
-  const primaryAction = verdict.required_actions[0] ?? null;
+  const primaryAction = primaryRequiredAction(verdict);
   return (
     <div className="mb-3 flex flex-col gap-2 border-border/70 border-y px-3 py-3" data-testid="rendered-verdict">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">

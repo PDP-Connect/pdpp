@@ -25,7 +25,7 @@
 
 import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import { indexCollectionReportByStream } from "../lib/collection-report.ts";
-import { deriveFailureSummary, type FailureSummary } from "../lib/connection-evidence.ts";
+import type { FailureSummary } from "../lib/connection-evidence.ts";
 import type {
   RefCollectionReportEntry,
   RefConnectorSummary,
@@ -33,7 +33,7 @@ import type {
   RefSchedule,
   RunSummary,
 } from "../lib/ref-client.ts";
-import { verdictRequiresOwnerNow } from "../lib/source-actionability.ts";
+import { projectSourceActionability, type SourceWorkItem } from "../lib/source-actionability.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -479,9 +479,13 @@ function buildSyncRows(input: {
  * says the owner is the sole resolution. Advisory refresh/retry accelerants and
  * source-pressure waits do not inflate that number.
  */
-function buildHealthBand(input: { groups: SyncGroup[]; failureCards: FailureCard[] }): HealthBand {
+function buildHealthBand(input: {
+  failureCards: FailureCard[];
+  groups: SyncGroup[];
+  projections: readonly SyncProjection[];
+}): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
-  const needYourHand = input.failureCards.filter((c) => c.summary.ownerActionRequired).length;
+  const needYourHand = input.projections.filter((projection) => projection.work?.group === "needsOwner").length;
   const needsReview = input.failureCards.length;
   return {
     onSchedule,
@@ -497,17 +501,26 @@ interface SyncProjection {
   group: SyncGroup;
   lastAtMs: number;
   summary: FailureSummary | null;
+  work: SourceWorkItem | null;
 }
 
 function groupPriority(projection: SyncProjection): number {
-  if (verdictRequiresOwnerNow(projection.connector.rendered_verdict ?? null)) {
-    return 0;
-  }
-  if (projection.summary?.ownerActionRequired) {
-    return 1;
-  }
-  if (projection.summary) {
-    return 2;
+  const workGroup = projection.work?.group;
+  switch (workGroup) {
+    case "needsOwner":
+      return 0;
+    case "review":
+      return 1;
+    case "systemIssue":
+      return 2;
+    case "checking":
+      return 4;
+    case undefined:
+      break;
+    default: {
+      const _exhaustive: never = workGroup;
+      throw new Error(`Unhandled source work group ${_exhaustive}`);
+    }
   }
   if (projection.failing) {
     return 3;
@@ -560,7 +573,7 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
       connectorId,
       firstConnectionId: first.connector.connection_id,
       kind: connectorKind(first.connector),
-      ownerActionCount: sortedBucket.filter((projection) => projection.summary?.ownerActionRequired).length,
+      ownerActionCount: sortedBucket.filter((projection) => projection.work?.group === "needsOwner").length,
       streamCount: sortedBucket.reduce((sum, projection) => sum + projection.group.totalStreamCount, 0),
       total: sortedBucket.length,
     });
@@ -601,7 +614,9 @@ export function buildSyncsViewModel(input: {
     if (connector.revoked_at) {
       continue;
     }
-    const summary = deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null);
+    const actionability = projectSourceActionability(connector);
+    const summary = actionability.failureSummary;
+    const work = actionability.work;
     const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
@@ -618,6 +633,7 @@ export function buildSyncsViewModel(input: {
       failing,
       lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
       summary,
+      work,
       group: {
         name: connector.display_name,
         connectionId: connector.connection_id,
@@ -654,7 +670,7 @@ export function buildSyncsViewModel(input: {
   // duplicate groups that were collapsed away are surfaced separately through
   // the duplicate-group panel, so counting them here would tell the owner to
   // "review the cards below" when no such card is visible.
-  const band = buildHealthBand({ groups: allGroups, failureCards });
+  const band = buildHealthBand({ groups: allGroups, failureCards, projections: ordered });
   return {
     band,
     duplicateGroups,

@@ -55,6 +55,10 @@ import {
   listConnectorManifests,
   type StreamSummary,
 } from "../../lib/rs-client.ts";
+import {
+  projectSourceActionability,
+  type SourceStreamOwnerActionAvailability,
+} from "../../lib/source-actionability.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
@@ -115,7 +119,7 @@ interface ConnectorPageModel {
    * renders exactly as before in that case.
    */
   collectionFactsByStream: Map<string, StreamCollectionFacts>;
-  collectionOwnerActionByStream: Map<string, boolean>;
+  collectionOwnerActionByStream: SourceStreamOwnerActionAvailability;
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
   /**
@@ -124,6 +128,7 @@ interface ConnectorPageModel {
    * operator starts blank instead of re-typing a meaningless default.
    */
   connectionLabelSeed: string;
+  connectionPrimaryAction: RefRequiredAction | null;
   connectionRenderedVerdict: RefRenderedVerdict | null;
   connectorId: string;
   connectorInstanceId: string | null;
@@ -143,22 +148,6 @@ interface ConnectorPageModel {
   sourceInstancesError: string | null;
   streams: StreamSummary[];
   totalRecords: number;
-}
-
-function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): boolean {
-  return action?.audience === "owner" && action.satisfied_when.kind !== "none";
-}
-
-function ownerActionAvailabilityByStream(verdict: RefRenderedVerdict | null | undefined): Map<string, boolean> {
-  const out = new Map<string, boolean>();
-  if (!verdict) {
-    return out;
-  }
-  for (const row of verdict.streams ?? []) {
-    const action = row.action_ref === null ? null : (verdict.required_actions[row.action_ref] ?? null);
-    out.set(row.stream_id, isOwnerSatisfiableAction(action));
-  }
-  return out;
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
@@ -356,7 +345,8 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   for (const [stream, entry] of indexCollectionReportByStream(summary.collection_report)) {
     collectionFactsByStream.set(stream, formatStreamCollectionFacts(entry));
   }
-  const collectionOwnerActionByStream = ownerActionAvailabilityByStream(summary.rendered_verdict ?? null);
+  const actionability = projectSourceActionability(summary);
+  const collectionOwnerActionByStream = actionability.ownerActionByStream;
   const displayName = formatConnectorNameForDisplay({
     connectorId,
     displayName: manifest.display_name,
@@ -388,6 +378,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     collectionOwnerActionByStream,
     connectionHealth: summary.connection_health ?? null,
     connectionId,
+    connectionPrimaryAction: actionability.primaryAction,
     connectionRenderedVerdict: summary.rendered_verdict ?? null,
     connectorId,
     connectorInstanceId,
@@ -455,6 +446,7 @@ function ConnectorPageView({
     connectionHealth,
     connectionRenderedVerdict,
     connectionId,
+    connectionPrimaryAction,
     connectorId,
     connectorInstanceId,
     connectionLabelSeed,
@@ -518,7 +510,7 @@ function ConnectorPageView({
             overview={overview}
             primaryAction={primaryAction}
             renameSelector={renameSelector}
-            renderedVerdict={connectionRenderedVerdict}
+            renderedAction={connectionPrimaryAction}
             revoked={revoked}
             running={running}
             syncIdleLabel={syncIdleLabel}
@@ -573,7 +565,7 @@ function ConnectorPageView({
           <DataList>
             {streams.map((s) => {
               const facts = collectionFactsByStream.get(s.name) ?? null;
-              const ownerActionAvailable = collectionOwnerActionByStream.get(s.name) ?? true;
+              const ownerActionAvailable = collectionOwnerActionByStream[s.name] ?? true;
               return (
                 <li key={s.name}>
                   <Link
@@ -626,7 +618,7 @@ function ConnectorHeaderActions({
   overview,
   primaryAction,
   renameSelector,
-  renderedVerdict,
+  renderedAction,
   revoked,
   running,
   syncIdleLabel,
@@ -640,7 +632,7 @@ function ConnectorHeaderActions({
   overview: ConnectorOverview;
   primaryAction: PrimaryRowAction;
   renameSelector: string;
-  renderedVerdict: RefRenderedVerdict | null;
+  renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
   syncIdleLabel: string;
@@ -677,7 +669,7 @@ function ConnectorHeaderActions({
         displayName={displayName}
         manualUploadHref={manualUploadHref}
         primaryAction={primaryAction}
-        renderedVerdict={renderedVerdict}
+        renderedAction={renderedAction}
         revoked={revoked}
         running={running}
         syncIdleLabel={syncIdleLabel}
@@ -698,7 +690,7 @@ function ConnectorPrimaryHeaderAction({
   displayName,
   manualUploadHref,
   primaryAction,
-  renderedVerdict,
+  renderedAction,
   revoked,
   running,
   syncIdleLabel,
@@ -709,7 +701,7 @@ function ConnectorPrimaryHeaderAction({
   displayName: string;
   manualUploadHref: string | null;
   primaryAction: PrimaryRowAction;
-  renderedVerdict: RefRenderedVerdict | null;
+  renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
   syncIdleLabel: string;
@@ -725,7 +717,6 @@ function ConnectorPrimaryHeaderAction({
       </Link>
     );
   }
-  const renderedAction = primaryRenderedAction(renderedVerdict);
   if (renderedAction) {
     return (
       <RenderedVerdictHeaderAction
@@ -784,10 +775,6 @@ function ConnectorPrimaryHeaderAction({
     );
   }
   return <PrimaryActionNotice action={primaryAction} />;
-}
-
-function primaryRenderedAction(verdict: RefRenderedVerdict | null): RefRequiredAction | null {
-  return verdict?.required_actions[0] ?? null;
 }
 
 function RenderedVerdictHeaderAction({

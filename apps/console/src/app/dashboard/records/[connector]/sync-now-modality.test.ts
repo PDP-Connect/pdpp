@@ -33,7 +33,8 @@ const DERIVES_PRIMARY_ACTION = /const primaryAction = derivePrimaryRowAction\(\{
 const PRIMARY_ACTION_KEYS_RAW_HEALTH = /derivePrimaryRowAction\(\{[\s\S]{0,220}health:/;
 const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(overview\.lastRun\?\.status\)/;
 const SYNC_BUTTON_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
-const RENDERED_VERDICT_ACTION_HELPER = /function primaryRenderedAction\(verdict: RefRenderedVerdict \| null\)/;
+const ACTIONABILITY_PROJECTION = /const actionability = projectSourceActionability\(summary\)/;
+const RENDERED_VERDICT_ACTION_FROM_PROJECTION = /connectionPrimaryAction: actionability\.primaryAction/;
 const RENDERED_VERDICT_HEADER_ACTION = /function RenderedVerdictHeaderAction/;
 const RENDERED_VERDICT_ACTION_TESTID = /data-testid="detail-action-rendered-verdict"/;
 const RENDERED_VERDICT_STATUS_TESTID = /data-testid="detail-action-rendered-verdict-status"/;
@@ -42,8 +43,7 @@ const RENDERED_VERDICT_STATUS_TESTID = /data-testid="detail-action-rendered-verd
 // to /runs (which sent the owner in a hero→panel→runs→panel circle).
 const DEVICE_LOCAL_GUARD = /action\.remediation\?\.target\.kind === "local_device"/;
 const DEVICE_LOCAL_TESTID = /data-testid="detail-action-rendered-verdict-device-local"/;
-const RENDERED_VERDICT_ACTION_PRECEDES_SYNC =
-  /const renderedAction = primaryRenderedAction\(renderedVerdict\);[\s\S]*if \(renderedAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
+const RENDERED_VERDICT_ACTION_PRECEDES_SYNC = /if \(renderedAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
 const SYNC_BRANCH_GUARD = /if \(primaryAction\.kind === "sync"\)/;
 const COOLDOWN_BRANCH_GUARD = /if \(primaryAction\.kind === "cooldown_wait"\)/;
 const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
@@ -78,7 +78,8 @@ test("detail page labels failed owner syncs as retryable", async () => {
 
 test("rendered verdict owner action owns the header before generic sync fallback", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, RENDERED_VERDICT_ACTION_HELPER);
+  assert.match(src, ACTIONABILITY_PROJECTION);
+  assert.match(src, RENDERED_VERDICT_ACTION_FROM_PROJECTION);
   assert.match(src, RENDERED_VERDICT_HEADER_ACTION);
   assert.match(src, RENDERED_VERDICT_ACTION_TESTID);
   assert.match(src, RENDERED_VERDICT_STATUS_TESTID);

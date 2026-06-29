@@ -1684,7 +1684,7 @@ function deriveRenderedFailureSummary(
       cta,
       lastSuccessAt: health.last_success_at,
       nextAttemptAt: health.next_attempt_at,
-      ownerActionRequired: false,
+      ownerActionRequired: verdict.channel === "attention",
       prose: verdict.forward_statement,
       reasonCode: health.reason_code,
       triggerLabel: triggerLabelFromRenderedVerdict(verdict),

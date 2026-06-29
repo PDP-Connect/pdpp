@@ -591,6 +591,49 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
   assert.equal(model.band.allClear, false);
 });
 
+test("device-local recovery counts as need-your-hand while navigating to recovery steps", () => {
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_health: health({
+          axes: { attention: "open", coverage: "complete", freshness: "fresh", outbox: "stalled" },
+          reason_code: "local_exporter_dead_letter_backlog",
+          state: "degraded",
+        }),
+        rendered_verdict: renderedVerdict({
+          channel: "attention",
+          forward_statement: "The local collector has saved records on its host that did not upload to this server.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              cta: "Run local recovery",
+              kind: "add_info",
+              remediation: {
+                cause: "dead_letter_backlog",
+                commands: [],
+                kind: "local_collector_recovery",
+                label: "Recover local collector uploads",
+                summary: "Recover saved records on the host that owns them.",
+                target: { identity_source: "source_instance_bindings", kind: "local_device" },
+              },
+              satisfied_when: { kind: "attention_resolved" },
+              urgency: "now",
+            }),
+          ],
+        }),
+      }),
+    ],
+    runs: [],
+  });
+
+  const card = model.failureCards[0];
+  assert.equal(card?.summary.cta, "connection_detail");
+  assert.equal(card?.summary.actionLabel, "See recovery steps");
+  assert.equal(card?.summary.ownerActionRequired, true);
+  assert.equal(model.band.needYourHand, 1);
+  assert.equal(model.band.needsReview, 1);
+});
+
 test("syncs ranking only treats attention plus primary owner action as need-your-hand", () => {
   const maintainerFirst = connector({
     connection_id: "cin_maintainer",
