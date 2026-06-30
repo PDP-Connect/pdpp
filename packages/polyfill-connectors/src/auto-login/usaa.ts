@@ -237,12 +237,10 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
   try {
     await page.waitForSelector('input[name="password"]', { timeout: 25_000 });
   } catch {
-    const body = (
-      await page
-        .locator("body")
-        .innerText()
-        .catch((): string => "")
-    ).slice(0, 800);
+    const body = await page
+      .locator("body")
+      .innerText()
+      .catch((): string => "");
     const inputs = await page
       .evaluate((): InputProbe[] => {
         const els = document.querySelectorAll("input");

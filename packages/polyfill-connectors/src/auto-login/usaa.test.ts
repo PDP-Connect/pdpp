@@ -88,6 +88,43 @@ function makeInteractionHarness(status: InteractionResponse["status"] = "success
   };
 }
 
+function makePasswordStepFailurePage(bodyText: string): Page {
+  const memberIdLocator: Pick<Locator, "press"> = {
+    press: (): Promise<void> => Promise.resolve(),
+  };
+  const nextButtonLocator: Pick<Locator, "waitFor"> = {
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  const bodyLocator: Pick<Locator, "innerText"> = {
+    innerText: (): Promise<string> => Promise.resolve(bodyText),
+  };
+  const fake: Partial<Page> = {};
+  fake.click = (): Promise<void> => Promise.resolve();
+  fake.evaluate = (async (): Promise<Array<{ name: string; placeholder: string; type: string }>> => [
+    { name: "memberId", placeholder: "", type: "text" },
+  ]) as Page["evaluate"];
+  fake.fill = (): Promise<void> => Promise.resolve();
+  fake.goto = (): ReturnType<Page["goto"]> => Promise.resolve(null);
+  fake.locator = ((selector: string): Locator => {
+    if (selector === "#next-button:not([disabled])") {
+      return nextButtonLocator as Locator;
+    }
+    if (selector === 'input[name="memberId"]') {
+      return memberIdLocator as Locator;
+    }
+    return bodyLocator as Locator;
+  }) as Page["locator"];
+  fake.waitForSelector = ((selector: string): Promise<never> => {
+    if (selector === 'input[name="password"]') {
+      return Promise.reject(new Error("password field unavailable"));
+    }
+    return Promise.resolve({} as never);
+  }) as Page["waitForSelector"];
+  fake.waitForTimeout = (): Promise<void> => Promise.resolve();
+  fake.url = (): string => `${LOGIN_URL}?akredirect=true`;
+  return fake as Page;
+}
+
 async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
   const priorUsername = process.env.USAA_USERNAME;
   const priorPassword = process.env.USAA_PASSWORD;
@@ -234,4 +271,29 @@ test("classifyUsaaLoginStepFailure distinguishes source downtime from selector d
     "source_unavailable"
   );
   assert.equal(classifyUsaaLoginStepFailure("Member Account Login Username Next"), "password_field_missing");
+});
+
+test("ensureUsaaSession classifies delayed USAA source-unavailable modal after member-id submit", async () => {
+  // Live fixture 2026-06-29: USAA rendered the source-unavailable dialog after
+  // the logon form/footer, beyond the old 800-character pre-classification
+  // slice. The run was mislabeled as selector drift even though the source
+  // explicitly said its login system was unavailable.
+  await withUsaaCredentials(async () => {
+    const prefix = "Member Account Login ".repeat(80);
+    const page = makePasswordStepFailurePage(
+      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`
+    );
+    const context = makeContext([[]]);
+    const interactions = makeInteractionHarness();
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /source_unavailable: USAA reported its login system is currently unavailable after Next click/
+    );
+    assert.equal(interactions.requests.length, 0);
+  });
 });
