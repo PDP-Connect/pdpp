@@ -106,7 +106,7 @@ export const orderItemSchema = z.object({
   url: z.url().nullable(),
   unit_price: currencyStringSchema,
   unit_price_cents: centsSchema,
-  quantity: z.number().int().min(1).max(999),
+  quantity: z.number().positive().max(999),
   seller: z.string().min(1).max(120).nullable(),
   item_image_url: z.string().nullable(),
   returned: z.boolean(),

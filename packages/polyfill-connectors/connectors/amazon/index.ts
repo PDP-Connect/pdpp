@@ -109,7 +109,7 @@ const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
 const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
 const ORDERS_URL_RE = /\/your-orders|\/order-history/;
 const YEAR_VALUE_RE = /year-(\d{4})/;
-const DETAIL_URL_RE = /\/gp\/your-account\/order-details/;
+const DETAIL_URL_RE = /\/(?:gp\/your-account|fopo)\/order-details/;
 
 export type AmazonDetailGapReason = "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
 
@@ -262,10 +262,13 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
         // Wait for #orderDetails to appear OR for the cancellation/redirect
         // page signature. waitForSelector replaces `await sleep(800)` —
         // real sync primitive instead of a pacing guess.
-        await page.waitForSelector('#orderDetails, [data-component="cancelled"]', {
-          timeout: DETAIL_WAIT_MS,
-          state: "attached",
-        });
+        await page.waitForSelector(
+          '#orderDetails, [data-component="cancelled"], #f3_food_ItemList, #f3_food_WfmInStoreOrderSummary',
+          {
+            timeout: DETAIL_WAIT_MS,
+            state: "attached",
+          }
+        );
       },
       {
         retries: RETRY_COUNT,

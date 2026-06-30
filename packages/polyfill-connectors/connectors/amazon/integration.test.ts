@@ -54,6 +54,7 @@ import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from
 
 const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
 const AMAZON_INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
+const AMAZON_FOPO_DETAIL_FIXTURE = new URL("./__fixtures__/order-detail-fopo-minimal.html", import.meta.url);
 
 interface RecordingDeps {
   deps: EmitDeps;
@@ -151,7 +152,10 @@ const NO_DETAIL_HTML = "<!doctype html><html><body><div>no order details</div></
  * `makeDetailHtml()` (parses to a non-null OrderDetail); a degraded-gap stub
  * passes `NO_DETAIL_HTML`.
  */
-function makeDetailPageStub(html: string): Page {
+function makeDetailPageStub(
+  html: string,
+  url = "https://www.amazon.com/gp/your-account/order-details?orderID=fixture"
+): Page {
   // Single assertion through Proxy (matches NEVER_CALLED_PAGE), avoiding a
   // double-cast. Only the methods fetchOrderDetail touches are backed; any
   // other access throws so an unexpected page call is caught loudly.
@@ -166,7 +170,7 @@ function makeDetailPageStub(html: string): Page {
           return (): Promise<string> => Promise.resolve(html);
         }
         if (prop === "url") {
-          return (): string => "https://www.amazon.com/gp/your-account/order-details?orderID=fixture";
+          return (): string => url;
         }
         throw new Error(`unexpected page.${String(prop)} in detail stub`);
       },
@@ -687,6 +691,27 @@ test("processListOrder: a hydrated detail records the order id in required + hyd
   assert.deepEqual(coverage.gap, []);
   // A hydration is not a gap — it must emit no DETAIL_GAP.
   assert.equal(findDetailGaps(protocolMessages).length, 0, "a hydrated detail emits no DETAIL_GAP");
+});
+
+test("processListOrder: fopo Whole Foods detail URL hydrates instead of becoming a gap", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const html = readFileSync(AMAZON_FOPO_DETAIL_FIXTURE, "utf8");
+  const page = makeDetailPageStub(
+    html,
+    "https://www.amazon.com/fopo/order-details/ref=ppx_hzod_rd_dt_b_fresh_fopo_rd?_encoding=UTF8&orderID=fixture"
+  );
+
+  await processListOrder(page, deps, makeRunFlags(), makeListOrder({ orderId: "ord-fopo-1" }));
+
+  assert.deepEqual(coverage.required, ["ord-fopo-1"]);
+  assert.deepEqual(coverage.hydrated, ["ord-fopo-1"]);
+  assert.deepEqual(coverage.gap, []);
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "fopo detail pages must not emit degraded detail gaps");
+  assert.ok(
+    emitted.some((r) => r.stream === "order_items" && r.data.asin === "B01FOPO001"),
+    "fopo detail items enrich emitted order_items"
+  );
 });
 
 test("processListOrder: a null detail (attempted, degraded) records a gap, not a hydration", async () => {

@@ -191,6 +191,39 @@ test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", (
   assert.equal(item.refund_status, null);
 });
 
+test("parseOrderDetailDom: fopo Whole Foods detail fixture parses alternate detail shape", () => {
+  const html = readFixture("order-detail-fopo-minimal.html");
+  const d = parseOrderDetailDom(html);
+  assert.ok(d, "expected non-null OrderDetail");
+  assert.equal(d.grand_total, "$10.50");
+  assert.equal(d.payment_method_summary, "Visa ending in 1234");
+  assert.equal(d.shipping_address_summary, "Whole Foods Market, 123 Placeholder Rd, Fakeville, TX 00000");
+  assert.equal(d.status_detail, "Purchased at Whole Foods Market - Fictional Store");
+  assert.equal(d.gift_order, false);
+  assert.equal(d.digital_order, false);
+  assert.equal(d.items.length, 2);
+  assert.deepEqual(d.items[0], {
+    asin: "B01FOPO001",
+    name: "Fictional Market Apples",
+    url: "https://www.amazon.com/dp/B01FOPO001?ref_=wfmInStore_food_od_product_details",
+    unit_price: "$3.00",
+    quantity: 1.5,
+    seller: null,
+    item_image_url: "https://example.com/fopo-a.jpg",
+    refund_status: null,
+  });
+  assert.deepEqual(d.items[1], {
+    asin: null,
+    name: "Fictional Bulk Peaches",
+    url: null,
+    unit_price: "$6.00",
+    quantity: 2,
+    seller: null,
+    item_image_url: "https://example.com/fopo-b.jpg",
+    refund_status: null,
+  });
+});
+
 test("parseOrderDetailDom: shipping address <li>-only fallback (no inner span)", () => {
   // Old Amazon layouts render address lines as plain <li> without the
   // a-list-item <span>. The parser must still extract one line per <li>,

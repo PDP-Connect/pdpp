@@ -143,6 +143,11 @@ const ASIN_RE = /\/(?:gp\/product|dp)\/([A-Z0-9]{10})/;
 const SOLD_BY_RE = /^Sold by:?\s*(.+)$/i;
 const DOLLAR_RE = /\$([\d,]+\.\d{2})/;
 const INT_RE = /^\d+$/;
+const FOPO_BR_RE = /<br\s*\/?>/i;
+const FOPO_AT_PRICE_RE = /@\s*(\$[\d,]+\.\d{2})/;
+const FOPO_CARD_TAIL_PREFIX_RE = /^\*/;
+const HTML_TAG_RE = /<[^>]*>/g;
+const FOPO_QTY_RE = /\bQty:\s*(\d+(?:\.\d+)?)/i;
 
 const PAY_METHOD_MAX_LEN = 200;
 const ADDRESS_MAX_LEN = 240;
@@ -282,11 +287,99 @@ function parseDetailItem(rightGrid: Element): DetailItem | null {
   };
 }
 
+function parseFopoPaymentMethod(summaryEl: Element | null): string | null {
+  const brand = normText(summaryEl?.querySelector('[id^="wfm-"][id$="-card-brand"]'));
+  const tail = normText(summaryEl?.querySelector('[id^="wfm-"][id$="-card-tail"]')).replace(
+    FOPO_CARD_TAIL_PREFIX_RE,
+    ""
+  );
+  if (brand && tail) {
+    return `${brand} ending in ${tail}`.slice(0, PAY_METHOD_MAX_LEN);
+  }
+  return null;
+}
+
+function parseFopoStoreSummary(destinationEl: Element | null): string | null {
+  if (!destinationEl) {
+    return null;
+  }
+  const source = destinationEl.querySelector("span") ?? destinationEl;
+  const html = (source as { innerHTML?: string }).innerHTML ?? "";
+  const lines = (html.includes("<br") ? html.split(FOPO_BR_RE) : [textOf(source)])
+    .map((line) => line.replace(HTML_TAG_RE, " "))
+    .map((line) => line.replace(WHITESPACE_RE, " ").trim())
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0 ? lines.join(", ").slice(0, ADDRESS_MAX_LEN) : null;
+}
+
+function parseFopoDetailItem(row: Element): DetailItem | null {
+  const img = row.querySelector<HTMLElement>("img.ufpo-itemListWidget-image");
+  const titleLink = row.querySelector<HTMLAnchorElement>('a[href*="/dp/"], a[href*="/gp/product/"]');
+  const nameBox = row.querySelector<HTMLElement>(".a-column.a-span10 .a-row.a-spacing-none .a-column.a-span10");
+  const titleFallback = nameBox?.querySelector<HTMLElement>("span.a-size-small") ?? null;
+  const name = normText(titleLink ?? titleFallback);
+  if (!name) {
+    return null;
+  }
+
+  const href = titleLink?.getAttribute("href") ?? "";
+  const asinM = href.match(ASIN_RE);
+  const absoluteHref = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
+
+  const priceText = [...row.querySelectorAll<HTMLElement>(".a-text-right span.a-size-small")]
+    .map((el) => normText(el))
+    .find((text) => DOLLAR_RE.test(text));
+  const unitPriceMatch = normText(row).match(FOPO_AT_PRICE_RE) ?? priceText?.match(DOLLAR_RE);
+  let unit_price: string | null = null;
+  if (unitPriceMatch?.[1]) {
+    unit_price = unitPriceMatch[1].startsWith("$") ? unitPriceMatch[1] : `$${unitPriceMatch[1]}`;
+  }
+
+  const qtyMatch = normText(row).match(FOPO_QTY_RE);
+  const quantity = qtyMatch?.[1] ? Number(qtyMatch[1]) : 1;
+
+  return {
+    asin: asinM?.[1] ?? null,
+    name: name.slice(0, ITEM_NAME_MAX_LEN),
+    url: absoluteHref,
+    unit_price,
+    quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
+    seller: null,
+    item_image_url: img?.getAttribute("src") ?? null,
+    refund_status: null,
+  };
+}
+
+function parseFopoOrderDetailDom(document: Document): OrderDetail | null {
+  const itemList = document.querySelector("#f3_food_ItemList");
+  const summaryEl = document.querySelector("#f3_food_WfmInStoreOrderSummary");
+  if (!(itemList || summaryEl)) {
+    return null;
+  }
+
+  const rows = itemList ? [...itemList.querySelectorAll<HTMLElement>(".a-row.a-spacing-base")] : [];
+  const items = rows.map((row) => parseFopoDetailItem(row)).filter((item): item is DetailItem => Boolean(item));
+  const grandTotal = normText(summaryEl?.querySelector("#wfm-grand-total-amount"));
+  const status = normText(document.querySelector("#ufpo-order-status-primary"));
+
+  return {
+    status_detail: status && status.length < STATUS_MAX_LEN ? status : null,
+    recipient_name: null,
+    shipping_address_summary: parseFopoStoreSummary(document.querySelector("#f3_food_DestinationInfo")),
+    payment_method_summary: parseFopoPaymentMethod(summaryEl),
+    grand_total: DOLLAR_RE.test(grandTotal) ? (grandTotal.match(DOLLAR_RE)?.[0] ?? null) : null,
+    gift_order: false,
+    digital_order: false,
+    items,
+  };
+}
+
 export function parseOrderDetailDom(html: string): OrderDetail | null {
   const { document } = parseHTML(html);
   const od = document.querySelector("#orderDetails");
   if (!od) {
-    return null;
+    return parseFopoOrderDetailDom(document);
   }
 
   const cancelledEl = od.querySelector('[data-component="cancelled"]');
